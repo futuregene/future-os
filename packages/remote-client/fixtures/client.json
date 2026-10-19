@@ -1,0 +1,193 @@
+{
+  "version": 1,
+  "fileBytes": [
+    82,
+    101,
+    109,
+    111,
+    116,
+    101,
+    0,
+    255,
+    98,
+    121,
+    116,
+    101,
+    115,
+    33
+  ],
+  "event": {
+    "sessionId": "interop_session",
+    "type": "agent_start",
+    "data": "{}",
+    "runId": "interop_run",
+    "idx": 1,
+    "epoch": 1,
+    "eventId": "interop_event",
+    "timestamp": "2026-10-19T00:00:00Z",
+    "sessionIdx": 1,
+    "runSequence": 1
+  },
+  "cases": [
+    {
+      "id": "client.request.read",
+      "kind": "request",
+      "steps": [
+        {
+          "command": {
+            "id": "shared_read",
+            "type": "get_state",
+            "sessionId": "interop_session",
+            "message": "read"
+          },
+          "data": {
+            "echo": "read",
+            "kind": "get_state"
+          }
+        }
+      ],
+      "expectedExecutions": 1
+    },
+    {
+      "id": "client.request.write",
+      "kind": "request",
+      "steps": [
+        {
+          "command": {
+            "id": "shared_write",
+            "type": "set_thinking_level",
+            "sessionId": "interop_session",
+            "message": "write"
+          },
+          "data": {
+            "echo": "write",
+            "kind": "set_thinking_level"
+          }
+        }
+      ],
+      "expectedExecutions": 1
+    },
+    {
+      "id": "client.request.duplicate-read",
+      "kind": "request",
+      "steps": [
+        {
+          "command": {
+            "id": "shared_duplicate-read",
+            "type": "get_state",
+            "sessionId": "interop_session",
+            "message": "same-read"
+          },
+          "data": {
+            "echo": "same-read",
+            "kind": "get_state"
+          }
+        },
+        {
+          "command": {
+            "id": "shared_duplicate-read",
+            "type": "get_state",
+            "sessionId": "interop_session",
+            "message": "same-read"
+          },
+          "data": {
+            "echo": "same-read",
+            "kind": "get_state"
+          }
+        }
+      ],
+      "expectedExecutions": 1
+    },
+    {
+      "id": "client.request.duplicate-write",
+      "kind": "request",
+      "steps": [
+        {
+          "command": {
+            "id": "shared_duplicate-write",
+            "type": "set_thinking_level",
+            "sessionId": "interop_session",
+            "message": "same-write"
+          },
+          "data": {
+            "echo": "same-write",
+            "kind": "set_thinking_level"
+          }
+        },
+        {
+          "command": {
+            "id": "shared_duplicate-write",
+            "type": "set_thinking_level",
+            "sessionId": "interop_session",
+            "message": "same-write"
+          },
+          "data": {
+            "echo": "same-write",
+            "kind": "set_thinking_level"
+          }
+        }
+      ],
+      "expectedExecutions": 1
+    },
+    {
+      "id": "client.request.business-error",
+      "kind": "request",
+      "steps": [
+        {
+          "command": {
+            "id": "shared_business-error",
+            "type": "get_state",
+            "sessionId": "interop_session",
+            "message": "refuse"
+          },
+          "error": "fixture_refused"
+        },
+        {
+          "command": {
+            "id": "shared_business-error",
+            "type": "get_state",
+            "sessionId": "interop_session",
+            "message": "refuse"
+          },
+          "error": "fixture_refused"
+        }
+      ],
+      "expectedExecutions": 1
+    },
+    {
+      "id": "client.request.command-conflict",
+      "kind": "request",
+      "steps": [
+        {
+          "command": {
+            "id": "shared_conflict",
+            "type": "get_state",
+            "sessionId": "interop_session",
+            "message": "before"
+          },
+          "data": {
+            "echo": "before",
+            "kind": "get_state"
+          }
+        },
+        {
+          "command": {
+            "id": "shared_conflict",
+            "type": "get_state",
+            "sessionId": "interop_session",
+            "message": "changed"
+          },
+          "error": "command_id_conflict"
+        }
+      ],
+      "expectedExecutions": 1
+    }
+  ],
+  "flowIds": {
+    "firstPair": "client.handshake.xxpsk0",
+    "event": "client.event.encrypted",
+    "transfer": "client.transfer.binary",
+    "reconnect": "client.handshake.ik",
+    "shutdown": "client.shutdown"
+  }
+}

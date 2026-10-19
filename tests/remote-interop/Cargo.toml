@@ -1,0 +1,36 @@
+[package]
+name = "future-remote-interop"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+default = []
+network-tests = ["future-remote-client/test-support", "future-remote-server/test-support"]
+
+[dependencies]
+future-remote-client = { path = "../../packages/remote-client" }
+future-remote-server = { path = "../../packages/remote-server" }
+future-remote-protocol = { path = "../../packages/remote-protocol" }
+future-remote-crypto = { path = "../../packages/remote-crypto" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+anyhow = { workspace = true }
+tempfile = { workspace = true }
+base64 = { workspace = true }
+nkeys = "0.4"
+sha2 = "0.10"
+url = "2"
+async-nats = "0.49"
+
+[[bin]]
+name = "remote-interop-host"
+path = "src/bin/host.rs"
+required-features = ["network-tests"]
+
+[[test]]
+name = "rust_client_server"
+path = "tests/rust_client_server.rs"
+required-features = ["network-tests"]

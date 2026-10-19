@@ -15,7 +15,7 @@ backward rule) and every page is measured separately — the whole-session row i
 not what a phone pays, since it never reads the session in one go.
 
 Paging is data selection only: the trim and the byte counts always come from the
-shipping Rust code (`remote_host::lean`), never from a Python reimplementation.
+shipping Rust code (`future_remote_server::lean`), never from a Python reimplementation.
 """
 import argparse
 import json
@@ -186,13 +186,13 @@ def main() -> int:
     # and measuring with a stale one reports the previous revision's trim.
     candidates = sorted(
         (path for path in
-         (ROOT / "target" / "debug" / "deps").glob("futureos_lib-*")
+         (ROOT / "target" / "debug" / "deps").glob("future_remote_server-*")
          if path.is_file() and os.access(path, os.X_OK)),
         key=lambda path: path.stat().st_mtime, reverse=True)
     binary = candidates[0] if candidates else None
     if binary is None:
-        raise SystemExit("build the desktop test binary first "
-                         "(cd desktop/src-tauri && cargo test --lib lean --no-run)")
+        raise SystemExit("build the Remote Server test binary first "
+                         "cargo test -p future-remote-server --lib --no-run")
 
     print(f"{'session':<9}{'entries':>9}{'untrimmed':>12}{'trimmed':>11}{'saved':>8}"
           f"{'gzipped':>10}{'saved(gz)':>10}   wire (the reply a phone receives)")
@@ -204,7 +204,7 @@ def main() -> int:
                 count, raw_bytes = dump_phone_page(session, page_path, args.phone_page)
                 result = subprocess.run(
                     [str(binary),
-                     "remote_host::business::wire_limits::measure_phone_page_tests::measure_phone_page",
+                     "wire_limits::measure_phone_page_tests::measure_phone_page",
                      "--exact", "--ignored", "--nocapture", "--test-threads=1"],
                     env={**os.environ, "VERIFY_E2E_PHONE_PAGE": str(page_path)},
                     capture_output=True, text=True, check=True)
@@ -259,7 +259,7 @@ def main() -> int:
                 page_path.write_text(json.dumps(entries[start:end], separators=(",", ":")))
                 try:
                     result = subprocess.run(
-                        [str(binary), "remote_host::lean::tests::measure_real_entries",
+                        [str(binary), "lean::tests::measure_real_entries",
                          "--exact", "--ignored", "--nocapture", "--test-threads=1"],
                         env={**os.environ, "LEAN_HISTORY_ENTRIES": str(page_path)},
                         capture_output=True, text=True, check=True)

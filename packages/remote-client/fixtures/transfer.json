@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "suite": "client.transfer-stop",
+  "cases": [
+    {
+      "id": "client.transfer-stop.pending-download",
+      "kind": "shutdown_pending_download",
+      "expectedDeliveredBytes": 0,
+      "expectedRestarts": 0,
+      "difference": "Rust returns downloaded bytes to its caller; TS writes through a host sink and may queue a concurrent pull wave. Both stop while the first real Server read is held, finish cancellation before that read is released, and must not deliver bytes or restart afterward. Server transfer records are cleared by explicit Server shutdown, not assumed to be released over an already closed Client."
+    }
+  ]
+}

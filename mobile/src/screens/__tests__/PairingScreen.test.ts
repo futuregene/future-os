@@ -6,7 +6,7 @@ import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
 import { PairingScreen } from "../PairingScreen";
 import { pairingCodeFromQr } from "../../remote/codec";
-import { RemoteApiError } from "../../remote/connectionState";
+import { RemoteApiError } from "@future-os/remote-client/connectionState";
 
 let mockDimensions = { width: 402, height: 874, scale: 3, fontScale: 1 };
 const mockAppStateHandlers = new Set<(state: string) => void>();

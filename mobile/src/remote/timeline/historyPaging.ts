@@ -1,8 +1,8 @@
 import { AppState } from "react-native";
 import type { RemoteClient } from "../client";
-import { requestReadPage } from "../readPages";
-import { SyncEngine } from "../syncEngine";
-import { type TimelineState } from "../timeline";
+import { requestReadPage } from "@future-os/remote-client/readPages";
+import { SyncEngine } from "@future-os/remote-client/syncEngine";
+import { type TimelineState } from "@future-os/remote-client/timeline";
 import type { EntriesData } from "../types";
 import { HISTORY_PAGE_USER_EXCHANGES, HISTORY_TAIL_CURSOR } from "@future-os/thread-projection";
 

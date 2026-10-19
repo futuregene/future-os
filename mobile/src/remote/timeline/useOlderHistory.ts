@@ -3,9 +3,9 @@ import type { HistoryPagingState } from "./historyPaging";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useCallback } from "react";
 import type { RemoteClient } from "../client";
-import { requestReadPage } from "../readPages";
-import { SyncEngine } from "../syncEngine";
-import { timelineFromEntries } from "../timeline";
+import { requestReadPage } from "@future-os/remote-client/readPages";
+import { SyncEngine } from "@future-os/remote-client/syncEngine";
+import { timelineFromEntries } from "@future-os/remote-client/timeline";
 import type { EntriesData } from "../types";
 
 /**

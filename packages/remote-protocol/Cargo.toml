@@ -1,0 +1,17 @@
+[package]
+name = "future-remote-protocol"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+future-remote-crypto = { path = "../remote-crypto" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+url = "2"
+flate2 = "1"
+thiserror = "2"
+
+[dev-dependencies]
+nkeys = "0.4"

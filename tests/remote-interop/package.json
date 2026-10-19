@@ -1,0 +1,28 @@
+{
+  "name": "@future-os/remote-interop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src-ts scripts",
+    "build": "node scripts/build.mjs",
+    "test": "npm run build && node .artifacts/client.cjs"
+  },
+  "dependencies": {
+    "@future-os/remote-client": "*",
+    "@nats-io/nats-core": "3.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.1",
+    "@typescript-eslint/parser": "8.69.0",
+    "@typescript-eslint/eslint-plugin": "8.69.0",
+    "eslint": "10.8.1",
+    "typescript": "6.0.3",
+    "esbuild": "0.28.2",
+    "sodium-javascript": "0.8.0"
+  }
+}

@@ -6,11 +6,11 @@ import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState } from "react-native";
 import type { RemoteClient } from "./client";
-import { fetchEventsSince } from "./replay";
+import { fetchEventsSince } from "@future-os/remote-client/replay";
 
 import type { RunCursor } from "@future-os/thread-projection";
-import { SyncEngine, type ReconcileReason, type TimelineSyncStatus } from "./syncEngine";
-import { emptyTimeline, markApprovalDecision, mergeHistoryAttachments, timelineFromEntries, type TimelineState } from "./timeline";
+import { SyncEngine, type ReconcileReason, type TimelineSyncStatus } from "@future-os/remote-client/syncEngine";
+import { emptyTimeline, markApprovalDecision, mergeHistoryAttachments, timelineFromEntries, type TimelineState } from "@future-os/remote-client/timeline";
 import type { HistoryEntry, RemoteSessionState, StreamEvent } from "./types";
 export { compactionTerminalOf, COMPACTION_TERMINAL_TIMEOUT_MS } from "./timeline/useCompactionOutcomes";
 

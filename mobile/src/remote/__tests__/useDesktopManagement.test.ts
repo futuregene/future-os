@@ -3,7 +3,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { RemoteClient } from "../client";
 import { useDesktopManagement } from "../useDesktopManagement";
 
-jest.mock("../readPages", () => ({
+jest.mock("@future-os/remote-client/readPages", () => ({
   requestReadPage: (client: { requestRetry: (command: unknown, session: string) => unknown }, command: unknown, session: string) => client.requestRetry(command, session),
 }));
 

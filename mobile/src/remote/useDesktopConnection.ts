@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
 import { AppState } from "react-native";
 import { RemoteClient, type RecoveryReason } from "./client";
-import type { ConnectionState } from "./connectionState";
-import { classifyError } from "./connectionState";
+import type { ConnectionState } from "@future-os/remote-client/connectionState";
+import { classifyError } from "@future-os/remote-client/connectionState";
 import { discardPendingPrompt } from "./pendingPromptStorage";
 import { discardPendingContinuation } from "./pendingContinuationStorage";
 import {
@@ -11,9 +11,9 @@ import {
   isDesktopOnline,
   PRESENCE_RECEIPT_STALE_MS,
   type PresenceState,
-} from "./presence";
-import { RecoveryCoordinator } from "./recoveryCoordinator";
-import type { ReconcileReason, SyncEngine } from "./syncEngine";
+} from "@future-os/remote-client/presence";
+import { RecoveryCoordinator } from "@future-os/remote-client/recoveryCoordinator";
+import type { ReconcileReason, SyncEngine } from "@future-os/remote-client/syncEngine";
 import { loadCredentials, saveCredentials } from "./storage";
 import type {
   CatalogRevisions,
@@ -188,6 +188,27 @@ export function useDesktopConnection({
   /** The session the desktop is asked to detail; empty while unfocused. */
   const visibleSessionRef = useRef("");
   const appActiveRef = useRef(true);
+  // A timed-out stop still has an owner until native/SDK work actually ends.
+  const closingClientsRef = useRef(new Set<RemoteClient>());
+  const stopClient = useCallback(async (client: RemoteClient | null) => {
+    if (!client) return;
+    closingClientsRef.current.add(client);
+    try {
+      const result = await client.shutdown(2_000, "UserInitiated");
+      if (result.complete) {
+        closingClientsRef.current.delete(client);
+        return;
+      }
+      console.warn("remote_cleanup_timeout", result.pendingTasks);
+      // Release the UI after its budget, while retaining the client and an
+      // observer for actual completion. Never report the timeout as completion.
+      void client.waitTasks().then(() => {
+        closingClientsRef.current.delete(client);
+      }, error => { console.warn("remote_cleanup_failed", error); });
+    } catch (error) {
+      console.warn("remote_cleanup_failed", error);
+    }
+  }, []);
 
   useEffect(() => {
     credentialsRef.current = credentials;
@@ -258,7 +279,7 @@ export function useDesktopConnection({
         resetConversation();
         resetTimeline();
       }
-      await previous?.close();
+      await stopClient(previous);
       if (access !== accessRef.current) return;
       // A successful pair must mean its credentials are durable. In
       // particular, do not let the UI report success while SecureStore writes
@@ -311,7 +332,7 @@ export function useDesktopConnection({
             resetTimeline();
             setPhase("revoked");
             setError("credentials_revoked");
-            void client.close("UserInitiated");
+            void stopClient(client);
             return;
           }
           // An explicit Desktop offline notice (including sleep) is terminal, unlike a
@@ -331,7 +352,7 @@ export function useDesktopConnection({
             resetTimeline();
             setPhase("stopped");
             setError(null);
-            void client.close("UserInitiated");
+            void stopClient(client);
             return;
           }
           const agentRecovered =
@@ -434,6 +455,7 @@ export function useDesktopConnection({
       noteCatalogRevisions,
       reconcileSession,
       recordError,
+      stopClient,
       recoverState,
       resetCatalog,
       resetConversation,
@@ -471,10 +493,10 @@ export function useDesktopConnection({
     return () => {
       active = false;
       accessRef.current += 1;
-      void clientRef.current?.close();
+      void stopClient(clientRef.current);
       clientRef.current = null;
     };
-  }, [clientRef, connect, desktopId]);
+  }, [clientRef, connect, desktopId, stopClient]);
 
   /**
    * Recover this connection.

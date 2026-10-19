@@ -1,46 +1,7 @@
-//! Replace this machine's pairing, in the only order that works.
-//!
-//! The two steps are the ones the Remote page's buttons perform: the old binding
-//! is dropped first, because a fresh invitation cannot be issued while this
-//! machine still holds the previous one.
-//!
-//! Reached in two situations, both of which mean "there is nothing to keep":
-//!
-//! * the machine has no device left, and a terminal asked for an invitation
-//!   (`future remote devices add` on an unpaired machine, `start.rs`'s
-//!   `pair_new_device`), where the cleanup is what stops a runtime that outlived
-//!   the pairing book `remove --all` emptied.
-//!
-//! Pairing replaces, so this is destructive by nature: the platform revokes the
-//! previous pairing as soon as the new code is created, and the device that was
-//! connected is cut off whether or not the new code is ever scanned.
-
+//! Re-pair policy belongs to Server; real persistence tests stay in Desktop.
 use super::*;
-
-/// Revoke the saved pairing, then add a device with a fresh invitation.
-///
-/// "Start afresh" is *adding*, not starting: a plain start no longer mints an
-/// invitation for an empty machine (the GUI adds devices one at a time), so the
-/// invitation the caller is waiting for has to be asked for explicitly.
 pub async fn re_pair() -> Result<RemoteStatus, crate::AppError> {
-    unpair().await?;
-    // `unpair` only queues the revoke: it is also the Remote page's button and
-    // must not wait on HTTP. Here the queue cannot be left for the compensation
-    // loop, because the platform gives a desktop it already knows the *same*
-    // `pair_id` for the replacement invitation — a revoke delivered after it
-    // would cancel the very code this command is about to print. Deliver it now.
-    // A failure here is not fatal: creating the invitation replaces the old
-    // binding anyway, and `create_pairing` retires whatever revoke is left.
-    if let Err(error) = pairing::retry_pending_revokes().await {
-        eprintln!("remote: re-pair could not settle the saved pairing's revoke: {error}");
-    }
-    // A categorized refusal (no account, network, server) is an answer the
-    // terminal can print, exactly as a start reports it; only an uncategorized
-    // local fault stays an error.
-    match add_device().await {
-        Ok(status) => Ok(status),
-        Err(error) => start_failure(error),
-    }
+    SUPERVISOR.re_pair().await.map_err(Into::into)
 }
 
 #[cfg(test)]

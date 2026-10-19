@@ -1,5 +1,10 @@
 # Module: `tau-remote` — the `desktop/src-tauri` remote lane
 
+> Remote extraction (2026-10-19): source paths and results below are historical.
+> Current test ownership is tracked in the [Remote migration inventory](../architecture/remote-test-migration.json).
+> Measurement scripts now target migrated Server cases where applicable. Final branch acceptance is pending.
+
+
 > **FIGURE (2026-10-19, TAU-D29): 1500 uncovered, measured at `16ea6f388`.**
 > `origin/main` was merged at `52d80801f`; #1179/#1184/#1188 add 994 lines inside these scopes and
 > the figure moved 1083 -> 1500. Report: `.future/cov100/pinned/union-refresh4.info` (gui leg `rc=0`,

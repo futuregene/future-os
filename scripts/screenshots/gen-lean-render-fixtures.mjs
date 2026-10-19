@@ -12,7 +12,7 @@
  *   render-lean-history-entries.json  <- lean_entries() applied in place
  *
  * The lean files are generated, never hand-edited: `desktop/src-tauri`'s
- * ignored `remote_host::lean::tests::generate_render_fixtures` test writes them,
+ * ignored `lean::tests::generate_render_fixtures` test writes them,
  * so a render capture is fed the exact bytes a phone would receive from the
  * code under test. Regenerate after any trim change:
  *
@@ -417,15 +417,17 @@ const generated = spawnSync(
   "cargo",
   [
     "test",
+    "-p",
+    "future-remote-server",
     "--lib",
-    "remote_host::lean::tests::generate_render_fixtures",
+    "lean::tests::generate_render_fixtures",
     "--",
     "--ignored",
     "--exact",
     "--nocapture",
   ],
   {
-    cwd: join(ROOT, "desktop", "src-tauri"),
+    cwd: ROOT,
     env: { ...process.env, LEAN_RENDER_FIXTURES: DIR },
     stdio: "inherit",
   },

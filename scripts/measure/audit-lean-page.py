@@ -8,14 +8,14 @@ tool-call row, the run id, tool name, call id and argument keys before and
 after — plus the byte totals the shipping code measured.
 
 Selection only: the trim and every byte count come from
-`remote_host::lean::lean_entries` through the desktop test binary
-(`remote_host::lean::tests::measure_real_entries`), never from a Python copy.
+`lean::lean_entries` through the Remote Server test binary
+(`lean::tests::measure_real_entries`), never from a Python copy.
 
   python3 scripts/measure/audit-lean-page.py [--session SESSION_ID] [--page 1]
 
 Build the measurement binary first:
 
-  (cd desktop/src-tauri && cargo test --lib lean --no-run)
+  cargo test -p future-remote-server --lib --no-run
 """
 import argparse
 import json
@@ -42,12 +42,12 @@ def load_measure_history():
 def measurement_binary():
     candidates = sorted(
         (path for path in
-         (ROOT / "target" / "debug" / "deps").glob("futureos_lib-*")
+         (ROOT / "target" / "debug" / "deps").glob("future_remote_server-*")
          if path.is_file() and os.access(path, os.X_OK)),
         key=lambda path: path.stat().st_mtime, reverse=True)
     if not candidates:
-        raise SystemExit("build the desktop test binary first "
-                         "(cd desktop/src-tauri && cargo test --lib lean --no-run)")
+        raise SystemExit("build the Remote Server test binary first "
+                         "cargo test -p future-remote-server --lib --no-run")
     return candidates[0]
 
 
@@ -92,7 +92,7 @@ def main() -> int:
     trimmed_path = Path(tempfile.mktemp(suffix=".json"))
     page_path.write_text(json.dumps(page, separators=(",", ":")))
     result = subprocess.run(
-        [str(measurement_binary()), "remote_host::lean::tests::measure_real_entries",
+        [str(measurement_binary()), "lean::tests::measure_real_entries",
          "--exact", "--ignored", "--nocapture", "--test-threads=1"],
         env={**os.environ, "LEAN_HISTORY_ENTRIES": str(page_path),
              "LEAN_HISTORY_OUT": str(trimmed_path)},

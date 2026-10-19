@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "suite": "client.isolation",
+  "endpoints": [
+    {
+      "label": "isolation_first",
+      "message": "from-first-endpoint"
+    },
+    {
+      "label": "isolation_second",
+      "message": "from-second-endpoint"
+    }
+  ],
+  "requestId": "isolation_same_command",
+  "flowIds": {
+    "requests": "client.isolation.requests",
+    "catalog": "client.isolation.catalog",
+    "events": "client.isolation.events",
+    "disconnect": "client.isolation.disconnect",
+    "reconnect": "client.isolation.reconnect"
+  }
+}

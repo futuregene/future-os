@@ -1,186 +1,20 @@
+//! Desktop forwards snapshots/control notifications to its owned Server instance.
 use super::*;
-
-/// Append one signature field as `<byte-len>:<bytes>`. Because every record
-/// emits a fixed number of fields in a fixed order, length-prefixing makes the
-/// whole catalog signature unambiguous without any record/field separator — so a
-/// title that happens to contain a separator character can't collide two
-/// different catalogs into the same signature (which would silently skip a sync).
-/// Build the full presence snapshot (directory + per-session streaming) together
-/// with a signature that changes iff the snapshot's UI-visible content changes.
-/// The signature is recomputed straight from the store each call, so it can never
-/// drift from reality: a missed dirty-mark only delays propagation (the catalog
-/// tick recomputes it and advertises the new revision), it never desyncs.
-pub(super) fn build_presence_snapshot(
-    pair_id: &str,
-    bridge_instance_id: &str,
-) -> (serde_json::Value, String) {
-    let mut payload = light_presence_payload(pair_id, bridge_instance_id);
-    payload["catalogEpoch"] = json!(host().catalog_epoch());
-    let mut signature = String::new();
-    if let Some((sessions, sig)) = build_sessions_snapshot(pair_id) {
-        payload["sessions"] = sessions["sessions"].clone();
-        payload["sessionsVersion"] = sessions["version"].clone();
-        signature.push_str(&sig);
-    }
-    if let Some((workspaces, sig)) = build_workspaces_snapshot() {
-        payload["workspaces"] = workspaces["workspaces"].clone();
-        payload["workspacesVersion"] = workspaces["version"].clone();
-        signature.push_str(&sig);
-    }
-    (payload, signature)
+pub(super) fn build_presence_payload(pair: &str, bridge: &str) -> serde_json::Value {
+    SUPERVISOR.build_presence_payload(pair, bridge)
 }
-
-/// Full directory snapshot for the handshake and on-demand `get_presence`
-/// (always complete, so a freshly connected client gets a usable baseline).
-pub(super) fn build_presence_payload(pair_id: &str, bridge_instance_id: &str) -> serde_json::Value {
-    build_presence_snapshot(pair_id, bridge_instance_id).0
+#[cfg(test)]
+pub(super) fn build_sessions_snapshot(pair: &str) -> Option<(serde_json::Value, String)> {
+    SUPERVISOR.build_sessions_snapshot(pair)
 }
-
-/// Sessions-only snapshot for `p.{pair}.state.sessions`.
-///
-/// Returns `None` when any backing store read fails. A transient SQLite error
-/// must not surface as an *empty* session list — publishing `{"sessions":[]}`
-/// makes the phone's "selected session vanished" heuristic fire and close a
-/// conversation the user is reading (audit 05 L8). On failure the publisher
-/// skips this tick and the phone keeps the previous snapshot.
-pub(super) fn build_sessions_snapshot(pair_id: &str) -> Option<(serde_json::Value, String)> {
-    host().sessions(pair_id)
-}
+#[cfg(test)]
 pub(super) fn build_workspaces_snapshot() -> Option<(serde_json::Value, String)> {
-    host().workspaces()
+    SUPERVISOR.build_workspaces_snapshot()
 }
-
-/// Liveness-only payload: no directory content. Carries no catalog revision
-/// either; a caller that needs the recovery signal uses
-/// [`presence_heartbeat_payload`].
-pub(super) fn light_presence_payload(pair_id: &str, bridge_instance_id: &str) -> serde_json::Value {
-    let in_control = super::SUPERVISOR.in_control(pair_id);
-    json!({
-        "online": true,
-        "agentAvailable": host().agent_available(),
-        "pairId": pair_id,
-        "bridgeInstanceId": bridge_instance_id,
-        // Additive: an older client ignores it, a newer one uses it to tell
-        // "connected to the machine" from "allowed to drive the machine".
-        "control": if in_control { "active" } else { "standby" },
-        // Who holds it, when somebody else does. This is what lets a client ask
-        // its user "taking over disconnects <name>" instead of either taking the
-        // machine silently or refusing without saying why. Absent for the
-        // controller itself: it is not displacing anyone.
-        "holder": if in_control { json!(null) } else { holder_payload() },
-        "lastHeartbeatTs": unix_timestamp(),
-    })
+pub(super) fn light_presence_payload(pair: &str, bridge: &str) -> serde_json::Value {
+    SUPERVISOR.light_presence_payload(pair, bridge)
 }
-
-/// The controller's self-declared identity, in the shape the wire carries.
-fn holder_payload() -> serde_json::Value {
-    match super::SUPERVISOR.controller_identity() {
-        Some(identity) => json!({
-            "pairId": super::SUPERVISOR.active_pair(),
-            "name": identity.name,
-            "kind": identity.kind,
-        }),
-        // A controller that never said what it is: the client is told the
-        // machine is taken, and names it neutrally.
-        None => json!({ "pairId": super::SUPERVISOR.active_pair() }),
-    }
-}
-
-/// Tell a device it is no longer the one driving this machine.
-///
-/// Sent on the superseded device's own `state.` namespace — the platform's
-/// bridge permission already covers it — so the client learns immediately
-/// rather than by inference from a refused command. A client that does not
-/// understand the packet ignores it and finds out the same way it would have
-/// before: its next command comes back `superseded`.
-pub(super) fn publish_standby(pair_id: &str) {
-    publish_control(pair_id, "standby");
-}
-
-/// Send one control-state packet on `pair_id`'s own channel.
-///
-/// Awaited rather than spawned: it is one small publish on a client the caller
-/// already holds, and the process-lifetime task registry is for work that
-/// outlives the call. Registering a control push there made a *test* wait on a
-/// detached publish before it could change HOME — and the wait belongs to
-/// someone else's test, which is exactly how this failed.
-pub(super) fn publish_control(pair_id: &str, control: &str) {
-    let Some((client, security, bridge_instance_id)) = super::SUPERVISOR
-        .state
-        .lock()
-        .unwrap()
-        .get(pair_id)
-        .map(|state| {
-            (
-                state.client.clone(),
-                state.security.clone(),
-                state.bridge_instance_id.clone(),
-            )
-        })
-    else {
-        // The superseded device is not connected here, so there is nobody to
-        // tell. It will read `control: standby` from this machine's next
-        // presence whenever it does connect.
-        return;
-    };
-    let subject = format!("p.{pair_id}.state.control");
-    let payload = json!({
-        "control": control,
-        "pairId": pair_id,
-        "bridgeInstanceId": bridge_instance_id,
-        "lastControlChangeTs": unix_timestamp(),
-    });
-    let Ok(bytes) = serde_json::to_vec(&payload) else {
-        return;
-    };
-    // Fire-and-forget, on a task the process registry does not own: this is a
-    // notification, and no caller — a handshake reply, a takeover answer — may
-    // wait on it. The client finds out the same fact from its next presence
-    // packet if this one is lost.
-    tokio::spawn(async move {
-        let _ = super::secure::publish(&client, &security, subject, bytes).await;
-    });
-}
-
-/// Heartbeat payload: liveness plus the catalog revision.
-///
-/// The revision is what replaces the old "re-send every unchanged snapshot
-/// every 20s" self-heal. A client compares it against the revision it last
-/// applied; when the advertised one is newer, a pushed snapshot was lost (core
-/// NATS is at-most-once) and the client pulls the catalogue itself. That makes
-/// recovery faster than the timer it replaces (one tick, not 20s) while an
-/// idle, unchanged directory costs nothing but this packet.
-///
-/// A revision that stays put on an unchanged snapshot is only safe because
-/// `sessions()`/`workspaces()` recompute it from the store on every catalog
-/// tick: the signal is derived from ground truth, not from an accumulating
-/// dirty flag that a missed mark could strand.
-pub(super) fn presence_heartbeat_payload(
-    pair_id: &str,
-    bridge_instance_id: &str,
-) -> serde_json::Value {
-    let mut payload = light_presence_payload(pair_id, bridge_instance_id);
-    let (epoch, sessions, workspaces) = host().catalog_revisions();
-    payload["catalogVersion"] = json!({
-        "epoch": epoch,
-        "sessions": sessions,
-        "workspaces": workspaces,
-    });
-    payload
-}
-
-pub(crate) fn unix_timestamp() -> u64 {
-    // `unwrap_or_default`: a pre-epoch clock is not a reachable failure mode
-    // worth an arm — treat it as 0.
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-pub(super) fn unix_timestamp_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+#[cfg(test)]
+pub(super) fn build_presence_snapshot(pair: &str, bridge: &str) -> (serde_json::Value, String) {
+    SUPERVISOR.build_presence_snapshot(pair, bridge)
 }

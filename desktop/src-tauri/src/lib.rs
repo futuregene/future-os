@@ -50,6 +50,7 @@ mod proc;
 mod remote;
 mod remote_host;
 mod remote_peer;
+mod remote_platform;
 mod run_error;
 mod runtime;
 mod scheduler;

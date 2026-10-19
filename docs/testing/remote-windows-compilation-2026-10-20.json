@@ -1,0 +1,144 @@
+{
+  "version": 1,
+  "startedAt": "2026-10-19T15:53:33.655945+00:00",
+  "runnerOS": "Windows-2025Server-10.0.26100-SP0",
+  "cpuCount": 4,
+  "rustc": "rustc 1.97.0 (2d8144b78 2026-07-07)\nbinary: rustc\ncommit-hash: 2d8144b7880597b6e6d3dfd63a9a9efae3f533d3\ncommit-date: 2026-07-07\nhost: x86_64-pc-windows-msvc\nrelease: 1.97.0\nLLVM version: 22.1.6",
+  "cargo": "cargo 1.97.0 (c980f4866 2026-06-30)",
+  "toolchain": "1.97.0-x86_64-pc-windows-msvc",
+  "rustflags": null,
+  "encodedRustflags": null,
+  "order": [
+    "baseline",
+    "candidate"
+  ],
+  "limitations": [
+    "One sequential sample; baseline runs first. OS caches, order and runner load are uncontrolled.",
+    "Empty separate target per revision; registry preparation is outside compilation. No Actions cache is restored or saved.",
+    "The same existing CI cargo-check commands run; workspace membership changes are part of the measured cost.",
+    "These are check/metadata compilation observations, not executable linking, release builds or test execution."
+  ],
+  "revisions": {
+    "baseline": {
+      "commit": "7eb94d52db36b288a295ae33cb4f654ea1994044",
+      "dependencyPreparationSeconds": 50.55898210000001,
+      "dependencyPreparationExitCode": 0,
+      "checks": [
+        {
+          "label": "workspace",
+          "command": [
+            "cargo",
+            "check",
+            "--workspace",
+            "--exclude",
+            "futureos",
+            "--manifest-path",
+            "Cargo.toml",
+            "--locked",
+            "--offline",
+            "--timings"
+          ],
+          "seconds": 157.16989169999997,
+          "exitCode": 0
+        },
+        {
+          "label": "desktop-gui",
+          "command": [
+            "cargo",
+            "check",
+            "-p",
+            "future-cli",
+            "-p",
+            "futureos",
+            "--locked",
+            "--offline",
+            "--timings"
+          ],
+          "seconds": 159.45136300000007,
+          "exitCode": 0
+        },
+        {
+          "label": "desktop-headless",
+          "command": [
+            "cargo",
+            "check",
+            "--no-default-features",
+            "--features",
+            "headless",
+            "--manifest-path",
+            "desktop/src-tauri/Cargo.toml",
+            "--locked",
+            "--offline",
+            "--timings"
+          ],
+          "seconds": 54.862038400000074,
+          "exitCode": 0
+        }
+      ]
+    },
+    "candidate": {
+      "commit": "ca5a9b775c4d96d4b4fa31450bf0372985e63979",
+      "dependencyPreparationSeconds": 0.6618646999999953,
+      "dependencyPreparationExitCode": 0,
+      "checks": [
+        {
+          "label": "workspace",
+          "command": [
+            "cargo",
+            "check",
+            "--workspace",
+            "--exclude",
+            "futureos",
+            "--manifest-path",
+            "Cargo.toml",
+            "--locked",
+            "--offline",
+            "--timings"
+          ],
+          "seconds": 180.56932510000001,
+          "exitCode": 0
+        },
+        {
+          "label": "desktop-gui",
+          "command": [
+            "cargo",
+            "check",
+            "-p",
+            "future-cli",
+            "-p",
+            "futureos",
+            "--locked",
+            "--offline",
+            "--timings"
+          ],
+          "seconds": 165.81935350000003,
+          "exitCode": 0
+        },
+        {
+          "label": "desktop-headless",
+          "command": [
+            "cargo",
+            "check",
+            "--no-default-features",
+            "--features",
+            "headless",
+            "--manifest-path",
+            "desktop/src-tauri/Cargo.toml",
+            "--locked",
+            "--offline",
+            "--timings"
+          ],
+          "seconds": 52.377509499999974,
+          "exitCode": 0
+        }
+      ]
+    }
+  },
+  "finishedAt": "2026-10-19T16:07:16.444751+00:00",
+  "evidence": {
+    "run": "https://github.com/futuregene/future-os/actions/runs/39281256679",
+    "jobId": 118155804767,
+    "artifactId": 12202960069,
+    "artifactSha256": "0011d5d9b47a31d1cccc4e8914c2946f00f0b6e37d6bee0e275527b112be5143"
+  }
+}

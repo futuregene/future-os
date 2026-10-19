@@ -18,7 +18,7 @@ import { ComposerDock } from "../components/ComposerDock";
 import type { PendingSuggestion } from "../useSkillRecommendation";
 import type { TimelineCardProps } from "../messages/types";
 import { FloatingTimelineButton } from "../components/FloatingTimelineButton";
-import type { TimelineSyncStatus } from "../../../remote/syncEngine";
+import type { TimelineSyncStatus } from "@future-os/remote-client/syncEngine";
 import type { RemoteSession, RemoteSessionUsage, RemoteWorkspace, TimelineItem } from "../../../remote/types";
 
 const mockRemote = {

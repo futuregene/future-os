@@ -1,5 +1,5 @@
-use crate::remote::protocol::IncomingCmd;
-use crate::remote::services::ReplySink;
+use future_remote_protocol::IncomingCmd;
+use future_remote_server::services::ReplySink;
 use serde_json::{json, Value};
 
 use super::{reply, reply_unit};

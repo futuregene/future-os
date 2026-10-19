@@ -15,105 +15,13 @@
 //! Sort order is the book's own (insertion order); the session list's ordering
 //! is a UI concern and comes from `lastMessageAt`, never from this file.
 
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// The Noise identity this desktop uses with one remote host.
-///
-/// `peer_public_key` is the host's Noise static key. It is known from the
-/// invitation itself (the QR carries it), not learned from the handshake — so
-/// it is pinned at claim time and *verified* during every handshake, including
-/// the first one. A key offered by the broker or the platform is refused
-/// rather than adopted: there is no trust-on-first-use here.
-///
-/// `secret` is the invitation PSK. It exists only until the first handshake
-/// succeeds; the host deletes its own copy at the same moment, so keeping ours
-/// would leave a verbatim bearer credential on disk for no benefit.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PeerIdentity {
-    pub private_key: String,
-    pub public_key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub peer_public_key: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret: Option<String>,
-}
+pub(crate) use future_remote_client::credentials::PeerCreds;
+#[cfg(test)]
+pub(crate) use future_remote_client::credentials::PeerIdentity;
 
-/// Everything needed to reach one remote host again, minus the label the user
-/// chose (that lives on the [`PeerRecord`], so it survives a credential
-/// refresh).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PeerCreds {
-    pub pair_id: String,
-    /// The *host* desktop's identity — what the UI names and de-duplicates by.
-    pub desktop_id: String,
-    /// This installation's pairing device id (shared with the host role; the
-    /// platform binds the pair to it).
-    pub device_id: String,
-    pub nkey_seed: String,
-    pub user_jwt: String,
-    pub refresh_token: String,
-    pub nats_url: String,
-    pub nats_ws_url: String,
-    /// Unix seconds. Drives the same pre-expiry refresh the host performs.
-    pub jwt_expires_at: i64,
-    /// `…/client/v1/remote/auth/token` for the platform that minted the pair.
-    pub token_url: String,
-    /// Absent only for a v1-era import; a v2 pairing always has one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secure: Option<PeerIdentity>,
-}
-
-impl PeerCreds {
-    /// Expired (or unreadable) JWTs are refreshed before a connect attempt.
-    /// Mirrors the mobile client's 60 s margin: a token that expires *during*
-    /// the handshake fails it in a way that looks like a protocol fault.
-    pub(crate) fn needs_refresh(&self, now: i64) -> bool {
-        self.jwt_expires_at > 0 && self.jwt_expires_at - 60 <= now
-    }
-
-    pub(crate) fn revoke_url(&self) -> String {
-        self.token_url.replace("/auth/token", "/pair/revoke")
-    }
-}
-
-/// One paired host: its credentials plus the purely-local presentation the user
-/// picked. `name`/`icon` never reach the platform or the host desktop.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PeerLabel {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    /// A short glyph from the fixed picker (`desktopIcons.ts`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub icon: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PeerRecord {
-    #[serde(flatten)]
-    pub creds: PeerCreds,
-    #[serde(flatten)]
-    pub label: PeerLabel,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PeerBook {
-    #[serde(default)]
-    pub peers: Vec<PeerRecord>,
-}
-
-impl PeerBook {
-    pub(crate) fn find(&self, desktop_id: &str) -> Option<&PeerRecord> {
-        self.peers
-            .iter()
-            .find(|peer| peer.creds.desktop_id == desktop_id)
-    }
-}
+pub(crate) use future_remote_client::credentials::{PeerBook, PeerLabel, PeerRecord};
 
 fn book_path() -> Result<PathBuf, crate::AppError> {
     Ok(crate::store::future_dir()?.join("remote_peers.json"))
@@ -191,6 +99,7 @@ pub(crate) fn set_label(
 
 /// Forget one pairing locally. Server-side revocation is the caller's job and
 /// is best-effort (see [`super::platform::revoke`]).
+#[cfg(test)]
 pub(crate) fn remove(desktop_id: &str) -> Result<(), crate::AppError> {
     let path = book_path()?;
     crate::config_io::with_config_lock(&path, || {
@@ -205,6 +114,7 @@ pub(crate) fn remove(desktop_id: &str) -> Result<(), crate::AppError> {
 
 /// Persist a refreshed JWT/endpoint set for one pairing, leaving the label and
 /// the pinned identity alone.
+#[cfg(test)]
 pub(crate) fn update_credentials(
     desktop_id: &str,
     user_jwt: String,
@@ -237,6 +147,7 @@ pub(crate) fn update_credentials(
 /// Called only after the host has both proved possession of the PSK and bound
 /// this identity. From here the pair uses `Noise_IK` with the pinned peer key,
 /// which is what makes the (now useless) invitation a dead bearer token.
+#[cfg(test)]
 pub(crate) fn clear_secret(desktop_id: &str) -> Result<(), crate::AppError> {
     let path = book_path()?;
     crate::config_io::with_config_lock(&path, || {
@@ -254,6 +165,55 @@ pub(crate) fn clear_secret(desktop_id: &str) -> Result<(), crate::AppError> {
         let value = serde_json::to_value(&book)
             .map_err(|error| crate::AppError::Message(format!("encode peer book: {error}")))?;
         crate::config_io::write_json_atomic(&path, &value, true)
+    })
+}
+
+/// Compare and write while holding the original per-file lock. A late refresh
+/// or handshake may never overwrite a newly paired identity for the same host.
+fn edit_if_current(
+    expected: &PeerCreds,
+    edit: impl FnOnce(&mut PeerBook, usize),
+) -> Result<bool, crate::AppError> {
+    let path = book_path()?;
+    crate::config_io::with_config_lock(&path, || {
+        let mut book = load()?;
+        let Some(index) = book.peers.iter().position(|record| {
+            record.creds.desktop_id == expected.desktop_id
+                && record.creds.pair_id == expected.pair_id
+                && record.creds.nkey_seed == expected.nkey_seed
+                && record.creds.refresh_token == expected.refresh_token
+        }) else {
+            return Ok(false);
+        };
+        edit(&mut book, index);
+        let value = serde_json::to_value(&book)
+            .map_err(|error| crate::AppError::Message(format!("encode peer book: {error}")))?;
+        crate::config_io::write_json_atomic(&path, &value, true)?;
+        Ok(true)
+    })
+}
+pub(crate) fn update_credentials_if_current(
+    expected: &PeerCreds,
+    fresh: &future_remote_client::host::Refreshed,
+) -> Result<bool, crate::AppError> {
+    edit_if_current(expected, |book, index| {
+        let creds = &mut book.peers[index].creds;
+        creds.user_jwt = fresh.user_jwt.clone();
+        creds.nats_url = fresh.nats_url.clone();
+        creds.nats_ws_url = fresh.nats_ws_url.clone();
+        creds.jwt_expires_at = fresh.jwt_expires_at;
+    })
+}
+pub(crate) fn clear_secret_if_current(expected: &PeerCreds) -> Result<bool, crate::AppError> {
+    edit_if_current(expected, |book, index| {
+        if let Some(identity) = book.peers[index].creds.secure.as_mut() {
+            identity.secret = None;
+        }
+    })
+}
+pub(crate) fn remove_if_current(expected: &PeerCreds) -> Result<bool, crate::AppError> {
+    edit_if_current(expected, |book, index| {
+        book.peers.remove(index);
     })
 }
 
@@ -284,6 +244,28 @@ mod tests {
 
     fn home(name: &str) -> crate::remote::test_support::HomeGuard {
         crate::remote::test_support::HomeGuard::new(name)
+    }
+
+    #[test]
+    fn late_grants_and_handshakes_cannot_mutate_a_repaired_host() {
+        let _home = home("peer-cas-repaired");
+        let original = creds("desktop_a", "pair_old");
+        upsert(original.clone()).unwrap();
+        let replacement = creds("desktop_a", "pair_new");
+        upsert(replacement.clone()).unwrap();
+        let fresh = future_remote_client::host::Refreshed {
+            user_jwt: "late-token-fixture".into(),
+            nats_url: "nats://127.0.0.1:1".into(),
+            nats_ws_url: "wss://example.invalid".into(),
+            jwt_expires_at: 2_000,
+        };
+        assert!(!update_credentials_if_current(&original, &fresh).unwrap());
+        assert!(!clear_secret_if_current(&original).unwrap());
+        assert!(!remove_if_current(&original).unwrap());
+        assert_eq!(
+            load().unwrap().find("desktop_a").unwrap().creds,
+            replacement
+        );
     }
 
     #[test]
@@ -476,31 +458,5 @@ mod tests {
 
     fn persist_after_corrupt(_path: &std::path::Path) -> Result<(), crate::AppError> {
         set_label("desktop_a", Some("x"), None)
-    }
-
-    /// Refreshing is a clock decision, with a margin: a JWT that expires inside
-    /// the margin is refreshed *before* the connect that would otherwise fail.
-    #[test]
-    fn refresh_is_required_inside_the_sixty_second_margin() {
-        let mut creds = creds("desktop_a", "pair_a");
-        creds.jwt_expires_at = 1_000;
-        assert!(!creds.needs_refresh(900));
-        assert!(creds.needs_refresh(940));
-        assert!(creds.needs_refresh(1_000));
-        // An unreadable expiry is not "expired": it is a broken credential the
-        // handshake will reject, and looping a refresh on it would hammer the
-        // token endpoint.
-        creds.jwt_expires_at = 0;
-        assert!(!creds.needs_refresh(9_999));
-    }
-
-    /// The revoke endpoint is derived, not stored, so a platform change (or a
-    /// self-hosted one) needs no extra field — matching the host and mobile.
-    #[test]
-    fn the_revoke_url_is_derived_from_the_token_url() {
-        assert_eq!(
-            creds("desktop_a", "pair_a").revoke_url(),
-            "https://future-os.cn/client/v1/remote/pair/revoke"
-        );
     }
 }

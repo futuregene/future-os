@@ -5,220 +5,6 @@ mod contract_tests {
     use super::*;
 
     #[test]
-    fn drop_log_rate_limits_episodes() {
-        let counters = DropCounters::new();
-
-        // Episode progress is reported only at power-of-two attempts.
-        for i in 1..=10 {
-            let line = counters.record_drop("queue full", "tool_delta", "s1", 1_000 + i);
-            assert_eq!(
-                line.is_some(),
-                i.is_power_of_two(),
-                "unexpected reporting decision for drop {i}"
-            );
-        }
-        assert_eq!(counters.reports.load(Ordering::Relaxed), 4);
-    }
-
-    #[test]
-    fn drop_log_reports_recovery_and_resets() {
-        let counters = DropCounters::new();
-
-        counters.record_drop("NATS not connected", "tool_delta", "s1", 1_000);
-        let line = counters
-            .report_recovery()
-            .expect("recovery after an active episode reports");
-        assert!(line.contains("dropped 1 events"), "got: {line}");
-
-        // No episode active: recovery is silent and counters stay zero.
-        assert!(counters.report_recovery().is_none());
-
-        // The next episode starts fresh: the first drop logs again.
-        assert!(counters
-            .record_drop("queue full", "tool_delta", "s1", 2_000)
-            .is_some());
-    }
-
-    #[test]
-    fn nats_v2_event_keeps_every_v1_field_unchanged() {
-        let body = build_event_body(
-            "session-1",
-            "text_chunk",
-            r#"{"text":"hi"}"#,
-            "run-1",
-            7,
-            2,
-            "evt-1",
-            "2026-08-02T00:00:00Z",
-            -1,
-            11,
-        );
-        assert_eq!(body["type"], "text_chunk");
-        assert_eq!(body["data"], r#"{"text":"hi"}"#);
-        assert_eq!(body["runId"], "run-1");
-        assert_eq!(body["idx"], 7);
-        assert_eq!(body["schemaVersion"], 2);
-        assert_eq!(body["sessionId"], "session-1");
-        assert_eq!(body["epoch"], 2);
-        assert_eq!(body["eventId"], "evt-1");
-        assert_eq!(body["runSequence"], 11);
-    }
-
-    #[test]
-    fn nats_session_event_has_independent_cursor() {
-        let body = build_event_body(
-            "session-1",
-            "model_changed",
-            "{}",
-            "",
-            -1,
-            0,
-            "session-1:session:4",
-            "2026-08-02T00:00:00Z",
-            4,
-            -1,
-        );
-        assert_eq!(body["runId"], "");
-        assert_eq!(body["sessionIdx"], 4);
-        assert_eq!(body["runSequence"], -1);
-    }
-
-    #[test]
-    fn failure_episode_same_category_non_power_of_two_attempt_is_silent() {
-        let category = "test_episode_silent";
-        let episode = FailureEpisode(Mutex::new(FailureEpisodeState::default()));
-        // Attempt 1 (fresh category) and attempt 2 (power of two) both report;
-        // attempt 3 is not a power of two, so it falls through to the silent None.
-        assert!(episode.record(category, "first").is_some());
-        assert!(episode.record(category, "second").is_some());
-        assert!(episode.record(category, "third").is_none());
-    }
-
-    #[test]
-    fn failure_episode_category_switch_after_quota_exhaustion_reports_nothing() {
-        // Exhaust the process-wide log quota for a fresh category, then start a
-        // new episode with that category: the first `record` resets the episode
-        // state but `permit_failure_log` refuses the line, so it returns None.
-        let category = "test_episode_switch_quota";
-        for _ in 0..MAX_FAILURE_LOGS_PER_CATEGORY {
-            assert!(permit_failure_log(category));
-        }
-        assert!(!permit_failure_log(category));
-
-        let episode = FailureEpisode(Mutex::new(FailureEpisodeState::default()));
-        assert!(episode.record(category, "boom").is_none());
-    }
-
-    #[test]
-    fn support_codes_cover_every_category() {
-        assert_eq!(support_code_for_category("network"), "NW001");
-        assert_eq!(support_code_for_category("credential_network"), "NW001");
-        assert_eq!(support_code_for_category("remote_server"), "SV001");
-        assert_eq!(support_code_for_category("service_authorization"), "AU001");
-        assert_eq!(support_code_for_category("account_authorization"), "AU003");
-        assert_eq!(support_code_for_category("credential_expired"), "AU002");
-        assert_eq!(support_code_for_category("credential_connect"), "AU002");
-        assert_eq!(support_code_for_category("slow_consumer"), "RT002");
-        assert_eq!(support_code_for_category("command_subscription"), "RT003");
-        assert_eq!(support_code_for_category("transfer_subscription"), "RT004");
-        assert_eq!(support_code_for_category("event_publish"), "RT005");
-        assert_eq!(support_code_for_category("heartbeat_publish"), "RT006");
-        assert_eq!(support_code_for_category("state_publish"), "RT006");
-        assert_eq!(support_code_for_category("web_bind"), "LC002");
-        assert_eq!(support_code_for_category("revoked"), "PA001");
-        assert_eq!(support_code_for_category("local"), "LC001");
-        assert_eq!(support_code_for_category("mystery"), "LC999");
-    }
-
-    #[test]
-    fn nats_health_handles_remaining_event_variants() {
-        let health = NatsHealth::default();
-
-        // A routine drop: self-healing reconnect, no failure episode.
-        health.handle_event(&async_nats::Event::Disconnected);
-        assert!(!health.needs_reconnect());
-
-        // Slow-consumer and generic server errors each open an episode.
-        health.handle_event(&async_nats::Event::SlowConsumer(7));
-        health.handle_event(&async_nats::Event::ServerError(
-            async_nats::ServerError::SlowConsumer(8),
-        ));
-        health.handle_event(&async_nats::Event::ServerError(
-            async_nats::ServerError::Other("permissions".to_string()),
-        ));
-
-        // Remaining event shapes fall through the wildcard arm harmlessly.
-        health.handle_event(&async_nats::Event::LameDuckMode);
-        health.handle_event(&async_nats::Event::Draining);
-    }
-
-    #[test]
-    fn runtime_active_classifies_every_phase() {
-        for phase in [
-            RemotePhase::Connecting,
-            RemotePhase::Ready,
-            RemotePhase::Reconnecting,
-            RemotePhase::Refreshing,
-        ] {
-            let status = RemoteStatus {
-                phase,
-                reason: None,
-                ..empty()
-            };
-            assert!(runtime_active(&status), "{phase:?} should be active");
-        }
-        for phase in [
-            RemotePhase::Stopped,
-            RemotePhase::Failed,
-            RemotePhase::Revoked,
-        ] {
-            let status = RemoteStatus {
-                phase,
-                reason: None,
-                ..empty()
-            };
-            assert!(!runtime_active(&status), "{phase:?} should be inactive");
-        }
-    }
-
-    /// Only a self-hosted relay that actually declares a plaintext endpoint may
-    /// keep a plaintext NATS connection; the official platform and a relay that
-    /// kept TLS both keep the unconditional requirement.
-    #[test]
-    fn only_a_plaintext_self_hosted_relay_waives_the_tls_requirement() {
-        let mut creds = crate::remote::test_support::pairing_creds("pair_plain");
-        // The fixture is a platform pairing (no relay) on a plaintext URL: that
-        // combination is exactly the downgrade the rule must refuse.
-        assert!(!plaintext_relay(&creds));
-
-        creds.control_url = Some("http://192.168.1.10:8099".into());
-        assert!(
-            plaintext_relay(&creds),
-            "a LAN relay serving nats:// is plaintext"
-        );
-
-        // Keeping TLS is the relay's own choice and stays enforced.
-        creds.nats_url = "tls://192.168.1.10:4222".into();
-        assert!(!plaintext_relay(&creds));
-
-        // A platform pairing names no relay, so a plaintext URL is not a waiver.
-        creds.nats_url = "nats://192.168.1.10:4222".into();
-        creds.control_url = None;
-        assert!(!plaintext_relay(&creds));
-    }
-
-    #[test]
-    fn classify_nats_connect_error_covers_server_parse() {
-        assert!(matches!(
-            classify_nats_connect_error(
-                async_nats::ConnectErrorKind::ServerParse,
-                "bad url".to_string()
-            ),
-            crate::AppError::Message(_)
-        ));
-    }
-
-    #[test]
     fn start_failure_maps_every_remote_error_code() {
         // A revoked credential surfaces as a localized Revoked status.
         let revoked = start_failure(crate::AppError::Remote {
@@ -347,111 +133,6 @@ mod runtime_tests {
         SUPERVISOR.restore_active(Some(pair_id));
     }
 
-    #[test]
-    fn nats_health_classifies_recoverable_and_terminal_events() {
-        let _home = HomeGuard::new("remote-nats-health");
-        let health = NatsHealth::default();
-        health.handle_event(&async_nats::Event::ClientError(
-            async_nats::ClientError::MaxReconnects,
-        ));
-        assert!(health.needs_reconnect());
-        assert!(!health.is_terminal());
-
-        health.handle_event(&async_nats::Event::Connected);
-        assert!(!health.needs_reconnect());
-
-        // async-nats wraps reconnect-time authorization errors in the client
-        // event rather than forwarding the server event. This must trigger a
-        // generation refresh instead of leaving an apparently live bridge in
-        // an unbounded reconnect/log loop.
-        health.handle_event(&async_nats::Event::ClientError(
-            async_nats::ClientError::Other("authorization violation".to_string()),
-        ));
-        health.handle_event(&async_nats::Event::ClientError(
-            async_nats::ClientError::Other("authorization violation".to_string()),
-        ));
-        assert!(health.needs_reconnect());
-        assert!(!health.is_terminal());
-        assert!(health
-            .authorization_rejection_logged
-            .load(Ordering::Acquire));
-
-        health.handle_event(&async_nats::Event::Connected);
-        assert!(!health.needs_reconnect());
-        assert!(!health
-            .authorization_rejection_logged
-            .load(Ordering::Acquire));
-
-        health.handle_event(&async_nats::Event::ClientError(
-            async_nats::ClientError::Other("IO error".to_string()),
-        ));
-        health.handle_event(&async_nats::Event::ClientError(
-            async_nats::ClientError::Other("IO error".to_string()),
-        ));
-        assert!(!health.needs_reconnect());
-
-        health.handle_event(&async_nats::Event::Connected);
-
-        health
-            .credential_expires_at
-            .store(unix_timestamp() + 3600, Ordering::Release);
-        // The same rejection on the generation created by the reactive
-        // refresh is terminal service authorization.
-        health
-            .credential_was_refreshed
-            .store(true, Ordering::Release);
-        health.handle_event(&async_nats::Event::ServerError(
-            async_nats::ServerError::AuthorizationViolation,
-        ));
-        health.handle_event(&async_nats::Event::Connected);
-        assert!(
-            health.is_terminal(),
-            "reconnect must not hide an auth failure"
-        );
-    }
-
-    #[test]
-    fn power_events_preserve_intent_and_only_resume_rebuilds_a_generation() {
-        assert_eq!(
-            power_transition(PowerEvent::Suspend, true),
-            PowerTransition {
-                stop_generation: true,
-                start_generation: false,
-                rotate_epoch: false,
-            }
-        );
-        assert_eq!(
-            power_transition(PowerEvent::Resume, true),
-            PowerTransition {
-                stop_generation: false,
-                start_generation: true,
-                rotate_epoch: true,
-            }
-        );
-        for event in [PowerEvent::Suspend, PowerEvent::Resume] {
-            assert_eq!(
-                power_transition(event, false),
-                PowerTransition {
-                    stop_generation: false,
-                    start_generation: false,
-                    rotate_epoch: false,
-                }
-            );
-        }
-    }
-
-    #[test]
-    fn failure_logs_are_bounded_across_alternating_episodes() {
-        // The per-episode counter alone is insufficient: alternating category
-        // names used to restart it indefinitely. This unique test category
-        // exercises the process-level, 24-hour quota.
-        let category = "test_alternating_failure_quota";
-        for _ in 0..MAX_FAILURE_LOGS_PER_CATEGORY {
-            assert!(permit_failure_log(category));
-        }
-        assert!(!permit_failure_log(category));
-    }
-
     /// Wait until WEB_PORT is bindable again (stop() aborts the web task
     /// asynchronously — the socket lingers briefly).
     async fn wait_for_web_port_free() {
@@ -526,7 +207,7 @@ mod runtime_tests {
         let _home = HomeGuard::new("remote-status");
         let nats = FakeNats::start().await;
         let mut state = fake_state(&nats, "pair_status").await;
-        state.web_task = Some(tokio::spawn(std::future::pending()));
+        state.web_task = Some(SUPERVISOR.spawn_fixture_task(std::future::pending()));
         state.web_url = Some("http://localhost:8022".to_string());
         state.pairing_code = Some("code-123".to_string());
         state.pairing_code_expires_at = Some(now_secs() + 600);
@@ -561,7 +242,7 @@ mod runtime_tests {
             let mut guard = SUPERVISOR.state.lock().unwrap();
             let state = guard.as_mut().unwrap();
             state.cmd_task.abort();
-            state.cmd_task = tokio::spawn(async {});
+            state.cmd_task = SUPERVISOR.spawn_fixture_task(async {});
         }
         SUPERVISOR.start_requested.store(true, Ordering::Release);
         SUPERVISOR
@@ -651,7 +332,7 @@ mod runtime_tests {
             let mut guard = SUPERVISOR.state.lock().unwrap();
             let state = guard.as_mut().unwrap();
             state.web_task = None;
-            state.cmd_task = tokio::spawn(std::future::pending());
+            state.cmd_task = SUPERVISOR.spawn_fixture_task(std::future::pending());
         }
         let pair_id = SUPERVISOR.active_pair().expect("fixture controller");
         *SUPERVISOR.web_owner.lock().unwrap() = Some(pair_id);
@@ -985,9 +666,7 @@ mod runtime_tests {
         {
             let mut guard = SUPERVISOR.state.lock().unwrap();
             let state = guard.as_mut().unwrap();
-            state.drop_counters.dropping.store(false, Ordering::Relaxed);
-            state.drop_counters.dropped.store(0, Ordering::Relaxed);
-            state.drop_counters.reports.store(0, Ordering::Relaxed);
+            state.drop_counters.reset_for_test();
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             drop(rx);
             state.event_tx = tx;
@@ -1024,34 +703,6 @@ mod runtime_tests {
 
         drain.abort();
         stop();
-    }
-
-    #[test]
-    fn catalog_lane_keeps_status_and_approvals_but_not_token_traffic() {
-        for event in [
-            "agent_start",
-            "agent_end",
-            "approval_request",
-            "approval_decision",
-            "error",
-            "session_name_changed",
-            "provider_config_changed",
-            "model_visibility_changed",
-            "app_settings_changed",
-            "skills_changed",
-            "run_snapshot",
-        ] {
-            assert!(is_catalog_event(event), "{event}");
-        }
-        for event in [
-            "text_chunk",
-            "thinking_delta",
-            "tool_delta",
-            "toolcall_delta",
-            "tool_end",
-        ] {
-            assert!(!is_catalog_event(event), "{event}");
-        }
     }
 
     #[tokio::test]
@@ -1174,7 +825,7 @@ mod runtime_tests {
         platform.respond_pair_code(nats.url());
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        *READINESS_PAUSE.lock().unwrap() = Some((entered_tx, release_rx));
+        *SUPERVISOR.hooks.readiness_pause.lock().unwrap() = Some((entered_tx, release_rx));
         let opening = tokio::spawn(start(RemoteStartInput {}));
         tokio::time::timeout(Duration::from_secs(5), entered_rx)
             .await
@@ -1200,20 +851,6 @@ mod runtime_tests {
         );
         stop();
         wait_for_web_port_free().await;
-    }
-
-    #[test]
-    fn expired_rotated_credential_is_refreshable_not_a_configuration_failure() {
-        let health = NatsHealth::default();
-        health
-            .credential_was_refreshed
-            .store(true, Ordering::Release);
-        health
-            .credential_expires_at
-            .store(unix_timestamp().saturating_sub(1), Ordering::Release);
-        health.mark_authorization_rejected();
-        assert!(health.needs_reconnect());
-        assert!(!health.is_terminal());
     }
 
     /// The platform hands out the SAME `pair_id` again when a desktop that is
@@ -1721,76 +1358,15 @@ mod runtime_tests {
     }
 
     #[test]
-    fn only_transient_remote_start_failures_arm_background_recovery() {
-        let network = RemoteStatus {
-            phase: RemotePhase::Reconnecting,
-            reason: Some(RemoteFailureReason::Network),
-            ..empty()
-        };
-        let server = RemoteStatus {
-            phase: RemotePhase::Reconnecting,
-            reason: Some(RemoteFailureReason::RemoteServer),
-            ..empty()
-        };
-        let revoked = RemoteStatus {
-            phase: RemotePhase::Revoked,
-            reason: Some(RemoteFailureReason::CredentialRevoked),
-            ..empty()
-        };
-        assert!(retryable_start_status(&network));
-        assert!(retryable_start_status(&server));
-        assert!(!retryable_start_status(&revoked));
-        assert!(!retryable_start_status(&RemoteStatus {
-            phase: RemotePhase::Ready,
-            reason: Some(RemoteFailureReason::Network),
-            ..empty()
-        }));
-    }
-
-    #[test]
-    fn initial_nats_connect_errors_distinguish_authorization_from_network() {
-        for kind in [
-            async_nats::ConnectErrorKind::Authentication,
-            async_nats::ConnectErrorKind::AuthorizationViolation,
-        ] {
-            assert!(matches!(
-                classify_nats_connect_error(kind, "rejected".to_string()),
-                crate::AppError::RemoteAuthorization(_)
-            ));
-        }
-        for kind in [
-            async_nats::ConnectErrorKind::Dns,
-            async_nats::ConnectErrorKind::TimedOut,
-            async_nats::ConnectErrorKind::Io,
-        ] {
-            assert!(matches!(
-                classify_nats_connect_error(kind, "offline".to_string()),
-                crate::AppError::RemoteTransport(_)
-            ));
-        }
-    }
-
-    #[test]
-    fn desktop_reconnect_backoff_matches_the_shared_policy() {
-        assert_eq!(reconnect_delay(0, 0.5), Duration::from_secs(1));
-        assert_eq!(reconnect_delay(1, 0.5), Duration::from_secs(2));
-        assert_eq!(reconnect_delay(2, 0.5), Duration::from_secs(4));
-        assert_eq!(reconnect_delay(4, 0.5), Duration::from_secs(16));
-        assert_eq!(reconnect_delay(5, 0.5), Duration::from_secs(30));
-        assert!(reconnect_delay(20, 1.0) <= Duration::from_secs(30));
-    }
-
-    #[test]
     fn bridge_shared_state_survives_generation_swaps_but_rotates_epoch() {
         let _home = HomeGuard::new("remote-shared-generation");
         SUPERVISOR.bridge_shared.lock().unwrap().clear();
         let creds = test_creds("pair_shared", "nats://127.0.0.1:4222", 3600);
         let first = shared_runtime(&creds, true, false);
         let same_credential_epoch = shared_runtime(&creds, true, false);
-        assert!(Arc::ptr_eq(
-            &first.reply_slots,
-            &same_credential_epoch.reply_slots
-        ));
+        assert!(first
+            .reply_slots
+            .shares_cache(&same_credential_epoch.reply_slots));
         assert!(Arc::ptr_eq(
             &first.pairing_confirmed,
             &same_credential_epoch.pairing_confirmed
@@ -1801,7 +1377,7 @@ mod runtime_tests {
         );
 
         let rebuilt = shared_runtime(&creds, true, true);
-        assert!(Arc::ptr_eq(&first.reply_slots, &rebuilt.reply_slots));
+        assert!(first.reply_slots.shares_cache(&rebuilt.reply_slots));
         assert!(Arc::ptr_eq(
             &first.pairing_confirmed,
             &rebuilt.pairing_confirmed
@@ -1816,7 +1392,7 @@ mod runtime_tests {
             false,
             false,
         );
-        assert!(!Arc::ptr_eq(&first.reply_slots, &reissued.reply_slots));
+        assert!(!first.reply_slots.shares_cache(&reissued.reply_slots));
         assert!(!Arc::ptr_eq(
             &first.pairing_confirmed,
             &reissued.pairing_confirmed
@@ -1824,31 +1400,6 @@ mod runtime_tests {
         assert!(!reissued.pairing_confirmed.load(Ordering::Acquire));
         assert_ne!(first.bridge_instance_id, reissued.bridge_instance_id);
         SUPERVISOR.bridge_shared.lock().unwrap().clear();
-    }
-
-    #[test]
-    fn runtime_failure_budget_uses_a_ten_minute_window() {
-        let _home = HomeGuard::new("remote-runtime-budget");
-        SUPERVISOR
-            .runtime_failure_window_started
-            .store(0, Ordering::Release);
-        SUPERVISOR
-            .runtime_reconnect_attempts
-            .store(0, Ordering::Release);
-        assert_eq!(record_runtime_failure(1_000), 1);
-        assert_eq!(record_runtime_failure(2_000), 2);
-        assert_eq!(record_runtime_failure(3_000), 3);
-        assert_eq!(record_runtime_failure(4_000), 4);
-        assert_eq!(
-            record_runtime_failure(1_000 + RUNTIME_FAILURE_WINDOW_MS + 1),
-            1
-        );
-        SUPERVISOR
-            .runtime_failure_window_started
-            .store(0, Ordering::Release);
-        SUPERVISOR
-            .runtime_reconnect_attempts
-            .store(0, Ordering::Release);
     }
 
     #[tokio::test]
@@ -1866,7 +1417,7 @@ mod runtime_tests {
         let state = fake_state(&nats, "pair_swap").await;
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
-        let handshake = commands::HandshakeState::new(
+        let handshake = commands::new_handshake_state(
             creds.clone(),
             confirmed.clone(),
             "bridge_swap".to_string(),
@@ -1926,7 +1477,7 @@ mod runtime_tests {
         let state = fake_state(&nats, "pair_savefail").await;
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
-        let handshake = commands::HandshakeState::new(
+        let handshake = commands::new_handshake_state(
             creds.clone(),
             confirmed.clone(),
             "bridge_savefail".to_string(),
@@ -1963,7 +1514,7 @@ mod runtime_tests {
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
         let handshake =
-            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_rev".into());
+            commands::new_handshake_state(creds, confirmed.clone(), "bridge_rev".into());
         let handle = spawn_credential_refresh(
             "pair_rev".to_string(),
             commands::new_reply_slots(),
@@ -2004,7 +1555,7 @@ mod runtime_tests {
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
         let handshake =
-            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_account".into());
+            commands::new_handshake_state(creds, confirmed.clone(), "bridge_account".into());
         let task = spawn_credential_refresh(
             "pair_account".into(),
             commands::new_reply_slots(),
@@ -2116,7 +1667,7 @@ mod runtime_tests {
         let health = state.nats_health.clone();
         install_state(state);
         let handshake =
-            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_auth_reject".into());
+            commands::new_handshake_state(creds, confirmed.clone(), "bridge_auth_reject".into());
         let task = spawn_credential_refresh(
             "pair_auth_reject".into(),
             commands::new_reply_slots(),
@@ -2167,7 +1718,7 @@ mod runtime_tests {
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
         let handshake =
-            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_retry".into());
+            commands::new_handshake_state(creds, confirmed.clone(), "bridge_retry".into());
         let handle = spawn_credential_refresh(
             "pair_retry".to_string(),
             commands::new_reply_slots(),
@@ -2196,7 +1747,7 @@ mod runtime_tests {
 
         // No persisted credential → immediate return.
         let creds = test_creds("pair_none", nats.url(), 3600);
-        let handshake = commands::HandshakeState::new(
+        let handshake = commands::new_handshake_state(
             creds.clone(),
             Arc::new(AtomicBool::new(true)),
             "bridge_none".into(),
@@ -2215,7 +1766,7 @@ mod runtime_tests {
         // A persisted credential for a DIFFERENT pairing → return.
         let other = test_creds("pair_other", nats.url(), 3600);
         pairing::save_creds(&other).unwrap();
-        let handshake = commands::HandshakeState::new(
+        let handshake = commands::new_handshake_state(
             creds.clone(),
             Arc::new(AtomicBool::new(true)),
             "bridge_other".into(),
@@ -2247,7 +1798,7 @@ mod runtime_tests {
         // generation → the old refresh worker must not overwrite it.
         let state = fake_state(&nats, "pair_gen").await;
         install_state(state);
-        let handshake = commands::HandshakeState::new(
+        let handshake = commands::new_handshake_state(
             creds,
             Arc::new(AtomicBool::new(true)),
             "bridge_gen".into(),
@@ -2280,7 +1831,7 @@ mod runtime_tests {
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
         let handshake =
-            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_sick".into());
+            commands::new_handshake_state(creds, confirmed.clone(), "bridge_sick".into());
         let handle = spawn_credential_refresh(
             "pair_sick".to_string(),
             commands::new_reply_slots(),
@@ -2742,7 +2293,9 @@ mod runtime_tests {
         let handle = spawn_presence_heartbeat(client.clone(), pair, "bridge_hbf".into());
         // A critical publisher failure ends the generation instead of logging
         // once per heartbeat forever.
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::timeout(Duration::from_secs(5), handle.clone().completed())
+            .await
+            .expect("critical publisher failure must end its generation");
         assert!(handle.is_finished());
         std::fs::remove_dir_all(&workspace_dir).ok();
     }
@@ -3404,7 +2957,7 @@ mod runtime_tests {
                 .store(true, Ordering::Release);
         }
         let handshake =
-            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_terminal".into());
+            commands::new_handshake_state(creds, confirmed.clone(), "bridge_terminal".into());
         let handle = spawn_credential_refresh(
             "pair_terminal".to_string(),
             commands::new_reply_slots(),
@@ -3438,7 +2991,7 @@ mod runtime_tests {
         let confirmed = state.pairing_confirmed.clone();
         install_state(state);
         let handshake =
-            commands::HandshakeState::new(creds, confirmed.clone(), "bridge_ready".into());
+            commands::new_handshake_state(creds, confirmed.clone(), "bridge_ready".into());
         let handle = spawn_credential_refresh(
             pair.clone(),
             commands::new_reply_slots(),
@@ -3553,7 +3106,7 @@ mod runtime_tests {
         let sink = crate::remote::test_support::RecordingSink::default();
         host()
             .execute(
-                crate::remote::protocol::IncomingCmd {
+                future_remote_protocol::IncomingCmd {
                     cmd_type: "get_read_chunk".into(),
                     reply_id: unique("read"),
                     ..Default::default()
@@ -3620,7 +3173,7 @@ mod multi_device_tests {
             standby.pair_id.clone(),
             commands::ReplySlots::default(),
             confirmed,
-            commands::HandshakeState::new(
+            commands::new_handshake_state(
                 standby.clone(),
                 Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 "bridge_renew".to_string(),
@@ -3660,7 +3213,7 @@ mod multi_device_tests {
         let nats = FakeNats::start().await;
         let mut owner = test_support::fake_state(&nats, &controller.pair_id).await;
         // The controller is the slot that bound the process-wide listener.
-        owner.web_task = Some(tokio::spawn(std::future::pending()));
+        owner.web_task = Some(SUPERVISOR.spawn_fixture_task(std::future::pending()));
         let standby_state = test_support::fake_state(&nats, &standby.pair_id).await;
         *SUPERVISOR.web_owner.lock().unwrap() = Some(controller.pair_id.clone());
         {
@@ -3702,8 +3255,9 @@ mod multi_device_tests {
         let nats = FakeNats::start().await;
         // Bound and then gone: the port is free and the process owed a listener.
         let mut owner = test_support::fake_state(&nats, &controller.pair_id).await;
-        let dead = tokio::spawn(std::future::pending::<()>());
+        let dead = SUPERVISOR.spawn_fixture_task(std::future::pending::<()>());
         dead.abort();
+        dead.clone().completed().await;
         owner.web_task = Some(dead);
         let standby_state = test_support::fake_state(&nats, &standby.pair_id).await;
         *SUPERVISOR.web_owner.lock().unwrap() = Some(controller.pair_id.clone());
@@ -4561,7 +4115,7 @@ mod slot_tests {
         let creds = test_creds("pair_inert_notice", nats.url(), 3600);
         let mut state = fake_state(&nats, &creds.pair_id).await;
         // A v2 identity with no channel yet: `seal` answers `None`.
-        state.security = secure::Transport::new(&creds);
+        state.security = secure::new_transport(&creds);
         assert!(state.security.seal("p.presence", b"x").unwrap().is_none());
         let slot = Slot::install_state(state);
         let mut tap = nats.tap();
@@ -4689,12 +4243,15 @@ mod slot_tests {
         let creds = test_creds("pair_build_failure", nats.url(), 3600);
         pairing::save_creds(&creds).unwrap();
         platform.respond_refresh(nats.url());
-        transport::INJECT_BUILD_FAILURE.store(1, Ordering::SeqCst);
+        SUPERVISOR
+            .hooks
+            .inject_build_failure
+            .store(1, Ordering::SeqCst);
 
         let status = start(RemoteStartInput {}).await.expect("categorized");
 
         assert_eq!(
-            transport::INJECT_BUILD_FAILURE.load(Ordering::SeqCst),
+            SUPERVISOR.hooks.inject_build_failure.load(Ordering::SeqCst),
             0,
             "the injected failure must be the one that was consumed"
         );
@@ -4728,12 +4285,15 @@ mod slot_tests {
         let pairing_confirmed = state.pairing_confirmed.clone();
         let generation = state.generation_id;
         let slot = Slot::install_state(state);
-        let handshake = crate::remote::commands::HandshakeState::new(
+        let handshake = crate::remote::commands::new_handshake_state(
             creds.clone(),
             pairing_confirmed.clone(),
             format!("bridge_{}", crate::remote::test_support::unique("refresh")),
         );
-        transport::INJECT_BUILD_FAILURE.store(1, Ordering::SeqCst);
+        SUPERVISOR
+            .hooks
+            .inject_build_failure
+            .store(1, Ordering::SeqCst);
 
         let task = transport::spawn_credential_refresh(
             slot.pair_id.clone(),
@@ -4745,7 +4305,7 @@ mod slot_tests {
         wait_until(
             "the refresh to attempt its rebuild",
             Duration::from_secs(10),
-            || transport::INJECT_BUILD_FAILURE.load(Ordering::SeqCst) == 0,
+            || SUPERVISOR.hooks.inject_build_failure.load(Ordering::SeqCst) == 0,
         )
         .await;
         wait_until(

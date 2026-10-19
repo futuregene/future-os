@@ -26,7 +26,7 @@ import {
   emptyTimeline,
   timelineFromEntries,
   type TimelineState,
-} from "../../src/remote/projection";
+} from "@future-os/remote-client/projection";
 import { asToolKind, normalizeArgs, targetFromArgs } from "@future-os/thread-projection";
 import fullHistoryEntries from "./fixtures/render-full-history-entries.json";
 import fullLaneEvents from "./fixtures/render-full-lane-events.json";

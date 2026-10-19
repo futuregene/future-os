@@ -1,11 +1,12 @@
+import { ensureFreshCredentials as ensureClientCredentials } from "@future-os/remote-client/pairing";
 import { remoteHttp } from "./http";
-import { createSecureIdentity, keyBytes } from "./secureChannel";
+import { createSecureIdentity, keyBytes } from "@future-os/remote-crypto";
 import * as Device from "expo-device";
 import { Platform } from "react-native";
 import { createUser, fromSeed } from "nkeys.js";
 import { isAcceptableClaimUrl, natsWsUrlScheme } from "../config/environment";
 import { decodePairingCode, jwtExpiry, parsePairingInvitation, randomId } from "./codec";
-import { RemoteApiError } from "./connectionState";
+import { RemoteApiError } from "@future-os/remote-client/connectionState";
 import { loadDeviceId, saveDeviceId, type PendingRevoke } from "./storage";
 import type { RemoteCredentials } from "./types";
 
@@ -166,14 +167,7 @@ export async function ensureFreshCredentials(
   credentials: RemoteCredentials,
   signal?: AbortSignal,
 ): Promise<RemoteCredentials> {
-  const expiry = jwtExpiry(credentials.userJwt);
-  // A JWT we can't read expiry from is corrupt, not expired. The desktop
-  // rejects such a token outright; looping a refresh here would hammer the
-  // token endpoint on every (re)connect. Fail loudly instead.
-  if (expiry === null) throw new Error("invalid_jwt");
-  return expiry * 1000 < Date.now() + 60_000
-    ? refreshCredentials(credentials, signal)
-    : credentials;
+  return ensureClientCredentials(credentials, signal, refreshCredentials);
 }
 
 /**

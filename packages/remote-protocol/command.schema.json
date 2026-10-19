@@ -1,0 +1,498 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://future-os.cn/schemas/remote-command-v2.json",
+  "title": "Remote command",
+  "description": "Wire command shape. Rust preserves legacy missing-field defaults; TS producers require type. Unknown fields and capabilities remain additive. Credentials and UI types are excluded.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "type"
+  ],
+  "x-version": 1,
+  "properties": {
+    "chunkedRead": {
+      "x-rust-name": "chunked_read",
+      "x-rust-type": "bool",
+      "default": false,
+      "x-ts-type": "boolean",
+      "type": "boolean"
+    },
+    "preferSnapshot": {
+      "x-rust-name": "prefer_snapshot",
+      "x-rust-type": "bool",
+      "default": false,
+      "x-ts-type": "boolean",
+      "type": "boolean"
+    },
+    "untrimmed": {
+      "x-rust-name": "untrimmed",
+      "x-rust-type": "bool",
+      "default": false,
+      "x-ts-type": "boolean",
+      "type": "boolean",
+      "description": "Mobile gap-fill integrity reads need the backward page to end flush with the requested cursor; a chunked reader reassembles the reply, so it can opt out of the bridge's byte-budget trim explicitly."
+    },
+    "replyId": {
+      "x-rust-name": "reply_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "replayUntilIdx": {
+      "x-rust-name": "replay_until_idx",
+      "x-rust-type": "Option<i64>",
+      "default": null,
+      "x-ts-type": "number",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "bridgeInstanceId": {
+      "x-rust-name": "bridge_instance_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "id": {
+      "x-rust-name": "id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "type": {
+      "x-rust-name": "cmd_type",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "sessionId": {
+      "x-rust-name": "session_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "message": {
+      "x-rust-name": "message",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "entryId": {
+      "x-rust-name": "entry_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "approval_decision"
+    },
+    "sourceEntryId": {
+      "x-rust-name": "source_entry_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "fork_session: the persisted user entry whose settled turn the phone forks at. The command's own `id` is the fork request identity (idempotent child)."
+    },
+    "mode": {
+      "x-rust-name": "mode",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "runId": {
+      "x-rust-name": "run_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "get_events_since (P1c backfill)"
+    },
+    "promptId": {
+      "x-rust-name": "prompt_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "sinceIdx": {
+      "x-rust-name": "since_idx",
+      "x-rust-type": "i64",
+      "default": -1,
+      "x-ts-type": "number",
+      "type": "integer"
+    },
+    "offset": {
+      "x-rust-name": "offset",
+      "x-rust-type": "i64",
+      "default": 0,
+      "x-ts-type": "number",
+      "type": "integer",
+      "description": "get_messages pagination (NATS payload-limit guard)"
+    },
+    "limit": {
+      "x-rust-name": "limit",
+      "x-rust-type": "i64",
+      "default": 0,
+      "x-ts-type": "number",
+      "type": "integer"
+    },
+    "toolCallId": {
+      "x-rust-name": "tool_call_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "get_tool_call_args: the call whose arguments a lean client asks back."
+    },
+    "before": {
+      "x-rust-name": "before",
+      "x-rust-type": "Option<i64>",
+      "default": null,
+      "x-ts-type": "number",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "get_session_entries backward cursor (mobile lazy history)"
+    },
+    "modelId": {
+      "x-rust-name": "model_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "set_model / set_thinking_level"
+    },
+    "providerId": {
+      "x-rust-name": "provider_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "level": {
+      "x-rust-name": "level",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "settings": {
+      "x-rust-name": "settings",
+      "x-rust-type": "serde_json::Value",
+      "default": null,
+      "x-ts-type": "Partial<DesktopSettings>",
+      "description": "Desktop-owned settings and skill management (never mobile persistence)."
+    },
+    "skillId": {
+      "x-rust-name": "skill_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "version": {
+      "x-rust-name": "version",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "task": {
+      "x-rust-name": "task",
+      "x-rust-type": "serde_json::Value",
+      "default": null,
+      "x-ts-type": "Record<string, unknown>",
+      "description": "Task management (one whole task write, like `provider`; plus the ids a revisions/run command addresses)."
+    },
+    "taskId": {
+      "x-rust-name": "task_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "revisionId": {
+      "x-rust-name": "revision_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "enabled": {
+      "x-rust-name": "enabled",
+      "x-rust-type": "bool",
+      "default": false,
+      "x-ts-type": "boolean",
+      "type": "boolean",
+      "description": "set_task_enabled"
+    },
+    "upstreamTaskId": {
+      "x-rust-name": "upstream_task_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "set_task_dep: the upstream a task waits for, and the condition it fires on. `remove_task_dep` needs only the id pair."
+    },
+    "on": {
+      "x-rust-name": "on",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "query": {
+      "x-rust-name": "query",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "suggest_skill: the draft to recommend for, and the UNINSTALLED skill candidates the phone offers. The candidates travel from the phone because the catalogue is the client's to fetch; the desktop only forwards them to the agent."
+    },
+    "candidates": {
+      "x-rust-name": "candidates",
+      "x-rust-type": "serde_json::Value",
+      "default": null,
+      "x-ts-type": "{ name: string; description: string }[]"
+    },
+    "messageHash": {
+      "x-rust-name": "message_hash",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "record_skill_reco: the message that produced a shown recommendation."
+    },
+    "provider": {
+      "x-rust-name": "provider",
+      "x-rust-type": "serde_json::Value",
+      "default": null,
+      "x-ts-type": "CustomProviderUpsert | BuiltinProviderUpdate",
+      "description": "Provider configuration: one whole provider write (see `list_providers` in `remote_host::business`)."
+    },
+    "tier": {
+      "x-rust-name": "tier",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "set_approval_tier"
+    },
+    "name": {
+      "x-rust-name": "name",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "set_session_name / upload_init (display name) / download_prepare (the name the phone already shows, so the desktop needn't scan the session)"
+    },
+    "transferName": {
+      "x-rust-name": "transfer_name",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "threadId": {
+      "x-rust-name": "thread_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "delete_session / set_session_pinned (thread-scoped, see ThreadRecord)"
+    },
+    "pinned": {
+      "x-rust-name": "pinned",
+      "x-rust-type": "bool",
+      "default": false,
+      "x-ts-type": "boolean",
+      "type": "boolean"
+    },
+    "workspaceId": {
+      "x-rust-name": "workspace_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "prompt creation mode / existing workspace selection"
+    },
+    "path": {
+      "x-rust-name": "path",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "create_workspace: the desktop-side directory to register (the phone has no folder picker for the host, so it types the path)."
+    },
+    "deviceName": {
+      "x-rust-name": "device_name",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "`secure_ready`: what the client says it is. Optional and additive, so an older client that sends neither is simply \"unknown\" rather than wrong."
+    },
+    "deviceKind": {
+      "x-rust-name": "device_kind",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "mimeType": {
+      "x-rust-name": "mime_type",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string",
+      "description": "file transfer control + prompt attachment references"
+    },
+    "kind": {
+      "x-rust-name": "kind",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "originalSize": {
+      "x-rust-name": "original_size",
+      "x-rust-type": "u64",
+      "default": 0,
+      "x-ts-type": "number",
+      "type": "integer",
+      "minimum": 0
+    },
+    "transferSize": {
+      "x-rust-name": "transfer_size",
+      "x-rust-type": "u64",
+      "default": 0,
+      "x-ts-type": "number",
+      "type": "integer",
+      "minimum": 0
+    },
+    "transferId": {
+      "x-rust-name": "transfer_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "filePath": {
+      "x-rust-name": "file_path",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "attachments": {
+      "x-rust-name": "attachments",
+      "x-rust-type": "Vec<UploadReference>",
+      "default": [],
+      "x-ts-type": "UploadReference[]",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/UploadReference"
+      }
+    },
+    "protocolVersion": {
+      "x-rust-name": "protocol_version",
+      "x-rust-type": "u32",
+      "default": 0,
+      "x-ts-type": "number",
+      "type": "integer",
+      "minimum": 0,
+      "description": "signed application-level pairing handshake",
+      "maximum": 4294967295
+    },
+    "pairId": {
+      "x-rust-name": "pair_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "deviceId": {
+      "x-rust-name": "device_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "clientPublicKey": {
+      "x-rust-name": "client_public_key",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "clientNonce": {
+      "x-rust-name": "client_nonce",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "desktopNonce": {
+      "x-rust-name": "desktop_nonce",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "expectedDesktopId": {
+      "x-rust-name": "expected_desktop_id",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "expectedDesktopPublicKey": {
+      "x-rust-name": "expected_desktop_public_key",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "clientSignature": {
+      "x-rust-name": "client_signature",
+      "x-rust-type": "String",
+      "default": "",
+      "x-ts-type": "string",
+      "type": "string"
+    },
+    "features": {
+      "x-rust-name": "features",
+      "x-rust-type": "Vec<String>",
+      "default": [],
+      "x-ts-type": "string[]",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Client capabilities declared once per connection (currently on `secure_ready`). Additive: a client that sends none gets the legacy per-event lane, and an unknown name is ignored."
+    }
+  },
+  "$defs": {
+    "UploadReference": {
+      "type": "object",
+      "required": [
+        "uploadId"
+      ],
+      "properties": {
+        "uploadId": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

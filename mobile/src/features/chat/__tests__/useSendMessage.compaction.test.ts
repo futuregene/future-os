@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { useSendMessage, type SendMessageApi } from "../useSendMessage";
-import { emptyTimeline } from "../../../remote/timeline";
+import { emptyTimeline } from "@future-os/remote-client/timeline";
 import type { TimelineItem } from "../../../remote/types";
 
 jest.mock("../../../remote/RemoteContext", () => ({}));

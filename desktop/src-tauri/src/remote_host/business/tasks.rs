@@ -5,8 +5,8 @@
 //! never the prompt body — and run summaries are truncated. `get_task` returns
 //! the full record for the detail screen.
 
-use crate::remote::protocol::IncomingCmd;
-use crate::remote::services::ReplySink;
+use future_remote_protocol::IncomingCmd;
+use future_remote_server::services::ReplySink;
 use serde_json::{json, Value};
 
 use super::{reply, reply_unit};
@@ -517,8 +517,8 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::protocol::IncomingCmd;
     use crate::remote::test_support::{HomeGuard, RecordingSink};
+    use future_remote_protocol::IncomingCmd;
 
     /// A private FutureOS home: `open_store` resolves the task database from it,
     /// so each test owns its rows.

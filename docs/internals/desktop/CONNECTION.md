@@ -11,6 +11,12 @@
 > entry; this file is the only maintenance location for this domain's design
 > and contract.
 
+The [Remote package development plan](../../architecture/remote-package-development.md)
+tracks the proposed Rust/TypeScript protocol, client and server extraction and
+its host interfaces. Those package and future CLI/TUI integration targets are
+planned; this document continues to describe the existing product and connection
+contract, with E2EE governed by the security document linked above.
+
 Review date: 2026-09-14. Source baseline: FutureOS `2774e4a9` plus this
 document's own change candidate, and the local future-server `bbd6c23`; the
 server-side baseline does not represent the actual online deployment. The text
@@ -1593,7 +1599,7 @@ unchanged.
 
 | Domain | Implemented | Verification focus |
 | --- | --- | --- |
-| Host boundary | `remote/services.rs` defines the business/state/pairing/file four interfaces, `protocol.rs` carries DTOs; `remote_host/` implements the Desktop business/catalog/file/platform adapters; `agent_events.rs` outputs events, wired into Remote by the integration layer; protocol commands can inject a substitute host | original session, approval, workspace, attachment business semantics and permissions stay consistent |
+| Host boundary | `future-remote-server::services` defines the business/state/pairing/file interfaces, `future-remote-protocol` carries wire DTOs and Server defines pairing credentials; `remote_host/` implements the Desktop business/catalog/file/platform adapters; `agent_events.rs` outputs events, wired into Remote by the integration layer; protocol commands can inject a substitute host | original session, approval, workspace, attachment business semantics and permissions stay consistent |
 | Desktop lifecycle | a single `Supervisor` owns user intent, access generations, the active runtime, retry budgets, and the background task group; stop/sleep cancel uniformly; initial connection and renewal share candidate build and readiness install; wake recovery reports yellow only while tasks run | stop vs readiness interleaving, sleep-wake, brief offline, gateway restart, both ends' renewal |
 | Mobile connection | a single connection attempt; first/manual connect limited to 20 seconds; post-success auto-recovery uses ±20% jitter backoff limited to 3 minutes; explicit Desktop-disconnect notices stop retries; business requests uniformly pass the ready/desktop-available gate | foreground/background, system pickers, network switches, the 20-second and 3-minute boundaries, late recovery not crossing an active stop |
 | Status display | Desktop and phone both produce `level`, `customerState`, `action`, `supportCode` once via a pure conversion layer; green/yellow/red consistent; the phone Header, status popover, frozen lists/sessions, and standalone status page reuse the same result | fixed slots without flicker; status, reason, remedy, and actions consistent; raw errors only in the console |

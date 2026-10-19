@@ -1,0 +1,420 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "protocol.invitation.v2",
+      "kind": "invitation",
+      "input": "futureos://remote/pair?code=eyJ2IjoyLCJub25jZSI6Im4tMSIsImNsYWltX3VybCI6Imh0dHBzOi8vZnV0dXJlLW9zLmNuL2NsaWVudC92MS9yZW1vdGUvcGFpci9jbGFpbSIsImV4cCI6MjAwMH0&desktopId=desktop_host&desktopKey=UDESKTOP&secureKey=BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc&secret=BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc&v=2",
+      "now": 1000,
+      "expected": {
+        "rust": true,
+        "typescript": true
+      },
+      "difference": null
+    },
+    {
+      "id": "protocol.invitation.self-hosted-v3",
+      "kind": "invitation",
+      "input": "futureos://remote/pair?code=eyJ2IjoyLCJub25jZSI6Im4tMSIsImNsYWltX3VybCI6Imh0dHBzOi8vZnV0dXJlLW9zLmNuL2NsaWVudC92MS9yZW1vdGUvcGFpci9jbGFpbSIsImV4cCI6MjAwMH0&desktopId=desktop_host&desktopKey=UDESKTOP&secureKey=BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc&secret=BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc&v=3",
+      "now": 1000,
+      "expected": {
+        "rust": true,
+        "typescript": true
+      },
+      "difference": null
+    },
+    {
+      "id": "protocol.invitation.legacy-parser-only",
+      "kind": "invitation",
+      "input": "futureos://remote/pair?code=eyJ2IjoyLCJub25jZSI6Im4tMSIsImNsYWltX3VybCI6Imh0dHBzOi8vZnV0dXJlLW9zLmNuL2NsaWVudC92MS9yZW1vdGUvcGFpci9jbGFpbSIsImV4cCI6MjAwMH0&desktopId=desktop_host&desktopKey=UDESKTOP&secureKey=BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc&secret=BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc",
+      "now": 1000,
+      "expected": {
+        "rust": false,
+        "typescript": true
+      },
+      "difference": "Mobile retains its historical shape-only legacy pre-parser; app pairing/version policy is applied before credentials are claimed."
+    },
+    {
+      "id": "protocol.invitation.short-key",
+      "kind": "invitation",
+      "input": "futureos://remote/pair?code=eyJ2IjoyLCJub25jZSI6Im4tMSIsImNsYWltX3VybCI6Imh0dHBzOi8vZnV0dXJlLW9zLmNuL2NsaWVudC92MS9yZW1vdGUvcGFpci9jbGFpbSIsImV4cCI6MjAwMH0&desktopId=desktop_host&desktopKey=UDESKTOP&secureKey=short&secret=short&v=2",
+      "now": 1000,
+      "expected": {
+        "rust": false,
+        "typescript": false
+      },
+      "difference": null
+    },
+    {
+      "id": "protocol.invitation.wrong-endpoint",
+      "kind": "invitation",
+      "input": "futureos://remote/other?code=eyJ2IjoyLCJub25jZSI6Im4tMSIsImNsYWltX3VybCI6Imh0dHBzOi8vZnV0dXJlLW9zLmNuL2NsaWVudC92MS9yZW1vdGUvcGFpci9jbGFpbSIsImV4cCI6MjAwMH0&desktopId=desktop_host&desktopKey=UDESKTOP&secureKey=BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc&secret=BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc&v=2",
+      "now": 1000,
+      "expected": {
+        "rust": false,
+        "typescript": false
+      },
+      "difference": null
+    },
+    {
+      "id": "protocol.invitation.malformed",
+      "kind": "invitation",
+      "input": "not a url",
+      "now": 1000,
+      "expected": {
+        "rust": false,
+        "typescript": false
+      },
+      "difference": null
+    },
+    {
+      "id": "protocol.json.plain",
+      "kind": "json",
+      "bytes": [
+        123,
+        34,
+        115,
+        117,
+        99,
+        99,
+        101,
+        115,
+        115,
+        34,
+        58,
+        32,
+        116,
+        114,
+        117,
+        101,
+        44,
+        32,
+        34,
+        100,
+        97,
+        116,
+        97,
+        34,
+        58,
+        32,
+        123,
+        34,
+        116,
+        101,
+        120,
+        116,
+        34,
+        58,
+        32,
+        34,
+        92,
+        117,
+        56,
+        102,
+        100,
+        99,
+        92,
+        117,
+        55,
+        97,
+        48,
+        98,
+        34,
+        125,
+        125
+      ],
+      "accepted": true,
+      "expected": {
+        "success": true,
+        "data": {
+          "text": "远程"
+        }
+      }
+    },
+    {
+      "id": "protocol.json.gzip",
+      "kind": "json",
+      "bytes": [
+        31,
+        139,
+        8,
+        0,
+        0,
+        0,
+        0,
+        0,
+        2,
+        255,
+        171,
+        86,
+        42,
+        46,
+        77,
+        78,
+        78,
+        45,
+        46,
+        86,
+        178,
+        42,
+        41,
+        42,
+        77,
+        213,
+        81,
+        74,
+        73,
+        44,
+        73,
+        84,
+        178,
+        138,
+        54,
+        212,
+        49,
+        138,
+        173,
+        5,
+        0,
+        88,
+        220,
+        14,
+        202,
+        29,
+        0,
+        0,
+        0
+      ],
+      "accepted": true,
+      "expected": {
+        "success": true,
+        "data": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "id": "protocol.json.truncated-gzip",
+      "kind": "json",
+      "bytes": [
+        31,
+        139,
+        1
+      ],
+      "accepted": false,
+      "error": "remote_json_gzip_invalid"
+    },
+    {
+      "id": "protocol.json.gzip-footer-budget",
+      "kind": "json",
+      "bytes": [
+        31,
+        139,
+        1,
+        0,
+        16,
+        0
+      ],
+      "accepted": false,
+      "error": "remote_json_gzip_too_large"
+    },
+    {
+      "id": "protocol.json.invalid-json",
+      "kind": "json",
+      "bytes": [
+        123,
+        93
+      ],
+      "accepted": false,
+      "error": null
+    },
+    {
+      "id": "protocol.json.budget.1048576",
+      "kind": "json",
+      "repeatSpace": 1048576,
+      "accepted": true,
+      "expected": 0,
+      "error": null
+    },
+    {
+      "id": "protocol.json.budget.1048577",
+      "kind": "json",
+      "repeatSpace": 1048577,
+      "accepted": false,
+      "expected": 0,
+      "error": "remote_json_too_large"
+    },
+    {
+      "id": "protocol.command.minimal",
+      "kind": "command",
+      "input": {
+        "type": "get_sessions"
+      },
+      "expected": {
+        "type": "get_sessions",
+        "sinceIdx": -1,
+        "features": []
+      }
+    },
+    {
+      "id": "protocol.command.nullable-cursors",
+      "kind": "command",
+      "input": {
+        "type": "get_session_entries",
+        "before": null,
+        "replayUntilIdx": null
+      },
+      "expected": {
+        "before": null,
+        "replayUntilIdx": null
+      }
+    },
+    {
+      "id": "protocol.command.capabilities",
+      "kind": "command",
+      "input": {
+        "type": "secure_ready",
+        "features": [
+          "reply_gzip_v1",
+          "future_unknown_feature"
+        ],
+        "deviceKind": "cli"
+      },
+      "expected": {
+        "features": [
+          "reply_gzip_v1",
+          "future_unknown_feature"
+        ],
+        "deviceKind": "cli"
+      }
+    },
+    {
+      "id": "protocol.command.attachments",
+      "kind": "command",
+      "input": {
+        "type": "prompt",
+        "message": "hello",
+        "attachments": [
+          {
+            "uploadId": "upload_1"
+          }
+        ]
+      },
+      "expected": {
+        "attachments": [
+          {
+            "uploadId": "upload_1"
+          }
+        ],
+        "message": "hello"
+      }
+    },
+    {
+      "id": "protocol.handshake.open-defaults",
+      "kind": "handshake-request",
+      "input": {
+        "type": "secure_open",
+        "message": "AAAA"
+      },
+      "expected": {
+        "type": "secure_open",
+        "message": "AAAA",
+        "id": "",
+        "pairing": false
+      }
+    },
+    {
+      "id": "protocol.handshake.finish",
+      "kind": "handshake-request",
+      "input": {
+        "type": "secure_finish",
+        "message": "AAAA",
+        "id": "challenge_fixture"
+      },
+      "expected": {
+        "type": "secure_finish",
+        "message": "AAAA",
+        "id": "challenge_fixture",
+        "pairing": false
+      }
+    },
+    {
+      "id": "protocol.handshake.additive-fields",
+      "kind": "handshake-request",
+      "input": {
+        "type": "secure_open",
+        "message": "AAAA",
+        "pairing": true,
+        "futureField": "preserved by producer"
+      },
+      "expected": {
+        "type": "secure_open",
+        "message": "AAAA",
+        "id": "",
+        "pairing": true
+      }
+    },
+    {
+      "id": "protocol.handshake.confirmation",
+      "kind": "handshake-confirmation",
+      "input": {
+        "pairId": "pair_fixture",
+        "bridgeInstanceId": "bridge_fixture",
+        "presence": {
+          "online": true,
+          "bridgeInstanceId": "bridge_fixture",
+          "futurePresenceField": 42
+        }
+      },
+      "expected": {
+        "confirmed": true,
+        "pairId": "pair_fixture",
+        "bridgeInstanceId": "bridge_fixture",
+        "features": [
+          "e2ee_v2",
+          "file_transfer_v1",
+          "file_download_v2",
+          "approval_tier_v1",
+          "auto_approval_v1",
+          "continue_run_v1",
+          "prompt_receipt_v1",
+          "session_files_v1",
+          "skills_v1",
+          "selective_events_v1",
+          "workspace_pinning_v1",
+          "workspace_create_v1",
+          "desktop_settings_v1",
+          "skill_management_v1",
+          "compaction_v1",
+          "provider_management_v1",
+          "fork_v1",
+          "tasks_v1",
+          "task_deps_v1"
+        ],
+        "presence": {
+          "online": true,
+          "bridgeInstanceId": "bridge_fixture",
+          "futurePresenceField": 42
+        }
+      }
+    },
+    {
+      "id": "protocol.handshake.legacy-transcript",
+      "kind": "handshake-transcript",
+      "input": {
+        "protocolVersion": 1,
+        "pairId": "pair_1",
+        "desktopId": "desktop_1",
+        "desktopPublicKey": "UDESKTOP",
+        "bridgeInstanceId": "bridge_1",
+        "deviceId": "dev_1",
+        "clientPublicKey": "UCLIENT",
+        "clientNonce": "client_nonce",
+        "desktopNonce": "desktop_nonce",
+        "desktopSignature": ""
+      },
+      "expected": "futureos-remote-handshake-v1\npair_1\ndesktop_1\nUDESKTOP\nbridge_1\ndev_1\nUCLIENT\nclient_nonce\ndesktop_nonce"
+    }
+  ]
+}

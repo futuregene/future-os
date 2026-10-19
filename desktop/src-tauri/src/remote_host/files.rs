@@ -34,7 +34,7 @@ const MAX_PREVIEW_CACHE_BYTES: u64 = 100 * 1024 * 1024;
 pub const CHUNK_BYTES: u64 = 512 * 1024;
 const TRANSFER_TTL: Duration = Duration::from_secs(30 * 60);
 
-pub(crate) use crate::remote::protocol::UploadReference;
+pub(crate) use future_remote_protocol::UploadReference;
 
 #[derive(Debug, Clone)]
 struct UploadRecord {

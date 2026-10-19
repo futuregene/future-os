@@ -1,6 +1,6 @@
 import { useCallback, useMemo, type RefObject } from "react";
 import type { RemoteClient } from "./client";
-import { requestReadPage } from "./readPages";
+import { requestReadPage } from "@future-os/remote-client/readPages";
 import type {
   RemoteTaskDetail,
   RemoteTaskRow,

@@ -1,5 +1,5 @@
-use crate::remote::protocol::IncomingCmd;
-use crate::remote::services::ReplySink;
+use future_remote_protocol::IncomingCmd;
+use future_remote_server::services::ReplySink;
 use serde_json::{json, Value};
 
 use super::{reply, reply_unit};
@@ -586,8 +586,8 @@ mod tests {
     /// as a receipt naming a thread the phone cannot open.
     #[tokio::test]
     async fn a_receipt_for_a_thread_that_no_longer_exists_reads_as_no_receipt() {
-        use crate::remote::protocol::IncomingCmd;
         use crate::remote::test_support::{raw_store_connection, HomeGuard, RecordingSink};
+        use future_remote_protocol::IncomingCmd;
 
         let _home = HomeGuard::new("business-prompt-dangling-run");
         crate::remote::test_support::init_store();

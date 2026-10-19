@@ -132,7 +132,7 @@ jest.mock("../useSessionCatalog", () => ({
 }));
 jest.mock("../useTimelineController", () => {
   const React = jest.requireActual<typeof import("react")>("react");
-  const { emptyTimeline } = jest.requireActual<typeof import("../timeline")>("../timeline");
+  const { emptyTimeline } = jest.requireActual<typeof import("@future-os/remote-client/timeline")>("@future-os/remote-client/timeline");
   return {
     useTimelineController: (options: typeof timelineOptions) => {
       timelineOptions = options;

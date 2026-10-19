@@ -2,7 +2,7 @@ import type { MutableRefObject } from "react";
 import { useCallback, useEffect, useRef } from "react";
 import { AppState } from "react-native";
 import type { RemoteClient } from "../client";
-import { SyncEngine } from "../syncEngine";
+import { SyncEngine } from "@future-os/remote-client/syncEngine";
 import type { RemoteSessionState, StreamEvent, CompactionOutcome } from "../types";
 
 export const COMPACTION_TERMINAL_TIMEOUT_MS = 30 * 60 * 1000;

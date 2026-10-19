@@ -121,6 +121,8 @@ interface MockClient {
   requests: RequestRecord[];
   open: jest.Mock;
   close: jest.Mock;
+  shutdown: jest.Mock;
+  waitTasks: jest.Mock;
   setAppActive: jest.Mock;
   setVisibleSession: jest.Mock;
   recoverNow: jest.Mock;
@@ -172,7 +174,12 @@ jest.mock("../client", () => {
       // nobody is reading has its workspaces, models and settings in hand too.
       this.callbacks.onReconnected?.();
     });
-    close = jest.fn(async () => {});
+    close = jest.fn(async (_reason?: string) => {});
+    shutdown = jest.fn(async (_budget: number, reason?: string) => {
+      await this.close(reason);
+      return { complete: true, pendingTasks: [] };
+    });
+    waitTasks = jest.fn(async () => ({ complete: true, pendingTasks: [] }));
     setAppActive = jest.fn();
     setVisibleSession = jest.fn();
     recoverNow = jest.fn(async () => {});

@@ -1,0 +1,151 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "sourceCommit": "d6a240b439d0cfd1bd41becb90d374e6d3ae4faf",
+  "environment": {
+    "os": "macOS",
+    "architecture": "arm64",
+    "rustc": "1.97.0 (2d8144b78 2026-07-07)",
+    "node": "v24.21.0"
+  },
+  "policy": "User authorized local unit testing and suspended new CI dispatches on 2026-10-20.",
+  "results": [
+    {
+      "suite": "Rust remote-crypto",
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "suite": "Rust remote-protocol",
+      "passed": 23,
+      "failed": 0,
+      "ignored": 0,
+      "note": "22 library tests plus 1 package contract integration target"
+    },
+    {
+      "suite": "Rust remote-client",
+      "passed": 56,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "suite": "Rust remote-server",
+      "passed": 155,
+      "failed": 0,
+      "ignored": 5
+    },
+    {
+      "suite": "TypeScript remote-crypto",
+      "passed": 17,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "suite": "TypeScript remote-protocol",
+      "passed": 48,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "suite": "TypeScript remote-client",
+      "passed": 657,
+      "failed": 0,
+      "ignored": 0,
+      "testSuites": 31
+    },
+    {
+      "suite": "Desktop TypeScript",
+      "passed": 4430,
+      "failed": 0,
+      "ignored": 0,
+      "testFiles": 325
+    },
+    {
+      "suite": "Mobile",
+      "passed": 2696,
+      "failed": 0,
+      "ignored": 0,
+      "testSuites": 138
+    },
+    {
+      "suite": "Shared shell projection",
+      "passed": 13,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "suite": "Remote CI selection and boundary policy",
+      "passed": 14,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "suite": "Desktop Rust GUI library",
+      "passed": 2071,
+      "failed": 0,
+      "ignored": 10,
+      "executionSeconds": 547.27
+    },
+    {
+      "suite": "Desktop Rust headless library",
+      "passed": 1624,
+      "failed": 0,
+      "ignored": 10,
+      "executionSeconds": 431.53
+    }
+  ],
+  "commands": [
+    {
+      "cwd": ".",
+      "command": "RUSTC_WRAPPER= CARGO_PROFILE_TEST_DEBUG=1 cargo test --offline --locked -p future-remote-crypto -p future-remote-protocol -p future-remote-client -p future-remote-server -- --nocapture"
+    },
+    {
+      "cwd": ".",
+      "command": "npm test --workspace @future-os/remote-crypto"
+    },
+    {
+      "cwd": ".",
+      "command": "npm test --workspace @future-os/remote-protocol"
+    },
+    {
+      "cwd": ".",
+      "command": "npm test --workspace @future-os/remote-client"
+    },
+    {
+      "cwd": ".",
+      "command": "npm test --workspace @futureos/desktop"
+    },
+    {
+      "cwd": ".",
+      "command": "npm test --workspace @future-os/mobile"
+    },
+    {
+      "cwd": "desktop",
+      "command": "../node_modules/.bin/vitest run --config ../packages/markdown/vitest.config.ts thread-projection/src/shellResult.test.ts"
+    },
+    {
+      "cwd": ".",
+      "command": "node --test scripts/tests/remote-ci.test.mjs"
+    },
+    {
+      "cwd": ".",
+      "command": "RUSTC_WRAPPER= CARGO_PROFILE_TEST_DEBUG=1 cargo test --offline --locked -p futureos --lib -- --test-threads=1"
+    },
+    {
+      "cwd": ".",
+      "command": "RUSTC_WRAPPER= CARGO_PROFILE_TEST_DEBUG=1 cargo test --offline --locked -p futureos --no-default-features --features headless --lib -- --test-threads=1"
+    }
+  ],
+  "limits": [
+    "Counts are framework executions, not unique cross-language or cross-configuration behaviors.",
+    "Existing ignored manual/measurement/real-model targets were not enabled; no failures were disabled.",
+    "No independent network-tests interoperability target or interop host/TS driver was executed in this local unit batch.",
+    "Application library suites retain their own network/process/native fixtures; GUI and headless ran sequentially to avoid fixed-port contention.",
+    "Desktop Rust commands selected --lib; separate binary and integration targets are not established by this record.",
+    "This macOS arm64 result does not establish Windows/Linux runtime behavior or Android/iOS physical-device acceptance.",
+    "Build artifacts were reused normally. GUI/headless execution times are not a matched performance comparison.",
+    "Product source remained unchanged throughout this batch; only development documentation was edited.",
+    "The overall Remote goal still requires outstanding interoperability, platform/performance evidence and user-confirmed manual acceptance."
+  ]
+}

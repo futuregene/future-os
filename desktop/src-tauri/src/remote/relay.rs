@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use super::protocol::PairingCreds;
+use future_remote_server::PairingCreds;
 
 /// Where the relay endpoint is remembered.
 const SETTINGS_FILE: &str = "relay.json";
@@ -199,7 +199,7 @@ pub(crate) async fn register(
     }))
     .map_err(|error| crate::AppError::Message(format!("encode relay request: {error}")))?;
     let headers = signed_headers(key, "POST", "/v1/rooms", &body)?;
-    let mut request = crate::remote_host::pairing::http_client()?
+    let mut request = crate::remote_platform::http_client()?
         .post(relay_url(base, "/v1/rooms"))
         .header("content-type", "application/json")
         .body(body);
@@ -207,10 +207,10 @@ pub(crate) async fn register(
         request = request.header(name, value);
     }
     let response = request.send().await.map_err(|error| {
-        crate::remote_host::pairing::transport_or_message("register relay room", error)
+        crate::remote_platform::transport_or_message("register relay room", error)
     })?;
     let body: serde_json::Value =
-        crate::remote_host::pairing::parse_response(response, "register relay room").await?;
+        crate::remote_platform::parse_response(response, "register relay room").await?;
     grant_from(body, "register relay room")
 }
 
@@ -246,7 +246,7 @@ async fn rotate_with(
     .map_err(|error| crate::AppError::Message(format!("encode relay request: {error}")))?;
     let path = "/client/v1/remote/auth/token";
     let headers = signed_headers(key, "POST", path, &body)?;
-    let mut request = crate::remote_host::pairing::http_client()?
+    let mut request = crate::remote_platform::http_client()?
         .post(relay_url(base, path))
         .header("content-type", "application/json")
         .body(body);
@@ -254,10 +254,10 @@ async fn rotate_with(
         request = request.header(name, value);
     }
     let response = request.send().await.map_err(|error| {
-        crate::remote_host::pairing::transport_or_message("refresh relay credential", error)
+        crate::remote_platform::transport_or_message("refresh relay credential", error)
     })?;
     let body: serde_json::Value =
-        crate::remote_host::pairing::parse_response(response, "refresh relay credential").await?;
+        crate::remote_platform::parse_response(response, "refresh relay credential").await?;
     grant_from(body, "refresh relay credential")
 }
 
@@ -272,17 +272,17 @@ pub(crate) async fn revoke(creds: &PairingCreds) -> Result<(), crate::AppError> 
         .map_err(|error| crate::AppError::Message(format!("read desktop NKey: {error}")))?;
     let path = format!("/v1/rooms/{}", creds.pair_id);
     let headers = signed_headers(&key, "DELETE", &path, &[])?;
-    let mut request = crate::remote_host::pairing::http_client()?.delete(relay_url(base, &path));
+    let mut request = crate::remote_platform::http_client()?.delete(relay_url(base, &path));
     for (name, value) in headers {
         request = request.header(name, value);
     }
     let response = request.send().await.map_err(|error| {
-        crate::remote_host::pairing::transport_or_message("revoke relay room", error)
+        crate::remote_platform::transport_or_message("revoke relay room", error)
     })?;
     if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(());
     }
-    Err(crate::remote_host::pairing::response_error(response, "revoke relay room").await)
+    Err(crate::remote_platform::response_error(response, "revoke relay room").await)
 }
 
 /// Whether an error means "this relay has no such room".
@@ -300,7 +300,7 @@ fn grant_from(body: serde_json::Value, action: &str) -> Result<Grant, crate::App
             })
     };
     let user_jwt = field("userJwt")?;
-    let jwt_expires_at = crate::remote_host::pairing::jwt_expiry(&user_jwt)?;
+    let jwt_expires_at = crate::remote_platform::jwt_expiry(&user_jwt)?;
     Ok(Grant {
         user_jwt,
         jwt_expires_at,

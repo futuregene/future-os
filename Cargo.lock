@@ -1978,6 +1978,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "future-remote-client"
+version = "0.1.0"
+dependencies = [
+ "async-nats",
+ "base64 0.22.1",
+ "future-remote-crypto",
+ "future-remote-protocol",
+ "futures",
+ "nkeys",
+ "rand 0.8.7",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.19",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "future-remote-crypto"
 version = "0.1.0"
 dependencies = [
@@ -1987,6 +2006,62 @@ dependencies = [
  "snow",
  "thiserror 2.0.19",
  "zeroize",
+]
+
+[[package]]
+name = "future-remote-interop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "base64 0.22.1",
+ "future-remote-client",
+ "future-remote-crypto",
+ "future-remote-protocol",
+ "future-remote-server",
+ "futures",
+ "nkeys",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "future-remote-protocol"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "flate2",
+ "future-remote-crypto",
+ "nkeys",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "url",
+]
+
+[[package]]
+name = "future-remote-server"
+version = "0.1.0"
+dependencies = [
+ "async-nats",
+ "base64 0.22.1",
+ "chrono",
+ "flate2",
+ "future-remote-crypto",
+ "future-remote-protocol",
+ "futures",
+ "nkeys",
+ "rand 0.8.7",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -2069,7 +2144,10 @@ dependencies = [
  "future-agent",
  "future-app-settings",
  "future-app-workspaces",
+ "future-remote-client",
  "future-remote-crypto",
+ "future-remote-protocol",
+ "future-remote-server",
  "future-rpc",
  "future-tasks",
  "futures",

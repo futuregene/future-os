@@ -1,50 +1,21 @@
-//! Step C: command subscription + routing. Mobile commands arrive on
-//! `p.{pairId}.cmd.>`; reads go straight to the store, prompts go through
-//! `agent_bridge::headless` so the persist/finalize contract is shared with
-//! the rest of the backend.
-
-use super::protocol::IncomingCmd;
-use super::services::ReplySink;
+//! Desktop operator settings and real application command integration tests.
 #[cfg(test)]
-use crate::remote_host::business::*;
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
-use flate2::{write::GzEncoder, Compression};
-use futures::StreamExt;
-use serde_json::{json, Value};
-use std::{
-    collections::HashMap,
-    io::Write,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc, LazyLock, Mutex,
-    },
-    time::Duration,
-};
+use future_remote_protocol::IncomingCmd;
+#[cfg(test)]
+pub(super) use future_remote_server::commands::new_reply_slots;
+#[cfg(test)]
+pub(super) use future_remote_server::commands::{apply_declared_features, REPLY_GZIP_FEATURE};
+#[cfg(test)]
+pub(super) use future_remote_server::commands::{HandshakeState, ReplySlots};
+#[cfg(test)]
+use future_remote_server::services::ReplySink;
+#[cfg(test)]
+use serde_json::Value;
+#[cfg(test)]
+use std::sync::{atomic::AtomicBool, Arc};
 
-static COMMAND_EPISODE: LazyLock<super::FailureEpisode> = LazyLock::new(Default::default);
-/// Refused handshakes. Any peer holding the pair's NATS JWT can attempt one, so
-/// this goes through the same quota mechanism as every other bridge fault
-/// rather than printing once per frame.
-static HANDSHAKE_EPISODE: LazyLock<super::FailureEpisode> = LazyLock::new(Default::default);
-
-const REMOTE_JSON_GZIP_THRESHOLD_BYTES: usize = 32 * 1024;
 const REMOTE_JSON_GZIP_ENV: &str = "FUTURE_REMOTE_JSON_GZIP";
-
-/// Large remote JSON replies can be sent as standard gzip without changing the
-/// reply envelope: mobile recognizes the gzip magic bytes and otherwise parses
-/// plain JSON. The capability is deliberately OFF by default. Once history is
-/// fetched in small, lazy pages, gzip's bandwidth saving is outweighed on the
-/// current React Native client by JS-side gunzip + JSON decode time (about one
-/// second across a long thread in the measured emulator run). Keep the wire
-/// path available for high-latency/low-bandwidth deployments; opt in with
-/// `FUTURE_REMOTE_JSON_GZIP=1` (also accepts true/yes/on).
-fn remote_json_gzip_enabled() -> bool {
-    // Either the connection asked for it, or an operator forced it on for
-    // diagnostics. Both are needed: the capability is what makes the feature
-    // safe against older clients, the override is what makes it testable.
-    if reply_gzip_allowed() {
-        return true;
-    }
+pub(super) fn operator_gzip_enabled() -> bool {
     std::env::var(REMOTE_JSON_GZIP_ENV).is_ok_and(|value| {
         matches!(
             value.trim().to_ascii_lowercase().as_str(),
@@ -52,1026 +23,52 @@ fn remote_json_gzip_enabled() -> bool {
         )
     })
 }
-
-pub(super) struct CachedReply {
-    request: Value,
-    response: tokio::sync::Mutex<Option<Vec<u8>>>,
-}
-
-type ReplySlot = Arc<CachedReply>;
-
-/// Command-id → in-flight/completed response cache (single-flight). Created
-/// once per bridge start and SHARED across command loops: credential refresh
-/// swaps the loop every JWT TTL, and a cache local to the loop would be wiped
-/// on every swap — a client retrying right after a swap would re-execute a
-/// command the old loop had already run (for `prompt`, a duplicated message).
-pub(super) type ReplySlots = Arc<Mutex<HashMap<String, ReplySlot>>>;
-
-#[derive(Clone)]
-pub(super) struct HandshakeState {
-    pub(super) secure: super::secure::Transport,
-    host: &'static dyn super::services::BusinessHost,
-    creds: crate::remote::pairing::PairingCreds,
-    access_epoch: Option<u64>,
+#[cfg(test)]
+pub(super) fn new_handshake_state(
+    creds: super::pairing::PairingCreds,
     confirmed: Arc<AtomicBool>,
-    active: Arc<AtomicBool>,
-    bridge_instance_id: String,
-    pending: Arc<Mutex<HashMap<String, PendingHandshake>>>,
-    /// Whether this connection's replies may be gzipped, set when the client
-    /// declares it on `secure_ready`. It lives with the handshake — not the
-    /// process — because an older client that never declares it must keep
-    /// receiving plain JSON: it has no magic-byte detection and would fail to
-    /// parse a compressed reply.
-    pub(super) gzip_replies: Arc<AtomicBool>,
-    /// Whether this connection declared the lean feed.
-    ///
-    /// Lives with the connection like [`HandshakeState::gzip_replies`]: it is a
-    /// property of who is asking, and this machine now serves several clients,
-    /// so a process-wide flag would trim one device's replies to another
-    /// device's declaration.
-    pub(super) lean_events: Arc<AtomicBool>,
-}
-
-/// Capability a client declares on `secure_ready` to accept gzip-compressed
-/// command replies. Additive: a client that does not ask never receives one.
-pub(super) const REPLY_GZIP_FEATURE: &str = "reply_gzip_v1";
-
-/// Record what the client said it was.
-///
-/// Both fields are optional on the wire, and a client that sends neither is left
-/// as "unknown" rather than described wrongly: the UI has wording for an
-/// unnamed device, and none for a device it mislabels. An empty declaration
-/// therefore clears a previous one — a client that stops describing itself must
-/// not keep the old description on screen.
-fn record_client_identity(pair_id: &str, command: &IncomingCmd) {
-    // A pairing with no live runtime has nowhere to record this, and the
-    // accessor hands back a throwaway slot for an unknown one. Writing into that
-    // would look like it worked while the status kept saying "unknown", so the
-    // absence is checked here.
-    let Some(slot) = super::SUPERVISOR.client_identity(pair_id) else {
-        return;
-    };
-    *slot.lock().unwrap() = declared_identity(command);
-}
-
-/// What a `secure_ready` declared, normalised.
-///
-/// Pure, so every rule is testable without a running bridge: a name is trimmed,
-/// a blank one means "did not say", and the kind is kept verbatim because it is
-/// opaque to this side — an unknown kind is a rendering question for the UI, not
-/// a reason to discard the name it came with.
-fn declared_identity(command: &IncomingCmd) -> Option<crate::remote::types::ClientIdentity> {
-    let name = command.device_name.trim();
-    if name.is_empty() {
-        return None;
-    }
-    Some(crate::remote::types::ClientIdentity {
-        name: name.to_string(),
-        kind: command.device_kind.trim().to_string(),
-    })
-}
-
-/// Record what a connection declared on `secure_ready`. Every capability is
-/// opt-in, and the declared set is authoritative: a declaration always writes
-/// the flag, so an empty list clears a previous declaration rather than leaving
-/// it latched.
-pub(super) fn apply_declared_features(
-    handshake: &HandshakeState,
-    pair_id: &str,
-    features: &[String],
-) {
-    super::SUPERVISOR.coalesce_events(pair_id).store(
-        features
-            .iter()
-            .any(|feature| feature == super::publisher::EVENT_COALESCING_FEATURE),
-        Ordering::Release,
-    );
-    super::SUPERVISOR.catalog_activity(pair_id).store(
-        features
-            .iter()
-            .any(|feature| feature == super::publisher::CATALOG_ACTIVITY_FEATURE),
-        Ordering::Release,
-    );
-    // The declaration belongs to the connection that made it: it is recorded on
-    // the handshake (what the command path reads) and on the pairing's shared
-    // runtime (what the event publisher reads, since events go to the device in
-    // control). This machine serves several clients, so neither may be global.
-    let lean = crate::remote_host::lean::feature_declared(features);
-    handshake.lean_events.store(lean, Ordering::Release);
-    super::SUPERVISOR
-        .lean_events(pair_id)
-        .store(lean, Ordering::Release);
-    handshake.gzip_replies.store(
-        features.iter().any(|feature| feature == REPLY_GZIP_FEATURE),
-        Ordering::Release,
-    );
-}
-
-#[derive(Clone)]
-struct PendingHandshake {
-    transcript: String,
-    device_id: String,
-    client_public_key: String,
-    created_at: std::time::Instant,
-}
-
-impl HandshakeState {
-    pub(super) fn new(
-        creds: crate::remote::pairing::PairingCreds,
-        confirmed: Arc<AtomicBool>,
-        bridge_instance_id: String,
-    ) -> Self {
-        Self {
-            secure: super::secure::Transport::new(&creds),
-            creds,
-            access_epoch: None,
-            host: super::host(),
-            confirmed,
-            active: Arc::new(AtomicBool::new(false)),
-            bridge_instance_id,
-            pending: Arc::new(Mutex::new(HashMap::new())),
-            gzip_replies: Arc::new(AtomicBool::new(false)),
-            lean_events: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    pub(super) fn with_access(mut self, epoch: u64) -> Self {
-        self.access_epoch = Some(epoch);
-        self
-    }
-
-    fn access_current(&self) -> bool {
-        self.access_epoch
-            .is_none_or(|epoch| super::SUPERVISOR.access.current() == epoch)
-    }
-
-    pub(super) fn bridge_instance_id(&self) -> &str {
-        &self.bridge_instance_id
-    }
-
-    pub(super) fn active_flag(&self) -> Arc<AtomicBool> {
-        self.active.clone()
-    }
-}
-
-pub(super) fn new_reply_slots() -> ReplySlots {
-    Arc::new(Mutex::new(HashMap::new()))
-}
-
-/// How long a completed single-flight response stays cached for retrying
-/// clients (matches the planned NATS duplicate window). Tests shrink it to
-/// milliseconds so expiry can be observed without a ten-minute wait.
-fn reply_slot_ttl() -> Duration {
-    #[cfg(test)]
-    const TTL: Duration = Duration::from_millis(500);
-    #[cfg(not(test))]
-    const TTL: Duration = Duration::from_secs(600);
-    TTL
-}
-
-tokio::task_local! {
-    static REPLY_CAPTURE: Arc<Mutex<Option<Vec<u8>>>>;
-}
-
-tokio::task_local! {
-    /// Whether the connection serving this command accepts gzipped replies.
-    /// A task-local keeps the flag on the reply path without threading it
-    /// through every handler between the command loop and `reply`.
-    static REPLY_GZIP: bool;
-}
-
-/// Read the reply-encoding permission, defaulting to off outside a command.
-fn reply_gzip_allowed() -> bool {
-    REPLY_GZIP.try_with(|allowed| *allowed).unwrap_or(false)
+    bridge: String,
+) -> HandshakeState {
+    super::SUPERVISOR.new_handshake_state(creds, confirmed, bridge)
 }
 
 #[cfg(test)]
-pub(super) async fn command_loop(
-    client: async_nats::Client,
-    pair_id: String,
-    reply_slots: ReplySlots,
-    handshake: HandshakeState,
-) {
-    command_loop_with_ready(client, pair_id, reply_slots, handshake, None).await;
+use crate::remote_host::business::*;
+#[cfg(test)]
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+#[cfg(test)]
+use future_remote_protocol::handshake::{handshake_transcript, HandshakeTranscript};
+#[cfg(test)]
+use future_remote_server::commands::{command_loop, test_support};
+#[cfg(test)]
+use test_support::{
+    handle_command, handle_command_singleflight, handle_pair_handshake,
+    handle_pair_handshake_confirm, publish_reply_payload,
+};
+#[cfg(test)]
+fn remote_json_gzip_enabled() -> bool {
+    operator_gzip_enabled()
 }
-
-pub(super) async fn command_loop_with_ready(
-    client: async_nats::Client,
-    pair_id: String,
-    reply_slots: ReplySlots,
-    handshake: HandshakeState,
-    mut ready: Option<tokio::sync::oneshot::Sender<()>>,
-) {
-    let subject = format!("p.{pair_id}.cmd.>");
-    let queue = format!("bridge.{pair_id}");
-    let mut sub = match client.queue_subscribe(subject, queue).await {
-        Ok(sub) => sub,
-        Err(error) => {
-            if let Some(line) = COMMAND_EPISODE.record("command_subscription", error) {
-                eprintln!("{line}");
-            }
-            return;
-        }
-    };
-    if let Some(line) = COMMAND_EPISODE.recovered() {
-        eprintln!("{line}");
-    }
-    if let Some(sender) = ready.take() {
-        let _ = sender.send(());
-    }
-    while let Some(msg) = sub.next().await {
-        let client = client.clone();
-        let reply_slots = reply_slots.clone();
-        let handshake = handshake.clone();
-        let pair_id = pair_id.clone();
-        // Spawn per command: prevent a slow command from blocking others.
-        tokio::spawn(async move {
-            if handshake.secure.enabled() {
-                if !handshake.access_current() {
-                    return;
-                }
-                if msg.payload.starts_with(b"FRE2") {
-                    let Ok((plain, security)) = handshake.secure.open(&msg.subject, &msg.payload)
-                    else {
-                        return;
-                    };
-                    let mut msg = msg;
-                    msg.payload = plain.into();
-                    // Handshake messages are never business commands, even
-                    // when a paired peer sends them inside a secure record.
-                    let parsed = serde_json::from_slice::<IncomingCmd>(&msg.payload);
-                    if parsed.as_ref().is_ok_and(|c| {
-                        matches!(
-                            c.cmd_type.as_str(),
-                            "pair_handshake" | "pair_handshake_confirm"
-                        )
-                    }) {
-                        return;
-                    }
-                    if parsed.as_ref().is_ok_and(|c| c.cmd_type == "secure_ready") {
-                        // Declared capabilities are per connection: a client that
-                        // asks for the coalesced lane gets it, and every other
-                        // client keeps the legacy one-event-per-token lane.
-                        if let Ok(command) = parsed.as_ref() {
-                            apply_declared_features(&handshake, &pair_id, &command.features);
-                            record_client_identity(&pair_id, command);
-                        }
-                        let activate = || {
-                            handshake.secure.activate(&security)?;
-                            handshake.active.store(true, Ordering::Release);
-                            Ok::<_, crate::AppError>(())
-                        };
-                        let activated = match handshake.access_epoch {
-                            Some(epoch) => super::SUPERVISOR.access.commit(epoch, activate),
-                            None => Some(activate()),
-                        };
-                        if matches!(activated, Some(Ok(()))) {
-                            super::secure::REPLY
-                                .scope(security, reply(&client, &msg, true, json!({}), None))
-                                .await;
-                        }
-                        return;
-                    }
-                    if !handshake.secure.is_active(&security) {
-                        return;
-                    }
-                    super::secure::REPLY
-                        .scope(
-                            security,
-                            handle_command_singleflight(&client, msg, reply_slots, handshake),
-                        )
-                        .await;
-                } else {
-                    // Whether this is the pairing's first handshake — the one
-                    // that puts the device in front of the machine. Read before
-                    // the commit, acted on after it: the access epoch's critical
-                    // section is for deciding *whether* a result installs, and
-                    // it must stay short. Persisting a control change is file
-                    // work, and a handshake that held that lock while writing
-                    // would stall every other connection's handshake behind it.
-                    let first_handshake = !handshake.confirmed.load(Ordering::Acquire);
-                    let process = || {
-                        let result = handshake
-                            .secure
-                            .handshake(&msg.payload, &handshake.bridge_instance_id);
-                        if let Ok(data) = &result {
-                            if data.get("confirmation").is_some() {
-                                handshake.confirmed.store(true, Ordering::Release);
-                            }
-                        }
-                        result
-                    };
-                    let result = match handshake.access_epoch {
-                        Some(epoch) => match super::SUPERVISOR.access.commit(epoch, process) {
-                            Some(result) => result,
-                            None => return,
-                        },
-                        None => process(),
-                    };
-
-                    // A refused handshake is the one pairing failure that used to
-                    // leave no trace anywhere: the phone only reports that the
-                    // desktop would not authenticate, and the reason never left
-                    // this function. Log it, and send it to the phone (which has
-                    // the console a user can actually be asked to read).
-                    if let Err(error) = &result {
-                        if let Some(line) = HANDSHAKE_EPISODE.record("handshake_refused", error) {
-                            eprintln!("{line}");
-                        }
-                    }
-                    let accepted = result.is_ok();
-                    if let Some(reply) = msg.reply {
-                        let body = match result {
-                            Ok(data) => json!({ "success": true, "data": data }),
-                            Err(error) => json!({ "success": false, "error": error.to_string() }),
-                        };
-                        let _ = client
-                            .publish(reply, serde_json::to_vec(&body).expect("JSON value").into())
-                            .await;
-                    }
-                    // Control moves *after* the answer, never before it: the
-                    // claim persists to disk, and a handshake reply must not
-                    // wait on a file write. The device is already authenticated
-                    // by this point, so the few milliseconds in between belong
-                    // to nobody's authority.
-                    //
-                    // …and only when the machine is free. Connecting is not
-                    // taking over: if another device holds the machine, this
-                    // one comes up in standby, reads `control`/`holder` from its
-                    // presence, and asks its user whether to displace the
-                    // controller. The client decides that, not this machine.
-                    if first_handshake
-                        && accepted
-                        && !super::SUPERVISOR.held_by_another(&handshake.creds.pair_id)
-                    {
-                        let moved = super::SUPERVISOR.claim_control_soon(&handshake.creds.pair_id);
-                        if let Some(previous) = moved {
-                            super::publish_standby(&previous);
-                        }
-                        super::publish_control(&handshake.creds.pair_id, "active");
-                    }
-                }
-                #[cfg(test)]
-                return;
-            }
-            // Legacy protocol fixtures are retained solely for business-route
-            // unit tests. Production must never accept a v1 connection.
-            #[cfg(test)]
-            handle_command_singleflight(&client, msg, reply_slots, handshake).await;
-        });
-    }
-    if let Some(line) =
-        COMMAND_EPISODE.record("command_subscription", "subscription ended unexpectedly")
-    {
-        eprintln!("{line}");
-    }
+#[cfg(test)]
+fn record_client_identity(pair: &str, command: &IncomingCmd) {
+    super::SUPERVISOR.record_client_identity(pair, command);
 }
-
-/// Merge concurrent/retried deliveries carrying the same command id. The first
-/// delivery executes the command; followers wait for and receive the exact same
-/// response bytes. Completed responses stay cached for ten minutes, matching
-/// the planned NATS duplicate window, then expire without blocking unrelated ids.
-async fn handle_command_singleflight(
-    client: &async_nats::Client,
-    msg: async_nats::Message,
-    reply_slots: ReplySlots,
-    handshake: HandshakeState,
-) {
-    if !handshake.access_current() {
-        return;
-    }
-    let command = serde_json::from_slice::<IncomingCmd>(&msg.payload).ok();
-    // Chunk reads are already idempotent against the bounded immutable cache.
-    // Do not retain a second copy of every chunk in the ten-minute command
-    // reply cache. They still pass the normal handshake/access checks below.
-    if command
-        .as_ref()
-        .is_some_and(|cmd| cmd.cmd_type == "get_read_chunk")
-    {
-        handle_command(client, msg, handshake).await;
-        return;
-    }
-    let command_id = command.map(|cmd| cmd.id).filter(|id| !id.is_empty());
-    let Some(command_id) = command_id else {
-        handle_command(client, msg, handshake).await;
-        return;
-    };
-
-    let request: Value = serde_json::from_slice(&msg.payload).expect("command already decoded");
-    let (slot, inserted) = {
-        let mut slots = reply_slots.lock().unwrap();
-        match slots.get(&command_id) {
-            Some(slot) => (slot.clone(), false),
-            None => {
-                let slot = Arc::new(CachedReply {
-                    request: request.clone(),
-                    response: tokio::sync::Mutex::new(None),
-                });
-                slots.insert(command_id.clone(), slot.clone());
-                (slot, true)
-            }
-        }
-    };
-    if slot.request != request {
-        reply(
-            client,
-            &msg,
-            false,
-            Value::Null,
-            Some("command_id_conflict"),
-        )
-        .await;
-        return;
-    }
-
-    let mut cached = slot.response.lock().await;
-    if !handshake.access_current() {
-        return;
-    }
-    if let Some(payload) = cached.as_ref() {
-        publish_reply_payload(client, &msg, payload.clone()).await;
-        return;
-    }
-
-    let capture = Arc::new(Mutex::new(None));
-    let gzip_replies = handshake.gzip_replies.load(Ordering::Acquire);
-    REPLY_CAPTURE
-        .scope(
-            capture.clone(),
-            REPLY_GZIP.scope(gzip_replies, handle_command(client, msg, handshake)),
-        )
-        .await;
-    *cached = capture.lock().unwrap().clone();
-    if inserted {
-        let slots = reply_slots.clone();
-        let id = command_id.clone();
-        let expected = slot.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(reply_slot_ttl()).await;
-            let mut slots = slots.lock().unwrap();
-            if slots
-                .get(&id)
-                .is_some_and(|current| Arc::ptr_eq(current, &expected))
-            {
-                slots.remove(&id);
-            }
-        });
-    }
-}
-
-// SECURITY: NATS admits this bridge with a short-lived user JWT whose server-
-// enforced ACL is scoped to this pair, and every non-handshake command is gated
-// on a completed pairing handshake above. Only `approval_decision` additionally
-// re-checks per-session ownership (that an approval belongs to the requesting
-// session); the other handlers trust the pair-scoped ACL because the paired
-// device is authorized to operate on all of this desktop's sessions.
-async fn handle_command(
-    client: &async_nats::Client,
-    msg: async_nats::Message,
-    handshake: HandshakeState,
-) {
-    // Every handler below reads `remote_host::lean::enabled()` to decide whether
-    // to trim a reply to the lean feed. That is this command's connection's
-    // declaration — not the machine's, which now has several.
-    let lean = handshake.lean_events.load(Ordering::Acquire);
-    crate::remote_host::lean::in_request(lean, handle_command_inner(client, msg, handshake)).await;
-}
-
-async fn handle_command_inner(
-    client: &async_nats::Client,
-    msg: async_nats::Message,
-    handshake: HandshakeState,
-) {
-    if !handshake.access_current() {
-        return;
-    }
-    let cmd: IncomingCmd = match serde_json::from_slice(&msg.payload) {
-        Ok(cmd) => cmd,
-        Err(e) => {
-            reply(
-                client,
-                &msg,
-                false,
-                Value::Null,
-                Some(&format!("Failed to parse command JSON: {e}")),
-            )
-            .await;
-            return;
-        }
-    };
-
-    let handshake_command = matches!(
-        cmd.cmd_type.as_str(),
-        "pair_handshake" | "pair_handshake_confirm"
-    );
-    if !handshake_command && !handshake.active.load(Ordering::Acquire) {
-        reply(
-            client,
-            &msg,
-            false,
-            Value::Null,
-            Some("pairing_handshake_required"),
-        )
-        .await;
-        return;
-    }
-
-    if !handshake_command
-        && !cmd.bridge_instance_id.is_empty()
-        && cmd.bridge_instance_id != handshake.bridge_instance_id
-    {
-        reply(
-            client,
-            &msg,
-            false,
-            Value::Null,
-            Some("remote_access_changed"),
-        )
-        .await;
-        return;
-    }
-
-    // Control arbitration happens here, on the machine the two devices are
-    // fighting over — not on the platform, which has no downlink and could only
-    // be asked about the decision after the fact. A standby device's business
-    // commands stop before they reach any handler, which is what makes the
-    // moment of takeover clean: nothing already in flight can still execute.
-    //
-    // The exceptions are the commands a standby device legitimately speaks:
-    // asking to take over, reading its own state, unpairing itself, and the
-    // pairing handshakes that establish who it even is.
-    if !handshake_command
-        && !matches!(
-            cmd.cmd_type.as_str(),
-            "takeover" | "get_presence" | "unpair"
-        )
-        && !super::SUPERVISOR.in_control(&handshake.creds.pair_id)
-    {
-        reply(client, &msg, false, Value::Null, Some("superseded")).await;
-        return;
-    }
-    match cmd.cmd_type.as_str() {
-        "pair_handshake" => {
-            handle_pair_handshake(client, &msg, &cmd, &handshake).await;
-        }
-        "pair_handshake_confirm" => {
-            handle_pair_handshake_confirm(client, &msg, &cmd, &handshake).await;
-        }
-        // A device asking for the machine back.
-        //
-        // This is the only path by which a *connected* device takes control
-        // from another, and it exists because the alternative — reclaiming on
-        // reconnect — makes two devices evict each other forever. The previous
-        // controller is told `standby` on its own channel below, and its client
-        // stops reconnecting until its user asks again.
-        "takeover" => {
-            let moved = super::SUPERVISOR.claim_control_soon(&handshake.creds.pair_id);
-            reply(
-                client,
-                &msg,
-                true,
-                json!({
-                    "control": "active",
-                    // Whether this call changed anything. A device that was
-                    // already in control gets `false` and must not read it as
-                    // a refusal.
-                    "changed": moved.is_some(),
-                    "previous": moved,
-                }),
-                None,
-            )
-            .await;
-            if let Some(previous) = moved {
-                super::publish_standby(&previous);
-            }
-        }
-        // Presence is normally pushed on every heartbeat. A client that
-        // subscribes after the latest heartbeat would otherwise look offline
-        // until the next tick because core NATS subscriptions do not replay old
-        // messages.
-        "get_presence" => {
-            let pair_id = msg
-                .subject
-                .strip_prefix("p.")
-                .and_then(|subject| subject.split('.').next())
-                .unwrap_or_default();
-            // A standby device gets its own liveness and nothing else. The
-            // catalogue is this machine's conversations, and handing the list
-            // to every paired device would make "only one controls" a
-            // statement about commands alone.
-            let payload = if super::SUPERVISOR.in_control(pair_id) {
-                super::build_presence_payload(pair_id, &handshake.bridge_instance_id)
-            } else {
-                super::light_presence_payload(pair_id, &handshake.bridge_instance_id)
-            };
-            reply(client, &msg, true, payload, None).await;
-        }
-        // A phone-initiated unpair first reaches the desktop over the existing
-        // authenticated command channel. Acknowledge before stopping the
-        // bridge, then perform the destructive work in a separate task so the
-        // requester can clear itself without waiting for token expiry.
-        //
-        // It unpairs *this* device only: with several devices sharing a machine,
-        // one of them asking to leave is not a request to unpair the others.
-        "unpair" => {
-            let pair_id = handshake.creds.pair_id.clone();
-            reply(client, &msg, true, json!({}), None).await;
-            crate::runtime::spawn(async move {
-                if !handshake.access_current() {
-                    return;
-                }
-                if let Err(error) = super::unpair_slot(&pair_id).await {
-                    eprintln!("remote: phone-initiated unpair failed: {error}");
-                }
-            });
-        }
-        _ => {
-            handshake
-                .host
-                .execute(cmd, &NatsReply { client, msg: &msg })
-                .await;
-        }
-    }
-}
-
-const HANDSHAKE_PROTOCOL_VERSION: u32 = 1;
-
-/// Inputs bound into the pairing handshake transcript. Every field is an
-/// `&str`, so a positional call could silently transpose two of them and sign
-/// a different transcript — named fields make that a compile error instead.
-struct HandshakeTranscript<'a> {
-    pair_id: &'a str,
-    desktop_id: &'a str,
-    desktop_public_key: &'a str,
-    bridge_instance_id: &'a str,
-    device_id: &'a str,
-    client_public_key: &'a str,
-    client_nonce: &'a str,
-    desktop_nonce: &'a str,
-}
-
-fn handshake_transcript(parts: &HandshakeTranscript<'_>) -> String {
-    [
-        "futureos-remote-handshake-v1",
-        parts.pair_id,
-        parts.desktop_id,
-        parts.desktop_public_key,
-        parts.bridge_instance_id,
-        parts.device_id,
-        parts.client_public_key,
-        parts.client_nonce,
-        parts.desktop_nonce,
-    ]
-    .join("\n")
-}
-
-async fn handle_pair_handshake(
-    client: &async_nats::Client,
-    msg: &async_nats::Message,
-    cmd: &IncomingCmd,
-    state: &HandshakeState,
-) {
-    // The desktop key pair is derived once: a bad seed fails here, and a
-    // successfully parsed pair always signs, so no later fallible step.
-    let key_pair = match nkeys::KeyPair::from_seed(&state.creds.nkey_seed) {
-        Ok(key_pair) => key_pair,
-        Err(error) => {
-            reply(client, msg, false, Value::Null, Some(&error.to_string())).await;
-            return;
-        }
-    };
-    let desktop_public_key = key_pair.public_key();
-    // Validate BEFORE deactivating commands: a garbage handshake must not lock
-    // the bridge (active=false gates every command) — only a well-formed
-    // handshake from a party that holds the pair's identity may suspend the
-    // current session while it re-authenticates.
-    //
-    // Each field is checked by name so a refusal says *which* one disagreed. A
-    // client holding a QR for an identity this bridge no longer serves fails
-    // the two `expected_desktop_*` checks, and that is the only place either
-    // side can see it: the client just reports that the desktop would not
-    // authenticate, and the desktop used to report nothing at all.
-    let invalid: Option<&str> = if cmd.protocol_version != HANDSHAKE_PROTOCOL_VERSION {
-        Some("protocol_version")
-    } else if cmd.pair_id != state.creds.pair_id {
-        Some("pair_id")
-    } else if cmd.expected_desktop_id != state.creds.desktop_id {
-        Some("desktop_id")
-    } else if cmd.expected_desktop_public_key != desktop_public_key {
-        Some("desktop_public_key")
-    } else if !cmd.device_id.starts_with("dev_") {
-        Some("device_id")
-    } else if !cmd.client_public_key.starts_with('U') {
-        Some("client_public_key")
-    } else if !(16..=256).contains(&cmd.client_nonce.len()) {
-        Some("client_nonce")
-    } else {
-        None
-    };
-    if let Some(field) = invalid {
-        if let Some(line) = HANDSHAKE_EPISODE.record(
-            "pairing_identity_mismatch",
-            format!("{field} does not match this bridge's pairing"),
-        ) {
-            eprintln!("{line}");
-        }
-        reply(
-            client,
-            msg,
-            false,
-            Value::Null,
-            Some("pairing_identity_mismatch"),
-        )
-        .await;
-        return;
-    }
-
-    // A candidate challenge must not revoke the already authenticated peer.
-
-    let desktop_nonce = nkeys::KeyPair::new_user().public_key();
-    let transcript = handshake_transcript(&HandshakeTranscript {
-        pair_id: &state.creds.pair_id,
-        desktop_id: &state.creds.desktop_id,
-        desktop_public_key: &desktop_public_key,
-        bridge_instance_id: &state.bridge_instance_id,
-        device_id: &cmd.device_id,
-        client_public_key: &cmd.client_public_key,
-        client_nonce: &cmd.client_nonce,
-        desktop_nonce: &desktop_nonce,
-    });
-    let signature = URL_SAFE_NO_PAD.encode(
-        key_pair
-            .sign(transcript.as_bytes())
-            .expect("a seed-derived KeyPair always signs"),
-    );
-    {
-        let mut pending = state.pending.lock().unwrap();
-        pending.retain(|_, value| value.created_at.elapsed() < Duration::from_secs(30));
-        if pending.len() >= 32 {
-            return;
-        }
-        pending.insert(
-            desktop_nonce.clone(),
-            PendingHandshake {
-                transcript,
-                created_at: std::time::Instant::now(),
-                device_id: cmd.device_id.clone(),
-                client_public_key: cmd.client_public_key.clone(),
-            },
-        );
-    }
-    reply(
-        client,
-        msg,
-        true,
-        json!({
-            "protocolVersion": HANDSHAKE_PROTOCOL_VERSION,
-            "pairId": state.creds.pair_id,
-            "desktopId": state.creds.desktop_id,
-            "desktopPublicKey": desktop_public_key,
-            "bridgeInstanceId": state.bridge_instance_id,
-            "deviceId": cmd.device_id,
-            "clientPublicKey": cmd.client_public_key,
-            "clientNonce": cmd.client_nonce,
-            "desktopNonce": desktop_nonce,
-            "desktopSignature": signature,
-        }),
-        None,
-    )
-    .await;
-}
-
-async fn handle_pair_handshake_confirm(
-    client: &async_nats::Client,
-    msg: &async_nats::Message,
-    cmd: &IncomingCmd,
-    state: &HandshakeState,
-) {
-    let pending = state.pending.lock().unwrap().remove(&cmd.desktop_nonce);
-    let Some(pending) = pending else {
-        reply(
-            client,
-            msg,
-            false,
-            Value::Null,
-            Some("pairing_challenge_expired"),
-        )
-        .await;
-        return;
-    };
-    if !state.access_current()
-        || pending.created_at.elapsed() >= Duration::from_secs(30)
-        || cmd.device_id != pending.device_id
-    {
-        reply(
-            client,
-            msg,
-            false,
-            Value::Null,
-            Some("pairing_identity_mismatch"),
-        )
-        .await;
-        return;
-    }
-    let signature = URL_SAFE_NO_PAD.decode(&cmd.client_signature).ok();
-    let verified = signature
-        .and_then(|signature| {
-            nkeys::KeyPair::from_public_key(&pending.client_public_key)
-                .ok()
-                .map(|key| {
-                    key.verify(pending.transcript.as_bytes(), &signature)
-                        .is_ok()
-                })
-        })
-        .unwrap_or(false);
-    if !verified {
-        reply(
-            client,
-            msg,
-            false,
-            Value::Null,
-            Some("pairing_signature_invalid"),
-        )
-        .await;
-        return;
-    }
-    // Whether this is the pairing's *first* confirmation. Only that one takes
-    // control: a client that replays its pairing handshake on a reconnect is
-    // reconnecting, not asking for the machine — and if a replay could claim,
-    // the two devices would evict each other forever.
-    let first_confirmation = !state.confirmed.load(Ordering::Acquire);
-    let confirm = || -> Result<(), crate::AppError> {
-        if !state.confirmed.load(Ordering::Acquire) {
-            crate::remote::pairing::save_creds(&state.creds)?;
-            state.confirmed.store(true, Ordering::Release);
-        }
-        state.active.store(true, Ordering::Release);
-        Ok(())
-    };
-    let committed = match state.access_epoch {
-        Some(epoch) => super::SUPERVISOR.access.commit(epoch, confirm),
-        None => Some(confirm()),
-    };
-    match committed {
-        None => return,
-        Some(Err(error)) => {
-            reply(client, msg, false, Value::Null, Some(&error.to_string())).await;
-            return;
-        }
-        Some(Ok(())) => {}
-    }
-    // Pairing this device is *not* the act that puts it in front of the machine
-    // when another device already holds it. The user is the one who decides to
-    // displace a controller, and the client they are looking at is where that
-    // decision is made: this device comes up in standby, its presence names the
-    // current holder, and its own "take over" is what moves the machine. Making
-    // the mere handshake claim would silently disconnect whatever the other
-    // person was in the middle of.
-    reply(
-        client,
-        msg,
-        true,
-        json!({
-            "confirmed": true,
-            "pairId": state.creds.pair_id,
-            "desktopId": state.creds.desktop_id,
-            "bridgeInstanceId": state.bridge_instance_id,
-            "deviceId": cmd.device_id,
-            "desktopNonce": cmd.desktop_nonce,
-            "features": ["file_transfer_v1", "file_download_v2", "approval_tier_v1", "continue_run_v1", "prompt_receipt_v1", "session_files_v1", "skills_v1", "selective_events_v1", "workspace_pinning_v1", "workspace_create_v1", "desktop_settings_v1", "skill_management_v1", "compaction_v1", "provider_management_v1", "fork_v1", "tasks_v1", "task_deps_v1"],
-            // A device that is not in control gets its own liveness and nothing
-            // else: the conversation list belongs to the machine, and this reply
-            // is also what a replayed handshake receives. `control` and `holder`
-            // are how it learns whether it may drive at all, and whom it would
-            // displace.
-            "presence": if super::SUPERVISOR.in_control(&state.creds.pair_id) {
-                super::build_presence_payload(&state.creds.pair_id, &state.bridge_instance_id)
-            } else {
-                super::light_presence_payload(&state.creds.pair_id, &state.bridge_instance_id)
-            },
-        }),
-        None,
-    )
-    .await;
-    // After the answer, for the same reason as the secure handshake: a claim
-    // writes to disk, and no reply may wait on that. And like the secure path,
-    // only a machine nobody holds is claimed by connecting to it.
-    if first_confirmation && !super::SUPERVISOR.held_by_another(&state.creds.pair_id) {
-        let moved = super::SUPERVISOR.claim_control_soon(&state.creds.pair_id);
-        if let Some(previous) = moved {
-            super::publish_standby(&previous);
-        }
-    }
-}
-
-/// Send a unified request-reply response (in `RpcResponse` shape), and flush to ensure timely delivery.
-async fn reply(
-    client: &async_nats::Client,
-    msg: &async_nats::Message,
-    success: bool,
-    data: Value,
-    error: Option<&str>,
-) {
-    if msg.reply.is_none() {
-        return;
-    }
-    let body = json!({
-        "type": "response",
-        "success": success,
-        "data": data,
-        "error": error,
-    });
-    // Plain JSON is the default. When FUTURE_REMOTE_JSON_GZIP explicitly opts
-    // in, only large replies that actually shrink are gzip-compressed; mobile
-    // recognizes standard gzip magic bytes without a negotiation round.
-    let payload = encode_reply_payload(&body);
-    let _ = REPLY_CAPTURE.try_with(|capture| {
-        *capture.lock().unwrap() = Some(payload.clone());
-    });
-    publish_reply_payload(client, msg, payload).await;
-}
-
-fn encode_reply_payload(body: &Value) -> Vec<u8> {
-    encode_reply_payload_with_gzip(body, remote_json_gzip_enabled())
-}
-
-pub(crate) fn encode_reply_payload_with_gzip(body: &Value, gzip_enabled: bool) -> Vec<u8> {
-    let plain = serde_json::to_vec(body).expect("a response Value always serializes");
-    // Enforce the decoded JSON budget too: compressing a larger reply would
-    // still be rejected by Mobile's decompression guard. Negotiated read pages
-    // reach here as small chunks; legacy/other oversized replies fail explicitly
-    // rather than being dropped by NATS and making the client time out.
-    if plain.len() > future_remote_crypto::MAX_PLAINTEXT {
-        return serde_json::to_vec(&json!({
-            "type": "response", "success": false, "data": null,
-            "error": "remote_reply_too_large"
-        }))
-        .expect("size error serializes");
-    }
-    if !gzip_enabled || plain.len() < REMOTE_JSON_GZIP_THRESHOLD_BYTES {
-        return plain;
-    }
-
-    let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
-    if encoder.write_all(&plain).is_err() {
-        return plain;
-    }
-    let Ok(compressed) = encoder.finish() else {
-        return plain;
-    };
-    if compressed.len() >= plain.len() {
-        return plain;
-    }
-    compressed
-}
-
-async fn publish_reply_payload(
-    client: &async_nats::Client,
-    msg: &async_nats::Message,
-    payload: Vec<u8>,
-) {
-    let Some(reply_subject) = msg.reply.clone() else {
-        return;
-    };
-    let payload = match super::secure::REPLY.try_with(|security| security.seal(&payload)) {
-        Ok(Ok(wire)) => wire,
-        Ok(Err(_)) => return,
-        Err(_) => {
-            #[cfg(not(test))]
-            return;
-            #[cfg(test)]
-            {
-                payload
-            }
-        }
-    };
-    if let Err(error) = client.publish(reply_subject, payload.into()).await {
-        eprintln!("FutureOS: failed to publish remote command reply: {error}");
-        return;
-    }
-    if let Err(error) = client.flush().await {
-        eprintln!("FutureOS: failed to flush remote command reply: {error}");
+#[cfg(test)]
+struct BorrowedBusiness(&'static dyn future_remote_server::services::BusinessHost);
+#[cfg(test)]
+impl future_remote_server::services::BusinessHost for BorrowedBusiness {
+    fn execute<'a>(
+        &'a self,
+        command: IncomingCmd,
+        reply: &'a dyn future_remote_server::services::ReplySink,
+    ) -> futures::future::BoxFuture<'a, ()> {
+        self.0.execute(command, reply)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::test_support::{jwt, now_secs, unique};
-    use flate2::read::GzDecoder;
-    use std::io::Read;
-
-    #[test]
-    fn oversized_reply_is_an_explicit_bounded_error_even_with_gzip() {
-        let body = json!({"success": true, "data": "x".repeat(2 * 1024 * 1024)});
-        for gzip in [false, true] {
-            let bytes = encode_reply_payload_with_gzip(&body, gzip);
-            assert!(bytes.len() < 1024);
-            let value: Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(value["success"], false);
-            assert_eq!(value["error"], "remote_reply_too_large");
-        }
-    }
 
     #[test]
     fn model_identity_keeps_raw_slashes_and_distinguishes_providers() {
@@ -1092,30 +89,6 @@ mod tests {
             Some("p/model")
         );
         assert_eq!(qualified_model_id("", "p"), None);
-    }
-
-    #[test]
-    fn remote_json_gzip_is_automatic_thresholded_and_standard() {
-        let body = json!({ "entries": ["repeated history ".repeat(8_000)] });
-        let plain = serde_json::to_vec(&body).unwrap();
-
-        let encoded = encode_reply_payload_with_gzip(&body, true);
-        assert!(encoded.starts_with(&[0x1f, 0x8b]), "expected standard gzip");
-        assert!(
-            encoded.len() < plain.len() / 4,
-            "expected useful compression"
-        );
-        let mut decoder = GzDecoder::new(encoded.as_slice());
-        let mut decoded = Vec::new();
-        decoder.read_to_end(&mut decoded).unwrap();
-        assert_eq!(decoded, plain);
-
-        let small = json!({ "ok": true });
-        let encoded_small = encode_reply_payload_with_gzip(&small, true);
-        assert_eq!(encoded_small, serde_json::to_vec(&small).unwrap());
-
-        let disabled = encode_reply_payload_with_gzip(&body, false);
-        assert_eq!(disabled, plain, "gzip must remain opt-in");
     }
 
     /// The operator override is what lets the wire path be exercised without a
@@ -1171,580 +144,6 @@ mod tests {
         );
         restore(&previous);
     }
-
-    /// The capability — not the process — decides, so an older client on the
-    /// same pairing keeps receiving plain JSON. It has no magic-byte detection
-    /// and would fail to parse a compressed reply.
-    #[test]
-    fn gzip_follows_the_per_connection_capability() {
-        let body = json!({ "entries": ["repeated history ".repeat(8_000)] });
-        let plain = serde_json::to_vec(&body).unwrap();
-
-        let key_pair = nkeys::KeyPair::new_user();
-        let handshake = HandshakeState::new(
-            crate::remote::pairing::PairingCreds {
-                handshake_version: 1,
-                secure: None,
-                pair_id: format!("pair_{}", unique("gzip")),
-                desktop_id: format!("desktop_{}", unique("gzip")),
-                nkey_seed: key_pair.seed().unwrap().to_string(),
-                user_jwt: jwt(now_secs() + 3600),
-                nats_url: "nats://127.0.0.1:1".to_string(),
-                nats_ws_url: "ws://127.0.0.1:1".to_string(),
-                jwt_expires_at: now_secs() + 3600,
-                control_url: None,
-            },
-            Arc::new(AtomicBool::new(true)),
-            "bridge_test".to_string(),
-        );
-        assert!(
-            !handshake.gzip_replies.load(Ordering::Acquire),
-            "a connection that never declares the capability is not gzipped"
-        );
-
-        // A command served on a connection that declared it is compressed.
-        let declared = REPLY_GZIP.sync_scope(true, || encode_reply_payload(&body));
-        assert!(declared.starts_with(&[0x1f, 0x8b]));
-        assert!(declared.len() < plain.len() / 4);
-
-        // A connection that did not declare it still gets plain JSON, even
-        // while another connection on this process receives gzip.
-        let silent = REPLY_GZIP.sync_scope(false, || encode_reply_payload(&body));
-        assert_eq!(silent, plain);
-
-        // Outside any command there is no permission: default to plain JSON.
-        assert!(!reply_gzip_allowed());
-        assert_eq!(encode_reply_payload(&body), plain);
-    }
-
-    /// `build_transport` clears the permission on every new connection so an
-    /// older client on the same pairing cannot inherit the previous client's
-    /// gzip request. That reset is only meaningful if it reaches the copy the
-    /// command loop holds, so pin the shared-Arc behaviour.
-    #[test]
-    fn clearing_the_capability_reaches_the_loop_copy() {
-        let key_pair = nkeys::KeyPair::new_user();
-        let handshake = HandshakeState::new(
-            crate::remote::pairing::PairingCreds {
-                handshake_version: 1,
-                secure: None,
-                pair_id: format!("pair_{}", unique("stale")),
-                desktop_id: format!("desktop_{}", unique("stale")),
-                nkey_seed: key_pair.seed().unwrap().to_string(),
-                user_jwt: jwt(now_secs() + 3600),
-                nats_url: "nats://127.0.0.1:1".to_string(),
-                nats_ws_url: "ws://127.0.0.1:1".to_string(),
-                jwt_expires_at: now_secs() + 3600,
-                control_url: None,
-            },
-            Arc::new(AtomicBool::new(true)),
-            "bridge_test".to_string(),
-        );
-        // A declaring client connects and turns gzip on.
-        handshake.gzip_replies.store(true, Ordering::Release);
-        // The loop receives a clone, exactly as `build_transport` hands it over.
-        let loop_copy = handshake.clone();
-        assert!(loop_copy.gzip_replies.load(Ordering::Acquire));
-        // The next connection clears it before anything can declare otherwise.
-        handshake.gzip_replies.store(false, Ordering::Release);
-        assert!(
-            !loop_copy.gzip_replies.load(Ordering::Acquire),
-            "the reset must be visible to a loop holding a clone"
-        );
-        assert!(!REPLY_GZIP
-            .sync_scope(loop_copy.gzip_replies.load(Ordering::Acquire), || {
-                encode_reply_payload(&json!({ "entries": ["x".repeat(40_000)] }))
-            })
-            .starts_with(&[0x1f, 0x8b]));
-    }
-
-    #[test]
-    fn handshake_transcript_binds_both_device_identities_and_nonces() {
-        let transcript = handshake_transcript(&HandshakeTranscript {
-            pair_id: "pair_1",
-            desktop_id: "desktop_1",
-            desktop_public_key: "UDESKTOP",
-            bridge_instance_id: "bridge_1",
-            device_id: "dev_1",
-            client_public_key: "UCLIENT",
-            client_nonce: "client_nonce",
-            desktop_nonce: "desktop_nonce",
-        });
-        assert_eq!(
-            transcript,
-            "futureos-remote-handshake-v1\npair_1\ndesktop_1\nUDESKTOP\nbridge_1\ndev_1\nUCLIENT\nclient_nonce\ndesktop_nonce"
-        );
-        assert_ne!(
-            transcript,
-            handshake_transcript(&HandshakeTranscript {
-                pair_id: "pair_1",
-                desktop_id: "desktop_other",
-                desktop_public_key: "UDESKTOP",
-                bridge_instance_id: "bridge_1",
-                device_id: "dev_1",
-                client_public_key: "UCLIENT",
-                client_nonce: "client_nonce",
-                desktop_nonce: "desktop_nonce",
-            })
-        );
-    }
-
-    #[test]
-    fn handshake_signature_rejects_tampered_transcript() {
-        let desktop = nkeys::KeyPair::new_user();
-        let transcript = handshake_transcript(&HandshakeTranscript {
-            pair_id: "pair_1",
-            desktop_id: "desktop_1",
-            desktop_public_key: &desktop.public_key(),
-            bridge_instance_id: "bridge_1",
-            device_id: "dev_1",
-            client_public_key: "UCLIENT",
-            client_nonce: "client_nonce",
-            desktop_nonce: "desktop_nonce",
-        });
-        let signature = desktop.sign(transcript.as_bytes()).unwrap();
-        let verifier = nkeys::KeyPair::from_public_key(&desktop.public_key()).unwrap();
-        assert!(verifier.verify(transcript.as_bytes(), &signature).is_ok());
-        assert!(verifier
-            .verify(format!("{transcript}_tampered").as_bytes(), &signature)
-            .is_err());
-    }
-
-    fn text_message(text: &str) -> Value {
-        json!({ "role": "assistant", "blocks": [{"kind":"text","text":text}] })
-    }
-
-    #[test]
-    fn paginate_small_list_is_one_page() {
-        let messages = vec![text_message("a"), text_message("b"), text_message("c")];
-        let page = paginate_messages(messages, 0, 100);
-        assert_eq!(page["messages"].as_array().unwrap().len(), 3);
-        assert_eq!(page["offset"], 0);
-        assert_eq!(page["nextOffset"], 3);
-        assert_eq!(page["total"], 3);
-        assert_eq!(page["hasMore"], false);
-    }
-
-    #[test]
-    fn paginate_respects_limit_and_cursors() {
-        let messages = vec![text_message("a"), text_message("b"), text_message("c")];
-        let first = paginate_messages(messages.clone(), 0, 2);
-        assert_eq!(first["messages"].as_array().unwrap().len(), 2);
-        assert_eq!(first["nextOffset"], 2);
-        assert_eq!(first["hasMore"], true);
-        let second = paginate_messages(messages, 2, 2);
-        assert_eq!(second["messages"].as_array().unwrap().len(), 1);
-        assert_eq!(second["nextOffset"], 3);
-        assert_eq!(second["hasMore"], false);
-    }
-
-    #[test]
-    fn paginate_bounds_by_byte_budget() {
-        // ~100KB messages; a 512KB budget fits ~5 of them, forcing a second page.
-        let big = "x".repeat(100 * 1024);
-        let messages: Vec<Value> = (0..6).map(|_| text_message(&big)).collect();
-        let page = paginate_messages(messages, 0, 100);
-        let arr = page["messages"].as_array().unwrap();
-        let arr_len = arr.len();
-        assert!(
-            arr_len < 6,
-            "expected byte budget to cap the page, got {arr_len}"
-        );
-        assert_eq!(page["hasMore"], true);
-        // The page itself stays comfortably under the 1MB NATS payload cap.
-        let size = serde_json::to_vec(&page).map(|b| b.len()).unwrap();
-        assert!(size < 1024 * 1024, "page too large: {size}");
-    }
-
-    #[test]
-    fn backward_history_budget_defers_complete_oldest_exchanges() {
-        let big = "x".repeat(220 * 1024);
-        let mut entries = Vec::new();
-        for index in 0..3 {
-            entries.push(json!({
-                "id": format!("u{index}"),
-                "role": "user",
-                "blocks":[{"kind":"text","text":format!("q{index}")}]
-            }));
-            entries.push(json!({
-                "id": format!("a{index}"),
-                "role": "assistant",
-                "blocks":[{"kind":"text","text":big.clone()}]
-            }));
-        }
-        let page = prepare_backward_entries_page(
-            "missing-session",
-            json!({ "entries": entries, "hasMore": false, "nextOffset": 10 }),
-        );
-        let rows = page["entries"].as_array().unwrap();
-        assert_eq!(rows.first().and_then(|row| row["id"].as_str()), Some("u1"));
-        assert_eq!(page["nextOffset"], 12);
-        assert_eq!(page["hasMore"], true);
-        assert!(serde_json::to_vec(rows).unwrap().len() <= BACKWARD_HISTORY_PAGE_BYTES);
-    }
-
-    #[test]
-    fn paginate_caps_and_includes_oversized_message() {
-        // A message larger than the page budget is content-capped (cap < budget)
-        // so it fits, and the page never exceeds the payload cap.
-        let huge = "y".repeat(MESSAGES_PAGE_BYTES + 1024);
-        let messages = vec![text_message(&huge), text_message("small")];
-        let page = paginate_messages(messages, 0, 100);
-        let arr = page["messages"].as_array().unwrap();
-        assert!(!arr.is_empty());
-        // The oversized message's content was truncated to the cap.
-        let content = arr[0]["blocks"][0]["text"].as_str().unwrap();
-        assert!(content.len() <= MESSAGE_CONTENT_CAP_BYTES + 128);
-        let size = serde_json::to_vec(&page).map(|b| b.len()).unwrap();
-        assert!(size < 1024 * 1024, "page too large: {size}");
-    }
-
-    #[test]
-    fn paginate_caps_structured_tool_arguments_and_metadata() {
-        let entries = vec![json!({
-            "id":"a1","kind":"assistant","role":"assistant","runId":"r1","createdAtMs":1000,
-            "blocks":[{"kind":"text","text":"done"},{"kind":"tool_call","toolCallId":"tc-1","name":"write","arguments":{"path":"/tmp/x","content":"x".repeat(700_000)}}],
-            "metadata":{"blob":"y".repeat(700_000)}
-        })];
-        let page = paginate_items(entries, 0, 100, "entries");
-        assert!(serde_json::to_vec(&page).unwrap().len() < 1024 * 1024);
-        assert_eq!(page["entries"][0]["runId"], "r1");
-        assert_eq!(page["entries"][0]["metadata"]["remoteTruncated"], true);
-    }
-
-    #[test]
-    fn chunked_history_preserves_oversized_entries() {
-        let text = "完整内容".repeat(200_000);
-        let entries = vec![text_message(&text)];
-        let page = paginate_items_with_cap(entries, 0, 100, "entries", false);
-        assert_eq!(page["entries"][0]["blocks"][0]["text"], text);
-        assert!(page["entries"][0].get("metadata").is_none());
-    }
-
-    #[test]
-    fn chunked_backward_history_is_bounded_without_truncating_content() {
-        // A chunked backward page (the phone's first paint) must respect the
-        // page budget — an unbounded first page is pure first-paint cost — yet
-        // it may not lose content: there is no lazy body fetch to recover a
-        // truncated tool result with.
-        // One exchange must fit the budget; three must not — that is the case
-        // the byte budget exists for (a page made of many small entries).
-        let big = "完整内容".repeat(17_000); // ~200 KiB per entry, ~400 KiB per exchange
-        let mut entries = Vec::new();
-        for index in 0..3 {
-            entries.push(json!({"id": format!("u{index}"), "role": "user",
-                "blocks": [{"kind": "text", "text": format!("q{index}")}]}));
-            entries.push(json!({"id": format!("a{index}"), "role": "assistant",
-                "blocks": [{"kind": "text", "text": big.clone()}]}));
-        }
-        let page = prepare_backward_entries_page_with_cap(
-            "missing-session",
-            json!({"entries": entries, "hasMore": false, "nextOffset": 10}),
-            false,
-            true,
-        );
-        let rows = page["entries"].as_array().unwrap();
-        // The oldest exchange is deferred to the next pull, and the omitted
-        // rows stay reachable from the advanced cursor.
-        assert_eq!(rows.len(), 4);
-        assert_eq!(rows[0]["id"], "u1");
-        assert_eq!(page["nextOffset"], 12);
-        assert_eq!(page["hasMore"], true);
-        assert!(serde_json::to_vec(rows).unwrap().len() <= BACKWARD_HISTORY_PAGE_BYTES);
-        // Lossless: the surviving exchange's text is byte-identical.
-        assert_eq!(rows[3]["blocks"][0]["text"].as_str().unwrap(), big);
-        assert!(rows[3].get("metadata").is_none());
-    }
-
-    #[test]
-    fn chunked_backward_history_keeps_one_oversized_exchange() {
-        // A single exchange larger than the budget cannot be trimmed without
-        // splitting an exchange, so it is served whole rather than emptied.
-        let huge = "x".repeat(BACKWARD_HISTORY_PAGE_BYTES * 2);
-        let page = prepare_backward_entries_page_with_cap(
-            "missing-session",
-            json!({"entries": [
-                json!({"id": "u0", "role": "user", "blocks": [{"kind": "text", "text": "q"}]}),
-                json!({"id": "a0", "role": "assistant", "blocks": [{"kind": "text", "text": huge}]}),
-            ], "hasMore": false, "nextOffset": 0}),
-            false,
-            true,
-        );
-        assert_eq!(page["entries"].as_array().unwrap().len(), 2);
-        assert_eq!(page["nextOffset"], 0);
-        assert_eq!(page["hasMore"], false);
-    }
-
-    #[test]
-    fn truncate_caps_string_content() {
-        let mut message = text_message(&"z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2));
-        truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
-        let content = message["blocks"][0]["text"].as_str().unwrap();
-        assert!(content.len() <= MESSAGE_CONTENT_CAP_BYTES + 128);
-        assert!(content.ends_with('…'));
-    }
-
-    #[test]
-    fn truncate_caps_text_blocks_and_keeps_others() {
-        let mut message = json!({
-            "role": "assistant",
-            "blocks": [
-                { "kind": "text", "text": "a".repeat(MESSAGE_CONTENT_CAP_BYTES * 2) },
-                { "kind": "tool_use", "id": "t1", "name": "shell" },
-            ]
-        });
-        truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
-        let blocks = message["blocks"].as_array().unwrap();
-        // Tool block untouched.
-        assert_eq!(blocks[1]["kind"], "tool_use");
-        assert_eq!(blocks[1]["name"], "shell");
-        // Text block truncated.
-        let text = blocks[0]["text"].as_str().unwrap();
-        assert!(text.len() <= MESSAGE_CONTENT_CAP_BYTES + 8);
-    }
-
-    #[test]
-    fn truncate_leaves_small_messages_alone() {
-        let mut message = text_message("small");
-        truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
-        assert_eq!(message["blocks"][0]["text"], "small");
-    }
-
-    #[test]
-    fn truncate_skips_messages_without_a_content_field() {
-        // Oversized but with no `content` key → the let-else early-returns.
-        let mut message = json!({
-            "role": "assistant",
-            "tool_use": "z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2),
-        });
-        truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
-        assert!(message.get("blocks").is_none());
-    }
-
-    #[test]
-    fn truncate_skips_non_text_blocks_and_fits_small_ones() {
-        // A non-text block first (continue), then a small text block that fits
-        // (the remaining-subtract path), then an oversized one.
-        let mut message = json!({
-            "role": "assistant",
-            "blocks": [
-                { "kind": "tool_use", "id": "t0", "name": "shell" },
-                { "kind": "text", "text": "small" },
-                { "kind": "text", "text": "z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2) },
-            ]
-        });
-        truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
-        let blocks = message["blocks"].as_array().unwrap();
-        assert_eq!(blocks[0]["name"], "shell"); // untouched
-        assert_eq!(blocks[1]["text"], "small"); // fits, untouched
-        let text = blocks[2]["text"].as_str().unwrap();
-        assert!(text.len() <= MESSAGE_CONTENT_CAP_BYTES + 8);
-    }
-
-    #[test]
-    fn truncate_ignores_non_string_non_array_content() {
-        // Oversized but content is a scalar → the `_ => {}` arm.
-        let mut message = json!({
-            "role": "assistant",
-            "blocks": 42,
-            "pad": "z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2),
-        });
-        truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
-        assert_eq!(message["blocks"], 42);
-    }
-
-    #[test]
-    fn truncate_skips_text_blocks_without_a_string_text() {
-        // A block claiming `type: "text"` but carrying a non-string `text` is
-        // left intact (the text-block match's `_ => {}` arm).
-        let mut message = json!({
-            "role": "assistant",
-            "blocks": [
-                { "kind": "text", "text": 42 },
-                { "kind": "text", "text": "z".repeat(MESSAGE_CONTENT_CAP_BYTES * 2) },
-            ]
-        });
-        truncate_message_content(&mut message, MESSAGE_CONTENT_CAP_BYTES);
-        let blocks = message["blocks"].as_array().unwrap();
-        assert_eq!(blocks[0]["text"], 42); // untouched
-        let text = blocks[1]["text"].as_str().unwrap();
-        assert!(text.len() <= MESSAGE_CONTENT_CAP_BYTES + 8);
-    }
-
-    #[test]
-    fn byte_cut_is_char_boundary_safe() {
-        let s = "中文内容"; // multi-byte chars
-        let (end, truncated) = byte_cut(s, 4);
-        assert!(s.is_char_boundary(end));
-        assert!(truncated);
-        let (end, truncated) = byte_cut(s, 1024);
-        assert_eq!(end, s.len());
-        assert!(!truncated);
-    }
-
-    #[test]
-    fn paginate_events_pages_a_large_tail() {
-        // A multi-MB replay tail must page instead of shipping as one reply.
-        let big = "y".repeat(100 * 1024);
-        let events: Vec<Value> = (0..6)
-            .map(|i| json!({ "type": "text_chunk", "run_id": "run-1", "idx": i, "data": big }))
-            .collect();
-        let data = json!({ "runId": "run-1", "events": events });
-        let first = paginate_events(data, 0, 100);
-        let arr = first["events"].as_array().unwrap();
-        let arr_len = arr.len();
-        assert!(
-            arr_len < 6,
-            "byte budget should split the tail, got {arr_len}"
-        );
-        assert_eq!(first["runId"], "run-1");
-        assert_eq!(first["hasMore"], true);
-        let size = serde_json::to_vec(&first).map(|b| b.len()).unwrap();
-        assert!(size < 1024 * 1024, "page too large: {size}");
-    }
-
-    #[test]
-    fn paginate_events_carries_projection_on_first_page() {
-        let events = vec![json!({ "type": "text_chunk", "run_id": "run-1", "idx": 0 })];
-        let data = json!({
-            "runId": "run-1",
-            "events": events,
-            "projection": { "run_id": "run-1", "cursor": 42, "events": [] },
-        });
-        let page = paginate_events(data, 0, 100);
-        assert_eq!(page["projection"]["cursor"], 42);
-        assert_eq!(page["events"].as_array().unwrap().len(), 1);
-        assert_eq!(page["hasMore"], false);
-    }
-
-    #[test]
-    fn paginate_events_carries_truncated_flag() {
-        let events = vec![json!({ "type": "text_chunk", "run_id": "run-1", "idx": 0 })];
-        let data = json!({
-            "runId": "run-1",
-            "events": events,
-            "truncated": true,
-        });
-        let page = paginate_events(data, 0, 100);
-        assert_eq!(page["truncated"], json!(true));
-        assert_eq!(page["events"].as_array().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn paginate_events_truncates_a_single_oversized_event_data() {
-        // A single journal event larger than the relay payload cap (a multi-MB
-        // tool result) must not page out whole — the "at least one item per
-        // page" rule would otherwise ship it intact and the relay silently
-        // drops it, failing every reconcile on that session (H2 residual).
-        let huge = "z".repeat(3 * 1024 * 1024);
-        let events =
-            vec![json!({ "type": "tool_result", "run_id": "run-1", "idx": 0, "data": huge })];
-        let data = json!({ "runId": "run-1", "events": events });
-        let page = paginate_events(data, 0, 100);
-        let arr = page["events"].as_array().unwrap();
-        assert_eq!(arr.len(), 1, "the single event still pages through");
-        let data_str = arr[0]["data"].as_str().unwrap();
-        let parsed: Value = serde_json::from_str(data_str).unwrap();
-        assert_eq!(
-            parsed["_truncated"], true,
-            "oversized event data must be swapped for the _truncated marker"
-        );
-        // The page must now fit well under the relay cap.
-        let size = serde_json::to_vec(&page).map(|b| b.len()).unwrap();
-        assert!(
-            size < 1024 * 1024,
-            "page too large after truncation: {size}"
-        );
-    }
-
-    #[test]
-    fn paginate_events_keeps_oversized_tool_outcomes_matchable() {
-        // Regression: a ~503 KB test result was replaced by an anonymous marker,
-        // leaving a running row between two groups of already-completed work.
-        for event_type in ["tool_end", "tool_result"] {
-            for exit_code in [0, 1] {
-                let output = format!("{}\n[exit: {exit_code}]", "测试输出\n".repeat(50_000));
-                let payload = json!({
-                    "type": event_type, "tool_id": "large-test", "tool_name": "shell",
-                    "exit_code": exit_code, "text": output,
-                })
-                .to_string();
-                let page = paginate_events(
-                    json!({
-                        "runId": "run-1",
-                        "events": [{"type": event_type, "runId": "run-1", "idx": 1938, "data": payload}],
-                    }),
-                    0,
-                    100,
-                );
-                let event = &page["events"][0];
-                let data: Value = serde_json::from_str(event["data"].as_str().unwrap()).unwrap();
-                assert_eq!(event["idx"], 1938);
-                assert_eq!(event["type"], event_type);
-                assert_eq!(data["_truncated"], true);
-                assert_eq!(data["tool_id"], "large-test");
-                assert_eq!(data["tool_name"], "shell");
-                assert_eq!(data["exit_code"], exit_code);
-                assert!(data["text"]
-                    .as_str()
-                    .unwrap()
-                    .ends_with(&format!("[exit: {exit_code}]")));
-                assert!(serde_json::to_vec(&page).unwrap().len() < MESSAGE_CONTENT_CAP_BYTES);
-            }
-        }
-    }
-
-    #[test]
-    fn truncated_tool_data_preserves_errors_and_large_input_targets() {
-        let payload = json!({
-            "tool_call_id": "write-1", "toolName": "write", "phase": "execution",
-            "tool_args": json!({"path": "目录/文件.txt", "content": "x".repeat(300_000)}).to_string(),
-            "error": format!("permission denied{}", " ".repeat(300_000)),
-            "is_error": true,
-        }).to_string();
-        let mut event = json!({"type": "tool_end", "data": payload});
-        cap_remote_item(&mut event, MESSAGE_CONTENT_CAP_BYTES);
-        let data: Value = serde_json::from_str(event["data"].as_str().unwrap()).unwrap();
-        assert_eq!(data["tool_call_id"], "write-1");
-        assert_eq!(data["toolName"], "write");
-        assert_eq!(data["phase"], "execution");
-        assert_eq!(data["error"], "permission denied");
-        assert_eq!(data["is_error"], true);
-        assert_eq!(data["tool_args"], json!({"path": "目录/文件.txt"}));
-        assert!(serde_json::to_vec(&event).unwrap().len() < MESSAGE_CONTENT_CAP_BYTES);
-    }
-
-    #[test]
-    fn truncated_tool_data_bounds_json_escaping_and_error_aliases() {
-        let payload = json!({
-            "toolID": "tool-1", "name": "shell", "exitCode": 2,
-            "result": format!("{}\n[exit: 2]", "\u{0001}".repeat(300_000)),
-            "errorText": "错误".repeat(150_000),
-            "unknown": "x".repeat(300_000),
-        })
-        .to_string();
-        let mut event = json!({"type": "tool_result", "data": payload});
-        cap_remote_item(&mut event, MESSAGE_CONTENT_CAP_BYTES);
-        let data: Value = serde_json::from_str(event["data"].as_str().unwrap()).unwrap();
-        assert_eq!(data["toolID"], "tool-1");
-        assert_eq!(data["exitCode"], 2);
-        assert!(data["result"].as_str().unwrap().ends_with("[exit: 2]"));
-        assert!(!data["errorText"].as_str().unwrap().trim().is_empty());
-        assert!(data.get("unknown").is_none());
-        assert!(serde_json::to_vec(&event).unwrap().len() < MESSAGE_CONTENT_CAP_BYTES);
-    }
-
-    #[test]
-    fn truncate_swaps_oversized_event_data_but_keeps_small() {
-        let mut big = json!({ "type": "tool_result", "run_id": "r", "idx": 0, "data": "x".repeat(MESSAGE_CONTENT_CAP_BYTES + 10) });
-        truncate_message_content(&mut big, MESSAGE_CONTENT_CAP_BYTES);
-        let parsed: Value = serde_json::from_str(big["data"].as_str().unwrap()).unwrap();
-        assert_eq!(parsed["_truncated"], true);
-
-        let mut small = json!({ "type": "text_chunk", "run_id": "r", "idx": 1, "data": "ok" });
-        truncate_message_content(&mut small, MESSAGE_CONTENT_CAP_BYTES);
-        assert_eq!(small["data"], "ok");
-    }
 }
 
 #[cfg(test)]
@@ -1760,6 +159,9 @@ mod bridge_tests {
     use flate2::read::GzDecoder;
     use serde_json::json;
     use std::io::Read as _;
+    #[cfg(test)]
+    use std::sync::atomic::Ordering;
+    #[cfg(test)]
     use std::time::Duration;
 
     #[test]
@@ -1826,7 +228,9 @@ mod bridge_tests {
         async fn start() -> Self {
             Self::start_with(super::super::host(), None).await
         }
-        async fn start_with_host(host: &'static dyn super::super::services::BusinessHost) -> Self {
+        async fn start_with_host(
+            host: &'static dyn future_remote_server::services::BusinessHost,
+        ) -> Self {
             Self::start_with(host, None).await
         }
         /// A bridge whose connection was admitted under `access_epoch`. `None`
@@ -1834,7 +238,7 @@ mod bridge_tests {
         /// a supervised generation is admitted under, so a stale one can be
         /// built by admitting under an epoch that has since moved on.
         async fn start_with(
-            host: &'static dyn super::super::services::BusinessHost,
+            host: &'static dyn future_remote_server::services::BusinessHost,
             access_epoch: Option<u64>,
         ) -> Self {
             Self::spawn_flavour(host, access_epoch, false).await.0
@@ -1846,7 +250,7 @@ mod bridge_tests {
         }
 
         async fn spawn_flavour(
-            host: &'static dyn super::super::services::BusinessHost,
+            host: &'static dyn future_remote_server::services::BusinessHost,
             access_epoch: Option<u64>,
             secure: bool,
         ) -> (Self, String) {
@@ -1869,7 +273,7 @@ mod bridge_tests {
             } else {
                 String::new()
             };
-            let mut handshake = HandshakeState::new(
+            let mut handshake = new_handshake_state(
                 creds,
                 Arc::new(AtomicBool::new(false)),
                 format!("bridge_{}", unique("cmd")),
@@ -1877,7 +281,7 @@ mod bridge_tests {
             if let Some(epoch) = access_epoch {
                 handshake = handshake.with_access(epoch);
             }
-            handshake.host = host;
+            test_support::set_business(&mut handshake, Arc::new(BorrowedBusiness(host)));
             let reply_slots = new_reply_slots();
             let loop_handle = tokio::spawn(command_loop(
                 client.clone(),
@@ -1941,7 +345,7 @@ mod bridge_tests {
     #[tokio::test]
     async fn declared_capability_reaches_the_running_command_loop() {
         struct Big;
-        impl super::super::services::BusinessHost for Big {
+        impl future_remote_server::services::BusinessHost for Big {
             fn execute<'a>(
                 &'a self,
                 _cmd: IncomingCmd,
@@ -2014,7 +418,7 @@ mod bridge_tests {
     #[tokio::test]
     async fn protocol_routes_to_a_substitute_host_and_rejects_a_stale_access_identity() {
         struct Echo;
-        impl super::super::services::BusinessHost for Echo {
+        impl future_remote_server::services::BusinessHost for Echo {
             fn execute<'a>(
                 &'a self,
                 cmd: IncomingCmd,
@@ -2066,7 +470,7 @@ mod bridge_tests {
         let client = nats_connect(&nats).await;
         let mut creds = bridge_creds();
         creds.nkey_seed = "not-a-valid-seed".to_string();
-        let handshake = HandshakeState::new(
+        let handshake = new_handshake_state(
             creds,
             Arc::new(AtomicBool::new(false)),
             format!("bridge_{}", unique("cmd")),
@@ -2135,7 +539,7 @@ mod bridge_tests {
         init_store();
         let bridge = Bridge::start().await;
         let client_key = nkeys::KeyPair::new_user();
-        let creds = bridge.handshake.creds.clone();
+        let creds = bridge.handshake.credentials().clone();
 
         // Identity mismatch → refused.
         let mut bad = handshake_cmd(&creds, &client_key);
@@ -2154,7 +558,7 @@ mod bridge_tests {
             pair_id: &creds.pair_id,
             desktop_id: &creds.desktop_id,
             desktop_public_key: &crate::remote::pairing::public_key(&creds).unwrap(),
-            bridge_instance_id: &bridge.handshake.bridge_instance_id,
+            bridge_instance_id: bridge.handshake.bridge_instance_id(),
             device_id: "dev_test",
             client_public_key: &client_key.public_key(),
             client_nonce: "nonce-0123456789abcdef",
@@ -2201,7 +605,7 @@ mod bridge_tests {
             pair_id: &creds.pair_id,
             desktop_id: &creds.desktop_id,
             desktop_public_key: &crate::remote::pairing::public_key(&creds).unwrap(),
-            bridge_instance_id: &bridge.handshake.bridge_instance_id,
+            bridge_instance_id: bridge.handshake.bridge_instance_id(),
             device_id: "dev_test",
             client_public_key: &client_key.public_key(),
             client_nonce: "nonce-0123456789abcdef",
@@ -2265,7 +669,7 @@ mod bridge_tests {
             pair_id: &creds.pair_id,
             desktop_id: &creds.desktop_id,
             desktop_public_key: &crate::remote::pairing::public_key(&creds).unwrap(),
-            bridge_instance_id: &bridge.handshake.bridge_instance_id,
+            bridge_instance_id: bridge.handshake.bridge_instance_id(),
             device_id: "dev_test",
             client_public_key: &client_key.public_key(),
             client_nonce: "nonce-0123456789abcdef",
@@ -2301,7 +705,7 @@ mod bridge_tests {
             pair_id: &creds.pair_id,
             desktop_id: &creds.desktop_id,
             desktop_public_key: &crate::remote::pairing::public_key(&creds).unwrap(),
-            bridge_instance_id: &bridge.handshake.bridge_instance_id,
+            bridge_instance_id: bridge.handshake.bridge_instance_id(),
             device_id: "dev_test",
             client_public_key: &client_key.public_key(),
             client_nonce: "nonce-0123456789abcdef",
@@ -2336,7 +740,7 @@ mod bridge_tests {
         let _home = HomeGuard::new("cmd-device-mismatch");
         let bridge = Bridge::start().await;
         let client_key = nkeys::KeyPair::new_user();
-        let creds = bridge.handshake.creds.clone();
+        let creds = bridge.handshake.credentials().clone();
         let reply = bridge.call(handshake_cmd(&creds, &client_key)).await;
         let desktop_nonce = reply["data"]["desktopNonce"].as_str().unwrap().to_string();
         let reply = bridge
@@ -2357,14 +761,14 @@ mod bridge_tests {
         let home = HomeGuard::new("cmd-save-fail");
         let bridge = Bridge::start().await;
         let client_key = nkeys::KeyPair::new_user();
-        let creds = bridge.handshake.creds.clone();
+        let creds = bridge.handshake.credentials().clone();
         let reply = bridge.call(handshake_cmd(&creds, &client_key)).await;
         let desktop_nonce = reply["data"]["desktopNonce"].as_str().unwrap().to_string();
         let transcript = handshake_transcript(&HandshakeTranscript {
             pair_id: &creds.pair_id,
             desktop_id: &creds.desktop_id,
             desktop_public_key: &crate::remote::pairing::public_key(&creds).unwrap(),
-            bridge_instance_id: &bridge.handshake.bridge_instance_id,
+            bridge_instance_id: bridge.handshake.bridge_instance_id(),
             device_id: "dev_test",
             client_public_key: &client_key.public_key(),
             client_nonce: "nonce-0123456789abcdef",
@@ -4754,7 +3158,7 @@ mod bridge_tests {
         let client = nats_connect_once(&nats).await;
         let creds = bridge_creds();
         let pair_id = creds.pair_id.clone();
-        let handshake = HandshakeState::new(
+        let handshake = new_handshake_state(
             creds,
             Arc::new(AtomicBool::new(true)),
             format!("bridge_{}", unique("cmd")),
@@ -4794,7 +3198,7 @@ mod bridge_tests {
         // `queue_subscribe` is refused before anything reaches the broker.
         creds.pair_id = "pair with a space".to_string();
         let pair_id = creds.pair_id.clone();
-        let handshake = HandshakeState::new(
+        let handshake = new_handshake_state(
             creds,
             Arc::new(AtomicBool::new(false)),
             format!("bridge_{}", unique("cmd")),
@@ -5760,7 +4164,7 @@ mod bridge_tests {
     struct CountingHost;
     static COUNTING: CountingHost = CountingHost;
     static COUNTING_RUNS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    impl super::super::services::BusinessHost for CountingHost {
+    impl future_remote_server::services::BusinessHost for CountingHost {
         fn execute<'a>(
             &'a self,
             cmd: IncomingCmd,
@@ -5820,7 +4224,7 @@ mod bridge_tests {
         let _home = HomeGuard::new("cmd-stale-epoch-decoded");
         let nats = FakeNats::start().await;
         let client = nats_connect(&nats).await;
-        let handshake = HandshakeState::new(
+        let handshake = new_handshake_state(
             bridge_creds(),
             Arc::new(AtomicBool::new(false)),
             format!("bridge_{}", unique("cmd")),
@@ -5856,7 +4260,7 @@ mod bridge_tests {
         let _home = HomeGuard::new("cmd-epoch-contended");
         let nats = FakeNats::start().await;
         let client = nats_connect(&nats).await;
-        let handshake = HandshakeState::new(
+        let handshake = new_handshake_state(
             bridge_creds(),
             Arc::new(AtomicBool::new(false)),
             format!("bridge_{}", unique("cmd")),
@@ -5864,16 +4268,8 @@ mod bridge_tests {
         .with_access(SUPERVISOR.access.current());
         let slots = new_reply_slots();
         let request = json!({"id": "contended", "type": "get_state"});
-        let slot = Arc::new(CachedReply {
-            request: request.clone(),
-            response: tokio::sync::Mutex::new(None),
-        });
-        slots
-            .lock()
-            .unwrap()
-            .insert("contended".to_string(), slot.clone());
-        // Hold the reply slot exactly as an in-flight first delivery does.
-        let in_flight = slot.response.lock().await;
+        let response = test_support::insert_reply_slot(&slots, "contended".into(), request.clone());
+        let in_flight = response.lock().await;
         let msg = async_nats::Message {
             subject: "p.pair.cmd.rpc".into(),
             reply: Some("rep_contended".into()),
@@ -5910,7 +4306,7 @@ mod bridge_tests {
     async fn a_handshake_that_disagrees_on_one_identity_field_is_refused() {
         let _home = HomeGuard::new("cmd-identity-ladder");
         let bridge = Bridge::start().await;
-        let creds = bridge.handshake.creds.clone();
+        let creds = bridge.handshake.credentials().clone();
         let client_key = nkeys::KeyPair::new_user();
         let other_key = nkeys::KeyPair::new_user();
         for (field, value) in [
@@ -5932,7 +4328,7 @@ mod bridge_tests {
             );
         }
         assert!(
-            bridge.handshake.pending.lock().unwrap().is_empty(),
+            test_support::pending_count(&bridge.handshake) == 0,
             "a refused handshake must not leave a challenge behind"
         );
         assert!(
@@ -5950,13 +4346,13 @@ mod bridge_tests {
     async fn the_challenge_table_stops_accepting_a_flood() {
         let _home = HomeGuard::new("cmd-challenge-flood");
         let bridge = Bridge::start().await;
-        let creds = bridge.handshake.creds.clone();
+        let creds = bridge.handshake.credentials().clone();
         for _ in 0..32 {
             let key = nkeys::KeyPair::new_user();
             let reply = bridge.call(handshake_cmd(&creds, &key)).await;
             assert_eq!(reply["success"], json!(true), "got: {reply}");
         }
-        assert_eq!(bridge.handshake.pending.lock().unwrap().len(), 32);
+        assert_eq!(test_support::pending_count(&bridge.handshake), 32);
 
         let mut tap = bridge.nats.tap();
         bridge.nats.inject(
@@ -5971,7 +4367,7 @@ mod bridge_tests {
         )
         .await;
         assert_eq!(
-            bridge.handshake.pending.lock().unwrap().len(),
+            test_support::pending_count(&bridge.handshake),
             32,
             "the refused challenge must not displace one already issued"
         );
@@ -5994,7 +4390,7 @@ mod bridge_tests {
             let creds = bridge_creds();
             let client_key = nkeys::KeyPair::new_user();
             let bridge_instance_id = format!("bridge_{}", unique("cmd"));
-            let state = HandshakeState::new(
+            let state = new_handshake_state(
                 creds.clone(),
                 Arc::new(AtomicBool::new(false)),
                 bridge_instance_id.clone(),
@@ -6012,14 +4408,13 @@ mod bridge_tests {
                 client_nonce: "nonce-0123456789abcdef",
                 desktop_nonce: &desktop_nonce,
             });
-            state.pending.lock().unwrap().insert(
+            test_support::insert_pending(
+                &state,
                 desktop_nonce.clone(),
-                PendingHandshake {
-                    transcript: transcript.clone(),
-                    device_id: "dev_test".to_string(),
-                    client_public_key: client_key.public_key(),
-                    created_at: std::time::Instant::now(),
-                },
+                transcript.clone(),
+                "dev_test".into(),
+                client_key.public_key(),
+                std::time::Instant::now(),
             );
             crate::remote::pairing::clear_creds().expect("start with no persisted pairing");
 
@@ -6050,7 +4445,7 @@ mod bridge_tests {
                     .json();
                 assert_eq!(reply["success"], json!(true), "got: {reply}");
                 assert_eq!(reply["data"]["confirmed"], json!(true));
-                assert!(state.active.load(Ordering::Acquire));
+                assert!(state.active_flag().load(Ordering::Acquire));
                 assert!(
                     crate::remote::pairing::load_creds().is_some(),
                     "a confirmed pairing is persisted"
@@ -6065,7 +4460,7 @@ mod bridge_tests {
                 assert_eq!(refused["success"], json!(false), "got: {refused}");
                 assert_eq!(refused["error"], json!("pairing_identity_mismatch"));
                 assert!(
-                    !state.active.load(Ordering::Acquire),
+                    !state.active_flag().load(Ordering::Acquire),
                     "a stale epoch must not activate the bridge"
                 );
                 assert!(
@@ -6146,13 +4541,13 @@ mod bridge_tests {
 
         let nats = FakeNats::start().await;
         let client = nats_connect(&nats).await;
-        let handshake = HandshakeState::new(
+        let handshake = new_handshake_state(
             bridge_creds(),
             Arc::new(AtomicBool::new(false)),
             format!("bridge_{}", unique("cmd")),
         )
         .with_access(SUPERVISOR.access.current());
-        handshake.active.store(true, Ordering::Release);
+        handshake.active_flag().store(true, Ordering::Release);
         let reply_subject = "rep_unpair_persist".to_string();
         let msg = async_nats::Message {
             subject: "p.pair.cmd.unpair".into(),
@@ -6199,13 +4594,13 @@ mod bridge_tests {
             // never saved.
             let creds = secure_bridge_creds();
             crate::remote::pairing::save_creds(&creds).expect("seed a pairing");
-            let handshake = HandshakeState::new(
+            let handshake = new_handshake_state(
                 creds,
                 Arc::new(AtomicBool::new(false)),
                 format!("bridge_{}", unique("cmd")),
             )
             .with_access(SUPERVISOR.access.current());
-            handshake.active.store(true, Ordering::Release);
+            handshake.active_flag().store(true, Ordering::Release);
             let reply_subject = format!("rep_unpair_{label}");
             let msg = async_nats::Message {
                 subject: "p.pair.cmd.unpair".into(),
@@ -6282,56 +4677,9 @@ mod bridge_tests {
     }
 }
 
-struct NatsReply<'a> {
-    client: &'a async_nats::Client,
-    msg: &'a async_nats::Message,
-}
-impl ReplySink for NatsReply<'_> {
-    fn send<'a>(
-        &'a self,
-        success: bool,
-        data: Value,
-        error: Option<String>,
-    ) -> futures::future::BoxFuture<'a, ()> {
-        Box::pin(async move { reply(self.client, self.msg, success, data, error.as_deref()).await })
-    }
-}
-
 #[cfg(test)]
 mod client_identity_tests {
     use super::*;
-
-    /// A client that names itself is recorded, with its own kind, and the name
-    /// is trimmed.
-    #[test]
-    fn a_declared_client_is_normalised() {
-        assert_eq!(
-            declared_identity(&IncomingCmd {
-                device_kind: "  desktop  ".into(),
-                device_name: "  FutureOS Desktop (studio-imac)  ".into(),
-                ..Default::default()
-            }),
-            Some(crate::remote::types::ClientIdentity {
-                name: "FutureOS Desktop (studio-imac)".into(),
-                kind: "desktop".into(),
-            })
-        );
-    }
-
-    /// A client that names itself only in whitespace has not named itself — and
-    /// that must clear a previous description rather than keep it on screen.
-    #[test]
-    fn a_blank_name_means_did_not_say() {
-        assert_eq!(
-            declared_identity(&IncomingCmd {
-                device_name: "   ".into(),
-                device_kind: "mobile".into(),
-                ..Default::default()
-            }),
-            None
-        );
-        assert_eq!(declared_identity(&IncomingCmd::default()), None);
-    }
 
     /// Recording for a pairing with no live runtime is a no-op rather than a
     /// panic: the accessor has nothing to hand back, and a `secure_ready` that
@@ -6353,32 +4701,6 @@ mod client_identity_tests {
                 .client_identity("pair_with_no_runtime")
                 .is_none(),
             "an unknown pairing has no slot to record into"
-        );
-    }
-
-    /// The kind is optional and opaque: a client from a future version that
-    /// reports one this build has never heard of is still recorded by name, and
-    /// rendering is the UI's question.
-    #[test]
-    fn an_unknown_kind_is_kept_verbatim() {
-        assert_eq!(
-            declared_identity(&IncomingCmd {
-                device_name: "Watch".into(),
-                device_kind: "wearable".into(),
-                ..Default::default()
-            })
-            .map(|client| client.kind),
-            Some("wearable".into())
-        );
-        // And an absent kind is an empty string, not a missing one: the UI reads
-        // a kind it does not know as "a connected device".
-        assert_eq!(
-            declared_identity(&IncomingCmd {
-                device_name: "Something".into(),
-                ..Default::default()
-            })
-            .map(|client| client.kind),
-            Some(String::new())
         );
     }
 }

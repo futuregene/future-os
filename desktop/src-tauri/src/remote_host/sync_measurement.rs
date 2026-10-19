@@ -113,7 +113,7 @@ async fn handle(
             {
                 return Err("same-origin probe header required".into());
             }
-            let command: crate::remote::protocol::IncomingCmd =
+            let command: future_remote_protocol::IncomingCmd =
                 serde_json::from_slice(&bytes[header_end..header_end + size])?;
             if !matches!(
                 command.cmd_type.as_str(),
@@ -146,7 +146,7 @@ async fn handle(
             }
             (
                 "application/octet-stream",
-                crate::remote::commands::encode_reply_payload_with_gzip(&response, gzip),
+                future_remote_server::reply::encode_reply_payload_with_gzip(&response, gzip),
             )
         }
         _ => ("text/plain", b"not found".to_vec()),

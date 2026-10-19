@@ -1,5 +1,5 @@
-use crate::remote::protocol::IncomingCmd;
-use crate::remote::services::ReplySink;
+use future_remote_protocol::IncomingCmd;
+use future_remote_server::services::ReplySink;
 use serde_json::{json, Value};
 
 use super::{
@@ -349,7 +349,7 @@ mod tests {
     #[tokio::test]
     #[should_panic(expected = "handler received")]
     async fn a_command_from_another_family_is_not_answered() {
-        use crate::remote::protocol::IncomingCmd;
+        use future_remote_protocol::IncomingCmd;
         let sink = crate::remote::test_support::RecordingSink::default();
         let cmd = IncomingCmd {
             cmd_type: "get_settings".into(),

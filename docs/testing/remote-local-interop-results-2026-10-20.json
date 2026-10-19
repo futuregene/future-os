@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "sourceCommit": "f61b9563",
+  "productSourceCommit": "d6a240b439d0cfd1bd41becb90d374e6d3ae4faf",
+  "environment": {
+    "os": "macOS",
+    "architecture": "arm64",
+    "natsServer": "2.10.29",
+    "rustc": "1.97.0"
+  },
+  "command": "RUSTC_WRAPPER= CARGO_PROFILE_TEST_DEBUG=1 cargo test --offline --locked -p future-remote-interop --features network-tests --test rust_client_server -- --nocapture --test-threads=1",
+  "result": {
+    "passed": 6,
+    "failed": 4,
+    "ignored": 0,
+    "executionSeconds": 29.7,
+    "exitCode": 101,
+    "logSha256": "399cf304dce45f4cb24fd41a65f7f8393777486d3af3d74f44085ebf061247ae"
+  },
+  "failures": [
+    {
+      "test": "public_rust_roles_pair_request_publish_transfer_and_reconnect",
+      "observed": "Expected zero retained downloads after successful transfer; actual count one. Byte and hash assertions before this point passed. Reconnect/shutdown assertions after the failure were not reached.",
+      "sourceFollowUp": "Keep existing successful-download retention. Assert one retained record, then cancel through the real Client request and require zero.",
+      "runtimeRevalidated": false
+    },
+    {
+      "test": "scripted_requests::a_failed_lane_move_keeps_the_installed_lane",
+      "observed": "Lane retention and event delivery assertions passed; redundant cleanup drain failed because the connection command channel was already closed.",
+      "sourceFollowUp": "Remove the second drain of the deliberately drained session, retaining stream-owner and scripted-host shutdown.",
+      "runtimeRevalidated": false
+    },
+    {
+      "test": "scripted_requests::an_overfull_event_backlog_resumes_and_drops_the_newest",
+      "observed": "Delivered nine events for capacity eight; three buffered pushes dropped. Publisher/subscriber flushes did not establish the assumed complete preloaded burst.",
+      "sourceFollowUp": "Replace publisher/subscriber flush and yield assumptions with a marker sent after the entire burst by the same publisher and received on a separate subscription of the same receiving connection. Keep the real Client stream and all original capacity/newest-drop assertions. Runtime remains unverified.",
+      "runtimeRevalidated": false
+    },
+    {
+      "test": "stopping_a_client_finishes_download_before_a_late_host_read",
+      "observed": "deadline has elapsed; existing output does not identify the timed-out stage.",
+      "sourceFollowUp": "Add distinct error context for entering the held read, Client shutdown, caller completion and released-read completion. Underlying timeout remains unresolved.",
+      "runtimeRevalidated": false
+    }
+  ],
+  "policy": "User subsequently stopped NATS testing and kept new CI dispatches suspended. No broker/network rerun or TypeScript interoperability driver execution after that instruction.",
+  "followUpValidation": {
+    "kind": "compilation/static only",
+    "commands": [
+      "cargo fmt -p future-remote-interop --check",
+      "RUSTC_WRAPPER= cargo clippy --offline --locked -p future-remote-interop --features network-tests --all-targets -- -D warnings"
+    ],
+    "passed": true,
+    "executedNetworkTests": 0,
+    "note": "Includes the subsequent same-connection burst marker correction; static compilation does not prove runtime behavior."
+  },
+  "limitations": [
+    "This failed independent interoperability run is separate from the passing package/application unit suites.",
+    "Source corrections and better diagnostics do not establish runtime success.",
+    "TypeScript-to-Rust interoperability and same-candidate manual acceptance remain unverified.",
+    "Temporary broker download removed; no global installation retained."
+  ],
+  "brokerFreeDiagnostic": {
+    "baseCommit": "6143c36a",
+    "test": "server_host::tests::held_chunk_gate_remains_observable_and_releasable",
+    "command": "RUSTC_WRAPPER= CARGO_PROFILE_TEST_DEBUG=1 cargo test --offline --locked -p future-remote-interop --features network-tests --lib held_chunk_gate_remains_observable_and_releasable -- --nocapture",
+    "passed": 1,
+    "failed": 0,
+    "executionSeconds": 0.01,
+    "brokersStarted": 0,
+    "socketsOpened": 0,
+    "conclusion": "The isolated synchronous gate is observable and releasable on the two-worker fixture runtime. This does not reproduce or resolve the full held-download interoperability timeout."
+  }
+}

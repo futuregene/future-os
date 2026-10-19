@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "suite": "client.recovery",
+  "nowMs": 1000000,
+  "rustObservationMs": 2000,
+  "typescriptBudgetMs": 180000,
+  "cases": [
+    {
+      "id": "client.recovery.budget",
+      "closeAfterAttempts": null,
+      "expected": {
+        "rust": 18,
+        "typescript": 10
+      },
+      "difference": "Rust executes the existing attempt-bounded supervisor (18 maximum); TS executes its existing 180000ms recovery deadline after a previously ready role. Rust test builds scale delay units to milliseconds; TS uses deterministic midpoint jitter and starts the first open immediately."
+    },
+    {
+      "id": "client.recovery.close-before-first",
+      "closeAfterAttempts": 0,
+      "expected": {
+        "rust": 0,
+        "typescript": 0
+      },
+      "difference": "Rust executes the existing attempt-bounded supervisor (18 maximum); TS executes its existing 180000ms recovery deadline after a previously ready role. Rust test builds scale delay units to milliseconds; TS uses deterministic midpoint jitter and starts the first open immediately."
+    },
+    {
+      "id": "client.recovery.close-after-first",
+      "closeAfterAttempts": 1,
+      "expected": {
+        "rust": 1,
+        "typescript": 1
+      },
+      "difference": "Rust executes the existing attempt-bounded supervisor (18 maximum); TS executes its existing 180000ms recovery deadline after a previously ready role. Rust test builds scale delay units to milliseconds; TS uses deterministic midpoint jitter and starts the first open immediately."
+    },
+    {
+      "id": "client.recovery.close-after-third",
+      "closeAfterAttempts": 3,
+      "expected": {
+        "rust": 3,
+        "typescript": 3
+      },
+      "difference": "Rust executes the existing attempt-bounded supervisor (18 maximum); TS executes its existing 180000ms recovery deadline after a previously ready role. Rust test builds scale delay units to milliseconds; TS uses deterministic midpoint jitter and starts the first open immediately."
+    }
+  ]
+}

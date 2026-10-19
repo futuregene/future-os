@@ -6,17 +6,18 @@
 //! copy because the server credential is bound to that exact identity.
 
 #[cfg(test)]
-use crate::remote::pairing::{
-    error_code, is_invalid_or_revoked_error, public_key, refresh_delay, REFRESH_LEAD,
+use crate::remote::pairing::{error_code, is_invalid_or_revoked_error, public_key};
+#[cfg(test)]
+use crate::remote_platform::is_transport_error;
+use crate::remote_platform::{
+    http_client, jwt_expiry, parse_response, response_error, transport_or_message,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
-
-pub(crate) use crate::remote::protocol::PairingCreds;
+pub(crate) use future_remote_server::PairingCreds;
 
 #[derive(Debug, Deserialize)]
 struct CreatePairCodeResponse {
@@ -663,101 +664,6 @@ pub(crate) async fn retry_pending_revokes() -> Result<(), crate::AppError> {
     Ok(())
 }
 
-// The four helpers below are `pub(crate)` because the *client* role
-// (`remote_peer`) speaks to the same platform API and must fail the same way:
-// one HTTP/TLS policy per process, one reading of the platform's
-// `{error, message}` body, one JWT-expiry rule. Duplicating them per role is
-// how the two would drift into disagreeing about, say, whether a 401 is
-// "revoked" or "retry".
-pub(crate) fn http_client() -> Result<reqwest::Client, crate::AppError> {
-    crate::install_rustls_provider();
-    reqwest::Client::builder()
-        .timeout(REQUEST_TIMEOUT)
-        .build()
-        .map_err(|error| crate::AppError::Message(format!("Failed to create HTTP client: {error}")))
-}
-
-/// Build the error for a failed `.send()`: a [`RemoteTransport`] when no HTTP
-/// response was possible (so the UI can say "check your network"), a plain
-/// [`Message`] otherwise. The original reqwest detail is preserved in both for
-/// logs.
-pub(crate) fn transport_or_message(action: &str, error: reqwest::Error) -> crate::AppError {
-    let message = format!("Failed to {action}: {error}");
-    if is_transport_error(&error) {
-        crate::AppError::RemoteTransport(message)
-    } else {
-        crate::AppError::Message(message)
-    }
-}
-
-/// A send failure that never produced an HTTP response — i.e. the network path
-/// itself failed (offline, DNS, connection refused, timeout). Status / body /
-/// decode errors mean we *did* reach the server, so they aren't transport
-/// failures.
-fn is_transport_error(error: &reqwest::Error) -> bool {
-    error.is_connect() || error.is_timeout() || error.is_request() || error.is_redirect()
-}
-
-pub(crate) async fn parse_response<T: serde::de::DeserializeOwned>(
-    response: reqwest::Response,
-    action: &str,
-) -> Result<T, crate::AppError> {
-    if !response.status().is_success() {
-        return Err(response_error(response, action).await);
-    }
-    response.json::<T>().await.map_err(|error| {
-        crate::AppError::Message(format!("Failed to parse {action} response: {error}"))
-    })
-}
-
-pub(crate) async fn response_error(response: reqwest::Response, action: &str) -> crate::AppError {
-    let status = response.status();
-    let body = response.json::<Value>().await.ok();
-    // The platform error body is `{error: <machine code>, message: <human text>}`.
-    let code = body
-        .as_ref()
-        .and_then(|value| value.get("error"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .filter(|code| !code.trim().is_empty());
-    let message = body
-        .as_ref()
-        .and_then(|value| value.get("message"))
-        .and_then(Value::as_str)
-        .filter(|message| !message.trim().is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("Failed to {action} (HTTP {})", status.as_u16()));
-    eprintln!(
-        "remote: {action} failed: HTTP {}, code={:?}, message={}, body={}",
-        status.as_u16(),
-        code,
-        message,
-        body.as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .unwrap_or_default()
-            .unwrap_or_default(),
-    );
-    crate::AppError::Remote {
-        status: status.as_u16(),
-        code,
-        message,
-    }
-}
-
-pub(crate) fn jwt_expiry(jwt: &str) -> Result<i64, crate::AppError> {
-    let payload = jwt.split('.').nth(1).ok_or_else(|| {
-        crate::AppError::Message("Remote server returned an invalid JWT.".to_string())
-    })?;
-    let bytes = URL_SAFE_NO_PAD.decode(payload).map_err(|_| {
-        crate::AppError::Message("Remote server returned an invalid JWT.".to_string())
-    })?;
-    serde_json::from_slice::<Value>(&bytes)
-        .ok()
-        .and_then(|value| value.get("exp").and_then(Value::as_i64))
-        .ok_or_else(|| crate::AppError::Message("Remote JWT is missing its expiry.".to_string()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -780,78 +686,6 @@ mod tests {
             serde_json::to_value(&book).expect("serializes")["version"],
             serde_json::json!(BOOK_VERSION),
             "the default is the constant the writer uses"
-        );
-    }
-
-    #[test]
-    fn identifies_revoked_credential_error() {
-        assert!(is_invalid_or_revoked_error(&crate::AppError::Remote {
-            status: 401,
-            code: Some("invalid_remote_credential".to_string()),
-            message: "Remote credential is invalid or revoked.".to_string(),
-        }));
-        // A human message that merely reads like a revocation must NOT match —
-        // only the machine code is authoritative.
-        assert!(!is_invalid_or_revoked_error(&crate::AppError::Remote {
-            status: 401,
-            code: Some("unauthorized".to_string()),
-            message: "Remote credential is invalid or revoked.".to_string(),
-        }));
-        assert!(!is_invalid_or_revoked_error(&crate::AppError::Message(
-            "Failed to refresh remote credential: timeout".to_string(),
-        )));
-    }
-
-    #[test]
-    fn platform_account_rejection_is_not_a_retryable_network_error() {
-        for status in [401, 403] {
-            let error = crate::AppError::Remote {
-                status,
-                code: None,
-                message: "rejected".into(),
-            };
-            assert_eq!(error_code(&error), Some("account_authorization"));
-            assert!(!is_invalid_or_revoked_error(&error));
-        }
-    }
-
-    #[test]
-    fn classifies_error_codes_without_sniffing_messages() {
-        // Offline / unreachable → network, regardless of the human message.
-        assert_eq!(
-            error_code(&crate::AppError::RemoteTransport(
-                "Failed to create pairing code: error sending request".to_string(),
-            )),
-            Some("network"),
-        );
-        // Server revocation is read from the machine code, not the message.
-        assert_eq!(
-            error_code(&crate::AppError::Remote {
-                status: 401,
-                code: Some("invalid_remote_credential".to_string()),
-                message: "gone".to_string(),
-            }),
-            Some("revoked"),
-        );
-        // Any other server status → generic server category.
-        assert_eq!(
-            error_code(&crate::AppError::Remote {
-                status: 500,
-                code: None,
-                message: "boom".to_string(),
-            }),
-            Some("server"),
-        );
-        // A missing account credential is the account's problem, and the type
-        // says so — no message is consulted.
-        assert_eq!(
-            error_code(&crate::AppError::NotSignedIn),
-            Some("account_authorization"),
-        );
-        // Local failures carry no remote category.
-        assert_eq!(
-            error_code(&crate::AppError::Message("disk full".to_string())),
-            None,
         );
     }
 }
@@ -982,14 +816,6 @@ mod http_tests {
         assert!(!book_path().unwrap().exists());
         assert!(!legacy.exists(), "unpair must not leave a file behind");
         assert!(load_creds().is_none());
-    }
-
-    #[test]
-    fn public_key_rejects_a_bad_seed() {
-        let _home = HomeGuard::new("pairing-bad-seed");
-        let mut creds = fixture_creds();
-        creds.nkey_seed = "not-a-seed".to_string();
-        assert!(public_key(&creds).is_err());
     }
 
     #[test]
@@ -1225,35 +1051,6 @@ mod http_tests {
             pairing_code_expiry(&URL_SAFE_NO_PAD.encode(json!({ "nope": 1 }).to_string())),
             None
         );
-    }
-
-    #[test]
-    fn refresh_delay_is_the_time_until_the_lead_before_expiry() {
-        let mut creds = fixture_creds();
-        // Renewal starts REFRESH_LEAD before expiry (minutes, not the previous
-        // 60 seconds): the HTTPS round trip, TLS connect and transport rebuild
-        // have to fit inside the old credential's lifetime.
-        creds.jwt_expires_at = now_secs() + 3600;
-        let delay = refresh_delay(&creds).as_secs();
-        let expected = 3600 - REFRESH_LEAD.as_secs();
-        assert!(
-            delay <= expected && delay + 5 >= expected,
-            "delay was {delay}"
-        );
-        // Already expired → due now, so the renewal loop retries at its fast
-        // cadence instead of idling out a tick with the bridge unable to publish.
-        creds.jwt_expires_at = now_secs() - 10;
-        assert_eq!(refresh_delay(&creds), std::time::Duration::ZERO);
-    }
-
-    #[test]
-    fn jwt_expiry_rejects_malformed_tokens() {
-        assert!(jwt_expiry("one-segment").is_err());
-        assert!(jwt_expiry("two.segments").is_err()); // decodes, but not JSON
-        assert!(jwt_expiry("a.!!!.b").is_err()); // invalid base64 payload → decode failure
-        let no_exp = URL_SAFE_NO_PAD.encode(json!({ "sub": 1 }).to_string());
-        assert!(jwt_expiry(&format!("h.{no_exp}.s")).is_err());
-        assert_eq!(jwt_expiry(&jwt(42)).unwrap(), 42);
     }
 
     #[tokio::test]

@@ -1,0 +1,423 @@
+{
+  "headSha": "363eafcb32be3a2215076721e1449c8bdb45b195",
+  "conclusion": "success",
+  "url": "https://github.com/futuregene/future-os/actions/runs/39225650930",
+  "note": "Historical reference only. Not a same-condition before/after benchmark; compilation and test execution are mixed in cargo steps. Final comparison must record runner/toolchain/features/commands/cache and separate execution from compilation.",
+  "jobs": [
+    {
+      "name": "Rust tests (Linux) (desktop headless)",
+      "databaseId": 117971758179,
+      "startedAt": "2026-10-19T08:52:06Z",
+      "completedAt": "2026-10-19T09:02:26Z",
+      "conclusion": "success",
+      "url": "https://github.com/futuregene/future-os/actions/runs/39225650930/job/117971758179",
+      "steps": [
+        {
+          "name": "Set up job",
+          "startedAt": "2026-10-19T08:52:07Z",
+          "completedAt": "2026-10-19T08:52:08Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Is this test group affected?",
+          "startedAt": "2026-10-19T08:52:08Z",
+          "completedAt": "2026-10-19T08:52:08Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Checkout",
+          "startedAt": "2026-10-19T08:52:08Z",
+          "completedAt": "2026-10-19T08:52:11Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Setup Rust",
+          "startedAt": "2026-10-19T08:52:11Z",
+          "completedAt": "2026-10-19T08:52:22Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Cache Rust",
+          "startedAt": "2026-10-19T08:52:22Z",
+          "completedAt": "2026-10-19T08:52:36Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install Linux deps",
+          "startedAt": "2026-10-19T08:52:36Z",
+          "completedAt": "2026-10-19T08:53:05Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "cargo test (desktop headless)",
+          "startedAt": "2026-10-19T08:53:05Z",
+          "completedAt": "2026-10-19T09:02:24Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Cache Rust",
+          "startedAt": "2026-10-19T09:02:24Z",
+          "completedAt": "2026-10-19T09:02:24Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Checkout",
+          "startedAt": "2026-10-19T09:02:24Z",
+          "completedAt": "2026-10-19T09:02:24Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "startedAt": "2026-10-19T09:02:24Z",
+          "completedAt": "2026-10-19T09:02:24Z",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "Rust build (Windows)",
+      "databaseId": 117971758243,
+      "startedAt": "2026-10-19T08:52:08Z",
+      "completedAt": "2026-10-19T09:02:27Z",
+      "conclusion": "success",
+      "url": "https://github.com/futuregene/future-os/actions/runs/39225650930/job/117971758243",
+      "steps": [
+        {
+          "name": "Set up job",
+          "startedAt": "2026-10-19T08:52:09Z",
+          "completedAt": "2026-10-19T08:52:13Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Checkout",
+          "startedAt": "2026-10-19T08:52:13Z",
+          "completedAt": "2026-10-19T08:52:22Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Setup Rust",
+          "startedAt": "2026-10-19T08:52:22Z",
+          "completedAt": "2026-10-19T08:52:36Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Cache Rust",
+          "startedAt": "2026-10-19T08:52:36Z",
+          "completedAt": "2026-10-19T08:53:53Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "cargo check (desktop Tauri backend)",
+          "startedAt": "2026-10-19T08:53:53Z",
+          "completedAt": "2026-10-19T08:54:28Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "cargo check (desktop Tauri backend, no default features)",
+          "startedAt": "2026-10-19T08:54:28Z",
+          "completedAt": "2026-10-19T08:54:51Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Embedded Agent native lifecycle",
+          "startedAt": "2026-10-19T08:54:51Z",
+          "completedAt": "2026-10-19T09:02:20Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Upload native lifecycle evidence",
+          "startedAt": "2026-10-19T09:02:20Z",
+          "completedAt": "2026-10-19T09:02:22Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Cache Rust",
+          "startedAt": "2026-10-19T09:02:22Z",
+          "completedAt": "2026-10-19T09:02:22Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Checkout",
+          "startedAt": "2026-10-19T09:02:22Z",
+          "completedAt": "2026-10-19T09:02:24Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "startedAt": "2026-10-19T09:02:24Z",
+          "completedAt": "2026-10-19T09:02:24Z",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "Rust build (Linux)",
+      "databaseId": 117971758312,
+      "startedAt": "2026-10-19T08:52:06Z",
+      "completedAt": "2026-10-19T08:57:09Z",
+      "conclusion": "success",
+      "url": "https://github.com/futuregene/future-os/actions/runs/39225650930/job/117971758312",
+      "steps": [
+        {
+          "name": "Set up job",
+          "startedAt": "2026-10-19T08:52:07Z",
+          "completedAt": "2026-10-19T08:52:10Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Checkout",
+          "startedAt": "2026-10-19T08:52:10Z",
+          "completedAt": "2026-10-19T08:52:13Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Setup Rust",
+          "startedAt": "2026-10-19T08:52:13Z",
+          "completedAt": "2026-10-19T08:52:23Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Cache Rust",
+          "startedAt": "2026-10-19T08:52:23Z",
+          "completedAt": "2026-10-19T08:53:16Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install Linux system dependencies (base)",
+          "startedAt": "2026-10-19T08:53:16Z",
+          "completedAt": "2026-10-19T08:53:24Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install Linux system dependencies (desktop GUI stack)",
+          "startedAt": "2026-10-19T08:53:24Z",
+          "completedAt": "2026-10-19T08:53:49Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "cargo check (desktop Tauri backend)",
+          "startedAt": "2026-10-19T08:53:49Z",
+          "completedAt": "2026-10-19T08:54:07Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "cargo check (desktop Tauri backend, no default features)",
+          "startedAt": "2026-10-19T08:54:07Z",
+          "completedAt": "2026-10-19T08:54:21Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Embedded Agent native lifecycle",
+          "startedAt": "2026-10-19T08:54:21Z",
+          "completedAt": "2026-10-19T08:57:05Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Upload native lifecycle evidence",
+          "startedAt": "2026-10-19T08:57:05Z",
+          "completedAt": "2026-10-19T08:57:07Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Cache Rust",
+          "startedAt": "2026-10-19T08:57:07Z",
+          "completedAt": "2026-10-19T08:57:07Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Checkout",
+          "startedAt": "2026-10-19T08:57:07Z",
+          "completedAt": "2026-10-19T08:57:07Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "startedAt": "2026-10-19T08:57:07Z",
+          "completedAt": "2026-10-19T08:57:07Z",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "Rust tests (Linux) (desktop gui)",
+      "databaseId": 117971758369,
+      "startedAt": "2026-10-19T08:52:07Z",
+      "completedAt": "2026-10-19T09:03:21Z",
+      "conclusion": "success",
+      "url": "https://github.com/futuregene/future-os/actions/runs/39225650930/job/117971758369",
+      "steps": [
+        {
+          "name": "Set up job",
+          "startedAt": "2026-10-19T08:52:08Z",
+          "completedAt": "2026-10-19T08:52:09Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Is this test group affected?",
+          "startedAt": "2026-10-19T08:52:09Z",
+          "completedAt": "2026-10-19T08:52:09Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Checkout",
+          "startedAt": "2026-10-19T08:52:09Z",
+          "completedAt": "2026-10-19T08:52:13Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Setup Rust",
+          "startedAt": "2026-10-19T08:52:13Z",
+          "completedAt": "2026-10-19T08:52:21Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Cache Rust",
+          "startedAt": "2026-10-19T08:52:21Z",
+          "completedAt": "2026-10-19T08:52:39Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Install Linux deps",
+          "startedAt": "2026-10-19T08:52:39Z",
+          "completedAt": "2026-10-19T08:53:11Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "cargo test (desktop gui)",
+          "startedAt": "2026-10-19T08:53:11Z",
+          "completedAt": "2026-10-19T09:03:17Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Cache Rust",
+          "startedAt": "2026-10-19T09:03:17Z",
+          "completedAt": "2026-10-19T09:03:17Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Checkout",
+          "startedAt": "2026-10-19T09:03:17Z",
+          "completedAt": "2026-10-19T09:03:17Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "startedAt": "2026-10-19T09:03:17Z",
+          "completedAt": "2026-10-19T09:03:17Z",
+          "conclusion": "success"
+        }
+      ]
+    },
+    {
+      "name": "Rust build (macOS)",
+      "databaseId": 117971758429,
+      "startedAt": "2026-10-19T08:52:13Z",
+      "completedAt": "2026-10-19T09:00:53Z",
+      "conclusion": "success",
+      "url": "https://github.com/futuregene/future-os/actions/runs/39225650930/job/117971758429",
+      "steps": [
+        {
+          "name": "Set up job",
+          "startedAt": "2026-10-19T08:52:14Z",
+          "completedAt": "2026-10-19T08:52:16Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Checkout",
+          "startedAt": "2026-10-19T08:52:16Z",
+          "completedAt": "2026-10-19T08:52:19Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Setup Rust",
+          "startedAt": "2026-10-19T08:52:19Z",
+          "completedAt": "2026-10-19T08:52:30Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Cache Rust",
+          "startedAt": "2026-10-19T08:52:30Z",
+          "completedAt": "2026-10-19T08:53:22Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "cargo check (desktop Tauri backend)",
+          "startedAt": "2026-10-19T08:53:22Z",
+          "completedAt": "2026-10-19T08:54:03Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "cargo check (desktop Tauri backend, no default features)",
+          "startedAt": "2026-10-19T08:54:03Z",
+          "completedAt": "2026-10-19T08:54:31Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Embedded Agent native lifecycle",
+          "startedAt": "2026-10-19T08:54:31Z",
+          "completedAt": "2026-10-19T09:00:41Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Upload native lifecycle evidence",
+          "startedAt": "2026-10-19T09:00:41Z",
+          "completedAt": "2026-10-19T09:00:43Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Cache Rust",
+          "startedAt": "2026-10-19T09:00:43Z",
+          "completedAt": "2026-10-19T09:00:44Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Checkout",
+          "startedAt": "2026-10-19T09:00:44Z",
+          "completedAt": "2026-10-19T09:00:45Z",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "startedAt": "2026-10-19T09:00:45Z",
+          "completedAt": "2026-10-19T09:00:51Z",
+          "conclusion": "success"
+        }
+      ]
+    }
+  ],
+  "windowsDetail": {
+    "jobId": 117971758243,
+    "runner": {
+      "runner_name": "GitHub Actions 1000034493",
+      "runner_group_name": "GitHub Actions",
+      "labels": [
+        "windows-latest"
+      ]
+    },
+    "logMetricLines": [
+      "Cache Size: ~1212 MB (1271194532 B)",
+      "Cache restored successfully",
+      "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 34.28s",
+      "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 22.10s",
+      "    Finished `test` profile [unoptimized + debuginfo] target(s) in 11.41s",
+      "test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 169 filtered out; finished in 0.46s",
+      "    Finished `test` profile [unoptimized + debuginfo] target(s) in 38.00s",
+      "test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.20s",
+      "    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 43s",
+      "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 1781 filtered out; finished in 0.01s",
+      "    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 59s",
+      "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 2204 filtered out; finished in 6.59s",
+      "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.64s",
+      "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 1776 filtered out; finished in 6.58s",
+      "    Finished `test` profile [unoptimized + debuginfo] target(s) in 48.85s",
+      "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s",
+      "    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 33s",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2418 filtered out; finished in 12.89s",
+      "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.55s",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2418 filtered out; finished in 1.22s",
+      "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.52s",
+      "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2418 filtered out; finished in 0.97s"
+    ],
+    "limitation": "Printed durations describe each Cargo invocation, including incremental rebuild effects. These are not a cold Windows compiler benchmark."
+  }
+}

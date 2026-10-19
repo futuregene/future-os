@@ -19,8 +19,8 @@ use crate::agent_providers::{
     delete_custom_provider, list_agent_providers, update_builtin_provider, upsert_custom_provider,
     ProvidersView,
 };
-use crate::remote::protocol::IncomingCmd;
-use crate::remote::services::ReplySink;
+use future_remote_protocol::IncomingCmd;
+use future_remote_server::services::ReplySink;
 use serde_json::Value;
 
 use super::reply;

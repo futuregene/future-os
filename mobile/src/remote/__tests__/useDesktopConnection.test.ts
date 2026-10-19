@@ -1,12 +1,12 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { AppState } from "react-native";
-import type { ConnectionState } from "../connectionState";
-import { RemoteApiError } from "../connectionState";
+import type { ConnectionState } from "@future-os/remote-client/connectionState";
+import { RemoteApiError } from "@future-os/remote-client/connectionState";
 import { discardPendingContinuation } from "../pendingContinuationStorage";
 import { discardPendingPrompt } from "../pendingPromptStorage";
 import { loadCredentials, saveCredentials } from "../storage";
-import type { SyncEngine } from "../syncEngine";
+import type { SyncEngine } from "@future-os/remote-client/syncEngine";
 import type {
   Presence,
   PresenceSession,
@@ -37,7 +37,12 @@ jest.mock("../client", () => {
   class MockRemoteClient {
     credentials: unknown;
     callbacks: Record<string, (...args: never[]) => unknown>;
-    close = jest.fn(async () => {});
+    close = jest.fn(async (_reason?: string) => {});
+    shutdown = jest.fn(async (_budget: number, reason?: string) => {
+      await this.close(reason);
+      return { complete: true, pendingTasks: [] };
+    });
+    waitTasks = jest.fn(async () => ({ complete: true, pendingTasks: [] }));
     setAppActive = jest.fn();
     setVisibleSession = jest.fn();
     open = jest.fn(async () => {
@@ -96,6 +101,8 @@ interface MockClient {
   credentials: RemoteCredentials;
   callbacks: MockClientCallbacks;
   close: jest.Mock;
+  shutdown: jest.Mock;
+  waitTasks: jest.Mock;
   setAppActive: jest.Mock;
   setVisibleSession: jest.Mock;
   open: jest.Mock;
@@ -497,7 +504,7 @@ describe("useDesktopConnection", () => {
       // The phone moved on while the old socket was still being probed: the
       // refresh belongs to the connection that asked for it, not to whatever
       // replaced it.
-      options.clientRef.current = cast({ close: jest.fn(), requestRetry: jest.fn() });
+      options.clientRef.current = cast({ close: jest.fn(), shutdown: jest.fn(async () => ({ complete: true, pendingTasks: [] })), waitTasks: jest.fn(), requestRetry: jest.fn() });
       await act(async () => { release(); await pending; });
       expect(options.refreshModels).not.toHaveBeenCalled();
     });
@@ -665,5 +672,37 @@ describe("useDesktopConnection", () => {
       expect(result.current.credentials).toEqual(credentials);
     });
   });
+
+  test("unmount uses bounded shutdown and keeps observing cleanup after a timeout", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+    let finish!: (result: { complete: boolean; pendingTasks: string[] }) => void;
+    try {
+      await mountConnected();
+      const c = client();
+      c.shutdown.mockResolvedValueOnce({ complete: false, pendingTasks: ["connection-close"] });
+      c.waitTasks.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+      await act(async () => { renderer!.unmount(); renderer = null; await drain(); });
+      expect(c.shutdown).toHaveBeenCalledWith(2_000, "UserInitiated");
+      expect(c.waitTasks).toHaveBeenCalledTimes(1);
+      expect(options.clientRef.current).toBeNull();
+      expect(warn).toHaveBeenCalledWith("remote_cleanup_timeout", ["connection-close"]);
+      await act(async () => { finish({ complete: true, pendingTasks: [] }); await drain(); });
+      expect(c.open).toHaveBeenCalledTimes(1);
+    } finally { warn.mockRestore(); }
+  });
+
+  test("explicit desktop offline retires the UI before its cleanup budget completes", async () => {
+    await mountConnected();
+    const c = client();
+    let finish!: (result: { complete: boolean; pendingTasks: string[] }) => void;
+    c.shutdown.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    act(() => c.callbacks.onPresence({ ...presence, disconnected: true }));
+    expect(result.current.phase).toBe("stopped");
+    expect(options.clientRef.current).toBeNull();
+    expect(c.shutdown).toHaveBeenCalledWith(2_000, "UserInitiated");
+    await act(async () => { finish({ complete: true, pendingTasks: [] }); await drain(); });
+    expect(c.waitTasks).not.toHaveBeenCalled();
+  });
+
 });
 

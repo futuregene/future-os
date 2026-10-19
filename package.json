@@ -4,7 +4,8 @@
   "workspaces": [
     "packages/*",
     "desktop",
-    "mobile"
+    "mobile",
+    "tests/remote-interop"
   ],
   "overrides": {
     "argparse@1": "^2.0.1",

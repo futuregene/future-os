@@ -49,8 +49,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use serde_json::{json, Value};
 
-use super::commands::{new_reply_slots, HandshakeState};
-use super::protocol::PairingCreds;
+use super::commands::new_reply_slots;
 use super::publisher::{CATALOG_ACTIVITY_FEATURE, EVENT_COALESCING_FEATURE, MAX_EVENT_BYTES};
 use super::test_support::{
     declare_features, ensure_mock_agent, init_store, jwt, mock_agent_lock, now_secs, pairing_creds,
@@ -60,6 +59,7 @@ use super::transport::build_transport;
 use super::{publish_event, secure, stop, DropCounters, NatsHealth, RemoteState, SUPERVISOR};
 use crate::remote_host::business::truncated_event_data;
 use crate::remote_host::lean;
+use future_remote_server::PairingCreds;
 
 /// The `before` cursor the mobile client opens a conversation with.
 /// The phone's history page size, in user exchanges: `HISTORY_PAGE_USER_EXCHANGES`
@@ -411,7 +411,7 @@ pub(super) async fn install_slot(
     let bridge_client = connect(broker.url(), &format!("realnet-host-{pair_id}")).await;
     let bridge_instance_id = format!("bridge_{}", unique("realnet-host"));
     let confirmed_flag = Arc::new(AtomicBool::new(confirmed));
-    let handshake = HandshakeState::new(
+    let handshake = crate::remote::commands::new_handshake_state(
         creds.clone(),
         confirmed_flag.clone(),
         bridge_instance_id.clone(),
@@ -437,7 +437,7 @@ pub(super) async fn install_slot(
             cmd_task: tasks.cmd_task,
             transfer_task: tasks.transfer_task,
             heartbeat_task: tasks.heartbeat_task,
-            refresh_task: tokio::spawn(std::future::pending()),
+            refresh_task: crate::remote::SUPERVISOR.spawn_fixture_task(std::future::pending()),
             web_task: None,
             web_url: None,
             web_lan_url: None,
@@ -513,7 +513,7 @@ impl E2e {
         let _shared = super::supervisor::shared_runtime(&creds, true, false);
         let bridge_client = connect(broker.url(), &format!("verify-bridge-{pair_id}")).await;
         let bridge_instance_id = format!("bridge_{}", unique("e2e"));
-        let handshake = HandshakeState::new(
+        let handshake = crate::remote::commands::new_handshake_state(
             creds.clone(),
             Arc::new(AtomicBool::new(true)),
             bridge_instance_id.clone(),
@@ -543,7 +543,7 @@ impl E2e {
                 cmd_task: tasks.cmd_task,
                 transfer_task: tasks.transfer_task,
                 heartbeat_task: tasks.heartbeat_task,
-                refresh_task: tokio::spawn(std::future::pending()),
+                refresh_task: crate::remote::SUPERVISOR.spawn_fixture_task(std::future::pending()),
                 web_task: None,
                 web_url: None,
                 web_lan_url: None,

@@ -5,7 +5,7 @@ import * as Clipboard from "expo-clipboard";
 import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import { friendlyRunError, friendlyRunErrorTitle } from "../../../components/errorMessage";
 import { MarkdownText } from "../../../components/MarkdownText";
-import { canRecoverMessage } from "../../../remote/recovery";
+import { canRecoverMessage } from "@future-os/remote-client/recovery";
 import { useTheme } from "../../../theme/ThemeContext";
 import { Button } from "../../../components/Button";
 import { useStyles } from "./messageStyles";

@@ -10,12 +10,12 @@ mod read_pages;
 mod session_files;
 #[cfg(test)]
 mod sync_measurement;
-use crate::remote::services::{BusinessHost, ReplySink};
+use future_remote_server::services::{BusinessHost, ReplySink};
 struct DesktopHost;
 impl BusinessHost for DesktopHost {
     fn execute<'a>(
         &'a self,
-        command: crate::remote::protocol::IncomingCmd,
+        command: future_remote_protocol::IncomingCmd,
         reply: &'a dyn ReplySink,
     ) -> futures::future::BoxFuture<'a, ()> {
         Box::pin(async move {
@@ -35,6 +35,10 @@ pub(crate) fn host() -> &'static dyn RemoteHost {
     &DesktopHost
 }
 
+pub(crate) fn owned_host() -> std::sync::Arc<dyn RemoteHost> {
+    std::sync::Arc::new(DesktopHost)
+}
+
 pub(crate) fn attach_events() {
     crate::agent_events::attach(|event| {
         crate::remote::publish_event(
@@ -51,10 +55,10 @@ pub(crate) fn attach_events() {
         )
     });
 }
-use crate::remote::protocol::PairingCreds;
-use crate::remote::services::{
+use future_remote_server::services::{
     FileHost, Invitation, PairingHost, RemoteHost, SessionsCatalog, StateHost,
 };
+use future_remote_server::PairingCreds;
 use futures::future::BoxFuture;
 use serde_json::Value;
 impl PairingHost for DesktopHost {
@@ -69,29 +73,39 @@ impl PairingHost for DesktopHost {
     fn active_slot(&self) -> Option<String> {
         pairing::load_book().and_then(|book| book.active().map(str::to_string))
     }
-    fn set_active(&self, pair_id: &str) -> Result<(), crate::AppError> {
-        pairing::set_active(pair_id).map(|_| ())
+    fn set_active(&self, pair_id: &str) -> Result<(), future_remote_server::Error> {
+        pairing::set_active(pair_id).map(|_| ()).map_err(Into::into)
     }
-    fn remove_slot(&self, pair_id: &str) -> Result<(), crate::AppError> {
-        pairing::remove_slot(pair_id)
+    fn remove_slot(&self, pair_id: &str) -> Result<(), future_remote_server::Error> {
+        pairing::remove_slot(pair_id).map_err(Into::into)
     }
-    fn save(&self, c: &PairingCreds) -> Result<(), crate::AppError> {
-        pairing::save_creds(c)
+    fn save(&self, c: &PairingCreds) -> Result<(), future_remote_server::Error> {
+        pairing::save_creds(c).map_err(Into::into)
     }
-    fn clear(&self) -> Result<(), crate::AppError> {
-        pairing::clear_creds()
+    fn clear(&self) -> Result<(), future_remote_server::Error> {
+        pairing::clear_creds().map_err(Into::into)
     }
-    fn invite(&self, keep_existing: bool) -> BoxFuture<'_, Result<Invitation, crate::AppError>> {
-        Box::pin(pairing::create_pairing(keep_existing))
+    fn invite(
+        &self,
+        keep_existing: bool,
+    ) -> BoxFuture<'_, Result<Invitation, future_remote_server::Error>> {
+        Box::pin(async move {
+            pairing::create_pairing(keep_existing)
+                .await
+                .map_err(Into::into)
+        })
     }
-    fn refresh(&self, c: PairingCreds) -> BoxFuture<'_, Result<PairingCreds, crate::AppError>> {
-        Box::pin(pairing::refresh_bridge_jwt(c))
+    fn refresh(
+        &self,
+        c: PairingCreds,
+    ) -> BoxFuture<'_, Result<PairingCreds, future_remote_server::Error>> {
+        Box::pin(async move { pairing::refresh_bridge_jwt(c).await.map_err(Into::into) })
     }
-    fn queue_revoke(&self, c: &PairingCreds) -> Result<(), crate::AppError> {
-        pairing::queue_revoke(c)
+    fn queue_revoke(&self, c: &PairingCreds) -> Result<(), future_remote_server::Error> {
+        pairing::queue_revoke(c).map_err(Into::into)
     }
-    fn retry_revokes(&self) -> BoxFuture<'_, Result<(), crate::AppError>> {
-        Box::pin(pairing::retry_pending_revokes())
+    fn retry_revokes(&self) -> BoxFuture<'_, Result<(), future_remote_server::Error>> {
+        Box::pin(async { pairing::retry_pending_revokes().await.map_err(Into::into) })
     }
 }
 impl StateHost for DesktopHost {
@@ -124,8 +138,8 @@ impl FileHost for DesktopHost {
     fn upload_chunk(&self, id: &str, index: u64, bytes: &[u8]) -> Result<Value, String> {
         files::write_upload_chunk(id, index, bytes)
     }
-    fn download_chunk(&self, id: &str, index: u64) -> Result<Vec<u8>, crate::AppError> {
-        files::read_download_chunk(id, index)
+    fn download_chunk(&self, id: &str, index: u64) -> Result<Vec<u8>, future_remote_server::Error> {
+        files::read_download_chunk(id, index).map_err(Into::into)
     }
     fn prune_transfers(&self) {
         files::prune_expired();

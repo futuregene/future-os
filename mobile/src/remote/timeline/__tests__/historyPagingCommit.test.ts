@@ -1,6 +1,6 @@
 import { HistoryPageHiddenError, commitHistoryPage } from "../historyPaging";
-import { emptyTimeline } from "../../timeline";
-import type { SyncEngine } from "../../syncEngine";
+import { emptyTimeline } from "@future-os/remote-client/timeline";
+import type { SyncEngine } from "@future-os/remote-client/syncEngine";
 
 type Timeline = ReturnType<typeof emptyTimeline>;
 

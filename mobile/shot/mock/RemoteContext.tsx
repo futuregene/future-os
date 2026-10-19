@@ -30,7 +30,7 @@ import type {
 } from "../../src/remote/types";
 import { createContext, useContext, useMemo, useState } from "react";
 import { connectionPresentation as buildConnectionPresentation } from "../../src/remote/connectionPresentation";
-import { applyStreamEvents, timelineFromEntries } from "../../src/remote/projection";
+import { applyStreamEvents, timelineFromEntries } from "@future-os/remote-client/projection";
 import { leanRenderMode, leanRenderTimeline, leanTargetForToolCall } from "./leanRender";
 import {
   compactResumeEntries,

@@ -66,6 +66,83 @@ pub enum AppError {
     Message(String),
 }
 
+impl From<future_remote_server::Error> for AppError {
+    fn from(error: future_remote_server::Error) -> Self {
+        use future_remote_server::Error as ServerError;
+        match error {
+            ServerError::Host(error) | ServerError::AccountAuthorization(error) => {
+                match error.downcast::<AppError>() {
+                    Ok(error) => *error,
+                    Err(error) => Self::Message(error.to_string()),
+                }
+            }
+            ServerError::Io(error) => Self::Io(error),
+            ServerError::Json(error) => Self::Json(error),
+            ServerError::Remote {
+                status,
+                code,
+                message,
+            } => Self::Remote {
+                status,
+                code,
+                message,
+            },
+            ServerError::RemoteTransport(message) => Self::RemoteTransport(message),
+            ServerError::RemoteAuthorization(message) => Self::RemoteAuthorization(message),
+            ServerError::Message(message) => Self::Message(message),
+        }
+    }
+}
+impl From<AppError> for future_remote_server::Error {
+    fn from(error: AppError) -> Self {
+        match error {
+            AppError::Io(error) => Self::Io(error),
+            AppError::Json(error) => Self::Json(error),
+            AppError::Remote {
+                status,
+                code,
+                message,
+            } => Self::Remote {
+                status,
+                code,
+                message,
+            },
+            AppError::RemoteTransport(message) => Self::RemoteTransport(message),
+            AppError::RemoteAuthorization(message) => Self::RemoteAuthorization(message),
+            AppError::NotSignedIn => Self::AccountAuthorization(Box::new(AppError::NotSignedIn)),
+            AppError::Message(message) => Self::Message(message),
+            error => Self::Host(Box::new(error)),
+        }
+    }
+}
+
+impl From<future_remote_client::Error> for AppError {
+    fn from(error: future_remote_client::Error) -> Self {
+        match error {
+            future_remote_client::Error::Host(error) => match error.downcast::<AppError>() {
+                Ok(error) => *error,
+                Err(error) => Self::Message(error.to_string()),
+            },
+            future_remote_client::Error::Io(error) => Self::Io(error),
+            future_remote_client::Error::Json(error) => Self::Json(error),
+            future_remote_client::Error::Remote {
+                status,
+                code,
+                message,
+            } => Self::Remote {
+                status,
+                code,
+                message,
+            },
+            future_remote_client::Error::RemoteTransport(message) => Self::RemoteTransport(message),
+            future_remote_client::Error::RemoteAuthorization(message) => {
+                Self::RemoteAuthorization(message)
+            }
+            future_remote_client::Error::Message(message) => Self::Message(message),
+        }
+    }
+}
+
 impl From<future_app_settings::Error> for AppError {
     fn from(error: future_app_settings::Error) -> Self {
         match error {
@@ -111,6 +188,80 @@ impl serde::Serialize for AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_boundary_preserves_recovery_categories_and_original_host_errors() {
+        use future_remote_server::Error as ServerError;
+        let platform = AppError::Remote {
+            status: 403,
+            code: Some("invalid_remote_credential".into()),
+            message: "revoked fixture".into(),
+        };
+        let server: ServerError = platform.into();
+        assert!(
+            matches!(&server, ServerError::Remote { status: 403, code: Some(code), .. } if code == "invalid_remote_credential")
+        );
+        let platform: AppError = server.into();
+        assert!(
+            matches!(&platform, AppError::Remote { status: 403, code: Some(code), .. } if code == "invalid_remote_credential")
+        );
+        assert_eq!(platform.to_string(), "revoked fixture");
+        let account: ServerError = AppError::NotSignedIn.into();
+        assert!(matches!(&account, ServerError::AccountAuthorization(_)));
+        assert!(matches!(AppError::from(account), AppError::NotSignedIn));
+        let transport: ServerError = AppError::RemoteTransport("offline fixture".into()).into();
+        assert!(matches!(&transport, ServerError::RemoteTransport(_)));
+        assert!(matches!(
+            AppError::from(transport),
+            AppError::RemoteTransport(_)
+        ));
+        let authorization: ServerError =
+            AppError::RemoteAuthorization("grant fixture".into()).into();
+        assert!(matches!(
+            &authorization,
+            ServerError::RemoteAuthorization(_)
+        ));
+        assert!(matches!(
+            AppError::from(authorization),
+            AppError::RemoteAuthorization(_)
+        ));
+        let business: ServerError = AppError::AgentCommand {
+            code: "fixture_code".into(),
+            message: "fixture message".into(),
+        }
+        .into();
+        assert!(matches!(&business, ServerError::Host(_)));
+        assert!(
+            matches!(AppError::from(business), AppError::AgentCommand { code, message } if code == "fixture_code" && message == "fixture message")
+        );
+    }
+
+    #[test]
+    fn controller_error_conversion_preserves_retry_categories_and_wire_codes() {
+        let transport: AppError =
+            future_remote_client::Error::RemoteTransport("network fixture".into()).into();
+        assert!(matches!(&transport, AppError::RemoteTransport(_)));
+        assert_eq!(transport.to_string(), "network fixture");
+        let authorization: AppError =
+            future_remote_client::Error::RemoteAuthorization("credential fixture".into()).into();
+        assert!(matches!(&authorization, AppError::RemoteAuthorization(_)));
+        assert_eq!(authorization.to_string(), "credential fixture");
+        let platform: AppError = future_remote_client::Error::Remote {
+            status: 401,
+            code: Some("invalid_remote_credential".into()),
+            message: "revoked fixture".into(),
+        }
+        .into();
+        assert!(matches!(
+            &platform,
+            AppError::Remote { status: 401, code: Some(code), .. }
+                if code == "invalid_remote_credential"
+        ));
+        assert_eq!(
+            serde_json::to_string(&platform).unwrap(),
+            "\"revoked fixture\""
+        );
+    }
 
     #[test]
     fn serializes_as_plain_string() {

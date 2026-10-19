@@ -65,12 +65,12 @@ def main() -> int:
     # measures an older revision of the trims — the numbers look plausible and
     # are simply from another commit.
     candidates = [path for path in
-                  (ROOT / "target" / "debug" / "deps").glob("futureos_lib-*")
+                  (ROOT / "target" / "debug" / "deps").glob("future_remote_server-*")
                   if path.is_file() and os.access(path, os.X_OK)]
     binary = max(candidates, key=lambda path: path.stat().st_mtime, default=None)
     if binary is None:
-        raise SystemExit("build the desktop test binary first "
-                         "(cd desktop/src-tauri && cargo test --no-default-features --lib publish --no-run)")
+        raise SystemExit("build the Remote Server test binary first "
+                         "cargo test -p future-remote-server --lib --no-run")
 
     print(f"{'sample':7}{'events':>9}{'window':>8}{'full MB':>10}{'coalesced MB':>14}"
           f"{'full msgs':>11}{'lean MB':>10}{'lean merged MB':>16}{'saved':>8}{'lean msgs':>11}")
@@ -86,9 +86,9 @@ def main() -> int:
                 if window is not None:
                     env["SYNC_MEASURE_WINDOW_MS"] = str(window)
                 full = run_measurement(
-                    binary, "remote::publisher::coalesce::tests::measure_real_journal", env)
+                    binary, "events::coalesce::tests::measure_real_journal", env)
                 lean = run_measurement(
-                    binary, "remote::publisher::coalesce::tests::measure_real_journal_lean", env)
+                    binary, "events::coalesce::tests::measure_real_journal_lean", env)
                 if full is None or lean is None:
                     print(f"top{index}: no measurement")
                     continue

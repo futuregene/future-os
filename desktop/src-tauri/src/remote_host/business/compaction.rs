@@ -4,8 +4,8 @@
 //! Desktop resolves the same session-scoped `compact` RPC the GUI uses, so both
 //! clients accept the operation identically and correlate the terminal
 //! `compaction_*` event by the returned operation id.
-use crate::remote::protocol::IncomingCmd;
-use crate::remote::services::ReplySink;
+use future_remote_protocol::IncomingCmd;
+use future_remote_server::services::ReplySink;
 
 use super::reply;
 
