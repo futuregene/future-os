@@ -5,17 +5,6 @@ mod contract_tests {
     use super::*;
 
     #[test]
-    fn classify_nats_connect_error_covers_server_parse() {
-        assert!(matches!(
-            classify_nats_connect_error(
-                async_nats::ConnectErrorKind::ServerParse,
-                "bad url".to_string()
-            ),
-            crate::AppError::Message(_)
-        ));
-    }
-
-    #[test]
     fn start_failure_maps_every_remote_error_code() {
         // A revoked credential surfaces as a localized Revoked status.
         let revoked = start_failure(crate::AppError::Remote {
@@ -742,34 +731,6 @@ mod runtime_tests {
         stop();
     }
 
-    #[test]
-    fn catalog_lane_keeps_status_and_approvals_but_not_token_traffic() {
-        for event in [
-            "agent_start",
-            "agent_end",
-            "approval_request",
-            "approval_decision",
-            "error",
-            "session_name_changed",
-            "provider_config_changed",
-            "model_visibility_changed",
-            "app_settings_changed",
-            "skills_changed",
-            "run_snapshot",
-        ] {
-            assert!(is_catalog_event(event), "{event}");
-        }
-        for event in [
-            "text_chunk",
-            "thinking_delta",
-            "tool_delta",
-            "toolcall_delta",
-            "tool_end",
-        ] {
-            assert!(!is_catalog_event(event), "{event}");
-        }
-    }
-
     #[tokio::test]
     async fn event_publisher_flushes_in_order_and_reports_failures() {
         let _home = HomeGuard::new("remote-drain");
@@ -1420,29 +1381,6 @@ mod runtime_tests {
             assert!(result.is_err());
         }
         *SUPERVISOR.last_error_code.lock().unwrap() = None;
-    }
-
-    #[test]
-    fn initial_nats_connect_errors_distinguish_authorization_from_network() {
-        for kind in [
-            async_nats::ConnectErrorKind::Authentication,
-            async_nats::ConnectErrorKind::AuthorizationViolation,
-        ] {
-            assert!(matches!(
-                classify_nats_connect_error(kind, "rejected".to_string()),
-                crate::AppError::RemoteAuthorization(_)
-            ));
-        }
-        for kind in [
-            async_nats::ConnectErrorKind::Dns,
-            async_nats::ConnectErrorKind::TimedOut,
-            async_nats::ConnectErrorKind::Io,
-        ] {
-            assert!(matches!(
-                classify_nats_connect_error(kind, "offline".to_string()),
-                crate::AppError::RemoteTransport(_)
-            ));
-        }
     }
 
     #[test]

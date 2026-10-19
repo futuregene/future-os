@@ -20,7 +20,9 @@ use std::{
     },
 };
 
+mod publisher;
 mod status;
+pub use publisher::PublisherTiming;
 pub use status::StatusProjection;
 
 pub trait TaskExecutor: Send + Sync {
@@ -29,10 +31,7 @@ pub trait TaskExecutor: Send + Sync {
     fn spawn_native(&self, job: Box<dyn FnOnce() + Send + 'static>);
 }
 
-pub struct ConnectedNats {
-    pub client: async_nats::Client,
-    pub health: Arc<NatsHealth>,
-}
+pub use crate::connection::ConnectedNats;
 
 /// Active remote connection. Holds async-nats client + command/event tasks;
 /// on stop, aborts the tasks and drops the client.
@@ -123,6 +122,7 @@ pub struct Supervisor {
     control: Arc<ControlPersistence>,
     host: Arc<dyn RemoteHost>,
     executor: Arc<dyn TaskExecutor>,
+    publisher_failures: crate::diagnostics::FailureEpisode,
 }
 #[derive(Default)]
 struct ControlPersistence {
@@ -131,8 +131,10 @@ struct ControlPersistence {
 }
 
 impl Supervisor {
-    pub fn new(host: Arc<dyn RemoteHost>, executor: Arc<dyn TaskExecutor>) -> Self {
-        Self {
+    /// Create one explicitly shared runtime handle; scheduled futures capture
+    /// this instance rather than looking up an application singleton.
+    pub fn new(host: Arc<dyn RemoteHost>, executor: Arc<dyn TaskExecutor>) -> Arc<Self> {
+        Arc::new(Self {
             access: Arc::new(lifecycle::AccessEpoch::new()),
             state: Mutex::new(HashMap::new()),
             bridge_shared: Mutex::new(HashMap::new()),
@@ -158,7 +160,8 @@ impl Supervisor {
             control: Arc::new(ControlPersistence::default()),
             host,
             executor,
-        }
+            publisher_failures: Default::default(),
+        })
     }
 }
 
@@ -849,7 +852,7 @@ mod tests {
 
     /// A supervisor nobody asked to start, built by hand so the process-global
     /// application state is untouched.
-    fn stopped_supervisor() -> Supervisor {
+    fn stopped_supervisor() -> Arc<Supervisor> {
         isolated()
     }
 

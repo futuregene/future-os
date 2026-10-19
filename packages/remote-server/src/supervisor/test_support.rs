@@ -7,6 +7,13 @@ use serde_json::Value;
 pub(super) struct MemoryHost {
     pub slots: Mutex<Vec<PairingCreds>>,
     pub active: Mutex<Option<String>>,
+    pub catalog_reads: Mutex<Vec<String>>,
+    pub catalog_pause: Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            std::sync::mpsc::Receiver<()>,
+        )>,
+    >,
 }
 impl BusinessHost for MemoryHost {
     fn execute<'a>(
@@ -69,7 +76,12 @@ impl StateHost for MemoryHost {
     fn sessions(&self, _: &str) -> Option<(Value, String)> {
         None
     }
-    fn sessions_catalog(&self, _: &str) -> Option<SessionsCatalog> {
+    fn sessions_catalog(&self, pair: &str) -> Option<SessionsCatalog> {
+        self.catalog_reads.lock().unwrap().push(pair.into());
+        if let Some((entered, release)) = self.catalog_pause.lock().unwrap().take() {
+            let _ = entered.send(());
+            let _ = release.recv();
+        }
         None
     }
     fn workspaces(&self) -> Option<(Value, String)> {
@@ -108,6 +120,6 @@ impl TaskExecutor for TokioExecutor {
         std::thread::spawn(job);
     }
 }
-pub(super) fn isolated() -> Supervisor {
+pub(super) fn isolated() -> Arc<Supervisor> {
     Supervisor::new(Arc::new(MemoryHost::default()), Arc::new(TokioExecutor))
 }

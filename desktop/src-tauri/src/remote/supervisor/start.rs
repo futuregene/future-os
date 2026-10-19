@@ -772,71 +772,19 @@ pub(in crate::remote) fn start_failure(
     }
 }
 
-/// NATS remains a direct TCP connection, but production requires verified TLS
-/// even when the endpoint uses the nats:// scheme. E2EE protects content from
-/// the broker; TLS independently protects credentials and transport metadata.
+/// Desktop supplies the platform trust snapshot; the Server owns NATS auth,
+/// per-generation health and mandatory production TLS.
 pub(in crate::remote) async fn connect_nats(
     creds: &pairing::PairingCreds,
     credential_was_refreshed: bool,
 ) -> Result<ConnectedNats, crate::AppError> {
-    let key_pair = std::sync::Arc::new(
-        nkeys::KeyPair::from_seed(&creds.nkey_seed)
-            .map_err(|error| crate::AppError::Message(format!("Invalid desktop NKey: {error}")))?,
-    );
-    let health = Arc::new(NatsHealth::default());
-    health
-        .credential_was_refreshed
-        .store(credential_was_refreshed, Ordering::Release);
-    health
-        .credential_expires_at
-        .store(creds.jwt_expires_at.max(0) as u64, Ordering::Release);
-    let event_health = health.clone();
-    let options = async_nats::ConnectOptions::with_jwt(creds.user_jwt.clone(), move |nonce| {
-        let key_pair = key_pair.clone();
-        async move { key_pair.sign(&nonce).map_err(async_nats::AuthError::new) }
-    })
-    .custom_inbox_prefix(format!("p.{}.rep.{}", creds.pair_id, creds.desktop_id))
-    .reconnect_delay_callback(|attempt| reconnect_delay(attempt, rand::random::<f64>()))
-    .event_callback(move |event| {
-        let health = event_health.clone();
-        async move { health.handle_event(&event) }
-    });
-    // Load the platform trust store here, once, rather than letting async-nats
-    // do it on every connection: that read fails intermittently on macOS and
-    // takes the whole connection (and therefore the credential rotation) down
-    // with it. A failed read now degrades to the last snapshot; `None` keeps
-    // async-nats' own platform load.
-    let options = match trust::root_bundle() {
-        Some(bundle) => options.add_root_certificates(bundle),
-        None => options,
-    };
-    // Unit tests use an in-process, plaintext fake broker. There is no runtime
-    // configuration switch that permits a production TLS downgrade.
-    #[cfg(not(test))]
-    let options = options.require_tls(true);
-    let client = options.connect(&creds.nats_url).await.map_err(|error| {
-        let message = format!("Failed to connect to NATS: {error}");
-        classify_nats_connect_error(error.kind(), message)
-    })?;
-    Ok(ConnectedNats { client, health })
-}
-
-pub(in crate::remote) fn classify_nats_connect_error(
-    kind: async_nats::ConnectErrorKind,
-    message: String,
-) -> crate::AppError {
-    match kind {
-        async_nats::ConnectErrorKind::Authentication
-        | async_nats::ConnectErrorKind::AuthorizationViolation => {
-            crate::AppError::RemoteAuthorization(message)
-        }
-        async_nats::ConnectErrorKind::Dns
-        | async_nats::ConnectErrorKind::TimedOut
-        | async_nats::ConnectErrorKind::Io
-        | async_nats::ConnectErrorKind::Tls
-        | async_nats::ConnectErrorKind::MaxReconnects => crate::AppError::RemoteTransport(message),
-        async_nats::ConnectErrorKind::ServerParse => crate::AppError::Message(message),
-    }
+    let mut environment = future_remote_server::connection::ConnectionOptions::default();
+    environment.root_bundle = trust::root_bundle();
+    #[cfg(test)]
+    let environment = environment.for_loopback_fixture();
+    future_remote_server::connection::connect_nats(creds, credential_was_refreshed, &environment)
+        .await
+        .map_err(Into::into)
 }
 
 /// Drop the persisted pairing and stop the bridge (the desktop "unpair").

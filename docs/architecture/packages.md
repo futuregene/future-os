@@ -8,7 +8,7 @@ of their implementation language.
 - `remote-crypto`: Rust/TypeScript Noise secure channels sharing handshake, record and rejection fixtures.
 - `remote-client`: Rust controller connections, credential DTOs, multi-host instances, task lifecycle and file orchestration; TS Client remains in migration.
 - `remote-protocol`: Rust/TypeScript wire contracts, command schema/generated types, handshake envelopes, invitations and JSON/gzip codecs.
-- `remote-server`: Rust controlled-endpoint security, host contracts, file framing, ordered events/coalescing, command admission, wire policies and instance supervisor/control state; startup/rebuild and full role cleanup remain in migration.
+- `remote-server`: Rust controlled-endpoint security, host contracts, file framing, ordered events/coalescing, command admission, wire policies, NATS connections, heartbeat/catalog publishing and instance supervisor/control state; startup/rebuild and full role cleanup remain in migration.
 - `app-settings`: the desktop app's own settings document
   (`~/.future/app/app.db`), shared by the Tauri backend and `future desktop`.
 - `app-workspaces`: the desktop app's workspace records in the same database,

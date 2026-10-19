@@ -7,6 +7,23 @@ use std::sync::{
 };
 mod coalesce;
 
+pub fn is_catalog_event(event_type: &str) -> bool {
+    matches!(
+        event_type,
+        "agent_start"
+            | "agent_end"
+            | "approval_request"
+            | "approval_decision"
+            | "session_name_changed"
+            | "provider_config_changed"
+            | "model_visibility_changed"
+            | "app_settings_changed"
+            | "skills_changed"
+            | "run_snapshot"
+            | "error"
+    )
+}
+
 pub const MAX_EVENT_BYTES: usize = 900 * 1024;
 
 /// One agent event queued for publishing, in agent-emission order.
@@ -200,5 +217,37 @@ mod tests {
         assert_eq!(body["runId"], "");
         assert_eq!(body["sessionIdx"], 4);
         assert_eq!(body["runSequence"], -1);
+    }
+}
+
+#[cfg(test)]
+mod lane_tests {
+    use super::*;
+    #[test]
+    fn catalog_lane_keeps_status_and_approvals_but_not_token_traffic() {
+        for event in [
+            "agent_start",
+            "agent_end",
+            "approval_request",
+            "approval_decision",
+            "error",
+            "session_name_changed",
+            "provider_config_changed",
+            "model_visibility_changed",
+            "app_settings_changed",
+            "skills_changed",
+            "run_snapshot",
+        ] {
+            assert!(is_catalog_event(event), "{event}");
+        }
+        for event in [
+            "text_chunk",
+            "thinking_delta",
+            "tool_delta",
+            "toolcall_delta",
+            "tool_end",
+        ] {
+            assert!(!is_catalog_event(event), "{event}");
+        }
     }
 }

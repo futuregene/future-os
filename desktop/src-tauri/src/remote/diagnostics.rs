@@ -3,8 +3,6 @@ pub(super) use future_remote_server::diagnostics::FailureEpisode;
 
 pub(super) static START_EPISODE: LazyLock<FailureEpisode> = LazyLock::new(Default::default);
 pub(super) static CREDENTIAL_EPISODE: LazyLock<FailureEpisode> = LazyLock::new(Default::default);
-pub(super) static HEARTBEAT_PUBLISH_EPISODE: LazyLock<FailureEpisode> =
-    LazyLock::new(Default::default);
 
 /// Port for the embedded web client HTTP server.
 pub(crate) const WEB_PORT: u16 = 8022;

@@ -4,9 +4,9 @@ use crate::types::RemotePhase;
 use std::time::Duration;
 
 #[derive(Default)]
-struct QueueExecutor {
+pub(super) struct QueueExecutor {
     futures: Mutex<Vec<BoxFuture<'static, ()>>>,
-    native: Mutex<Vec<Box<dyn FnOnce() + Send + 'static>>>,
+    pub(super) native: Mutex<Vec<Box<dyn FnOnce() + Send + 'static>>>,
     reject: AtomicBool,
 }
 impl TaskExecutor for QueueExecutor {
@@ -20,7 +20,7 @@ impl TaskExecutor for QueueExecutor {
     }
 }
 impl QueueExecutor {
-    fn run_native_reverse(&self) {
+    pub(super) fn run_native_reverse(&self) {
         let mut jobs = std::mem::take(&mut *self.native.lock().unwrap());
         while let Some(job) = jobs.pop() {
             job();

@@ -491,7 +491,8 @@
           "path": "packages/remote-server/src/events.rs",
           "cases": [
             "nats_v2_event_keeps_every_v1_field_unchanged",
-            "nats_session_event_has_independent_cursor"
+            "nats_session_event_has_independent_cursor",
+            "catalog_lane_keeps_status_and_approvals_but_not_token_traffic"
           ]
         },
         "remaining-runtime-and-application": "desktop/src-tauri/src/remote/tests.rs",
@@ -516,6 +517,13 @@
           "cases": [
             "runtime_active_classifies_every_phase",
             "only_transient_remote_start_failures_arm_background_recovery"
+          ]
+        },
+        "server-connection": {
+          "path": "packages/remote-server/src/connection.rs",
+          "cases": [
+            "classify_nats_connect_error_covers_server_parse",
+            "initial_nats_connect_errors_distinguish_authorization_from_network"
           ]
         }
       }

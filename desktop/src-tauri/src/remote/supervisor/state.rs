@@ -17,7 +17,7 @@ impl future_remote_server::supervisor::TaskExecutor for DesktopExecutor {
         crate::runtime::spawn_native(job);
     }
 }
-pub(in crate::remote) static SUPERVISOR: LazyLock<Supervisor> =
+pub(in crate::remote) static SUPERVISOR: LazyLock<Arc<Supervisor>> =
     LazyLock::new(|| Supervisor::new(crate::remote_host::owned_host(), Arc::new(DesktopExecutor)));
 pub(in crate::remote) fn shared_runtime(
     creds: &pairing::PairingCreds,
