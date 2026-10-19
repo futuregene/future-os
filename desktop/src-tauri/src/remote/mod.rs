@@ -9,6 +9,7 @@
 //! refreshes credentials before expiry.
 
 pub(crate) mod commands;
+pub(crate) mod control;
 mod diagnostics;
 mod health;
 mod lifecycle;

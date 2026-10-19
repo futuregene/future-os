@@ -43,9 +43,9 @@ Windows PowerShell：
 ```
 
 不需要也不接受 `--headless` 参数。`futureos` 只启动图形 Desktop，原来的 `--headless` 选项已移除。
-旧命令如 `futureos --headless --no-qr` 应改成 `futureos-headless --no-qr`。
-图形入口接受 `--re-pair`：在运行它的终端上打印新邀请（二维码 + 完整链接）；与它一起加
-`--no-qr` 则只打印链接。
+旧命令如 `futureos --headless --no-qr` 应改成 `futureos-headless`。
+两个入口都不再接受配对相关参数：设备统一用 `future remote devices` 管理（见 3.1），
+由它在运行中的 Desktop 里完成配对。
 两个程序共享后端、数据和手机协议，不是另一套实现。
 
 无需额外指定 `--pair --qr`。程序会按当前登录与配对状态引导下一步；配对成功后也不会
@@ -98,32 +98,30 @@ GUI 的另外两个定时任务在服务器端没有对应物：应用更新检�
 
 | 选项 | 行为 |
 |---|---|
-| `--no-qr` | 只输出授权/配对链接，不绘制二维码 |
-| `--re-pair` | 撤销全部已保存的设备配对并创建新邀请 |
+| `--relay URL` | 新邀请指向自建中继，而不是 Future 平台 |
+| `--relay-ca` | 该中继使用私有 CA 时，指向其 PEM 文件 |
 | `--help` | 显示帮助，不启动 Desktop 或 Agent |
 
 例如：
 
 ```bash
-./futureos-headless --no-qr
-./futureos-headless --re-pair
+./futureos-headless --relay https://relay.example.com
+./futureos-headless --help
 ```
 
-`--re-pair` 会影响全部已保存的设备配对，只在换手机或确需替换配对时使用，不是普通网络故障的修复开关。
-终端过窄时，二维码会自动回退为文字链接；可直接复制链接，或扩大终端后重新启动。
-图形入口 `futureos` 同样接受 `--re-pair` 和 `--no-qr`，并在运行它的终端上打印。
-Windows 上请在想看到配对码的那个终端里运行：图形启动会与启动它的控制台解绑，
-`--re-pair` 会重新挂接回该终端后再打印。
+邀请会以二维码加完整链接的形式打印。终端过窄时自动回退为只打印链接并说明原因，
+因此不需要专门的开关；配对同样不再由启动参数完成，见下文。
 
 ### 3.1 在终端管理已配对设备
 
 一台机器可以同时配多台设备（手机、另一台电脑），但其中只有一台**在控**（in control），
-只有它被允许指挥这台机器；其余设备保持配对、处于待命（standby）。`--re-pair` 是
-"全部替换"，不能只处理其中一台；逐台管理用 `future` CLI：
+只有它被允许指挥这台机器；其余设备保持配对、处于待命（standby）。设备统一用 `future` CLI 管理：
 
 ```bash
 future remote devices                     # 列出已配对设备、谁在控、由平台还是中继签发
+future remote devices add                 # 配一台新设备：打印它的邀请
 future remote devices remove <id|序号>     # 只解绑这一台，其余保持配对
+future remote devices remove --all        # 解绑全部设备
 future remote devices use <id|序号>        # 指定哪一台在控
 ```
 
@@ -133,12 +131,15 @@ future remote devices use <id|序号>        # 指定哪一台在控
   下一个运行的 Desktop 重试，本地解绑照常生效。
 - `use` 写入的就是窗口里"让它控制"写入的同一个指针。Desktop 正在运行时，控制权是内存中的
   决定（设备主动接管也会改它），所以运行时**本次不生效**，下次启动才用这里的值。
-- 这些命令直接读 `~/.future/remote_pairings.json`（旧版单配对文件按单槽位读取），
+- `list`、`remove`、`use` 直接读写 `~/.future/remote_pairings.json`（旧版单配对文件按单槽位读取），
   不需要 Desktop 在运行，自建中继也不需要账号。
+- `add` 是例外：邀请只有在为该配对服务的桥已连接时才可用，所以请求交给运行中的 Desktop
+  （窗口或无头进程），由它签发邀请并在发起请求的终端里打印二维码与链接。已有设备保持配对，
+  这是"在旁边再加一台"；换手机则是 `remove --all` 之后 `add`，`add` 会先把移除遗留的旧桥停掉
+  再签发新邀请。
 
 "当前连上了没有""设备自称什么名字"只在运行的 Desktop 进程里，不在配对文件中；
-在无头服务器上新增一台设备仍属于配对动作：窗口用 Remote 页的"添加设备"，
-无头服务器用 `futureos-headless --re-pair` 换发新邀请。
+一台设备都没有时，Desktop 启动就会打印一张邀请，这也是 `remove --all` 之后的恢复方式。
 
 ## 4. Ctrl+C、SSH 断开与再次启动
 
@@ -227,12 +228,12 @@ Agent 会按阶段记录启动过程（模型目录、数据库、历史会话�
 | 现象 | 处理方式 |
 |---|---|
 | 缺少 `libwebkit2gtk-4.1.so.0` | 当前运行的是 GUI 二进制；请构建并运行 `futureos-headless` |
-| 提示 `--headless` 已移除或未知参数 | 使用不带该参数的 `futureos-headless`；`--re-pair`（以及搭配它的 `--no-qr`）两个入口都支持，其余选项属于 `futureos-headless` |
+| 提示 `--headless` 已移除或未知参数 | 使用不带该参数的 `futureos-headless`；`--re-pair`/`--no-qr` 已移除，改用 `future remote devices add` 与 `remove --all`；`--relay`/`--relay-ca` 两个入口都支持 |
 | Agent 不可用、不兼容或实例锁占用 | 根据错误确认 owner、版本、用户和数据根，升级或正常退出外部服务；不删除锁或绕过互斥。显式端点与 external 模式只连接、不接管 |
 | 内置技能没有装上 | 查看 stderr 上的 `[skills]` 输出：`future init` 需要 `futureos-headless` 旁的 CLI 或在 PATH 上，且能访问技能目录。手机仍可自行安装技能 |
 | 提示需要交互终端 | 首次登录/配对请在真实终端执行，不要使用管道、重定向或非交互服务启动 |
 | 平台授权拒绝或过期 | 按提示重新启动并登录，不要把登录码当作 App 配对码 |
-| 配对邀请过期 | 重新启动申请邀请；已完成配对无需因此重配 |
+| 配对邀请过期 | 用 `future remote devices add` 重新申请（或在一台设备都没有时重启）；已完成配对无需因此重配 |
 | 已有 Desktop 占用目录 | 退出使用该数据目录的 GUI 或另一无头进程；不要删除锁文件来绕过互斥 |
 | 进程直接消失，或节点管理员反馈被清理 | 主机的 OOM killer 或登录节点按用户配额会直接发 SIGKILL，进程自身无法报告。先看 `<根目录>/app/logs/desktop.log` 最后记录到哪个启动阶段，再查主机侧记录（`dmesg -T`、`journalctl -k`，以及节点自己的配额/作业日志）。若触发配额的是历史会话导入，可用 `FUTURE_HOME` 把数据根目录移出共享存储 |
 | 手机无法领取邀请 | 检查手机与主机的生产/测试环境是否匹配，确认邀请未过期且未被使用 |

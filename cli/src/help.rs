@@ -286,17 +286,26 @@ made in the app's own Settings screen applies immediately."#;
 pub const REMOTE_HELP: &str = r#"future remote — manage the devices paired to this machine's remote desktop
 
 Usage:
-  future remote devices [list] [--json]         Every paired device, and the one in control
-  future remote devices remove <id|#> [--yes]   Unpair one device; the others stay paired
-  future remote devices use <id|#>              Make a paired device the one in control
+  future remote devices [list] [--json]              Every paired device, and the one in control
+  future remote devices add [--json]                 Pair a new device: print its invitation
+  future remote devices remove <id|#> [--yes]        Unpair one device; the others stay paired
+  future remote devices remove --all [--yes]         Unpair every device
+  future remote devices use <id|#>                   Make a paired device the one in control
 
-Every action takes --json and prints the resulting device document instead of a
-sentence, which is the same shape `future remote devices --json` prints.
+Every action takes --json and prints the same document `future remote devices
+--json` prints (except `add`, which prints the invitation: pairId, link,
+expiresAt).
 
 A device is a phone or another computer that paired with this machine's remote
-desktop — the Remote page in the window, or futureos-headless. The list is the
-pairing book the Desktop itself reads (~/.future/remote_pairings.json), so these
-commands need no running Desktop; a self-hosted relay needs no account either.
+desktop — the Remote page in the window, or futureos-headless. The list, remove
+and use read and write the pairing book the Desktop itself reads
+(~/.future/remote_pairings.json), so they need no running Desktop; a self-hosted
+relay needs no account either.
+
+add is the exception: an invitation is only usable while the bridge for that
+pairing is connected, so the request goes to the running Desktop (the window, or
+futureos-headless) and the answer carries the invitation. A machine with no
+device at all prints one as the Desktop starts.
 
 remove revokes the device where it was minted before dropping it locally: at the
 Future platform, or by deleting its room at the relay that issued it. A revoke
@@ -306,17 +315,40 @@ use writes the same pointer the window's "Let this control" writes. A running
 Desktop keeps its current controller until it restarts: control is an in-memory
 decision there, and a device asking to take over moves it too.
 
-Adding a device is a pairing, not a management step: use the window's Remote page
-(Add a device). On a headless server, futureos-headless --re-pair replaces the
-existing pairing with a new invitation.
-
 Run `future remote devices --help` for the ids remove and use accept."#;
 
 /// The one-line usage every `future remote` argument error repeats.
 pub const REMOTE_USAGE: &str = r#"Usage:
   future remote devices [list] [--json]
-  future remote devices remove <id|#> [--yes]
-  future remote devices use <id|#>"#;
+  future remote devices add [--json]
+  future remote devices remove <id|#> [--yes] [--json]
+  future remote devices remove --all [--yes] [--json]
+  future remote devices use <id|#> [--json]"#;
+
+/// `future remote devices add --help` output.
+pub const REMOTE_ADD_HELP: &str = r#"future remote devices add — pair a new device
+
+Usage:
+  future remote devices add [--json]
+
+Prints a single-use invitation: a QR code (when the terminal is wide enough), the
+complete `futureos://remote/pair` link, and when it expires. In the app, choose
+Add device and scan it, or paste the complete link. The same invitation is also
+on the Remote page while it lasts.
+
+The invitation is minted by the running Desktop, which is the only process that
+can serve the new device, so this needs one: a window, or futureos-headless. With
+none running, the answer is "start the Desktop" — and a machine with no device at
+all prints an invitation as it starts, which is also the recovery path after
+`remove --all`.
+
+Existing devices stay paired: this adds beside them. `remove --all` followed by
+`add` is what replaces the pairing on a machine whose phone is being retired.
+
+--json prints pairId, link and expiresAt for a script to render or forward.
+
+When the invitation cannot be minted (the platform's device cap, a refused
+credential, no sign-in) the reason is printed and the exit code is 1."#;
 
 /// `future remote devices list --help` output.
 pub const REMOTE_LIST_HELP: &str = r#"future remote devices list — every device paired to this machine
@@ -344,9 +376,14 @@ pub const REMOTE_REMOVE_HELP: &str = r#"future remote devices remove — unpair 
 
 Usage:
   future remote devices remove <id|#> [--yes] [--json]
+  future remote devices remove --all [--yes] [--json]
 
 <id|#> is a pair id (the `pair_` prefix and letter case may be omitted, and a
 unique prefix is enough) or the row number `future remote devices` prints.
+
+--all removes every device at once — the "replace this machine's pairing" flow.
+It takes no device argument; pair the first one back with `future remote devices
+add`.
 
 Asks for confirmation from the terminal unless --yes is given, and refuses to
 read an answer from a redirected stdin: a prompt nobody saw must not become

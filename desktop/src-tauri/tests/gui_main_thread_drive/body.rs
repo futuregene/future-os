@@ -10,7 +10,7 @@ const MARKER: &str = "gui_main_thread_drive: driver completed";
 const READY_EVIDENCE: &str = "embedded Agent ready";
 
 /// Bound on waiting for the plugin's listener before giving up and reporting it. Every other
-/// phase is bounded too (`CHILD_BUDGET`, the reply wait, `READY_BUDGET`, `SETTLE`), so the
+/// phase is bounded too (`CHILD_BUDGET`, `READY_BUDGET`, `SETTLE`), so the
 /// target's total cost has a ceiling of roughly this plus half a minute.
 const LISTENER_BUDGET: Duration = Duration::from_secs(30);
 
@@ -32,9 +32,6 @@ const READY_BUDGET: Duration = Duration::from_secs(15);
 
 /// Environment override for [`READY_BUDGET`], in seconds.
 const READY_BUDGET_ENV: &str = "FUTUREOS_DRIVE_READY_BUDGET_SECS";
-
-/// How long the callback's reply file gets to appear after the notification.
-const REPLY_BUDGET: Duration = Duration::from_secs(6);
 
 /// [`READY_BUDGET`], with the environment override applied.
 fn ready_budget() -> Duration {
@@ -74,20 +71,6 @@ const CHILD_BUDGET: Duration = Duration::from_secs(20);
 /// which is what makes the one retry below self-checking (§S11.9.5(a)).
 const COMPANION_LATENCY: Duration = Duration::from_secs(5);
 
-/// Run one notification child and report it.
-fn spawn_child(
-    label: &str,
-    command: &mut std::process::Command,
-) -> Option<(String, std::process::Child)> {
-    match command.spawn() {
-        Ok(child) => Some((label.to_string(), child)),
-        Err(error) => {
-            eprintln!("gui_main_thread_drive: could not start the {label} child: {error}");
-            None
-        }
-    }
-}
-
 /// The isolated data root, published for the exit path: the driver removes it **only when it
 /// created it**. A notification child shares the primary's root (`ROOT_ENV`) and must never
 /// delete it out from under the primary.
@@ -111,9 +94,7 @@ fn finish(why: &str) -> ! {
     std::process::exit(0);
 }
 
-/// Hand this process a single-instance notification, once per `argv` shape per round —
-/// the two shapes the plugin's callback distinguishes — and report how each child ended.
-/// At most two rounds: the second only after the first produced no reply (see below).
+/// Hand this process a single-instance notification and report how the child ended.
 ///
 /// The child is this same binary with `ROOT_ENV` pointing at our root, so it reaches the
 /// same socket. It never gets as far as the app: `Builder::build` runs the plugin's `setup`,
@@ -121,20 +102,16 @@ fn finish(why: &str) -> ! {
 /// `std::process::exit(0)` (`tauri-plugin-single-instance 2.4.3`,
 /// `platform_impl/macos.rs:23-31` — the mechanism §S6.7.1 measured). Our listener thread then
 /// delivers the message to the app's callback on the tauri runtime, which is what makes the
-/// callback body execute.
+/// callback body (`activate_main_window`) execute on the main thread.
 ///
-/// The reply file is the attribution: the callback's `RePair` arm spawns the re-pair pass
-/// with `RePairDelivery::Reply(path)`, and that pass writes an answer even when it fails
-/// (there are no pairing credentials in this root), so the file's appearance proves the
-/// callback ran rather than merely that a child exited.
-///
-/// **Outcome reporting (supervisor ruling of 2026-10-17, §S11.9.5):** a round that produces
-/// the reply prints `hand-off ok, first-try` (or `…ok, retried`), and a round that does not
-/// prints a single greppable `hand-off FAILED (…); socket=…` line — because a run whose
-/// children took the companion path earns nothing from the nine callback lines and must be
-/// discardable by a reader who is not looking. One bounded retry follows, and only while
-/// the listener still accepts; a second failure prints its own terminal line instead of
-/// looping. These lines are a flag, not a fix: the underlying host state is §S11.1/§S11.3.
+/// **Attribution.** A hand-off child exits in ~0.1 s (at most ~2.3 s on a loaded host,
+/// §S11.11); a child that missed the listener becomes an app of its own and runs this
+/// driver's primary path instead, which is `READY_BUDGET` + `SETTLE` — an order of
+/// magnitude longer. [`COMPANION_LATENCY`] is that gap. This used to be attributed by a
+/// reply file the callback wrote for the old `--re-pair` hand-off; with no forwarded command
+/// left, the latency is the only observable, so it is reported with the same
+/// `hand-off ok` / `hand-off FAILED` vocabulary (supervisor ruling of 2026-10-17, §S11.9.5)
+/// a leg-reader greps for.
 fn notify_self() {
     let exe = match std::env::current_exe() {
         Ok(exe) => exe,
@@ -143,10 +120,6 @@ fn notify_self() {
             return;
         }
     };
-    let reply = std::env::temp_dir().join(format!(
-        "futureos-gui-drive-reply-{}.json",
-        std::process::id()
-    ));
     if let Some(root) = std::env::var_os(ROOT_ENV) {
         let _ = std::fs::remove_dir_all(std::path::Path::new(&root).join("future/agent"));
     }
@@ -160,30 +133,23 @@ fn notify_self() {
         .map(|socket| socket.display().to_string())
         .unwrap_or_else(|| "<undetermined>".to_string());
 
-    let (answered, companion) = notification_round(&exe, &reply);
-    if answered {
+    if notification_round(&exe) {
         eprintln!(
-            "gui_main_thread_drive: hand-off ok, first-try (the first spawn produced the reply)"
+            "gui_main_thread_drive: hand-off ok, first-try (the first spawn handed off and exited)"
         );
         return;
     }
-    // Fail loudly (§S11.9.5(c)): a run whose children took the companion path earns
-    // nothing from the nine callback lines, so a leg like that must be discardable by
-    // grep instead of read as if it were a complete measurement.
+    // Fail loudly (§S11.9.5(c)): a run whose child became an app of its own earns nothing
+    // from the callback lines, so a leg like that must be discardable by grep instead of
+    // read as if it were a complete measurement.
     eprintln!(
-        "gui_main_thread_drive: hand-off FAILED ({}; no reply within {}s); socket={socket_label}",
-        if companion {
-            "companion path"
-        } else {
-            "children exited on the hand-off path but left no reply"
-        },
-        REPLY_BUDGET.as_secs()
+        "gui_main_thread_drive: hand-off FAILED (the child became an app of its own or          outlived {}s); socket={socket_label}",
+        COMPANION_LATENCY.as_secs()
     );
     // One retry, and only while the listener is actually accepting: the failure is
-    // intermittent (§S11.11: the same driver failed three times, then passed with 2.24 s
-    // children and a real reply), so a second spawn can turn a bad run into a good one.
-    // It cannot mask a good one: a hand-off answers in ~0.1 s with the reply file, and
-    // this branch is only reached when there is no reply after a whole round.
+    // intermittent (§S11.11), so a second spawn can turn a bad run into a good one. It
+    // cannot mask a good one: a hand-off exits in ~0.1 s, and this branch is only reached
+    // when the first child did not.
     match socket.as_deref() {
         Some(socket) if listener_is_up(socket) => {}
         _ => {
@@ -194,118 +160,62 @@ fn notify_self() {
         }
     }
     eprintln!("gui_main_thread_drive: retrying the notification once (spawn #2)");
-    let (answered, companion) = notification_round(&exe, &reply);
-    if answered {
+    if notification_round(&exe) {
         eprintln!(
-            "gui_main_thread_drive: hand-off ok, retried (the second spawn produced the reply; \
-             the first round was degraded)"
+            "gui_main_thread_drive: hand-off ok, retried (the second spawn handed off; the \
+             first round was degraded)"
         );
         return;
     }
     eprintln!(
-        "gui_main_thread_drive: hand-off FAILED after one retry ({}; no reply within {}s); \
-         socket={socket_label}",
-        if companion {
-            "companion path"
-        } else {
-            "children exited on the hand-off path but left no reply"
-        },
-        REPLY_BUDGET.as_secs()
+        "gui_main_thread_drive: hand-off FAILED after one retry (no hand-off in either round); \
+         socket={socket_label}"
     );
 }
 
-/// One notification round: both `argv` shapes, one spawn each, then the wait for the
-/// callback's reply file.
+/// One notification round: spawn one child and judge it by how long it took to exit.
 ///
-/// Returns `(answered, companion_path)` — whether the reply appeared, and whether any
-/// child outlived [`COMPANION_LATENCY`], which is the signature of a child that never
-/// reached the plugin's `setup`. The per-child latency lines are printed either way, so
-/// the reader sees the evidence behind both answers, not just the verdict.
-fn notification_round(exe: &std::path::Path, reply: &std::path::Path) -> (bool, bool) {
-    // A stale answer from a previous round would read as a hand-off that never happened.
-    let _ = std::fs::remove_file(reply);
-
-    // Shape 1: a bare `--re-pair`, which the callback reads as `reply: None`.
-    let mut bare = std::process::Command::new(exe);
-    bare.arg("--re-pair").stdin(std::process::Stdio::null());
-
-    // Shape 2: the launcher's own hand-off, which reads as `reply: Some(path)`.
-    let mut handed = futureos_lib::launch::notifier_command(exe, reply, false);
-
-    // Both at once: the notifications are delivered to one listener thread and each child
-    // exits as soon as it has written its message, so this costs one child's latency.
-    let mut pending: Vec<(String, std::process::Child)> = Vec::new();
-    for (label, command) in [
-        ("bare --re-pair", &mut bare),
-        ("--re-pair --re-pair-reply", &mut handed),
-    ] {
-        if let Some(child) = spawn_child(label, command) {
-            pending.push(child);
+/// Returns whether the child handed the request over — it exited within
+/// [`COMPANION_LATENCY`] and successfully. The per-child line is printed either way, so the
+/// reader sees the evidence behind the verdict, not just the verdict.
+fn notification_round(exe: &std::path::Path) -> bool {
+    let mut child = match std::process::Command::new(exe)
+        .stdin(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("gui_main_thread_drive: could not start the notification child: {error}");
+            return false;
         }
-    }
-
+    };
     let started = Instant::now();
-    let mut companion = false;
-    while !pending.is_empty() {
-        let mut index = 0;
-        while index < pending.len() {
-            match pending[index].1.try_wait() {
-                Ok(Some(status)) => {
-                    let (label, _) = pending.remove(index);
-                    let elapsed = started.elapsed();
-                    companion |= elapsed > COMPANION_LATENCY;
-                    eprintln!(
-                        "gui_main_thread_drive: {label} child exited {status} after {:.2}s",
-                        elapsed.as_secs_f32()
-                    );
-                    continue;
-                }
-                Ok(None) => index += 1,
-                Err(error) => {
-                    let (label, _) = pending.remove(index);
-                    eprintln!(
-                        "gui_main_thread_drive: {label} child could not be waited on: {error}"
-                    );
-                }
-            }
-        }
-        if !pending.is_empty() && started.elapsed() >= CHILD_BUDGET {
-            for (label, mut child) in pending.drain(..) {
+    let handoff = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success() && started.elapsed() <= COMPANION_LATENCY,
+            Ok(None) if started.elapsed() >= CHILD_BUDGET => {
                 let _ = child.kill();
                 let _ = child.wait();
-                companion = true;
                 eprintln!(
-                    "gui_main_thread_drive: {label} child exceeded {}s and was killed \
+                    "gui_main_thread_drive: notification child exceeded {}s and was killed \
                      (the hand-off did not happen)",
                     CHILD_BUDGET.as_secs()
                 );
+                break false;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(error) => {
+                eprintln!("gui_main_thread_drive: notification child could not be waited on: {error}");
+                break false;
             }
         }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-
-    // The callback runs on the app's runtime; give it a window to answer on the file.
-    let deadline = Instant::now() + REPLY_BUDGET;
-    while !reply.is_file() {
-        if Instant::now() >= deadline {
-            eprintln!(
-                "gui_main_thread_drive: no reply file at {} within {}s (the callback's Reply \
-                 arm did not finish)",
-                reply.display(),
-                REPLY_BUDGET.as_secs()
-            );
-            return (false, companion);
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    let answer = std::fs::read_to_string(reply).unwrap_or_default();
+    };
     eprintln!(
-        "gui_main_thread_drive: the forwarded re-pair was answered on {}: {}",
-        reply.display(),
-        answer.trim()
+        "gui_main_thread_drive: notification child exited after {:.2}s ({})",
+        started.elapsed().as_secs_f32(),
+        if handoff { "hand-off" } else { "no hand-off" }
     );
-    let _ = std::fs::remove_file(reply);
-    (true, companion)
+    handoff
 }
 
 /// The socket this process's single-instance plugin listens on, computed the way the plugin
@@ -457,10 +367,8 @@ pub fn main() {
                 ready_budget().as_secs()
             );
         }
-        // Both notification shapes, once — a plain `--re-pair` (`reply: None`) and the
-        // launcher's own `--re-pair --re-pair-reply <path>` (`reply: Some(…)`). A companion
-        // never does this: it is here to *be* a notification, or the children would notify
-        // each other forever.
+        // One notification, once. A companion never does this: it is here to *be* a
+        // notification, or the children would notify each other forever.
         if !is_companion {
             notify_self();
         }
@@ -475,7 +383,7 @@ pub fn main() {
     });
 
     // The real entry point, on this process's main thread.
-    let outcome = futureos_lib::run_with(futureos_lib::launch::LaunchOptions::default());
+    let outcome = futureos_lib::run_with();
     match outcome {
         Ok(()) => finish("driver completed after run_with returned"),
         Err(error) => finish(&format!(

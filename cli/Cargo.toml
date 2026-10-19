@@ -56,6 +56,12 @@ sha2 = "0.10"
 anyhow = "1"
 fs2 = "0.4"
 fd-lock = "4"
+# `future remote devices add`: the invitation is printed as a QR code in the
+# terminal that asked for it, with the link kept when the terminal is narrow. The
+# same two crates and versions the desktop entry point renders with, so the two
+# print the same invitation.
+qrcode = { version = "0.14", default-features = false }
+terminal_size = "0.4"
 # `future relay`: an account-free NATS relay served from this binary. Its HTTP
 # surface is small (four routes, no middleware stack), so axum's default features
 # are enough; `nkeys` signs the NATS user JWTs it issues.
