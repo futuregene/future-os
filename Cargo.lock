@@ -2009,6 +2009,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "future-remote-interop"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "future-remote-client",
+ "future-remote-crypto",
+ "future-remote-protocol",
+ "future-remote-server",
+ "futures",
+ "nkeys",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "future-remote-protocol"
 version = "0.1.0"
 dependencies = [

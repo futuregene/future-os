@@ -1,9 +1,8 @@
 # Shared Rust workspace: core libraries and CLI/Desktop entry points.
 #
-# The remote-control bridge is embedded in the desktop Tauri backend
-# (desktop/src-tauri/src/remote/) — see docs/internals/desktop/remote-control-*.md. The
-# former standalone `remote/` crate is gone; only `desktop/web/` (the
-# verification web client served by the embedded bridge) remains.
+# Remote libraries live in packages/remote-* and are hosted by Desktop/Mobile.
+# tests/remote-interop combines public roles without an application dependency;
+# its broker/process tests and host binary require the network-tests feature.
 #
 # Desktop shares the lockfile, build profiles and target directory.
 # default-members keeps GUI dependencies out of ordinary root builds; use
@@ -13,7 +12,7 @@
 # one place instead of chasing drift across the Cargo.tomls. Members opt in
 # with `{ workspace = true }` and may add features (cargo unifies them).
 [workspace]
-members = ["agent", "channels", "packages/rpc", "packages/remote-crypto", "packages/remote-protocol", "packages/remote-client", "packages/remote-server", "packages/app-settings", "packages/app-workspaces", "orchestration/goal", "orchestration/tasks", "tui", "cli", "desktop/src-tauri"]
+members = ["agent", "channels", "packages/rpc", "packages/remote-crypto", "packages/remote-protocol", "packages/remote-client", "packages/remote-server", "packages/app-settings", "packages/app-workspaces", "orchestration/goal", "orchestration/tasks", "tui", "cli", "desktop/src-tauri", "tests/remote-interop"]
 default-members = ["agent", "channels", "packages/rpc"]
 resolver = "2"
 
