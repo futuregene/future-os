@@ -528,3 +528,5 @@ Client 接回主干的 control/holder 状态，握手 presence 初始化，后�
 [迁移清单](remote-test-migration.json)补齐保留位置和理由：Desktop 业务/Store/Agent/审批/文件、平台账户与证书适配、真实多进程、应用运行时/凭据书及其测试基础设施；Mobile 原生存储、HTTP/设备、React/Context、可见会话提交和呈现规则继续留在应用，不因纯函数形式误归协议。729 个原基线 Rust 名字仍可追踪，211 个在独立核心/互通、518 个在应用；主干新增 control 网络用例也迁入互通。归属和源码断言不等于验收通过。
 
 Client/interop 与 Desktop GUI/headless Clippy `--all-targets`、相关 fmt、边界/生成/文档检查通过；没有执行本地测试。实现进入工作分支统一自动化验收准备，阶段状态仍等待 CI 结果、同条件性能证据与同候选版本人工确认；不创建 PR。
+
+[人工验收清单](../testing/remote-package-manual-acceptance.zh-CN.md)用于记录最终候选及待确认的真机结果；当前尚未执行，不代表人工通过。

@@ -664,3 +664,5 @@ Client/interop and Desktop GUI/headless Clippy --all-targets, relevant fmt,
 boundary/generation/documentation checks pass. No local tests ran. Implementation
 is entering unified branch CI preparation; runtime, matched performance and
 same-candidate manual confirmation remain pending. No PR is created.
+
+[Manual acceptance checklist](../testing/remote-package-manual-acceptance.md) records the final candidate and pending physical-device results.
