@@ -222,20 +222,24 @@ export async function runSendPipeline(
           // the thread the reload restores it (stopped, per run.status).
           const storedAssistantMessage = clientMessageRecord(run.id, partial, "complete");
           if (isCurrentSend()) {
-            const abortedRender = deriveRenderFields(
-              await safeListRunEvents(run.id),
-              storedAssistantMessage.content,
-            );
-            patchMessage(setMessages, pendingId, {
-              id: storedAssistantMessage.id,
-              runId: storedAssistantMessage.runId,
-              content: abortedRender.content,
-              segments: abortedRender.segments,
-              status: storedAssistantMessage.status,
-              createdAt: runStartedAt,
-              outputTokens: abortedRender.outputTokens,
-              stopped: true,
-              terminationNotice: userStoppedNotice(),
+            const events = await safeListRunEvents(run.id);
+            patchMessage(setMessages, pendingId, (previous) => {
+              const abortedRender = deriveRenderFields(
+                events,
+                storedAssistantMessage.content,
+                previous,
+              );
+              return {
+                id: storedAssistantMessage.id,
+                runId: storedAssistantMessage.runId,
+                content: abortedRender.content,
+                segments: abortedRender.segments,
+                status: storedAssistantMessage.status,
+                createdAt: runStartedAt,
+                outputTokens: abortedRender.outputTokens,
+                stopped: true,
+                terminationNotice: userStoppedNotice(),
+              };
             });
             onThreadActivity();
           }
@@ -304,22 +308,26 @@ export async function runSendPipeline(
         reply.content,
         "failed",
       );
-      const partialRender = deriveRenderFields(
-        await safeListRunEvents(run.id),
-        storedAssistantMessage.content,
-      );
+      const events = await safeListRunEvents(run.id);
       if (isCurrentSend()) {
-        patchMessage(setMessages, pendingId, {
-          id: storedAssistantMessage.id,
-          runId: storedAssistantMessage.runId,
-          content: partialRender.content,
-          segments: partialRender.segments,
-          status: storedAssistantMessage.status,
-          createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
-          outputTokens: partialRender.outputTokens,
-          terminationNotice: interruptedNotice,
-          terminationTitle: interruptedTitle,
-          runError: interruptedMessage,
+        patchMessage(setMessages, pendingId, (previous) => {
+          const partialRender = deriveRenderFields(
+            events,
+            storedAssistantMessage.content,
+            previous,
+          );
+          return {
+            id: storedAssistantMessage.id,
+            runId: storedAssistantMessage.runId,
+            content: partialRender.content,
+            segments: partialRender.segments,
+            status: storedAssistantMessage.status,
+            createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
+            outputTokens: partialRender.outputTokens,
+            terminationNotice: interruptedNotice,
+            terminationTitle: interruptedTitle,
+            runError: interruptedMessage,
+          };
         });
         onThreadActivity();
       }
@@ -339,24 +347,28 @@ export async function runSendPipeline(
 
     // Streaming polls can lag the final text tail; re-project the now-complete
     // events so the inline segments match the persisted reply exactly.
-    const finalRender = deriveRenderFields(
-      await safeListRunEvents(run.id),
-      storedAssistantMessage.content,
-    );
+    const events = await safeListRunEvents(run.id);
     const settledRun = await loadCurrentRun(run.id);
     const durationMs = runDurationMs(settledRun, runStartAnchorMs);
 
     if (isCurrentSend()) {
-      patchMessage(setMessages, pendingId, {
-        id: storedAssistantMessage.id,
-        runId: storedAssistantMessage.runId,
-        content: finalRender.content,
-        segments: finalRender.segments,
-        status: storedAssistantMessage.status,
-        createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
-        modelId: settledRun?.modelId ?? modelId,
-        durationMs,
-        outputTokens: finalRender.outputTokens,
+      patchMessage(setMessages, pendingId, (previous) => {
+        const finalRender = deriveRenderFields(
+          events,
+          storedAssistantMessage.content,
+          previous,
+        );
+        return {
+          id: storedAssistantMessage.id,
+          runId: storedAssistantMessage.runId,
+          content: finalRender.content,
+          segments: finalRender.segments,
+          status: storedAssistantMessage.status,
+          createdAt: storedTimeToIso(storedAssistantMessage.createdAt),
+          modelId: settledRun?.modelId ?? modelId,
+          durationMs,
+          outputTokens: finalRender.outputTokens,
+        };
       });
       onThreadActivity();
     }
@@ -374,7 +386,7 @@ export async function runSendPipeline(
         if (isCurrentSend()) {
           setRecentRun(currentRun);
           patchMessage(setMessages, pendingId, (previous) => {
-            const rendered = deriveRenderFields(events, previous.content);
+            const rendered = deriveRenderFields(events, previous.content, previous);
             const stopped = currentRun.status === "cancelled";
             return {
               ...rendered,
