@@ -242,29 +242,43 @@ pub(in crate::remote) fn status_focused(prefer: Option<&str>) -> RemoteStatus {
         web_url: runtime.and_then(|state| state.web_url.clone()),
         web_lan_url: runtime.and_then(|state| state.web_lan_url.clone()),
         agent_available: host().agent_available(),
-        warning_code: web_warning(runtime),
+        warning_code: web_warning(&guard),
     }
 }
 
 /// The local browser listener is one listener for the whole process, owned by
-/// one slot; a dead one is reported there and nowhere else.
-fn web_warning(runtime: Option<&RemoteState>) -> Option<String> {
-    let runtime = runtime?;
+/// exactly one slot.
+///
+/// Report — and heal — it from its owner only. A slot that never bound it
+/// carries no `web_task` *by design*, and reading that absence as "the listener
+/// died" made the status of any other device (the one focused after a
+/// takeover) claim a broken listener, spend the bounded retry budget rebinding
+/// a port its owner still held, and then show `LC002` for a listener that was
+/// never down.
+fn web_warning(states: &HashMap<String, RemoteState>) -> Option<String> {
     if !web_client_enabled() {
         return None;
     }
-    let dead = runtime
+    let owner = SUPERVISOR.web_owner.lock().unwrap().clone()?;
+    let state = states.get(&owner)?;
+    // No task on the owner means the last generation could not bind — the
+    // port was still held by the generation it replaced — which is worth one
+    // rebind now that the old listener is gone.
+    let dead = state
         .web_task
         .as_ref()
         .is_none_or(|task| task.is_finished());
+    if !dead {
+        return None;
+    }
     let can_retry =
         SUPERVISOR.web_reconnect_attempts.load(Ordering::Acquire) < MAX_WEB_RECONNECT_ATTEMPTS;
     let in_flight = SUPERVISOR.web_reconnect_running.load(Ordering::Acquire);
-    if dead && !in_flight && !can_retry {
+    if !in_flight && !can_retry {
         return Some("web_bind".to_string());
     }
-    if dead && can_retry && !in_flight {
-        spawn_web_reconnect(runtime.pair_id.clone());
+    if can_retry && !in_flight {
+        spawn_web_reconnect(owner);
     }
     None
 }

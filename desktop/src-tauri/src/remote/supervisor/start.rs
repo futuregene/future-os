@@ -402,6 +402,10 @@ pub(in crate::remote) async fn start_slot(
     // the unauthenticated local HTTP listener in production or custom envs.
     let web_enabled = web_client_enabled() && owns_local_web;
     let (web_task, web_url, web_lan_url) = if web_enabled {
+        // The listener is this device's duty from its first attempt, not only
+        // once the port opens: a bind that failed has to be retried and, if it
+        // keeps failing, reported — and both belong to this slot alone.
+        *SUPERVISOR.web_owner.lock().unwrap() = Some(pair_id.clone());
         match bind_web_listener().await {
             Ok(listener) => (
                 Some(spawn_web_server(listener)),
@@ -746,6 +750,7 @@ pub(in crate::remote) fn spawn_web_reconnect(pair_id: String) {
                     let web_task = spawn_web_server(listener);
                     let mut guard = SUPERVISOR.state.lock().unwrap();
                     if let Some(state) = guard.get_mut(&pair_id) {
+                        *SUPERVISOR.web_owner.lock().unwrap() = Some(pair_id.clone());
                         if let Some(previous) = state.web_task.replace(web_task) {
                             previous.abort();
                         }
