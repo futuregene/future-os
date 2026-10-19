@@ -99,6 +99,24 @@ function buttonByText(text: string): HTMLButtonElement | undefined {
     .find(button => (button.textContent ?? "").trim() === text);
 }
 
+/** The on/off switch of the host section: the first `role=switch` on the page. */
+function hostSwitch(): HTMLButtonElement {
+  return container.querySelectorAll<HTMLButtonElement>("button[role='switch']")[0]!;
+}
+
+/** The auto-connect preference, which exists only while the host is on. */
+function autoConnectSwitch(): HTMLButtonElement | undefined {
+  return container.querySelectorAll<HTMLButtonElement>("button[role='switch']")[1];
+}
+
+/** Turn the remote desktop on (or off) the way a user does: through the switch. */
+async function toggleHost(): Promise<void> {
+  await act(async () => {
+    hostSwitch().click();
+  });
+  await flush();
+}
+
 beforeEach(() => {
   startRemote.mockReset();
   stopRemote.mockReset();
@@ -137,11 +155,12 @@ describe("remoteView pairing lifecycle", () => {
     await mount();
 
     await act(async () => {
-      buttonByText("Pair & start")?.click();
+      hostSwitch().click();
     });
     expect(startRemote).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("Establishing a secure connection. The QR code will appear when it is ready.");
-    expect(buttonByText("Pair & start")).toBeUndefined();
+    // The switch cannot claim to be on until the bridge actually reports it.
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("false");
 
     await act(async () => {
       release();
@@ -157,13 +176,13 @@ describe("remoteView pairing lifecycle", () => {
     try {
       await mount();
       await act(async () => {
-        buttonByText("Pair & start")?.click();
+        hostSwitch().click();
       });
       await flush();
       expect(container.textContent).toContain("The action could not be completed. Try again later. (LC999)");
       expect(container.textContent).not.toContain("SPAWN_FAILED");
       expect(consoleError).toHaveBeenCalledWith("remote start failed:", expect.any(Error));
-      expect(buttonByText("Pair & start")).toBeTruthy();
+      expect(hostSwitch().getAttribute("aria-checked")).toBe("false");
     }
     finally {
       consoleError.mockRestore();
@@ -274,31 +293,28 @@ describe("remoteView pairing lifecycle", () => {
 });
 
 describe("remoteView connection actions", () => {
-  it("starts a stopped but paired device and can disconnect a running one", async () => {
+  it("starts a stopped but paired machine and stops a running one, through the switch", async () => {
     await mount({ remoteStatus: status({ pairId: "pair_abcd", phase: "stopped" }) });
-    expect(container.textContent).toContain("7F3A".replace("7F3A", "ABCD"));
-    expect(buttonByText("Connect")).toBeTruthy();
+    // Off: the identity is not shown, and nothing about the bridge is claimed.
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).not.toContain("ABCD");
 
-    await act(async () => {
-      buttonByText("Connect")?.click();
-    });
-    await flush();
+    await toggleHost();
     expect(startRemote).toHaveBeenCalledTimes(1);
 
     act(() => root.unmount());
     root = createRoot(container);
     await mount({ remoteStatus: status({ pairId: "pair_abcd", phase: "ready" }) });
-    expect(buttonByText("Disconnect")).toBeTruthy();
-    await act(async () => {
-      buttonByText("Disconnect")?.click();
-    });
-    await flush();
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("true");
+    await toggleHost();
     expect(stopRemote).toHaveBeenCalledTimes(1);
   });
 
-  it("offers Pair again for a revoked credential and Reconnect while recovering", async () => {
+  it("reports a revoked credential and leaves the switch off", async () => {
     await mount({ remoteStatus: status({ pairId: "pair_1", phase: "revoked" }) });
-    expect(buttonByText("Pair again")).toBeTruthy();
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("false");
+    // The reason stays visible: an off switch with no explanation would leave
+    // the user guessing whether their own action turned it off.
     expect(container.textContent).toContain("Pairing expired");
 
     act(() => root.unmount());
@@ -306,10 +322,9 @@ describe("remoteView connection actions", () => {
     await mount({
       remoteStatus: status({ pairId: "pair_1", phase: "reconnecting", reason: "network", recovery: { attempt: 1, maxAttempts: 3, nextRetryAt: null, since: 0 } }),
     });
-    // A non-terminal state keeps the "Connecting" badge and offers the action
-    // that answers the reason (here: check the network).
+    // A non-terminal state is on: the badge says what is happening.
     expect(container.textContent).toContain("Connecting");
-    expect(buttonByText("Reconnect")).toBeTruthy();
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("true");
   });
 
   it("sends the user back to sign-in when the account needs authorization", async () => {
@@ -318,10 +333,11 @@ describe("remoteView connection actions", () => {
     window.addEventListener("futureos:show-onboarding", listener);
     try {
       await mount({ remoteStatus: status({ pairId: "pair_1", phase: "failed", reason: "account_authorization" }) });
-      expect(buttonByText("Sign in again")).toBeTruthy();
-      await act(async () => {
-        buttonByText("Sign in again")?.click();
-      });
+      expect(container.textContent).toContain("Your FutureOS sign-in has expired. Sign in again.");
+
+      // Turning the switch on must not start a bridge the platform will refuse:
+      // it sends the user to the step that can succeed.
+      await toggleHost();
       expect(events).toEqual(["show-onboarding"]);
       expect(startRemote).not.toHaveBeenCalled();
     }
@@ -336,16 +352,11 @@ describe("remoteView connection actions", () => {
     window.addEventListener("futureos:show-onboarding", listener);
     try {
       // Unpaired, and the failure is the account's: the platform issues pairing
-      // codes, so "Pair & start" here could only fail again. The primary action
-      // has to be the one that can succeed.
+      // codes, so starting here could only fail again.
       await mount({ remoteStatus: status({ phase: "failed", reason: "account_authorization" }) });
       expect(container.textContent).toContain("Your FutureOS sign-in has expired. Sign in again.");
-      expect(buttonByText("Sign in again")).toBeTruthy();
-      expect(buttonByText("Pair & start")).toBeUndefined();
 
-      await act(async () => {
-        buttonByText("Sign in again")?.click();
-      });
+      await toggleHost();
       expect(events).toEqual(["show-onboarding"]);
       expect(startRemote).not.toHaveBeenCalled();
     }
@@ -355,32 +366,32 @@ describe("remoteView connection actions", () => {
   });
 
   it("names each terminal failure with its support code", async () => {
-    const cases: Array<[RemoteStatus["reason"], string, string]> = [
-      ["network", "Network unavailable. Check your connection and try again later. (NW001)", "Reconnect"],
-      ["credential_revoked", "Pairing expired. Pair this device again. (PA001)", "Pair again"],
-      ["credential_expired", "Service temporarily unavailable. Try again later. (AU002)", "Reconnect"],
-      ["service_authorization", "Service temporarily unavailable. Contact support. (AU001)", "Reconnect"],
-      ["protocol", "Service temporarily unavailable. Contact support. (PT001)", "Reconnect"],
-      ["generation_unhealthy", "Service temporarily unavailable. Try again later. (RT001)", "Reconnect"],
-      ["remote_server", "Service temporarily unavailable. Try again later. (SV001)", "Reconnect"],
-      ["local", "This device encountered a problem. Try again later. (LC001)", "Reconnect"],
-      ["system_sleep", "Network unavailable. Check your connection and try again later. (PW001)", "Reconnect"],
+    const cases: Array<[RemoteStatus["reason"], string]> = [
+      ["network", "Network unavailable. Check your connection and try again later. (NW001)"],
+      ["credential_revoked", "Pairing expired. Pair this device again. (PA001)"],
+      ["credential_expired", "Service temporarily unavailable. Try again later. (AU002)"],
+      ["service_authorization", "Service temporarily unavailable. Contact support. (AU001)"],
+      ["protocol", "Service temporarily unavailable. Contact support. (PT001)"],
+      ["generation_unhealthy", "Service temporarily unavailable. Try again later. (RT001)"],
+      ["remote_server", "Service temporarily unavailable. Try again later. (SV001)"],
+      ["local", "This device encountered a problem. Try again later. (LC001)"],
+      ["system_sleep", "Network unavailable. Check your connection and try again later. (PW001)"],
     ];
-    for (const [reason, message, action] of cases) {
+    for (const [reason, message] of cases) {
       await mount({ remoteStatus: status({ pairId: "pair_1", phase: "failed", reason }) });
       expect(container.textContent, String(reason)).toContain(message);
-      expect(buttonByText(action), String(reason)).toBeTruthy();
+      // A failed bridge is off, and the switch is how the user tries again.
+      expect(hostSwitch().getAttribute("aria-checked"), String(reason)).toBe("false");
       act(() => root.unmount());
       root = createRoot(container);
     }
   });
 
-  it("asks the user to reconnect while the desktop is still preparing", async () => {
+  it("keeps the connecting badge while the desktop is still preparing", async () => {
     await mount({ remoteStatus: status({ agentAvailable: false, pairId: "pair_1", phase: "ready" }) });
-    // The device-preparing state is a connecting state for this surface: the
-    // badge stays "Connecting" and the action is a reconnect/restart.
+    // The device-preparing state is a connecting state for this surface.
     expect(container.textContent).toContain("Connecting");
-    expect(buttonByText("Connect")).toBeTruthy();
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("true");
     expect(buttonByText("Disconnect")).toBeUndefined();
   });
 
@@ -389,10 +400,7 @@ describe("remoteView connection actions", () => {
     stopRemote.mockRejectedValue(new Error("stop failed"));
     try {
       await mount({ remoteStatus: status({ pairId: "pair_1", phase: "ready" }) });
-      await act(async () => {
-        buttonByText("Disconnect")?.click();
-      });
-      await flush();
+      await toggleHost();
       expect(container.textContent).toContain("The action could not be completed.");
       expect(consoleError).toHaveBeenCalledWith("remote stop failed:", expect.any(Error));
     }
@@ -406,7 +414,7 @@ describe("remoteView unpair", () => {
   it("confirms before unpairing, and reports a failure", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      await mount({ remoteStatus: status({ pairId: "pair_bee", phase: "stopped" }) });
+      await mount({ remoteStatus: status({ pairId: "pair_bee", phase: "ready" }) });
       await act(async () => {
         buttonByText("Unpair")?.click();
       });
@@ -445,14 +453,14 @@ describe("remoteView unpair", () => {
   });
 
   it("leaves an unnamed pair id as it is", async () => {
-    await mount({ remoteStatus: status({ pairId: "custom-id", phase: "stopped" }) });
+    await mount({ remoteStatus: status({ pairId: "custom-id", phase: "ready" }) });
     expect(container.textContent).toContain("CUSTOM-ID");
   });
 });
 
 describe("remoteHostSection", () => {
   it("links to the mobile app beside the note", async () => {
-    await mount();
+    await mount({ remoteStatus: status({ pairId: "pair_1", phase: "ready" }) });
     await act(async () => {
       buttonByText("Download mobile app")?.click();
     });
@@ -466,8 +474,8 @@ describe("remoteHostSection", () => {
    * look when it is wrong.
    */
   it("carries the auto-connect preference and reports changes", async () => {
-    const props = await mount({ autoConnect: true });
-    const toggle = container.querySelector<HTMLButtonElement>("button[role='switch']")!;
+    const props = await mount({ autoConnect: true, remoteStatus: status({ pairId: "pair_1", phase: "ready" }) });
+    const toggle = autoConnectSwitch()!;
     expect(toggle.getAttribute("aria-checked")).toBe("true");
 
     await act(async () => toggle.click());
@@ -537,8 +545,48 @@ describe("remoteHostSection", () => {
 
   it("renders nothing pairing-specific for a null status", async () => {
     await mount({ remoteStatus: null });
-    expect(buttonByText("Pair & start")).toBeTruthy();
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("false");
     expect(buttonByText("Unpair")).toBeUndefined();
+    expect(autoConnectSwitch()).toBeUndefined();
+  });
+
+  it("hides every setting while the switch is off", async () => {
+    await mount({
+      autoConnect: true,
+      remoteStatus: status({
+        pairId: "pair_alpha",
+        phase: "stopped",
+        devices: [{ pairId: "pair_alpha", phase: "ready", control: "active", connected: false, client: { kind: "mobile", name: "Pixel 9" }, pairingCode: null, pairingCodeExpiresAt: null, desktopId: "desk_1" }],
+      }),
+    });
+
+    // The switch is the whole off state: no client list, no invitation, no
+    // preference, no footnote explaining what a closed switch would do anyway.
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).not.toContain("Pixel 9");
+    expect(container.textContent).not.toContain("Add a device");
+    expect(container.textContent).not.toContain("Auto-connect on launch");
+    expect(container.textContent).not.toContain("Download mobile app");
+    expect(autoConnectSwitch()).toBeUndefined();
+    expect(buttonByText("Unpair")).toBeUndefined();
+  });
+
+  it("shows the paired clients and their actions once the switch is on", async () => {
+    await mount({
+      remoteStatus: status({
+        pairId: "pair_alpha",
+        phase: "ready",
+        devices: [{ pairId: "pair_alpha", phase: "ready", control: "active", connected: true, client: { kind: "mobile", name: "Pixel 9" }, pairingCode: null, pairingCodeExpiresAt: null, desktopId: "desk_1" }],
+      }),
+    });
+
+    expect(hostSwitch().getAttribute("aria-checked")).toBe("true");
+    expect(container.textContent).toContain("Pixel 9 (a phone)");
+    expect(container.textContent).toContain("Add a device");
+    expect(buttonByText("Unpair")).toBeTruthy();
+    // The switch is the only start/stop control; no second "Disconnect" button.
+    expect(buttonByText("Disconnect")).toBeUndefined();
+    expect(buttonByText("Connect")).toBeUndefined();
   });
 });
 
@@ -601,7 +649,7 @@ describe("remoteView device list", () => {
     expect(container.textContent).toContain("Offline");
   });
 
-  it("says the connection is down above the device list, and offers to retry", async () => {
+  it("says the connection is down above the device list", async () => {
     await mount({
       remoteStatus: status({
         pairId: "pair_alpha",
@@ -616,10 +664,11 @@ describe("remoteView device list", () => {
 
     // The list alone would read as normal: every row is merely standing by.
     expect(container.textContent).toContain("Connecting");
-    expect(container.textContent).toContain("Reconnect");
-    // The bridge is not up, so "Disconnect" must not be the offered action.
-    expect(container.textContent).not.toContain("Disconnect");
+    expect(container.textContent).toContain("Offline");
+    // The bridge is not up, so no device is presented as driving.
     expect(container.textContent).not.toContain("In control");
+    // The list is still there because the bridge is running (reconnecting).
+    expect(container.textContent).toContain("Add a device");
   });
 
   it("offers a takeover only for the device that is not in control", async () => {
