@@ -952,8 +952,10 @@ Current pairing authorization covers that Desktop's sessions and must not be
 misdescribed as per-session authorization. Remote v2 uses Noise authenticated
 key agreement and per-message AEAD on top of NATS — business messages, files,
 and status notices are all end-to-end encrypted; the relay no longer carries
-content-authenticity trust. The phone requires WSS; Desktop production
-connections enforce verified TLS. Scanning and pasting the full invitation
+content-authenticity trust. The phone requires WSS from the Future platform, and
+Desktop production connections enforce verified TLS; a self-hosted relay that
+declares a plaintext origin is the one exception on both sides (see
+`docs/guide/self-hosted-relay.md`). Scanning and pasting the full invitation
 keep the same flow; the invitation carries a one-time secret usable only
 end-side; original pairings must be re-established, with no silent fallback to
 v1 plaintext. The relay can still observe subjects, traffic metadata, and deny

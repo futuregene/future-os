@@ -853,15 +853,36 @@ pub(in crate::remote) async fn connect_nats(
         Some(bundle) => options.add_root_certificates(bundle),
         None => options,
     };
-    // Unit tests use an in-process, plaintext fake broker. There is no runtime
-    // configuration switch that permits a production TLS downgrade.
-    #[cfg(not(test))]
-    let options = options.require_tls(true);
+    // Unit tests use an in-process, plaintext fake broker. A production
+    // connection requires verified TLS — with one exception, and it is the
+    // same one the invitation makes: a self-hosted relay on a local network has
+    // no certificate this machine could verify (it would have to be its own
+    // CA), so a relay that declares a plaintext endpoint gets a plaintext
+    // connection. The pairing is authenticated by the Noise key in the QR
+    // code, not by the broker's certificate; what the exception exposes is the
+    // NATS credential, which that relay issued anyway. See
+    // `docs/guide/self-hosted-relay.md`.
+    let options = if cfg!(test) || plaintext_relay(creds) {
+        options
+    } else {
+        options.require_tls(true)
+    };
     let client = options.connect(&creds.nats_url).await.map_err(|error| {
         let message = format!("Failed to connect to NATS: {error}");
         classify_nats_connect_error(error.kind(), message)
     })?;
     Ok(ConnectedNats { client, health })
+}
+
+/// Whether this pairing was minted by a self-hosted relay that serves a
+/// plaintext endpoint.
+///
+/// Both conditions matter: `control_url` is what distinguishes a relay from the
+/// official platform (which always leaves it `None`), and the `nats://` scheme
+/// is the operator's own statement that TLS is off — a relay that kept TLS
+/// hands out `tls://` and gets the unconditional requirement.
+pub(in crate::remote) fn plaintext_relay(creds: &pairing::PairingCreds) -> bool {
+    creds.control_url.is_some() && creds.nats_url.starts_with("nats://")
 }
 
 pub(in crate::remote) fn classify_nats_connect_error(

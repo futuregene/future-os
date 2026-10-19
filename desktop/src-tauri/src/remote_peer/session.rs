@@ -917,10 +917,17 @@ pub(crate) async fn connect(creds: &PeerCreds) -> Result<Connected, crate::AppEr
         Some(bundle) => options.add_root_certificates(bundle),
         None => options,
     };
-    // Unit tests use an in-process, plaintext fake broker. There is no runtime
-    // switch that permits a production TLS downgrade.
-    #[cfg(not(test))]
-    let options = options.require_tls(true);
+    // Unit tests use an in-process, plaintext fake broker. A production
+    // connection requires verified TLS unless the relay that minted this
+    // pairing is plaintext itself — its token URL is the record of that choice
+    // (a self-hosted relay hands one out over the scheme it serves). A LAN
+    // relay cannot present a certificate this machine would accept, and the
+    // invitation, not the broker, authenticates the host.
+    let options = if cfg!(test) || creds.token_url.starts_with("http://") {
+        options
+    } else {
+        options.require_tls(true)
+    };
     let client = options.connect(&creds.nats_url).await.map_err(|error| {
         // Two different kinds of failure, which need two different responses from
         // the caller: an authorization failure will never succeed on a retry (the
