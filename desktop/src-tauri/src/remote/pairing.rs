@@ -10,6 +10,16 @@ pub fn load_creds() -> Option<PairingCreds> {
 pub fn load_slots() -> Vec<PairingCreds> {
     super::host().load_slots()
 }
+/// One device's credential, as last saved.
+///
+/// A slot's credential-refresh runner belongs to that device, so it reads *this*
+/// slot: [`load_creds`] answers with the book's primary — the controlling
+/// device — and asking it about a standby slot answers "that device is gone".
+pub fn load_slot(pair_id: &str) -> Option<PairingCreds> {
+    load_slots()
+        .into_iter()
+        .find(|creds| creds.pair_id == pair_id)
+}
 /// Which device drives this machine, as persisted.
 pub fn active_slot() -> Option<String> {
     super::host().active_slot()

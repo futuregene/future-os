@@ -87,6 +87,12 @@ pub(in crate::remote) struct Supervisor {
     pub(in crate::remote) runtime_failure_window_started: AtomicU64,
     pub(in crate::remote) web_reconnect_running: AtomicBool,
     pub(in crate::remote) web_reconnect_attempts: AtomicU8,
+    /// The slot that bound the process-wide browser listener, if one did.
+    ///
+    /// The listener is one per process and belongs to whoever opened the port,
+    /// so both its health report and its retry have to name that device — a
+    /// slot that never bound it has no `web_task` and must not stand in for it.
+    pub(in crate::remote) web_owner: Mutex<Option<String>>,
     pub(in crate::remote) tasks: Mutex<Vec<(futures::future::AbortHandle, Arc<AtomicBool>)>>,
 }
 pub(in crate::remote) static SUPERVISOR: LazyLock<Supervisor> = LazyLock::new(|| Supervisor {
@@ -109,6 +115,7 @@ pub(in crate::remote) static SUPERVISOR: LazyLock<Supervisor> = LazyLock::new(||
     runtime_failure_window_started: AtomicU64::new(0),
     web_reconnect_running: AtomicBool::new(false),
     web_reconnect_attempts: AtomicU8::new(0),
+    web_owner: Mutex::new(None),
     tasks: Mutex::new(Vec::new()),
 });
 impl Supervisor {
@@ -550,6 +557,7 @@ mod tests {
             runtime_failure_window_started: AtomicU64::new(0),
             web_reconnect_running: AtomicBool::new(false),
             web_reconnect_attempts: AtomicU8::new(0),
+            web_owner: std::sync::Mutex::new(None),
             tasks: std::sync::Mutex::new(Vec::new()),
         }
     }

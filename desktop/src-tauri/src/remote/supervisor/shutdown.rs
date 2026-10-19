@@ -399,6 +399,7 @@ pub(in crate::remote) fn stop_runtime() -> RemoteStatus {
         abort_generation(state);
     }
     *SUPERVISOR.active.lock().unwrap() = None;
+    *SUPERVISOR.web_owner.lock().unwrap() = None;
     empty()
 }
 
@@ -414,6 +415,11 @@ pub(in crate::remote) fn stop_slot(pair_id: &str) {
     if let Some(state) = state {
         announce_offline_untracked(&state);
         abort_generation(state);
+    }
+    // A listener that died with its slot has no owner to report or rebind it.
+    let mut owner = SUPERVISOR.web_owner.lock().unwrap();
+    if owner.as_deref() == Some(pair_id) {
+        *owner = None;
     }
 }
 
