@@ -234,9 +234,13 @@ impl Supervisor {
                                 return;
                             }
                             let revoked = pairing::is_invalid_or_revoked_error(&error);
-                            eprintln!(
-                                "remote: platform rejected account authorization; stopping bridge"
-                            );
+                            // Keep the fixed classification observable without
+                            // logging the server's untrusted body or message.
+                            if revoked {
+                                eprintln!("remote: invalid_remote_credential; forgetting that device");
+                            } else {
+                                eprintln!("remote: platform rejected account authorization; stopping bridge");
+                            }
                             *server.last_error_code.lock().unwrap() = Some(
                                 if revoked {
                                     "revoked"

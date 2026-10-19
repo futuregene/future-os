@@ -246,13 +246,9 @@ async fn stopping_a_client_finishes_download_before_a_late_host_read() -> anyhow
                 )
                 .await
             }));
-            tokio::time::timeout(Duration::from_secs(5), async {
-                while fixture.metrics()["chunkWaiting"] != true {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .context("Server did not enter the held chunk read")?;
+            tokio::time::timeout(Duration::from_secs(5), fixture.host.wait_for_held_chunk())
+                .await
+                .context("Server did not enter the held chunk read")?;
             let attempts = host.connection_attempts();
             client
                 .shutdown(Duration::from_secs(1))

@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "pullRequest": 1235,
+  "runUrl": "https://github.com/futuregene/future-os/actions/runs/39292678172",
+  "sourceCommit": "1a60b3d624b99bb0852c6db3a37d9fd3fd2223ce",
+  "jobs": [
+    {
+      "name": "remote",
+      "url": "https://github.com/futuregene/future-os/actions/runs/39292678172/job/118197210598",
+      "logSha256": "7dd2b545f36ac542348e6bfce4cec07b62cade9619c752af63413dd87e1cd292"
+    },
+    {
+      "name": "headless",
+      "url": "https://github.com/futuregene/future-os/actions/runs/39292678172/job/118197210764",
+      "logSha256": "4788aeae0c6ccd8789da4a9c5df80df102c2f24c4c6bf7c7b879bab3ab393b5d"
+    }
+  ],
+  "observed": {
+    "rustInterop": {
+      "passed": 9,
+      "failed": 1,
+      "remainingFailure": "stopping_a_client_finishes_download_before_a_late_host_read",
+      "error": "Server did not enter the held chunk read: deadline has elapsed"
+    },
+    "headlessLibrary": {
+      "passed": 1621,
+      "failed": 0,
+      "ignored": 10
+    },
+    "headlessRemoteStartRefusal": {
+      "passed": 10,
+      "failed": 1,
+      "remainingFailure": "a_revoked_answer_is_forgotten_whichever_ask_receives_it",
+      "error": "Test waited for invalid_remote_credential in logs; sanitized HTTP diagnostic retained only HTTP 401."
+    }
+  },
+  "corrections": [
+    "Held synchronous fixture IO uses Tokio block_in_place so Client/timers/control can progress; an explicit Notify announces actual held-read entry instead of timer polling. Existing held-read, cancellation, zero-delivery and cleanup assertions remain.",
+    "Revocation branches log the fixed classified invalid_remote_credential code without restoring untrusted platform bodies/messages; the original headless integration test and persisted-slot assertions remain unchanged.",
+    "CI selects both the interop library regression and the real endpoint integration target, including their no-run compilation."
+  ],
+  "validationPolicy": "Compile/static checks only for these corrections; no local unit or NATS tests. Push the fix for PR CI; do not watch.",
+  "runtimeRevalidated": false,
+  "staticChecks": [
+    "cargo fmt -p future-remote-server -p future-remote-interop --check",
+    "Server default and interop network-feature Clippy --all-targets -D warnings",
+    "Desktop GUI/headless Clippy --all-targets -D warnings",
+    "Scoped documentation and diff checks",
+    "node --check scripts/ci/remote-checks.mjs"
+  ]
+}

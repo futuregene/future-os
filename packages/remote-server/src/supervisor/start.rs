@@ -249,7 +249,7 @@ impl Supervisor {
                     // someone revoked it. It is not this machine's device any more,
                     // and leaving it on disk would make every start retry a
                     // credential that can never succeed.
-                    eprintln!("remote: a pairing was revoked [PA001]; forgetting that device");
+                    eprintln!("remote: a pairing was revoked [PA001 invalid_remote_credential]; forgetting that device");
                     self.forget_slot(&pair_id)?;
                 }
                 Err(error) => return Err(error),
@@ -562,6 +562,9 @@ impl Supervisor {
         let creds = match self.host.refresh(creds).await {
             Ok(creds) => creds,
             Err(error) if pairing::is_invalid_or_revoked_error(&error) => {
+                // Only the classified, fixed code is logged, never a platform
+                // response body/message that could reflect credentials.
+                eprintln!("remote: invalid_remote_credential; forgetting that device");
                 self.forget_slot(pair_id)?;
                 return Ok(self.empty());
             }

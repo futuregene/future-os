@@ -33,6 +33,7 @@ struct ChunkGateState {
 struct ChunkGate {
     state: Mutex<ChunkGateState>,
     changed: Condvar,
+    entered: tokio::sync::Notify,
 }
 struct ChunkRead<'a>(&'a ChunkGate);
 impl Drop for ChunkRead<'_> {
@@ -46,12 +47,17 @@ impl ChunkGate {
         state.reads += 1;
         if state.armed {
             state.waiting = true;
-            // Model a synchronous host read that ignores Client cancellation.
-            // The fixture uses two workers and always releases on owner drop.
-            let (mut next, timeout) = self
-                .changed
-                .wait_timeout_while(state, Duration::from_secs(20), |state| !state.released)
-                .unwrap();
+            // Signal the actual held read, rather than requiring the test's
+            // timer/IO driver to progress while a worker is synchronously held.
+            self.entered.notify_one();
+            // This models native IO that ignores Client cancellation. Tell Tokio
+            // the worker is blocking so the shared Rust fixture runtime can
+            // continue driving the Client, timers and harness control messages.
+            let (mut next, timeout) = tokio::task::block_in_place(|| {
+                self.changed
+                    .wait_timeout_while(state, Duration::from_secs(20), |state| !state.released)
+                    .unwrap()
+            });
             next.waiting = false;
             next.armed = false;
             if timeout.timed_out() && !next.released {
@@ -109,6 +115,9 @@ impl MemoryServerHost {
         );
         state.armed = true;
         state.released = false;
+    }
+    pub async fn wait_for_held_chunk(&self) {
+        self.chunk_gate.entered.notified().await;
     }
     pub fn release_chunks(&self) {
         self.chunk_gate.release();
@@ -336,25 +345,17 @@ mod tests {
         let read = tokio::spawn(async move {
             let _held = reader.enter().expect("gate released before its deadline");
         });
-        let observed = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                {
-                    let state = gate.state.lock().unwrap();
-                    if state.waiting {
-                        assert_eq!(state.reads, 1);
-                        assert_eq!(state.finished, 0);
-                        break;
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await;
+        let observed = tokio::time::timeout(Duration::from_secs(5), gate.entered.notified()).await;
+        let held = {
+            let state = gate.state.lock().unwrap();
+            (state.waiting, state.reads, state.finished)
+        };
         // Release before assertions, including an observation timeout. A failing
         // test must not leave the worker held for the gate's full timeout.
         gate.release();
         let completed = tokio::time::timeout(Duration::from_secs(1), read).await;
         observed.expect("held read remains observable from the test task");
+        assert_eq!(held, (true, 1, 0));
         completed
             .expect("released read finishes promptly")
             .expect("reader did not panic");

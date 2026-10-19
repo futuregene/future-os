@@ -617,3 +617,11 @@ GUI 与 headless 选择各自完整 `--lib` 套件并顺序运行，避免应用
 用户后续要求提交 ready PR，由用户观察 CI，不执行 watch；此安排覆盖本轮此前“不提交 PR、暂停 CI”的历史约束。合并 `b7179d41`（#1234，自建中继明文连接）时，将邀请 origin 校验及回归用例保留在 Protocol，把 Rust 主控/被控的明文中继策略分别迁入 Client/Server；不把已迁出的实现重新放回 Desktop。Mobile 配对、环境及平台设置采用主干更新。平台/HTTPS 配对仍要求 TLS，只有主干定义的自建中继例外允许明文；测试辅助入口仍限制 loopback。
 
 本轮只进行提交前静态检查，不在本地执行单元或网络测试。历史本地单元结果不证明合并后候选已运行通过；独立互通首轮失败及修正待复验继续保留，交由 PR CI 验证。人工及完整性能验收仍未完成，创建 PR 不代表整体 Goal 完成。
+
+### 2026-10-20：PR #1235 首轮 CI 失败修正
+
+[CI 39292678172](https://github.com/futuregene/future-os/actions/runs/39292678172) 已运行候选 `1a60b3d6`：包测试、Desktop GUI、Desktop/Mobile TS 及三平台编译通过；独立 Rust 互通从前次 6/4 变为 9 通过、1 失败，剩余为读取挂起入口的等待超时。headless 库 1621 通过，独立 `remote_start_refusal` 为 10 通过、1 失败，测试仍在等待 HTTP 脱敏日志已不再打印的 `invalid_remote_credential`。作业与日志摘要见[失败证据及修正记录](../testing/remote-ci-1235-2026-10-20.json)。
+
+互通夹具的同步读取等待现在使用 `block_in_place`，明确交还 Tokio worker，使同 runtime 的 Client、时钟及控制消息可继续推进；通过 Notify 报告真实读取已挂起，替代 timer 轮询。读取仍在显式释放前保持挂起，保留停止、零字节交付、无重连和清理断言。Server 的撤销分支仅输出已分类的固定错误码，不恢复服务端原始 body/message；保留原 headless 测试及配对簿断言。
+
+本轮依用户安排修复后推送，不 watch。仅做对应编译/静态检查，没有本地单元或 NATS 复验；修正后的运行结果待后续 PR CI，不提前写成通过。TS→Rust 驱动被前序失败阻断，人工与完整性能验收仍未完成。

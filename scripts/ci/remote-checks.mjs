@@ -42,8 +42,8 @@ if (interop) {
   run('broker version', 'nats-server', ['--version']);
   run('interop fmt', 'cargo', ['fmt', '-p', 'future-remote-interop', '--check']);
   run('interop clippy', 'cargo', ['clippy', '--locked', '-p', 'future-remote-interop', '--features', 'network-tests', '--all-targets', '--', '-D', 'warnings']);
-  run('Rust interop compilation', 'cargo', ['test', '--locked', '-p', 'future-remote-interop', '--features', 'network-tests', '--test', 'rust_client_server', '--no-run']);
-  run('Rust interop tests', 'cargo', ['test', '--locked', '-p', 'future-remote-interop', '--features', 'network-tests', '--test', 'rust_client_server', '--', '--nocapture']);
+  run('Rust interop compilation', 'cargo', ['test', '--locked', '-p', 'future-remote-interop', '--features', 'network-tests', '--lib', '--test', 'rust_client_server', '--no-run']);
+  run('Rust interop tests', 'cargo', ['test', '--locked', '-p', 'future-remote-interop', '--features', 'network-tests', '--lib', '--test', 'rust_client_server', '--', '--nocapture']);
   run('TS interop host compilation', 'cargo', ['build', '--locked', '-p', 'future-remote-interop', '--features', 'network-tests', '--bin', 'remote-interop-host']);
   for (const script of ['typecheck', 'lint', 'test']) run(`TS interop ${script}`, 'npm', ['run', script, '--workspace', '@future-os/remote-interop']);
 }
