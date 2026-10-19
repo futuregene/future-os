@@ -424,7 +424,7 @@ it("surfaces a folder that could not be opened", async () => {
  *
  * The preview component is this app's own local one — it draws the bytes this
  * machine already fetched — so the button that opens the file in the OS has to ask
- * *the host* for a real copy. Handing it the preview's cached path would open a
+ * the host for a real copy. Handing it the preview's cached path would open a
  * temporary cache file whose name the user cannot recognise, or nothing at all on
  * a machine that never fetched it.
  */

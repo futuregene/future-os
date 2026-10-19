@@ -138,6 +138,8 @@ async function toggleHost(): Promise<void> {
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
   startRemote.mockReset();
   stopRemote.mockReset();
   addRemoteDevice.mockReset();
@@ -147,10 +149,8 @@ beforeEach(() => {
   stopRemote.mockResolvedValue(undefined);
   addRemoteDevice.mockResolvedValue(undefined);
   openExternalUrl.mockResolvedValue(undefined);
-  // The invitation is minted for "two minutes from now", so its expiry has to
-  // be anchored to the test run, not to module import: a slow full-suite load
-  // can put more than a second between the two, and the countdown then starts
-  // at 1:59 instead of 2:00.
+  // Freeze the clock before minting the invitation: even a short render can
+  // cross a real second boundary and start the countdown at 1:59, not 2:00.
   invited.pairingCodeExpiresAt = Math.floor(Date.now() / 1000) + 120;
   refresh = vi.fn<() => Promise<void>>(async () => {});
   container = document.createElement("div");
@@ -417,7 +417,6 @@ describe("adding a client", () => {
   });
 
   it("counts the invitation down and can copy the code", async () => {
-    vi.useFakeTimers();
     await mount({
       remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, invited] }),
     });

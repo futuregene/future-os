@@ -31,10 +31,13 @@
 //! nothing asserted here depends on it — but a reader seeing the log should know
 //! it is expected rather than a second host failing to start.
 
+#[cfg(unix)]
 use super::creds;
+#[cfg(unix)]
+use super::runtime::connect;
 use super::runtime::{
-    connect, connect_with_emitter, disconnect, list, live_count, reset_for_test, sessions, unpair,
-    Emitter, PeerEvent, PeerSummary,
+    connect_with_emitter, disconnect, list, live_count, reset_for_test, sessions, unpair, Emitter,
+    PeerEvent, PeerSummary,
 };
 use super::testing::claim;
 use crate::remote::test_support::{init_store, sign_in, FakeNats, HomeGuard, MockPlatform};
