@@ -104,6 +104,16 @@ impl Launch {
             match args[index].as_str() {
                 "--help" | "-h" => help = true,
                 "--re-pair" => options.re_pair = true,
+                // Validated here, applied in `prepare_host_environment`. Both
+                // entry points parse their argv before that runs, and the
+                // setting is process-wide, so keeping it out of the Copy
+                // `LaunchOptions` avoids two ways to spell the same decision.
+                "--relay" | "--relay-ca" => {
+                    index += 1;
+                    let flag = args[index - 1].clone();
+                    args.get(index)
+                        .ok_or_else(|| format!("{flag} needs a value (see --help)"))?;
+                }
                 // Same flag and same meaning as the headless entry point; only
                 // its combination differs (there is nothing else this launch
                 // would print).
@@ -195,6 +205,57 @@ pub fn forwarded_request(argv: &[String]) -> Option<Forwarded> {
         }),
         _ => None,
     }
+}
+
+/// Apply `--relay` / `--relay-ca` from this process's command line.
+///
+/// Runs once, before anything reads the pairing store: an invitation minted by
+/// this launch has to know which relay it points at. `futureos-headless` reads
+/// the same flags from its own parser; applying them twice is harmless because
+/// the values are identical.
+pub(crate) fn apply_relay_from_argv() -> Result<(), String> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut relay = None;
+    let mut relay_ca = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--relay" => {
+                index += 1;
+                relay = args.get(index).cloned();
+            }
+            "--relay-ca" => {
+                index += 1;
+                relay_ca = args.get(index).cloned();
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    apply_relay_settings(relay.as_deref(), relay_ca.as_deref())
+}
+
+/// Persist the relay flags, if any were given.
+///
+/// Both entry points call this before the remote runtime starts, so the
+/// setting means the same thing whether it arrived through the GUI's command
+/// line (including a forwarded `argv`) or through `futureos-headless`. An empty
+/// `--relay` clears the choice and returns this machine to the Future platform
+/// for *new* pairings; existing ones are untouched either way.
+pub fn apply_relay_settings(relay: Option<&str>, relay_ca: Option<&str>) -> Result<(), String> {
+    if relay.is_none() && relay_ca.is_none() {
+        return Ok(());
+    }
+    let mut settings = crate::remote::relay::load_settings();
+    if let Some(url) = relay {
+        let url = url.trim().trim_end_matches('/');
+        settings.url = (!url.is_empty()).then(|| url.to_string());
+    }
+    if let Some(ca) = relay_ca {
+        let ca = ca.trim();
+        settings.ca = (!ca.is_empty()).then(|| ca.to_string());
+    }
+    crate::remote::relay::save_settings(&settings).map_err(|error| error.to_string())
 }
 
 /// Whether another Desktop already owns this data directory.
@@ -555,6 +616,52 @@ mod tests {
 
     fn argv(args: &[&str]) -> Vec<String> {
         args.iter().map(|arg| arg.to_string()).collect()
+    }
+
+    /// `--relay` is remembered as an installation choice, and an empty value is
+    /// how a machine goes back to the Future platform without unpairing
+    /// anything it already has.
+    #[test]
+    fn relay_flags_are_persisted_and_cleared() {
+        let _home = HomeGuard::new("launch-relay-settings");
+        crate::store::initialize_app_store().expect("store init");
+
+        apply_relay_settings(Some("https://relay.example/"), Some("/etc/ca.pem"))
+            .expect("apply relay settings");
+        let settings = crate::remote::relay::load_settings();
+        assert_eq!(settings.url.as_deref(), Some("https://relay.example"));
+        assert_eq!(settings.ca.as_deref(), Some("/etc/ca.pem"));
+        assert_eq!(
+            crate::remote::relay::endpoint().as_deref(),
+            Some("https://relay.example")
+        );
+
+        apply_relay_settings(Some(""), None).expect("clear relay settings");
+        assert!(!crate::remote::relay::enabled());
+        // The whole file goes: a CA with no relay to verify would be a stale
+        // trust anchor waiting to be mistaken for configuration.
+        let settings = crate::remote::relay::load_settings();
+        assert_eq!(settings.url, None);
+        assert_eq!(settings.ca, None);
+
+        // A launch with neither flag changes nothing.
+        apply_relay_settings(None, None).expect("no-op");
+        assert!(!crate::remote::relay::enabled());
+    }
+
+    /// The flags are also accepted as `--flag=value`, the form a shell wrapper
+    /// or a service unit tends to use.
+    #[test]
+    fn relay_flags_are_recognized_with_an_equals_sign() {
+        // Taking the value out of argv is all `Launch::parse` does with them;
+        // the settings application reads argv itself in
+        // `apply_relay_from_argv`.
+        assert_eq!(
+            parse(&["--relay", "https://relay.example"]),
+            Ok(Launch::Gui(LaunchOptions::default()))
+        );
+        assert!(parse(&["--relay"]).is_err(), "a flag without its value");
+        assert!(parse(&["--relay-ca"]).is_err());
     }
 
     #[test]

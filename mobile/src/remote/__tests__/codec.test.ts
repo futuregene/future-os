@@ -82,12 +82,24 @@ describe("pairing codec", () => {
 
   test("v2 invitations need two real 32-byte transport keys", () => {
     const base = "futureos://remote/pair?code=abc_123&desktopId=desktop_1&desktopKey=U1&v=2";
+
     const key = encodeBase64Url(new Uint8Array(32).fill(7));
     // A truncated or non-key parameter cannot seed the Noise handshake, and
     // accepting it would fail much later with a confusing signature error.
     expect(parsePairingInvitation(`${base}&secureKey=short&secret=short`)).toBeNull();
     expect(parsePairingInvitation(`${base}&secureKey=${key}&secret=short`)).toBeNull();
     expect(parsePairingInvitation(`${base}&secureKey=${key}&secret=${key}`)).toEqual({
+      code: "abc_123",
+      desktopId: "desktop_1",
+      desktopPublicKey: "U1",
+      secureKey: key,
+      secret: key,
+    });
+    // A self-hosted relay mints `v=3` with the same Noise material. Treating it
+    // as "v2 fields optional" would strip the keys the handshake needs, which is
+    // exactly the kind of quiet downgrade the version gate exists to prevent.
+    const v3 = `${base}&secureKey=${key}&secret=${key}`.replace("v=2", "v=3");
+    expect(parsePairingInvitation(v3)).toEqual({
       code: "abc_123",
       desktopId: "desktop_1",
       desktopPublicKey: "U1",

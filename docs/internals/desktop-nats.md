@@ -36,6 +36,20 @@ requires an operator-run NATS container recreation and matching
 `platform-service` deployment. Old JetStream data does not need to be retained
 for this test cutover.
 
+## Self-hosted alternative
+
+`future relay` (this repository) is the same relay without the platform: it
+mints the same pair-scoped NATS user JWTs, from the same claim/token endpoints,
+for rooms instead of accounts. A desktop selects it per installation with
+`futureos --relay URL` (or `futureos-headless --relay URL`), and the choice is
+recorded per pairing, so official and self-hosted pairings coexist on one
+machine. Runbook, threat model and verification:
+[../guide/self-hosted-relay.md](../guide/self-hosted-relay.md).
+
+The broker configuration `future relay init` writes is the one this document's
+production template describes, minus the account layer: operator JWT, memory
+resolver, no JetStream.
+
 ## Legacy local environment
 
 `desktop/nats/nats.conf` and `desktop/nats/docker-compose.yml` remain only for

@@ -31,6 +31,7 @@ Apps (run the FutureOS components — same as their standalone binaries):
   tui       Launch the terminal UI (future-tui)
   channel   Start the IM channel bridge (future-channel)
   goal      Goal control plane: goals/todos/gates (future-goal)
+  relay     Self-hosted, account-free NATS relay for remote control
 
 Quick start:
   future init                                Initialize Future OS
@@ -58,6 +59,7 @@ Run 'future <group> --help' for per-group details.
   future models --help       Model listing options
   future session --help      Session management options
   future agent --help        Agent server options (gRPC addr, logging, profiling)
+  future relay --help        Self-hosted relay (init/serve)
   future tui --help          TUI options (print mode, list models, etc.)
   future goal --help         Goal control plane commands
   future version --json      Build identity: version, commit, target

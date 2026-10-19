@@ -124,8 +124,12 @@ pub(crate) fn parse_invitation(value: &str, now: i64) -> Result<Invitation, Link
     };
     // Reject v1 explicitly instead of treating it as a missing field: the link
     // is well-formed and the user would otherwise see a generic error.
+    //
+    // v3 is the same invitation shape minted by a self-hosted relay: the Noise
+    // material and the one-time secret are unchanged, only the claim endpoint
+    // (which the invitation already carries) is not the Future platform's.
     match field("v").as_deref() {
-        Some("2") => {}
+        Some("2") | Some("3") => {}
         _ => return Err(LinkError::UnsupportedVersion),
     }
     let code = field("code").ok_or(LinkError::InvalidField)?;

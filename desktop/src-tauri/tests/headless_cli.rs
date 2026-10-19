@@ -87,8 +87,10 @@ fn standalone_help_and_invalid_arguments_have_no_startup_side_effects() {
         let home = tempfile::tempdir().unwrap();
         let help = headless(home.path()).args(args).output().unwrap();
         assert!(help.status.success());
-        assert!(String::from_utf8_lossy(&help.stdout)
-            .contains("Usage: futureos-headless [--no-qr] [--re-pair]"));
+        // The usage line names every flag the entry point accepts; asserting a
+        // prefix keeps the test about "help was printed" rather than about the
+        // exact option list.
+        assert!(String::from_utf8_lossy(&help.stdout).contains("Usage: futureos-headless"));
         assert!(!home.path().join(".future").exists());
     }
     for arg in ["--headless", "--gui", "--unknown", "-psn_123"] {
@@ -97,6 +99,37 @@ fn standalone_help_and_invalid_arguments_have_no_startup_side_effects() {
         assert_eq!(invalid.status.code(), Some(1));
         assert!(String::from_utf8_lossy(&invalid.stderr).contains("Unknown option"));
         assert!(!home.path().join(".future").exists());
+    }
+}
+
+/// `--relay URL` is accepted in both spellings and never reaches the platform.
+/// This only asserts the parse (an unattended run would block on the terminal
+/// rule); the end-to-end path is `remote::relay_e2e`.
+#[cfg(feature = "headless")]
+#[test]
+fn relay_flags_are_accepted_in_both_spellings() {
+    for args in [
+        vec!["--relay", "https://relay.example", "--help"],
+        vec!["--relay=https://relay.example", "--help"],
+        vec![
+            "--relay",
+            "https://relay.example",
+            "--relay-ca",
+            "/tmp/ca.pem",
+            "--help",
+        ],
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let help = headless(home.path()).args(&args).output().unwrap();
+        assert!(help.status.success(), "{args:?}");
+        assert!(String::from_utf8_lossy(&help.stdout).contains("Usage: futureos-headless"));
+    }
+    // A flag without its value is an error, not a silent no-op.
+    for args in [vec!["--relay"], vec!["--relay-ca"]] {
+        let home = tempfile::tempdir().unwrap();
+        let refused = headless(home.path()).args(&args).output().unwrap();
+        assert_eq!(refused.status.code(), Some(1), "{args:?}");
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("needs a value"));
     }
 }
 

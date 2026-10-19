@@ -65,6 +65,7 @@ pub(crate) fn pairing_creds(pair_id: &str) -> crate::remote::protocol::PairingCr
         nats_url: "nats://127.0.0.1:1".to_string(),
         nats_ws_url: "ws://127.0.0.1:1".to_string(),
         jwt_expires_at: expires_at,
+        control_url: None,
     }
 }
 

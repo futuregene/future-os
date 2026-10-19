@@ -24,6 +24,14 @@ ACL 仍是纵深防御，不是消息来源证明。生产桌面端要求经校�
 `secret`。把整份邀请当作短时效的 bearer 凭据对待。不新增 6 位数字码模式。不得记录
 邀请、不得发送给 analytics、不得用远程 API 渲染二维码。
 
+针对自建中继签发的邀请是同一份文档的 `v=3` 版本：`desktopKey`/`secureKey`/
+`secret` 完全相同，`code` 载荷保持平台的 `nonce`/`claim_url`/`exp` 形状，只额外
+带一个 `relay`（claim 端点所属的 origin）。只认识 v2 的客户端会拒绝它，而不是降级；
+v3 客户端会把 claim 钉在声明的那个 origin 上——请求要么发往 Future 平台，要么发往
+code 里点名的中继，不会发往第三个地方。握手、记录层、subject 与回复绑定逐字节相同，
+因此换中继不需要重新配对。见
+[../../guide/self-hosted-relay.zh-CN.md](../../guide/self-hosted-relay.zh-CN.md)。
+
 移动端生成自己的 X25519 身份，并把 bundle 存入 Expo SecureStore
 （`WHEN_UNLOCKED_THIS_DEVICE_ONLY`），沿用现有的双槽凭据提交。桌面端用其现有的
 owner-restricted、原子化配对凭据文件存储配对身份；这不是硬件 keystore 保证。
