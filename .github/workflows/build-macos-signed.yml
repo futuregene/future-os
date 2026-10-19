@@ -277,22 +277,10 @@ jobs:
       # resulting signed disk image as a separate distribution artifact: submit
       # it after creation and staple its own ticket so installation also works
       # when Gatekeeper cannot reach Apple's notarization service.
-      - name: Notarize and staple DMG
+      - name: Prepare signed DMG
         if: inputs.signed
-        timeout-minutes: 60
-        env:
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: |
           set -euo pipefail
-          : "${APPLE_API_KEY_PATH:?APPLE_API_KEY_PATH is required}"
-          : "${APPLE_API_KEY_ID:?APPLE_API_KEY_ID secret is required}"
-          : "${APPLE_API_ISSUER:?APPLE_API_ISSUER secret is required}"
-          [[ -s "$APPLE_API_KEY_PATH" ]] || {
-            echo "Apple notarization key is missing or empty: $APPLE_API_KEY_PATH" >&2
-            exit 1
-          }
-
           shopt -s nullglob
           dmgs=(target/release/bundle/dmg/*.dmg)
           if [[ ${#dmgs[@]} -ne 1 ]]; then
@@ -308,57 +296,48 @@ jobs:
           codesign --verify --strict --verbose=2 "$dmg"
           hdiutil verify "$dmg"
 
-          response="$RUNNER_TEMP/futureos-dmg-notarization.json"
+          # Keep the distributable path even when a test build cannot reach Apple.
+          echo "SIGNED_DMG=$dmg" >> "$GITHUB_ENV"
+
+      - name: Notarize and staple DMG
+        id: notarize_dmg
+        if: inputs.signed
+        continue-on-error: ${{ !inputs.strict_verification }}
+        timeout-minutes: 75
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          dmg="$SIGNED_DMG"
+          diagnostics="$RUNNER_TEMP/futureos-dmg-notarization"
+          # Bound diagnostic/stapler calls too, leaving time for the test-build
+          # fallback before the Actions timeout (which cannot be caught).
+          bounded_xcrun() {
+            python3 - "$@" <<'PYTIMEOUT'
+          import subprocess, sys
+          try:
+              sys.exit(subprocess.run(['xcrun', *sys.argv[1:]], timeout=60).returncode)
+          except subprocess.TimeoutExpired:
+              print('Apple command timed out after 60 seconds', file=sys.stderr)
+              sys.exit(124)
+          PYTIMEOUT
+          }
+          node scripts/ci/notarize-macos-dmg.mjs "$dmg" "$diagnostics"
+          submission_id="$(cat "$diagnostics/submission-id.txt")"
           notary_args=(
             --key "$APPLE_API_KEY_PATH"
             --key-id "$APPLE_API_KEY_ID"
             --issuer "$APPLE_API_ISSUER"
           )
 
-          set +e
-          xcrun notarytool submit \
-            "${notary_args[@]}" \
-            --wait \
-            --timeout 45m \
-            --output-format json \
-            "$dmg" > "$response"
-          submit_exit=$?
-          set -e
-
-          if [[ -s "$response" ]]; then
-            cat "$response"
-          fi
-          submission_id="$(node -e '
-            const fs = require("node:fs");
-            try {
-              const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).id;
-              if (value) process.stdout.write(String(value));
-            } catch {}
-          ' "$response")"
-          notarization_status="$(node -e '
-            const fs = require("node:fs");
-            try {
-              const value = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).status;
-              if (value) process.stdout.write(String(value));
-            } catch {}
-          ' "$response")"
-
-          if [[ "$submit_exit" -ne 0 || "$notarization_status" != "Accepted" ]]; then
-            echo "DMG notarization failed (exit=$submit_exit, status=${notarization_status:-unknown})." >&2
-            if [[ -n "$submission_id" ]]; then
-              echo "Apple notarization log for submission $submission_id:" >&2
-              xcrun notarytool log "${notary_args[@]}" "$submission_id" || true
-            fi
-            exit 1
-          fi
-
           # Apple recommends checking the completed submission log even after an
           # Accepted result. Surface every reported issue in the Actions summary,
           # but do not block an Apple-accepted release on advisory diagnostics.
-          notary_log="$RUNNER_TEMP/futureos-dmg-notarization-log.json"
+          notary_log="$diagnostics/accepted-log.json"
           log_downloaded=false
           for attempt in 1 2 3; do
-            if xcrun notarytool log \
+            if bounded_xcrun notarytool log \
               "${notary_args[@]}" \
               "$submission_id" \
               "$notary_log"; then
@@ -395,7 +374,7 @@ jobs:
           # Retry only the idempotent staple operation; never resubmit the DMG.
           stapled=false
           for attempt in 1 2 3 4 5; do
-            if xcrun stapler staple -v "$dmg"; then
+            if bounded_xcrun stapler staple -v "$dmg"; then
               stapled=true
               break
             fi
@@ -409,7 +388,21 @@ jobs:
             echo "Unable to staple the accepted notarization ticket to $dmg." >&2
             exit 1
           }
-          echo "SIGNED_DMG=$dmg" >> "$GITHUB_ENV"
+
+      - name: Report non-blocking test notarization failure
+        if: ${{ inputs.signed && !inputs.strict_verification && steps.notarize_dmg.outcome == 'failure' }}
+        run: |
+          echo "::warning title=DMG notarization incomplete::Test build will publish the signed DMG without confirmed DMG notarization/stapling. Review the notarization diagnostics; formal releases require success."
+          echo "### DMG notarization incomplete" >> "$GITHUB_STEP_SUMMARY"
+          echo "Test artifacts will be published without confirmed DMG notarization/stapling. See the notarization diagnostics artifact for the submission ID and responses." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload DMG notarization diagnostics
+        if: ${{ always() && inputs.signed }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: notarization-diagnostics-${{ matrix.asset_arch }}
+          path: ${{ runner.temp }}/futureos-dmg-notarization/
+          if-no-files-found: ignore
 
       # A valid signature alone does not prove that the bundled CLI is
       # executable (compile-only placeholders can leave mode 0644 behind).
@@ -472,7 +465,7 @@ jobs:
           updater="${updaters[0]}"
           updater_sig="${updater_sigs[0]}"
           dmg="$SIGNED_DMG"
-          [[ -s "$dmg" ]] || { echo "The notarized DMG is missing or empty: $dmg" >&2; exit 1; }
+          [[ -s "$dmg" ]] || { echo "The signed DMG is missing or empty: $dmg" >&2; exit 1; }
           echo "MACOS_UPDATER=$updater" >> "$GITHUB_ENV"
           echo "MACOS_UPDATER_SIG=$updater_sig" >> "$GITHUB_ENV"
           echo "DISTRIBUTABLE_DMG=$dmg" >> "$GITHUB_ENV"
