@@ -680,7 +680,16 @@ function buildStyles(theme: Theme, tone: MarkdownTone) {
     color: text,
     ...theme.chat,
   },
-  listItemBody: { flex: 1, minWidth: 0 },
+  // The body takes the row's free space, but its *basis* has to stay the
+  // item's own content: a markdown list can be drawn inside a box that sizes
+  // itself to its content (the user's own prompt bubble does), and a flex item
+  // with a zero basis contributes nothing to that measurement. Measured on
+  // Yoga, `flex: 1` (basis 0) sizes this row as the bullet alone — 22dp plus
+  // margins — so the prompt bubble collapsed to the width of its "1." marker
+  // and the item text was laid out at no width and never painted. The web
+  // harness could not show it: CSS sizes a flex container from its items'
+  // max-content however their basis is set.
+  listItemBody: { flexGrow: 1, flexShrink: 1, minWidth: 0 },
   listItemText: { color: text, ...theme.chat },
   nestedBlocks: { marginTop: spacing.xs },
   checkbox: {

@@ -228,6 +228,27 @@ describe("MarkdownText layout and fidelity", () => {
       .map(node => node.props.accessibilityState.checked)).toEqual([true, false]);
   });
 
+  test("a list item's body keeps a content-based flex basis for a shrink-wrapped bubble", () => {
+    // The user's own prompt bubble sizes itself to what it draws, and Yoga — the
+    // engine the phone runs — measures a flex item from its *basis*, not from
+    // its content. `flex: 1` is a zero basis, so a prompt that parsed as a list
+    // measured as wide as its marker: the bubble painted its accent fill at the
+    // width of "1." with the item text laid out at no width. A regression here
+    // is invisible in the browser harness, because CSS sizes a flex container
+    // from its items' max-content whatever their basis is.
+    const root = render("1. PC 和手机上安装：只要包含安装内容即可。\n2. 科研技能使用：给出具体的例子。");
+    const bodies = root.findAllByType(View).filter(node =>
+      StyleSheet.flatten(node.props.style)?.minWidth === 0
+      && StyleSheet.flatten(node.props.style)?.flexShrink === 1);
+    expect(bodies).toHaveLength(2);
+    for (const body of bodies) {
+      const style = StyleSheet.flatten(body.props.style);
+      expect(style.flexGrow).toBe(1);
+      expect(style.flex).toBeUndefined();
+      expect(style.flexBasis).toBeUndefined();
+    }
+  });
+
   test("wide tables scroll as a unit with aligned columns, including missing cells", () => {
     const root = render("| A long heading | B long heading | C long heading | D |\n|:---|:---:|---:|---|\n| one<br>two | **bold** | 3 | 4 |\n| missing |");
     const scroll = root.findByType(ScrollView);
