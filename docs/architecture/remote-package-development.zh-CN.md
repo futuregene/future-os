@@ -470,3 +470,9 @@ TS 新增互通流程，两个 Client 对应两个实际宿主/broker 子进程�
 同时核对基线 Rust 清单的源码去向，发现原清单中的 `that` 来自 `verify_e2e.rs` 的注释“blocking fn that builds its own runtime”，不是测试函数；已修正并记录原因。其余 729 个基线名字均在当前源码找到，202 个位于独立核心/互通，527 个位于应用。这个检查只证明名字未丢失，不能证明用例仍覆盖同一行为、条件编译生效或运行通过；混合应用文件仍需按职责审查，不能把“名字存在”作为阶段完成标准。
 
 Client 默认/测试辅助特性、互通网络特性，以及 Desktop GUI/headless 的 Clippy `--all-targets` 均通过；相关 fmt、协议生成和文档静态检查通过。没有执行单元测试、网络用例、CI 或测试产物。真实故障补充和迁移清单有实际进展，但最终自动化、性能测量及同候选版本人工验收仍待完成。
+
+### 2026-10-19：Server gzip 能力测试归包
+
+原 Desktop 的 `gzip_follows_the_per_connection_capability` 与 `clearing_the_capability_reaches_the_loop_copy` 已迁到 Server 包的 `commands/context_tests.rs`，从 Desktop 单例构造改为显式内存命令宿主/运行时，保留 v1 legacy 连接形状、原测试名字和全部断言：默认不压缩、声明后压缩、未声明者仍收到原始 JSON、离开命令作用域恢复默认，以及权限重置对命令循环 clone 立即可见。比较仅排除原凭据/单例 fixture 构造后，断言块一致。产品 operator 环境变量测试和真实网络命令循环测试仍留在应用；不在 GUI/headless 中重复执行这两个纯核心用例。[迁移清单](remote-test-migration.json)已更新，基线名字的当前归属为独立核心/互通 204、应用 525。
+
+Server 默认及 test-support、Desktop GUI/headless 的 Clippy `--all-targets` 和相关 fmt/文档静态检查通过；本地没有运行测试。最终 CI、剩余迁移/行为核对、性能与人工确认继续进行。

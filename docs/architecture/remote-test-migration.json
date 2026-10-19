@@ -185,6 +185,13 @@
             "a_blank_name_means_did_not_say",
             "an_unknown_kind_is_kept_verbatim"
           ]
+        },
+        "server-gzip-capabilities": {
+          "path": "packages/remote-server/src/commands/context_tests.rs",
+          "cases": [
+            "gzip_follows_the_per_connection_capability",
+            "clearing_the_capability_reaches_the_loop_copy"
+          ]
         }
       }
     },

@@ -10,11 +10,7 @@ pub(super) use future_remote_server::commands::{apply_declared_features, REPLY_G
 #[cfg(test)]
 pub(super) use future_remote_server::commands::{HandshakeState, ReplySlots};
 #[cfg(test)]
-use serde_json::json;
-#[cfg(test)]
 use serde_json::Value;
-#[cfg(test)]
-use std::sync::atomic::Ordering;
 #[cfg(test)]
 use std::sync::{atomic::AtomicBool, Arc};
 
@@ -46,8 +42,8 @@ use future_remote_protocol::handshake::{handshake_transcript, HandshakeTranscrip
 use future_remote_server::commands::{command_loop, test_support};
 #[cfg(test)]
 use test_support::{
-    encode_reply_payload, handle_command, handle_command_singleflight, handle_pair_handshake,
-    handle_pair_handshake_confirm, publish_reply_payload, reply_gzip_allowed,
+    handle_command, handle_command_singleflight, handle_pair_handshake,
+    handle_pair_handshake_confirm, publish_reply_payload,
 };
 #[cfg(test)]
 fn remote_json_gzip_enabled() -> bool {
@@ -73,7 +69,6 @@ impl super::services::BusinessHost for BorrowedBusiness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::test_support::{jwt, now_secs, unique};
 
     #[test]
     fn model_identity_keeps_raw_slashes_and_distinguishes_providers() {
@@ -148,93 +143,6 @@ mod tests {
             "an absent override stays absent"
         );
         restore(&previous);
-    }
-
-    /// The capability — not the process — decides, so an older client on the
-    /// same pairing keeps receiving plain JSON. It has no magic-byte detection
-    /// and would fail to parse a compressed reply.
-    #[test]
-    fn gzip_follows_the_per_connection_capability() {
-        let body = json!({ "entries": ["repeated history ".repeat(8_000)] });
-        let plain = serde_json::to_vec(&body).unwrap();
-
-        let key_pair = nkeys::KeyPair::new_user();
-        let handshake = new_handshake_state(
-            crate::remote::pairing::PairingCreds {
-                handshake_version: 1,
-                secure: None,
-                pair_id: format!("pair_{}", unique("gzip")),
-                desktop_id: format!("desktop_{}", unique("gzip")),
-                nkey_seed: key_pair.seed().unwrap().to_string(),
-                user_jwt: jwt(now_secs() + 3600),
-                nats_url: "nats://127.0.0.1:1".to_string(),
-                nats_ws_url: "ws://127.0.0.1:1".to_string(),
-                jwt_expires_at: now_secs() + 3600,
-                control_url: None,
-            },
-            Arc::new(AtomicBool::new(true)),
-            "bridge_test".to_string(),
-        );
-        assert!(
-            !handshake.gzip_replies.load(Ordering::Acquire),
-            "a connection that never declares the capability is not gzipped"
-        );
-
-        // A command served on a connection that declared it is compressed.
-        let declared = test_support::with_gzip(true, || encode_reply_payload(&body));
-        assert!(declared.starts_with(&[0x1f, 0x8b]));
-        assert!(declared.len() < plain.len() / 4);
-
-        // A connection that did not declare it still gets plain JSON, even
-        // while another connection on this process receives gzip.
-        let silent = test_support::with_gzip(false, || encode_reply_payload(&body));
-        assert_eq!(silent, plain);
-
-        // Outside any command there is no permission: default to plain JSON.
-        assert!(!reply_gzip_allowed());
-        assert_eq!(encode_reply_payload(&body), plain);
-    }
-
-    /// `build_transport` clears the permission on every new connection so an
-    /// older client on the same pairing cannot inherit the previous client's
-    /// gzip request. That reset is only meaningful if it reaches the copy the
-    /// command loop holds, so pin the shared-Arc behaviour.
-    #[test]
-    fn clearing_the_capability_reaches_the_loop_copy() {
-        let key_pair = nkeys::KeyPair::new_user();
-        let handshake = new_handshake_state(
-            crate::remote::pairing::PairingCreds {
-                handshake_version: 1,
-                secure: None,
-                pair_id: format!("pair_{}", unique("stale")),
-                desktop_id: format!("desktop_{}", unique("stale")),
-                nkey_seed: key_pair.seed().unwrap().to_string(),
-                user_jwt: jwt(now_secs() + 3600),
-                nats_url: "nats://127.0.0.1:1".to_string(),
-                nats_ws_url: "ws://127.0.0.1:1".to_string(),
-                jwt_expires_at: now_secs() + 3600,
-                control_url: None,
-            },
-            Arc::new(AtomicBool::new(true)),
-            "bridge_test".to_string(),
-        );
-        // A declaring client connects and turns gzip on.
-        handshake.gzip_replies.store(true, Ordering::Release);
-        // The loop receives a clone, exactly as `build_transport` hands it over.
-        let loop_copy = handshake.clone();
-        assert!(loop_copy.gzip_replies.load(Ordering::Acquire));
-        // The next connection clears it before anything can declare otherwise.
-        handshake.gzip_replies.store(false, Ordering::Release);
-        assert!(
-            !loop_copy.gzip_replies.load(Ordering::Acquire),
-            "the reset must be visible to a loop holding a clone"
-        );
-        assert!(
-            !test_support::with_gzip(loop_copy.gzip_replies.load(Ordering::Acquire), || {
-                encode_reply_payload(&json!({ "entries": ["x".repeat(40_000)] }))
-            })
-            .starts_with(&[0x1f, 0x8b])
-        );
     }
 }
 
