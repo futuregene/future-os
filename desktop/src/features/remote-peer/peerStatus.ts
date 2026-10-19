@@ -65,6 +65,58 @@ export function peerStatusTone(
 }
 
 /**
+ * Whether this machine is ours to drive: connected **and** not held elsewhere.
+ *
+ * The second half is what a status alone cannot say. A standby machine answers
+ * every heartbeat — that is what lets its user take the machine back without
+ * reconnecting — but it cannot read the host's conversations or prompt them: its
+ * business commands come back `superseded`. The phone draws the same distinction
+ * (`drivable` in `desktopStatus.ts`), and for the same reason: a green dot over a
+ * list missing that machine's rows claims a machine works while nothing on it
+ * does.
+ */
+export function peerDrivable(peer: RemotePeer): boolean {
+  return peerStatus(peer) === "connected" && peer.control !== "standby";
+}
+
+/** Whether the machine answers but another paired device is driving it. */
+export function peerHeld(peer: RemotePeer): boolean {
+  return peer.control === "standby" && peerStatus(peer) === "connected";
+}
+
+/**
+ * The word for one machine, which is not always its status.
+ *
+ * A machine that answers while another paired device drives it is `connected` on
+ * the transport and unusable in fact: it has no conversations to show and
+ * refuses every command. Calling it "connected" tells the reader everything is
+ * fine, one line above a list missing exactly that machine — so the held case
+ * gets its own word.
+ */
+export function peerLabelKey(peer: RemotePeer): string {
+  return peerHeld(peer) ? "statusTakenOver" : peerStatusKey(peerStatus(peer));
+}
+
+/** The `Badge` tone for a machine, held included: amber, not green. */
+export function peerLabelTone(
+  peer: RemotePeer,
+): "neutral" | "accent" | "warning" | "danger" {
+  return peerHeld(peer) ? "warning" : peerStatusTone(peerStatus(peer));
+}
+
+/**
+ * The name of the device holding the machine, when it declared one.
+ *
+ * `null` covers both "nobody holds it" and "the holder never said who it is";
+ * the caller asks [`peerHeld`] and falls back to neutral wording instead of
+ * inventing an identity.
+ */
+export function peerHolderName(peer: RemotePeer): string | null {
+  const name = peer.holder?.name?.trim();
+  return name || null;
+}
+
+/**
  * Whether every paired machine is connected — the rail dot's own condition.
  *
  * `all` is what the dot needs: a machine paired with three hosts is "connected"
@@ -98,12 +150,18 @@ export type PeersDotState = "up" | "partial" | "down";
  *
  * `null` rather than "down": an unpaired machine has no client-role status to
  * show, and a red dot there would report a failure that does not exist.
+ *
+ * Green needs a second condition beyond "every one of them answers": at least
+ * one must actually be drivable. A set that is entirely in standby answers every
+ * heartbeat and cannot be read from — painting that green says the merged list
+ * is complete while none of those machines' conversations can appear in it. It
+ * is the same rule the phone's dot follows (`machinesConnected().drivable`).
  */
 export function peersDotState(peers: readonly RemotePeer[]): PeersDotState | null {
   if (peers.length === 0)
     return null;
   const counts = peersConnected(peers);
-  if (counts.all)
-    return "up";
-  return counts.any ? "partial" : "down";
+  if (!counts.all)
+    return counts.any ? "partial" : "down";
+  return peers.some(peerDrivable) ? "up" : "partial";
 }

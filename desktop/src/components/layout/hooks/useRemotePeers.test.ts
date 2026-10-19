@@ -481,6 +481,135 @@ describe("live events", () => {
   });
 });
 
+/**
+ * Control: who may drive the machine.
+ *
+ * This is the one fact a presence tick carries that the catalogue cannot:
+ * while another paired device drives the host, this client is refused every
+ * read, so the host's rows are **absent** from the merged list — and they stay
+ * absent after a move back until something re-reads them. A list that only
+ * corrected itself on the next five-second poll (or on a command that happened
+ * to fail) is the "the list is not current" the user sees.
+ */
+describe("control", () => {
+  /** A list that answers with the control the host last reported. */
+  function controlSource(initial: "active" | "standby") {
+    let control = initial;
+    listRemotePeers.mockImplementation(async () => [
+      peer({
+        control,
+        ...(control === "standby" ? { holder: { name: "Hui's phone" } } : {}),
+      }),
+    ]);
+    return { set: (next: "active" | "standby") => { control = next; } };
+  }
+
+  it("re-reads as soon as the host says another device took it", async () => {
+    const source = controlSource("active");
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    listRemotePeers.mockClear();
+    fetchRemoteSessions.mockClear();
+
+    source.set("standby");
+    pushKind("presence", "desktop_a", { control: "standby" });
+    await settle();
+
+    // The list is re-read, and the machine now says so — which is what turns
+    // the dot amber and puts the reason in the picker.
+    expect(listRemotePeers).toHaveBeenCalledTimes(1);
+    expect(hook.current.peers[0]!.control).toBe("standby");
+    // And nothing is asked of a machine that cannot answer.
+    expect(fetchRemoteSessions).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
+  it("re-reads the host's conversations when control comes back", async () => {
+    const source = controlSource("standby");
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    expect(hook.current.catalogs).toEqual([]);
+    fetchRemoteSessions.mockClear();
+
+    source.set("active");
+    pushKind("presence", "desktop_a", { control: "active" });
+    await settle();
+
+    // The rows the machine could not show while it stood by are readable the
+    // moment it takes control back, and this is what puts them back into the
+    // merged list without waiting for the next poll.
+    expect(fetchRemoteSessions).toHaveBeenCalledTimes(1);
+    expect(hook.current.peers[0]!.control).toBe("active");
+    hook.unmount();
+  });
+
+  it("does not ask a machine in standby for its catalogue, on either cadence", async () => {
+    controlSource("standby");
+    // The read-ahead mocks are shared with the tests above (their calls are
+    // real catalogue fills for an active host); only this test's own mounts
+    // count.
+    listRemoteModels.mockClear();
+    getRemoteDesktopSettings.mockClear();
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    // Mounting runs the list poll and the host-catalogue read-ahead; neither
+    // may address a host that refuses business commands. A refusal per poll
+    // would be one wasted round trip every five seconds, for the life of the
+    // connection.
+    expect(fetchRemoteSessions).not.toHaveBeenCalled();
+    expect(listRemoteModels).not.toHaveBeenCalled();
+    expect(getRemoteDesktopSettings).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
+  it("re-reads on the control packet, which arrives before the tick that names the holder", async () => {
+    controlSource("active");
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    listRemotePeers.mockClear();
+
+    pushKind("control", "desktop_a", { control: "standby", pairId: "pair_1" });
+    await settle();
+
+    expect(listRemotePeers).toHaveBeenCalledTimes(1);
+    hook.unmount();
+  });
+
+  it("does not re-read on a tick that merely restates the control it already has", async () => {
+    controlSource("active");
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    listRemotePeers.mockClear();
+
+    // No catalogVersion, and the same control: an ordinary heartbeat.
+    pushKind("presence", "desktop_a", { control: "active" });
+    await settle();
+
+    expect(listRemotePeers).not.toHaveBeenCalled();
+    hook.unmount();
+  });
+
+  it("does not try to heal a standby machine's snapshot revision", async () => {
+    const source = controlSource("standby");
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    fetchRemoteSessions.mockClear();
+
+    // A standby device is not sent snapshots, so a revision ahead of the gate
+    // says nothing about a lost one. Pulling it would only confirm the refusal.
+    pushKind("presence", "desktop_a", {
+      control: "standby",
+      catalogVersion: { epoch: "epoch_1", sessions: 9, workspaces: 9 },
+    });
+    await settle();
+
+    expect(fetchRemoteSessions).not.toHaveBeenCalled();
+    expect(source).toBeDefined();
+    hook.unmount();
+  });
+});
+
 describe("heartbeat self-heal", () => {
   it("re-reads once when the presence revision is ahead", async () => {
     const hook = renderHook(() => useRemotePeers(true));

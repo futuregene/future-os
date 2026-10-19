@@ -62,6 +62,20 @@ pub struct PeerSummary {
     /// reachable. A reachable bridge with an unavailable agent is the case the
     /// support table calls `LC003`: the link is up and every command fails.
     pub agent_available: bool,
+    /// Whether this device may drive the host, as the host last reported it.
+    ///
+    /// Deliberately a second axis beside `connected`, because the two facts are
+    /// different and the difference is the whole point: a standby device's link
+    /// is healthy and taking the machine back needs no reconnection, but it
+    /// cannot read the host's conversations or prompt them — its business
+    /// commands are refused with `superseded`. A list that showed it as simply
+    /// "connected" would claim a machine works while every action on it fails.
+    ///
+    /// `None` on a host that predates the field; the client then assumes what
+    /// it always did, that the machine is ours.
+    pub control: Option<session::ControlState>,
+    /// Who holds the host while this device is in standby.
+    pub holder: Option<session::Holder>,
 }
 
 /// Where pushed events go. Injected rather than hard-coded to Tauri so the
@@ -76,8 +90,17 @@ pub struct PeerEvent {
     /// `event` for a session event — one pushed on a conversation's `evt.`
     /// subject, or the same event read off the host-wide `state.events` mirror
     /// while the lane is narrowed to one conversation — `presence` for a
-    /// liveness tick, `resumed` for a link that came back, `catalog` for a
-    /// sessions or workspaces snapshot.
+    /// liveness tick, `control` for a packet that says control moved, `resumed`
+    /// for a link that came back, `catalog` for a sessions or workspaces
+    /// snapshot.
+    ///
+    /// `control` is separate from `presence` because it answers a different
+    /// question: a tick says the host is alive and (in passing) who may drive
+    /// it, while this packet exists to say the *right to drive it* moved —
+    /// published on the device that gained it and on the one that lost it. A
+    /// reader that waits for the next tick learns the same fact one second
+    /// later, by which time another frame of the old holder's list has been
+    /// drawn as if it were current.
     ///
     /// `resumed` exists because the other kinds cannot express it: a presence tick
     /// arrives on a healthy link as well, and a session event says nothing about
@@ -489,6 +512,10 @@ fn paired_summary(desktop_id: &str) -> Result<PeerSummary, crate::AppError> {
         // rather than `true` keeps "unknown" on the safe side of the UI's
         // "everything is fine" check.
         agent_available: false,
+        // Nobody has said otherwise, and a book entry has never been connected:
+        // the state becomes known from the host's first presence.
+        control: None,
+        holder: None,
     })
 }
 
@@ -501,6 +528,7 @@ pub(crate) async fn list() -> Result<Vec<PeerSummary>, crate::AppError> {
         .iter()
         .map(|peer| {
             let session = live.live.get(&peer.creds.desktop_id);
+            let control = session.map(|session| session.control()).unwrap_or_default();
             PeerSummary {
                 desktop_id: peer.creds.desktop_id.clone(),
                 pair_id: peer.creds.pair_id.clone(),
@@ -514,6 +542,8 @@ pub(crate) async fn list() -> Result<Vec<PeerSummary>, crate::AppError> {
                     .map(|session| session.features().to_vec())
                     .unwrap_or_default(),
                 agent_available: session.is_some_and(|session| session.agent_available()),
+                control: control.state,
+                holder: control.holder,
             }
         })
         .collect())
@@ -826,6 +856,10 @@ struct StreamParts {
     channel: std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
     subscriptions: super::session::Subscriptions,
     emitter: Emitter,
+    /// Where the host's statements about control are filed. The stream is the
+    /// only reader that sees them, so it owns the update; the machine list reads
+    /// the same handle.
+    control: std::sync::Arc<std::sync::Mutex<session::Control>>,
 }
 
 /// Subscribe to a host's pushes, or say why not.
@@ -846,6 +880,7 @@ async fn attach_stream(
             channel: peer_session.channel_for_stream(),
             subscriptions,
             emitter,
+            control: peer_session.control_for_stream(),
         }),
         Err(error) => {
             eprintln!("remote_peer: could not subscribe for {desktop_id}: {error}");
@@ -882,13 +917,15 @@ const EVENT_BACKLOG_CAPACITY: usize = 4096;
 /// `evt.*` is the only lane that carries a conversation; `presence` is the
 /// host's liveness tick; `state.*` is the host's host-wide lane, of which only
 /// `state.events` is read as an event and `state.sessions`/`state.workspaces`
-/// are forwarded as catalog updates; `catalog` is a decrypted snapshot. Chunks
-/// are not a `PeerEvent` kind at all — they go to the pull waiting for them
+/// are forwarded as catalog updates; `catalog` is a decrypted snapshot; `control`
+/// is the host's statement that the right to drive it moved. Chunks are not a
+/// `PeerEvent` kind at all — they go to the pull waiting for them
 /// ([`deliver_chunk`]).
 const EVENT_LANE: &str = "event";
 const PRESENCE_LANE: &str = "presence";
 const STATE_LANE: &str = "state";
 const CATALOG_LANE: &str = "catalog";
+const CONTROL_LANE: &str = "control";
 const TRANSFER_LANE: &str = "chunk";
 
 /// One push taken off a subscription, before anything has been made of it.
@@ -1121,6 +1158,7 @@ fn spawn_event_stream_capped(
                 mut transfers,
             },
         emitter,
+        control,
     } = parts;
     crate::runtime::spawn(async move {
         let mut visible = visible;
@@ -1176,6 +1214,7 @@ fn spawn_event_stream_capped(
         async fn handle_push(
             push: Push,
             channel: &std::sync::Mutex<future_remote_crypto::Channel>,
+            control: &std::sync::Mutex<session::Control>,
             desktop_id: &str,
             pair_id: &str,
             narrow: bool,
@@ -1210,6 +1249,7 @@ fn spawn_event_stream_capped(
                     StateEventKind::Sessions => (CATALOG_LANE, Some("sessions")),
                     StateEventKind::Activity => (CATALOG_LANE, Some("sessions_activity")),
                     StateEventKind::Workspaces => (CATALOG_LANE, Some("workspaces")),
+                    StateEventKind::Control => (CONTROL_LANE, None),
                     _ => return,
                 }
             } else {
@@ -1219,6 +1259,23 @@ fn spawn_event_stream_capped(
                 // Unparsable or unauthenticated; same reasoning as above.
                 return;
             };
+            // Who may drive the host, kept where the machine list and the
+            // "this read was refused" sentence can both read it. Two sources,
+            // because the host has two: every presence tick restates the state
+            // (with the holder's name), and a `state.control` packet announces
+            // the move the moment it happens — which is the one that matters
+            // here, since the next thing the reader does is look at a list that
+            // has just stopped being readable, or has just become readable.
+            if kind == PRESENCE_LANE || kind == CONTROL_LANE {
+                let mut held = control
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if kind == PRESENCE_LANE {
+                    held.apply_presence(&payload);
+                } else {
+                    held.apply_control(&payload);
+                }
+            }
             // Each push's conversation is recovered from the subject it arrived
             // on when the payload does not carry one, because a lean host trims
             // `sessionId` out of the event envelope. `state.events` is the one
@@ -1299,6 +1356,7 @@ fn spawn_event_stream_capped(
                 handle_push(
                     push,
                     &channel,
+                    &control,
                     &desktop_id,
                     &pair_id,
                     installed.narrow,
@@ -1428,10 +1486,12 @@ pub(crate) fn event_session_id<'a>(subject: &'a str, pair_id: &str) -> Option<&'
 
 /// Which kind of host-wide lane a `state.>` subject names.
 ///
-/// The host publishes four things under `state.>`: the event mirror, the
-/// sessions snapshot, the activity packet and the workspaces snapshot. Only
-/// `state.events` is read as an event (and only while the event lane is
-/// narrowed); the snapshots and the packet are forwarded as catalog updates.
+/// The host publishes several things under `state.>`: the event mirror, the
+/// sessions snapshot, the activity packet, the workspaces snapshot, and a
+/// control packet on a change of who drives the machine. Only `state.events` is
+/// read as an event (and only while the event lane is narrowed); the snapshots
+/// and the packet are forwarded as catalog updates, and the control packet as
+/// `control`.
 enum StateEventKind {
     Events,
     Sessions,
@@ -1440,6 +1500,9 @@ enum StateEventKind {
     /// that moved, so a reader must not treat the rest as absent.
     Activity,
     Workspaces,
+    /// `state.control`: `{control: "active" | "standby"}` on the device that
+    /// gained or lost the machine.
+    Control,
     Other,
 }
 
@@ -1452,6 +1515,8 @@ fn state_event_kind(subject: &str, pair_id: &str) -> StateEventKind {
         StateEventKind::Activity
     } else if subject == format!("p.{pair_id}.state.workspaces") {
         StateEventKind::Workspaces
+    } else if subject == format!("p.{pair_id}.state.control") {
+        StateEventKind::Control
     } else {
         StateEventKind::Other
     }
@@ -2511,11 +2576,18 @@ mod tests {
             state_event_kind("p.pair_1.state.activity", "pair_1"),
             StateEventKind::Activity
         ));
+        // The control packet is read as *control*, not as a snapshot: it names
+        // who may drive the machine and nothing about its list.
+        assert!(matches!(
+            state_event_kind("p.pair_1.state.control", "pair_1"),
+            StateEventKind::Control
+        ));
         for subject in [
             "p.pair_1.state.version",
             // Another pairing's host-wide lane.
             "p.pair_10.state.events",
             "p.pair_10.state.activity",
+            "p.pair_10.state.control",
             // The events lane proper, which is read through its own subscription.
             "p.pair_1.evt.sess_a",
             "",
@@ -2783,6 +2855,7 @@ pub(crate) mod cov_harness {
             channel: session.channel_for_stream(),
             subscriptions,
             emitter,
+            control: session.control_for_stream(),
         };
         let (sender, receiver) = tokio::sync::watch::channel(None);
         let handle = spawn_event_stream_capped(

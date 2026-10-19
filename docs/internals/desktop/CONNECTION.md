@@ -359,14 +359,32 @@ and `unpair` are the only commands it may speak. The payload it gets back from
 `get_presence` is the light one: the conversation list is the machine's, not
 every paired device's.
 
-**Still next.** The desktop client role's standby UI ("connect to another
-computer" has the same question to ask). The mobile half is done: the sessions
+The mobile half: the sessions
 screen keeps its cues to a yellow status dot — green would claim the machine
 works while nothing can be read from it — and puts the explanation and the
 "take over" button inside the popover that dot opens. The list page itself
 carries no prompt: it says something is wrong, the sheet says what, and the
 action sits next to the explanation. The picker's per-machine rows show the
 same state, so choosing a machine also tells you whether you may use it.
+
+**The desktop client role answers the same question.** What the host says in
+its presence packet and its `p.{pair}.state.control` packet (`control`, plus
+`holder` while somebody else has it) is kept on the connection and reported
+with `remote_peer_list` as `PeerSummary.control` / `holder`. Three surfaces read
+that one field: the device picker's entry says who is using the machine, the
+machine's row in the Remote section says "taken over" instead of "connected"
+and offers `takeover` (the same command a phone sends, on the `list` lane), and
+the Remote dot is amber when every paired machine answers and none of them is
+this machine's to drive. A control move — announced by the packet, or noticed
+in a presence tick — drops that host's snapshot gate and re-reads: a standby
+device is never sent a snapshot, so the gate can sit at a revision whose content
+this client has never applied and would reject the first snapshot after control
+returns. While standby, the poll stops asking that host for its catalogue, since
+the only possible answer is a refusal.
+
+**What the desktop does not add** is a standby *list*: that machine's rows are
+simply absent, and the picker and the Remote row are where the reader finds out
+why and takes it back — the same shape the phone settled on.
 
 ### 2.2.1 Mobile multi-Desktop pairing (2026-09-12)
 

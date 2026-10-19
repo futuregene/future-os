@@ -1,6 +1,11 @@
 import type { RemotePeer } from "./remotePeerClient";
 import { describe, expect, it } from "vitest";
 import {
+  peerDrivable,
+  peerHeld,
+  peerHolderName,
+  peerLabelKey,
+  peerLabelTone,
   peersConnected,
   peersDotState,
   peerStatus,
@@ -73,6 +78,53 @@ describe("peerStatus", () => {
   });
 });
 
+/**
+ * Connected is not the same as usable.
+ *
+ * A machine another paired device drives answers every heartbeat and refuses
+ * every read. Calling it "connected" — green badge, green dot — tells the user
+ * everything works, one line above a list that is missing exactly its
+ * conversations. These are the five states plus that one answer.
+ */
+describe("being held by another paired device", () => {
+  const held = peer({ control: "standby", holder: { name: "Hui's phone" } });
+
+  it("is connected, and still not ours to drive", () => {
+    expect(peerStatus(held)).toBe("connected");
+    expect(peerHeld(held)).toBe(true);
+    expect(peerDrivable(held)).toBe(false);
+  });
+
+  it("is drivable when nobody else has it", () => {
+    expect(peerDrivable(peer())).toBe(true);
+    expect(peerHeld(peer())).toBe(false);
+    // A host that predates the field says nothing; the machine is assumed ours.
+    expect(peerDrivable(peer({ control: undefined }))).toBe(true);
+    expect(peerDrivable(peer({ control: "active" }))).toBe(true);
+  });
+
+  it("gets its own word and an amber badge, not 'connected'", () => {
+    expect(peerLabelKey(held)).toBe("statusTakenOver");
+    expect(peerLabelTone(held)).toBe("warning");
+    // Every other machine keeps the status vocabulary.
+    expect(peerLabelKey(peer())).toBe("statusConnected");
+    expect(peerLabelTone(peer())).toBe("accent");
+    expect(peerLabelKey(peer({ connected: false, error: "gone" }))).toBe("statusOffline");
+    expect(peerLabelTone(peer({ connected: false, error: "gone" }))).toBe("danger");
+  });
+
+  it("names the holder when it declared one, and says nothing when it did not", () => {
+    expect(peerHolderName(held)).toBe("Hui's phone");
+    expect(peerHolderName(peer({ control: "standby" }))).toBeNull();
+    expect(peerHolderName(peer({ control: "standby", holder: { name: "   " } }))).toBeNull();
+  });
+
+  it("is not held while the link is down, whatever the last state said", () => {
+    expect(peerHeld(peer({ control: "standby", connected: false, error: "gone" }))).toBe(false);
+    expect(peerDrivable(peer({ control: "standby", connected: false, error: "gone" }))).toBe(false);
+  });
+});
+
 describe("peersConnected", () => {
   it("counts only the machines that are really up", () => {
     const counts = peersConnected([
@@ -114,5 +166,24 @@ describe("peersDotState", () => {
   /** A machine with nothing paired has no client-role state at all. */
   it("is nothing when nothing is paired", () => {
     expect(peersDotState([])).toBeNull();
+  });
+
+  /**
+   * Every machine answers and none of them is ours: the merged list is empty of
+   * their conversations, and green would say the opposite.
+   */
+  it("is partial when every machine answers but none is ours to drive", () => {
+    expect(peersDotState([peer({ control: "standby" })])).toBe("partial");
+    expect(peersDotState([
+      peer({ control: "standby" }),
+      peer({ desktopId: "desktop_b", control: "standby" }),
+    ])).toBe("partial");
+  });
+
+  it("stays green while at least one machine is drivable", () => {
+    expect(peersDotState([
+      peer({ control: "standby" }),
+      peer({ desktopId: "desktop_b" }),
+    ])).toBe("up");
   });
 });
