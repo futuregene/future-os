@@ -1,8 +1,6 @@
 //! Desktop adapter for its explicitly owned Remote controller instance.
 #[cfg(test)]
 use super::session::PeerSession;
-#[cfg(test)]
-pub(crate) use future_remote_client::runtime::parse_chunk_subject;
 use future_remote_client::Client;
 #[cfg(test)]
 pub(crate) use future_remote_client::PeerEvent;
@@ -20,7 +18,7 @@ fn client_cell() -> &'static std::sync::RwLock<Client> {
         )))
     })
 }
-fn client() -> Client {
+pub(super) fn client() -> Client {
     let client = client_cell()
         .read()
         .unwrap_or_else(|p| p.into_inner())
@@ -240,6 +238,7 @@ pub(crate) async fn request(
         .map_err(Into::into)
 }
 
+#[cfg(test)]
 pub(crate) async fn put_chunk(
     desktop_id: &str,
     upload_id: &str,
@@ -276,17 +275,6 @@ pub(crate) async fn register_chunk(
     client()
         .register_chunk(desktop_id, transfer_id, index, sender)
         .await
-}
-
-pub(crate) async fn pull_chunk(
-    desktop_id: &str,
-    transfer_id: &str,
-    index: u64,
-) -> Result<Vec<u8>, crate::AppError> {
-    client()
-        .pull_chunk(desktop_id, transfer_id, index)
-        .await
-        .map_err(Into::into)
 }
 
 #[cfg(test)]

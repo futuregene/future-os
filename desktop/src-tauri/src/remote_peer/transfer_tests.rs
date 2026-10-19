@@ -11,7 +11,6 @@
 use super::runtime;
 use super::runtime_tests::find;
 use super::testing::{fixture, teardown};
-use super::transfer::TransferKind;
 use super::transfer::{self, DownloadInfo};
 use std::sync::Arc;
 
@@ -273,28 +272,7 @@ async fn a_failed_pull_releases_the_hosts_record() {
     teardown(&fx.pair_id).await;
 }
 
-/// The retry decision, tested directly: it is the one choice here whose wrong
-/// answer is invisible. Retrying a refusal delays a definite error; refusing to
-/// retry a transport fault turns a lost packet into a failed download.
-#[test]
-fn only_a_transport_fault_is_worth_retrying() {
-    use crate::AppError;
-    assert!(transfer::retryable(&AppError::RemoteTransport(
-        "Remote request timed out".into()
-    )));
-    // A host that answered and refused: it will refuse again.
-    assert!(!transfer::retryable(&AppError::Message(
-        "Download expired or does not exist.".into()
-    )));
-    // A local misconfiguration is not the link's fault either.
-    assert!(!transfer::retryable(&AppError::Message(
-        "peer_not_connected".into()
-    )));
-}
-
 // ── pure pieces ─────────────────────────────────────────────────────────────
-
-use super::runtime::parse_chunk_subject;
 
 /**
  * A preview pulled for the overlay lands under its own name, one entry per source.
@@ -490,33 +468,6 @@ fn the_prune_is_a_no_op_when_no_home_can_be_resolved() {
         std::env::var_os("HOME").is_some(),
         "the fixture must put HOME back"
     );
-}
-
-#[test]
-fn a_chunk_subject_yields_its_transfer_and_index() {
-    assert_eq!(
-        parse_chunk_subject("p.pair_1.xfer.down.download_9.chunk.3"),
-        Some(("download_9".to_string(), 3))
-    );
-}
-
-#[test]
-fn a_subject_that_is_not_a_chunk_is_refused() {
-    for subject in [
-        // Another family on the same pair.
-        "p.pair_1.evt.sess_1",
-        // The lane the client writes on, not the one it reads.
-        "p.pair_1.xfer.up.download_9.pull.3",
-        // An upload chunk, which is a command rather than a publish.
-        "p.pair_1.xfer.up.download_9.chunk.3",
-        // A non-numeric index: guessing at it would mis-address the file.
-        "p.pair_1.xfer.down.download_9.chunk.abc",
-        // Truncated.
-        "p.pair_1.xfer.down.download_9.chunk",
-        "",
-    ] {
-        assert_eq!(parse_chunk_subject(subject), None, "subject {subject}");
-    }
 }
 
 #[test]
@@ -948,69 +899,6 @@ async fn an_upload_to_an_unpaired_host_is_refused() {
     );
 }
 
-/// The host's hash is checked against the local bytes, and a disagreement is a
-/// failure rather than a file the user believes arrived intact.
-///
-/// Asserted on the predicate because a real host cannot be made to receive
-/// different bytes than it was sent — which is the point of the check.
-#[test]
-fn a_hash_that_does_not_match_the_bytes_is_refused() {
-    let bytes = b"what we sent";
-    let correct = {
-        use sha2::{Digest, Sha256};
-        format!("{:x}", Sha256::digest(bytes))
-    };
-
-    assert_eq!(
-        transfer::verified_hash_for_test(&correct, bytes, "n.txt").expect("the matching hash"),
-        correct
-    );
-    // Case is not part of the contract: a host may hex either way.
-    assert!(transfer::verified_hash_for_test(&correct.to_uppercase(), bytes, "n.txt").is_ok());
-
-    // A hash of something else: the bytes that arrived are not the bytes sent.
-    let wrong = {
-        use sha2::{Digest, Sha256};
-        format!("{:x}", Sha256::digest(b"something else"))
-    };
-    let error = transfer::verified_hash_for_test(&wrong, bytes, "n.txt")
-        .expect_err("a mismatch must be refused");
-    assert!(
-        error
-            .to_string()
-            .contains("remote_upload_hash_mismatch:n.txt"),
-        "the refusal must name the file, got: {error}"
-    );
-}
-
-/// Which attachment kind the host is told, since it chooses preview and
-/// thumbnail handling from it. A name with no extension has none.
-#[test]
-fn the_attachment_kind_follows_the_extension() {
-    for image in [
-        "photo.JPG",
-        "a.png",
-        "b.webp",
-        "c.heic",
-        "d.tiff",
-        "scan.svg",
-        "e.jpeg",
-    ] {
-        assert_eq!(transfer::upload_kind_for_test(image), "image", "{image}");
-    }
-    for other in [
-        "notes.txt",
-        "archive.tar.gz",
-        // No dot at all: the whole name would otherwise read as an extension.
-        "Makefile",
-        ".gitignore",
-        "data.json",
-        "report.pdf",
-    ] {
-        assert_eq!(transfer::upload_kind_for_test(other), "file", "{other}");
-    }
-}
-
 /**
  * The id an upload returns is one the host will accept as an attachment.
  *
@@ -1046,35 +934,6 @@ async fn an_uploaded_file_can_be_claimed_as_an_attachment() {
     );
 
     teardown(&fx.pair_id).await;
-}
-
-/// A chunk size a host declares must be one this machine can use.
-///
-/// A zero is the case that matters: `chunks(0)` panics, so a hostile or broken
-/// host could otherwise take this client down with one number.
-#[test]
-fn a_zero_chunk_size_is_refused_by_name() {
-    assert_eq!(
-        transfer::usable_chunk_size_for_test(512 * 1024).expect("a normal size"),
-        512 * 1024
-    );
-
-    let error = transfer::usable_chunk_size_for_test(0).expect_err("zero must be refused");
-    assert!(
-        error.to_string().contains("remote_upload_bad_chunk_size"),
-        "got: {error}"
-    );
-}
-
-/// A size larger than this platform can address means "one chunk" rather than a
-/// refusal: that is what `chunks` does with a size past the end, and the host
-/// rejects an oversized chunk with a message about its own limit. Refusing here
-/// instead would be a 32-bit-only arm with no way to exercise it on 64-bit.
-#[test]
-fn an_enormous_chunk_size_becomes_one_chunk() {
-    let chunk = transfer::usable_chunk_size_for_test(u64::MAX).expect("usable");
-    assert_eq!(chunk, usize::MAX);
-    assert_eq!(b"four".chunks(chunk).count(), 1);
 }
 
 /// A chunk write with no connection behind it is refused rather than sent into
@@ -1212,26 +1071,6 @@ async fn a_request_that_times_out_keeps_a_connection_that_is_still_up() {
     );
 
     teardown(&fx.pair_id).await;
-}
-
-/**
- * Each direction releases its own record.
- *
- * The host keeps a prepared download and a staged upload in separate registries
- * behind separate commands, so sharing one name would release the wrong one —
- * and `with_release` is deliberately one body for both paths, which is exactly
- * why the command has to be chosen per direction rather than fixed.
- */
-#[test]
-fn each_direction_has_its_own_cancel_command() {
-    assert_eq!(
-        transfer::cancel_command_for_test(TransferKind::Download),
-        "download_cancel"
-    );
-    assert_eq!(
-        transfer::cancel_command_for_test(TransferKind::Upload),
-        "upload_cancel"
-    );
 }
 
 /**

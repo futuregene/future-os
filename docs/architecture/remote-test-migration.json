@@ -701,7 +701,7 @@
         "a_transport_failure_costs_one_retry_and_the_transfer_completes",
         "a_chunk_that_never_lands_reports_its_first_failure"
       ],
-      "target": null
+      "target": "packages/remote-client/src/transfer.rs"
     },
     {
       "source": "desktop/src-tauri/src/remote_peer/transfer_tests.rs",
@@ -748,7 +748,22 @@
         "each_direction_has_its_own_cancel_command",
         "a_chunk_write_on_a_dropped_broker_is_recorded"
       ],
-      "target": null
+      "target": {
+        "client-core": {
+          "path": "packages/remote-client/src/transfer_unit_tests.rs",
+          "cases": [
+            "a_chunk_subject_yields_its_transfer_and_index",
+            "a_hash_that_does_not_match_the_bytes_is_refused",
+            "a_subject_that_is_not_a_chunk_is_refused",
+            "a_zero_chunk_size_is_refused_by_name",
+            "an_enormous_chunk_size_becomes_one_chunk",
+            "each_direction_has_its_own_cancel_command",
+            "only_a_transport_fault_is_worth_retrying",
+            "the_attachment_kind_follows_the_extension"
+          ]
+        },
+        "application-files-and-host-integration": "desktop/src-tauri/src/remote_peer/transfer_tests.rs"
+      }
     },
     {
       "source": "desktop/src-tauri/src/remote_host/availability.rs",
@@ -1019,7 +1034,15 @@
         "a_pairing_code_without_an_expiry_is_refused_by_name",
         "pending_revokes_are_skipped_blocked_or_retried_by_error_class"
       ],
-      "target": null
+      "target": {
+        "protocol-jwt": {
+          "path": "packages/remote-protocol/src/jwt.rs",
+          "cases": [
+            "jwt_expiry_rejects_malformed_tokens"
+          ]
+        },
+        "host-pairing-and-http-integration": "desktop/src-tauri/src/remote_host/pairing.rs"
+      }
     },
     {
       "source": "desktop/src-tauri/src/remote_host/read_pages.rs",

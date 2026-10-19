@@ -5,7 +5,7 @@
 
 - `rpc`：Rust 线上契约 crate 与 protobuf 事实源。
 - `remote-crypto`：Rust/TypeScript Noise 安全通道；共用握手、记录与拒绝条件素材。
-- `remote-client`：Rust 主控连接、凭据 DTO、多远端实例与任务生命周期；文件编排和 TS Client 仍在迁移。
+- `remote-client`：Rust 主控连接、凭据 DTO、多远端实例、任务生命周期与文件编排；TS Client 仍在迁移。
 - `remote-protocol`：Rust/TypeScript 线上契约、命令 schema/生成类型、邀请及 JSON/gzip 编解码。
 - `markdown`：共享 TypeScript markdown 解析器与类型。
 - `thread-projection`：共享 TypeScript 线程投影逻辑。

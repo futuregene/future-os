@@ -243,3 +243,38 @@ async fn disconnect_prevents_a_pending_refresh_from_replacing_the_grant() {
     assert!(client.list().await.unwrap()[0].error.is_none());
     client.shutdown(Duration::from_secs(1)).await.unwrap();
 }
+
+#[tokio::test]
+async fn dropping_a_transfer_registration_releases_the_waiter_synchronously() {
+    let client = Client::new(Arc::new(MemoryHost::default()));
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let registration =
+        client.register_transfer_chunk("desktop_fixture", "transfer_fixture", 0, sender);
+    drop(registration);
+    assert!(receiver.await.is_err());
+    assert!(client.inner.chunks.lock().unwrap().is_empty());
+    client.shutdown(Duration::from_secs(1)).await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelling_an_old_chunk_waiter_cannot_remove_a_newer_retry() {
+    let client = Client::new(Arc::new(MemoryHost::default()));
+    let (first, first_reply) = tokio::sync::oneshot::channel();
+    let old = client.register_transfer_chunk("desktop_fixture", "transfer_fixture", 0, first);
+    let (second, second_reply) = tokio::sync::oneshot::channel();
+    let current = client.register_transfer_chunk("desktop_fixture", "transfer_fixture", 0, second);
+    assert!(first_reply.await.is_err());
+    drop(old);
+    client
+        .deliver_chunk(
+            "desktop_fixture",
+            "transfer_fixture".into(),
+            0,
+            vec![1, 2, 3],
+        )
+        .await;
+    assert_eq!(second_reply.await.unwrap(), vec![1, 2, 3]);
+    drop(current);
+    assert!(client.inner.chunks.lock().unwrap().is_empty());
+    client.shutdown(Duration::from_secs(1)).await.unwrap();
+}

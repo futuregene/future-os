@@ -52,7 +52,7 @@ pub(crate) async fn claim(
     device_public_key: &str,
     device_name: &str,
 ) -> Result<Claimed, crate::AppError> {
-    let response = crate::remote_host::pairing::http_client()?
+    let response = crate::remote_platform::http_client()?
         .post(&invitation.claim_url)
         .json(&json!({
             "nonce": invitation.nonce,
@@ -62,11 +62,9 @@ pub(crate) async fn claim(
         }))
         .send()
         .await
-        .map_err(|error| {
-            crate::remote_host::pairing::transport_or_message("claim pairing", error)
-        })?;
+        .map_err(|error| crate::remote_platform::transport_or_message("claim pairing", error))?;
     let body: ClaimResponse =
-        crate::remote_host::pairing::parse_response(response, "claim pairing").await?;
+        crate::remote_platform::parse_response(response, "claim pairing").await?;
     // Platform endpoints are cached on the credential so a later refresh needs
     // no re-derivation; they are also where the revoke URL comes from.
     let nats_url = optional_endpoint(body.nats_url);
@@ -75,7 +73,7 @@ pub(crate) async fn claim(
         .filter(|url| !url.trim().is_empty())
         .or_else(|| nats_url.clone())
         .unwrap_or_default();
-    let jwt_expires_at = crate::remote_host::pairing::jwt_expiry(&body.user_jwt)?;
+    let jwt_expires_at = crate::remote_platform::jwt_expiry(&body.user_jwt)?;
     Ok(Claimed {
         pair_id: body.pair_id,
         user_jwt: body.user_jwt,
@@ -93,7 +91,7 @@ pub(crate) async fn refresh(creds: &PeerCreds) -> Result<Refreshed, crate::AppEr
     let key_pair = nkeys::KeyPair::from_seed(&creds.nkey_seed).map_err(|error| {
         crate::AppError::Message(format!("Invalid stored device NKey: {error}"))
     })?;
-    let response = crate::remote_host::pairing::http_client()?
+    let response = crate::remote_platform::http_client()?
         .post(&creds.token_url)
         .json(&json!({
             "pair_id": creds.pair_id,
@@ -105,17 +103,17 @@ pub(crate) async fn refresh(creds: &PeerCreds) -> Result<Refreshed, crate::AppEr
         .send()
         .await
         .map_err(|error| {
-            crate::remote_host::pairing::transport_or_message("refresh peer credentials", error)
+            crate::remote_platform::transport_or_message("refresh peer credentials", error)
         })?;
     let body: RefreshResponse =
-        crate::remote_host::pairing::parse_response(response, "refresh peer credentials").await?;
+        crate::remote_platform::parse_response(response, "refresh peer credentials").await?;
     let nats_url = required_endpoint(body.nats_url, "nats_url")?;
     let nats_ws_url = body
         .nats_ws_url
         .filter(|url| !url.trim().is_empty())
         .unwrap_or_else(|| nats_url.clone());
     Ok(Refreshed {
-        jwt_expires_at: crate::remote_host::pairing::jwt_expiry(&body.user_jwt)?,
+        jwt_expires_at: crate::remote_platform::jwt_expiry(&body.user_jwt)?,
         user_jwt: body.user_jwt,
         nats_url,
         nats_ws_url,
@@ -132,7 +130,7 @@ pub(crate) async fn revoke(creds: &PeerCreds) -> Result<(), crate::AppError> {
     let key_pair = nkeys::KeyPair::from_seed(&creds.nkey_seed).map_err(|error| {
         crate::AppError::Message(format!("Invalid stored device NKey: {error}"))
     })?;
-    let response = crate::remote_host::pairing::http_client()?
+    let response = crate::remote_platform::http_client()?
         .post(creds.revoke_url())
         .json(&json!({
             "pair_id": creds.pair_id,
@@ -143,7 +141,7 @@ pub(crate) async fn revoke(creds: &PeerCreds) -> Result<(), crate::AppError> {
         .send()
         .await
         .map_err(|error| {
-            crate::remote_host::pairing::transport_or_message("revoke peer pairing", error)
+            crate::remote_platform::transport_or_message("revoke peer pairing", error)
         })?;
     if response.status().is_success() || matches!(response.status().as_u16(), 401 | 404) {
         return Ok(());

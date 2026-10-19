@@ -12,3 +12,5 @@ pub mod runtime;
 mod tasks;
 pub use runtime::{Client, Emitter, PeerEvent, PeerSummary};
 pub use tasks::TaskHandle;
+
+pub mod transfer;

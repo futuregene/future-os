@@ -118,14 +118,6 @@ struct Runtime {
     /// The last failure per host. Kept after a disconnect so the list can say
     /// *why* a host is not connected instead of only that it is not.
     errors: HashMap<String, String>,
-    /// One inbox per chunk pull that is in flight, keyed by
-    /// `(desktop, transfer, index)`.
-    ///
-    /// The bytes arrive on a *different* subject from the acknowledgement, so
-    /// the two halves of one pull have to be joined somewhere; this is where.
-    /// Keyed by all three parts because a host serves several downloads with
-    /// different transfer ids, and the same index appears in every one of them.
-    chunks: HashMap<(String, String, u64), tokio::sync::oneshot::Sender<Vec<u8>>>,
     /// Which conversation the UI is looking at, per host — the value the event
     /// task watches to move its `evt.` subscription between the narrow lane and
     /// the whole host.
@@ -716,9 +708,39 @@ fn chunk_pull_timeout() -> Duration {
 pub struct Client {
     inner: Arc<ClientInner>,
 }
+type ChunkKey = (String, String, u64);
+struct ChunkWaiter {
+    registration: Arc<()>,
+    sender: tokio::sync::oneshot::Sender<Vec<u8>>,
+}
+pub(crate) struct ChunkRegistration {
+    client: Client,
+    key: ChunkKey,
+    registration: Arc<()>,
+}
+impl Drop for ChunkRegistration {
+    fn drop(&mut self) {
+        let mut chunks = self
+            .client
+            .inner
+            .chunks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if chunks
+            .get(&self.key)
+            .is_some_and(|waiter| Arc::ptr_eq(&waiter.registration, &self.registration))
+        {
+            chunks.remove(&self.key);
+        }
+    }
+}
+
 struct ClientInner {
     state: Mutex<Runtime>,
     host: Arc<dyn ClientHost>,
+    /// Synchronous registration lets a dropped caller future remove its waiter
+    /// without spawning background cleanup or removing a newer retry.
+    chunks: std::sync::Mutex<HashMap<ChunkKey, ChunkWaiter>>,
     tasks: std::sync::Mutex<Vec<TaskHandle>>,
     closed: std::sync::atomic::AtomicBool,
     stopping: tokio::sync::watch::Sender<bool>,
@@ -786,6 +808,7 @@ impl Client {
             inner: Arc::new(ClientInner {
                 state: Mutex::new(Runtime::default()),
                 host,
+                chunks: std::sync::Mutex::new(HashMap::new()),
                 tasks: std::sync::Mutex::new(Vec::new()),
                 closed: std::sync::atomic::AtomicBool::new(false),
                 stopping: tokio::sync::watch::channel(false).0,
@@ -832,7 +855,7 @@ impl Client {
     pub fn is_stopped(&self) -> bool {
         self.inner.closed.load(std::sync::atomic::Ordering::Acquire)
     }
-    async fn while_running<T>(
+    pub(crate) async fn while_running<T>(
         &self,
         future: impl std::future::Future<Output = Result<T, crate::Error>>,
     ) -> Result<T, crate::Error> {
@@ -841,6 +864,59 @@ impl Client {
         tokio::select! {
             result = future => result,
             _ = stop.changed() => Err(crate::Error::Message("remote_client_stopped".into())),
+        }
+    }
+    pub(crate) async fn transfer_session(
+        &self,
+        desktop: &str,
+    ) -> Result<(u64, Arc<PeerSession>), crate::Error> {
+        let state = self.inner.state.lock().await;
+        self.ensure_running()?;
+        let session = state
+            .live
+            .get(desktop)
+            .cloned()
+            .ok_or_else(|| crate::Error::Message("peer_not_connected".into()))?;
+        if state.stopped.contains(desktop) {
+            return Err(crate::Error::Message("peer_not_connected".into()));
+        }
+        let epoch = state.epochs.get(desktop).copied().unwrap_or_default();
+        Ok((epoch, session))
+    }
+    pub(crate) async fn check_transfer(
+        &self,
+        desktop: &str,
+        epoch: u64,
+        session: &Arc<PeerSession>,
+    ) -> Result<(), crate::Error> {
+        let state = self.inner.state.lock().await;
+        self.check_attempt(&state, desktop, epoch)?;
+        if state.stopped.contains(desktop)
+            || !state
+                .live
+                .get(desktop)
+                .is_some_and(|current| Arc::ptr_eq(current, session))
+        {
+            return Err(crate::Error::Message("peer_not_connected".into()));
+        }
+        Ok(())
+    }
+    pub(crate) fn transfer_command_id(&self) -> String {
+        self.inner.host.command_id()
+    }
+    pub(crate) async fn record_transfer_failure(
+        &self,
+        desktop: &str,
+        session: &Arc<PeerSession>,
+        error: &crate::Error,
+    ) {
+        let mut state = self.inner.state.lock().await;
+        if state
+            .live
+            .get(desktop)
+            .is_some_and(|current| Arc::ptr_eq(current, session))
+        {
+            self.on_transport_failure(&mut state, desktop, error);
         }
     }
     fn ensure_running(&self) -> Result<(), crate::Error> {
@@ -893,7 +969,11 @@ impl Client {
             state.supervisors.clear();
             state.emitters.clear();
             state.visible.clear();
-            state.chunks.clear();
+            self.inner
+                .chunks
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clear();
             state.errors.clear();
             sessions
         };
@@ -1824,14 +1904,15 @@ impl Client {
         index: u64,
         bytes: Vec<u8>,
     ) {
-        let waiter = self.inner.state.lock().await.chunks.remove(&(
-            desktop_id.to_string(),
-            transfer_id,
-            index,
-        ));
+        let waiter = self
+            .inner
+            .chunks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&(desktop_id.to_string(), transfer_id, index));
         if let Some(waiter) = waiter {
             // A closed receiver means the pull gave up; the bytes are then unwanted.
-            let _ = waiter.send(bytes);
+            let _ = waiter.sender.send(bytes);
         }
     }
     /// Record which conversation the UI is looking at, so the live lane can be
@@ -1867,7 +1948,10 @@ impl Client {
         let mut live = self.inner.state.lock().await;
         let epoch = live.epochs.entry(desktop_id.to_string()).or_default();
         *epoch = epoch.wrapping_add(1);
-        live.chunks
+        self.inner
+            .chunks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
             .retain(|(desktop, _, _), _| desktop != desktop_id);
         if let Some(task) = live.tasks.remove(desktop_id) {
             task.abort();
@@ -1954,14 +2038,38 @@ impl Client {
         command: Value,
         lane: &str,
     ) -> Result<Value, crate::Error> {
+        self.request_bound(desktop_id, command, lane, None).await
+    }
+    pub(crate) async fn request_for_transfer(
+        &self,
+        desktop_id: &str,
+        epoch: u64,
+        command: Value,
+        lane: &str,
+    ) -> Result<Value, crate::Error> {
+        self.request_bound(desktop_id, command, lane, Some(epoch))
+            .await
+    }
+    async fn request_bound(
+        &self,
+        desktop_id: &str,
+        command: Value,
+        lane: &str,
+        expected: Option<u64>,
+    ) -> Result<Value, crate::Error> {
         // Read before the command is consumed: the chunk fetches have to name the
         // same session and run as the page they are completing.
         let owner = ChunkOwner::from(&command);
-        let reply = self.send_request(desktop_id, command, lane).await?;
+        let reply = self
+            .send_request_bound(desktop_id, command, lane, expected)
+            .await?;
         match read_chunk_of(&reply) {
             // A chunked reply: put the page back together before returning it, so no
             // caller has to know a page can arrive in pieces.
-            Some(chunk) => self.reassemble(desktop_id, lane, chunk, &owner).await,
+            Some(chunk) => {
+                self.reassemble(desktop_id, lane, chunk, &owner, expected)
+                    .await
+            }
             None => Ok(reply),
         }
     }
@@ -1970,13 +2078,16 @@ impl Client {
     /// Split from [`request`] because chunk fetching goes through it directly: a
     /// `get_read_chunk` reply *is* a chunk, and routing it back through the
     /// reassembling wrapper would make the two functions mutually recursive.
-    async fn send_request(
+    async fn send_request_bound(
         &self,
         desktop_id: &str,
         mut command: Value,
         lane: &str,
+        expected: Option<u64>,
     ) -> Result<Value, crate::Error> {
-        self.ensure_connected(desktop_id).await?;
+        if expected.is_none() {
+            self.ensure_connected(desktop_id).await?;
+        }
         if let Some(object) = command.as_object_mut() {
             object
                 .entry("id")
@@ -2000,12 +2111,21 @@ impl Client {
         // below is a network wait, and the runtime mutex is what every other host's
         // `list()`, `connect` and `disconnect` needs. This is the second half of
         // why a session is an `Arc` — the wait happens with the lock released.
-        let Some(session) = self.session_handle(desktop_id).await else {
+        let bound = if let Some(expected) = expected {
+            let (epoch, session) = self.transfer_session(desktop_id).await?;
+            if epoch != expected {
+                return Err(crate::Error::Message("peer_not_connected".into()));
+            }
+            Some(session)
+        } else {
+            self.session_handle(desktop_id).await
+        };
+        let Some(session) = bound else {
             return Err(crate::Error::Message("peer_not_connected".into()));
         };
         let subject = session.command_subject(&key);
-        let result = session
-            .request(&subject, command, session::COMMAND_TIMEOUT)
+        let result = self
+            .while_running(session.request(&subject, command, session::COMMAND_TIMEOUT))
             .await;
         if let Err(error) = &result {
             let mut live = self.inner.state.lock().await;
@@ -2026,6 +2146,7 @@ impl Client {
         lane: &str,
         first: &Value,
         owner: &ChunkOwner,
+        expected: Option<u64>,
     ) -> Result<Value, crate::Error> {
         let id = chunk_string(first, "id")?;
         let total = chunk_u64(first, "totalBytes")?;
@@ -2045,7 +2166,7 @@ impl Client {
             for offset in offsets {
                 fetched.push((
                     offset,
-                    self.fetch_chunk(desktop_id, lane, &id, offset, owner)
+                    self.fetch_chunk(desktop_id, lane, &id, offset, owner, expected)
                         .await?,
                 ));
             }
@@ -2065,6 +2186,7 @@ impl Client {
         id: &str,
         offset: usize,
         owner: &ChunkOwner,
+        expected: Option<u64>,
     ) -> Result<Value, crate::Error> {
         let mut command = json!({"type": "get_read_chunk", "replyId": id, "offset": offset});
         if let Some(session) = &owner.session {
@@ -2073,7 +2195,8 @@ impl Client {
         if let Some(run) = &owner.run {
             command["runId"] = json!(run);
         }
-        self.send_request(desktop_id, command, lane).await
+        self.send_request_bound(desktop_id, command, lane, expected)
+            .await
     }
     fn on_transport_failure(&self, live: &mut Runtime, desktop_id: &str, error: &crate::Error) {
         // Only a transport fault means the socket is gone. A host that answered and
@@ -2162,7 +2285,9 @@ impl Client {
         // before it answers, so a short budget here would report a slow disk as a
         // dead socket. The wait happens with the runtime lock released, so a slow
         // disk on this host does not stall another host's list read.
-        let result = session.request_bytes(&subject, bytes, budget).await;
+        let result = self
+            .while_running(session.request_bytes(&subject, bytes, budget))
+            .await;
         if let Err(error) = &result {
             let mut live = self.inner.state.lock().await;
             if live
@@ -2190,6 +2315,7 @@ impl Client {
         Ok(session.transfer_pull_subject(transfer_id, index))
     }
     /// Hold a place for the bytes of one chunk.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn register_chunk(
         &self,
         desktop_id: &str,
@@ -2197,18 +2323,53 @@ impl Client {
         index: u64,
         sender: tokio::sync::oneshot::Sender<Vec<u8>>,
     ) {
-        self.inner.state.lock().await.chunks.insert(
-            (desktop_id.to_string(), transfer_id.to_string(), index),
-            sender,
-        );
+        let key = (desktop_id.to_string(), transfer_id.to_string(), index);
+        self.inner
+            .chunks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(
+                key,
+                ChunkWaiter {
+                    registration: Arc::new(()),
+                    sender,
+                },
+            );
+    }
+    pub(crate) fn register_transfer_chunk(
+        &self,
+        desktop: &str,
+        transfer: &str,
+        index: u64,
+        sender: tokio::sync::oneshot::Sender<Vec<u8>>,
+    ) -> ChunkRegistration {
+        let key = (desktop.to_string(), transfer.to_string(), index);
+        let registration = Arc::new(());
+        self.inner
+            .chunks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(
+                key.clone(),
+                ChunkWaiter {
+                    registration: registration.clone(),
+                    sender,
+                },
+            );
+        ChunkRegistration {
+            client: self.clone(),
+            key,
+            registration,
+        }
     }
     /// Give up a place for one chunk.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn forget_chunk(&self, desktop_id: &str, transfer_id: &str, index: u64) {
-        self.inner.state.lock().await.chunks.remove(&(
-            desktop_id.to_string(),
-            transfer_id.to_string(),
-            index,
-        ));
+        self.inner
+            .chunks
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&(desktop_id.to_string(), transfer_id.to_string(), index));
     }
     /// The bytes of one chunk: ask, and join the two halves of the answer.
     pub async fn pull_chunk(
@@ -2243,15 +2404,13 @@ impl Client {
         budget: Duration,
     ) -> Result<Vec<u8>, crate::Error> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
-        self.register_chunk(desktop_id, transfer_id, index, sender)
-            .await;
+        let _registration = self.register_transfer_chunk(desktop_id, transfer_id, index, sender);
         let subject = match self
             .transfer_pull_subject(desktop_id, transfer_id, index)
             .await
         {
             Ok(subject) => subject,
             Err(error) => {
-                self.forget_chunk(desktop_id, transfer_id, index).await;
                 return Err(error);
             }
         };
@@ -2263,13 +2422,8 @@ impl Client {
         // busy machine looks exactly like a network fault. `budget` above is only
         // the wait for the bytes, which the host has already published by the time
         // it acknowledges this request.
-        if let Err(error) = self
-            .request_at(desktop_id, json!({}), &subject, session::COMMAND_TIMEOUT)
-            .await
-        {
-            self.forget_chunk(desktop_id, transfer_id, index).await;
-            return Err(error);
-        }
+        self.request_at(desktop_id, json!({}), &subject, session::COMMAND_TIMEOUT)
+            .await?;
         match tokio::time::timeout(budget, receiver).await {
             Ok(Ok(bytes)) => Ok(bytes),
             // Nothing arrived: either the sender was dropped (the connection went
@@ -2277,12 +2431,9 @@ impl Client {
             // that never reached this subscription. The two are indistinguishable
             // from here and both are transient, so they share one message — and the
             // caller retries either way.
-            _ => {
-                self.forget_chunk(desktop_id, transfer_id, index).await;
-                Err(crate::Error::RemoteTransport(
-                    "remote_download_chunk_missing".into(),
-                ))
-            }
+            _ => Err(crate::Error::RemoteTransport(
+                "remote_download_chunk_missing".into(),
+            )),
         }
     }
     /// One command on an explicit subject, for the routes that are not the
@@ -2307,7 +2458,9 @@ impl Client {
         let Some(session) = self.session_handle(desktop_id).await else {
             return Err(crate::Error::Message("peer_not_connected".into()));
         };
-        let result = session.request(subject, command, timeout).await;
+        let result = self
+            .while_running(session.request(subject, command, timeout))
+            .await;
         if let Err(error) = &result {
             let mut live = self.inner.state.lock().await;
             if live
