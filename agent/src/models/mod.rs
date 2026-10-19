@@ -932,21 +932,92 @@ impl Registry {
         Some((model, api_key))
     }
 
-    /// Resolve the selected identity for an actual request, falling back to
-    /// the current replacement policy if the historical model disappeared or
-    /// its provider is no longer configured. This closes the narrow race where
-    /// a run was accepted just before an authoritative Registry swap.
+    /// Resolve the selected identity for an actual request, falling back —
+    /// **within the same provider** — when the historical model cannot be
+    /// called right now. This closes the narrow race where a run was accepted
+    /// just before an authoritative Registry swap.
+    ///
+    /// The fallback never crosses providers: a conversation whose owner
+    /// temporarily lost a credential must fail with a clear error rather than
+    /// run on another vendor's endpoint and bill it. Cross-provider movement is
+    /// reserved for [`Self::replacement_model`], which callers use only when a
+    /// reference is genuinely stale (see [`Self::reference_is_stale`]).
     pub fn resolve_request_target(&self, id: &str) -> Option<(String, Model, String)> {
         if let Some((model, api_key)) = self.resolve_for_request(id) {
             return Some((format!("{}/{}", model.provider, model.id), model, api_key));
         }
-        let replacement = self.replacement_model(id)?;
+        // No recorded identity (a direct/ephemeral run with an empty reference)
+        // has no provider to defend, so the registry's default applies.
+        let replacement = if id.trim().is_empty() {
+            self.replacement_model(id)?
+        } else {
+            self.same_provider_replacement(id)?
+        };
         let (model, api_key) = self.resolve_for_request(&replacement)?;
         Some((replacement, model, api_key))
     }
 
     pub fn is_model_available(&self, id: &str) -> bool {
         self.resolve_for_request(id).is_some()
+    }
+
+    /// Whether a persisted `provider/model` reference has to be replaced.
+    ///
+    /// A session stores only that reference; credentials, base URLs and the
+    /// model metadata are resolved per request. Replacing the persisted
+    /// reference is therefore reserved for facts that no transient state can
+    /// explain:
+    ///
+    /// * the model is gone from a catalog that is otherwise healthy for its
+    ///   provider, or
+    /// * the provider itself is no longer configured in any form.
+    ///
+    /// Everything else must leave the reference alone. A provider whose key is
+    /// momentarily absent (an environment switch drops `future.key` until the
+    /// next login) or whose catalog is still cold on startup is *not* a
+    /// removal: rewriting the reference there silently moved conversations onto
+    /// whatever the global default happened to be and persisted it, so logging
+    /// back in never restored the model the user had chosen.
+    pub fn reference_is_stale(&self, id: &str) -> bool {
+        if id.trim().is_empty() {
+            return true;
+        }
+        match self.resolve(id) {
+            // In the catalog: only an unconfigured provider counts as gone.
+            Some(model) => !self.provider_is_configured(&model.provider),
+            None => match id.split_once('/') {
+                Some((provider, _)) if !provider.is_empty() => {
+                    if !self.provider_is_configured(provider) {
+                        // No credential and no catalogue entry: the provider
+                        // itself was removed, so its references are stale.
+                        true
+                    } else {
+                        // Servable models mean the catalogue is authoritative
+                        // for this provider and the missing one was removed.
+                        // None means the catalogue is still cold — keep it.
+                        self.provider_has_models(provider)
+                    }
+                }
+                // A bare id that no longer resolves has no provider to defend.
+                _ => true,
+            },
+        }
+    }
+
+    /// Whether `provider` is configured in any form — an auth entry (even with
+    /// an empty key, which is what an environment switch leaves behind) or at
+    /// least one model in the catalog.
+    fn provider_is_configured(&self, provider: &str) -> bool {
+        self.auth_store.has_entry(provider) || self.provider_has_models(provider)
+    }
+
+    /// Whether the catalog currently exposes any model for `provider`. Hidden
+    /// models count: they stay callable through `resolve()`.
+    fn provider_has_models(&self, provider: &str) -> bool {
+        self.user
+            .iter()
+            .chain(self.builtin.iter())
+            .any(|model| model.provider == provider)
     }
 
     pub fn request_model_accepts_images(&self, id: &str) -> bool {
@@ -990,6 +1061,42 @@ impl Registry {
         }
 
         global_default
+    }
+
+    /// A callable replacement from the *same* provider as `current`, or `None`.
+    ///
+    /// Request-time fallback uses this instead of [`Self::replacement_model`] so
+    /// a provider that is momentarily unusable (credential re-established,
+    /// catalog still cold) cannot hand the conversation to another vendor.
+    pub fn same_provider_replacement(&self, current: &str) -> Option<String> {
+        let provider = current.split_once('/')?.0;
+        if provider.is_empty() {
+            return None;
+        }
+        let global_default = get_default_model_with(self);
+        if let Some(default) = global_default.as_deref() {
+            if default.split_once('/').map(|(p, _)| p) == Some(provider)
+                && self.is_model_available(default)
+            {
+                return Some(default.to_string());
+            }
+        }
+        let mut candidates = self
+            .all_models()
+            .into_iter()
+            .filter(|model| model.provider == provider)
+            .filter(|model| model.output.iter().any(|kind| kind == "text"))
+            .filter(|model| self.is_model_available(&format!("{}/{}", model.provider, model.id)))
+            .collect::<Vec<_>>();
+        candidates.sort_by(|left, right| {
+            right
+                .recommended
+                .cmp(&left.recommended)
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        candidates
+            .first()
+            .map(|model| format!("{}/{}", model.provider, model.id))
     }
 
     fn apply_override(&self, model: &mut Model) {
@@ -2569,6 +2676,108 @@ mod tests {
     fn registry_default_matches_new() {
         let reg = Registry::default();
         assert!(!reg.all_models().is_empty());
+    }
+
+    /// The environment switch a user performs in the app rewrites the `future`
+    /// auth block with a base URL and no key. Every `future/*` model then
+    /// disappears from the registry (its catalogue is only injected when the
+    /// key is present), which used to read as "the model was removed" and
+    /// silently moved the conversation onto the global default — persisting it,
+    /// so logging back in never restored the model the user had chosen.
+    #[test]
+    fn reference_is_stale_keeps_a_provider_whose_key_is_temporarily_gone() {
+        let reg = Registry {
+            builtin: std::sync::Arc::new(vec![]),
+            user: vec![],
+            provider_overrides: HashMap::new(),
+            auth_store: crate::AuthStore::from_json(
+                r#"{"future":{"type":"api_key","base_url":"https://test.future-os.cn/api"}}"#,
+            )
+            .unwrap(),
+        };
+        assert!(
+            !reg.is_model_available("future/deepseek-flash"),
+            "a keyless provider serves nothing"
+        );
+        assert!(
+            !reg.reference_is_stale("future/deepseek-flash"),
+            "a temporarily credential-less provider is not a removed one"
+        );
+    }
+
+    /// A keyless catalogue is not authoritative: nothing says the model was
+    /// removed, so the reference survives a cold start as well.
+    #[test]
+    fn reference_is_stale_keeps_a_model_that_is_still_in_the_catalogue() {
+        let reg = Registry {
+            builtin: std::sync::Arc::new(vec![make_model("deepseek-flash", "future")]),
+            user: vec![],
+            provider_overrides: HashMap::new(),
+            auth_store: crate::AuthStore::from_json(
+                r#"{"future":{"type":"api_key","base_url":"https://test.future-os.cn/api"}}"#,
+            )
+            .unwrap(),
+        };
+        assert!(!reg.reference_is_stale("future/deepseek-flash"));
+    }
+
+    /// With the provider healthy (it still serves other models), a missing
+    /// model really was removed, and the reference must be replaced.
+    #[test]
+    fn reference_is_stale_replaces_a_model_removed_from_a_healthy_catalogue() {
+        let reg = Registry {
+            builtin: std::sync::Arc::new(vec![make_model("glm-5.3", "future")]),
+            user: vec![],
+            provider_overrides: HashMap::new(),
+            auth_store: crate::AuthStore::from_json(
+                r#"{"future":{"type":"api_key","key":"k","base_url":"https://test.future-os.cn/api"}}"#,
+            )
+            .unwrap(),
+        };
+        assert!(reg.reference_is_stale("future/deepseek-flash"));
+    }
+
+    /// A provider that no longer exists in any form is stale.
+    #[test]
+    fn reference_is_stale_replaces_a_removed_provider() {
+        let reg = Registry {
+            builtin: std::sync::Arc::new(vec![make_model("model-x", "kept")]),
+            user: vec![],
+            provider_overrides: HashMap::new(),
+            auth_store: crate::AuthStore::from_json(r#"{"kept":{"type":"api_key","key":"k"}}"#)
+                .unwrap(),
+        };
+        assert!(reg.reference_is_stale("gone/vanished"));
+        assert!(reg.reference_is_stale(""));
+    }
+
+    /// Request-time fallback must stay inside the session's provider: a
+    /// conversation whose provider is momentarily unusable fails with a clear
+    /// error instead of silently running on (and billing) another vendor.
+    #[test]
+    fn request_target_never_falls_back_to_another_provider() {
+        let reg = Registry {
+            builtin: std::sync::Arc::new(vec![
+                make_model("deepseek-flash", "future"),
+                make_model("gpt-6-astra", "azure"),
+            ]),
+            user: vec![],
+            provider_overrides: HashMap::new(),
+            auth_store: crate::AuthStore::from_json(
+                r#"{"future":{"type":"api_key","base_url":"https://test.future-os.cn/api"},
+                    "azure":{"type":"api_key","key":"azure-key"}}"#,
+            )
+            .unwrap(),
+        };
+        assert!(
+            reg.resolve_request_target("azure/gpt-6-astra").is_some(),
+            "the configured provider still serves its own model"
+        );
+        assert!(
+            reg.resolve_request_target("future/deepseek-flash")
+                .is_none(),
+            "an unusable provider must not borrow another provider's model"
+        );
     }
 
     /// A split is "unset" until something was actually priced, which is what
