@@ -9,8 +9,9 @@ use futureos_lib::launch::{self, Launch};
 
 #[cfg(not(test))]
 fn main() -> std::process::ExitCode {
-    // Reuse a launching shell for help, errors and the --re-pair terminal check.
-    // Explorer has no console to attach to; never allocate one for a GUI launch.
+    // Reuse a launching shell for help and error output (a terminal launch of
+    // `futureos --help` or a refused flag). Explorer has no console to attach to;
+    // never allocate one for a GUI launch.
     #[cfg(all(windows, feature = "gui"))]
     unsafe {
         use windows::Win32::System::Console::{AttachConsole, ATTACH_PARENT_PROCESS};
