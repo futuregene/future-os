@@ -655,7 +655,7 @@ function TaskForm({
                   <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
                 </label>
                 {/* The short-month rule is user-visible by design. */}
-                <p className="text-[11px] text-ink-muted">{t("form.shortMonthHint")}</p>
+                <p className="text-2xs text-ink-muted">{t("form.shortMonthHint")}</p>
               </div>
             )
           : null}
@@ -691,7 +691,7 @@ function TaskForm({
                 </label>
                 {/* A clamped day is user-visible by design, the same rule the
                     monthly mode states. */}
-                <p className="text-[11px] text-ink-muted">{t("form.shortMonthHint")}</p>
+                <p className="text-2xs text-ink-muted">{t("form.shortMonthHint")}</p>
               </div>
             )
           : null}
@@ -902,7 +902,7 @@ function TaskDetail({
                           missing "open conversation" reads as intended rather
                           than broken, and point at where the output is. */}
                       {run.sessionDeleted
-                        ? <p className="text-[11px] text-ink-muted">{t("runSessionDeleted")}</p>
+                        ? <p className="text-2xs text-ink-muted">{t("runSessionDeleted")}</p>
                         : null}
                     </div>
                   </li>

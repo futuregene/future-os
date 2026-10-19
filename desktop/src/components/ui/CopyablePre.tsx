@@ -34,7 +34,7 @@ export function CopyablePre({
       <pre
         className={cn(
           fill ? "min-h-0" : maxHeightClassName,
-          "overflow-auto whitespace-pre-wrap wrap-break-word rounded-md border border-line-soft bg-surface/50 p-2 pr-9 text-[11px] leading-4 text-ink-soft",
+          "overflow-auto whitespace-pre-wrap wrap-break-word rounded-md border border-line-soft bg-surface/50 p-2 pr-9 text-2xs leading-4 text-ink-soft",
         )}
       >
         <code>{text}</code>

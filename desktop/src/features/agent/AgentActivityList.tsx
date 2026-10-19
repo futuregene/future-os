@@ -140,7 +140,7 @@ function AgentActivitySingleLine({ item, resolveTarget, workspacePath, runId }: 
   };
 
   return (
-    <div className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted">
+    <div className="flex min-w-0 flex-col gap-1 text-13 leading-6 text-ink-muted">
       <div className="flex max-w-full items-center gap-2 self-start">
         {runId || displayTarget || canBeRevealed(item, resolveTarget)
           ? (
@@ -197,7 +197,7 @@ function AgentActivityGroupLine({ item, resolveTarget, workspacePath, runId }: A
 
   return (
     <div
-      className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted"
+      className="flex min-w-0 flex-col gap-1 text-13 leading-6 text-ink-muted"
     >
       <button
         type="button"

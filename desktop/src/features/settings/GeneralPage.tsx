@@ -1,11 +1,13 @@
 import type { Language } from "../../i18n";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
+import type { FontSizePreference } from "../../lib/fontSize";
 import type { ThemeMode } from "../../lib/theme";
 import { useTranslation } from "react-i18next";
 import { Select } from "../../components/ui/Select";
 import { getLanguage, LANGUAGE_LABELS, setLanguage, SUPPORTED_LANGUAGES } from "../../i18n";
 import { automaticApprovalAvailable, effectiveApprovalTier } from "../../integrations/agent/automaticApproval";
 import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
+import { FONT_SIZES, setFontSize, useFontSize } from "../../lib/fontSize";
 import { isLinux, isWindows } from "../../lib/platform";
 import { setThemeMode, THEME_MODES, useThemeMode } from "../../lib/theme";
 import { linuxUnavailableReasonKey } from "./linuxSandboxStatus";
@@ -38,6 +40,7 @@ export function GeneralPage({
 }) {
   const { t } = useTranslation("settings");
   const themeMode = useThemeMode();
+  const fontSize = useFontSize();
   const sandboxAvailability = useSandboxAvailability();
   const autoAvailable = automaticApprovalAvailable(futureSessionStatus);
   const visibleApprovalTier = effectiveApprovalTier(approvalTier, futureSessionStatus);
@@ -75,6 +78,23 @@ export function GeneralPage({
             {THEME_MODES.map(mode => (
               <option key={mode} value={mode}>
                 {t(`theme.${mode}`)}
+              </option>
+            ))}
+          </Select>
+        </SettingsRow>
+        <SettingsRow
+          title={t("fontSize.title")}
+          description={t("fontSize.description")}
+        >
+          <Select
+            size="sm"
+            value={fontSize}
+            wrapperClassName="w-32"
+            onChange={e => setFontSize(e.target.value as FontSizePreference)}
+          >
+            {FONT_SIZES.map(size => (
+              <option key={size} value={size}>
+                {t(`fontSize.${size}`)}
               </option>
             ))}
           </Select>

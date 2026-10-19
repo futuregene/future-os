@@ -10,6 +10,14 @@
     "dark": "Dark",
     "system": "System"
   },
+  "fontSize": {
+    "title": "Font size",
+    "description": "Adjust the size of text without changing the layout",
+    "small": "Small",
+    "medium": "Medium",
+    "large": "Large",
+    "xlarge": "Extra large"
+  },
   "approvalTier": {
     "title": "Approval mode",
     "manual": "Manual",

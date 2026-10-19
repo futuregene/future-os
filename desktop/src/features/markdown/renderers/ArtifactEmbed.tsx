@@ -29,7 +29,7 @@ export function ArtifactEmbed({
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
             <h4 className="truncate text-sm font-semibold text-ink">{artifact.title || reference.label || artifact.id}</h4>
-            <span className="shrink-0 rounded bg-surface-subtle px-1.5 py-0.5 text-[11px] text-ink-muted">
+            <span className="shrink-0 rounded bg-surface-subtle px-1.5 py-0.5 text-2xs text-ink-muted">
               {artifact.artifactType}
             </span>
           </div>
@@ -44,7 +44,7 @@ export function ArtifactEmbed({
             : null}
           {!artifact.path && artifact.content
             ? (
-                <pre className="mt-2 max-h-32 overflow-auto rounded-md bg-surface-subtle p-2 text-[11px] leading-4 text-ink-soft">
+                <pre className="mt-2 max-h-32 overflow-auto rounded-md bg-surface-subtle p-2 text-2xs leading-4 text-ink-soft">
                   <code>{artifact.content}</code>
                 </pre>
               )

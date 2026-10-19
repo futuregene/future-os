@@ -133,7 +133,7 @@ export function RemoteFilesPanel({
                       ? null
                       : (
                           <>
-                            <span className="shrink-0 text-[11px] text-ink-muted">{formatSize(entry.size)}</span>
+                            <span className="shrink-0 text-2xs text-ink-muted">{formatSize(entry.size)}</span>
                             {/* Download goes through a save dialog: guessing a
                                 destination would write to a directory the user did
                                 not choose, on a machine whose conventions we are

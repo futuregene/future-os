@@ -118,7 +118,7 @@ function ThreadListItemImpl({
           )
         : null}
       <RailRowTitle muted={archived}>{displayTitle}</RailRowTitle>
-      {archived ? <span className="pointer-events-none shrink-0 text-[11px] text-ink-muted group-hover/thread:hidden">{t("activityRail.archived")}</span> : null}
+      {archived ? <span className="pointer-events-none shrink-0 text-2xs text-ink-muted group-hover/thread:hidden">{t("activityRail.archived")}</span> : null}
       {selectionMode
         ? (
             <input

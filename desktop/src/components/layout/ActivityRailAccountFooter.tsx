@@ -216,7 +216,7 @@ function MenuRow({ action, icon, label, onClick }: { action?: ReactNode; icon: R
 
 function ActionBadge({ children }: { children: ReactNode }) {
   return (
-    <span className="shrink-0 rounded bg-accent-fill px-1.5 py-0.5 text-[11px] font-medium leading-none text-white">
+    <span className="shrink-0 rounded bg-accent-fill px-1.5 py-0.5 text-2xs font-medium leading-none text-white">
       {children}
     </span>
   );

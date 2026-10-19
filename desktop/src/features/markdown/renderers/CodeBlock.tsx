@@ -36,7 +36,7 @@ export function CodeBlock({
           variant="floating"
         />
         <pre className="overflow-auto rounded-lg border border-line-soft bg-code-surface p-3 pr-11 text-xs leading-5 text-ink">
-          {language ? <div className="mb-2 text-[11px] text-ink-muted">{language}</div> : null}
+          {language ? <div className="mb-2 text-2xs text-ink-muted">{language}</div> : null}
           <code>{code}</code>
         </pre>
       </div>
@@ -56,7 +56,7 @@ export function CodeBlock({
         className="overflow-auto rounded-lg border border-line-soft bg-code-surface p-3 pr-11 text-xs leading-5"
         style={{ color: highlighted.fgColor }}
       >
-        {language ? <div className="mb-2 text-[11px] opacity-60">{language}</div> : null}
+        {language ? <div className="mb-2 text-2xs opacity-60">{language}</div> : null}
         <code>
           <HighlightedCode code={code} highlighted={highlighted} />
         </code>

@@ -73,6 +73,17 @@
 
   /* Overlay / scrim (modal backdrop, see components/ui/Overlay) */
   --color-overlay: rgba(0, 0, 0, 0.6);
+
+  /* Sub-`text-xs` labels of the dense UI (previously one-off arbitrary pixel
+     sizes). Declared here so `text-2xs` / `text-3xs` / `text-13` utilities
+     exist; `:root` below scales them at runtime like every other type token.
+     `normal` keeps the line-height these labels were rendered with. */
+  --text-3xs: 0.625rem;
+  --text-3xs--line-height: normal;
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: normal;
+  --text-13: 0.8125rem;
+  --text-13--line-height: normal;
 }
 
 /* ── Dark palette ───────────────────────────────────────────────────────────
@@ -233,12 +244,55 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 
+  /* Reader text size (`lib/fontSize.ts` writes this multiplier: 0.85 / 1 /
+     1.15 / 1.35). Every type token is its design-time size times the scale, so
+     `text-*` grows while spacing and widths — which read `--spacing` and px
+     values — stay fixed. The paired `--text-*--line-height` values are
+     unitless ratios, so they follow their font size automatically. */
+  --app-font-scale: 1;
+  --text-3xs: calc(0.625rem * var(--app-font-scale));
+  --text-2xs: calc(0.6875rem * var(--app-font-scale));
+  --text-13: calc(0.8125rem * var(--app-font-scale));
+  --text-xs: calc(0.75rem * var(--app-font-scale));
+  --text-sm: calc(0.875rem * var(--app-font-scale));
+  --text-base: calc(1rem * var(--app-font-scale));
+  --text-lg: calc(1.125rem * var(--app-font-scale));
+  --text-xl: calc(1.25rem * var(--app-font-scale));
+  --text-2xl: calc(1.5rem * var(--app-font-scale));
+  --text-3xl: calc(1.875rem * var(--app-font-scale));
+  --text-4xl: calc(2.25rem * var(--app-font-scale));
+
   /* Light shadows (the dark overrides live in the `.dark` block above). */
   --shadow-panel:
     0 1px 2px rgba(23, 32, 51, 0.06), 0 12px 28px rgba(23, 32, 51, 0.07);
   --shadow-dialog: 0 24px 60px rgba(15, 23, 42, 0.18);
   --shadow-sidebar-divider: inset -8px 0 16px -16px rgba(23, 32, 51, 0.15);
   --shadow-sidebar-floating: 6px 0 16px rgba(23, 32, 51, 0.05);
+}
+
+/* `leading-<number>` is derived from `--spacing`, which must stay fixed (it
+   also drives padding, gaps and widths). These are the only numeric leading
+   utilities the app uses, so scale them explicitly with the same multiplier as
+   the type tokens and keep the leading a style was designed with at every
+   text size. Unitless `leading-none/tight/…` already scale with their font. */
+.leading-4 {
+  --tw-leading: calc(1rem * var(--app-font-scale));
+  line-height: calc(1rem * var(--app-font-scale));
+}
+
+.leading-5 {
+  --tw-leading: calc(1.25rem * var(--app-font-scale));
+  line-height: calc(1.25rem * var(--app-font-scale));
+}
+
+.leading-6 {
+  --tw-leading: calc(1.5rem * var(--app-font-scale));
+  line-height: calc(1.5rem * var(--app-font-scale));
+}
+
+.leading-7 {
+  --tw-leading: calc(1.75rem * var(--app-font-scale));
+  line-height: calc(1.75rem * var(--app-font-scale));
 }
 
 @layer base {
