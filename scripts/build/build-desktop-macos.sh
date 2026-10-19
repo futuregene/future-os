@@ -114,10 +114,10 @@ require_tool xcrun "Install the Xcode command line tools."
 TRIPLE="$(rustc -Vv | sed -n 's/^host: //p')"
 [[ -n "$TRIPLE" ]] || fail "could not read the host triple from rustc -Vv"
 
-if [[ -z "${FUTURE_VERSION:-}" ]]; then
-  FUTURE_VERSION="$(node scripts/version.mjs)"
-  export FUTURE_VERSION
-fi
+VERSIONS="$(node scripts/version.mjs --json)"
+FUTURE_VERSION="$(node -p 'JSON.parse(process.argv[1]).version' "$VERSIONS")"
+ARTIFACT_VERSION="$(node -p 'JSON.parse(process.argv[1]).artifactVersion' "$VERSIONS")"
+export FUTURE_VERSION
 
 echo "    host triple: $TRIPLE"
 echo "    version    : $FUTURE_VERSION"
@@ -283,12 +283,14 @@ fi
 
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
-BASE="$(basename "$DMG" .dmg)"
-if [[ "$SIGNED" == true ]]; then
-  OUTPUT="$OUT_DIR/${BASE}-sign.dmg"
-else
-  OUTPUT="$OUT_DIR/${BASE}.dmg"
-fi
+case "$TRIPLE" in
+  aarch64-*) ASSET_ARCH="aarch64" ;;
+  x86_64-*) ASSET_ARCH="x64" ;;
+  *) fail "unsupported architecture in host triple: $TRIPLE" ;;
+esac
+SUFFIX="-unsigned"
+[[ "$SIGNED" != true ]] || SUFFIX=""
+OUTPUT="$OUT_DIR/FutureOS_${ARTIFACT_VERSION}_${ASSET_ARCH}${SUFFIX}.dmg"
 cp -f "$DMG" "$OUTPUT"
 
 echo

@@ -13,6 +13,11 @@
 # Single source of truth for the build version (scripts/version.mjs); exported
 # so the cargo build.rs files pick it up. CI sets FUTURE_VERSION on release tags.
 FUTURE_VERSION_SCRIPT := $(CURDIR)/scripts/version.mjs
+# Capture the public version before exporting the default +local display version.
+# Explicit FUTURE_VERSION overrides are resolved by the packaging scripts instead.
+ifeq ($(origin FUTURE_VERSION),undefined)
+export FUTURE_ARTIFACT_VERSION ?= $(shell node "$(FUTURE_VERSION_SCRIPT)" --artifact-version)
+endif
 export FUTURE_VERSION ?= $(shell node "$(FUTURE_VERSION_SCRIPT)" || node -e "console.log('0.0.0-dev')" || echo 0.0.0-dev)
 
 version:
@@ -50,7 +55,7 @@ CARGO_PINNED := rustup run $(RUST_TOOLCHAIN) cargo
 # it for CLI tools and maintenance; Desktop hosts Agent in process by default.
 # Standalone future-agent/-tui/-channel/-goal
 # binaries are dev-only (cargo run -p <crate>) — install puts three files in
-# PREFIX: `future`, `future-desktop`, and the GUI-free `futureos-headless`.
+# PREFIX: `future`, `futureos`, and the GUI-free `futureos-headless`.
 # The headless server keeps its release-package name (Linux .deb and portable
 # tarball install `futureos-headless` too), and its own help text names it
 # that way; it finds `future` beside it for skill initialisation.
@@ -81,10 +86,10 @@ install-desktop: build-desktop
 ifeq ($(OS),windows)
 	@if not exist "$(USERPROFILE)\.future\bin" mkdir "$(USERPROFILE)\.future\bin"
 	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "$(PREFIX)\future$(EXE_SUFFIX)"
-	$(COPY_CMD) target\release\futureos$(EXE_SUFFIX) "$(PREFIX)\future-desktop$(EXE_SUFFIX)"
+	$(COPY_CMD) target\release\futureos$(EXE_SUFFIX) "$(PREFIX)\futureos$(EXE_SUFFIX)"
 else
 	$(SUDO) install -m 755 target/release/future "$(PREFIX)/future"
-	$(SUDO) install -m 755 target/release/futureos "$(PREFIX)/future-desktop"
+	$(SUDO) install -m 755 target/release/futureos "$(PREFIX)/futureos"
 endif
 
 # GUI-free server, plus the matching CLI it looks for beside itself. The server
@@ -103,9 +108,9 @@ endif
 # Also removes pre-unification installs (future-agent/-tui/-channel).
 uninstall:
 ifeq ($(OS),windows)
-	-cmd /c del /q "$(PREFIX)\future$(EXE_SUFFIX)" "$(PREFIX)\future-desktop$(EXE_SUFFIX)" "$(PREFIX)\futureos-headless$(EXE_SUFFIX)" "$(PREFIX)\future-agent$(EXE_SUFFIX)" "$(PREFIX)\future-tui$(EXE_SUFFIX)" "$(PREFIX)\future-channel$(EXE_SUFFIX)" 2>NUL
+	-cmd /c del /q "$(PREFIX)\future$(EXE_SUFFIX)" "$(PREFIX)\futureos$(EXE_SUFFIX)" "$(PREFIX)\future-desktop$(EXE_SUFFIX)" "$(PREFIX)\futureos-headless$(EXE_SUFFIX)" "$(PREFIX)\future-agent$(EXE_SUFFIX)" "$(PREFIX)\future-tui$(EXE_SUFFIX)" "$(PREFIX)\future-channel$(EXE_SUFFIX)" 2>NUL
 else
-	$(SUDO) rm -f $(addprefix $(PREFIX)/,future future-desktop futureos-headless future-agent future-tui future-channel)
+	$(SUDO) rm -f $(addprefix $(PREFIX)/,future futureos future-desktop futureos-headless future-agent future-tui future-channel)
 endif
 	@echo "Removed installed binaries from $(PREFIX)"
 
@@ -422,8 +427,13 @@ endif
 
 package-desktop:
 	$(call npm-install-if-needed,desktop)
-	node scripts/version.mjs --set-bundle
-	cd desktop && npm run tauri:build
+ifeq ($(OS),windows)
+	powershell -ExecutionPolicy Bypass -File scripts/build/build-desktop-windows-installer.ps1 -SkipDeps
+else ifeq ($(OS),darwin)
+	bash scripts/build/build-desktop-macos.sh --skip-deps
+else
+	bash scripts/build/build-desktop-linux.sh --skip-deps
+endif
 
 # ─── Help ───────────────────────────────────────────────────────────────────
 

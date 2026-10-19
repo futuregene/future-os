@@ -21,6 +21,14 @@ Desktop packaging scripts that mirror the CI pipelines.
   optionally Authenticode-signing via `../release/sign-file.ps1`.
 - `build-desktop-windows-portable.ps1` — builds the portable Windows zip with Desktop and its matching CLI tools.
 
+`make package-desktop` reuses these platform scripts. Final packages default to
+the repository root; override it with `--out-dir` (macOS/Linux) or `-OutDir` (Windows).
+Names include the artifact version and architecture. Unsigned macOS/Windows
+packages use `-unsigned`; signed packages have no suffix. See the
+[build guide](../docs/guide/build-and-install.md#distribution-filenames) for the full
+list and the distinction from raw Tauri bundles. `version.mjs --artifact-version`
+prints only the artifact version; `--json` returns display, artifact and bundle versions.
+
 ## dev/
 
 Local development sessions. Desktop starts its embedded Agent by default;

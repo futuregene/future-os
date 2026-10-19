@@ -343,8 +343,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build\build-desktop-windows-i
 powershell -ExecutionPolicy Bypass -File .\scripts\tests\test-windows-sandbox-lifecycle.ps1 -Action Snapshot
 ```
 
-Portable is the root-level `FutureOS-portable-windows.zip`, keeping
-FutureOS.exe/future.exe in the same directory; NSIS is under
+The scripts copy `FutureOS_<version>_windows_x64-portable-unsigned.zip` and
+`FutureOS_<version>_x64-setup-unsigned.exe` to the repository root by default;
+`-Sign` removes `-unsigned`, and `-OutDir` overrides the output directory. Keep
+FutureOS.exe/future.exe together after extraction. Raw NSIS output remains under
 `target\release\bundle\nsis\`. Each lifecycle call keeps an
 independently timestamped log; full command lines are not recorded.
 
