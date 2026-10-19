@@ -167,6 +167,36 @@ describe("local send lifecycle", () => {
     await act(async () => reply.resolve(success));
   });
 
+  it("does not automatically resend a rejected first prompt on run and view updates", async () => {
+    const error = "Conversation source is unavailable; restore the matching Agent database before continuing.";
+    agent.send.mockImplementation(async () => {
+      latest = { ...running, status: "failed", errorMessage: error };
+      throw new Error(error);
+    });
+    const options = {
+      pendingPrompt: { id: "failed-source-prompt", content: "hello", targetThreadId: "lifecycle-thread" },
+      onPromptConsumed: vi.fn(),
+    };
+    const view = await mount(options);
+    expect(agent.send).toHaveBeenCalledTimes(1);
+    expect(storage.createRun).toHaveBeenCalledTimes(1);
+    expect(options.onPromptConsumed).not.toHaveBeenCalled();
+
+    await act(async () => {
+      view.rerender();
+      window.dispatchEvent(new Event("focus"));
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+    expect(agent.send).toHaveBeenCalledTimes(1);
+    expect(storage.createRun).toHaveBeenCalledTimes(1);
+
+    // A later visit may retry the preserved first prompt once.
+    view.unmount();
+    await mount(options);
+    expect(agent.send).toHaveBeenCalledTimes(2);
+    expect(storage.createRun).toHaveBeenCalledTimes(2);
+  });
+
   it("does not release a preparing send using the previous run's terminal status", async () => {
     latest = { ...running, id: "previous-run", status: "completed" };
     const view = await mount();
