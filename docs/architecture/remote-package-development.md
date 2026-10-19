@@ -5,6 +5,8 @@
 > Design date: 2026-10-19. Source baseline: `4a64b65e`.
 > Status: in progress; phases 1–4 are being migrated. Section 8 records implemented boundaries, checks and remaining work. Phases 0–5 are not complete.
 
+> Validation change, 2026-10-20: because CI is slow, the user requested stopping CI for now and running unit tests locally. This overrides the historical no-local-tests development arrangement below; do not dispatch new CI at present. Complete package/application unit suites and fix failures first. Real-network interoperability, other platforms and manual results remain separate evidence; passing local unit tests does not replace them.
+
 Separate Remote into protocol, controller and controlled-endpoint packages, retaining the independent secure-channel foundation. Rust and TypeScript follow the same responsibility model with separate implementations, validated against a common contract, vectors and interoperability tests. Desktop, Mobile, CLI and TUI provide UI, environment and local business adapters; Remote libraries do not depend on a particular application entry point.
 
 The immediate goal is independently buildable, testable and lintable package boundaries, narrower validation for unrelated edits, and less duplication of core tests across GUI/headless configurations. Existing controlled-endpoint capability remains owned by Desktop GUI or its foreground headless host. Extension points for CLI/TUI are part of this design; new commands and interactions belong to the later host integration phase.
@@ -699,3 +701,29 @@ Actual logs and [artifact 12202960069](https://github.com/futuregene/future-os/a
 Both used one four-core Windows Server 2025 runner, Rust/Cargo 1.97.0 and identical Cargo configuration. Each revision began with its own empty target, reused within its three commands. All commands exited zero. Dependency preparation took 50.56s baseline and 0.66s candidate before either compilation; those registry-order effects are excluded from the table and are not compilation gains.
 
 This sample does not establish a Windows full-check speedup: total cost increased about 27s. Additional workspace members change the graph and are part of the measured full-workspace cost, not a cost to subtract from the report. Package boundaries and affected selection can omit unrelated jobs, but that implemented mechanism is not evidence of total time saved in this sample. OS caches, machine load and sequential-order effects remain uncontrolled. Executable linking/release builds and matched test-execution/cache/queue benefits were not measured. Final-candidate runtime acceptance and required performance evidence remain pending.
+
+### 2026-10-20: Local unit acceptance under the revised user instruction
+
+The user requested stopping CI for now and running unit tests locally. Cancellation was requested for run `39283767289`; the previous `39282804797` was confirmed already completed when cancellation was attempted. No new CI was dispatched in this batch. Product source stayed at `d6a240b439d0cfd1bd41becb90d374e6d3ae4faf`, including main `53847357`; only development documentation changed during testing, with no failing tests disabled.
+
+Environment: macOS arm64, Rust 1.97.0 and Node v24.21.0. The [result record and complete commands](../testing/remote-local-unit-results-2026-10-20.json) contain:
+
+| Suite | Passed | Failed | Existing ignored |
+|---|---:|---:|---:|
+| Rust Crypto | 11 | 0 | 0 |
+| Rust Protocol (including one package contract integration target) | 23 | 0 | 0 |
+| Rust Client | 56 | 0 | 0 |
+| Rust Server | 155 | 0 | 5 |
+| TS Crypto | 17 | 0 | 0 |
+| TS Protocol | 48 | 0 | 0 |
+| TS Client (31 suites) | 657 | 0 | 0 |
+| Desktop TS (325 files) | 4430 | 0 | 0 |
+| Mobile (138 suites) | 2696 | 0 | 0 |
+| Shared shell projection | 13 | 0 | 0 |
+| Remote selection/boundary regressions | 14 | 0 | 0 |
+| Desktop Rust GUI library | 2071 | 0 | 10 |
+| Desktop Rust headless library | 1624 | 0 | 10 |
+
+The earlier CI failures in TS record authentication, heartbeat exit, burst ordering and replacement of an old recovery loop now pass in their corresponding local suites. Four Rust packages run independently of futureos; three TS packages use their own Node configurations. Application suites retain real host adaptation, persistence, approvals, process and lifecycle fixtures.
+
+GUI/headless ran their complete respective `--lib` suites sequentially to avoid fixed fixture-port contention. Execution took 547.27s and 431.53s excluding builds; these are not matched performance comparisons or Windows observations. Counts represent framework executions, not unique behaviors across languages/configurations. Existing ignored manual/measurement/real-model cases were not forced on. Separate binary/integration targets are not proved by these `--lib` commands. Independent network-tests interoperability, other platforms and physical-device acceptance remain unverified by this batch. Local unit success does not complete the overall goal; new CI dispatch remains suspended.
