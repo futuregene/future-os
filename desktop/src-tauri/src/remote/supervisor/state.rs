@@ -76,6 +76,13 @@ pub(in crate::remote) struct Supervisor {
     pub(in crate::remote) last_error_code: Mutex<Option<String>>,
     pub(in crate::remote) start_lock: tokio::sync::Mutex<()>,
     pub(in crate::remote) start_requested: AtomicBool,
+    /// Whether a start with nothing paired mints an invitation.
+    ///
+    /// The GUI's switch does not: the user asks for a connection by adding one
+    /// device at a time, and a machine with no devices is simply on and empty.
+    /// The headless surface and the pair-a-device entry points do, because there
+    /// the invitation *is* what the user asked for.
+    pub(in crate::remote) invite_when_empty: AtomicBool,
     pub(in crate::remote) suspended: AtomicBool,
     pub(in crate::remote) resume_recovery_running: AtomicBool,
     pub(in crate::remote) start_retry_running: AtomicBool,
@@ -104,6 +111,7 @@ pub(in crate::remote) static SUPERVISOR: LazyLock<Supervisor> = LazyLock::new(||
     last_error_code: Mutex::new(None),
     start_lock: tokio::sync::Mutex::const_new(()),
     start_requested: AtomicBool::new(false),
+    invite_when_empty: AtomicBool::new(true),
     suspended: AtomicBool::new(false),
     resume_recovery_running: AtomicBool::new(false),
     start_retry_running: AtomicBool::new(false),
@@ -546,6 +554,7 @@ mod tests {
             last_error_code: std::sync::Mutex::new(None),
             start_lock: tokio::sync::Mutex::const_new(()),
             start_requested: AtomicBool::new(false),
+            invite_when_empty: AtomicBool::new(true),
             suspended: AtomicBool::new(false),
             resume_recovery_running: AtomicBool::new(false),
             start_retry_running: AtomicBool::new(false),

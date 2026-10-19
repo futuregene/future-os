@@ -1,6 +1,23 @@
 use super::*;
 
 pub async fn start(_input: RemoteStartInput) -> Result<RemoteStatus, crate::AppError> {
+    start_with(true).await
+}
+
+/// Start the devices this machine already has, and nothing else.
+///
+/// The GUI's switch is this: turning the remote desktop on makes the paired
+/// devices reachable and leaves an empty machine empty, because a connection is
+/// something the user adds one at a time. Minting an invitation here would pair
+/// a device nobody asked for — the phantom "waiting to pair" row.
+pub async fn enable() -> Result<RemoteStatus, crate::AppError> {
+    start_with(false).await
+}
+
+async fn start_with(invite_when_empty: bool) -> Result<RemoteStatus, crate::AppError> {
+    SUPERVISOR
+        .invite_when_empty
+        .store(invite_when_empty, Ordering::Release);
     spawn_revoke_cleanup();
     // An explicit user reconnect gets fresh automatic-reconnect budgets.
     SUPERVISOR
@@ -74,6 +91,20 @@ pub(in crate::remote) async fn start_generation(
     };
     if !SUPERVISOR.start_requested.load(Ordering::Acquire) {
         return Ok(empty());
+    }
+
+    // Nothing paired and no invitation asked for: the switch is on, and there
+    // is nothing to serve until a device is added. Saying "stopped" would turn
+    // the switch back off under the user's hand; minting an invitation would
+    // create a connection nobody asked for.
+    if plans.is_empty() {
+        SUPERVISOR
+            .access
+            .commit(epoch, || {
+                *SUPERVISOR.last_error_code.lock().unwrap() = None;
+            })
+            .unwrap_or(());
+        return Ok(status());
     }
 
     // One device needs no arbitration: it is the machine's controller by
@@ -161,9 +192,14 @@ pub(in crate::remote) struct SlotPlan {
 /// because pairing a device has nothing to do with their connections. The
 /// platform owns the cap, so `pairing_limit_reached` arrives here as an error
 /// and is surfaced unchanged.
+///
+/// Adding to an empty machine is the *replace* request, not the "keep the
+/// others" one: there is nothing to keep, and the platform treats a first
+/// pairing as replacing the (empty) binding.
 pub async fn add_device() -> Result<RemoteStatus, crate::AppError> {
     spawn_revoke_cleanup();
-    let (creds, code, expires_at) = pairing::create_pairing(true).await?;
+    let keep_existing = !pairing::load_slots().is_empty();
+    let (creds, code, expires_at) = pairing::create_pairing(keep_existing).await?;
     let plan = SlotPlan {
         creds,
         pairing_code: Some(code),
@@ -191,8 +227,8 @@ pub async fn add_device() -> Result<RemoteStatus, crate::AppError> {
 /// desktop back the *same* pair id, so minting the replacement without stopping
 /// them first would leave two bridges on one pair's subjects, with the stale one
 /// holding a credential the platform has already refused. `re_pair` — unpair,
-/// settle the queued revokes, start afresh — is exactly that cleanup, and with an
-/// empty book its revocation step has nothing left to revoke.
+/// settle the queued revokes, add the device — is exactly that cleanup, and with
+/// an empty book its revocation step has nothing left to revoke.
 pub async fn pair_new_device() -> Result<RemoteStatus, crate::AppError> {
     if pairing::load_slots().is_empty() {
         return re_pair().await;
@@ -201,7 +237,8 @@ pub async fn pair_new_device() -> Result<RemoteStatus, crate::AppError> {
 }
 
 /// Resolve every paired device into a plan, dropping the ones the platform has
-/// retired and minting an invitation when the machine has no device left.
+/// retired and minting an invitation when the machine has no device left *and*
+/// the caller asked for one (see [`Supervisor::invite_when_empty`]).
 pub(in crate::remote) async fn establish_slots() -> Result<Vec<SlotPlan>, crate::AppError> {
     let mut plans = Vec::new();
     for creds in pairing::load_slots() {
@@ -230,10 +267,11 @@ pub(in crate::remote) async fn establish_slots() -> Result<Vec<SlotPlan>, crate:
             Err(error) => return Err(error),
         }
     }
-    if plans.is_empty() {
-        // Nothing left to serve: mint one invitation, exactly as a
-        // single-device install always did. Replacing is right here because
-        // there is nothing to keep.
+    if plans.is_empty() && SUPERVISOR.invite_when_empty.load(Ordering::Acquire) {
+        // Nothing left to serve and an invitation was asked for: mint one,
+        // exactly as a single-device install always did. Replacing is right
+        // here because there is nothing to keep. A GUI start skips this — it
+        // serves the devices the user paired and leaves the rest to "add".
         let (creds, code, exp) = pairing::create_pairing(false).await?;
         plans.push(SlotPlan {
             creds,

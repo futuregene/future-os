@@ -8,6 +8,13 @@ pub struct RemoteStartInput {}
 #[serde(rename_all = "camelCase")]
 pub enum RemotePhase {
     Stopped,
+    /// The remote desktop is on and no device is connected yet.
+    ///
+    /// Turning the switch on does not create a connection: every device is
+    /// paired explicitly, one at a time, and until the first one is added there
+    /// is nothing to serve. It is therefore not `Stopped` (the switch would read
+    /// as off) and not `Ready` (no bridge is running).
+    Enabled,
     Connecting,
     Ready,
     Reconnecting,

@@ -3830,6 +3830,74 @@ mod multi_device_tests {
 /// host-bridge fixture does exactly that) would otherwise be pointed at another
 /// device's pairing — a client that then talks to a subject the machine is not
 /// serving, times out, and leaves its own runtime behind for the next fixture.
+/// Turning the remote desktop on is not adding a connection.
+///
+/// The switch serves the devices the user paired; on a machine with none it is
+/// simply on and empty. The other entry points (`future remote start`, the CLI's
+/// device command, the headless desktop) still mint an invitation when nothing
+/// is paired, because there the invitation *is* what was asked for — so the
+/// difference has to live in the start, not in the caller's good intentions.
+mod switch_tests {
+    use super::*;
+    use crate::remote::test_support::{init_store, sign_in, HomeGuard, MockPlatform};
+
+    /// The switch on an empty machine: on, empty, and no invitation minted. The
+    /// platform is a mock that *would* answer a pairing request, so a request
+    /// reaching it is the failure the assertion names.
+    #[tokio::test]
+    async fn the_switch_leaves_an_empty_machine_empty_and_on() {
+        let _home = HomeGuard::new("remote-switch-empty");
+        init_store();
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+
+        let status = super::supervisor::enable()
+            .await
+            .expect("an empty machine still answers with a status");
+
+        assert!(
+            matches!(status.phase, RemotePhase::Enabled),
+            "the switch must read as on, not stopped or connecting: {status:?}"
+        );
+        assert!(status.reason.is_none(), "{status:?}");
+        assert!(status.pairing_code.is_none(), "no invitation was asked for");
+        assert!(
+            status.devices.is_empty(),
+            "and none was created: {status:?}"
+        );
+        assert!(
+            platform.requests().is_empty(),
+            "the switch must not touch the platform: {:?}",
+            platform.requests()
+        );
+        assert!(
+            pairing::load_slots().is_empty(),
+            "nothing may be written to the pairing book"
+        );
+    }
+
+    /// The same machine, asked for an invitation on purpose: the CLI and the
+    /// headless desktop rely on a plain start still producing a code.
+    #[tokio::test]
+    async fn a_plain_start_still_offers_an_invitation_on_an_empty_machine() {
+        let _home = HomeGuard::new("remote-start-empty");
+        init_store();
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+
+        // The platform refuses the invitation (no scripted answer), which is
+        // enough: reaching it is what this test measures, and a refused mint is
+        // reported as a status rather than panicking the start.
+        let status = super::supervisor::start(RemoteStartInput {})
+            .await
+            .expect("a refused invitation is still a status");
+        assert!(
+            !platform.requests().is_empty(),
+            "a plain start must ask for an invitation: {status:?}"
+        );
+    }
+}
+
 mod start_focus_tests {
     use super::runtime_tests::test_creds_for_multi_device as test_creds;
     use super::*;

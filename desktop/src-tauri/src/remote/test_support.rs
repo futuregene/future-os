@@ -1766,6 +1766,9 @@ impl Drop for InstalledFakeState {
             .start_requested
             .store(false, std::sync::atomic::Ordering::Release);
         super::SUPERVISOR
+            .invite_when_empty
+            .store(true, std::sync::atomic::Ordering::Release);
+        super::SUPERVISOR
             .suspended
             .store(false, std::sync::atomic::Ordering::Release);
         super::SUPERVISOR

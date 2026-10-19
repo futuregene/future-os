@@ -7,7 +7,12 @@ use serde::Serialize;
 pub async fn remote_start(
     input: remote::RemoteStartInput,
 ) -> Result<remote::RemoteStatus, crate::AppError> {
-    match remote::start(input).await {
+    // The switch starts what is paired and nothing else: turning it on is not
+    // a request to pair a device, and a machine with no devices stays on and
+    // empty until the user adds one. The input is part of the command's shape
+    // (the frontend always sends it) and carries nothing the switch needs.
+    let _ = input;
+    match remote::enable().await {
         Ok(status) => {
             if let Some(reason) = &status.reason {
                 eprintln!("remote: start completed in {:?} [{reason:?}]", status.phase);
@@ -253,11 +258,13 @@ mod tests {
     #[tokio::test]
     async fn remote_start_surfaces_a_degraded_status() {
         let _home = HomeGuard::new("remote_start_deg");
-        // Point the platform at an unreachable host so `establish()` fails with
-        // a categorized "network" status — `remote::start` returns an Ok
-        // not-running status with `error_code` set, exercising the command's
-        // degraded-status eprintln arm (and the Ok branch of the match).
+        // A paired machine whose platform is unreachable: refreshing the
+        // device's bridge credential fails with a categorized "network" status,
+        // so `remote::enable` returns an Ok not-running status with the reason
+        // set — the command's degraded-status eprintln arm and its Ok branch.
         crate::remote::test_support::sign_in("http://127.0.0.1:9");
+        crate::remote::pairing::save_creds(&crate::remote::test_support::pairing_creds("pair_deg"))
+            .expect("seed a paired device");
         let status = remote_start(remote::RemoteStartInput {})
             .await
             .expect("start");
@@ -266,15 +273,11 @@ mod tests {
     }
 
     /// A pre-v2 pairing credential cannot be upgraded in place: `establish()`
-    /// clears it and mints a replacement code (its PA003 branch). Minting is the
-    /// platform's job, and the platform needs the account — so on a desktop with
-    /// no stored key the start settles as an *account* failure the user can act
-    /// on, not as the generic local fault it used to be reported as (which sent
-    /// the user back to a button that could only fail again).
-    ///
-    /// The assertion that carries weight is about the step order: the unusable
-    /// credential must be gone, which is only true if `clear_creds()` really ran
-    /// before the mint was attempted — no fallback path produces that pair.
+    /// clears it (its PA003 branch) and the machine comes up enabled with no
+    /// device. Minting the replacement is the add step's job, and the platform
+    /// needs the account for that — so on a desktop with no stored key the
+    /// invitation is refused as an *account* failure the user can act on, not as
+    /// the generic local fault it used to be reported as.
     #[tokio::test]
     async fn remote_start_replaces_a_legacy_credential_and_reports_the_missing_account() {
         let _home = HomeGuard::new("remote_start_legacy");
@@ -299,21 +302,32 @@ mod tests {
             "the legacy credential must be on disk before the start"
         );
 
+        // The switch starts what is paired and nothing else, so an unusable
+        // credential leaves an enabled, empty machine — not a failed start. The
+        // assertion that carries weight is the file: it must be gone, which is
+        // only true if the credential was really cleared rather than retried.
         let status = remote_start(remote::RemoteStartInput {})
             .await
-            .expect("a missing account is a status, not a fault");
-        assert_eq!(status.phase, remote::RemotePhase::Failed);
-        assert_eq!(
-            status.reason,
-            Some(remote::RemoteFailureReason::AccountAuthorization)
-        );
+            .expect("start");
+        assert_eq!(status.phase, remote::RemotePhase::Enabled);
+        assert!(status.reason.is_none(), "{status:?}");
         assert!(
-            status.recovery.is_none(),
-            "an account fault is not something a retry clock can repair"
+            status.devices.is_empty(),
+            "the unusable credential must not be listed as a device"
         );
         assert!(
             !creds_path.exists(),
             "the unusable legacy credential must have been cleared, not left behind"
+        );
+
+        // The replacement invitation is a device the user adds, and minting one
+        // needs the account — the account fault is reported where it happens.
+        let error = remote_add_device()
+            .await
+            .expect_err("a missing account cannot mint the replacement");
+        assert!(
+            matches!(error, crate::AppError::NotSignedIn),
+            "the missing account must surface as NotSignedIn, got {error:?}"
         );
     }
 
@@ -321,7 +335,8 @@ mod tests {
     /// command surfaces it as an error instead of dressing it up as a remote
     /// status. A pairing-code response the desktop cannot read is exactly that
     /// shape — the platform answered, so there is no network or account verdict
-    /// to report, and only the raw cause is honest.
+    /// to report, and only the raw cause is honest. Minting is what asks for a
+    /// code, so the fault belongs to the add command.
     #[tokio::test]
     async fn remote_start_propagates_an_uncategorized_local_failure() {
         let _home = HomeGuard::new("remote_start_err");
@@ -329,7 +344,7 @@ mod tests {
         platform.push("/client/v1/remote/pair/code", 200, serde_json::json!({}));
         crate::remote::test_support::sign_in(platform.url());
 
-        let message = remote_start(remote::RemoteStartInput {})
+        let message = remote_add_device()
             .await
             .expect_err("an unreadable pairing response is a local fault")
             .to_string();
