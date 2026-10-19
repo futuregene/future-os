@@ -18,12 +18,14 @@ const connectRemotePeer = vi.fn<(desktopId: string) => Promise<unknown>>();
 const disconnectRemotePeer = vi.fn<(desktopId: string) => Promise<unknown>>();
 const listRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
 const pairRemotePeer = vi.fn<(invitation: string) => Promise<unknown>>();
+const takeoverRemotePeer = vi.fn<(desktopId: string) => Promise<unknown>>();
 const unpairRemotePeer = vi.fn<(desktopId: string) => Promise<string | null>>();
 vi.mock("./remotePeerClient", () => ({
   connectRemotePeer: (...args: Parameters<typeof connectRemotePeer>) => connectRemotePeer(...args),
   disconnectRemotePeer: (...args: Parameters<typeof disconnectRemotePeer>) => disconnectRemotePeer(...args),
   listRemotePeers: () => listRemotePeers(),
   pairRemotePeer: (...args: Parameters<typeof pairRemotePeer>) => pairRemotePeer(...args),
+  takeoverRemotePeer: (...args: Parameters<typeof takeoverRemotePeer>) => takeoverRemotePeer(...args),
   unpairRemotePeer: (...args: Parameters<typeof unpairRemotePeer>) => unpairRemotePeer(...args),
 }));
 // A revoke the platform never took comes back as a warning string, which the
@@ -172,6 +174,7 @@ beforeEach(() => {
   disconnectRemotePeer.mockReset().mockResolvedValue(undefined);
   listRemotePeers.mockReset().mockResolvedValue([peer()]);
   pairRemotePeer.mockReset().mockResolvedValue(undefined);
+  takeoverRemotePeer.mockReset().mockResolvedValue(undefined);
   unpairRemotePeer.mockReset().mockResolvedValue(null);
 });
 
@@ -290,11 +293,66 @@ it("reconnects an offline computer, by its own id", async () => {
   const view = await mount();
 
   // The row's button, not the pairing form's — both read "Connect", and the
-  // pairing one is disabled with an empty link, so clicking the wrong one would
-  // pass by doing nothing.
+  // pairing form's is disabled with an empty link, so clicking the wrong one
+  // would pass by doing nothing.
   await act(async () => view.rowButton("Connect")!.click());
   await view.settle();
   expect(connectRemotePeer).toHaveBeenCalledWith("desktop_a");
+  await view.unmount();
+});
+
+// ── a machine another device drives ──────────────────────────────────────────
+
+/**
+ * A machine in standby is the one case where this row offers something the
+ * merged list needs: its conversations are missing until someone takes it back,
+ * and taking it back is a command rather than a reconnection — the link is
+ * already healthy.
+ */
+it("offers to take a machine back, and names who has it", async () => {
+  listRemotePeers.mockResolvedValue([
+    peer({ control: "standby", holder: { name: "Hui's phone" } }),
+  ]);
+  const view = await mount();
+
+  // Not "Connected": it answers every heartbeat and refuses every read, so the
+  // badge has to say what the merged list already shows — nothing from here.
+  expect(view.text()).toContain("Taken over");
+  expect(view.text()).not.toContain("Connected");
+  expect(view.container.querySelector("[data-testid='peer-held']")?.textContent)
+    .toBe("In use by Hui's phone");
+
+  await act(async () => view.rowButton("Take over")!.click());
+  await view.settle();
+  expect(takeoverRemotePeer).toHaveBeenCalledWith("desktop_a");
+  await view.unmount();
+});
+
+/**
+ * A holder that never declared a name is named neutrally. Inventing one — or
+ * naming the device that was just displaced — would be worse than the generic
+ * sentence.
+ */
+it("says another device has it when the holder declared no name", async () => {
+  listRemotePeers.mockResolvedValue([peer({ control: "standby" })]);
+  const view = await mount();
+
+  expect(view.container.querySelector("[data-testid='peer-held']")?.textContent)
+    .toBe("In use by another device");
+  expect(view.rowButton("Take over")).toBeDefined();
+  await view.unmount();
+});
+
+/**
+ * The row of a machine this desktop drives offers nothing to take: there is
+ * nothing to take, and a control that would do nothing is a control that lies.
+ */
+it("offers no takeover on a machine this desktop drives", async () => {
+  listRemotePeers.mockResolvedValue([peer({ control: "active" })]);
+  const view = await mount();
+
+  expect(view.rowButton("Take over")).toBeUndefined();
+  expect(view.container.querySelector("[data-testid='peer-held']")).toBeNull();
   await view.unmount();
 });
 
@@ -330,8 +388,24 @@ it("says how many of several machines are up", async () => {
   await view.unmount();
 });
 
-/** One machine has no set to summarise: its own row already says everything. */
-it("does not count a single machine", async () => {
+/**
+ * A machine another paired device drives is connected and contributes no rows,
+ * so "2 of 2 connected" would call that state complete — the count has to carry
+ * the second fact for the same reason it exists at all.
+ */
+it("counts the machines another device has taken over", async () => {
+  listRemotePeers.mockResolvedValue([
+    peer({ desktopId: "desktop_a" }),
+    peer({ desktopId: "desktop_b", control: "standby", holder: { name: "Phone" } }),
+  ]);
+  const view = await mount();
+
+  expect(view.container.querySelector("[data-testid='peers-summary']")?.textContent)
+    .toBe("2 of 2 connected · 1 taken over");
+  await view.unmount();
+});
+
+/** One machine has no set to summarise: its own row already says everything. */it("does not count a single machine", async () => {
   const view = await mount();
 
   expect(view.container.querySelector("[data-testid='peers-summary']")).toBeNull();

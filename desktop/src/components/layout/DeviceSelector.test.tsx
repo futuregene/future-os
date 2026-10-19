@@ -128,6 +128,27 @@ it("says why each machine is not in the list", async () => {
   expect(found.desktop_d).toBe("Stopped");
 });
 
+/**
+ * A machine that answers while another paired device drives it is listed too.
+ *
+ * Its rows are missing from the merged list, and the status alone cannot say
+ * why: it is not offline and not switched off. The note is the only place that
+ * says so, and it is the sentence the phone's sheet shows for the same fact.
+ */
+it("says when another paired device is driving a machine", async () => {
+  const found = await notes([
+    { ...peer, desktopId: "desktop_a", name: "Held", control: "standby", holder: { name: "Hui's phone" } },
+    // No declared name: the pair was established by a client that never sent one.
+    { ...peer, desktopId: "desktop_b", name: "HeldAnon", control: "standby" },
+    { ...peer, desktopId: "desktop_c", name: "Ours", control: "active" },
+  ]);
+
+  expect(found.desktop_a).toBe("In use by Hui's phone");
+  expect(found.desktop_b).toBe("In use by another device");
+  // A machine this desktop drives needs no note: its rows are in the list.
+  expect(found.desktop_c).toBe("");
+});
+
 /** Open the picker on a mutable view, so each case can click an entry. */
 async function openPicker(peers: RemotePeer[] = [peer]) {
   const onManage = vi.fn();

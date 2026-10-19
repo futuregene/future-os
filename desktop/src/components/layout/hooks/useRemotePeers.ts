@@ -97,9 +97,13 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
       // settings ask for — is read here, as the connection is established, rather
       // than once per conversation opened (`remoteHostCatalog`). Cached per host,
       // so this costs a command each on the first poll after a connection and
-      // nothing afterwards.
-      for (const peer of connected)
-        warmHostCatalogue(peer.desktopId);
+      // nothing afterwards. A host in standby is skipped: it refuses reads, so
+      // warming it would buy one refusal per poll for a catalogue it is not
+      // allowed to serve.
+      for (const peer of connected) {
+        if (peer.control !== "standby")
+          warmHostCatalogue(peer.desktopId);
+      }
       // A host that is not connected has no catalogue worth keeping: what was
       // read describes the connection that answered, and a re-pair or a
       // reconnect re-reads it.
@@ -108,6 +112,13 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
           forgetHostCatalogue(peer.desktopId);
       }
       const results = await Promise.all(connected.map(async (peer) => {
+        // A standby device reads nothing: the host refuses its business
+        // commands with `superseded`, so asking would spend a round trip per
+        // poll on an answer that can only be a refusal. What the reader needs
+        // instead is the machine's own state, which is why `control` rides on
+        // the peer summary.
+        if (peer.control === "standby")
+          return null;
         try {
           return await fetchRemoteSessions(peer.desktopId);
         }
@@ -254,7 +265,18 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
         return;
       }
       if (kind === "presence") {
-        handlePresence(desktopId, payload, refresh);
+        handlePresence(desktopId, payload, gatesRef.current, peersRef.current, refresh);
+        return;
+      }
+      if (kind === "control") {
+        // The host says the right to drive it moved. What this client holds
+        // describes the control it had: a gate may sit at a revision whose
+        // snapshot was never applied (a standby device is not sent one), and
+        // the catalogue it cached was read by the device that no longer
+        // drives the machine. Re-read rather than reconcile.
+        gatesRef.current.delete(desktopId);
+        forgetHostCatalogue(desktopId);
+        void refresh();
         return;
       }
       if (kind === "catalog") {
@@ -347,18 +369,48 @@ function readVersion(value: unknown): SnapshotVersion | undefined {
 /**
  * React to a host presence tick.
  *
- * The presence payload carries `catalogVersion` for both domains. If the
- * reported revision is newer than the one we have applied, a snapshot was
- * lost on the at-most-once event lane and we re-read to heal.
+ * Two things arrive on it, and they are answered differently.
+ *
+ * Who may drive the host comes first. Control is the one fact that changes
+ * what the list can hold: while another paired device drives the machine this
+ * client is refused every read, and its rows are absent — so a move is not a
+ * detail to patch, it is a reason to forget what was read under the old state
+ * and re-read. A gate that survived the move would be worse than useless: a
+ * standby device is never sent a snapshot, so the gate can sit at a revision
+ * whose content this client has never applied, and then reject the first
+ * snapshot after control returns. That is why the gate is dropped and the
+ * catalogue re-read — the same treatment `resumed` gets, for the same reason.
+ *
+ * What the host has read comes second: `catalogVersion` for both domains. If
+ * the reported revision is newer than the one applied, a snapshot was lost on
+ * the at-most-once lane and we re-read to heal. A standby device skips this
+ * entirely — there is nothing to heal towards, because the snapshot it names
+ * was never published to it.
  */
 function handlePresence(
   desktopId: string,
   payload: unknown,
+  gates: Map<string, CatalogVersionGate>,
+  peers: readonly RemotePeer[],
   refresh: () => Promise<void>,
 ) {
   if (typeof payload !== "object" || payload === null)
     return;
   const obj = payload as Record<string, unknown>;
+  const control = obj.control === "standby" || obj.control === "active" ? obj.control : undefined;
+  const known = peers.find(peer => peer.desktopId === desktopId)?.control;
+  if (control !== undefined && control !== known) {
+    // Control moved under this client. Forget what described the old state and
+    // re-read: the peer list now carries the new `control`, and a machine this
+    // device drives again answers reads the moment it does.
+    gates.delete(desktopId);
+    forgetHostCatalogue(desktopId);
+    void refresh();
+    return;
+  }
+  if (control === "standby")
+    return;
+
   const catalogVersion = obj.catalogVersion;
   if (typeof catalogVersion !== "object" || catalogVersion === null)
     return;
