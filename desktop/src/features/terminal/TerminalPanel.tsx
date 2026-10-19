@@ -198,7 +198,7 @@ export function TerminalPanel({ threadId, panel }: TerminalPanelProps) {
 
           {notices[activeId ?? ""]
             ? (
-                <div className="absolute bottom-1 left-2 z-10 rounded bg-surface/90 px-2 py-0.5 text-[11px] text-ink-muted">
+                <div className="absolute bottom-1 left-2 z-10 rounded bg-surface/90 px-2 py-0.5 text-2xs text-ink-muted">
                   {t("reconnecting")}
                 </div>
               )

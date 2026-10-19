@@ -224,7 +224,7 @@ export function ApprovalPrompt({
       {editorOpen && saveSuggestion?.path
         ? (
             <div className="mt-3 rounded-md border border-line-soft bg-surface-subtle p-3">
-              <div className="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
+              <div className="mb-1.5 text-2xs font-medium uppercase tracking-wide text-ink-soft">
                 {t("approval.ruleSaveWorkspace")}
               </div>
               <TextInput
@@ -316,7 +316,7 @@ function ActionDetails({ action }: ActionDetailsProps) {
         {action.command
           ? (
               <div>
-                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
+                <div className="mb-1 text-2xs font-medium uppercase tracking-wide text-ink-soft">
                   {t("approval.shellCommand")}
                 </div>
                 <pre className="max-h-[33vh] overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink">
@@ -326,7 +326,7 @@ function ActionDetails({ action }: ActionDetailsProps) {
             )
           : null}
         <div>
-          <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
+          <div className="mb-1 text-2xs font-medium uppercase tracking-wide text-ink-soft">
             {t("approval.writablePaths")}
           </div>
           <FileTargets
@@ -345,7 +345,7 @@ function ActionDetails({ action }: ActionDetailsProps) {
     return (
       <div className="mt-3 space-y-2">
         <div>
-          <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
+          <div className="mb-1 text-2xs font-medium uppercase tracking-wide text-ink-soft">
             {t("approval.shellCommand")}
           </div>
           <pre className="max-h-[33vh] overflow-auto whitespace-pre-wrap wrap-break-word rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink">
@@ -355,7 +355,7 @@ function ActionDetails({ action }: ActionDetailsProps) {
         {isEscalation && action.justification
           ? (
               <div>
-                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
+                <div className="mb-1 text-2xs font-medium uppercase tracking-wide text-ink-soft">
                   {t("approval.justification")}
                 </div>
                 <p className="rounded-md bg-surface-subtle p-3 text-xs leading-5 text-ink-soft">
@@ -369,7 +369,7 @@ function ActionDetails({ action }: ActionDetailsProps) {
           && action.blockedPaths.length > 0
           ? (
               <div>
-                <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-ink-soft">
+                <div className="mb-1 text-2xs font-medium uppercase tracking-wide text-ink-soft">
                   {t("approval.blockedPaths")}
                 </div>
                 <ul className="rounded-md bg-surface-subtle p-3 font-mono text-xs leading-5 text-ink">

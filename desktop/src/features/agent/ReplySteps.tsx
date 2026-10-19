@@ -36,7 +36,7 @@ export function ReplySteps({ resolveTarget, segments, workspaceId, workspacePath
   const Chevron = expanded ? ChevronUp : ChevronDown;
 
   return (
-    <div className="flex min-w-0 flex-col gap-1 text-[13px] leading-6 text-ink-muted">
+    <div className="flex min-w-0 flex-col gap-1 text-13 leading-6 text-ink-muted">
       <button
         aria-label={summary}
         aria-expanded={expanded}

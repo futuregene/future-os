@@ -105,7 +105,7 @@ function VirtualJsonLines({ lines }: { lines: string[] }) {
           const index = start + offset;
           return (
             <div
-              className="absolute left-0 flex min-w-full font-mono text-[13px] leading-[22px]"
+              className="absolute left-0 flex min-w-full font-mono text-13 leading-[22px]"
               key={index}
               style={{ top: index * ROW_HEIGHT }}
             >

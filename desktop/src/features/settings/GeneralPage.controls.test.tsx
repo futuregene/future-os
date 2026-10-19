@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "../../i18n";
+import { setFontSize } from "../../lib/fontSize";
 import { setThemeMode } from "../../lib/theme";
 import { GeneralPage } from "./GeneralPage";
 
@@ -33,6 +34,7 @@ beforeEach(() => {
   mocks.isLinux = false;
   mocks.isWindows = true;
   setThemeMode("system");
+  setFontSize("medium");
   void i18n.changeLanguage("en");
 });
 
@@ -128,11 +130,33 @@ describe("generalPage theme picker", () => {
   });
 });
 
+describe("generalPage font size picker", () => {
+  it("reflects the active text size and scales the document", () => {
+    const { container } = mount();
+    const fontSize = select(container, 2);
+
+    expect(fontSize.value).toBe("medium");
+    expect([...fontSize.options].map(option => option.textContent)).toEqual(["Small", "Medium", "Large", "Extra large"]);
+    expect(document.documentElement.style.getPropertyValue("--app-font-scale")).toBe("1");
+
+    choose(fontSize, "xlarge");
+
+    expect(fontSize.value).toBe("xlarge");
+    expect(document.documentElement.style.getPropertyValue("--app-font-scale")).toBe("1.35");
+    expect(localStorage.getItem("future.fontSize")).toBe("xlarge");
+
+    choose(fontSize, "small");
+
+    expect(document.documentElement.style.getPropertyValue("--app-font-scale")).toBe("0.85");
+    expect(localStorage.getItem("future.fontSize")).toBe("small");
+  });
+});
+
 describe("generalPage approval tier picker", () => {
   it("reports every tier change to the settings owner", () => {
     const onChangeApprovalTier = vi.fn();
     const { container } = mount({ approvalTier: "off", onChangeApprovalTier });
-    const tier = select(container, 2);
+    const tier = select(container, 3);
 
     expect(tier.value).toBe("off");
     expect([...tier.options].map(option => option.value)).toEqual(["manual", "sandbox", "auto", "off"]);
@@ -145,7 +169,7 @@ describe("generalPage approval tier picker", () => {
 
   it.each(["signed_out", "invalid", "checking"])("gates automatic review for %s without changing a pending preference", (futureSessionStatus) => {
     const { container } = mount({ approvalTier: "auto", futureSessionStatus });
-    const tier = select(container, 2);
+    const tier = select(container, 3);
     expect(tier.value).toBe(futureSessionStatus === "checking" ? "auto" : "sandbox");
     expect([...tier.options].find(option => option.value === "auto")!.disabled).toBe(true);
     expect([...tier.options].find(option => option.value === "sandbox")!.disabled).toBe(false);
@@ -153,7 +177,7 @@ describe("generalPage approval tier picker", () => {
 
   it("enables the sandbox option when the sandbox is available", () => {
     const { container } = mount({ approvalTier: "sandbox" });
-    const sandbox = [...select(container, 2).options].find(option => option.value === "sandbox")!;
+    const sandbox = [...select(container, 3).options].find(option => option.value === "sandbox")!;
 
     expect(sandbox.disabled).toBe(false);
     expect(sandbox.textContent).toBe("Sandboxed");
@@ -163,7 +187,7 @@ describe("generalPage approval tier picker", () => {
     mocks.availability = { available: false, code: null, resolved: false };
     const { container } = mount();
 
-    const sandbox = [...select(container, 2).options].find(option => option.value === "sandbox")!;
+    const sandbox = [...select(container, 3).options].find(option => option.value === "sandbox")!;
     expect(sandbox.disabled).toBe(true);
     expect(sandbox.textContent).toBe("Sandboxed (checking)");
   });
@@ -172,7 +196,7 @@ describe("generalPage approval tier picker", () => {
     mocks.availability = { available: false, code: "probe_failed", resolved: true };
     const { container } = mount();
 
-    const sandbox = [...select(container, 2).options].find(option => option.value === "sandbox")!;
+    const sandbox = [...select(container, 3).options].find(option => option.value === "sandbox")!;
     expect(sandbox.disabled).toBe(true);
     expect(sandbox.textContent).toBe("Sandboxed (unavailable)");
   });

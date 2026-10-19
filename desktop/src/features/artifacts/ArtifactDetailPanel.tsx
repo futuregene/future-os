@@ -254,7 +254,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
                     )
                   : (
                       <pre
-                        className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-surface-subtle p-2 pr-9 text-[11px] leading-4 text-ink-soft"
+                        className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-surface-subtle p-2 pr-9 text-2xs leading-4 text-ink-soft"
                         style={inlinePreviewHighlighted ? { color: inlinePreviewHighlighted.fgColor } : undefined}
                       >
                         <code>
@@ -264,7 +264,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
                         </code>
                       </pre>
                     )}
-                <div className="mt-1 text-[11px] text-ink-muted">
+                <div className="mt-1 text-2xs text-ink-muted">
                   {filePreview.truncated
                     ? t("detail.sizeBytesTruncated", { size: new Intl.NumberFormat(i18n.language).format(filePreview.size) })
                     : t("detail.sizeBytes", { size: new Intl.NumberFormat(i18n.language).format(filePreview.size) })}
@@ -290,7 +290,7 @@ export function ArtifactDetailPanel({ artifact, onBack, onChanged }: ArtifactDet
                   onCopy={() => void copy(artifact.content ?? "", "content")}
                   variant="floating"
                 />
-                <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-surface-subtle p-2 pr-9 text-[11px] leading-4 text-ink-soft">
+                <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-surface-subtle p-2 pr-9 text-2xs leading-4 text-ink-soft">
                   <code>{artifact.content}</code>
                 </pre>
               </div>

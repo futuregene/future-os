@@ -107,7 +107,7 @@ function DeviceRow({
       <span className="shrink-0">{glyph}</span>
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {note
-        ? <span className="shrink-0 text-[10px] text-ink-muted" data-testid="option-note">{note}</span>
+        ? <span className="shrink-0 text-3xs text-ink-muted" data-testid="option-note">{note}</span>
         : null}
       {disabled ? null : <ChevronRight aria-hidden className="size-3.5 shrink-0 text-ink-muted" />}
     </button>

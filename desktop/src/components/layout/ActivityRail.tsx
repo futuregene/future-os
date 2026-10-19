@@ -1268,7 +1268,7 @@ function NavButton({
             <span className="ml-auto flex shrink-0 items-center gap-1.5">
               {badge != null && badge > 0
                 ? (
-                    <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-[11px] font-semibold leading-none text-accent">
+                    <span className="rounded-full bg-accent-soft px-1.5 py-0.5 text-2xs font-semibold leading-none text-accent">
                       {badge}
                     </span>
                   )
