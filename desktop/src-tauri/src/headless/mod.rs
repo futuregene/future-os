@@ -21,7 +21,7 @@ With --relay, no Future account is needed at all.
   --relay-ca  PEM file with the relay's CA, when its certificate is not issued
               by a public CA.
   --no-qr     Print authorization/pairing links instead of terminal QR codes.
-  --re-pair   Explicitly revoke the saved phone pairing and create a new invitation.
+  --re-pair   Revoke every saved device pairing and create a new invitation.
   --help      Show this help without starting Desktop or Agent.
 
 Login uses your phone/computer browser; phone pairing uses the FutureOS app.

@@ -138,6 +138,14 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
         .await;
     }
 
+    // `future remote` — the devices paired to this machine's remote desktop.
+    if group == Some("remote") {
+        return catch(out, async {
+            commands::remote::remote(command, rest, out).await
+        })
+        .await;
+    }
+
     // if (group === "task") — reusable prompt + trigger + full-permission runs.
     if group == Some("task") {
         return catch(out, commands::task::task(command, rest, out)).await;
