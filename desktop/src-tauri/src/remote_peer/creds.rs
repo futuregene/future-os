@@ -18,66 +18,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// The Noise identity this desktop uses with one remote host.
-///
-/// `peer_public_key` is the host's Noise static key. It is known from the
-/// invitation itself (the QR carries it), not learned from the handshake — so
-/// it is pinned at claim time and *verified* during every handshake, including
-/// the first one. A key offered by the broker or the platform is refused
-/// rather than adopted: there is no trust-on-first-use here.
-///
-/// `secret` is the invitation PSK. It exists only until the first handshake
-/// succeeds; the host deletes its own copy at the same moment, so keeping ours
-/// would leave a verbatim bearer credential on disk for no benefit.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PeerIdentity {
-    pub private_key: String,
-    pub public_key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub peer_public_key: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secret: Option<String>,
-}
-
-/// Everything needed to reach one remote host again, minus the label the user
-/// chose (that lives on the [`PeerRecord`], so it survives a credential
-/// refresh).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PeerCreds {
-    pub pair_id: String,
-    /// The *host* desktop's identity — what the UI names and de-duplicates by.
-    pub desktop_id: String,
-    /// This installation's pairing device id (shared with the host role; the
-    /// platform binds the pair to it).
-    pub device_id: String,
-    pub nkey_seed: String,
-    pub user_jwt: String,
-    pub refresh_token: String,
-    pub nats_url: String,
-    pub nats_ws_url: String,
-    /// Unix seconds. Drives the same pre-expiry refresh the host performs.
-    pub jwt_expires_at: i64,
-    /// `…/client/v1/remote/auth/token` for the platform that minted the pair.
-    pub token_url: String,
-    /// Absent only for a v1-era import; a v2 pairing always has one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub secure: Option<PeerIdentity>,
-}
-
-impl PeerCreds {
-    /// Expired (or unreadable) JWTs are refreshed before a connect attempt.
-    /// Mirrors the mobile client's 60 s margin: a token that expires *during*
-    /// the handshake fails it in a way that looks like a protocol fault.
-    pub(crate) fn needs_refresh(&self, now: i64) -> bool {
-        self.jwt_expires_at > 0 && self.jwt_expires_at - 60 <= now
-    }
-
-    pub(crate) fn revoke_url(&self) -> String {
-        self.token_url.replace("/auth/token", "/pair/revoke")
-    }
-}
+pub(crate) use future_remote_client::credentials::{PeerCreds, PeerIdentity};
 
 /// One paired host: its credentials plus the purely-local presentation the user
 /// picked. `name`/`icon` never reach the platform or the host desktop.
@@ -476,31 +417,5 @@ mod tests {
 
     fn persist_after_corrupt(_path: &std::path::Path) -> Result<(), crate::AppError> {
         set_label("desktop_a", Some("x"), None)
-    }
-
-    /// Refreshing is a clock decision, with a margin: a JWT that expires inside
-    /// the margin is refreshed *before* the connect that would otherwise fail.
-    #[test]
-    fn refresh_is_required_inside_the_sixty_second_margin() {
-        let mut creds = creds("desktop_a", "pair_a");
-        creds.jwt_expires_at = 1_000;
-        assert!(!creds.needs_refresh(900));
-        assert!(creds.needs_refresh(940));
-        assert!(creds.needs_refresh(1_000));
-        // An unreadable expiry is not "expired": it is a broken credential the
-        // handshake will reject, and looping a refresh on it would hammer the
-        // token endpoint.
-        creds.jwt_expires_at = 0;
-        assert!(!creds.needs_refresh(9_999));
-    }
-
-    /// The revoke endpoint is derived, not stored, so a platform change (or a
-    /// self-hosted one) needs no extra field — matching the host and mobile.
-    #[test]
-    fn the_revoke_url_is_derived_from_the_token_url() {
-        assert_eq!(
-            creds("desktop_a", "pair_a").revoke_url(),
-            "https://future-os.cn/client/v1/remote/pair/revoke"
-        );
     }
 }

@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Capability a client declares on `secure_ready` to receive the lean lane.
 /// Named so an older desktop ignores it and an older client never asks for it.
-pub(crate) const LEAN_EVENTS_FEATURE: &str = "lean_events_v1";
+pub(crate) use future_remote_protocol::LEAN_EVENTS_FEATURE;
 
 /// Event types that exist only to stream content a phone does not render.
 const DROPPED_EVENTS: [&str; 3] = ["thinking_delta", "tool_delta", "toolcall_delta"];

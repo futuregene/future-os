@@ -482,7 +482,16 @@
         "refresh_is_required_inside_the_sixty_second_margin",
         "the_revoke_url_is_derived_from_the_token_url"
       ],
-      "target": null
+      "target": {
+        "application-storage": "desktop/src-tauri/src/remote_peer/creds.rs",
+        "client-policy": {
+          "path": "packages/remote-client/src/credentials.rs",
+          "cases": [
+            "refresh_is_required_inside_the_sixty_second_margin",
+            "the_revoke_url_is_derived_from_the_token_url"
+          ]
+        }
+      }
     },
     {
       "source": "desktop/src-tauri/src/remote_peer/link.rs",
@@ -641,7 +650,7 @@
         "connect_failures_are_classified_by_their_kind",
         "production_budgets_are_the_phone_and_the_library"
       ],
-      "target": null
+      "target": "packages/remote-client/src/session.rs"
     },
     {
       "source": "desktop/src-tauri/src/remote_peer/tests.rs",

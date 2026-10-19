@@ -5,3 +5,6 @@ pub mod invitation;
 pub mod json;
 pub use command_generated::{IncomingCmd, UploadReference};
 pub use future_remote_crypto as crypto;
+
+/// Clients that declare this capability implement lean event/history reads.
+pub const LEAN_EVENTS_FEATURE: &str = "lean_events_v1";

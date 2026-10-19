@@ -43,6 +43,7 @@ gui = [
 ]
 
 [dev-dependencies]
+future-remote-client = { path = "../../packages/remote-client", features = ["test-support"] }
 tokio = { version = "1", features = ["test-util"] }
 # End-to-end transport checks drive the real loopback listener with a real
 # WebSocket client (`terminal::server::end_to_end`). Features unify only for the
@@ -69,6 +70,7 @@ future-agent = { path = "../../agent" }
 anyhow = "1"
 future-remote-crypto = { path = "../../packages/remote-crypto" }
 future-remote-protocol = { path = "../../packages/remote-protocol" }
+future-remote-client = { path = "../../packages/remote-client" }
 future-app-settings = { path = "../../packages/app-settings" }
 # The desktop app's workspace records, shared with `future workspace` in the
 # CLI so the two writers cannot drift apart.

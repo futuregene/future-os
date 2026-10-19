@@ -218,7 +218,8 @@ Implementation branch: `refactor/remote-packages`. Scope remains phases 0–5; p
 |---|---|---|
 | 0 | Source/test inventory and historical CI reference captured; performance comparison awaits final CI | The [test migration inventory](remote-test-migration.json) records baseline files, Rust case names and destinations; `target: null` means unresolved ownership. The [historical CI reference](remote-ci-baseline.json) records the original commit, jobs, runner, steps and Windows compile/test log timings. It is not a same-condition performance result for this branch. |
 | 1 | In progress, existing consumers reconnected | TS Crypto and both Protocol packages exist. Mobile consumes package Crypto/wire DTOs; Desktop consumes shared commands, invitations and JSON decoding. Handshake envelopes, capability/chunk constants and remaining role-owned wire DTOs still need extraction during subsequent migration. Automated results await final CI. |
-| 2–5 | Pending | Rust Client/Server, TS Client, runtime instances and host interfaces, standalone interoperability, affected CI scheduling and final acceptance remain unfinished. |
+| 2 | In progress, connection core reconnected to Desktop | Rust Client single connections and credential DTOs are extracted. Multi-host runtime instances, host services, transfers and lifecycle still require migration. |
+| 3–5 | Pending | Rust Server, TS Client, standalone interoperability, affected CI scheduling and final acceptance remain unfinished. |
 
 Implemented package entry points and validation:
 
@@ -231,3 +232,15 @@ Implemented package entry points and validation:
 Preserved parser difference: Rust invitation parsing validates the complete code, claim URL and expiry. TS `parsePairingInvitation` is only Mobile's preliminary shape parser; the application pairing flow still applies the full policy. Parsing a legacy shape does not authorize an older security protocol. Shared fixtures explicitly record language expectations and reasons; extraction does not change authentication, plaintext HTTP exceptions or credential semantics.
 
 This batch uses pinned Rust 1.97.0 and Node 24.21.0 in an isolated macOS arm64 checkout. Crypto/Protocol and Desktop GUI/headless Clippy (including test compilation), both npm packages and Mobile typecheck/lint have passed. Unit tests and shared fixtures have not run, so this is not protocol/product acceptance. Historical Windows logs distinguish compilation from test execution, but no performance benefit is claimed for this refactor yet.
+
+### 2026-10-19: Rust Client single-connection core
+
+Phase 2 has started and remains incomplete. `future-remote-client` is an independent ordinary Rust library. Its first extraction includes `PeerSession`, Noise pairing/IK reconnection, encrypted command requests/retries, subscription lane selection, handshake confirmation validation and `PeerCreds`/`PeerIdentity` DTOs. It reads no global HOME, depends on no futureos/Agent/Tauri implementation and starts no application background tasks.
+
+The public connection entry is `session::connect(&PeerCreds, &ConnectionOptions)`. The host supplies device name/kind and an optional platform certificate bundle. Production connections still require TLS. The non-default `test-support` feature exposes fixture seams; plaintext fixture connections additionally require a loopback address. Only Desktop test builds enable it. The host still uses `consumed_invitation` in the connection result to remove the spent PSK; the library does not alter persisted credentials itself.
+
+Desktop's session module currently adapts environment and errors; the connection implementation exists only in the package. Client errors map by category to `AppError`, preserving transport/authorization classification, platform status/machine codes and user-visible messages without a SQLite dependency. The existing Desktop host still owns `remote_peers.json`, labels, atomic writes/configuration locks and device identity lookup. Serialized field names and optional-field rules are preserved. Credential DTO Debug output excludes keys/tokens so assertion or log output cannot accidentally expose them.
+
+Eleven original session unit cases and two credential timing/revoke URL cases move to Client. New regressions protect credential Debug redaction and application error conversion. Real pairing, file, Store and application shutdown integration cases remain in the application and will be assigned through the [migration inventory](remote-test-migration.json). Test sources have compiled but have not executed.
+
+Static checks passed on pinned Rust 1.97.0: independent Client library compilation with default features, default and `test-support` Clippy `--all-targets`, and Desktop GUI/headless Clippy `--all-targets`. Multi-host runtime instances, event supervision/recovery, credential/platform service interfaces, file transfer and owned stop/join semantics still require migration. A reusable connection core does not establish completion of phase 2 or the overall refactor.

@@ -218,7 +218,8 @@ CI 根据真实依赖选择改动包及受影响消费者，并记录共享 sche
 |---|---|---|
 | 0 | 已固定源码/测试清单和历史 CI 参考；性能对照待最终 CI | [原测试迁移清单](remote-test-migration.json)记录基线文件、Rust 用例名和迁移目标；`target: null` 表示尚未归位。[历史 CI 参考](remote-ci-baseline.json)记录原提交、作业、runner、步骤及 Windows 编译/测试日志时间。该运行不是本分支的同条件性能结果。 |
 | 1 | 实施中，已接回现有消费者 | TS Crypto 与两语言 Protocol 包已建立；Mobile 使用包内 Crypto/线上 DTO，Desktop 使用公共命令、邀请解析和 JSON 解码。其余握手封装、能力/分块常量及角色中散落的线协议 DTO 随后续迁移继续归位，自动化结果待最终 CI。 |
-| 2～5 | 待实施 | Rust Client/Server、TS Client、运行实例与宿主接口、独立互通工程、CI affected 调度和最终验收仍未完成。 |
+| 2 | 实施中，连接核心已接回 Desktop | Rust Client 单次连接与凭据 DTO 已提取；多远端运行实例、宿主服务、传输与生命周期仍待迁移。 |
+| 3～5 | 待实施 | Rust Server、TS Client、独立互通工程、CI affected 调度和最终验收仍未完成。 |
 
 已落地的包入口与检查约定：
 
@@ -231,3 +232,15 @@ CI 根据真实依赖选择改动包及受影响消费者，并记录共享 sche
 保留的历史解析差异：Rust 的邀请解析包含完整 code/claim URL/过期校验；TS 的 `parsePairingInvitation` 只是 Mobile 配对流程的前置格式解析，完整策略仍在应用配对流程执行。旧格式的前置解析结果不等于允许使用旧安全协议。共享素材为此显式记录语言预期和差异原因，本次迁移不借机改变认证、HTTP 例外或凭据语义。
 
 本批静态验证使用固定 Rust 1.97.0、Node 24.21.0，在隔离 macOS arm64 工作目录执行。Rust Crypto/Protocol 与 Desktop GUI/headless 的 Clippy（包含测试目标编译）、两 npm 包和 Mobile 的 typecheck/lint 已通过。单元测试和共享素材尚未执行，不能据此宣称协议或产品验收通过。历史 Windows CI 显示测试执行与编译耗时差异较大，但尚无本次重构的性能收益结论。
+
+### 2026-10-19：Rust Client 单次连接核心
+
+阶段 2 已开始，尚未完成。`future-remote-client` 是独立普通 Rust 库，首批迁入 `PeerSession`、Noise 配对/IK 重连、加密命令请求与重试、订阅通道选择、握手确认校验，以及 `PeerCreds`/`PeerIdentity` DTO。库不读取全局 HOME、不依赖 futureos/Agent/Tauri、不自行启动应用后台任务。
+
+公开连接入口为 `session::connect(&PeerCreds, &ConnectionOptions)`。宿主显式提供设备名称、设备种类和可选平台证书 bundle；生产连接继续强制 TLS。`test-support` 非默认特性只提供测试接线，明文 fixture 另有 loopback 地址检查；Desktop 的测试构建才启用它。连接结果中的 `consumed_invitation` 继续由宿主用于清除已消费 PSK，库不擅自更改凭据落盘。
+
+Desktop 的 session 模块目前是环境/错误适配，真实连接实现只有包内一份。Client 错误逐类转换回 `AppError`，保留网络、授权、平台状态码/机器错误码和用户可见文字；核心不依赖 SQLite。`remote_peers.json`、label、原子写入/配置锁及设备身份取得仍由原 Desktop 宿主负责，序列化字段和可选值规则保持。凭据 DTO 的 Debug 输出改为不含密钥/令牌，防止断言或日志意外打印秘密。
+
+11 个原 session 单元用例和 2 个凭据时序/撤销地址用例已迁到 Client；新增凭据 Debug 保密与应用错误转换回归用例。真实配对、文件、Store、应用退出等集成用例继续留在应用，后续按[迁移清单](remote-test-migration.json)归位。测试源码已编译，尚未执行。
+
+本批静态检查已通过：Client 默认特性的独立库编译、默认及 `test-support` 的 Clippy `--all-targets`，以及 Desktop GUI/headless 的 Clippy `--all-targets`；使用固定 Rust 1.97.0。下一步仍须迁移多远端运行实例、事件监督与恢复、凭据/平台服务接口、文件传输和有归属的停止/等待清理。此时不能把连接核心可复用视为阶段 2 或整个重构已完成。

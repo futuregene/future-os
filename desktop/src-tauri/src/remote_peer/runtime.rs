@@ -1659,7 +1659,8 @@ async fn send_request(
     let subject = session.command_subject(&key);
     let result = session
         .request(&subject, command, session::COMMAND_TIMEOUT)
-        .await;
+        .await
+        .map_err(crate::AppError::from);
     if let Err(error) = &result {
         let mut live = runtime().lock().await;
         on_transport_failure(&mut live, desktop_id, error);
@@ -1929,7 +1930,10 @@ pub(crate) async fn put_chunk_within(
     // before it answers, so a short budget here would report a slow disk as a
     // dead socket. The wait happens with the runtime lock released, so a slow
     // disk on this host does not stall another host's list read.
-    let result = session.request_bytes(&subject, bytes, budget).await;
+    let result = session
+        .request_bytes(&subject, bytes, budget)
+        .await
+        .map_err(crate::AppError::from);
     if let Err(error) = &result {
         let mut live = runtime().lock().await;
         on_transport_failure(&mut live, desktop_id, error);
@@ -2078,7 +2082,10 @@ pub(crate) async fn request_at(
     let Some(session) = session_handle(desktop_id).await else {
         return Err(crate::AppError::Message("peer_not_connected".into()));
     };
-    let result = session.request(subject, command, timeout).await;
+    let result = session
+        .request(subject, command, timeout)
+        .await
+        .map_err(crate::AppError::from);
     if let Err(error) = &result {
         let mut live = runtime().lock().await;
         on_transport_failure(&mut live, desktop_id, error);

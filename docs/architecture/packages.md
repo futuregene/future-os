@@ -6,6 +6,7 @@ of their implementation language.
 
 - `rpc`: Rust wire-contract crate and protobuf source of truth.
 - `remote-crypto`: Rust/TypeScript Noise secure channels sharing handshake, record and rejection fixtures.
+- `remote-client`: Rust controller connection core and credential DTOs; multi-host runtime and TS Client migration remain pending.
 - `remote-protocol`: Rust/TypeScript wire contracts, command schema/generated types, invitations and JSON/gzip codecs.
 - `app-settings`: the desktop app's own settings document
   (`~/.future/app/app.db`), shared by the Tauri backend and `future desktop`.
@@ -21,5 +22,5 @@ such as `desktop`, `mobile`, or `agent`.
 
 The [Remote package development plan](remote-package-development.md) defines
 the ongoing Rust/TypeScript protocol, client and server extraction, retaining
-independent Crypto and application host adapters. Client/Server remain planned;
-implemented Crypto/Protocol packages are included in the inventory above.
+independent Crypto and application host adapters. Rust Client extraction has
+started; Server and TS Client remain planned.
