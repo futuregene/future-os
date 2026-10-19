@@ -8,9 +8,9 @@ import {
   rememberPreparedPreview,
 } from "../files";
 import { loadLastModel, loadLastThinking, saveLastModel, saveLastThinking } from "../storage";
-import { emptyTimeline } from "../timeline";
+import { emptyTimeline } from "@future-os/remote-client/timeline";
 import { modelReference, type DownloadInfo, type HistoryAttachment, type RemoteModel, type RemoteSessionState, type RemoteSessionUsage } from "../types";
-import type { SyncEngine } from "../syncEngine";
+import type { SyncEngine } from "@future-os/remote-client/syncEngine";
 import { useConversationController } from "../useConversationController";
 
 jest.mock("../files", () => ({

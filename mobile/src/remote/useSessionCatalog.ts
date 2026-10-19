@@ -1,4 +1,4 @@
-import { CatalogVersionGate } from "./catalogVersion";
+import { CatalogVersionGate } from "@future-os/remote-client/catalogVersion";
 import type {
   SnapshotVersion,
   CatalogRevisions,

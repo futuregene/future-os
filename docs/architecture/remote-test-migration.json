@@ -1251,25 +1251,183 @@
       "source": "mobile/src/remote/__tests__/batchedReplay.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/batchedReplay.test.ts",
+      "typescriptCases": [
+        "batch folding matches single events across tools, approvals, errors, compaction and duplicates",
+        "arrival order, untracked events and malformed payloads keep their old semantics",
+        "cooperative cancellation leaves a committed tail and its projector untouched",
+        "folds %i text events with one render snapshot and yields to other tasks",
+        "hundreds of interleaved tool calls retain their exact transcript with one snapshot",
+        "records a bounded baseline comparison without timing assertions"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/catalogVersion.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/catalogVersion.test.ts",
+      "typescriptCases": [
+        "only an authenticated source can advance a catalog and old or duplicate snapshots are ignored",
+        "an explicit freshness read can repeat a revision but cannot regress or change epoch",
+        "revision() reports what was applied so a presence revision can be compared",
+        "legacy Desktop retains arrival fencing, malformed versions never advance state",
+        "re-authenticating within the same epoch keeps the revision fence"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/client.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/client.test.ts",
+      "typescriptCases": [
+        "long background does not consume recovery budget (%s timers)",
+        "foreground resumes a bounded budget even without a completed attempt",
+        "initial connection budget does not expire while the app starts in the background",
+        "explicit close cannot be undone by a long background and foreground transition",
+        "initial network failure is terminal and does not retry",
+        "real offline recovery retries within three minutes, then stays terminal",
+        "foreground attempts immediately, then retries at 1s, 2s, 4s without network events",
+        "network-restored accelerates backoff and does not leave a duplicate retry",
+        "network notifications during a pending retry share the same connection attempt",
+        "%s cancels pending backoff and ignores network-restored",
+        "revoked credentials stop foreground retries and ignore later network recovery",
+        "initial timeout rejects a late credential result",
+        "credential refresh pending does not retire the serving event subscription",
+        "failed candidate readiness keeps the old connection usable",
+        "one-way event delivery does not mark a broken command channel ready",
+        "a late successful fallback probe cannot resurrect a closed client",
+        "foreground reuses a socket only after authenticated desktop presence succeeds",
+        "foreground rebuilds when the broker responds but the desktop channel is gone",
+        "background teardown releases a suspended recovery before foreground reconnects",
+        "stop cancels an outstanding credential request and ignores its late result",
+        "concurrent open calls share one candidate",
+        "candidate events wait for readiness and survive the handoff",
+        "stop during candidate readiness closes both sockets and prevents ready",
+        "does not automatically retry %s without a durable retry contract",
+        "declares exactly the capabilities this client can decode",
+        "a declared trimmed lane is reported as one, though the desktop never advertises it",
+        "the visible session is validated before it reaches a wildcard subject",
+        "changing the visible session reinstalls only a selective subscription",
+        "a desktop that stops refreshing presence is presumed gone and re-probed",
+        "an explicitly disconnected desktop is not put on a liveness timer",
+        "a desktop that answers without a usable agent is not business-ready",
+        "a recovery budget that already ran out fails the connection instead of waiting again",
+        "a network event after the client was closed cannot reopen it",
+        "an error with no message and no code still gets a labelled, non-empty error",
+        "a close during the handshake drops the half-built socket instead of publishing it",
+        "a close while the subscription barrier is flushing drops the candidate socket",
+        "a candidate whose own subscription dies is failed and closed, not retried",
+        "a close during the socket connect drops the socket before any handshake",
+        "a live subscription that dies while a replacement is opening is not retried twice",
+        "a consumer callback that throws fails its generation instead of losing the frame",
+        "a foreground probe that finds the desktop healthy keeps the socket and its retry is cancelled",
+        "a foreground probe that answers for %s rebuilds the connection",
+        "a pairing revoked while the replacement was activating is never published",
+        "a reconnect frame already in flight when a newer generation took over is dropped",
+        "an upload chunk reports the desktop's refusal instead of the raw envelope",
+        "an upload chunk with no error text still fails loudly",
+        "transfers refuse to run before the desktop is business-ready",
+        "a downloaded chunk is delivered by its own pull subscription",
+        "a transfer message on %s cannot resolve a pull",
+        "a chunk that never arrives times out and frees its waiter",
+        "a refused pull rejects before any chunk arrives",
+        "losing the connection rejects a chunk pull instead of leaving it hanging",
+        "a read-like command (%s) is retried and the half-open transport is revalidated first",
+        "a write-like command that is not receipt-backed gets exactly one attempt",
+        "a business rejection is never retried, however read-like the command",
+        "a repeated transient failure exhausts the attempts and rethrows the last error",
+        "a command recovers only for a transport failure",
+        "a recovery that itself fails still reports the request as transient",
+        "a broker disconnect disposes the generation and reopens immediately",
+        "an authorization failure on the status stream is recorded and ends the loop",
+        "a protocol failure on the status stream retires the generation",
+        "a revoked pairing is not rotated again by the refresh timer",
+        "a broker reconnect re-handshakes and re-announces readiness",
+        "a reconnect whose handshake fails retires that generation instead of claiming ready",
+        "a presence callback that tears the client down during handshaking cancels the ready announcement",
+        "a status stream that ends on a live generation reports the connection as exhausted",
+        "an expired-JWT broker error rotates the token instead of giving up",
+        "a revoked refresh token stops the client and asks the user to re-pair",
+        "a retryable refresh failure backs off instead of spinning on the old token",
+        "a malformed JWT is reported and drops the connection instead of looping",
+        "a token rotation that does not help turns into a terminal service failure",
+        "a malformed event frame is reported instead of taking the connection down",
+        "a session and a workspace snapshot reach the catalogue callbacks",
+        "an activity packet is reported as activity, never as a session list",
+        "a malformed activity packet reports no rows rather than throwing",
+        "a snapshot with no payload reports an empty list, never undefined",
+        "a presence frame from another bridge forces a fresh handshake",
+        "a presence frame with an unreadable payload is ignored, not fatal",
+        "rotated credentials are persisted before the socket is used",
+        "a revoked device is reported as revoked and stops dialling",
+        "the confirmed bridge identity is exposed only once a handshake named one",
+        "a misconfigured service is fatal and stops every timer",
+        "a socket that outlives its attempt is closed instead of being installed",
+        "a handshake failure is reported as a desktop handshake problem",
+        "repeated critical-subscription losses become a single terminal failure",
+        "a frame the channel cannot decrypt is dropped without killing the connection",
+        "an event subscription that ends on a live generation retires it",
+        "a burst of events is yielded to input instead of monopolising the loop",
+        "a status frame that lands after its generation was retired is not treated as an outage",
+        "a token refused before this pairing ever served traffic fails the client instead of retrying",
+        "only a local readiness gate is a deferred request error",
+        "a frozen server reply is not mistaken for the local readiness gate",
+        "a transport failure is the only transient NATS request error",
+        "a server URL that cannot be parsed is still labelled, never blank",
+        "a healthy serving socket clears the pending retry instead of dialling it again",
+        "a budget that runs out during the probe fails the connection and publishes no presence",
+        "a presence callback that closes the client stops the handoff from publishing ready",
+        "a foreground request whose window already closed never probes the dead socket",
+        "a rotation that lands after the client was closed is never adopted",
+        "a rotation whose attempt was cancelled while writing credentials does not dial in the same breath",
+        "a rotation that fails on the transport is not reported while the socket still serves",
+        "a rejected rotation about nothing is never surfaced",
+        "a rotation that fails while the client closes during its own probe stays silent",
+        "a socket that refuses to close is still dropped when the pairing was revoked mid-handshake",
+        "a handshake failure drops its socket even when the teardown itself fails",
+        "a cancelled attempt drops its half-built socket even when the teardown fails",
+        "closing the client drops the serving socket even when its teardown fails",
+        "a candidate that loses its subscription is discarded even when its socket refuses to close",
+        "a proven replacement retires the previous socket even when that teardown fails",
+        "a credential adoption that outlives its attempt is not followed by a dial",
+        "a healthy heartbeat that arrives after the window closed cannot revive the client",
+        "a feature announcement that closes the client leaves the replacement unpublished",
+        "an expired token resets the single rotation allowance instead of failing the service",
+        "a failure that lands after the window closed fails at once instead of arming a retry",
+        "backgrounding during the reconnect broadcast opens no failure episode",
+        "a disconnect frame that lands after the window closed fails the connection at once",
+        "a reconnect frame whose window ran out during the handshake is never presented as ready",
+        "a late connect attempt on a client that already gave up dials nothing",
+        "a failure reported after the client gave up is not re-reported",
+        "a deadline that fires after the client was closed reports nothing",
+        "a reconnect frame whose socket closed under it is not re-announced",
+        "a status stream that throws is reported instead of wedging the client",
+        "a transfer chunk with no waiter is ignored instead of resurfacing later",
+        "a frame delivered after its secure channel was retired is dropped",
+        "a frame that arrives after the client was closed is not decoded",
+        "a batch yield that outlives its generation stops the loop",
+        "a subscription that cannot be attributed to a live generation is refused",
+        "a frame whose lane moved on between delivery and decoding is dropped",
+        "a frame whose lane goes stale in the microtask hop is dropped before decoding",
+        "a presence frame from a restarted desktop is not applied after the pairing closed",
+        "a presence frame that announces selective events reinstalls the event lane",
+        "a second presence frame while a handshake is in flight shares the same handshake",
+        "a ready client whose socket was dropped under it refuses commands loudly"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/coalescedLane.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/coalescedLane.test.ts",
+      "typescriptCases": [
+        "a coalesced lane renders exactly what the raw fragments render",
+        "a coalesced lane loses no fragment and no lifecycle event",
+        "interleaved tool streams still render per tool after merging",
+        "a merged range overlapping an applied prefix is recovered, not appended twice",
+        "a merged range that continues the cursor needs no replay",
+        "snapshot-style fragments replace rather than append after merging"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/codec.test.ts",
@@ -1277,20 +1435,66 @@
       "rustCases": [],
       "target": {
         "protocol": "packages/remote-protocol/tests/codec.test.ts",
-        "client-pending": "mobile/src/remote/__tests__/codec.test.ts"
-      }
+        "client": "packages/remote-client/tests/codec.test.ts"
+      },
+      "typescriptCases": [
+        "decodes a current v2 code",
+        "rejects expired and wrong-version codes",
+        "extracts custom-scheme QR payload",
+        "rejects invitations without a bound desktop identity",
+        "rejects a malformed invitation URL instead of throwing",
+        "rejects an empty QR payload and an invitation for the wrong endpoint",
+        "v2 invitations need two real 32-byte transport keys",
+        "joins text blocks and ignores tool blocks",
+        "tolerates missing or null content (tool-call-only messages)",
+        "utf8Bytes counts multi-byte characters as bytes, not code units",
+        "a maximum-size prompt still fits the NATS wire budget",
+        "prefixes a 128-bit hex random value",
+        "reads a valid exp",
+        "returns null instead of 0 for a missing/undecodable expiry"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/compactionProjection.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/compactionProjection.test.ts",
+      "typescriptCases": [
+        "standalone started/committed renders a divider without reviving the old reply",
+        "%s settles only its operation, not a reply",
+        "two compactions across run idx resets stay separate and in chronological order",
+        "a late compaction from an older run cannot clear another active run",
+        "terminal replay deduplicates the same checkpoint loaded from history",
+        "a start delivered after its checkpoint is durable does not draw a second, running divider",
+        "a late start folds into a settled divider even when its terminal never arrives",
+        "repeating an operation's start never revives a divider it already settled",
+        "a genuine new compaction still draws its running divider",
+        "automatic mid-turn compaction remains inside the active reply",
+        "a committed divider reports both token counts",
+        "a legacy compaction_end from a released journal keeps its before-only count",
+        "a checkpoint that opened the turn is drawn once, not also from durable history",
+        "a durable divider for another checkpoint is not superseded by this run",
+        "a compaction frame without an operation or checkpoint is not a marker",
+        "an unknown compaction-shaped frame is ignored instead of opening a divider",
+        "a replay with no events returns the timeline it was given",
+        "a replay whose lane goes stale before or after the fold is refused"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/connectionGenerationBudget.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/connectionGenerationBudget.test.ts",
+      "typescriptCases": [
+        "activation yields in bounded batches and new events cannot overtake the buffered prefix",
+        "retiring a yielding generation fences the queued suffix",
+        "a retired generation drops late deliveries instead of buffering them",
+        "a candidate that overflows its buffer fails rather than growing without bound",
+        "an oversized single event fails the candidate even with room in the list",
+        "a serving generation between batches reports overflow to its caller",
+        "a serving generation delivers straight through once its backlog is gone",
+        "a retirement caused by a delivery stops the rest of the batch"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/connectionPresentation.test.ts",
@@ -1302,7 +1506,53 @@
       "source": "mobile/src/remote/__tests__/connectionState.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/connectionState.test.ts",
+      "typescriptCases": [
+        "connecting/open_started is a no-op (oldest attempt wins)",
+        "connecting/ready → ready with no effects",
+        "ready/transport_disconnect never arms a retry (NATS reconnects internally)",
+        "a failed attempt (open_failed) always arms a retry",
+        "connecting/open_failed → reconnecting WITH a retry timer",
+        "auth_failed → refreshing (token rotation), from ready or connecting",
+        "revoked → revoked terminal, disposes the connection, never schedules",
+        "fatal NATS configuration errors enter a failed terminal state",
+        "unpair → unpaired terminal, disposes + enters unpaired",
+        "unrecognized event types degrade to a no-op instead of falling through",
+        "terminal states ignore every event — except unpaired/open_started",
+        "the full state×event table stays in revoked; unpaired only exits on open_started",
+        "H4 regression: a ready↔disconnect cycle never re-arms the retry timer",
+        "H4 regression: a slow open that dies arms exactly one timer",
+        "caps at MAX_BACKOFF_MS",
+        "grows with attempt (deterministic random)",
+        "terminal auth errors → authTerminal",
+        "refreshable auth errors → auth",
+        "NATS permission errors refresh once before becoming terminal",
+        "everything else → transport",
+        "failure logs have a 24-hour per-category cap across episode changes",
+        "late iterator completion cannot revive %s",
+        "an expired status refreshes credentials: %s",
+        "a permission status becomes a terminal service failure",
+        "a protocol status fails its generation once without exhaustion fallback",
+        "a throwing NATS status iterator enters the outer recovery path",
+        "a throwing event subscription cannot die as an unhandled task",
+        "a malformed live event requests immediate session reconciliation",
+        "the global provider completion subject reaches the control-plane callback",
+        "%s reconnects when its iterator ends independently",
+        "several subscriptions ending in one generation trigger one reconnect",
+        "a readiness teardown absorbs its provisional subscription endings",
+        "an auth error during refresh backs off instead of becoming terminal",
+        "four critical generations in ten minutes enter an unrecoverable failed state",
+        "retries transient NATS failures with one stable command id",
+        "does not retry a backend business error",
+        "recovers only transient request failures",
+        "passes a command-specific timeout to NATS",
+        "backgrounding closes the live socket and foregrounding opens a new generation",
+        "%s validates a healthy socket without replacing it",
+        "missing encrypted presence replaces the secure generation even if the broker is healthy",
+        "foreground starts an attempt without waiting for reachability",
+        "%s cannot activate a background app",
+        "a suspended probe cannot block or replace the next foreground connection"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/conversationLifetime.test.ts",
@@ -1314,7 +1564,12 @@
       "source": "mobile/src/remote/__tests__/cooperativeJson.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/cooperativeJson.test.ts",
+      "typescriptCases": [
+        "large parsing matches JSON.parse without changing own properties or Unicode",
+        "invalid large JSON is rejected: %s",
+        "an obsolete read stops during cooperative decoding"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/desktopStatus.test.ts",
@@ -1356,7 +1611,21 @@
       "source": "mobile/src/remote/__tests__/foregroundSync.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/foregroundSync.test.ts",
+      "typescriptCases": [
+        "inactive timeline caches obey LRU count and byte budgets without truncating the selected session",
+        "evicting a pending lane fences its late history result",
+        "a live burst yields to navigation and stops projecting after the session is hidden",
+        "yielded live batches retain event order, duplicate filtering, terminal events, and mutations",
+        "text commits are capped near 12.5Hz but terminal state bypasses the cadence",
+        "one opening state request feeds controls and history without another network round trip",
+        "live deltas during an open do not enqueue a duplicate opening read",
+        "ten thousand hidden deltas trigger no history, replay or timeline allocations",
+        "reconnect only restarts the visible lane and reopening refreshes an idle cached session",
+        "late history from a hidden lane cannot overwrite a fresh reopen",
+        "an opening request failure retries with fresh state instead of a rejected promise",
+        "opening a background session restores its pending approval from durable replay"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/handshake.test.ts",
@@ -1374,7 +1643,26 @@
       "source": "mobile/src/remote/__tests__/incrementalOpen.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/incrementalOpen.test.ts",
+      "typescriptCases": [
+        "%s resumes a proven active run and matches a cold rebuild including tools",
+        "warm delta keeps refreshed user attachments and replaces a durable partial assistant mirror",
+        "empty valid tail preserves the prefix and the following live delta appends exactly once",
+        "%s prevents prefix reuse",
+        "%s refreshes a run that ended while hidden instead of treating it as active",
+        "durable completion discovered after get_state wins over the cached active prefix",
+        "a new active run refreshes history and gets its full prefix",
+        "a snapshot notification while hidden invalidates the cache without eager network work",
+        "switching away during a large warm replay never partially advances the committed cache",
+        "a snapshot notification during a tail fences the old reply and survives an immediate reopen",
+        "invalid incremental reply ($label) keeps the cache and retries a full prefix",
+        "a transient tail failure preserves the proven prefix for the retry",
+        "a replacement projection rewinds cursor and dedup together, then accepts new live events",
+        "a watermarked full reply with a missing prefix cannot establish an incremental baseline",
+        "a legacy unwatermarked partial replay remains ineligible for warm reuse",
+        "a projection with %s falls back without corrupting the prefix",
+        "queued live events overlapping a warm replay are deduplicated, including agent_end"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/localPath.test.ts",
@@ -1398,7 +1686,15 @@
       "source": "mobile/src/remote/__tests__/natsErrors.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/natsErrors.test.ts",
+      "typescriptCases": [
+        "retries %s without treating it as authentication failure",
+        "preserves authentication errors through request and diagnostic wrappers: %s",
+        "distinguishes account expiry from other authorization errors",
+        "does not turn a protocol or application error into request recovery",
+        "a frozen readiness gate defers an operation without starting an RPC retry loop",
+        "handles circular diagnostic causes"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/pairing.test.ts",
@@ -1428,34 +1724,66 @@
       "source": "mobile/src/remote/__tests__/presence.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/presence.test.ts",
+      "typescriptCases": [
+        "accepts the first observation as online (establishes the clock baseline)",
+        "rejects an explicit offline update",
+        "rejects null presence",
+        "stays online when the clock is skewed but the delta is stable",
+        "marks offline when the delta jumps past the stale window (heartbeat stopped)",
+        "recovers when the desktop resumes beating",
+        "adopts a new baseline after a sustained clock jump (heartbeats still arriving)",
+        "does NOT re-baseline when the desktop truly dies (delta keeps growing)",
+        "never adopts a dead desktop even when consecutive ticks align within tolerance"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/readPages.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/readPages.test.ts",
+      "typescriptCases": [
+        "reassembles a multi-megabyte Unicode projection without changing its cursor or content",
+        "large snapshot at %i ms RPC latency uses bounded parallel reads",
+        "out-of-order chunks retain snapshot ownership and assemble at their requested offsets",
+        "%s during a parallel batch stops further reads without publishing partial data",
+        "ordinary and old Desktop replies remain compatible",
+        "a cancelled lane does not continue reading snapshot chunks",
+        "rejects a changed %s between chunks",
+        "rejects malformed or over-budget chunks without issuing another request",
+        "a lane that goes stale never starts, or continues, a chunked read"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/recovery.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/recovery.test.ts",
+      "typescriptCases": [
+        "allows only the latest failed run",
+        "suppresses user-stopped and unidentified runs",
+        "does not recover a handled tool failure without a failed run"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/recoveryCoordinator.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/recoveryCoordinator.test.ts",
+      "typescriptCases": [
+        "batches notifications and performs one trailing pass after an in-flight reconnect",
+        "retired client cannot run queued recovery or block a new client",
+        "a failed pass releases its slot for later recovery"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/remoteJson.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": {
-        "protocol": "packages/remote-protocol/tests/json.test.ts",
-        "client-pending": "mobile/src/remote/__tests__/remoteJson.test.ts"
-      }
+      "target": "packages/remote-client/tests/remoteJson.test.ts",
+      "typescriptCases": [
+        "the cooperative decoder enforces the same ceiling"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/remoteRenderIsolation.test.ts",
@@ -1467,13 +1795,22 @@
       "source": "mobile/src/remote/__tests__/replay.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/replay.test.ts",
+      "typescriptCases": [
+        "reads one page through the chunking request layer, and normalizes what it returns",
+        "carries a snapshot bootstrap through as one whole-run projection",
+        "stops without asking when the lane it was read for is already gone"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/retainedSize.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/retainedSize.test.ts",
+      "typescriptCases": [
+        "Map/Set payloads are counted without serializing or following object cycles",
+        "cache eviction includes closure-owned projector text even with an empty display snapshot"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/secureChannel.perf.test.ts",
@@ -1491,7 +1828,26 @@
       "source": "mobile/src/remote/__tests__/secureClient.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/secureClient.test.ts",
+      "typescriptCases": [
+        "real NATS messages retain routing after decryption across repeated catalog pushes",
+        "selective event subscriptions retain background approvals/end events and retire old session feeds safely",
+        "a queued encrypted event burst yields before all records have decoded",
+        "pairs, persists the bound identity without the invitation secret, encrypts commands and file chunks",
+        "a lost pairing confirmation recovers using IK, without another scan or accepting a new identity",
+        "reconnecting rotates traffic keys and rejects prior-channel replay",
+        "desktop traffic-key loss recovers through Noise IK even when the broker is still reachable",
+        "tampered replies are rejected before RPC success can be observed",
+        "does not send any business command before a secure handshake",
+        "rejects old credentials rather than silently using v1",
+        "rejects a substituted desktop key even when the attacker relays the real handshake",
+        "a refused handshake carries the desktop's own reason, not just the stable token",
+        "a confirmation whose binding does not match the pairing is refused",
+        "a handshake reply with no message is refused instead of pairing on nothing",
+        "a handshake reply with no confirmation is refused instead of trusting the socket",
+        "a pairing that closes after the confirmation is not retried without the secret",
+        "a pairing that closes while writing the rotated identity is not retried"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/sessionStatus.test.ts",
@@ -1503,7 +1859,12 @@
       "source": "mobile/src/remote/__tests__/snapshotBootstrap.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/snapshotBootstrap.test.ts",
+      "typescriptCases": [
+        "snapshot plus suffix matches raw replay, without duplicate user/assistant rows or live terminal stats",
+        "an error in the snapshot suffix settles the run even before agent_end arrives",
+        "a failed snapshot suffix does not commit its cursor or overwrite the readable preview"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/storage.test.ts",
@@ -1515,31 +1876,190 @@
       "source": "mobile/src/remote/__tests__/streamingSync.perf.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/streamingSync.perf.test.ts",
+      "typescriptCases": [
+        "streaming open: 10,000 events at %i ms RPC latency"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/syncEngine.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/syncEngine.test.ts",
+      "typescriptCases": [
+        "live queued standalone compaction reaches the UI through the production batch lane",
+        "a resend that lands while the replay is in flight discards that pass instead of committing it",
+        "a compaction frame with no cursor for its stamped run is not a gap",
+        "a history refresh clears a settled compaction start-alias left by a lost terminal",
+        "restores compaction on open and releases it on %s",
+        "%s clears a run that finished while hidden and restores its footer",
+        "idle reopen recovers the cached run's missed terminal event before history catches up",
+        "warm history keeps known terminal stats until entry metadata catches up",
+        "a projection snapshot retains its accumulator for the following live tail",
+        "restarting during a cooperative replay sees only committed cursors and drops old work",
+        "publishes cold history before slow replay without claiming a complete prefix",
+        "keeps early history readable after replay failure and retries the full prefix",
+        "an empty successful replay retains the gap tail and retries without a hot loop",
+        "clear drops pairing state but preserves the Provider commit subscription",
+        "clear rejects a late commit from the previous pairing generation",
+        "restart bypasses a request still pending on the previous connection",
+        "reports the failed stage and scheduled retry for diagnostics",
+        "mid-run join replays the prefix from -1 (H3)",
+        "reconnect full-reconciles so a settled run keeps its full text (H5)",
+        "a lane that omits indices applies across the hole instead of replaying it",
+        "the same jump on a lane that trims nothing is still a gap",
+        "gap during live streaming fills the hole from the journal (M4)",
+        "coalesces established live deltas into one frame commit",
+        "a failed gap replay preserves queued events and retries automatically",
+        "agent_end drops are healed by a snapshot-flip reconcile (M11)",
+        "a reconcile that finds no active run clears a stale generating flag and adopts the fence",
+        "out-of-order first delivery still converges to the full text",
+        "duplicate live events are dropped (dedup)",
+        "mutate applies inside the lane without racing live events",
+        "a mutation parked behind a reconcile survives the restart a foreground return triggers",
+        "a mutation the live op budget deferred survives the restart that follows",
+        "projection replay without run_id does not leave a streaming ghost (regression)",
+        "open reconcile on an idle session loads durable history (no active run)",
+        "first live contact on an idle-established session keeps live tail",
+        "user_message live mirror is applied (optimistic bubble lands)",
+        "query accessors return empty defaults before a lane establishes",
+        "untracked events (no runId) apply directly",
+        "a run settling in a batch is not re-read when it arrived whole",
+        "a settle still reconciles when the prefix is incomplete",
+        "a dropped terminal is still healed by the catalog's snapshot flip (M11)",
+        "a projection without a usable cursor is refused, and the prefix is not built from it",
+        "restartAll rebuilds every real lane from durable state",
+        "a step during retry backoff defers to the pending retry timer",
+        "%s preserves turn order when cached replies become durable during another run",
+        "history dedup requires both role and run identity, not matching text",
+        "a lean feed's mid-run join recovers both the prompt and the exchanges it missed",
+        "full reconcile drops a live user mirror duplicating a durable prompt",
+        "live queue overflow converges from the durable journal without losing text",
+        "a single oversized live frame is dropped and recovered from the journal",
+        "a run id is required to call a cached run complete",
+        "a truncated replay marks the timeline so the hole is visible",
+        "the draft lane reconciles nothing",
+        "a reconcile with no run to tail does not spend a replay",
+        "the queued reconcile instruction list is bounded",
+        "a lane hidden while a retry is armed neither fires it nor retries again",
+        "a failure that is reported as the session is hidden does not arm a retry",
+        "a clock jump past a pending retry cancels it instead of replaying twice",
+        "clearing the engine cancels a live flush that is still waiting",
+        "evicting a lane cancels its pending retry"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/timeline.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/timeline.test.ts",
+      "typescriptCases": [
+        "keeps optimistic attachment chips for an attachment-only prompt",
+        "skips tool-call-only messages whose content is omitted on the wire",
+        "a message that is neither a user bubble nor an assistant reply renders nothing",
+        "a live bubble that already carries its attachments keeps them",
+        "a settled live placeholder for a durable checkpoint is folded away",
+        "enriches text-only live user messages from durable attachments",
+        "matches repeated live prompts to the latest durable attachment",
+        "projects user/assistant entries and carries attachments",
+        "projects authoritative run outcomes from remote history",
+        "a reasoning block produces a thinking row with or without a body",
+        "a trimmed argument list still renders the tool row's label",
+        "a shell row trimmed of its arguments keeps the identity to fetch them",
+        "projects a durable checkpoint from reloaded history",
+        "preserves a reply across an in-turn checkpoint (schema=%s phase=%s)",
+        "keeps the first reply after pre-turn compression (phase=%s)",
+        "keeps repeated checkpoints, tool boundaries and the terminal failure in one turn",
+        "keeps manual compression between turns standalone (phase=%s)",
+        "keeps a v3 manual checkpoint between turns standalone",
+        "keeps attachment-only user entries and drops malformed attachments",
+        "projects thinking and tool rows inline in the reply per exchange (D2)",
+        "folds a run projection into a timeline like the live stream",
+        "empty projection is an empty timeline",
+        "stripRunItems drops a run's items but keeps user bubbles and other runs",
+        "dropSupersededCompactionDividers drops only the durable copy of a shared checkpoint",
+        "commits a user message only when the prompt acknowledgement is applied",
+        "pairs persisted tool results by id and trusts explicit error status",
+        "acknowledgement enriches an early live mirror instead of duplicating it",
+        "replaying the same acknowledgement is idempotent",
+        "user_message from another device appends a user bubble",
+        "events deduplicate by identity while identical prompts remain separate",
+        "maps snake_case run_id to the camelCase StreamEvent shape",
+        "drops malformed entries and tolerates missing run_id/idx",
+        "empty or undefined input yields no events",
+        "deduplicates and appends text chunks by run",
+        "consumes a text_chunk truncation marker as a friendly notice instead of dropping it",
+        "never renders the truncation marker's raw JSON as an error",
+        "tracks streaming and approval state",
+        "marks the assistant streaming while running and settles it with a duration on end",
+        "anchors the live timer to the agent_start started_at_ms, not the receipt time",
+        "creates the streaming assistant host on thinking_delta when agent_start was missed",
+        "keeps thinking and tool rows above the answer bubble in event order",
+        "a live shell row keeps the identity to fetch a command the lane dropped",
+        "keeps tool rows in stream order when text streams before the first tool call",
+        "settle prefers the authoritative agent_end totals over partial late-join stats",
+        "tool rows carry the call target from tool_args (object or JSON string)",
+        "agent_end leaves the thinking slice inline in the settled reply",
+        "settle falls back to receipt-clock duration and accumulated usage on older agents",
+        "a shell exit-code marks only the tool row failed (G1)",
+        "a bare grep exit-1 is a soft fail, not a tool failure (G1 exemption)",
+        "a structured exit code fails the row with no output text at all",
+        "a zero structured exit code completes the row",
+        "the soft-fail exemption survives the structured path",
+        "a lean shell row's verdict comes from the agent, not from a command",
+        "a reasoning row is projected from its boundary alone",
+        "a reasoning row after a tool call survives with no body (lean feed)",
+        "a tool target comes from tool_start, with no argument stream",
+        "a cancelled run marks the bubble stopped (G15)",
+        "an incomplete stream marks the bubble truncated (G13)",
+        "an agent error marks the run failed",
+        "a clean agent_end is neither stopped nor truncated",
+        "a compaction_end renders an inline divider segment (G3)",
+        "a durable compaction_committed renders one checkpoint divider",
+        "a standalone compaction becomes its own divider and never revives a finished run",
+        "a mid-turn compaction stays inside the running reply",
+        "a compaction with nothing to show leaves no placeholder behind",
+        "compaction lifecycle replaces running state and retains failures",
+        "the settled totals prefer agent_end usage over the late-join partial sum",
+        "file permission events retain purpose and scope until the matching decision",
+        "a repeated approval_request with the same id does not duplicate the card",
+        "markApprovalDecision stamps a decision only on the matching approval",
+        "malformed event JSON degrades to an empty payload",
+        "a burst of same-kind completed tools collapses into a summary row with children",
+        "an error event settles the run and pins the raw error on the assistant bubble",
+        "an error event without any run id still surfaces as a danger notice",
+        "history reload rebuilds the failure bubble for a run with no assistant entry",
+        "history reload anchors an empty-content failed run's bubble at the tail",
+        "an error event before any other run event still produces the failed bubble",
+        "history reload keeps a partial assistant reply instead of a synthesized bubble"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/timelineSyncStatus.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-client/tests/timelineSyncStatus.test.ts",
+      "typescriptCases": [
+        "reports state/history/replay timings without treating a failed attempt as synced",
+        "idle history-only open does not claim a replay was performed",
+        "explicit prefix recovery records why a retained cursor is not reused",
+        "readable initial history does not finish syncing while replay is pending",
+        "warm opens retain content and stale replay cannot clear a newer sync indicator",
+        "replay failures remain visibly retrying until automatic recovery succeeds"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/types.test.ts",
       "ownerAtBaseline": "ts-client-or-mobile",
       "rustCases": [],
-      "target": null
+      "target": "packages/remote-protocol/tests/model-reference.test.ts",
+      "typescriptCases": [
+        "modelReference scopes an id with its provider",
+        "modelReference does not confuse a provider-looking raw id with a qualified reference",
+        "two providers sharing one raw id retain distinct identities",
+        "modelProviderFromReference extracts the provider segment",
+        "modelProviderFromReference is undefined without a separator"
+      ]
     },
     {
       "source": "mobile/src/remote/__tests__/useAppLifecycle.test.ts",

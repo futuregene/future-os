@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { AppState } from "react-native";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { RemoteClient } from "../client";
-import { applyStreamEvent, applyStreamEvents, commitAcknowledgedUserMessage, emptyTimeline } from "../timeline";
+import { applyStreamEvent, applyStreamEvents, commitAcknowledgedUserMessage, emptyTimeline } from "@future-os/remote-client/timeline";
 import type { HistoryEntry, StreamEvent } from "../types";
 import { useTimelineController } from "../useTimelineController";
 

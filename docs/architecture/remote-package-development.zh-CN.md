@@ -3,7 +3,7 @@
 > [English](remote-package-development.md)
 >
 > 设计日期：2026-10-19。源码基线：`4a64b65e`。
-> 状态：实施中，阶段 1～3 持续迁移；实际落地、检查证据和待办见第 8 节。阶段 0～5 尚未整体完成。
+> 状态：实施中，阶段 1～4 持续迁移；实际落地、检查证据和待办见第 8 节。阶段 0～5 尚未整体完成。
 
 将远程能力拆成协议、主控、被控三个职责包，保留独立的安全通道基础库。Rust 与 TypeScript 使用相同的职责模型，各自维护实现，通过共同的协议契约、测试向量和互通测试保证兼容。Desktop、Mobile、CLI、TUI 负责界面、环境和本地业务适配；远程库不依赖某个应用入口。
 
@@ -214,21 +214,24 @@ CI 根据真实依赖选择改动包及受影响消费者，并记录共享 sche
 
 实施分支：`refactor/remote-packages`；范围仍为阶段 0～5，第 6 阶段未启动。本轮不创建 PR；最终通过工作分支 CI 统一执行自动化验收。开发期间只执行编译、类型检查、lint、fmt 和生成文件检查；人工验收确认前不标记整体完成。
 
+下表反映当前状态，后续小节保留各批次的实施记录。
+
 | 阶段 | 实际状态 | 证据与剩余工作 |
 |---|---|---|
-| 0 | 已固定源码/测试清单和历史 CI 参考；性能对照待最终 CI | [原测试迁移清单](remote-test-migration.json)记录基线文件、Rust 用例名和迁移目标；`target: null` 表示尚未归位。[历史 CI 参考](remote-ci-baseline.json)记录原提交、作业、runner、步骤及 Windows 编译/测试日志时间。该运行不是本分支的同条件性能结果。 |
-| 1 | 实施中，已接回现有消费者 | TS Crypto 与两语言 Protocol 包已建立；Mobile 使用包内 Crypto/线上 DTO，Desktop 使用公共命令、邀请解析和 JSON 解码。其余握手封装、能力/分块常量及角色中散落的线协议 DTO 随后续迁移继续归位，自动化结果待最终 CI。 |
+| 0 | 已固定源码/测试清单和历史 CI 参考；性能对照待最终 CI | [原测试迁移清单](remote-test-migration.json)记录基线文件、Rust 与已迁移 TS 用例名和迁移目标；`target: null` 表示尚未归位。[历史 CI 参考](remote-ci-baseline.json)记录原提交、作业、runner、步骤及 Windows 编译/测试日志时间。该运行不是本分支的同条件性能结果。 |
+| 1 | 基础包与共用素材已接回，待运行验收 | 两语言 Crypto/Protocol、命令 schema、握手封装、能力标识及邀请/JSON 编解码已归位；继续随角色迁移审计契约边界。共享素材驱动已编译，自动化结果待最终 CI。 |
 | 2 | 实施中，连接核心已接回 Desktop | Rust Client 连接、凭据 DTO、多远端实例、任务生命周期与上传/下载编排已接回；HTTP/JWT 共用工具已归位。独立网络互通、共享 Client 场景和最终验收仍待完成。 |
-| 3 | 实施中，安全端点与部分宿主契约已接回 | 实例监督器状态、控制权、状态/presence 与恢复/原生任务等待已接回；连接建立/重建、心跳/目录发布、完整角色退出及临时接线收口仍待完成。 |
-| 4～5 | 待实施 | TS Client、独立互通工程、CI affected 调度和最终验收仍未完成。 |
+| 3 | 运行时实现已接回，待运行验收 | 实例监督、控制权、启动/恢复/刷新、事件/目录发布与角色停止/等待已接回 GUI/headless；生产状态已封装。独立网络互通、CI 和人工边界验收尚未执行。 |
+| 4 | 实施中，TS 连接/同步核心已接回 Mobile | 独立 Client npm 包、显式宿主接口、通用投影/分页/同步与独立 Node/Jest 测试入口已建立；文件编排、完整停止等待、共用 Client 场景及运行验收仍待完成。 |
+| 5 | 待实施 | 独立真实互通工程、CI affected 调度、实测性能与最终验收仍未完成。 |
 
 已落地的包入口与检查约定：
 
 - Rust Crypto 保持 `future-remote-crypto`，Protocol 为普通库 `future-remote-protocol`。可分别使用 `cargo clippy -p <包名> --all-targets -- -D warnings` 检查；最终 CI 使用各自的 `cargo test -p <包名> -- --show-output`，输出共享用例 ID。
-- TS 包使用 `npm run typecheck|lint|test --workspace @future-os/remote-crypto` 和对应的 `@future-os/remote-protocol` 入口；其中 `typecheck|lint|test` 表示分别选择脚本，并非一条 shell 命令。各自使用 Node/Vitest 配置，不加载 Expo 或 Desktop 配置。源码直接导出，无需额外空 build。
+- TS 包使用 `npm run typecheck|lint|test --workspace @future-os/remote-crypto` 、`@future-os/remote-protocol` 和 `@future-os/remote-client` 入口；其中 `typecheck|lint|test` 表示分别选择脚本，并非一条 shell 命令。Crypto/Protocol 使用独立 Node/Vitest 配置，Client 使用独立 Node/Jest 配置；均不加载 Expo 或 Desktop 配置。源码直接导出，无需额外空 build。
 - [命令 schema](../../packages/remote-protocol/command.schema.json)是 62 个命令字段、Rust 缺省值和 TS 生产者类型的事实源。仓库内的生成器只使用 Python 标准库和固定工具链的 rustfmt：`python3 packages/remote-protocol/scripts/generate.py`；追加 `--check` 检查是否过期。不得手改生成文件。其余响应/事件 DTO 当前作为协议包内的手写线上类型维护，后续扩展 schema 时再迁入生成范围。
 - [安全素材](../../packages/remote-crypto/tests/vectors.json)使用 `version: 1`、稳定 ID、两种握手的原始字节向量及共享负向记录步骤；原握手、密文、摘要未改变。[协议素材](../../packages/remote-protocol/fixtures/protocol.json)覆盖邀请、命令、JSON/gzip 和大小边界。两语言驱动拒绝未知素材版本/类型，并报告执行 ID。
-- 原 Crypto、邀请、JSON/gzip 和 codec 核心测试迁入所属包；协作式 JSON 解析的调度/取消测试暂留 Mobile，阶段 4 随 Client 迁移。原测试去向继续更新清单，不以新 mock 替代真实宿主业务覆盖。
+- 原 Crypto、邀请、JSON/gzip 和 codec 核心测试迁入所属包；协作式 JSON 解析的调度/取消测试已随阶段 4 迁入 Client。原测试去向继续更新清单，不以新 mock 替代真实宿主业务覆盖。
 
 保留的历史解析差异：Rust 的邀请解析包含完整 code/claim URL/过期校验；TS 的 `parsePairingInvitation` 只是 Mobile 配对流程的前置格式解析，完整策略仍在应用配对流程执行。旧格式的前置解析结果不等于允许使用旧安全协议。共享素材为此显式记录语言预期和差异原因，本次迁移不借机改变认证、HTTP 例外或凭据语义。
 
@@ -349,3 +352,17 @@ NATS 的 JWT/NKey 认证、回调健康状态、退避和连接错误分类已�
 8 个原纯策略用例进入 Server：3 个配对错误分类、刷新提前量、坏 NKey、过期重试、休眠决策和重连预算。新增 9 个任务/上下文回归用例，覆盖代次迟到拒绝、超时后取消归属、刷新后旧队列等待、最终关闭、添加设备期间停止、握手缓存引用循环、旧上下文拒绝、已持有提交边界中的落盘及应用夹具重置隔离。原应用基线测试名的去向已核对，真实 HTTP/凭据存储测试继续留在 Desktop。
 
 本批通过 Server 默认/测试辅助特性及 Desktop GUI/headless 的 Clippy `--all-targets`、fmt、协议生成一致性和双语文档检查；这些只证明编译与静态检查，没有执行本地单元测试或最终 CI。阶段 3 的运行时实现已接回，自动化边界验收仍待最终 CI；阶段 4/5 的 TS Client、共用主控行为素材、独立真实互通、affected CI 和性能测量尚待实施，人工验收仍须在同一最终候选版本上由用户确认。整体目标未完成。
+
+### 2026-10-19：TS Client 连接、同步与独立测试入口
+
+`@future-os/remote-client` 已与 Rust Client 共存于同一目录，各自使用原有根锁文件。TS 的连接/代次、NATS 错误分类、状态机、加密握手/请求/订阅、凭据刷新调度、JSON 协作式解码、分页读取、replay、通用投影及 SyncEngine 已进入包。它继续调用既有 `thread-projection`，不复制其投影语义。凭据与投影数据类型由 Client 持有，线上 DTO 继续由 Protocol 持有；Mobile 的原生附件、界面和导航生命周期类型留在应用。
+
+构造函数显式接收 `ClientHost`：设备名称/种类、命令 ID、实际凭据刷新服务及传输创建。刷新时机与坏 JWT 拒绝由 Client 决定，Mobile 只提供实际 HTTP/身份/环境适配。现有 Mobile `RemoteClient` 现在是小型宿主适配，继续提供原有构造 API。React hooks、SecureStore、平台 URL 策略、前后台/网络监听、文件选择和原生文件能力均留在应用。15 个迁移用转发模块已删除，应用消费者直接导入包内职责模块。
+
+保留原凭据字段与 secureBundle 编码、设备声明、请求/回执、订阅就绪、代次交接、重试/恢复预算和合作式调度语义。源码 token 比较确认连接类除了显式宿主调用外与本批前的实现一致；其他同步/投影实现随源码迁移。lint 保留原 null/undefined 合并判断，未将 `== null` 错改为只判断 null 的严格相等。
+
+25 个原 Client 测试文件迁出 Mobile，共 455 个测试声明的名称和文件内顺序保持；参数化声明不是实际执行次数。Model reference 的 5 个原声明进入 Protocol。codec 基线的 14 个原声明已分别核对 Protocol/Client 唯一去向。新增 3 个独立凭据策略用例，验证坏 JWT 不调用宿主、健康凭据保持同一对象、临期刷新传递相同取消信号并保留宿主拒绝。Mobile hooks、原生存储、文件和产品交互测试继续留在应用。
+
+Client 自有 `package.json`、tsconfig、ESLint、Babel 和 Node/Jest 配置，不使用 Expo preset、React Native mocks 或 Mobile 测试配置。测试通过显式内存宿主创建 Client；真实 Noise/AEAD 用例仍保留算法实现，只替换 NATS 投递。Node 测试使用标准 WebCrypto，并与现有 Mobile 一样映射纯 JS sodium 后端。Client 的类型检查、lint 和 test 各有独立脚本；测试直接使用的依赖显式声明。锁文件只增加 workspace 并调整已有工具的 hoist，核对未改变现有包版本。
+
+本批通过 Client、Protocol 与 Mobile 的 typecheck/lint、协议生成和相关双语文档检查。另通过 Babel/Jest 编译 49 个源码/测试/夹具文件；没有执行编译产物或任何本地单元测试，Jest 运行和实际兼容结果仍待最终 CI。阶段 4 尚需抽取平台文件编排边界、完整角色停止/等待清理及 Rust/TS 共用 Client 行为素材；阶段 5 的真实互通、affected CI、性能实测和同版本人工验收仍保留完整范围。

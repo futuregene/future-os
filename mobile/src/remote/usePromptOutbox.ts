@@ -18,8 +18,8 @@ import {
   savePendingPrompt,
   type PendingPrompt,
 } from "./pendingPromptStorage";
-import { commitAcknowledgedUserMessage, emptyTimeline } from "./timeline";
-import type { SyncEngine, ReconcileReason } from "./syncEngine";
+import { commitAcknowledgedUserMessage, emptyTimeline } from "@future-os/remote-client/timeline";
+import type { SyncEngine, ReconcileReason } from "@future-os/remote-client/syncEngine";
 import { modelProviderFromReference } from "./types";
 import type {
   ConnectionPhase,

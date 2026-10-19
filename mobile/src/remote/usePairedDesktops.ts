@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
 import { AppState } from "react-native";
-import { RemoteApiError, classifyError } from "./connectionState";
+import { RemoteApiError, classifyError } from "@future-os/remote-client/connectionState";
 import { attemptPendingRevoke, claimPairingCode, serverRevoke } from "./pairing";
 import { discardPendingPrompt } from "./pendingPromptStorage";
 import { discardPendingContinuation } from "./pendingContinuationStorage";

@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
 import { AppState } from "react-native";
 import { RemoteClient, type RecoveryReason } from "./client";
-import type { ConnectionState } from "./connectionState";
-import { classifyError } from "./connectionState";
+import type { ConnectionState } from "@future-os/remote-client/connectionState";
+import { classifyError } from "@future-os/remote-client/connectionState";
 import { discardPendingPrompt } from "./pendingPromptStorage";
 import { discardPendingContinuation } from "./pendingContinuationStorage";
 import {
@@ -11,9 +11,9 @@ import {
   isDesktopOnline,
   PRESENCE_RECEIPT_STALE_MS,
   type PresenceState,
-} from "./presence";
-import { RecoveryCoordinator } from "./recoveryCoordinator";
-import type { ReconcileReason, SyncEngine } from "./syncEngine";
+} from "@future-os/remote-client/presence";
+import { RecoveryCoordinator } from "@future-os/remote-client/recoveryCoordinator";
+import type { ReconcileReason, SyncEngine } from "@future-os/remote-client/syncEngine";
 import { loadCredentials, saveCredentials } from "./storage";
 import type {
   CatalogRevisions,

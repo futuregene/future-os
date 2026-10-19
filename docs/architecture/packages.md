@@ -6,7 +6,7 @@ of their implementation language.
 
 - `rpc`: Rust wire-contract crate and protobuf source of truth.
 - `remote-crypto`: Rust/TypeScript Noise secure channels sharing handshake, record and rejection fixtures.
-- `remote-client`: Rust controller connections, credential DTOs, multi-host instances, task lifecycle and file orchestration; TS Client remains in migration.
+- `remote-client`: Rust controller connections, credential DTOs, multi-host instances, task lifecycle and file orchestration; TS controller connections, host services and generic synchronization are connected to Mobile; file orchestration and full stop/drain remain in migration.
 - `remote-protocol`: Rust/TypeScript wire contracts, command schema/generated types, handshake envelopes, invitations and JSON/gzip codecs.
 - `remote-server`: Rust controlled-endpoint security, host contracts, file framing, ordered events/coalescing, command admission, wire policies, NATS connections, heartbeat/catalog publishing and instance supervisor/control state; startup/recovery, credential rotation and role stop/drain are connected; runtime and interoperability acceptance still await final CI.
 - `app-settings`: the desktop app's own settings document
@@ -24,4 +24,4 @@ such as `desktop`, `mobile`, or `agent`.
 The [Remote package development plan](remote-package-development.md) defines
 the ongoing Rust/TypeScript protocol, client and server extraction, retaining
 independent Crypto and application host adapters. Rust Client extraction has
-started; Server security is connected, while TS Client remains planned.
+started; Server runtime is connected and TS Client extraction is underway. Independent interoperability and final acceptance remain pending.

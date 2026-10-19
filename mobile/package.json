@@ -45,7 +45,8 @@
     "react-native-safe-area-context": "~5.7.0",
     "react-native-svg": "15.15.4",
     "sha256-universal": "1.2.1",
-    "sodium-javascript": "0.8.0"
+    "sodium-javascript": "0.8.0",
+    "@future-os/remote-client": "*"
   },
   "devDependencies": {
     "@eslint/compat": "^2.1.0",

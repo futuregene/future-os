@@ -2,7 +2,7 @@ import { createElement, useState, type ComponentProps } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { ComposerDock } from "../components/ComposerDock";
 import { useCompactContext } from "../useCompactContext";
-import { emptyTimeline } from "../../../remote/timeline";
+import { emptyTimeline } from "@future-os/remote-client/timeline";
 import type { CompactionOutcome } from "../../../remote/types";
 import { SkillPicker } from "../components/SkillPicker";
 import { SessionPicker } from "../components/SessionPicker";

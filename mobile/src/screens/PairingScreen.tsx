@@ -22,7 +22,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { Button } from "../components/Button";
 import { DialogSurface } from "../components/DialogSurface";
 import { pairingCodeFromQr } from "../remote/codec";
-import { RemoteApiError } from "../remote/connectionState";
+import { RemoteApiError } from "@future-os/remote-client/connectionState";
 import { useRemote } from "../remote/RemoteContext";
 import { layout, radius, spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";

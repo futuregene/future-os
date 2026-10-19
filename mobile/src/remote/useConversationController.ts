@@ -9,11 +9,11 @@ import {
   rememberPreparedPreview,
   TransferCancelledError,
 } from "./files";
-import type { SyncEngine } from "./syncEngine";
-import { requestReadPage } from "./readPages";
+import type { SyncEngine } from "@future-os/remote-client/syncEngine";
+import { requestReadPage } from "@future-os/remote-client/readPages";
 import { asToolKind, normalizeArgs, targetFromArgs } from "@future-os/thread-projection";
 import { loadLastModel, loadLastThinking, saveLastModel, saveLastThinking } from "./storage";
-import { markApprovalDecision } from "./timeline";
+import { markApprovalDecision } from "@future-os/remote-client/timeline";
 import { modelProviderFromReference, modelReference } from "./types";
 import type {
   AvailableSkill,

@@ -1,6 +1,6 @@
 import { createElement, useRef } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { RemoteApiError } from "../connectionState";
+import { RemoteApiError } from "@future-os/remote-client/connectionState";
 import { attemptPendingRevoke, claimPairingCode, serverRevoke } from "../pairing";
 import { discardPendingContinuation } from "../pendingContinuationStorage";
 import { discardPendingPrompt } from "../pendingPromptStorage";

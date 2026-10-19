@@ -1,0 +1,121 @@
+{
+  "name": "@future-os/remote-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./client": {
+      "types": "./src/client.ts",
+      "default": "./src/client.ts"
+    },
+    "./connectionGeneration": {
+      "types": "./src/connectionGeneration.ts",
+      "default": "./src/connectionGeneration.ts"
+    },
+    "./connectionState": {
+      "types": "./src/connectionState.ts",
+      "default": "./src/connectionState.ts"
+    },
+    "./natsErrors": {
+      "types": "./src/natsErrors.ts",
+      "default": "./src/natsErrors.ts"
+    },
+    "./cooperativeJson": {
+      "types": "./src/cooperativeJson.ts",
+      "default": "./src/cooperativeJson.ts"
+    },
+    "./remoteJson": {
+      "types": "./src/remoteJson.ts",
+      "default": "./src/remoteJson.ts"
+    },
+    "./readPages": {
+      "types": "./src/readPages.ts",
+      "default": "./src/readPages.ts"
+    },
+    "./replay": {
+      "types": "./src/replay.ts",
+      "default": "./src/replay.ts"
+    },
+    "./retainedSize": {
+      "types": "./src/retainedSize.ts",
+      "default": "./src/retainedSize.ts"
+    },
+    "./recoveryCoordinator": {
+      "types": "./src/recoveryCoordinator.ts",
+      "default": "./src/recoveryCoordinator.ts"
+    },
+    "./catalogVersion": {
+      "types": "./src/catalogVersion.ts",
+      "default": "./src/catalogVersion.ts"
+    },
+    "./presence": {
+      "types": "./src/presence.ts",
+      "default": "./src/presence.ts"
+    },
+    "./projection": {
+      "types": "./src/projection.ts",
+      "default": "./src/projection.ts"
+    },
+    "./timeline": {
+      "types": "./src/timeline.ts",
+      "default": "./src/timeline.ts"
+    },
+    "./syncEngine": {
+      "types": "./src/syncEngine.ts",
+      "default": "./src/syncEngine.ts"
+    },
+    "./recovery": {
+      "types": "./src/recovery.ts",
+      "default": "./src/recovery.ts"
+    },
+    "./host": {
+      "types": "./src/host.ts",
+      "default": "./src/host.ts"
+    },
+    "./codec": {
+      "types": "./src/codec.ts",
+      "default": "./src/codec.ts"
+    },
+    "./types": {
+      "types": "./src/types.ts",
+      "default": "./src/types.ts"
+    },
+    "./pairing": {
+      "types": "./src/pairing.ts",
+      "default": "./src/pairing.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src tests",
+    "test": "jest --runInBand --verbose"
+  },
+  "dependencies": {
+    "@future-os/remote-crypto": "*",
+    "@future-os/remote-protocol": "*",
+    "@future-os/thread-projection": "*",
+    "@nats-io/nats-core": "^3.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "@typescript-eslint/parser": "^8.69.0",
+    "@typescript-eslint/eslint-plugin": "^8.69.0",
+    "eslint": "^10.9.1",
+    "typescript": "~6.0.3",
+    "jest": "29.7.0",
+    "@types/jest": "29.5.14",
+    "babel-jest": "29.7.0",
+    "@babel/core": "^7.29.7",
+    "@babel/preset-typescript": "^7.29.7",
+    "@babel/plugin-transform-modules-commonjs": "^7.29.7",
+    "sodium-javascript": "0.8.0",
+    "fflate": "^0.8.3",
+    "noise-handshake": "4.2.0"
+  }
+}

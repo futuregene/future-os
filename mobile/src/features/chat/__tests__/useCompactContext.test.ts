@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { CompactionOutcome } from "../../../remote/types";
-import { emptyTimeline } from "../../../remote/timeline";
+import { emptyTimeline } from "@future-os/remote-client/timeline";
 import { showToast } from "../utils";
 import { useCompactContext, type CompactContextApi } from "../useCompactContext";
 

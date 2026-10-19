@@ -1,12 +1,12 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { AppState } from "react-native";
-import type { ConnectionState } from "../connectionState";
-import { RemoteApiError } from "../connectionState";
+import type { ConnectionState } from "@future-os/remote-client/connectionState";
+import { RemoteApiError } from "@future-os/remote-client/connectionState";
 import { discardPendingContinuation } from "../pendingContinuationStorage";
 import { discardPendingPrompt } from "../pendingPromptStorage";
 import { loadCredentials, saveCredentials } from "../storage";
-import type { SyncEngine } from "../syncEngine";
+import type { SyncEngine } from "@future-os/remote-client/syncEngine";
 import type {
   Presence,
   PresenceSession,

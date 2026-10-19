@@ -5,9 +5,9 @@ import type { RemoteClient } from "../client";
 import { uploadAttachments } from "../files";
 import { loadPendingContinuation, savePendingContinuation } from "../pendingContinuationStorage";
 import { loadPendingPrompt, savePendingPrompt } from "../pendingPromptStorage";
-import { emptyTimeline } from "../timeline";
+import { emptyTimeline } from "@future-os/remote-client/timeline";
 import { modelReference, type ConnectionPhase, type MobileAttachment, type PromptAck, type RemoteCredentials } from "../types";
-import type { SyncEngine } from "../syncEngine";
+import type { SyncEngine } from "@future-os/remote-client/syncEngine";
 import { usePromptOutbox } from "../usePromptOutbox";
 
 const mockData = new Map<string, string>();

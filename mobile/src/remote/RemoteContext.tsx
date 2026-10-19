@@ -20,7 +20,7 @@ import { useAppLifecycle } from "./useAppLifecycle";
 import { useDesktopManagement } from "./useDesktopManagement";
 import { useDesktopRuntime, type DesktopRuntime } from "./useDesktopRuntime";
 import { usePairedDesktops } from "./usePairedDesktops";
-import type { TimelineState } from "./timeline";
+import type { TimelineState } from "@future-os/remote-client/timeline";
 import type { CatalogEntry } from "./mergeSessions";
 import type {
   ConnectionPhase,
@@ -78,7 +78,7 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   draftWorkspaceId: string;
   timeline: TimelineState;
   timelinePending: boolean;
-  timelineSyncStatus: import("./syncEngine").TimelineSyncStatus;
+  timelineSyncStatus: import("@future-os/remote-client/syncEngine").TimelineSyncStatus;
   timelineError: "timeout" | null;
   canLoadOlderTimeline: boolean;
   loadingOlderTimeline: boolean;
