@@ -134,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           APK="FutureOS_${FUTURE_ARTIFACT_VERSION}_android-universal.apk"
-          ossutil cp -f "$APK" "oss://$OSS_BUCKET/test/$FUTURE_ARTIFACT_VERSION/$APK"
-          ossutil stat "oss://$OSS_BUCKET/test/$FUTURE_ARTIFACT_VERSION/$APK"
+          ossutil cp -f "$APK" "oss://$OSS_BUCKET/dev/$FUTURE_ARTIFACT_VERSION/$APK"
+          ossutil stat "oss://$OSS_BUCKET/dev/$FUTURE_ARTIFACT_VERSION/$APK"
           echo "==> Download URL:"
-          echo "https://dl.future-os.cn/test/$FUTURE_ARTIFACT_VERSION/$APK"
+          echo "https://dl.future-os.cn/dev/$FUTURE_ARTIFACT_VERSION/$APK"

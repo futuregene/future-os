@@ -32,6 +32,44 @@ make setup    # 安装 JS 依赖（desktop/mobile）+ 初始化 skills 子模块
 JavaScript 依赖、初始化 `skills` 子模块。Rust 检查不需要 CLI sidecar，
 桌面构建会在编译完成后放置真实 CLI 产物。应用启动目标仍需要相应平台的 SDK 与模拟器或真机。
 
+本地打包与 Actions 使用相同的对外文件名。`<version>` 是
+`scripts/version.mjs` 的产物版本（例如 `0.0.2-<hash>`），安装器元数据仍使用纯数字版本。
+Windows 输出 `FutureOS_<version>_x64-setup[-unsigned].exe` 和
+`FutureOS_<version>_windows_x64-portable[-unsigned].zip`；`-Sign` 去掉
+`-unsigned`。两个 Windows 脚本默认将最终包复制到仓库根目录，可用 `-OutDir` 修改。
+`make package-desktop` 复用平台脚本，Linux 会先构建 headless，再生成安装包。
+
+### 分发产物命名
+
+以下是最终对外文件名。`<V>` 为产物版本，`<B>` 为纯数字安装器版本，
+`<N>` 为构建序号；`<S>` 在已签名时为空，未做平台代码签名时为 `-unsigned`。
+表中的“或”表示架构二选一，不是文件名的一部分。
+
+| 产物 | 文件名 | 生成入口 |
+|---|---|---|
+| macOS DMG | `FutureOS_<V>_<aarch64或x64><S>.dmg` | Actions、本地平台脚本、Make |
+| macOS 更新包 | `FutureOS_<V>_<aarch64或x64><S>.app.tar.gz` | Actions，另有同名 `.sig` |
+| Windows 安装器 | `FutureOS_<V>_x64-setup<S>.exe` | Actions、本地平台脚本、Make；Actions 另有 `.sig` |
+| Windows 便携包 | `FutureOS_<V>_windows_x64-portable<S>.zip` | 平台 Actions、本地便携脚本；总发布流程不收录 |
+| Linux Debian 包 | `FutureOS_<V>_<amd64或arm64>.deb` | Actions、本地平台脚本、Make；协调发布另有 `.sig` |
+| Linux 便携包 | `FutureOS_<V>_linux_<x86_64或aarch64>-portable.tar.gz` | Actions、本地平台脚本、Make |
+| Linux CLI 包 | `FutureOS_<V>_linux_<x86_64或aarch64>-cli.tar.gz` | Actions |
+| Android APK | `FutureOS_<V>_android-universal.apk` | Actions |
+| iOS IPA | `FutureOS_<B>_<N>.ipa` | Actions，仅上传 TestFlight |
+| 更新清单 | `latest.json` | release/test/nightly 总发布流程 |
+
+`.sig` 是自动更新签名，与 macOS Developer ID / Windows Authenticode 代码签名不同。
+Linux 不使用 `-unsigned` 后缀。本地普通打包不默认生成更新包和 `.sig`。
+
+`npm run tauri:build`、`npm run desktop:package` 和 Tauri CLI 是底层构建入口，
+其 `target/release/bundle/` 原始包使用 `<B>`；它们不执行平台脚本的最终重命名和复制。
+需要与 Actions 一致的最终文件名时，使用 `make package-desktop` 或对应平台脚本。
+Actions 同样先构建原始包，再按上表命名发布。
+
+独立桌面和 Android Actions 上传到 `dev/<V>/`；协调构建分别发布到
+`test/<V>/`、`nightly/<V>/`、`releases/<V>/`。test/nightly 的 `<V>` 为
+`0.0.2-<N>`，不含显示版本里的 `+test` / `+nightly`。
+
 ## macOS
 
 安装依赖：
@@ -52,11 +90,11 @@ make install-cli    # 仅统一 `future` CLI
 make install-desktop    # 仅桌面应用（自带 agent/CLI sidecar）
 make install-desktop-headless   # 无 GUI 的 `futureos-headless` 服务端 + 配套 CLI
 make install-skills # 内置技能 + /future-goal 技能
-make package-desktop    # 桌面打包 → .app + .dmg 位于 target/release/bundle/
+make package-desktop    # 命名后的 DMG 位于仓库根目录；原始包保留在 target/release/bundle/
 scripts/build/build-desktop-macos.sh  # 本地 DMG；有 Developer ID 证书时自动签名
 ```
 
-`scripts/build/build-desktop-macos.sh` 将统一 `future` CLI sidecar 连同 GUI 一起构建。它会自动使用 Keychain 中唯一的 `Developer ID Application` 身份并生成 `*-sign.dmg`；若身份不唯一，则回退到普通 DMG。用 `--help` 查看证书选择、输出目录与 Apple 公证选项。
+`scripts/build/build-desktop-macos.sh` 将统一 `future` CLI sidecar 连同 GUI 一起构建。它会自动使用 Keychain 中唯一的 `Developer ID Application` 身份并生成 `FutureOS_<version>_<arch>.dmg`；若没有唯一可用身份，则生成 `FutureOS_<version>_<arch>-unsigned.dmg`。用 `--help` 查看证书选择、输出目录与 Apple 公证选项。
 
 ## Linux（Debian/Ubuntu）
 
@@ -102,14 +140,14 @@ sudo apt install -y protobuf-compiler                             # 可选 —�
 构建与安装：
 
 ```bash
-scripts/build/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS-portable-linux.tar.gz
+scripts/build/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS_<version>_linux_<arch>-portable.tar.gz
 scripts/dev/start-desktop-linux.sh                    # 本地 Linux Desktop + agent 开发会话
 make install        # 或直接从源码安装：GUI + 无头桌面端 + 统一 `future` CLI + 技能 → /usr/local/bin（sudo）
 make install-cli    # 仅统一 `future` CLI
 make install-desktop    # 仅桌面应用（自带 agent/CLI sidecar）
 make install-desktop-headless   # 无 GUI 的 `futureos-headless` 服务端 + 配套 CLI
 make install-skills # 内置技能 + /future-goal 技能
-make package-desktop    # 桌面打包 → .deb 位于 target/release/bundle/
+make package-desktop    # 命名后的 .deb 与便携包位于仓库根目录
 ```
 
 `scripts/dev/start-desktop-linux.sh` 默认启动内置 Agent 的 GUI，也可以连接兼容的外部服务。脚本不会另起或结束 Agent；Bubblewrap 可用性和安全边界仍由 Agent 原有探测与执行链路决定。
@@ -157,7 +195,7 @@ Push-Location desktop; npm install; npm run tauri:build -- --no-bundle; Pop-Loca
 $bin = "$env:USERPROFILE\.future\bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 Copy-Item target\release\future.exe $bin
-Copy-Item target\release\futureos.exe "$bin\future-desktop.exe"
+Copy-Item target\release\futureos.exe "$bin\futureos.exe"
 ```
 
 **无头桌面端** —— 等价于 `make install-desktop-headless`。同一个 CLI 加无 GUI 服务端，
@@ -174,8 +212,7 @@ Copy-Item target\release\futureos-headless.exe $bin
 **安装包** —— 等价于 `make package-desktop`：
 
 ```powershell
-node scripts\version.mjs --set-bundle
-Push-Location desktop; npm run tauri:build; Pop-Location   # → NSIS 安装 .exe 位于 target\release\bundle\nsis\
+powershell -ExecutionPolicy Bypass -File scripts/build/build-desktop-windows-installer.ps1
 ```
 
 说明：

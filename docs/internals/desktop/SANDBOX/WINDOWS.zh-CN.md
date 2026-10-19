@@ -190,7 +190,10 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build\build-desktop-windows-i
 powershell -ExecutionPolicy Bypass -File .\scripts\tests\test-windows-sandbox-lifecycle.ps1 -Action Snapshot
 ```
 
-portable为根目录`FutureOS-portable-windows.zip`，保持FutureOS.exe/future.exe同目录；NSIS在`target\release\bundle\nsis\`。每次生命周期调用留独立时间戳日志，不记录完整命令行。
+两个脚本默认将 `FutureOS_<version>_windows_x64-portable-unsigned.zip` 和
+`FutureOS_<version>_x64-setup-unsigned.exe` 复制到仓库根目录；`-Sign` 去掉
+`-unsigned`，`-OutDir` 修改输出目录。解压后保持 FutureOS.exe/future.exe 同目录。
+原始 NSIS 包保留在 `target\release\bundle\nsis\`。每次生命周期调用留独立时间戳日志，不记录完整命令行。
 
 内置 Agent 版的所有 `Expect*` 调用须传 `-InstallDirectory` 指向本次安装目录；`ExpectEmbedded` 取代旧的子进程断言，`ExpectBundled` 仅为兼容别名。脚本核对实例锁、PID/路径/创建时间/数据根及打包 CLI 真实 RPC，退出后核对锁释放和 metadata 删除。使用隔离绝对 `FUTURE_HOME`，让 Desktop、外部 Agent 和脚本继承同一值；清除 `FUTURE_AGENT_GRPC_ADDR`/`FUTURE_AGENT_SOCKET`，以默认本地 IPC 验收 owner。Snapshot 另外记录相关进程树线程和内存，不能把它当成完整的启动耗时测量。
 

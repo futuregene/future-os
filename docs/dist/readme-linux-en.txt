@@ -3,9 +3,8 @@ FutureOS Portable Setup Guide (Linux)
 
 [Launch]
 Extract the downloaded archive to any directory, then run ./futureos.
-Use its actual filename: official releases use
-FutureOS_<version>_linux_<arch>-portable.tar.gz (x86_64 or aarch64);
-local developer builds may use FutureOS-portable-linux.tar.gz.
+Use its actual filename: local builds and official releases use
+FutureOS_<version>_linux_<arch>-portable.tar.gz (x86_64 or aarch64).
 Keep futureos, futureos-headless, and future together. GUI/headless attach to a
 compatible external Agent first; only an absent default endpoint and free lock
 authorize a complete in-process Agent. The CLI remains available for skills,
