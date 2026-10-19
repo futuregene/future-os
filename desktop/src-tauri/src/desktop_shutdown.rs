@@ -325,31 +325,10 @@ pub(crate) fn reset_for_test() {
     crate::tasks::reset_for_test();
 }
 
-/// Test-only: close admission exactly as `perform_stop` does, so the arms that
-/// react to a *stopping* process can be exercised.
+/// Test-only RAII guard that closes admission for as long as it lives and hands the
+/// flag back on drop.
 ///
-/// The only production writer of `ADMISSION.closed` is `perform_stop` (a real
-/// shutdown: `tasks::stop_admission`, `runtime::freeze_tasks`, the Agent's
-/// `request_stop` and a caller drain), and `reset_for_test` above only *clears*
-/// the flag — which is why an arm guarded by `is_stopping()` had no seam at all.
-/// This setter is the missing half; the clearing half already exists.
-///
-/// Deliberately not `cfg(feature = "gui")`: `tasks` is compiled in both flavours
-/// and the arm this reaches is not gui-gated.
-///
-/// **Nothing in production may call this.** It is the same shape as the crate's
-/// other test-only setters, and it is paired with [`reset_for_test`] — a fixture
-/// that closes admission must restore it, because the flag is process-global and
-/// `admit()` rejects every command while it is set.
-#[cfg(test)]
-pub(crate) fn close_admission_for_test() {
-    ADMISSION.lock().unwrap().closed = true;
-}
-
-/// Test-only RAII half of [`close_admission_for_test`]: closes admission for as
-/// long as the guard lives and hands the flag back on drop.
-///
-/// The setter alone leaves a fixture responsible for restoring process-global
+/// A bare setter would leave a fixture responsible for restoring process-global
 /// state on every path, including a panicking assertion. `reset_for_test` would
 /// also restore it, but it additionally stops tasks and clears the publishable
 /// stop, which is not what a fixture that merely borrowed the flag should do to
