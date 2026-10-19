@@ -1259,9 +1259,25 @@ fn a_reconnect_for_a_device_the_book_no_longer_holds_stops_that_runtime() {
     write_pairing(&home, &broker.url, true);
 
     let mut child = ChildRun::spawn(home.clone());
+    // "Live before the book changes" is a fact about the bridge, not about a status line:
+    // the generation has connected to its broker and the child has saved the book. Poll
+    // both instead of the interval-paced `Remote: Ready` printout, which a credential
+    // renewal can pre-empt on a loaded runner.
+    let deadline = Instant::now() + READY_BUDGET;
+    while Instant::now() < deadline
+        && (broker.connects.load(Ordering::Acquire) == 0
+            || !home.join(".future/remote_pairings.json").exists())
+    {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert!(
-        child.wait_for("Remote: Ready", READY_BUDGET),
+        broker.connects.load(Ordering::Acquire) >= 1,
         "the generation must be live before the book changes; transcript:\n{}",
+        child.text()
+    );
+    assert!(
+        home.join(".future/remote_pairings.json").exists(),
+        "the child must have saved the book before it is removed; transcript:\n{}",
         child.text()
     );
     // The book is authoritative once the child's own start has saved it.
