@@ -98,7 +98,7 @@ describe("pairing codec", () => {
     // A self-hosted relay mints `v=3` with the same Noise material. Treating it
     // as "v2 fields optional" would strip the keys the handshake needs, which is
     // exactly the kind of quiet downgrade the version gate exists to prevent.
-    const v3 = base.replace("v=2", "v=3");
+    const v3 = `${base}&secureKey=${key}&secret=${key}`.replace("v=2", "v=3");
     expect(parsePairingInvitation(v3)).toEqual({
       code: "abc_123",
       desktopId: "desktop_1",
