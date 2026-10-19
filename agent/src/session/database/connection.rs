@@ -82,7 +82,7 @@ pub(super) fn open_connection_cancellable(
             |row| row.get(0),
         )?;
         if !(bootstrap && matches!(version, 0 | 3 | 4)) {
-            super::schema::validate_authoritative_history(&connection)?;
+            super::schema::validate_authoritative_history(&connection, version)?;
         }
         let directory = path
             .parent()
