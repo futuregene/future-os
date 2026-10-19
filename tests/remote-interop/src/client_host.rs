@@ -16,6 +16,14 @@ pub struct MemoryClientHost {
     connects: AtomicU64,
 }
 impl MemoryClientHost {
+    pub fn empty() -> Self {
+        Self {
+            book: Mutex::default(),
+            sequence: AtomicU64::new(0),
+            connects: AtomicU64::new(0),
+        }
+    }
+
     pub fn new(creds: PeerCreds) -> Self {
         Self {
             book: Mutex::new(PeerBook {

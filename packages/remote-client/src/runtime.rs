@@ -2784,3 +2784,7 @@ pub mod testing {
 #[cfg(test)]
 #[path = "runtime_ownership_tests.rs"]
 mod ownership_tests;
+
+#[cfg(test)]
+#[path = "runtime_policy_tests.rs"]
+mod policy_tests;

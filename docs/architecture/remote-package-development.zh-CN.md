@@ -218,7 +218,7 @@ CI 根据真实依赖选择改动包及受影响消费者，并记录共享 sche
 
 | 阶段 | 实际状态 | 证据与剩余工作 |
 |---|---|---|
-| 0 | 已固定源码/测试清单和历史 CI 参考；性能对照待最终 CI | [原测试迁移清单](remote-test-migration.json)记录基线文件、Rust 与已迁移 TS 用例名和迁移目标；`target: null` 表示尚未归位。[历史 CI 参考](remote-ci-baseline.json)记录原提交、作业、runner、步骤及 Windows 编译/测试日志时间。该运行不是本分支的同条件性能结果。 |
+| 0 | 已固定源码/测试清单和历史 CI 参考；性能对照待最终 CI | [原测试迁移清单](remote-test-migration.json)记录基线文件、Rust 与已迁移 TS 用例名和迁移目标；迁移目标及保留的应用边界已明确；这些映射不是运行证据。[历史 CI 参考](remote-ci-baseline.json)记录原提交、作业、runner、步骤及 Windows 编译/测试日志时间。该运行不是本分支的同条件性能结果。 |
 | 1 | 基础包与共用素材已接回，待运行验收 | 两语言 Crypto/Protocol、命令 schema、握手封装、能力标识及邀请/JSON 编解码已归位；继续随角色迁移审计契约边界。共享素材驱动已编译，自动化结果待最终 CI。 |
 | 2 | 实施中，连接核心已接回 Desktop | Rust Client 连接、凭据 DTO、多远端实例、任务生命周期与上传/下载编排已接回；HTTP/JWT 共用工具已归位。独立真实互通及共享请求/凭据/多远端场景源码已建立；其余共用行为与最终运行验收待完成。 |
 | 3 | 运行时实现已接回，待运行验收 | 实例监督、控制权、启动/恢复/刷新、事件/目录发布与角色停止/等待已接回 GUI/headless；生产状态已封装。独立网络互通、CI 和人工边界验收尚未执行。 |
@@ -520,3 +520,11 @@ Client 接回主干的 control/holder 状态，握手 presence 初始化，后�
 ### 2026-10-19：统一验收前的邀请调试输出收紧
 
 审查发现 Invitation、RemoteStatus 和嵌套 RemoteDevice 的自动 Debug 会输出完整邀请/一次性 secret，失败断言也可能触发。改为只显示身份、状态和“是否有邀请”等诊断字段，省略 claim code/nonce/secret 与可能带认证信息的 URL；Serialize、字段名、UI/CLI 邀请显示与凭据格式不变。增加 Protocol/Server 各一个回归声明，分别检查邀请敏感字段、嵌套状态/URL不进入 Debug，并保留序列化原值。Protocol/Server、Client/互通消费者和 Desktop GUI/headless Clippy `--all-targets`、fmt、包边界及生成静态检查通过；未在本地运行测试。
+
+### 2026-10-19：测试归属收尾与统一 CI 候选准备
+
+再迁出 8 个不使用应用服务的用例：重试分类、握手/请求超时分类、已关闭 watch 留在独立 Client；control/presence、缺失 session ID 回填、队列溢出补齐信号和失败订阅切换迁到独立互通工程。原名字与断言序列逐一核对保留；watch 改用暂停时钟，网络夹具改为实际 broker、显式空内存宿主和受管 Client，不借用 Desktop HOME/单例。队列场景通过 publisher flush 与接收连接 PONG 的有序屏障确认缓冲前缀，替代原 300ms 等待；旧 Desktop cov_harness 及只供这些用例的转发已删除。
+
+[迁移清单](remote-test-migration.json)补齐保留位置和理由：Desktop 业务/Store/Agent/审批/文件、平台账户与证书适配、真实多进程、应用运行时/凭据书及其测试基础设施；Mobile 原生存储、HTTP/设备、React/Context、可见会话提交和呈现规则继续留在应用，不因纯函数形式误归协议。729 个原基线 Rust 名字仍可追踪，211 个在独立核心/互通、518 个在应用；主干新增 control 网络用例也迁入互通。归属和源码断言不等于验收通过。
+
+Client/interop 与 Desktop GUI/headless Clippy `--all-targets`、相关 fmt、边界/生成/文档检查通过；没有执行本地测试。实现进入工作分支统一自动化验收准备，阶段状态仍等待 CI 结果、同条件性能证据与同候选版本人工确认；不创建 PR。

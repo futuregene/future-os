@@ -638,3 +638,29 @@ display and credential formats are unchanged. One Protocol and one Server
 regression declaration check redaction, nesting/URLs and retained serialized
 values. Scoped Clippy --all-targets for the changed packages/consumers and Desktop
 GUI/headless, fmt, boundaries and generation pass; no local tests ran.
+
+### 2026-10-19: Test ownership cleanup before branch acceptance
+
+Moved eight remaining application-independent cases: retry classification,
+handshake/request timeouts and closed watch into Client; presence/control,
+missing-session fallback, overflow/resync/drop-newest and failed lane replacement
+into independent interop. Names and original assertion sequences are retained.
+Watch time is virtual. Network cases use the owned real broker, explicit empty
+memory host and managed Client instead of Desktop HOME/singletons. Publisher
+flush followed by the receiver connection PONG establishes the buffered prefix
+before backlog drain, replacing the old 300ms sleep. Desktop cov_harness and its
+now-unused forwarding functions are deleted.
+
+The inventory assigns retained application boundaries for actual business/Store/
+Agent/approval/files, account/certificate adapters, process integration, app
+runtime/credential books and fixture infrastructure; Mobile native storage,
+HTTP/device, React/context, visible-session commits and presentation remain
+application-owned. Pure syntax alone does not make presentation a protocol.
+All 729 original Rust names remain traceable: 211 in independent core/interop and
+518 in applications. The upstream control network case also moves to interop.
+Source ownership/assertions are not runtime acceptance.
+
+Client/interop and Desktop GUI/headless Clippy --all-targets, relevant fmt,
+boundary/generation/documentation checks pass. No local tests ran. Implementation
+is entering unified branch CI preparation; runtime, matched performance and
+same-candidate manual confirmation remain pending. No PR is created.

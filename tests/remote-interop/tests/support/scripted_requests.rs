@@ -1,7 +1,11 @@
 //! Migrated Client transport fault tests: real broker/records, scripted responder.
 //! These do not replace the real Client/Server interoperability flows.
-use future_remote_client::session;
+use future_remote_client::{
+    session::{self, ControlState, EventsSubscription},
+    Client, Emitter, PeerEvent,
+};
 use future_remote_interop::Broker;
+use future_remote_interop::MemoryClientHost;
 use futures::StreamExt;
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
@@ -25,13 +29,32 @@ struct ScriptedHost {
     /// Keeps the broker alive for the life of the host handle.
     _nats: Broker,
     task: tokio::task::JoinHandle<()>,
+    channel: Arc<std::sync::Mutex<future_remote_crypto::Channel>>,
+    publisher: async_nats::Client,
 }
 
 impl ScriptedHost {
     fn requests(&self) -> Vec<serde_json::Value> {
         self.requests.lock().unwrap().clone()
     }
+    async fn inject(&self, subject: &str, value: &serde_json::Value) {
+        let wire = self
+            .channel
+            .lock()
+            .unwrap()
+            .seal(subject, &serde_json::to_vec(value).unwrap())
+            .unwrap();
+        self.publisher
+            .publish(subject.to_owned(), wire.into())
+            .await
+            .expect("publish fixture event");
+        self.publisher.flush().await.expect("event reached broker");
+    }
     async fn shutdown(mut self) {
+        self.publisher
+            .drain()
+            .await
+            .expect("fixture publisher drained");
         self.task.abort();
         let _ = (&mut self.task).await;
     }
@@ -102,6 +125,7 @@ async fn scripted_peer(pair_id: &str, drop_replies: usize) -> (session::PeerSess
     let client = async_nats::connect(&nats.nats_url)
         .await
         .expect("fixture connection");
+    let publisher = host_client.clone();
     let task = tokio::spawn(async move {
         while let Some(message) = incoming.next().await {
             let opened = reply_channel
@@ -147,6 +171,8 @@ async fn scripted_peer(pair_id: &str, drop_replies: usize) -> (session::PeerSess
             requests,
             _nats: nats,
             task,
+            channel: host_channel,
+            publisher,
         },
     )
 }
@@ -260,5 +286,332 @@ async fn a_write_command_is_not_retried() {
     );
     assert_eq!(requests[0]["id"], json!("cmd-write"));
     peer.close_socket().await.expect("client drained");
+    host.shutdown().await;
+}
+
+struct ClientGuard(Client);
+impl Drop for ClientGuard {
+    fn drop(&mut self) {
+        self.0.stop_admission();
+    }
+}
+fn recording_emitter() -> (Emitter, Arc<std::sync::Mutex<Vec<PeerEvent>>>) {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    (
+        Arc::new(move |event| sink.lock().unwrap().push(event)),
+        seen,
+    )
+}
+async fn wait_for(what: &str, mut predicate: impl FnMut() -> bool) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !predicate() {
+        assert!(tokio::time::Instant::now() < deadline, "{what}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+#[tokio::test]
+async fn control_arrives_from_presence_and_from_the_control_packet() {
+    let pair_id = "pair_cov_control";
+    let (session, host) = scripted_peer(pair_id, 0).await;
+    let owner = ClientGuard(Client::new(Arc::new(MemoryClientHost::empty())));
+    let (emitter, seen) = recording_emitter();
+    let (_stream, _visible) = owner.0.spawn_fixture_stream(
+        &session,
+        session.subscribe(None).await.expect("subscriptions"),
+        "desktop_cov_control",
+        emitter,
+        future_remote_client::runtime::testing::BACKLOG_CAPACITY,
+    );
+
+    // The subscription must exist before the first push is injected, or the
+    // broker has nothing to deliver to and this passes without reading anything.
+    session
+        .client_for_test()
+        .flush()
+        .await
+        .expect("subscription reached broker");
+
+    host.inject(
+        &format!("p.{pair_id}.presence"),
+        &json!({
+            "online": true,
+            "control": "standby",
+            "holder": { "pairId": "pair_phone", "name": "Phone" },
+        }),
+    )
+    .await;
+    wait_for("the standby tick never reached the session", || {
+        session.control().state == Some(ControlState::Standby)
+    })
+    .await;
+    assert_eq!(
+        session.control().holder.and_then(|holder| holder.name),
+        Some("Phone".to_string()),
+        "the holder is what lets the window name who took it"
+    );
+
+    // The move back, announced ahead of any tick.
+    host.inject(
+        &format!("p.{pair_id}.state.control"),
+        &json!({ "control": "active", "pairId": pair_id }),
+    )
+    .await;
+    wait_for("the control packet never reached the session", || {
+        session.control().state == Some(ControlState::Active)
+    })
+    .await;
+    assert_eq!(
+        session.control().holder,
+        None,
+        "a packet names no holder, so the displaced one must not survive it"
+    );
+    // And the window is told: a `control` push is what makes it re-read the
+    // host's conversations the moment they become readable again.
+    wait_for("the control packet was not forwarded to the UI", || {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "control")
+    })
+    .await;
+    owner
+        .0
+        .shutdown(Duration::from_secs(1))
+        .await
+        .expect("stream owner stopped");
+    if session.is_connected() {
+        session.close_socket().await.expect("session drained");
+    }
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_push_without_a_session_id_recovers_it_from_the_subject() {
+    let pair_id = "pair_cov_backfill";
+    let (session, host) = scripted_peer(pair_id, 0).await;
+    let owner = ClientGuard(Client::new(Arc::new(MemoryClientHost::empty())));
+    let (emitter, seen) = recording_emitter();
+    let (_stream, _visible) = owner.0.spawn_fixture_stream(
+        &session,
+        session.subscribe(None).await.expect("subscriptions"),
+        "desktop_cov_backfill",
+        emitter,
+        future_remote_client::runtime::testing::BACKLOG_CAPACITY,
+    );
+
+    // `subscribe()` returning only means the command was sent; injecting before
+    // the broker registers the `SUB` would race and pass without delivering.
+    session
+        .client_for_test()
+        .flush()
+        .await
+        .expect("subscription reached broker");
+
+    host.inject(
+        &format!("p.{pair_id}.evt.sess_backfill"),
+        &json!({ "type": "agent_text", "data": r#"{"text":"hi"}"# }),
+    )
+    .await;
+
+    wait_for("the session-less push never reached the emitter", || {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "event")
+    })
+    .await;
+    let events = seen.lock().unwrap().clone();
+    let event = events
+        .iter()
+        .find(|event| event.kind == "event")
+        .expect("the push is an event");
+    assert_eq!(
+        event.payload["sessionId"],
+        json!("sess_backfill"),
+        "the subject's conversation must be written back onto the payload"
+    );
+    // Only the session is added: the rest of the body is the host's own, so a
+    // client that declared nothing still sees exactly what it always did.
+    assert_eq!(event.payload["type"], json!("agent_text"));
+    assert_eq!(event.payload["data"], json!(r#"{"text":"hi"}"#));
+    owner
+        .0
+        .shutdown(Duration::from_secs(1))
+        .await
+        .expect("stream owner stopped");
+    if session.is_connected() {
+        session.close_socket().await.expect("session drained");
+    }
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_overfull_event_backlog_resumes_and_drops_the_newest() {
+    let pair_id = "pair_cov_resumed";
+    let (session, host) = scripted_peer(pair_id, 0).await;
+    let owner = ClientGuard(Client::new(Arc::new(MemoryClientHost::empty())));
+    let subscriptions = session.subscribe(None).await.expect("subscribe");
+    session
+        .client_for_test()
+        .flush()
+        .await
+        .expect("subscription reached broker");
+
+    let capacity = 8usize;
+    let total = capacity + 4;
+    for idx in 0..total {
+        host.inject(
+            &format!("p.{pair_id}.evt.sess_resumed"),
+            &json!({ "type": "agent_text", "data": "{}", "idx": idx }),
+        )
+        .await;
+        // Let the broker and the client's reader make progress as we inject, so
+        // the burst is buffered by the time the loop starts.
+        if idx % 4 == 0 {
+            tokio::task::yield_now().await;
+        }
+    }
+    session
+        .client_for_test()
+        .flush()
+        .await
+        .expect("buffered burst precedes PONG");
+
+    let (emitter, seen) = recording_emitter();
+    let (_stream, _visible) = owner.0.spawn_fixture_stream(
+        &session,
+        subscriptions,
+        "desktop_cov_resumed",
+        emitter,
+        capacity,
+    );
+
+    wait_for("the overflow never produced a resumed", || {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "resumed")
+    })
+    .await;
+    // The resync is the *last* thing the loop does for the episode, so waiting
+    // for it means every surviving push has already been emitted.
+    let events = seen.lock().unwrap().clone();
+    let resumed = events
+        .iter()
+        .filter(|event| event.kind == "resumed")
+        .count();
+    let delivered: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|event| event.kind == "event")
+        .map(|event| &event.payload)
+        .collect();
+    assert_eq!(
+        resumed, 1,
+        "one episode of dropping is one resync, not one per lost push"
+    );
+    assert_eq!(
+        delivered.len(),
+        capacity,
+        "the queue's ceiling is exactly what survives an overfull burst"
+    );
+    // The drop policy is newest-first, so the last push that arrives is the one
+    // at the ceiling; the four injected past it never surface at all.
+    assert_eq!(
+        delivered.last().expect("the capped queue drained")["idx"],
+        json!(total - 5),
+        "the newest pushes are the ones dropped"
+    );
+    owner
+        .0
+        .shutdown(Duration::from_secs(1))
+        .await
+        .expect("stream owner stopped");
+    if session.is_connected() {
+        session.close_socket().await.expect("session drained");
+    }
+    host.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_failed_lane_move_keeps_the_installed_lane() {
+    let pair_id = "pair_cov_lane";
+    let (session, host) = scripted_peer(pair_id, 0).await;
+    let owner = ClientGuard(Client::new(Arc::new(MemoryClientHost::empty())));
+
+    let old_subject = "p.pair_cov.evt.old".to_string();
+    let live_client = host.publisher.clone();
+    let mut events = live_client
+        .subscribe(old_subject.clone())
+        .await
+        .expect("subscribe the installed lane");
+    live_client
+        .flush()
+        .await
+        .expect("subscription reached broker");
+
+    // Close the connection the lane would move on, and wait until it can no
+    // longer accept a `SUB`: that is the state a failed re-subscribe reports.
+    session
+        .close_socket()
+        .await
+        .expect("drain the lane's client");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if session
+            .client_for_test()
+            .subscribe("p.pair_cov.probe")
+            .await
+            .is_err()
+        {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "a drained client must stop accepting subscriptions"
+        );
+        tokio::task::yield_now().await;
+    }
+
+    let lane = session.event_lane();
+    let mut installed = EventsSubscription {
+        subject: old_subject.clone(),
+        narrow: false,
+    };
+
+    future_remote_client::runtime::testing::apply_visible_lane(
+        &lane,
+        &mut installed,
+        &mut events,
+        None,
+        "desktop_cov_lane",
+    )
+    .await;
+
+    assert_eq!(
+        installed.subject, old_subject,
+        "a failed move must leave the lane that was already installed"
+    );
+    // The stream is still there: the installed subscription still receives,
+    // which a torn-down connection would not.
+    host.inject(&old_subject, &json!({ "type": "agent_text", "data": "{}" }))
+        .await;
+    let delivered = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        futures::StreamExt::next(&mut events),
+    )
+    .await
+    .expect("the installed lane must still deliver after the failed move")
+    .expect("a message on the installed lane");
+    assert_eq!(delivered.subject.as_str(), old_subject);
+    owner
+        .0
+        .shutdown(Duration::from_secs(1))
+        .await
+        .expect("stream owner stopped");
+    if session.is_connected() {
+        session.close_socket().await.expect("session drained");
+    }
     host.shutdown().await;
 }

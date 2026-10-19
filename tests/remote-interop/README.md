@@ -123,3 +123,17 @@ an already-closed Client can send cancellation. Report output remains IDs and
 outcomes; private JSON-lines credentials are never forwarded.
 
 These extensions are statically compiled only until final branch CI acceptance.
+
+## Migrated controller stream regressions
+
+The same Rust target additionally owns the original manually encrypted stream
+cases for presence/control state, missing session ID fallback, backlog overflow
+(resync once, drop newest), and failed lane replacement. They use the owned real
+broker and Client test-support stream API with an explicit empty memory host,
+not a Desktop singleton, HOME, application Store or Tauri runtime. Original
+assertion sequences remain. The backlog fixture waits for publisher flush then
+the subscriber connection's PONG before starting the drain, replacing a timing
+sleep with an ordered protocol barrier. Each normal case awaits role shutdown,
+drains its connection/publisher and awaits its responder; an owner drop also
+cancels the role. These scripted channel tests are distinct from Server-role
+pairing/transfer interoperability and retain their original test names.
