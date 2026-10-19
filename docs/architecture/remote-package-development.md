@@ -666,3 +666,9 @@ is entering unified branch CI preparation; runtime, matched performance and
 same-candidate manual confirmation remain pending. No PR is created.
 
 [Manual acceptance checklist](../testing/remote-package-manual-acceptance.md) records the final candidate and pending physical-device results.
+
+### 2026-10-19: Matched Windows compilation observation entry
+
+CI adds the explicit manual `remote-compile-measurement` scope, pinning integrated main `7eb94d52db36b288a295ae33cb4f654ea1994044` as the pre-extraction baseline. On one Windows runner with the same pinned Rust toolchain and identical `.cargo/config.toml`, prepare both registries before timing, then run the existing workspace, GUI/CLI and headless cargo-check commands sequentially with separate empty targets. Compiler wrappers/incremental compilation are disabled; no Actions compilation cache is restored or saved. Record dependency preparation separately, exact SHAs/environment/commands/exit codes and Cargo timing HTML. The script runs only on Windows CI; local checks parse Python/YAML without executing the measurement.
+
+This is one sequential sample with baseline first; OS page caches, machine load and order effects remain uncontrolled. It observes check/metadata compilation, not executable linking, release builds or test execution. It has not run and establishes no Windows speedup. Test/queue/cache evidence must be collected separately from full acceptance with comparability limits stated.

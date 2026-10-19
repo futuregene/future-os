@@ -27,6 +27,7 @@ on:
         options:
           - all
           - remote
+          - remote-compile-measurement
           - windows-update
           - desktop-rust
           - headless-cli
@@ -252,6 +253,36 @@ jobs:
           CHANGED_FILES: ${{ steps.filter.outputs.remote_paths_files || '[]' }}
           REQUESTED_SCOPE: ${{ inputs.scope }}
         run: node scripts/ci/remote-affected.mjs
+
+  # Explicit one-off measurement only: no cache restore/save and no tests.
+  remote-compile-measurement:
+    name: Matched Windows Rust compilation
+    if: github.event_name == 'workflow_dispatch' && inputs.scope == 'remote-compile-measurement'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: candidate
+      - uses: actions/checkout@v7
+        with:
+          # Last integrated main, before extraction; same compiler/config.
+          ref: 7eb94d52db36b288a295ae33cb4f654ea1994044
+          path: baseline
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Setup shared pinned Rust toolchain
+        run: node candidate/scripts/ci/setup-rust.mjs
+      - name: Compare empty-target compilation on one runner
+        run: python candidate/scripts/ci/remote-compile-measurement.py --baseline baseline --candidate candidate --output measurement
+      - name: Upload compilation evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: remote-windows-compilation-${{ github.sha }}
+          path: measurement/
+          if-no-files-found: error
 
   # One Remote runner batches package checks and real interoperability, sharing
   # the Cargo target and npm install without spawning a runner for every package.

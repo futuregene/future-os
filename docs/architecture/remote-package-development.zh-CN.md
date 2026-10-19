@@ -530,3 +530,9 @@ Client 接回主干的 control/holder 状态，握手 presence 初始化，后�
 Client/interop 与 Desktop GUI/headless Clippy `--all-targets`、相关 fmt、边界/生成/文档检查通过；没有执行本地测试。实现进入工作分支统一自动化验收准备，阶段状态仍等待 CI 结果、同条件性能证据与同候选版本人工确认；不创建 PR。
 
 [人工验收清单](../testing/remote-package-manual-acceptance.zh-CN.md)用于记录最终候选及待确认的真机结果；当前尚未执行，不代表人工通过。
+
+### 2026-10-19：Windows 编译同条件测量入口
+
+CI 增加只手动选择的 `remote-compile-measurement` scope，固定已集成主干 `7eb94d52db36b288a295ae33cb4f654ea1994044` 为拆分前基线。在同一 Windows runner、同一固定 Rust 工具链和相同 `.cargo/config.toml` 下，先为两份源码准备 registry，再分别用独立空 target 顺序执行既有 workspace、GUI/CLI、headless 三条 cargo check。禁用编译 wrapper/incremental，不恢复或保存 Actions 编译缓存；下载准备与 check 时间分开记录，保留完整 SHA、环境、命令、退出码及 Cargo timing HTML。脚本只在 CI 的 Windows 环境运行，本地只检查 Python/YAML 语法。
+
+这是单次顺序样本，基线先运行，系统页缓存、机器负载和顺序效应不可控；只观测检查/元数据编译，不代表可执行产物链接、发布构建或测试执行耗时。尚未运行，不能据此宣布 Windows 提速；测试与排队/缓存证据另从完整验收获取，仍需说明可比性。
