@@ -252,14 +252,19 @@ it("pairs from a pasted link, and keeps the box empty after it", async () => {
 
 /** A failed pairing keeps the link: retyping an invitation is not the user's job. */
 it("keeps the link and reports the reason when pairing fails", async () => {
-  pairRemotePeer.mockRejectedValue(new Error("invitation_expired"));
+  // The host's refusal detail, as the secure-channel prefix carries it. The
+  // screen must explain it, not quote it.
+  pairRemotePeer.mockRejectedValue(new Error("remote_secure_channel_invalid (invitation_expired)"));
   const view = await mount();
   await view.type("futureos://remote/pair?code=stale");
 
   await act(async () => view.button("Connect")!.click());
   await view.settle();
 
-  expect(view.text()).toContain("invitation_expired");
+  expect(view.text()).toContain("That pairing has expired");
+  expect(view.text()).not.toContain("remote_secure_channel_invalid");
+  // The link survives the failure, ready for a corrected paste.
+  expect(view.input().value).toBe("futureos://remote/pair?code=stale");
   await view.unmount();
 });
 
@@ -431,6 +436,22 @@ it("tells a machine still being reached from one that failed", async () => {
   const failed = await mount();
   expect(failed.text()).toContain("Offline");
   await failed.unmount();
+});
+
+/**
+ * The runtime's failure text is a diagnostic, not a sentence for the user: the
+ * row says what they can do about a desktop that did not answer, and keeps the
+ * original as the tooltip a support session needs.
+ */
+it("explains a failed connection instead of quoting the transport", async () => {
+  const raw = "Remote handshake failed: no responders: no responders";
+  listRemotePeers.mockResolvedValue([peer({ connected: false, error: raw })]);
+  const view = await mount();
+
+  expect(view.text()).toContain("Couldn't reach that desktop");
+  expect(view.text()).not.toContain("no responders");
+  expect(view.container.querySelector(`[title="${raw}"]`)).toBeTruthy();
+  await view.unmount();
 });
 
 /**
