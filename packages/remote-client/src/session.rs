@@ -562,6 +562,14 @@ impl PeerSession {
             format!("p.{}.xfer.down.*.chunk.*", self.pair_id),
         )
         .await?;
+        // SUB enqueueing is not broker readiness. A different connection may
+        // publish immediately after connect returns; wait for the ordered PONG.
+        tokio::time::timeout(request_budget(), self.client.flush())
+            .await
+            .map_err(|_| {
+                crate::Error::RemoteTransport("Remote subscription flush timed out".into())
+            })?
+            .map_err(|error| crate::Error::RemoteTransport(error.to_string()))?;
         Ok(Subscriptions {
             events,
             presence,

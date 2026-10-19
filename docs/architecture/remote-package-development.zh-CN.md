@@ -536,3 +536,15 @@ Client/interop 与 Desktop GUI/headless Clippy `--all-targets`、相关 fmt、�
 CI 增加只手动选择的 `remote-compile-measurement` scope，固定已集成主干 `7eb94d52db36b288a295ae33cb4f654ea1994044` 为拆分前基线。在同一 Windows runner、同一固定 Rust 工具链和相同 `.cargo/config.toml` 下，先为两份源码准备 registry，再分别用独立空 target 顺序执行既有 workspace、GUI/CLI、headless 三条 cargo check。禁用编译 wrapper/incremental，不恢复或保存 Actions 编译缓存；下载准备与 check 时间分开记录，保留完整 SHA、环境、命令、退出码及 Cargo timing HTML。脚本只在 CI 的 Windows 环境运行，本地只检查 Python/YAML 语法。
 
 这是单次顺序样本，基线先运行，系统页缓存、机器负载和顺序效应不可控；只观测检查/元数据编译，不代表可执行产物链接、发布构建或测试执行耗时。尚未运行，不能据此宣布 Windows 提速；测试与排队/缓存证据另从完整验收获取，仍需说明可比性。
+
+### 2026-10-20：首次统一 CI 的实际日志与修复
+
+首次完整分支运行 [39280476153](https://github.com/futuregene/future-os/actions/runs/39280476153) 对应 `4a9213c5`。Actions/Check Runs 接口持续返回 queued、空 steps 和空 conclusion，但直接下载 job 日志已证明多个任务完成；此前据状态接口报告“尚未执行”的结论不准确。后续结合实际日志与产物核验，不能把此接口的 queued 当作真实 runner 排队证据。
+
+实际日志中 Rust Crypto 11、Protocol 23、Client 55、Server 155 个测试通过（Server 另有 5 个 ignored）；Mobile 138 个 suite / 2696 个测试通过；Desktop TS 主套件 325 个文件 / 4428 个测试，另一个配置套件 13 个测试通过。Remote job 在 TS Crypto 的 6 个失败后退出，后续 TS Protocol/Client 和真实互通尚未执行，不能声称整体 Remote 通过。Desktop GUI 为 2045 通过、2 失败、10 ignored；headless 为 1618 通过、3 失败、10 ignored。
+
+TS Crypto 失败根因是 Node Buffer.slice 与 Uint8Array.slice 的所有权差异：握手清理 split keys 会同时清空通道借用的内存，导致合法记录认证失败及反射检测失效。通道构造改为 Uint8Array.from 显式复制 send/receive/id；增加源 Buffer 清理和兄弟通道销毁不影响自身的回归，保留原安全向量和拒绝断言。
+
+Client 显式连接在建立新代次之前移除/取消旧 supervisor，避免旧恢复尝试覆盖新连接的 epoch；supervisor 自身恢复走内部入口，不取消自己。增加旧 supervisor 已进入续期时，公开 connect 即使读取凭据失败也必须销毁旧续期且不保存迟到结果的独立回归。初始订阅等待有请求预算约束的 flush/PONG 后才返回，避免不同连接在 SUB 尚未到 broker 时立即发事件而丢失首批推送。心跳失败测试等待受管任务实际完成（五秒失败上限），替代读取/序列化 9MB 夹具后仅睡 100ms 的调度假设；原结束断言保留。
+
+这些是根据 CI 失败作出的修复，尚待新候选 CI 复验；本地仍只做类型、lint、Clippy/编译、fmt、生成与边界静态检查，没有运行单元测试或互通。人工与性能结果继续待确认。

@@ -2293,7 +2293,9 @@ mod runtime_tests {
         let handle = spawn_presence_heartbeat(client.clone(), pair, "bridge_hbf".into());
         // A critical publisher failure ends the generation instead of logging
         // once per heartbeat forever.
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::timeout(Duration::from_secs(5), handle.clone().completed())
+            .await
+            .expect("critical publisher failure must end its generation");
         assert!(handle.is_finished());
         std::fs::remove_dir_all(&workspace_dir).ok();
     }

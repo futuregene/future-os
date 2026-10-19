@@ -299,6 +299,28 @@ async fn cancelling_an_old_chunk_waiter_cannot_remove_a_newer_retry() {
 #[path = "shared_request_tests.rs"]
 mod shared_requests;
 
+#[tokio::test]
+async fn explicit_connect_retires_an_inflight_supervisor_before_loading_credentials() {
+    let host = Arc::new(MemoryHost::default());
+    host.upsert(creds()).unwrap();
+    let client = Client::new(host.clone());
+    client.install_supervisor_for_test("desktop_fixture").await;
+    tokio::time::timeout(Duration::from_secs(5), host.entered.notified())
+        .await
+        .expect("supervisor entered renewal");
+    let old = client.inner.state.lock().await.supervisors["desktop_fixture"].clone();
+    host.reject_load.store(true, Ordering::SeqCst);
+    let error = client.connect("desktop_fixture").await.unwrap_err();
+    assert!(error.to_string().contains("fixture unavailable"));
+    tokio::time::timeout(Duration::from_secs(1), old.completed())
+        .await
+        .expect("superseded renewal was dropped");
+    assert_eq!(host.finished_refreshes.load(Ordering::SeqCst), 1);
+    assert_eq!(host.updates.load(Ordering::SeqCst), 0);
+    assert!(client.inner.state.lock().await.supervisors.is_empty());
+    client.shutdown(Duration::from_secs(1)).await.unwrap();
+}
+
 #[path = "shared_credentials_tests.rs"]
 mod shared_credentials;
 

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { Buffer } from "node:buffer";
 import Noise from "noise-handshake";
 import { createSecureIdentity, keyBytes, MAX_SECURE_PLAINTEXT, replyContext, SecureChannel, SecureHandshake, securePrologue } from "../src/secureChannel";
 import { encodeBase64Url } from "../src/base64";
@@ -115,6 +116,20 @@ describe("remote v2 secure records", () => {
     r.destroy();
     expect(() => r.open("command", wire)).toThrow();
     expect(() => r.seal("command", new Uint8Array())).toThrow();
+  });
+  test("owns Buffer keys across source clearing and sibling destruction", () => {
+    const send = Buffer.alloc(32, 1);
+    const receive = Buffer.alloc(32, 2);
+    const id = Buffer.alloc(16, 3);
+    const sender = new SecureChannel(send, receive, id);
+    const receiver = new SecureChannel(receive, send, id);
+    new SecureChannel(send, receive, id).destroy();
+    expect(send).toEqual(Buffer.alloc(32, 1));
+    expect(receive).toEqual(Buffer.alloc(32, 2));
+    send.fill(0); receive.fill(0); id.fill(0);
+    const plaintext = new Uint8Array([1, 2, 3]);
+    expect(receiver.open("owned-keys", sender.seal("owned-keys", plaintext))).toEqual(plaintext);
+    sender.destroy(); receiver.destroy();
   });
   test("a new handshake rejects records from the previous connection", () => {
     const old = pair(); const fresh = pair();

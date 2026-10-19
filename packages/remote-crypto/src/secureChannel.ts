@@ -57,7 +57,11 @@ export class SecureChannel {
   private destroyed = false;
   constructor(private send: Uint8Array, private receive: Uint8Array, private id: Uint8Array) {
     if (send.length !== 32 || receive.length !== 32 || id.length !== 16) throw invalid();
-    this.send = send.slice(); this.receive = receive.slice(); this.id = id.slice();
+    // Noise can return Node Buffers, whose slice() aliases the original bytes.
+    // Own the bytes before handshake destruction clears its split keys.
+    this.send = Uint8Array.from(send);
+    this.receive = Uint8Array.from(receive);
+    this.id = Uint8Array.from(id);
   }
   seal(context: string, plaintext: Uint8Array): Uint8Array {
     if (this.destroyed || this.next >= MAX_SEQUENCE || plaintext.length > MAX_SECURE_PLAINTEXT) throw invalid();

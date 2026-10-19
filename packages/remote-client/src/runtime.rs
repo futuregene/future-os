@@ -830,8 +830,20 @@ impl Client {
         }
     }
     async fn begin_attempt(&self, desktop: &str) -> Result<u64, crate::Error> {
+        self.begin_connect_attempt(desktop, false).await
+    }
+    async fn begin_connect_attempt(
+        &self,
+        desktop: &str,
+        replace_supervisor: bool,
+    ) -> Result<u64, crate::Error> {
         let mut state = self.inner.state.lock().await;
         self.ensure_running()?;
+        if replace_supervisor {
+            if let Some(supervisor) = state.supervisors.remove(desktop) {
+                supervisor.abort();
+            }
+        }
         let epoch = state.epochs.entry(desktop.to_string()).or_default();
         *epoch = epoch.wrapping_add(1);
         Ok(*epoch)
@@ -1370,8 +1382,18 @@ impl Client {
         desktop_id: &str,
         emitter: Option<Emitter>,
     ) -> Result<PeerSummary, crate::Error> {
+        self.connect_attempt(desktop_id, emitter, true).await
+    }
+    async fn connect_attempt(
+        &self,
+        desktop_id: &str,
+        emitter: Option<Emitter>,
+        replace_supervisor: bool,
+    ) -> Result<PeerSummary, crate::Error> {
         self.ensure_running()?;
-        let epoch = self.begin_attempt(desktop_id).await?;
+        let epoch = self
+            .begin_connect_attempt(desktop_id, replace_supervisor)
+            .await?;
         let mut creds = self.stored_creds(desktop_id)?;
         // Renew before connecting: a token that expires mid-handshake fails it in a
         // way that looks like a protocol fault.
@@ -1598,7 +1620,7 @@ impl Client {
     }
     /// Refresh credentials when needed, then reconnect and re-subscribe.
     async fn resume(&self, desktop_id: &str, emitter: Option<Emitter>) -> Result<(), crate::Error> {
-        self.connect_with_emitter(desktop_id, emitter)
+        self.connect_attempt(desktop_id, emitter, false)
             .await
             .map(|_| ())
     }
