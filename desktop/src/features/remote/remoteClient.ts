@@ -2,6 +2,8 @@ import { invokeCommand } from "../../integrations/tauri/invoke";
 
 export type RemotePhase
   = | "stopped"
+    /** The switch is on and no device is connected yet: nothing to serve. */
+    | "enabled"
     | "connecting"
     | "ready"
     | "reconnecting"
@@ -244,6 +246,11 @@ export function remoteConnectionPresentation(
   status: RemoteStatus | null,
 ): RemoteConnectionPresentation | null {
   if (!status)
+    return null;
+  // The switch is on with nothing to serve: there is no connection to describe,
+  // so the page says nothing about one and the sidebar dot stays dark. Reporting
+  // "connecting" here would claim an attempt that does not exist.
+  if (status.phase === "enabled")
     return null;
   if (status.phase === "stopped") {
     return status.pairId

@@ -76,6 +76,13 @@ pub(in crate::remote) struct Supervisor {
     pub(in crate::remote) last_error_code: Mutex<Option<String>>,
     pub(in crate::remote) start_lock: tokio::sync::Mutex<()>,
     pub(in crate::remote) start_requested: AtomicBool,
+    /// Whether a start with nothing paired mints an invitation.
+    ///
+    /// The GUI's switch does not: the user asks for a connection by adding one
+    /// device at a time, and a machine with no devices is simply on and empty.
+    /// The headless surface and the pair-a-device entry points do, because there
+    /// the invitation *is* what the user asked for.
+    pub(in crate::remote) invite_when_empty: AtomicBool,
     pub(in crate::remote) suspended: AtomicBool,
     pub(in crate::remote) resume_recovery_running: AtomicBool,
     pub(in crate::remote) start_retry_running: AtomicBool,
@@ -87,6 +94,12 @@ pub(in crate::remote) struct Supervisor {
     pub(in crate::remote) runtime_failure_window_started: AtomicU64,
     pub(in crate::remote) web_reconnect_running: AtomicBool,
     pub(in crate::remote) web_reconnect_attempts: AtomicU8,
+    /// The slot that bound the process-wide browser listener, if one did.
+    ///
+    /// The listener is one per process and belongs to whoever opened the port,
+    /// so both its health report and its retry have to name that device — a
+    /// slot that never bound it has no `web_task` and must not stand in for it.
+    pub(in crate::remote) web_owner: Mutex<Option<String>>,
     pub(in crate::remote) tasks: Mutex<Vec<(futures::future::AbortHandle, Arc<AtomicBool>)>>,
 }
 pub(in crate::remote) static SUPERVISOR: LazyLock<Supervisor> = LazyLock::new(|| Supervisor {
@@ -98,6 +111,7 @@ pub(in crate::remote) static SUPERVISOR: LazyLock<Supervisor> = LazyLock::new(||
     last_error_code: Mutex::new(None),
     start_lock: tokio::sync::Mutex::const_new(()),
     start_requested: AtomicBool::new(false),
+    invite_when_empty: AtomicBool::new(true),
     suspended: AtomicBool::new(false),
     resume_recovery_running: AtomicBool::new(false),
     start_retry_running: AtomicBool::new(false),
@@ -109,6 +123,7 @@ pub(in crate::remote) static SUPERVISOR: LazyLock<Supervisor> = LazyLock::new(||
     runtime_failure_window_started: AtomicU64::new(0),
     web_reconnect_running: AtomicBool::new(false),
     web_reconnect_attempts: AtomicU8::new(0),
+    web_owner: Mutex::new(None),
     tasks: Mutex::new(Vec::new()),
 });
 impl Supervisor {
@@ -539,6 +554,7 @@ mod tests {
             last_error_code: std::sync::Mutex::new(None),
             start_lock: tokio::sync::Mutex::const_new(()),
             start_requested: AtomicBool::new(false),
+            invite_when_empty: AtomicBool::new(true),
             suspended: AtomicBool::new(false),
             resume_recovery_running: AtomicBool::new(false),
             start_retry_running: AtomicBool::new(false),
@@ -550,6 +566,7 @@ mod tests {
             runtime_failure_window_started: AtomicU64::new(0),
             web_reconnect_running: AtomicBool::new(false),
             web_reconnect_attempts: AtomicU8::new(0),
+            web_owner: std::sync::Mutex::new(None),
             tasks: std::sync::Mutex::new(Vec::new()),
         }
     }

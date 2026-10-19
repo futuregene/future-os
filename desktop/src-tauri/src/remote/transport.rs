@@ -170,7 +170,13 @@ pub(super) fn spawn_credential_refresh(
             while !pairing_confirmed.load(Ordering::Acquire) {
                 tokio::time::sleep(presence_tick()).await;
             }
-            let Some(creds) = pairing::load_creds().filter(|creds| creds.pair_id == pair_id) else {
+            // This device's own credential, not the book's primary: with
+            // several paired devices the primary is whoever holds control, and
+            // reading it here made every standby slot's renewal runner exit
+            // immediately — which the generation watch reads as a dead critical
+            // task (a slot reported broken, and rebuilt until the reconnect
+            // budget ran out, while its bridge was perfectly healthy).
+            let Some(creds) = pairing::load_slot(&pair_id) else {
                 return;
             };
             // Credential scheduling owns only credential expiry. Critical task

@@ -144,7 +144,7 @@ pub(in crate::remote) fn status_focused(prefer: Option<&str>) -> RemoteStatus {
         // Nothing is running: the truth is whatever stopped it. `last_error_code`
         // is the only record of why, and it is deliberately process-lifetime.
         drop(guard);
-        return stopped_status(prefer);
+        return stopped_status(prefer, true);
     }
 
     // Every paired device, in pairing order, plus any runtime that holds an
@@ -184,7 +184,9 @@ pub(in crate::remote) fn status_focused(prefer: Option<&str>) -> RemoteStatus {
         .or_else(|| devices.first())
     {
         Some(focus) => focus.clone(),
-        None => return stopped_status(prefer),
+        // `guard` is non-empty here, so a device exists and this is unreachable
+        // in practice; the flag keeps the projection honest if it ever is not.
+        None => return stopped_status(prefer, false),
     };
     let runtime = guard.get(&focus.pair_id);
 
@@ -240,29 +242,43 @@ pub(in crate::remote) fn status_focused(prefer: Option<&str>) -> RemoteStatus {
         web_url: runtime.and_then(|state| state.web_url.clone()),
         web_lan_url: runtime.and_then(|state| state.web_lan_url.clone()),
         agent_available: host().agent_available(),
-        warning_code: web_warning(runtime),
+        warning_code: web_warning(&guard),
     }
 }
 
 /// The local browser listener is one listener for the whole process, owned by
-/// one slot; a dead one is reported there and nowhere else.
-fn web_warning(runtime: Option<&RemoteState>) -> Option<String> {
-    let runtime = runtime?;
+/// exactly one slot.
+///
+/// Report — and heal — it from its owner only. A slot that never bound it
+/// carries no `web_task` *by design*, and reading that absence as "the listener
+/// died" made the status of any other device (the one focused after a
+/// takeover) claim a broken listener, spend the bounded retry budget rebinding
+/// a port its owner still held, and then show `LC002` for a listener that was
+/// never down.
+fn web_warning(states: &HashMap<String, RemoteState>) -> Option<String> {
     if !web_client_enabled() {
         return None;
     }
-    let dead = runtime
+    let owner = SUPERVISOR.web_owner.lock().unwrap().clone()?;
+    let state = states.get(&owner)?;
+    // No task on the owner means the last generation could not bind — the
+    // port was still held by the generation it replaced — which is worth one
+    // rebind now that the old listener is gone.
+    let dead = state
         .web_task
         .as_ref()
         .is_none_or(|task| task.is_finished());
+    if !dead {
+        return None;
+    }
     let can_retry =
         SUPERVISOR.web_reconnect_attempts.load(Ordering::Acquire) < MAX_WEB_RECONNECT_ATTEMPTS;
     let in_flight = SUPERVISOR.web_reconnect_running.load(Ordering::Acquire);
-    if dead && !in_flight && !can_retry {
+    if !in_flight && !can_retry {
         return Some("web_bind".to_string());
     }
-    if dead && can_retry && !in_flight {
-        spawn_web_reconnect(runtime.pair_id.clone());
+    if can_retry && !in_flight {
+        spawn_web_reconnect(owner);
     }
     None
 }
@@ -274,7 +290,7 @@ fn web_warning(runtime: Option<&RemoteState>) -> Option<String> {
 /// `prefer` means the same thing as in [`status_focused`]: the caller asked
 /// about one device (one it just created), and even with nothing running the
 /// answer must be about that device rather than the persisted controller.
-fn stopped_status(prefer: Option<&str>) -> RemoteStatus {
+fn stopped_status(prefer: Option<&str>, no_runtime: bool) -> RemoteStatus {
     let error_code = SUPERVISOR.last_error_code.lock().unwrap().clone();
     // Startup retries run before a bridge instance exists, so this state cannot
     // be inferred from the runtime map. Expose it explicitly so the UI shows an
@@ -287,7 +303,24 @@ fn stopped_status(prefer: Option<&str>) -> RemoteStatus {
         && SUPERVISOR.resume_recovery_running.load(Ordering::Acquire)
         && matches!(error_code.as_deref(), Some("system_sleep"));
     let reconnecting = retrying_start || resuming_from_sleep;
-    let (phase, reason) = if reconnecting {
+    // The switch is on and there is nothing to serve: every device was removed,
+    // or none was ever added. Reporting `Stopped` here would flip the switch
+    // back off under the user's hand, and there is no failure to report.
+    //
+    // Only a start that mints nothing on an empty machine can be in this state:
+    // an entry point that asks for an invitation (the headless desktop, the CLI)
+    // treats an empty book as "nothing to serve" and stops, which is exactly what
+    // its own callers watch for.
+    let switched_on = !SUPERVISOR.invite_when_empty.load(Ordering::Acquire);
+    let enabled_and_empty = switched_on
+        && SUPERVISOR.start_requested.load(Ordering::Acquire)
+        && !reconnecting
+        && error_code.is_none()
+        && pairing::load_slots().is_empty()
+        && no_runtime;
+    let (phase, reason) = if enabled_and_empty {
+        (RemotePhase::Enabled, None)
+    } else if reconnecting {
         (
             RemotePhase::Reconnecting,
             Some(match error_code.as_deref() {
