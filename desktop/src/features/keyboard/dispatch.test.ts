@@ -205,6 +205,50 @@ describe("several keys on one command", () => {
   });
 });
 
+describe("the input layer", () => {
+  // The one place a bare key runs *over* a text field: `↩` sends, where every
+  // other layer's `↩` belongs to the editor.
+  const inputBindings = { "vibe.input.close": "escape", "vibe.input.send": "enter" };
+  const scopes = ["vibeInput", "vibeZoom", "vibe", "global"] as const;
+
+  it("sends with ↩ while the caret is in the editor", () => {
+    const hit = dispatchShortcut(
+      event("Enter", { code: "Enter" }),
+      context({ bindings: inputBindings, editable: true, scopes }),
+    );
+    expect(hit?.id).toBe("vibe.input.send");
+  });
+
+  it("leaves a composing ↩ to the input method", () => {
+    // This is what makes dictation safe: the Enter that commits a candidate (or
+    // ends a phrase) is never the Enter that sends.
+    const press = (overrides: Partial<ShortcutEvent>) => event("Enter", { code: "Enter", ...overrides });
+    expect(dispatchShortcut(press({ isComposing: true }), context({ bindings: inputBindings, editable: true, scopes }))).toBeNull();
+    expect(dispatchShortcut(press({ keyCode: 229 }), context({ bindings: inputBindings, editable: true, scopes }))).toBeNull();
+  });
+
+  it("leaves another layer's bare key to the editor", () => {
+    // One layer out, `↓` walks message blocks and `↩` zooms. Neither may reach
+    // over the field that has the caret — that is the difference between
+    // `overEditable` and an ordinary scoped command.
+    const bindings = { "vibe.block.next": "arrowdown", "vibe.open": "enter" };
+    const outer = ["vibeZoom", "vibe", "global"] as const;
+    expect(dispatchShortcut(event("ArrowDown", { code: "ArrowDown" }), context({ bindings, editable: true, scopes: outer }))).toBeNull();
+    expect(dispatchShortcut(event("Enter", { code: "Enter" }), context({ bindings, editable: true, scopes: outer }))).toBeNull();
+    // Without the caret they run normally.
+    expect(dispatchShortcut(event("ArrowDown", { code: "ArrowDown" }), context({ bindings, editable: false, scopes: outer }))?.id).toBe("vibe.block.next");
+  });
+
+  it("keeps the remote's own buttons live over the editor", () => {
+    // Reaching the menu mid-dictation is exactly when the menu button is needed,
+    // and the home button jumps back to the live end of the conversation.
+    const bindings = { "vibe.menu": ["mod+shift+k", "contextmenu"], "vibe.home": "browserhome" };
+    const input = context({ bindings, editable: true, scopes });
+    expect(dispatchShortcut(event("ContextMenu", { code: "ContextMenu" }), input)?.id).toBe("vibe.menu");
+    expect(dispatchShortcut(event("BrowserHome", { code: "BrowserHome" }), input)?.id).toBe("vibe.home");
+  });
+});
+
 describe("isBareBinding", () => {
   it("is true without a real modifier, Shift included", () => {
     expect(isBareBinding(parseBinding("arrowdown")!)).toBe(true);

@@ -48,6 +48,24 @@ describe("parseBinding", () => {
     expect(binding("opt+k")).toEqual(binding("alt+k"));
   });
 
+  it("reads a remote control's keys", () => {
+    // A TV-style remote's back / menu / home buttons are ordinary DOM codes; the
+    // panel binds them, so the parser has to know them by name.
+    expect(binding("contextmenu").code).toBe("ContextMenu");
+    // Some remotes' menu button reports `key: "Menu"` with no usable code.
+    expect(binding("menu").code).toBe("ContextMenu");
+    expect(binding("browserback").code).toBe("BrowserBack");
+    expect(binding("goback").code).toBe("BrowserBack");
+    expect(binding("browserhome").code).toBe("BrowserHome");
+  });
+
+  it("labels a remote's keys by the word printed on them", () => {
+    // Not a glyph: no platform shares one for these buttons.
+    expect(formatBinding(binding("contextmenu"), true)).toBe("Menu");
+    expect(formatBinding(binding("browserback"), false)).toBe("Back");
+    expect(formatBinding(binding("browserhome"), true)).toBe("Home");
+  });
+
   it("refuses text that is not one key with modifiers", () => {
     expect(parseBinding("")).toBeNull();
     expect(parseBinding("mod")).toBeNull();

@@ -58,6 +58,7 @@ export type CommandId
     | "vibe.focus.left"
     | "vibe.focus.right"
     | "vibe.open"
+    | "vibe.close"
     | "vibe.back"
     | "vibe.zoom.previous"
     | "vibe.zoom.next"
@@ -75,7 +76,17 @@ export type CommandId
     | "vibe.add"
     | "vibe.remove"
     | "vibe.fullscreen"
-    | "vibe.help";
+    | "vibe.help"
+    // The input layer: the one place the caret is in a text field, so these are
+    // the commands that fire *over* an editor, and the ones a microphone-driven
+    // conversation is actually operated with.
+    | "vibe.input.open"
+    | "vibe.input.close"
+    | "vibe.input.send"
+    | "vibe.block.previous"
+    | "vibe.block.next"
+    | "vibe.menu"
+    | "vibe.home";
 
 export interface CommandSpec {
   id: CommandId;
@@ -109,6 +120,27 @@ export interface CommandSpec {
    * mean recording nine. The settings page shows them as a read-only key list.
    */
   bindings?: readonly string[];
+  /**
+   * Keys the command **always** answers to, on top of whatever it resolves to.
+   *
+   * These are the device's keys, not the user's: a remote control's back / menu /
+   * home buttons must keep working after the user rebinds the keyboard chord, and
+   * cannot be handed to another command. So they survive an override and survive
+   * a cleared binding, they are not recorded, and a conflict with them is still
+   * refused (`conflictingCommand` sees them).
+   */
+  aliases?: readonly string[];
+  /**
+   * Whether the command runs with the caret inside a text field.
+   *
+   * Off for everything but the input layer. The dispatcher leaves a bare key to
+   * the field that has the caret (`isBareBinding`), and that rule is what keeps
+   * `↩` meaning "send" inside a composer — the input layer is the one place where
+   * the panel's own key is the one that sends, so it says so here instead of the
+   * dispatcher guessing. A composing key never reaches a command at all, so a
+   * dictation's `↩` still commits the input method's candidate.
+   */
+  overEditable?: boolean;
 }
 
 /**
@@ -166,13 +198,40 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "vibe.focus.left", category: "vibe", defaultBinding: "arrowleft", inTerminal: false, repeat: true, scope: "vibeGrid" },
   { id: "vibe.focus.right", category: "vibe", defaultBinding: "arrowright", inTerminal: false, repeat: true, scope: "vibeGrid" },
   { id: "vibe.open", category: "vibe", defaultBinding: "enter", inTerminal: false, scope: "vibeGrid" },
-  { id: "vibe.back", category: "vibe", defaultBinding: "escape", inTerminal: false, scope: "vibeZoom" },
+  // "Back" leaves the panel from the grid: the same button that steps out of one
+  // layer steps out of the last one.
+  { id: "vibe.close", category: "vibe", defaultBinding: "escape", aliases: ["browserback"], inTerminal: false, scope: "vibeGrid" },
+  { id: "vibe.back", category: "vibe", defaultBinding: "escape", aliases: ["browserback"], inTerminal: false, scope: "vibeZoom" },
   // Inside a zoomed cell the bare arrows switch conversations — the grid's own
   // arrows are not live there, and the caret rule keeps them off a text field.
   // Distinct commands from the grid's because a command has one binding set: the
   // grid moves a selection ring, this changes what the cell shows.
   { id: "vibe.zoom.previous", category: "vibe", defaultBinding: "arrowleft", inTerminal: false, repeat: true, scope: "vibeZoom" },
   { id: "vibe.zoom.next", category: "vibe", defaultBinding: "arrowright", inTerminal: false, repeat: true, scope: "vibeZoom" },
+  // Up/down inside a zoomed cell walk the transcript **by block**, not by pixel:
+  // a remote control cannot scroll, so the reading layer moves a block cursor over
+  // messages and expands the one it is on. The wheel and the trackpad still scroll
+  // normally — this pair is what makes the same view readable from the sofa.
+  { id: "vibe.block.previous", category: "vibe", defaultBinding: "arrowup", inTerminal: false, repeat: true, scope: "vibeZoom" },
+  { id: "vibe.block.next", category: "vibe", defaultBinding: "arrowdown", inTerminal: false, repeat: true, scope: "vibeZoom" },
+  // ---- The input layer -----------------------------------------------------
+  //
+  // One editable element exists at a time in the panel, and this layer is the
+  // only one that runs over it. `↩` sends (or closes, on an empty draft), `Esc`
+  // backs out to the reading layer — a dictation is confirmed with the same key
+  // that sends, which is why the panel opens *into* this layer.
+  { id: "vibe.input.open", category: "vibe", defaultBinding: "enter", inTerminal: false, scope: "vibeZoom" },
+  { id: "vibe.input.close", category: "vibe", defaultBinding: "escape", aliases: ["browserback"], inTerminal: false, overEditable: true, scope: "vibeInput" },
+  { id: "vibe.input.send", category: "vibe", defaultBinding: "enter", inTerminal: false, overEditable: true, scope: "vibeInput" },
+  // ---- Keys the remote control has, and a keyboard does not ----------------
+  //
+  // The menu and home buttons live in the panel-wide scope: their meaning is the
+  // same in all three layers (open the layer's menu; jump to the live end of the
+  // conversation), so one command per button is what keeps them from growing a
+  // copy per layer. Both run over the editor because reaching the menu while
+  // dictating is exactly when they are needed.
+  { id: "vibe.menu", category: "vibe", defaultBinding: "mod+shift+k", aliases: ["contextmenu"], inTerminal: false, overEditable: true, scope: "vibe" },
+  { id: "vibe.home", category: "vibe", defaultBinding: "browserhome", inTerminal: false, overEditable: true, scope: "vibe" },
   // Direct selection: nine bindings on one command, because a cell is chosen by
   // the digit printed on it, not by nine separate commands.
   {
@@ -222,6 +281,21 @@ export function scopeOf(spec: CommandSpec): ShortcutScope {
 /** Every default text a command answers to (`1`–`9` for direct selection). */
 export function defaultBindingTexts(spec: CommandSpec): readonly string[] {
   return spec.bindings ?? [spec.defaultBinding];
+}
+
+/**
+ * The keys a command always answers to, on top of its binding (`aliases`).
+ *
+ * A remote control's buttons live here: they are the device's, not the user's, so
+ * a rebinding or a cleared binding must not take them away.
+ */
+export function aliasBindingTexts(spec: CommandSpec): readonly string[] {
+  return spec.aliases ?? [];
+}
+
+/** Every key a command answers to out of the box, hardware aliases included. */
+export function everyDefaultBindingText(spec: CommandSpec): readonly string[] {
+  return [...defaultBindingTexts(spec), ...aliasBindingTexts(spec)];
 }
 
 /** A command's default bindings, parsed. */

@@ -18,6 +18,12 @@
  * - a key nothing in the active scopes binds is left alone (the dispatcher
  *   returns `null` and nothing is swallowed).
  *
+ * **The innermost layer is the one where the user types** (`vibeInput`). It is
+ * ranked last because it always sits on top while it is on — a cell's reading
+ * layer may still be held underneath it — and it is the one layer whose own keys
+ * must work *while the caret is in a text field* (`overEditable` in the catalog).
+ * Everywhere else a bare key belongs to whatever has the caret.
+ *
  * Registration is by presence, like `lib/keyboardOwners`: a scope is active while
  * a component says it is, which is what keeps "the mode is drawing a cell" and
  * "the mode owns the grid's arrow keys" from drifting apart.
@@ -25,7 +31,7 @@
 import { useEffect } from "react";
 
 /** The scopes a command can be bound in, outermost first. */
-export const SCOPES = ["global", "vibe", "vibeGrid", "vibeZoom"] as const;
+export const SCOPES = ["global", "vibe", "vibeGrid", "vibeZoom", "vibeInput"] as const;
 export type ShortcutScope = (typeof SCOPES)[number];
 
 /**

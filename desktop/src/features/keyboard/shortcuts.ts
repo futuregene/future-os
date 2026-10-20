@@ -25,7 +25,7 @@ import type { CommandId, CommandSpec } from "./catalog";
 import { useSyncExternalStore } from "react";
 import { formatBinding, parseBinding, serializeBinding } from "../../lib/keybinding";
 import { isMacOS } from "../../lib/platform";
-import { COMMANDS, commandSpec, defaultBindings, defaultBindingTexts, scopeOf } from "./catalog";
+import { aliasBindingTexts, COMMANDS, commandSpec, defaultBindings, defaultBindingTexts, scopeOf } from "./catalog";
 
 const STORAGE_KEY = "future.shortcuts.v1";
 
@@ -124,18 +124,24 @@ export function useShortcutOverrides(): ShortcutOverrides {
  * The texts a command resolves to, or `[]` when it is bound to nothing.
  *
  * Normally one; a command with several defaults (`vibe.cell`, the digits) has one
- * entry per key until the user overrides it, and a single entry after.
+ * entry per key until the user overrides it, and a single entry after. The
+ * hardware aliases (`aliases`) are appended either way: they describe the device,
+ * so neither a rebinding nor a cleared binding may take them away.
  */
 export function resolvedBindingTexts(
   id: CommandId,
   overrides: ShortcutOverrides = state.overrides,
 ): readonly string[] {
-  if (id in overrides) {
-    const text = overrides[id];
-    return text === null || text === undefined ? [] : [text];
-  }
   const spec = commandSpec(id);
-  return spec ? defaultBindingTexts(spec) : [];
+  if (!spec)
+    return [];
+  const own = id in overrides
+    ? (() => {
+        const text = overrides[id];
+        return text === null || text === undefined ? [] : [text];
+      })()
+    : defaultBindingTexts(spec);
+  return [...own, ...aliasBindingTexts(spec)];
 }
 
 /** The first text a command resolves to, or `null` when it is bound to nothing. */

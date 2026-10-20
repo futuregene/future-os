@@ -117,8 +117,11 @@ export function dispatchShortcut(event: ShortcutEvent, context: DispatchContext)
   if (context.hasOpenOverlay() || context.hasKeyboardOwner())
     return null;
   // A modifier-less key is only ever a mode's key, and even inside the mode it
-  // belongs to a text field that has the caret.
-  if (isBareBinding(hit.binding) && (scopeOf(spec) === "global" || context.editable))
+  // belongs to a text field that has the caret — except in the layer whose own
+  // key *is* the one that operates the field (`overEditable`: the panel's `↩`
+  // sends, where every other `↩` in the app is the field's). A composing key
+  // never gets here at all, so a dictation's `↩` stays the input method's.
+  if (isBareBinding(hit.binding) && (scopeOf(spec) === "global" || (context.editable && !spec.overEditable)))
     return null;
   if (context.inTerminal && !spec.inTerminal)
     return null;

@@ -159,7 +159,8 @@ allowed to sit on a key the global keymap already uses. `scopes.ts` is that.
 | `global` | always | everything above: new conversation, navigation, panels, terminal, settings |
 | `vibe` | the panel is open | layout, device filter, add/remove, attention queue, overlay full screen |
 | `vibeGrid` | the grid has the keyboard (no cell zoomed) | the direction keys, `↩`, `1`–`9` |
-| `vibeZoom` | one cell fills the screen | `Esc` back out, the side panel's two keys |
+| `vibeZoom` | one cell fills the screen | `Esc` back out, the block cursor, the side panel's two keys |
+| `vibeInput` | the input layer: the caret is in a dictation editor | `⏎` send, `Esc` back — the one layer that runs **over** an editor |
 
 Resolution is **innermost scope first**, then outwards, then `global`. So:
 
@@ -169,8 +170,10 @@ Resolution is **innermost scope first**, then outwards, then `global`. So:
   refuses a collision **within one scope** (`conflictingCommand` is scope-aware);
 * a bare key (`←`, `↩`, `Esc`, a digit) is only ever assignable in a non-global
   scope, and the dispatcher runs one **only when its scope is active and the caret
-  is not in a text field** — the zoomed cell has a composer, so `↩` there still
-  sends. `Shift` alone does not make a chord: `Shift+Enter` is a newline.
+  is not in a text field**. `Shift` alone does not make a chord: `Shift+Enter` is a
+  newline. The exception is the input layer, whose commands are marked
+  `overEditable`: it is the layer where the caret *is* in a field, and its `⏎` is
+  what sends. Nothing else may reach over an editor.
 
 The panel's own keys (all rebindable; `vibe.cell` is the one exception, see
 below). `mod` is `⌘` on macOS and `Ctrl` elsewhere:
@@ -179,9 +182,16 @@ below). `mod` is `⌘` on macOS and `Ctrl` elsewhere:
 | --- | --- | --- |
 | Open or close the panel | `mod+shift+v` | global |
 | Move the selection | `← ↑ → ↓` | vibeGrid |
-| Zoom into the selected cell | `↩` | vibeGrid |
-| Leave the zoomed cell | `Esc` | vibeZoom |
+| Enter the selected cell → its **input layer** | `↩` | vibeGrid |
+| Close the panel | `Esc` / `Back` | vibeGrid |
+| Leave the zoomed cell | `Esc` / `Back` | vibeZoom |
 | Previous / next conversation in the zoomed cell | `←` / `→` | vibeZoom |
+| Previous / next message block | `↑` / `↓` | vibeZoom |
+| Open the input layer | `↩` | vibeZoom |
+| Send the dictation (empty draft: close) | `↩` | vibeInput |
+| Leave the input layer | `Esc` / `Back` | vibeInput |
+| The layer's menu | `mod+shift+k` / `Menu` | vibe |
+| Jump to the live end of the conversation | `Home` | vibe |
 | Go to a numbered cell | `1`–`9` | vibeGrid |
 | Previous / next cell | `mod+[` / `mod+]` | (reuses `thread.previous`/`next`; the panel registers them, the rail does not) |
 | Cycle the grid layout | `mod+shift+g` | vibe |
@@ -197,6 +207,14 @@ below). `mod` is `⌘` on macOS and `Ctrl` elsewhere:
 
 Two notes on this table:
 
+* **`Menu`, `Back` and `Home` are the remote control's buttons, not a keyboard's.**
+  They are `aliases` on their command: they keep working after the reader rebinds
+  the chord and after clearing it, the settings page shows them read only, and they
+  are still refused as somebody else's recording in the same scope. A remote's
+  button is a property of the device, not a preference. Which button does what in
+  which layer, and what stops working on a remote that lacks one, is the panel's
+  own document (`VIBE.md` §9.2–9.3).
+
 * **`mod+[` / `mod+]` are the same commands as the rail's**, not a second pair. A
   command's *meaning* comes from whichever view owns it: inside the panel the
   panel registers `thread.next` as "next cell", outside it the rail registers it
@@ -208,12 +226,12 @@ Two notes on this table:
   page cannot answer. `vibe.cell`'s handler receives the matched binding and reads
   the digit from it (`runCommand(id, binding)`).
 
-The panel's design and its grid/order model live with the feature
-(`docs/internals/desktop/VIBE.md`, written by that task); this file owns only its
-keys. One design revision is worth recording here: that proposal reused
-`mod+alt+↓/↑` for "next cell" because the rail's fine move was there at the time.
-The fine move has since moved to `mod+[` / `mod+]`, so the panel reuses those —
-the pane's "next" and the rail's "next" are the same command on the same key.
+The panel's design, its grid/order model and its dictation model live with the
+feature (`docs/internals/desktop/VIBE.md`); this file owns only its keys. One
+design revision is worth recording here: that proposal reused `mod+alt+↓/↑` for
+"next cell" because the rail's fine move was there at the time. The fine move has
+since moved to `mod+[` / `mod+]`, so the panel reuses those — the panel's "next"
+and the rail's "next" are the same command on the same key.
 
 ## Where each command is registered
 

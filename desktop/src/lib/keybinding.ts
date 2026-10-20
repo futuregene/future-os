@@ -113,6 +113,18 @@ const NAMED_CODES: Record<string, string> = (() => {
     arrowdown: "ArrowDown",
     arrowleft: "ArrowLeft",
     arrowright: "ArrowRight",
+    // The keys a TV-style remote control sends. They live in the DOM's `code`
+    // space like any other physical key, and nothing else in the app wants them,
+    // which is what makes them usable as a mode's hardware keys: a Bluetooth
+    // remote's back / menu / home buttons arrive here, and a desktop keyboard
+    // has no key that produces them.
+    contextmenu: "ContextMenu",
+    // Some remotes' menu button reports the friendlier `key` of "Menu"; both
+    // spellings name the same physical button.
+    menu: "ContextMenu",
+    browserback: "BrowserBack",
+    goback: "BrowserBack",
+    browserhome: "BrowserHome",
   };
   // Punctuation answers to both spellings: the character (`","`) and its code
   // (`"comma"`), so a hand-written or stored binding in either form parses.
@@ -141,6 +153,11 @@ const KEY_LABELS: Record<string, { mac: string; other: string }> = {
   ArrowDown: { mac: "↓", other: "Down" },
   ArrowLeft: { mac: "←", other: "Left" },
   ArrowRight: { mac: "→", other: "Right" },
+  // Remote-control buttons, labelled by the word printed on them rather than by
+  // a glyph no platform shares.
+  ContextMenu: { mac: "Menu", other: "Menu" },
+  BrowserBack: { mac: "Back", other: "Back" },
+  BrowserHome: { mac: "Home", other: "Home" },
 };
 
 /**
