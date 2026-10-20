@@ -3,7 +3,7 @@
 > [中文](headless-package-development.zh-CN.md)
 >
 > Design date: 2026-10-20. Source baseline: `904eab2b`, including Remote extraction merged through PR #1235.
-> Status: implementation merged through PR #1259 and final ordinary CI completed successfully; phase 5 actual payloads and phase 6 performance/final same-candidate acceptance remain incomplete.
+> Status: implementation merged through PR #1259 and final ordinary CI completed successfully; dev unsigned payloads all passed, while platform signing, real install/update and final same-candidate acceptance remain incomplete; performance comparison was cancelled by the user.
 
 Extract the application host without a GUI from the Desktop crate and start it in the foreground with `future headless`. Introduce `future-host`, a Rust library without GUI dependencies, for the application backend shared by Desktop GUI and headless. Desktop and CLI own their entry points and interaction. Preserve current functionality, data, pairing, approval, sandbox and shutdown behavior.
 
@@ -17,13 +17,13 @@ Implementation merged through [PR #1259](https://github.com/futuregene/future-os
 
 | Phase | Current actual status |
 |---|---|
-| 0 Baseline | Source/dependency and 2193-case ownership baseline recorded; matched performance outstanding |
+| 0 Baseline | Source/dependency and 2193-case ownership baseline recorded; performance comparison cancelled by the user |
 | 1 Shared library | Ordinary GUI-free library and independent/combined boundaries implemented; three-platform Host CI passed |
 | 2 Shared backend | Store, Agent, application operations, Remote, scheduling/observers and shutdown migrated; owner suites passed |
 | 3 Unified entry | `future headless` implemented, old product entry removed; three-platform entry/real-process checks passed |
 | 4 Test migration | Original declaration ownership closed, final owner suites passed; platform conditions and original ignores retained |
 | 5 Build/release | Cargo/make/sidecar/release wiring and installer regression complete; dev unsigned payloads all passed; platform signing and real install/update/uninstall pending |
-| 6 Final acceptance | Implementation/ordinary automation passed and PR merged; user reports old exploratory manual round complete; final same-candidate manual/artifact/performance acceptance remains |
+| 6 Final acceptance | Implementation/ordinary automation passed and PR merged; user reports old exploratory manual round complete; final same-candidate manual and remaining release acceptance remain |
 
 Use the [release acceptance checklist](../testing/headless-release-acceptance.md) and [manual record](../testing/headless-manual-acceptance.md) for remaining work and candidate identity. Final CI archival initially only reconciled evidence. User-authorized dev unsigned builds all succeeded; see [unsigned results](../testing/headless-unsigned-results.md) for public downloads/validation and the release checklist for runs/candidate. Platform signing tests are deferred to the user; real installation and final acceptance remain open. The overall Goal remains incomplete.
 
@@ -128,7 +128,7 @@ Both upgraded GUI and headless must read the same old data. Use dedicated test-u
 | 3 Unified command | Add `headless` to `future`; migrate terminal interaction, signals, maintenance and device-control wiring | `future` alone hosts the full backend; arguments, new/stored pairings and shutdown at every stage remain compatible |
 | 4 Test migration | Move core tests to their libraries; retain CLI/GUI entry and real product integration; add versioned compatibility scenarios | Migration inventory closes; GUI-free tests are independent and shared core suites are not repeated per entry |
 | 5 Build and release | Update CI, make, sidecar, install/uninstall, upgrade, static builds and distribution instructions | Supported release packages/source installs run `future headless` without hidden dependence on the old binary |
-| 6 Acceptance and cleanup | Same-candidate CI, artifact smoke, performance records and manual confirmation; remove old entry/adapters | Required automation passes, manual results are confirmed, duplicate implementation is removed and docs match artifacts |
+| 6 Acceptance and cleanup | Same-candidate CI, artifact smoke and manual confirmation (performance comparison cancelled); remove old entry/adapters | Required automation passes, manual results are confirmed, duplicate implementation is removed and docs match artifacts |
 
 Commit traceable batches in an isolated branch and update the phase table. A temporary old launcher may forward to shared implementation to keep intermediate builds working. The final `future headless` must not launch an external `futureos-headless`, and no complete backend copy remains.
 
@@ -209,9 +209,11 @@ Adapt [check-headless-linux.sh](../../scripts/ci/check-headless-linux.sh) to the
 
 Adding the host must not make `future version --json`, help or early Linux sandbox-helper dispatch initialize databases, logs, Agent or locks. Matching sidecar capability/version checks and atomic replacement rules remain.
 
-### 6.3 Performance records
+### 6.3 Performance records (cancelled by user)
 
-Record build, link, test execution, binary size and startup costs under equivalent runner, toolchain, target, features, commands and cache conditions. Report the cost of including the complete host in CLI, GUI sharing benefits and core-test deduplication separately. Fewer executables or moved code alone do not establish a compilation speedup.
+On 2026-10-20 the user explicitly cancelled performance comparison. It is no longer a pending task or final acceptance gate, and no measurements will be scheduled. Existing optional tools and historical observations remain; unexecuted measurements are not passes and no extraction speedup is claimed. The next paragraph preserves the original measurement scope for provenance only. This decision also supersedes performance tasks in the historical batch journal below.
+
+Original scope: record build, link, test execution, binary size and startup costs under equivalent runner, toolchain, target, features, commands and cache conditions. Report the cost of including the complete host in CLI, GUI sharing benefits and core-test deduplication separately. Fewer executables or moved code alone do not establish a compilation speedup.
 
 ## 7 Documentation and completion checklist
 
@@ -225,7 +227,7 @@ Implementation updates CLI help; Headless, Agent, build/install and directory gu
 - [ ] Original tests have traceable destinations; independent host tests and CLI/GUI entry/product integration boundaries are implemented.
 - [ ] Affected CI, Linux static artifacts and platform install/update/signing/uninstall validation are complete.
 - [ ] Final implementation/distribution has no separate `futureos-headless` dependency; transitional copies/forwarders are removed.
-- [ ] Matched performance records, same-candidate automation and user-confirmed manual results are available.
+- [ ] Same-candidate automation and user-confirmed manual results are available (performance comparison cancelled by the user).
 - [ ] Bilingual documentation, command help and distribution instructions match implementation.
 
 Creating a package, compiling an entry or merging a PR does not complete these requirements. Record actual phase changes, commands, candidate and remaining limitations; close the migration after manual confirmation.

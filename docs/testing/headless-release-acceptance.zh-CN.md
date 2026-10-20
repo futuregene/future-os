@@ -43,12 +43,12 @@
 | R06 实际二进制无 GUI 依赖 | 普通依赖图及本轮实际包内二进制检查通过 | [产物检查器](../../scripts/ci/check-headless-artifact.py)：ELF、PE 普通/延迟导入、Mach-O；[包入口检查](../../scripts/ci/check-packaged-entrypoints.py) | 同一个包里实际 CLI 的链接依赖、help/版本、隔离 home 的首次非交互拒绝及无敏感状态副作用 |
 | R07 首次安装、升级与卸载 | 待真机/虚机 | Windows/macOS/Linux 的现有安装渠道；由旧正式版本升级，保留原数据与配对；回滚和卸载 | 平台/旧新版本/操作日志；旧配对无需重配、旧入口无运行依赖、外部 Agent 不被误杀、卸载遵守原数据策略 |
 | R08 同候选人工核对 | 用户体验已完成，最终身份待补 | Desktop、CLI/headless、Mobile；按[人工用例](headless-manual-acceptance.zh-CN.md)核对受源码变更影响的项目 | 平台、完整 SHA、真实 App 版本、通过/失败/未执行项及日志；不得把未反馈的平台推定通过 |
-| R09 匹配性能记录 | 工具已接线，本轮跳过 | CI 的 `headless-measurement` scope；[观察工具](../../scripts/ci/headless-measurement.py)，同 runner/工具链/target/features/命令/缓存策略 | 编译/直接 linker/真实 Store 样本执行时间、原始大小、启动样本、Cargo timings；记录顺序/页缓存/样本限制，不预设改善 |
+| R09 匹配性能记录 | 用户于 2026-10-20 明确取消；不再是验收条件 | 保留既有可选[观察工具](../../scripts/ci/headless-measurement.py)和历史记录，不安排执行 | 未进行受控对比，不计为通过，不宣称性能改善 |
 | R10 安装分发与渠道发布 | dev 下载/摘要已验证；正式渠道和安装升级待验 | 既有安装器下载入口、CLI 安装/升级、Desktop updater；仅使用经过前述检查的同一候选 | 下载与 checksum、平台架构/渠道匹配、升级路径和最终确认；不额外发布新协议或服务 |
 
 ## 顺序与需要真机的部分
 
-先固定 R01，再构建并验证 R02/R03/R06；在既有签名条件下完成 R04/R05；随后用明确版本做 R07/R08，并补 R09，最后才按既有流程核对 R10。需要用户真机时，应提供具体平台、候选版本、下载包/摘要、操作步骤与预期结果；当前未假定用户已有某一签名包。
+先固定 R01，再构建并验证 R02/R03/R06；在既有签名条件下完成 R04/R05；随后用明确版本做 R07/R08，最后才按既有流程核对 R10；R09 已由用户取消，无需补测。需要用户真机时，应提供具体平台、候选版本、下载包/摘要、操作步骤与预期结果；当前未假定用户已有某一签名包。
 
 [Build Test](../../.github/workflows/build.yml) 也会发布 test/nightly 产物，并调用 Android/iOS 流程；签名 nightly、TestFlight 和正式 [Release](../../.github/workflows/release.yml) 都存在外部发布效果。整理本清单不等于已经触发这些流程。版本与发布参数应在执行前固定，不能把普通 CI 的通过当作发布工作已完成。
 

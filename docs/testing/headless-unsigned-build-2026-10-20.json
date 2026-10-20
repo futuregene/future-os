@@ -50,12 +50,20 @@
   "pending": [
     "User platform signing/notarization tests",
     "Real install/upgrade/uninstall",
-    "Matched performance and final same-candidate manual confirmation"
+    "Final same-candidate manual confirmation"
   ],
   "status": "completed",
   "conclusion": "success",
   "results": "docs/testing/headless-unsigned-results-2026-10-20.json",
   "completedObservedAt": "2026-10-20T12:51:23.219605+00:00",
   "downloadManifest": "docs/testing/headless-unsigned-results.zh-CN.md",
-  "sha256Manifest": "docs/testing/headless-unsigned-2026-10-20.sha256"
+  "sha256Manifest": "docs/testing/headless-unsigned-2026-10-20.sha256",
+  "performanceComparison": {
+    "status": "cancelled-by-user",
+    "decisionDate": "2026-10-20",
+    "userInstruction": "性能对比不做了",
+    "measurementPerformed": false,
+    "acceptanceGate": false,
+    "performanceImprovementClaimed": false
+  }
 }

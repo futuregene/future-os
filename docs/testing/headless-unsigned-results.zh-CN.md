@@ -51,7 +51,7 @@ Windows 实际 CLI 允许使用 USER32/shell32 等系统 API；“无 GUI 依赖
 
 - 用户稍后做 Windows Authenticode、macOS Developer ID/公证/时间戳/Gatekeeper 测试。本轮没有这些证书签名或公证；构建所需 ad-hoc 和既有 updater .sig 不代替平台签名验收。已对 .sig 文件计算摘要，没有在本地独立做 updater 公钥验签。
 - 真实安装、旧正式版升级/回滚/卸载，以及最终同候选 Desktop/CLI/Mobile 人工功能结果仍待记录。NSIS 解包 smoke 不等于安装器已在真机执行。
-- 受控性能对照尚未执行；本轮构建耗时不能作为拆包性能改善结论。
+- 用户于 2026-10-20 取消性能对比，不再列为待办或验收条件；未进行受控对照，本轮构建耗时不能作为拆包性能改善结论。
 - 本轮固定的是 `a5f91752`，不含随后 main 中的启动等待、自建中继等改动。若要测试较新源码，应另定候选并复验，不替换本轮身份。
 - 完整后置事项见[发布验收清单](headless-release-acceptance.zh-CN.md)。unsigned 通过不代表整体 Goal 完成。
 

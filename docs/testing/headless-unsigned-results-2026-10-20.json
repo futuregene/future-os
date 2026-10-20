@@ -887,7 +887,7 @@
     "No real installer execution, upgrade/uninstall or final same-candidate functional manual acceptance performed by this inspection.",
     "Linux CLI-only tarballs were produced; Windows/macOS workflows provide CLI inside Desktop/portable payloads, not standalone CLI-only archives.",
     "Download hashing/archive inspection does not execute or install any downloaded binary.",
-    "No matched performance measurement; CI/build durations are not a controlled comparison.",
+    "Performance comparison cancelled by user on 2026-10-20; no controlled measurement or speedup claim. CI/build durations are not a controlled comparison.",
     "Build candidate is frozen at a5f91752, not later startup/relay changes now in main."
   ],
   "evidenceArchives": {
@@ -912,5 +912,13 @@
     "http200": 15,
     "fullPayloadSha256Computed": 15,
     "windowsLinuxMatchedCiArchiveHashes": 8
+  },
+  "performanceComparison": {
+    "status": "cancelled-by-user",
+    "decisionDate": "2026-10-20",
+    "userInstruction": "性能对比不做了",
+    "measurementPerformed": false,
+    "acceptanceGate": false,
+    "performanceImprovementClaimed": false
   }
 }

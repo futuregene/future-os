@@ -51,7 +51,7 @@ Windows CLI legitimately uses system APIs such as USER32/shell32. GUI exclusion 
 
 - The user will later test Windows Authenticode and macOS Developer ID/notarization/timestamps/Gatekeeper. This round did not use those certificates/services; build-required ad-hoc and existing updater .sig files do not replace platform signing acceptance. Signature files were hashed, without independent local updater public-key verification.
 - Real installation, upgrade/rollback/uninstall from an old release and final same-candidate Desktop/CLI/Mobile functional manual evidence remain. NSIS extraction smoke is not a real machine installation.
-- Controlled performance comparison has not run; these build durations establish no extraction speedup.
+- The user cancelled performance comparison on 2026-10-20; it is no longer pending or an acceptance gate. No controlled comparison was performed, and these build durations establish no extraction speedup.
 - This round freezes `a5f91752`, excluding later main startup-wait/relay changes. Testing newer source requires a newly identified and validated candidate.
 - See the [release acceptance checklist](headless-release-acceptance.md). Unsigned success does not complete the overall Goal.
 
