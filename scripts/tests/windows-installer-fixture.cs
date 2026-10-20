@@ -10,13 +10,22 @@ internal static class InstallerFixture
     private static int Main(string[] args)
     {
 #if INSTALLER_NEW
-        if (args.Length == 1 && args[0] == "--help" &&
+        bool headlessHelp = args.Length == 2 && args[0] == "headless" && args[1] == "--help";
+        if (headlessHelp)
+        {
+            File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "headless-probe.marker"), "invoked");
+            if (File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "fail-headless-health")))
+            {
+                return 5;
+            }
+        }
+        if (((args.Length == 1 && args[0] == "--help") || headlessHelp) &&
             File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "fail-health")))
         {
             return 5;
         }
         // Replacement health probes are independent of cleanup failure markers.
-        if (args.Length == 1 && (args[0] == "--help" || args[0] == "--version"))
+        if (headlessHelp || (args.Length == 1 && (args[0] == "--help" || args[0] == "--version")))
         {
             return 0;
         }

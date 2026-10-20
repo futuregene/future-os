@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "parent": "b5bd2f53b4d2c3c8414610c6ff4de25fbb2dc4c8",
+  "scope": "Stable device identity, existing desktop.lock namespace, Future home resolution and Git/shadow review backend.",
+  "migratedTestDeclarations": 75,
+  "executedTests": 0,
+  "checks": [
+    {
+      "command": "cargo clippy --offline --locked -p future-host -p future-cli -p futureos --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p future-host --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p futureos --no-default-features --features headless --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo fmt -p future-host -p future-cli -p futureos --check",
+      "result": "PASS"
+    },
+    {
+      "command": "python3 scripts/ci/host-boundaries.py",
+      "result": "PASS",
+      "hostPackages": 369,
+      "cliPackages": 395
+    }
+  ],
+  "environment": {
+    "target": "aarch64-apple-darwin",
+    "rust": "1.97.0",
+    "RUSTC_WRAPPER": "",
+    "CARGO_TARGET_DIR": "<root>/target (shared incremental)"
+  },
+  "interimCI": {
+    "runId": 39356975686,
+    "url": "https://github.com/futuregene/future-os/actions/runs/39356975686",
+    "headSha": "b5bd2f53b4d2c3c8414610c6ff4de25fbb2dc4c8",
+    "statusAtSnapshot": "queued",
+    "hostJobStatusAtSnapshot": "in_progress",
+    "conclusionAtSnapshot": null,
+    "scope": "all",
+    "containsThisChange": false
+  },
+  "limits": [
+    "No local test execution.",
+    "CI snapshot is pending, not success; it predates this change.",
+    "No matched performance, artifact, runtime compatibility or manual acceptance."
+  ]
+}

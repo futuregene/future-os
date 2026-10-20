@@ -314,6 +314,9 @@ mod block_fixtures {
     }
 
     fn run_case(case: &str) {
+        // Other fixtures temporarily replace PATH while holding the HOME lock.
+        // Keep that environment stable while creating this isolated child.
+        let _home = crate::auth_store::test_support::HomeGuard::new("skills-child-environment");
         let parent = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/host-fixtures");
         std::fs::create_dir_all(&parent).unwrap();
         let home = tempfile::tempdir_in(&parent).unwrap();

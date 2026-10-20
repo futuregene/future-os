@@ -23,6 +23,7 @@ pub mod command_policy;
 pub mod connection;
 pub mod history;
 pub mod home;
+pub mod instance_lock;
 pub mod session_deletion;
 pub mod session_errors;
 pub mod shell_result;

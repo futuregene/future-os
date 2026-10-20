@@ -51,7 +51,7 @@ Desktop 在默认本地端点没有外部 Agent 且成功取得实例锁时，�
 | [GUI supervisor](../../desktop/src-tauri/src/agent_supervisor.rs) | 探测、启动并管理 `future agent` 子进程；退出前重置 Windows 权限并 kill | 改为内置句柄与外部连接两种模式，共用完整停机流程 |
 | [GUI 启动](../../desktop/src-tauri/src/lib.rs)与[宿主锁](../../desktop/src-tauri/src/instance.rs) | setup 启动后台工作，Tauri build 后取得 GUI/headless 锁 | 依赖 Agent 的工作要延后到宿主锁与兼容性检查之后 |
 | [业务连接](../../desktop/src-tauri/src/agent_bridge/client.rs) | 缓存 Channel，检查业务连通性；兼容性另由状态接口报告 | 所有业务请求和自动重连都必须受兼容性与实例身份约束 |
-| [headless Agent 管理](../../desktop/src-tauri/src/headless/agent.rs)与[TUI supervisor](../../tui/src/agent_supervisor.rs) | 各自管理外部子进程，现有 Agent 可被复用 | headless 接入共享内置宿主；TUI 保留独立宿主并复用握手与冲突诊断 |
+| [headless Agent 管理](../../cli/src/headless/agent.rs)与[TUI supervisor](../../tui/src/agent_supervisor.rs) | 各自管理外部子进程，现有 Agent 可被复用 | headless 接入共享内置宿主；TUI 保留独立宿主并复用握手与冲突诊断 |
 | [SQLite worker](../../agent/src/session/database/mod.rs)、[会话 Manager](../../agent/src/session/manager/mod.rs)、[事件 writer](../../agent/src/rpc/broadcaster/journal_writer.rs) | Agent SQLite 主存储，有序写入、终态事务、后台维护和析构等待 | 需要明确 drain、停止、join 和超时结果，不能靠进程死亡代替正常完成 |
 | [RPC shutdown](../../agent/src/rpc/commands/session_lifecycle.rs)、[会话调度](../../agent/src/rpc/session.rs) | shutdown 拒绝新 prompt；完成任务后 scheduler 可继续出队 | 新增宿主停机控制，原子关闭接受与出队，持久化排队取消 |
 | [RPC 服务](../../agent/src/grpc/mod.rs)与[全局 broadcaster](../../agent/src/rpc/mod.rs) | 生产服务永久等待；全局控制面事件存在进程级静态对象 | 服务需要显式 shutdown，并结束全局与会话订阅 |
@@ -575,7 +575,7 @@ Windows GUI/headless 同样必须顺序执行。占位 CLI 仅供编译，NSIS �
 
 保留既有 required-check 名称；Windows 更新 fixture 的失败也会使 `Rust tests (Linux)` 汇总门禁失败，避免新增 job 尚未写入分支保护时出现漏拦截。headless 的 check、Clippy 和全量测试显式启用 `--features headless`，确保独立二进制也参与构建/静态检查。
 
-`ci.yml` 的 Agent 依赖变化现在触发 Desktop GUI/headless 和 CLI/TUI 检查，根 manifest/lock 和共享 settings/workspaces/tasks 的影响也纳入过滤。Linux 全量单测继续按 crate 分组，不在三平台重复全部测试。`Rust build (Linux/Windows/macOS)` 增加 `scripts/ci/check-embedded-agent.py`，顺序运行 RPC 连接门禁、Agent `service_startup`、GUI 和 headless 的 `agent_host::tests`。fixture 在独立进程中隔离 HOME、FUTURE_HOME 和本地端点，实际覆盖 Windows pipe/Unix socket、持锁拒绝、启动取消、全局停机、CLI 来源任务终态、重启和外部所有者存活。零匹配测试视为失败；每组命令、结果、耗时和日志写入 `target/embedded-agent-ci/`，由 CI 归档。CI 将构建并发限制为 2、测试并发为 1，使用 `CARGO_PROFILE_TEST_DEBUG=1`，不扩大到三平台全量单测。
+`ci.yml` 的 Agent 依赖变化现在触发 Desktop GUI/headless 和 CLI/TUI 检查，根 manifest/lock 和共享 settings/workspaces/tasks 的影响也纳入过滤。Linux 全量单测继续按 crate 分组，不在三平台重复全部测试。`Rust build (Linux/Windows/macOS)` 增加 `scripts/ci/check-embedded-agent.py`，顺序运行 RPC 连接门禁、Agent `service_startup`、CLI 查找、共享 `future-host` 的 `agent_host::` 用例一次，再分别运行 GUI 初始化/Provider-RPC/Ready/Exit 接线和真实 headless 进程测试；这替代了[Headless 拆包](headless-package-development.zh-CN.md)前 GUI/headless 重复筛选 `agent_host::tests` 的路径。fixture 在独立进程中隔离 HOME、FUTURE_HOME 和本地端点，实际覆盖 Windows pipe/Unix socket、持锁拒绝、启动取消、全局停机、CLI 来源任务终态、重启和外部所有者存活。零匹配测试视为失败；每组命令、结果、耗时和日志写入 `target/embedded-agent-ci/`，由 CI 归档。CI 将构建并发限制为 2、测试并发为 1，使用 `CARGO_PROFILE_TEST_DEBUG=1`，不扩大到三平台全量单测。
 
 新增 `Windows update fixtures` PR 检查，用临时 C# 可执行文件和 NSIS 执行安装预检、清理失败门禁、租约、回滚、卸载及独立观察器成功/启动失败/安装失败/回滚不完整场景。既有签名构建调用同一预检入口，因此也会覆盖观察器。启动失败用不存在的安装器模拟，避免执行无效 EXE 触发系统模态弹窗。这些离线 fixture 不安装真实产品、不读写开发者真实 Agent 数据，也不能替代完整安装器验收。
 

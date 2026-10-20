@@ -252,7 +252,7 @@ Real Agent/model verification is manual, outside CI. Desktop `tasks.rs` has igno
 
 ```bash
 # Agent and host must share HOME so managed chat workspaces agree.
-HOME=/tmp/try future agent --home /tmp/try/.future --grpc-addr 127.0.0.1:5099 &
+HOME=/tmp/try FUTURE_HOME=/tmp/try/.future future agent --grpc-addr 127.0.0.1:5099 &
 FUTURE_AGENT_GRPC_ADDR=127.0.0.1:5099 future task add … && future task run NAME
 HOME=/tmp/try FUTURE_AGENT_GRPC_ADDR=127.0.0.1:5099 \
   cargo test --lib tasks::tests::serve_pending_runs_until_idle -- --ignored --nocapture

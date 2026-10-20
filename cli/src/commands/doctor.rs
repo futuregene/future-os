@@ -284,10 +284,10 @@ static PROBE_BUDGET_OVERRIDE: std::sync::Mutex<Option<Option<Duration>>> =
 
 /// Sets [`PROBE_BUDGET_OVERRIDE`] and restores it on drop, so a panicking test
 /// cannot leak "no deadline" into the rest of the binary.
-#[cfg(test)]
+#[cfg(all(test, unix))]
 struct ProbeBudgetGuard;
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl ProbeBudgetGuard {
     fn set(budget: Option<Duration>) -> Self {
         *PROBE_BUDGET_OVERRIDE.lock().unwrap() = Some(budget);
@@ -295,7 +295,7 @@ impl ProbeBudgetGuard {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 impl Drop for ProbeBudgetGuard {
     fn drop(&mut self) {
         *PROBE_BUDGET_OVERRIDE.lock().unwrap() = None;

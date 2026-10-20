@@ -45,6 +45,12 @@ type ReplySlot = Arc<CachedReply>;
 #[derive(Clone, Default)]
 pub struct ReplySlots(Arc<Mutex<HashMap<String, ReplySlot>>>);
 impl ReplySlots {
+    /// Read-only observation of real cache retirement by integration fixtures.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn contains_command(&self, command_id: &str) -> bool {
+        self.0.lock().unwrap().contains_key(command_id)
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn shares_cache(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)

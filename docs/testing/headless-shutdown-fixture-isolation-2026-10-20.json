@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "0bf843e0726ee853b127e32e05178e08e1c073f9",
+  "ci": {
+    "run": 39374836837,
+    "candidate": "70f3d7866437c31af8bbb8cfedd7faf7e08e3fe9",
+    "job": 118470599535,
+    "jobName": "Rust tests (Linux) (desktop gui)",
+    "conclusion": "failure",
+    "result": "1025 passed; 2 failed; 8 existing ignored",
+    "failedCases": [
+      "desktop_shutdown::tests::reconcile_keeps_runs_whose_state_could_not_be_read",
+      "desktop_shutdown::tests::unconfirmed_runs_report_the_transport_outcome"
+    ],
+    "failure": "An unconfirmed run should remain owned (1), but its ledger had been cleared (0).",
+    "logSha256": "62de8b6e1a3ffae0e08bf4d66d162f1b859f90f55b467a775e98c07abc1a5047"
+  },
+  "cause": "GUI runtime-update drain fixture reset shared task/admission/shutdown state without TEST_HOME_LOCK. Its initial/final reset could clear another real RPC shutdown fixture's owned-run ledger.",
+  "repair": "Only add the existing HomeGuard to the GUI drain fixture for its entire lifetime, including both global resets. No product or assertion changes.",
+  "before": {
+    "command": "cargo test -p futureos --lib --offline --locked -- desktop_shutdown::tests::unconfirmed_runs_report_the_transport_outcome gui::runtime_update_tests::runtime_update_drain_loop_covers_every_receive_exit --test-threads=2",
+    "results": [
+      "test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 1041 filtered out; finished in 0.81s"
+    ],
+    "logSha256": "15c5a6604d501c2fd7210c58d5b45edd2f05510d668ed31bd6751fc4bfa15f0f",
+    "actualCases": 2,
+    "failure": "Same owned_count 0 != 1, reproduced locally in 0.81s."
+  },
+  "after": {
+    "command": "cargo test -p futureos --lib --offline --locked -- desktop_shutdown::tests:: gui::runtime_update_tests:: --test-threads=4",
+    "results": [
+      "test result: ok. 26 passed; 0 failed; 0 ignored; 0 measured; 1017 filtered out; finished in 10.72s"
+    ],
+    "logSha256": "ef4ff3506496d6d92d0a6c21abcfb26135e1cddf7fc1e4fbc43a29b976d569e6",
+    "actualCases": 26
+  },
+  "preserved": [
+    "Unreadable real RPC cannot release ownership",
+    "Unconfirmed cancellation reports the exact transport/timeout outcome and retains its run",
+    "Full original runtime-drain receive-exit coverage and assertions",
+    "Real RPC, ownership and shutdown effects are retained; no interface-only mock substitution"
+  ],
+  "limits": [
+    "Local native macOS repro/repair only; Linux CI revalidation pending.",
+    "No next workflow dispatch while prior Windows native build is still live; the branch CI concurrency policy would cancel it."
+  ],
+  "localStatic": {
+    "Host/GUI/CLI/app-settings Clippy --all-targets": {
+      "status": "pass",
+      "logSha256": "409caf9f850c1f22aa5b281d3478fb1c856610c065a08cc6b285fb930bfb20b3"
+    },
+    "Legacy headless Clippy --all-targets": {
+      "status": "pass",
+      "logSha256": "07ea30b81e9df0075b81e056bfcae2d4b07b6ea33f0617ae0fad562bd736f7d6"
+    },
+    "Standalone Host public Rustdoc -D warnings": {
+      "status": "pass",
+      "logSha256": "f50af6b1405b65dc64e3b78235d56cbee9d9f2ac66ccacf221bebf65a9c2119b"
+    }
+  }
+}

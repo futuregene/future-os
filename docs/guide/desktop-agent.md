@@ -2,7 +2,7 @@
 
 [中文](desktop-agent.zh-CN.md)
 
-GUI and `futureos-headless` run the complete Agent in their own process by default.
+GUI and `future headless` run the complete Agent in their own process by default.
 CLI, TUI, mobile and other clients retain the same RPC interface and existing
 configuration, database, session and credential formats. The packaged `future`
 CLI remains available for skills, maintenance and independent `future agent`

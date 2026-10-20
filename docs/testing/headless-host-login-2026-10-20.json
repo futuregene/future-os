@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+  "change": "Stateless device OAuth/account/auth-state services move once to Host; Desktop retains best-effort validated browser launch. Host start returns validated codes/URLs with no browser side effect; Desktop start/start_with_browser preserve old GUI/headless presentation. Agent remains sole credential writer.",
+  "compatibility": [
+    "Same client_name, platform label/query, URLs, HTTP bodies and retry/error/Retry-After policy.",
+    "Same auth.json path and Agent commit/live-session-refresh boundary.",
+    "No CLI/GUI/open dependency added to Host.",
+    "Endpoint restoration tests hold the canonical real RPC fixture guard before changing process-global endpoint; original restoration/failure assertions remain."
+  ],
+  "testOwnership": {
+    "newOriginalDeclarations": 49,
+    "totalMovedOriginalDeclarations": 1015,
+    "totalExecutedOriginalDeclarations": 1013,
+    "baselineIgnored": 2,
+    "retainedBrowserAdapter": "future_login::tests::open_browser_uses_injected_opener",
+    "originalAssertionMacros": 86,
+    "hostAssertionMacros": 86
+  },
+  "localTests": [
+    {
+      "command": "cargo test -p future-host --lib future_login:: --offline --locked",
+      "passed": 49,
+      "failed": 0,
+      "ignored": 0,
+      "executionSeconds": 0.2,
+      "logSha256": "95f7c0be75e5a61969b3e26039da147c28347c72e815c493f92cfe580dffd8e2"
+    },
+    {
+      "command": "cargo test -p futureos --lib future_login::tests::open_browser_uses_injected_opener --offline --locked -- --exact",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "executionSeconds": 0.0,
+      "logSha256": "be4cca0d4c2ea7f746208a2fa6adafedfd314f2856e4df6176119b61ed5e358e"
+    }
+  ],
+  "profile": "Native aarch64-apple-darwin, Rust 1.97.0, CARGO_PROFILE_TEST_DEBUG=1, unset RUST_LOG, shared existing target, offline/locked; no matched performance claim.",
+  "localChecks": [
+    "Host/GUI/CLI Clippy --all-targets PASS",
+    "Original headless Clippy --all-targets PASS",
+    "fmt PASS"
+  ],
+  "limits": [
+    "Native local results only; pending subsequent CI/real final CLI process/manual login acceptance.",
+    "Current CI candidate 0f9cc395 predates this migration.",
+    "Maintenance scheduler, Remote, complete stop coordination, future headless and releases remain open."
+  ]
+}

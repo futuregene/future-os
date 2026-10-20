@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "parent": "84ac062e",
+  "scope": "One shared command-admission and exact-run ownership ledger, original RPC builders and response handling. Entry cancellation remains exact-run fenced.",
+  "migratedTestDeclarations": 10,
+  "executedTests": 0,
+  "checks": [
+    {
+      "command": "cargo clippy --offline --locked -p future-host -p future-cli -p futureos --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p future-host --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p futureos --no-default-features --features headless --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo fmt -p future-host -p future-cli -p futureos --check",
+      "result": "PASS"
+    },
+    {
+      "command": "python3 scripts/ci/host-boundaries.py",
+      "result": "PASS"
+    }
+  ],
+  "environment": {
+    "target": "aarch64-apple-darwin",
+    "rust": "1.97.0",
+    "RUSTC_WRAPPER": "",
+    "CARGO_TARGET_DIR": "<root>/target (shared incremental)"
+  },
+  "limits": [
+    "No local unit/NATS tests executed.",
+    "Actual RPC/Agent ownership tests remain with Desktop until the shared bridge/harness moves.",
+    "Full stop coordination and Agent runtime ownership not yet migrated.",
+    "Intermediate CI 39356975686 predates this commit; host group succeeded but Agent group failed and the run is not accepted."
+  ]
+}

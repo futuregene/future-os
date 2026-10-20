@@ -5,7 +5,7 @@ FutureOS 免安装版使用说明（Linux）
 将下载的压缩包解压到任意目录，然后运行 ./futureos。
 使用实际下载文件名：本地构建和正式发布均为
 FutureOS_<version>_linux_<arch>-portable.tar.gz（x86_64 或 aarch64）。
-futureos、futureos-headless 与 future 保持同目录。图形或无头入口优先连接兼容外部
+futureos 与 future 保持同目录。图形或无头入口优先连接兼容外部
 Agent；默认端点不存在且实例锁空闲时，在自身进程内运行完整 Agent。future 用于技能、
 维护及独立 CLI。不兼容或持锁不可用时直接报错，不启动第二份服务，不删除锁绕过检查。
 
@@ -13,12 +13,12 @@ Agent；默认端点不存在且实例锁空闲时，在自身进程内运行完
 发布的 GUI 包需要 glibc >= 2.39（约 Ubuntu 24.04+）与 WebKitGTK：
     Debian/Ubuntu: sudo apt install libwebkit2gtk-4.1-0
     Fedora:        sudo dnf install webkit2gtk4.1
-官方 Linux CI 使用静态 musl 构建 future CLI 与 futureos-headless，
+官方 Linux CI 使用静态 musl 构建 future CLI（包含 headless），
 不需要 GUI 运行库，也没有 glibc 版本要求（CentOS 7 / Rocky 8 级别的老系统可运行）。
 本地源码构建使用所选 host target，不一定静态链接。
 无桌面主机可下载对应架构的官方 CLI-only 包，运行 ./future config 和 ./future tui，
 或运行 ./future agent 供其他 CLI 客户端使用。
-服务器需要提供手机远程入口时，运行 ./futureos-headless。它是独立前台程序，
+服务器需要提供手机远程入口时，运行 ./future headless。它在 CLI 进程内前台运行，
 不启动图形界面，按 Ctrl+C 关闭；不是 futureos 的 sidecar。
 futureos 只启动 GUI，原 --headless 选项已移除。
 
@@ -38,7 +38,7 @@ future agent --probe-sandbox 与 future doctor。主机 namespace 策略可能�
   本地优先不代表数据不会离开本机。
 · 退出内置宿主会取消所有客户端的活动、排队和审批任务，包括 CLI/TUI 对话；
   有任务时 GUI 会提示确认。连接外部 Agent 时只取消本 Desktop 的运行，外部服务保持运行。
-· 同目录已附带独立 futureos-headless 入口和统一 future CLI。
+· 同目录的统一 future CLI 已包含 headless 入口。
 
 【许可】
 FutureOS 主体按 MIT 许可发布；内置的 future goal 组件派生自 LoopX，

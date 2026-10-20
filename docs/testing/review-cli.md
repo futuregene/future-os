@@ -280,8 +280,8 @@ run is not "no input reaches it". The concrete input, on this host: the unified
 binary, an isolated home, and a scripted wizard — plus a live agent, because
 `provider_rpc` is called only from the `probe_agent().is_ok()` branch
 (`configure.rs:857-861`, measured 0 here because the probe's home has no agent).
-`future agent --home <dir>` is the documented way to give the CLI its own socket
-under the same `FUTURE_HOME` (AGENTS.md), so the fixture exists in-repo. Honest
+`FUTURE_HOME=<dir> future agent` is the documented way to run an agent with its own
+socket (AGENTS.md), so the fixture exists in-repo. Honest
 category: `unreachable-in-this-environment` (a live agent + a scripted wizard), or
 an OPEN row with that fixture named — not `unreachable-by-construction`.
 
@@ -647,7 +647,7 @@ way it lands → 0-vs-nonzero only, as §6.11 says); `209` is stable at 0 in 18 
 4. **`auth.rs:471-483` / `configure.rs:820ff` with a live agent.** Both need an
    agent on the isolated home's socket; my pty probe deliberately ran without one
    (which is why 855/856/862 flipped and 857-861 did not). The fixture is
-   `future agent --home <dir>`, but wiring it into the probe is a second harness
+   `FUTURE_HOME=<dir> future agent`, but wiring it into the probe is a second harness
    and I stopped at the category finding.
 5. **The `#[cfg(not(test))]` family as a class — 60 of §4c's 68 `unreachable-by-construction`
    lines** (`provider_rpc` 26, `save_custom_provider`'s agent branch 8, `save_auth` 24,

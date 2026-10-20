@@ -10,11 +10,6 @@ default-run = "futureos"
 name = "futureos_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-[[bin]]
-name = "futureos-headless"
-path = "src/bin/futureos-headless.rs"
-required-features = ["headless"]
-
 # The main-thread driver (TAU-C8). `harness = false` gives this target a real `fn main()`
 # — i.e. the process's main thread — which is what makes the AppKit/`muda` family
 # (`menu.rs`, `run_with`'s own body, the `.setup` hook) reachable at all; libtest runs
@@ -32,9 +27,6 @@ required-features = ["gui"]
 
 [features]
 default = ["gui"]
-# Opt-in binary, built with --no-default-features so GUI libraries cannot leak
-# into the server distribution. It reuses the same Desktop backend.
-headless = []
 gui = [
     "dep:tauri", "dep:tauri-build", "dep:tauri-plugin-shell",
     "dep:tauri-plugin-updater", "dep:tauri-plugin-dialog",
@@ -43,6 +35,7 @@ gui = [
 ]
 
 [dev-dependencies]
+future-host = { path = "../../host", features = ["test-support"] }
 future-remote-server = { path = "../../packages/remote-server", features = ["test-support"] }
 future-remote-client = { path = "../../packages/remote-client", features = ["test-support"] }
 tokio = { version = "1", features = ["test-util"] }
@@ -63,6 +56,7 @@ tauri-build = { version = "2", features = [], optional = true }
 # compile without pulling in GTK/WebKit through the dev dependency graph.
 
 [dependencies]
+future-host = { path = "../../host" }
 # Shared agent wire contract (proto codegen + typed/JSON decode; typed-RPC
 # milestone). Path dep: this crate lives in the root cargo workspace, and
 # tonic/prost versions must stay aligned with its workspace pins.

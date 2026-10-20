@@ -10,6 +10,7 @@ pub(super) async fn initialize(
     model_registry: Arc<parking_lot::RwLock<ModelRegistry>>,
     cancellation: &StartupCancellation,
     service_work: Arc<super::work::ServiceWork>,
+    synced_state: Arc<parking_lot::RwLock<Option<crate::rpc::AppState>>>,
 ) -> Result<(crate::rpc::AppState, crate::grpc::AgentListener)> {
     cancellation.check()?;
     config.validate_environment()?;
@@ -258,6 +259,23 @@ pub(super) async fn initialize(
 
     cancellation.check()?;
     config.validate_environment()?;
+
+    // Publish the built state to the sync callback registered in `prepare`
+    // (before the cold registry build, so an early background fetch cannot
+    // fire ahead of it). A fetch that already landed between those two points
+    // found the holder empty and is recovered by rebuilding here.
+    let early_sync = synced_state.read().is_none();
+    *synced_state.write() = Some(state.clone());
+    if early_sync {
+        let _provider_guard = state
+            .control_plane
+            .provider_command_lock
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        *state.model_registry.write() = crate::models::Registry::new();
+        state.reconcile_provider_references();
+    }
+
     tracing::info!("Agent startup: binding the gRPC endpoint");
     let listener = match tcp_bind {
         Some((host, port)) => crate::grpc::AgentListener::bind_tcp(&host, port).await?,

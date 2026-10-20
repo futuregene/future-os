@@ -1123,7 +1123,7 @@ Source entries: [mobile connection](../../../mobile/src/remote/client.ts),
 [mobile pairing HTTP](../../../mobile/src/remote/pairing.ts),
 [catalog state](../../../mobile/src/remote/useSessionCatalog.ts),
 [Desktop supervision](../../../desktop/src-tauri/src/remote/mod.rs),
-[Desktop commands and handshake](../../../desktop/src-tauri/src/remote/commands.rs).
+[Desktop commands and handshake](../../../host/src/remote/commands.rs).
 The cross-repo server entry is `future-server/platform/service/src/routes/remote.rs`.
 
 **Risk judgment and this round's priority:** existing evidence does not require

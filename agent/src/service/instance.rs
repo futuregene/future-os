@@ -1,6 +1,7 @@
 //! The existing per-data-root singleton and installer-compatible metadata.
 
 use anyhow::{Context, Result};
+use future_rpc::instance_lock::{host_name, lock_conflict_message};
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 
@@ -118,157 +119,6 @@ fn write_metadata(lock_path: &Path, future_home: &Path) -> Result<InstanceMetada
     Ok(InstanceMetadata(path))
 }
 
-/// The host name of the machine running this Agent, for instance metadata and
-/// lock-conflict diagnostics. Empty/unavailable resolves to `None`; the
-/// diagnostics degrade gracefully without it.
-fn host_name() -> Option<String> {
-    host_name_from_parts(hostname_raw(), std::env::var("COMPUTERNAME").ok())
-}
-
-#[cfg(unix)]
-fn hostname_raw() -> Option<String> {
-    let mut buffer = [0u8; 256];
-    let length = unsafe { libc::gethostname(buffer.as_mut_ptr().cast(), buffer.len()) };
-    if length != 0 {
-        return None;
-    }
-    let end = buffer
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(buffer.len());
-    Some(String::from_utf8_lossy(&buffer[..end]).trim().to_string())
-}
-
-#[cfg(windows)]
-fn hostname_raw() -> Option<String> {
-    use windows_sys::Win32::Foundation::BOOL;
-    use windows_sys::Win32::System::WindowsProgramming::GetComputerNameW;
-    let mut buffer = [0u16; 256];
-    let mut size = buffer.len() as u32;
-    let ok: BOOL = unsafe { GetComputerNameW(buffer.as_mut_ptr(), &mut size) };
-    if ok == 0 {
-        return None;
-    }
-    Some(
-        String::from_utf16_lossy(&buffer[..size as usize])
-            .trim()
-            .to_string(),
-    )
-}
-
-/// Combine the OS host name and (on Windows) `COMPUTERNAME` into one
-/// diagnostic value, dropping whitespace-only results. Split from
-/// [`host_name`] so the composition is testable without touching the
-/// environment or the OS.
-fn host_name_from_parts(os_name: Option<String>, env_name: Option<String>) -> Option<String> {
-    let os_name = os_name
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
-    let env_name = env_name
-        .map(|v| v.trim().to_string())
-        .filter(|v| !v.is_empty());
-    os_name.or(env_name)
-}
-
-/// Build the error shown when the instance lock is already held. The
-/// metadata file published by the running owner (best-effort) identifies
-/// *where* the Agent runs — crucial on shared-home setups (HPC login and
-/// compute nodes share one FutureOS home over NFS), where the conflicting
-/// process is on another machine and `kill` cannot reach it: the only local
-/// fixes are waiting for that node's job to end or using a different home.
-fn lock_conflict_message(lock_path: &Path, future_home: &Path) -> String {
-    let owner = std::fs::read(lock_path.with_file_name("agent-instance.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
-    lock_conflict_message_from(
-        lock_path,
-        future_home,
-        owner.as_ref(),
-        host_name().as_deref(),
-    )
-}
-
-/// [`lock_conflict_message`] with every input injected so both the same-host
-/// and cross-host arms are testable without spawning processes or depending
-/// on where the test runs.
-fn lock_conflict_message_from(
-    lock_path: &Path,
-    future_home: &Path,
-    owner: Option<&serde_json::Value>,
-    this_host: Option<&str>,
-) -> String {
-    let mut message = format!(
-        "Future Agent is already running for this FutureOS home (lock: {})",
-        lock_path.display()
-    );
-    let Some(owner) = owner else {
-        return message;
-    };
-    let pid = owner.get("pid").and_then(serde_json::Value::as_u64);
-    let host = owner
-        .get("host")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    let executable = owner
-        .get("executable")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_string);
-    let where_ = match (&host, pid) {
-        (Some(host), Some(pid)) => format!("pid {pid} on host {host}"),
-        (Some(host), None) => format!("host {host}"),
-        (None, Some(pid)) => format!("pid {pid}"),
-        (None, None) => String::new(),
-    };
-    if !where_.is_empty() {
-        message.push_str(&format!("\n  held by: {where_}"));
-    }
-    if let Some(executable) = executable {
-        message.push_str(&format!("\n  executable: {executable}"));
-    }
-    // A lock held on another host cannot be killed locally; only a
-    // different FutureOS home (or waiting for that process to exit) helps.
-    let cross_host = host
-        .as_deref()
-        .zip(this_host)
-        .is_some_and(|(owner_host, this_host)| owner_host != this_host);
-    if cross_host {
-        let owner_host = host.as_deref().unwrap_or_default();
-        message.push_str(&format!(
-            "\n  the lock is held on a different host ({owner_host}); this machine \
-             cannot stop that process — wait for it to exit, or run this Agent \
-             with its own FutureOS home, e.g.:"
-        ));
-    } else {
-        message.push_str(&format!(
-            "\n  to stop it: kill {} (or close the owning app), or run this Agent \
-             with its own FutureOS home, e.g.:",
-            pid.map(|p| p.to_string())
-                .unwrap_or_else(|| "<pid>".to_string())
-        ));
-    }
-    message.push_str(&format!(
-        "\n    future agent --home {}.future-{}",
-        future_home.display(),
-        host_token_example()
-    ));
-    message.push_str(&format!(
-        "\n  metadata (advisory, may be stale after a crash): {}",
-        lock_path.with_file_name("agent-instance.json").display()
-    ));
-    message
-}
-
-/// Placeholder used in the suggested `--home` example command. The example
-/// shows how to derive a per-host sibling directory; `$(hostname)` is shell
-/// syntax, `%COMPUTERNAME%` is the cmd equivalent.
-fn host_token_example() -> &'static str {
-    if cfg!(windows) {
-        "%COMPUTERNAME%"
-    } else {
-        "$(hostname)"
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -291,25 +141,11 @@ mod tests {
         );
         assert!(message.contains("kill"), "missing kill guidance: {message}");
         assert!(
-            message.contains("--home"),
-            "missing --home guidance: {message}"
+            message.contains("FUTURE_HOME"),
+            "missing FUTURE_HOME guidance: {message}"
         );
         drop(first);
         let _next = second_file.acquire(dir.path()).unwrap();
-    }
-
-    #[test]
-    fn host_name_prefers_the_os_and_ignores_blanks() {
-        assert_eq!(
-            host_name_from_parts(Some("intel080".into()), None),
-            Some("intel080".to_string())
-        );
-        assert_eq!(
-            host_name_from_parts(Some("  ".into()), Some("WIN-PC".into())),
-            Some("WIN-PC".to_string())
-        );
-        assert_eq!(host_name_from_parts(None, Some("".into())), None);
-        assert_eq!(host_name_from_parts(None, None), None);
     }
 
     #[test]
@@ -325,86 +161,6 @@ mod tests {
         // present and non-empty.
         let host = value["host"].as_str().expect("host field");
         assert!(!host.trim().is_empty());
-    }
-
-    #[test]
-    fn cross_host_conflict_explains_the_lock_is_out_of_reach() {
-        let lock = std::path::Path::new("/nfs/home/.future/agent/agent-instance.lock");
-        let home = std::path::Path::new("/nfs/home/.future");
-        let owner = serde_json::json!({
-            "pid": 4242,
-            "host": "intel080",
-            "executable": "/nfs/home/bin/future-agent",
-        });
-        let message = lock_conflict_message_from(lock, home, Some(&owner), Some("login01"));
-        assert!(message.contains("pid 4242 on host intel080"));
-        assert!(message.contains("different host"));
-        assert!(message.contains("--home"));
-        assert!(
-            !message.contains("kill 4242"),
-            "must not suggest killing a remote process"
-        );
-    }
-
-    #[test]
-    fn same_host_conflict_suggests_killing_the_owner() {
-        let lock = std::path::Path::new("/home/u/.future/agent/agent-instance.lock");
-        let home = std::path::Path::new("/home/u/.future");
-        let owner = serde_json::json!({"pid": 4242, "host": "intel080"});
-        let message = lock_conflict_message_from(lock, home, Some(&owner), Some("intel080"));
-        assert!(message.contains("held by: pid 4242 on host intel080"));
-        assert!(message.contains("kill 4242"));
-        assert!(message.contains("--home"));
-    }
-
-    #[test]
-    fn owner_description_covers_host_only_pid_only_and_neither() {
-        let lock = std::path::Path::new("/h/.future/agent/agent-instance.lock");
-        let home = std::path::Path::new("/h/.future");
-
-        // Host without a pid, on another host: the owner is named by host alone
-        // and the cross-host wording follows (no pid is needed to explain it).
-        let only_host = lock_conflict_message_from(
-            lock,
-            home,
-            Some(&serde_json::json!({"host": "intel080"})),
-            Some("login01"),
-        );
-        assert!(only_host.contains("held by: host intel080"), "{only_host}");
-        assert!(only_host.contains("different host"), "{only_host}");
-
-        // Pid without a host, same host as ours: the owner is named by pid, and
-        // the local advice uses the pid we have.
-        let only_pid = lock_conflict_message_from(
-            lock,
-            home,
-            Some(&serde_json::json!({"pid": 7})),
-            host_name().as_deref(),
-        );
-        assert!(only_pid.contains("held by: pid 7"), "{only_pid}");
-        assert!(only_pid.contains("kill 7"), "{only_pid}");
-
-        // Neither: there is no owner to name, so the message must not invent a
-        // "held by" line — the location advice stays, with a placeholder pid.
-        let neither = lock_conflict_message_from(
-            lock,
-            home,
-            Some(&serde_json::json!({"pid": null, "host": null})),
-            Some("login01"),
-        );
-        assert!(!neither.contains("held by:"), "{neither}");
-        assert!(neither.contains("kill <pid>"), "{neither}");
-    }
-
-    #[test]
-    fn missing_or_unreadable_metadata_degrades_to_the_plain_message() {
-        let lock = std::path::Path::new("/h/.future/agent/agent-instance.lock");
-        let home = std::path::Path::new("/h/.future");
-        let message = lock_conflict_message_from(lock, home, None, Some("intel080"));
-        assert_eq!(
-            message,
-            "Future Agent is already running for this FutureOS home (lock: /h/.future/agent/agent-instance.lock)"
-        );
     }
 
     #[test]
@@ -483,8 +239,8 @@ mod open_tests {
     use super::*;
 
     /// The instance lock file may live in a directory that does not exist yet
-    /// (`--home` pointed at a fresh path). Opening must create it, because the
-    /// alternative is failing the Agent's startup on a path the user just chose.
+    /// (`FUTURE_HOME` pointed at a fresh path). Opening must create it, because
+    /// the alternative is failing the Agent's startup on a path the user chose.
     #[test]
     fn opening_the_lock_file_creates_its_missing_parent_directories() {
         let dir = tempfile::tempdir().unwrap();

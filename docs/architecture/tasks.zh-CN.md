@@ -268,7 +268,7 @@ future task prompt log|apply|revert <id|name> [revision-id]
 
 ```bash
 # 一个一次性实例：agent 与 host 共用同一个 HOME（否则 chat 工作区与 agent 的托管根不一致）
-HOME=/tmp/try future agent --home /tmp/try/.future --grpc-addr 127.0.0.1:5099 &
+HOME=/tmp/try FUTURE_HOME=/tmp/try/.future future agent --grpc-addr 127.0.0.1:5099 &
 FUTURE_AGENT_GRPC_ADDR=127.0.0.1:5099 future task add … && future task run NAME
 HOME=/tmp/try FUTURE_AGENT_GRPC_ADDR=127.0.0.1:5099 \
   cargo test --lib tasks::tests::serve_pending_runs_until_idle -- --ignored --nocapture

@@ -5,7 +5,7 @@
 # so this script has none of the macOS signing/notarization machinery.
 #
 # Produces:
-#   FutureOS_<artifact-version>_<arch>.deb  (futureos + futureos-headless + future)
+#   FutureOS_<artifact-version>_<arch>.deb  (futureos + future)
 #   FutureOS_<artifact-version>_linux_<arch>-portable.tar.gz
 
 set -euo pipefail
@@ -96,9 +96,8 @@ echo "==> Preparing unified CLI/Desktop build"
 echo "==> Setting Tauri bundle version"
 node scripts/version.mjs --set-bundle
 
-echo "==> Building standalone headless desktop (release, no GUI features)"
-cargo build --release -p future-cli -p futureos --no-default-features \
-  --features futureos/headless --bin future --bin futureos-headless
+echo "==> Building unified CLI/headless (release, no GUI dependencies)"
+cargo build --release -p future-cli --bin future
 
 export FUTURE_DESKTOP_CLI="target/release/future"
 
@@ -120,7 +119,6 @@ echo "==> Assembling portable tarball"
 dir="futureos-portable-linux"
 mkdir -p "$dir"
 cp "target/release/futureos" "$dir/futureos"
-cp "target/release/futureos-headless" "$dir/futureos-headless"
 cp "target/release/future" "$dir/future"
 chmod +x "$dir"/*
 cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
@@ -129,13 +127,13 @@ tar -czf "$PORTABLE" -C "$dir" .
 
 deb_extract_dir="$(mktemp -d)"
 dpkg-deb --extract "$DEB" "$deb_extract_dir"
-if [[ ! -x "$deb_extract_dir/usr/bin/futureos-headless" ]]; then
+if [[ ! -x "$deb_extract_dir/usr/bin/future" ]]; then
   dpkg-deb --contents "$DEB" >&2
-  fail "the .deb does not contain executable /usr/bin/futureos-headless"
+  fail "the .deb does not contain executable /usr/bin/future"
 fi
 rm -rf -- "$deb_extract_dir"
-tar -tzf "$PORTABLE" ./futureos-headless >/dev/null \
-  || fail "the portable archive does not contain ./futureos-headless"
+tar -tzf "$PORTABLE" ./future >/dev/null \
+  || fail "the portable archive does not contain ./future"
 
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"

@@ -160,6 +160,7 @@ try {
     $fresh = Join-Path $root 'fresh install'
     Assert-Equal (Wait-Exit (Start-Installer $fresh)) 0 'Fresh install'
     Assert-Equal (Test-Path (Join-Path $fresh 'installed.marker')) $true 'Install completed'
+    Assert-Equal (Test-Path (Join-Path $fresh 'headless-probe.marker')) $true 'Fresh install probes unified headless entry'
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $fresh 'future.exe')).Hash $newFixtureHash 'Fresh install writes new Agent'
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $fresh 'futureos.exe')).Hash $newFixtureHash 'Fresh install writes new desktop'
 
@@ -334,6 +335,15 @@ try {
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $unloadable 'future.exe')).Hash $fixtureHash 'Health failure restores old Agent'
     Assert-Equal (Get-FileHash -LiteralPath (Join-Path $unloadable 'futureos.exe')).Hash $fixtureHash 'Health failure restores old desktop'
     Assert-Equal (Test-Path (Join-Path $unloadable 'installed.marker')) $false 'Health failure does not report completion'
+
+    Write-Host 'Testing failed unified headless health check rollback...'
+    $headlessHealth = New-Install 'rollback after headless health check'
+    $null = New-Item -ItemType File -Path (Join-Path $headlessHealth 'fail-headless-health')
+    Assert-Equal (Wait-Exit (Start-Installer $headlessHealth '/S')) 5 'Failed headless health probe reports failure'
+    Assert-Equal (Test-Path (Join-Path $headlessHealth 'headless-probe.marker')) $true 'Headless health failure was actually observed'
+    Assert-Equal (Get-FileHash -LiteralPath (Join-Path $headlessHealth 'future.exe')).Hash $fixtureHash 'Headless health failure restores old CLI'
+    Assert-Equal (Get-FileHash -LiteralPath (Join-Path $headlessHealth 'futureos.exe')).Hash $fixtureHash 'Headless health failure restores old desktop'
+    Assert-Equal (Test-Path (Join-Path $headlessHealth 'installed.marker')) $false 'Headless health failure does not report completion'
 
     Write-Host 'Testing read-only executable...'
     $readOnly = New-Install 'read only'

@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "ci": {
+    "runId": 39358154196,
+    "headSha": "df56f5f20b02c90377ed8b5b523b859fc10c0b08",
+    "url": "https://github.com/futuregene/future-os/actions/runs/39358154196",
+    "agentJob": {
+      "jobId": 118418539016,
+      "conclusion": "success"
+    },
+    "hostJob": {
+      "jobId": 118418539168,
+      "conclusion": "success"
+    },
+    "windowsJob": {
+      "jobId": 118418539003,
+      "conclusion": "failure",
+      "errors": [
+        "E0432 unresolved crate::proc import at terminal/pty.rs:219",
+        "E0599 no_window trait missing at terminal/pty.rs:226",
+        "Native evidence upload found no files because compilation stopped before those steps."
+      ],
+      "logSha256": "0ad00ec8a30806cf8f482e299cc441d05275d526fa75a77ac2144238952e8aee"
+    }
+  },
+  "diagnosis": "The unused Desktop proc facade was removed after Git/review migration, but the Windows-only terminal tree-kill path still imported its trait. Native macOS checks did not compile this cfg(windows) use.",
+  "change": "Expose only the existing NoWindow trait from the host root and import it directly in the Windows terminal adapter. No process flags or kill scope change.",
+  "verification": "Native formatting/compilation is checked; only the next Windows CI run can establish Windows acceptance.",
+  "executedLocalTests": 0,
+  "limits": [
+    "The full CI run is not accepted.",
+    "Windows compile and native evidence need revalidation.",
+    "This repair does not constitute final Headless acceptance."
+  ]
+}

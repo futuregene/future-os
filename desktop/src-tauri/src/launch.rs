@@ -1,4 +1,4 @@
-//! The graphical entry point's command line.
+﻿//! The graphical entry point's command line.
 //!
 //! `futureos` shows the window; the flags it accepts are about what that window
 //! should do, not about how remote access is implemented. Managing the devices
@@ -27,7 +27,7 @@ Start the graphical Desktop.
 Pairing, unpairing and choosing which device drives this machine all live in the
 window's Remote page, and in the terminal via `future remote devices` (list /
 add / remove / use). That command asks a running Desktop, so start it first.
-For phone remote access without GUI dependencies, run futureos-headless.";
+For phone remote access without GUI dependencies, run future headless.";
 
 /// The parsed command line. `Help` is not a mode of running: it means the process
 /// prints [`HELP`] and exits without touching any state.
@@ -63,7 +63,7 @@ impl Launch {
                 // they wanted.
                 "--headless" => {
                     return Err(
-                        "The --headless option has been removed. Run futureos-headless instead."
+                        "The --headless option has been removed. Run future headless instead."
                             .into(),
                     );
                 }
@@ -82,7 +82,7 @@ impl Launch {
 /// Apply `--relay` / `--relay-ca` from this process's command line.
 ///
 /// Runs once, before anything reads the pairing store: an invitation minted by
-/// this launch has to know which relay it points at. `futureos-headless` reads
+/// this launch has to know which relay it points at. `future headless` reads
 /// the same flags from its own parser; applying them twice is harmless because
 /// the values are identical.
 pub(crate) fn apply_relay_from_argv() {
@@ -111,15 +111,12 @@ pub(crate) fn apply_relay_from_argv() {
 ///
 /// Both entry points call this before the remote runtime starts, so the choice
 /// means the same thing whether it arrived through the GUI's command line or
-/// through `futureos-headless`. Nothing is written down: these flags decide
+/// through `future headless`. Nothing is written down: these flags decide
 /// where *this launch* mints its invitations, and a launch that names no relay
 /// uses the Future platform for new pairings. Existing pairings keep the relay
 /// that issued them either way.
 pub fn apply_relay_settings(relay: Option<&str>, relay_ca: Option<&str>) {
-    if relay.is_none() && relay_ca.is_none() {
-        return;
-    }
-    crate::remote::relay::set_launch(relay, relay_ca);
+    future_host::remote::relay::apply_launch_settings(relay, relay_ca)
 }
 
 /// Resolve the environment the Desktop itself will use.
@@ -168,7 +165,7 @@ mod tests {
         );
         assert!(HELP.contains("Usage: futureos"));
         assert!(HELP.contains("future remote devices"));
-        assert!(HELP.contains("futureos-headless"));
+        assert!(HELP.contains("future headless"));
     }
 
     /// The two flags this entry point no longer has are refused by name, with the
@@ -193,7 +190,7 @@ mod tests {
     fn the_headless_flag_is_refused_and_named() {
         for args in [vec!["--headless"], vec!["--help", "--headless"]] {
             let error = parse(&args).expect_err("not this entry point");
-            assert!(error.contains("futureos-headless"), "{args:?}: {error}");
+            assert!(error.contains("future headless"), "{args:?}: {error}");
         }
         assert!(parse(&["--repair"]).is_err());
     }
@@ -211,61 +208,6 @@ mod tests {
         assert!(error.contains("--relay"), "{error}");
         assert!(error.contains("needs"), "{error}");
         assert!(parse(&["--relay-ca"]).is_err());
-    }
-
-    /// `--relay` decides where *this process* mints invitations and is not
-    /// written down, so the next launch — one that names no relay — is back on
-    /// the Future platform without anyone remembering to undo anything.
-    #[test]
-    fn relay_flags_apply_to_this_launch_only() {
-        let _home = HomeGuard::new("launch-relay-settings");
-
-        apply_relay_settings(Some("https://relay.example/"), Some("/etc/ca.pem"));
-        assert_eq!(
-            crate::remote::relay::endpoint().as_deref(),
-            Some("https://relay.example")
-        );
-        assert_eq!(
-            crate::remote::relay::ca_path().as_deref(),
-            Some(std::path::Path::new("/etc/ca.pem"))
-        );
-        // Nothing was written: the file the old build left behind is not read
-        // either, and a fresh home has no such file at all.
-        let relay_file = crate::store::future_dir()
-            .expect("future dir")
-            .join("relay.json");
-        assert!(!relay_file.exists(), "{} was written", relay_file.display());
-
-        // An empty `--relay` is this launch saying "the Future platform", which
-        // is the same answer as not passing the flag.
-        apply_relay_settings(Some(""), None);
-        assert!(!crate::remote::relay::enabled());
-        assert_eq!(crate::remote::relay::ca_path(), None);
-
-        // A launch with neither flag leaves the official relay in place.
-        apply_relay_settings(None, None);
-        assert!(!crate::remote::relay::enabled());
-    }
-
-    /// A launch that never names a relay speaks for the Future platform, even
-    /// when an older build left `relay.json` in the data root: that file is the
-    /// trap this rule exists to remove, so it must not come back to life.
-    #[test]
-    fn a_leftover_relay_file_does_not_choose_the_relay() {
-        let _home = HomeGuard::new("launch-relay-file-ignored");
-        crate::store::initialize_app_store().expect("store init");
-        let path = crate::store::future_dir()
-            .expect("future dir")
-            .join("relay.json");
-        std::fs::write(
-            &path,
-            r#"{"url":"http://192.168.1.2:8099","ca":"/etc/private-ca.pem"}"#,
-        )
-        .expect("write legacy file");
-
-        apply_relay_settings(None, None);
-        assert!(!crate::remote::relay::enabled());
-        assert_eq!(crate::remote::relay::ca_path(), None);
     }
 
     /// Both launch stages hydrate the host environment, and the Desktop hydrates

@@ -8,7 +8,7 @@ wire: the typed payload the clients parse, every failure collapsing to "no
 recommendation", and the boundaries the constants imply.
 
   # 1. an isolated agent (its own socket, database and lock — never the one you use)
-  future agent --home /tmp/reco-test --verbose --log-file
+  FUTURE_HOME=/tmp/reco-test future agent --verbose --log-file
 
   # 2. the suite
   python3 scripts/skill_reco/suggest-skill-tests.py            # ~33 calls, ≈¥0.04
@@ -413,7 +413,7 @@ def main():
 
     if not os.path.exists(SOCKET):
         sys.exit(f"no isolated agent at {SOCKET}; start one with:\n"
-                 f"  future agent --home {HOME_DIR} --verbose --log-file")
+                 f"  FUTURE_HOME={HOME_DIR} future agent --verbose --log-file")
     print(f"isolated agent: unix://{SOCKET}")
     print(f"running suites: {','.join(sorted(wanted))}")
 

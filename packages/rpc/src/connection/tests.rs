@@ -70,6 +70,61 @@ fn checking_a_stale_lock_does_not_change_its_contents_or_metadata() {
     assert!(!home.path().join("agent").join("agent.db").exists());
 }
 
+/// A held lock must be reported with the owner identity from the metadata the
+/// running Agent publishes — the TUI's preflight says what `future agent`
+/// itself would say, instead of a generic "occupied" complaint.
+#[test]
+fn occupied_lock_reports_the_owner_identity_from_metadata() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir(home.path().join("agent")).unwrap();
+    let path = home.path().join("agent").join("agent-instance.lock");
+    let metadata = home.path().join("agent").join("agent-instance.json");
+    std::fs::write(&path, b"").unwrap();
+    std::fs::write(
+        &metadata,
+        serde_json::json!({
+            "pid": 4242,
+            "host": "login03",
+            "executable": "/home/u/.local/bin/future",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut owner = fd_lock::RwLock::new(
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap(),
+    );
+    let guard = owner.try_write().unwrap();
+
+    let error = check_instance_lock(home.path()).expect_err("occupied");
+    let message = match error {
+        ConnectionError::StartupBlocked(reason) => reason,
+        other => panic!("expected StartupBlocked, got: {other}"),
+    };
+    assert!(message.contains("already running"), "{message}");
+    assert!(message.contains("pid 4242"), "{message}");
+    assert!(
+        message.contains("held by:") || message.contains("host login03"),
+        "missing owner identity: {message}"
+    );
+    // The metadata read is best-effort and must not disturb the owner.
+    assert_eq!(
+        std::fs::read(&metadata).unwrap(),
+        serde_json::json!({
+            "pid": 4242,
+            "host": "login03",
+            "executable": "/home/u/.local/bin/future",
+        })
+        .to_string()
+        .into_bytes()
+    );
+    drop(guard);
+    check_instance_lock(home.path()).unwrap();
+}
+
 #[tokio::test]
 async fn unavailable_explicit_tcp_is_never_a_local_start_permission() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

@@ -1,0 +1,41 @@
+{
+  "date": "2026-10-20",
+  "pr": 1259,
+  "retry": {
+    "run": 39395390467,
+    "attempt": 2,
+    "commit": "9250e100a16205cea3f773109ab3bf6ccd9388d7",
+    "status": "completed",
+    "conclusion": "failure",
+    "linuxAgent": "passed on retry",
+    "windows": {
+      "job": 118547232101,
+      "failedCase": "an_unreadable_revoke_queue_is_reported_and_the_refusal_still_stands",
+      "result": "11 passed, 1 failed",
+      "transcript": "ESC[6n only; cursor-position query was not answered",
+      "logSha256": "01758f09b6e5e0f9f95beff3531f82f171fccaff28f3454ca7bdc6792ba95075"
+    }
+  },
+  "repairCommit": "6642c3fe",
+  "mainSync": "eaf859f6",
+  "mergeCommit": "9d2b1eec",
+  "fixes": [
+    "ConPTY terminal fixture answers cursor query, preserves real first-pairing process and original assertions, handles fragmented query bytes.",
+    "Agent fixture waits up to 3s for authoritative running=1 snapshot before cancellation; original stop, persistence and owned-task assertions retained."
+  ],
+  "localStatic": {
+    "clippy": "cargo clippy -p future-agent -p future-host -p future-cli -p futureos -p future-remote-client -p future-remote-server -p future-remote-protocol --all-targets --locked --offline -- -D warnings",
+    "exit": 0,
+    "seconds": 21.9,
+    "fmtExit": 0,
+    "desktopTypecheckExit": 0,
+    "mobileTypecheckExit": 0,
+    "affectedDesktopEslintExit": 0,
+    "affectedMobileEslintExit": 0,
+    "protocolGeneratedCheckExit": 0,
+    "docsExit": 0,
+    "dependencyBoundaryExit": 0,
+    "localUnitOrNatsTests": 0
+  },
+  "pending": "New PR CI, especially native Windows; no claim of fix execution on macOS/Linux/Windows."
+}

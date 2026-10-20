@@ -1,0 +1,240 @@
+{
+  "status": "completed-failure",
+  "runId": 39385601564,
+  "candidate": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+  "url": "https://github.com/futuregene/future-os/actions/runs/39385601564",
+  "jobs": [
+    {
+      "name": "macOS notarization recovery",
+      "status": "completed",
+      "conclusion": "success",
+      "id": 118504579178
+    },
+    {
+      "name": "Detect affected checks",
+      "status": "completed",
+      "conclusion": "success",
+      "id": 118504579429
+    },
+    {
+      "name": "Matched Windows Rust compilation",
+      "status": "completed",
+      "conclusion": "skipped",
+      "id": 118504580769
+    },
+    {
+      "name": "Windows update fixtures",
+      "status": "completed",
+      "conclusion": "failure",
+      "id": 118504643470
+    },
+    {
+      "name": "Desktop typecheck + lint + test",
+      "status": "completed",
+      "conclusion": "success",
+      "id": 118504643512
+    },
+    {
+      "name": "Rust build (Linux)",
+      "status": "completed",
+      "conclusion": "success",
+      "id": 118504643513
+    },
+    {
+      "name": "Rust tests (Linux) (desktop headless)",
+      "status": "completed",
+      "conclusion": "success",
+      "id": 118504643521
+    },
+    {
+      "name": "Rust tests (Linux) (tui, cli)",
+      "status": "completed",
+      "conclusion": "success",
+      "id": 118504643525
+    },
+    {
+      "name": "Rust tests (Linux) (host)",
+      "status": "completed",
+      "conclusion": "success",
+      "id": 118504643531
+    },
+    {
+      "name": "Rust build (Windows)",
+      "status": "completed",
+      "conclusion": "failure",
+      "id": 118504643536
+    },
+    {
+      "name": "Rust fmt + clippy (Linux)",
+      "status": "completed",
+      "conclusion": "failure",
+      "id": 118504643539
+    },
+    {
+      "name": "Rust tests (Linux) (channels, rpc, goal)",
+      "status": "completed",
+      "conclusion": "success",
+      "id": 118504643550
+    },
+    {
+      "name": "Shared host (Windows)",
+      "status": "completed",
+      "conclusion": "success",
+      "id": 118504643553
+    },
+    {
+      "name": "Rust build (macOS)",
+      "status": "completed",
+      "conclusion": "success",
+      "id": 118504643570
+    },
+    {
+      "name": "Mobile typecheck + lint + test",
+      "status": "completed",
+      "conclusion": "success",
+      "id": 118504643618
+    },
+    {
+      "name": "Shared host (macOS)",
+      "status": "completed",
+      "conclusion": "success",
+      "id": 118504643626
+    },
+    {
+      "name": "Rust tests (Linux) (desktop gui)",
+      "status": "completed",
+      "conclusion": "success",
+      "id": 118504643681
+    },
+    {
+      "name": "Rust tests (Linux) (agent)",
+      "status": "completed",
+      "conclusion": "success",
+      "id": 118504643704
+    },
+    {
+      "name": "Remote packages + interoperability",
+      "status": "completed",
+      "conclusion": "success",
+      "id": 118504643711
+    },
+    {
+      "name": "Rust tests (Linux) (desktop backend)",
+      "status": "completed",
+      "conclusion": "success",
+      "id": 118507930964
+    },
+    {
+      "name": "Rust tests (Linux)",
+      "status": "completed",
+      "conclusion": "failure",
+      "id": 118512555234
+    }
+  ],
+  "host": {
+    "linux": {
+      "passed": 1707,
+      "failed": 0,
+      "ignored": 10,
+      "seconds": 454.36
+    },
+    "macos": {
+      "passed": 1707,
+      "failed": 0,
+      "ignored": 10,
+      "seconds": 458.72
+    },
+    "windows": {
+      "passed": 1677,
+      "failed": 0,
+      "ignored": 10,
+      "seconds": 888.07
+    }
+  },
+  "actualCliProcesses": {
+    "linux": {
+      "headlessCli": {
+        "passed": 11,
+        "seconds": 3.42
+      },
+      "remoteStartRefusal": {
+        "passed": 11,
+        "seconds": 28.84
+      }
+    },
+    "macos": {
+      "headlessCli": {
+        "passed": 12,
+        "seconds": 7.2
+      },
+      "terminalUnitFilter": {
+        "passed": 29,
+        "seconds": 0.45
+      },
+      "remoteStartRefusal": {
+        "passed": 13,
+        "seconds": 195.44
+      }
+    }
+  },
+  "baselineMigrationDeclarationsMappedToPassingCases": 168,
+  "knownFailures": [
+    "Windows missing Console API dependency after entry move",
+    "Windows installer fixture did not recognize headless --help",
+    "Old no-GUI Desktop Clippy unused imports after application extraction"
+  ],
+  "fixCommit": "c04c3ecb065dbdd10328d6b14d04c1b4c3ba8bc9",
+  "logs": {
+    "windows-host": {
+      "path": "/tmp/headless-ci-39385601564-windows-host.log",
+      "sha256": "e7d8f2c29306102701431cd6106cbe47cd4f82ba94556d9bd591594dea73743b"
+    },
+    "linux-host": {
+      "path": "/tmp/headless-ci-39385601564-linux-host.log",
+      "sha256": "6b4366bf43536fe3db1f36b5f8fcc105e73f2d6188dfb3f3da9e515504bfd3af"
+    },
+    "macos-host": {
+      "path": "/tmp/headless-ci-39385601564-macos-host.log",
+      "sha256": "b05a3bf28dd052277830072c713ecea7d83e3064138babdf2d16e89becd26292"
+    },
+    "macos-build": {
+      "path": "/tmp/headless-ci-39385601564-macos-build.log",
+      "sha256": "377a6ed16267a49088533bd4993def4978c681384a3dbee0204d585464b52114"
+    },
+    "linux-cli": {
+      "path": "/tmp/headless-ci-39385601564-linux-cli.log",
+      "sha256": "1e89fed1b4f4dfd82ef59fe98a56a6489d0a06e33fcdd7d092e16e989b2c0ea1"
+    }
+  },
+  "limitations": [
+    "Current repair candidate is not validated by this run.",
+    "Overall CI is failure, not acceptance.",
+    "Counts are per suite/platform; subprocess fixture lines are not added to parent totals.",
+    "No matched performance comparison; runners and workloads differ.",
+    "Manual acceptance and deferred packaging/signing/install-upgrade remain pending."
+  ],
+  "postSync": {
+    "mergedOriginMain": "32032a3a31ad560f80c7720cbd01c944de7f64d3",
+    "mergeCommit": "eea609697a506bfa9f2f3305a07ef95e0db4c4a6",
+    "affected": "Six Desktop TS/TSX files for Remote machine-row control-state synchronization",
+    "checks": [
+      {
+        "command": "npm --prefix desktop run typecheck",
+        "result": "passed"
+      },
+      {
+        "command": "ESLint on the six changed Desktop files",
+        "result": "passed"
+      },
+      {
+        "command": "python3 scripts/docs/check-docs.py",
+        "result": "passed",
+        "documents": 297,
+        "pendingBilingualPairs": 0
+      }
+    ],
+    "localTestsExecuted": 0,
+    "temporaryDependencySymlinksRemoved": true,
+    "primaryWorkspaceStillAt": "a0d4d8402064dab1b82b0ad39bbd645837446236"
+  }
+}

@@ -72,12 +72,12 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
   清理机制——重置本身罕见且显式，而这个文件是被删内容唯一的副本。
 - `sessions/`、`run-events/<session_id>/` — 保留的旧 JSONL 迁移来源；自定义旧目录的事件来源为 `.run-events/`。迁移后不再更新这些文件。排队 prompt 仍只保存在内存中。
 - `agent-instance.lock` — 当前 FutureOS home 的单例锁。测试应隔离 HOME（Windows 同时
-  隔离 USERPROFILE），或用 `FUTURE_HOME` / `future agent --home` 把 Agent 指向另一个
+  隔离 USERPROFILE），或用 `FUTURE_HOME` 把 Agent 指向另一个
   FutureOS home（见[多实例运行](#多实例运行future_home)）；仅更换 TCP 端口无法绕过单例锁。
 - `agent-instance.json` — 记录 PID、主机名、可执行文件路径、FutureOS home，以及
   Windows 上的进程创建时间，供安装器核对进程身份。异常退出后文件可能残留；以操作系统锁为准。
   锁冲突时，Agent 会报告持有者 PID、主机与可执行文件——以及该主机是否在本机可达——并给出
-  停止它的命令或用 `--home` 另立 home 并存的命令（在 HPC 集群这类共享家目录的主机上尤为重要：
+  停止它的命令或用 `FUTURE_HOME` 另立 home 并存的命令（在 HPC 集群这类共享家目录的主机上尤为重要：
   冲突的 Agent 可能运行在另一个节点上）。
 - `skills/` — 两个技能发现目录之一（`APP_SKILLS_DIR`）；另一个是
   `~/.agents/skills/`（`AGENTS_SKILLS_DIR`）。技能是含 `SKILL.md` +
@@ -107,15 +107,15 @@ Windows 将 capability/ACL 清理元数据保存在 `~/.future/windows-capabilit
 
 ## 多实例运行（`FUTURE_HOME`）
 
-`FUTURE_HOME` 替换整个 FutureOS home（即 `~/.future` 根目录本身）。启动时的等价开关是
-`future agent --home DIR`（该选项默认取 `$FUTURE_HOME`），这正是第二个完全隔离实例的基础：
+`FUTURE_HOME` 替换整个 FutureOS home（即 `~/.future` 根目录本身），
+这正是第二个完全隔离实例的基础：
 
 ```bash
 # 实例 A：默认 home
 future agent
 
 # 实例 B：自己的锁、数据库、会话、日志、技能与 IPC 端点
-future agent --home /tmp/futureos-b
+FUTURE_HOME=/tmp/futureos-b future agent
 
 # 客户端设置同一个 home，即接入实例 B
 FUTURE_HOME=/tmp/futureos-b future tui
@@ -127,8 +127,7 @@ FutureOS 自己拥有的一切都会随之移动：`<home>/agent`（settings、m
 `<home>/windows-capabilities.json`。因此两个实例不会共享锁、数据库或端点，相互也无需停掉。
 
 **不**随之移动的是操作系统的 home：针对 `~/.ssh` 的沙箱守卫和共享的 `~/.agents/skills`
-目录仍指向真实用户 home。覆盖值必须是绝对路径——相对或空的 `FUTURE_HOME` 会被忽略，
-`future agent --home` 会直接报错——目录不存在时会自动创建。客户端通过设置同一个
+目录仍指向真实用户 home。该值必须是绝对路径——相对路径或空值会被忽略；目录不存在时会自动创建。客户端通过设置同一个
 `FUTURE_HOME` 选择实例；客户端自身的 UI 状态（`~/.future/tui/`、桌面应用的
 `~/.future/app/`）仍留在真实 home 中。
 

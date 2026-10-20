@@ -1,0 +1,1018 @@
+//! Shared run, journal and tool-query operations.
+
+use crate::{agent_bridge, store};
+
+pub fn create_run(input: store::CreateRunInput) -> Result<store::RunRecord, crate::Error> {
+    store::create_run(input)
+}
+
+pub fn list_runs(thread_id: String) -> Result<Vec<store::RunRecord>, crate::Error> {
+    store::list_runs(&thread_id)
+}
+
+/// The thread's most recent run, or None. Used for initial load and pushed
+/// terminal reconciliation without decoding the thread's full run history.
+pub fn get_latest_run(thread_id: String) -> Result<Option<store::RunRecord>, crate::Error> {
+    store::latest_run(&thread_id)
+}
+
+/// A single run by id — direct primary-key lookup for the send pipeline's
+/// settle checks (was a full per-thread list + client-side find).
+pub fn get_run(run_id: String) -> Result<Option<store::RunRecord>, crate::Error> {
+    store::get_run(&run_id)
+}
+
+/// Batch query: the latest run identity/status for each thread in one IPC.
+/// Used by the low-frequency thread-list reconciliation path.
+pub fn list_latest_run_infos(
+    thread_ids: Vec<String>,
+) -> Result<Vec<store::LatestRunInfo>, crate::Error> {
+    store::latest_run_infos(&thread_ids)
+}
+
+/// Update a run's status from the frontend's completion/failure paths. Guarded:
+/// a run that is already terminal (e.g. a concurrent `abort_run` set `cancelled`)
+/// is not clobbered. Returns the run's real current state so the caller
+/// reconciles its bubble from the truth rather than the status it tried to write.
+pub fn update_run_status(
+    input: store::UpdateRunStatusInput,
+) -> Result<store::RunRecord, crate::Error> {
+    let run_id = input.run_id.clone();
+    store::update_run_status_if_active(input)?;
+    store::get_run(&run_id)?.ok_or_else(|| "Run could not be loaded.".to_string().into())
+}
+
+pub async fn abort_run(
+    thread_id: String,
+    run_id: String,
+) -> Result<store::RunRecord, crate::Error> {
+    agent_bridge::abort_run(thread_id, run_id).await
+}
+
+pub async fn list_run_events(run_id: String) -> Result<Vec<store::RunEventRecord>, crate::Error> {
+    agent_events(&run_id, -1).await
+}
+
+/// Incremental variant of [`list_run_events`] for pushed live-preview updates:
+/// returns only events with `sequence > since_sequence`. A run's event log
+/// grows monotonically, so the steady-state payload is a handful of events
+/// instead of the whole log crossing IPC (and being re-parsed) every tick.
+pub async fn list_run_events_since(
+    run_id: String,
+    since_sequence: i64,
+) -> Result<Vec<store::RunEventRecord>, crate::Error> {
+    if since_sequence < 0 {
+        return list_run_events(run_id).await;
+    }
+    agent_events(&run_id, since_sequence).await
+}
+
+/// Pull canonical events from the Agent journal. `since_sequence` is passed
+/// through to the native incremental query (-1 = whole run).
+async fn agent_events(
+    run_id: &str,
+    since_sequence: i64,
+) -> Result<Vec<store::RunEventRecord>, crate::Error> {
+    let run = store::get_run(run_id)?.ok_or_else(|| format!("Unknown run {run_id}"))?;
+    let thread = store::get_thread(&run.thread_id)?
+        .ok_or_else(|| format!("Missing thread for run {run_id}"))?;
+    let sid = thread
+        .agent_session_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| run.thread_id.clone());
+    let replay =
+        agent_bridge::get_events_since_payload(sid, run_id.to_string(), since_sequence).await?;
+    let records: Vec<store::RunEventRecord> = replay_events(replay, since_sequence)
+        .into_iter()
+        .enumerate()
+        .map(|(i, e)| store::RunEventRecord {
+            id: if e.event_id.is_empty() {
+                format!("agent_{run_id}_{i}")
+            } else {
+                e.event_id
+            },
+            run_id: run_id.to_string(),
+            event_type: e.event_type,
+            payload: (!e.data.is_empty()).then_some(e.data),
+            sequence: e.idx,
+            created_at: chrono::DateTime::parse_from_rfc3339(&e.timestamp)
+                .map(|value| value.timestamp_millis())
+                .unwrap_or(0),
+        })
+        .collect();
+    Ok(records)
+}
+
+/// The events a replay actually carries, from whichever representation the
+/// Agent answered with.
+///
+/// A settled run's raw event rows are retired into a projection snapshot the
+/// moment the run completes (journal compaction publishes the snapshot, then
+/// deletes the rows), and from then on `get_events_since` answers that run with
+/// `events: []` plus the folded projection. Reading only `events` therefore
+/// made every finished run look as if it had recorded nothing — the settle-time
+/// re-projection of a reply rebuilt it from an empty log and dropped the
+/// segment timeline it had been streaming (the reply reloaded as prose followed
+/// by its tool rows, instead of the chronological slices) along with its token
+/// count.
+///
+/// The snapshot is the same event sequence the live lane saw, coalesced: same
+/// `idx` values, strictly increasing, so it feeds the projector unchanged. The
+/// caller's cursor still applies — a client that already ingested part of the
+/// run must not be handed it again.
+fn replay_events(
+    replay: future_rpc::payloads::EventsSincePayload,
+    since_sequence: i64,
+) -> Vec<future_rpc::payloads::ReplayEventPayload> {
+    let mut events = replay.events;
+    // Only a reply that carried no raw events can be a snapshot-only answer;
+    // when both arrive the raw tail is the one the caller asked for.
+    if events.is_empty() {
+        if let Some(projection) = replay.projection {
+            events = projection.events;
+        }
+    }
+    events.retain(|event| event.idx > since_sequence);
+    events
+}
+
+pub async fn list_run_events_bulk(
+    run_ids: Vec<String>,
+) -> Result<Vec<(String, Vec<store::RunEventRecord>)>, crate::Error> {
+    let mut result = Vec::new();
+    for run_id in run_ids {
+        let events = list_run_events(run_id.clone()).await?;
+        if !events.is_empty() {
+            result.push((run_id, events));
+        }
+    }
+    Ok(result)
+}
+
+pub async fn list_tool_calls(run_id: String) -> Result<Vec<store::ToolCallRecord>, crate::Error> {
+    fetch_agent_tools(&run_id).await
+}
+
+/// Batch variant: the context panel's poll needs tool calls for every run of
+/// the thread — one IPC round-trip instead of N. Every run id appears in the
+/// result (with an empty vec when it has no tool activity) so the caller's
+/// `Object.fromEntries` shape is unchanged.
+pub async fn list_tool_calls_bulk(
+    run_ids: Vec<String>,
+) -> Result<Vec<(String, Vec<store::ToolCallRecord>)>, crate::Error> {
+    let mut result = Vec::with_capacity(run_ids.len());
+    for run_id in run_ids {
+        let tools = fetch_agent_tools(&run_id).await?;
+        result.push((run_id, tools));
+    }
+    Ok(result)
+}
+
+async fn tool_session(run_id: &str) -> Result<String, crate::Error> {
+    let run = store::get_run(run_id)?.ok_or_else(|| format!("Unknown run {run_id}"))?;
+    let thread = store::get_thread(&run.thread_id)?.ok_or_else(|| "Missing thread".to_string())?;
+    thread
+        .agent_session_id
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "Thread has no Agent session".into())
+}
+
+/// Presentation mapping only: tool identity, arguments and result come from
+/// Agent records. No Desktop event projection or journal scan is involved.
+async fn fetch_agent_tools(run_id: &str) -> Result<Vec<store::ToolCallRecord>, crate::Error> {
+    let session_id = tool_session(run_id).await?;
+    let mut tools = Vec::new();
+    let mut offset = 0;
+    loop {
+        let page =
+            agent_bridge::query_tools(session_id.clone(), run_id.to_owned(), None, offset).await?;
+        let rows = page["tools"]
+            .as_array()
+            .ok_or_else(|| "Invalid tool page".to_string())?;
+        for tool in rows {
+            let id = tool["toolCallId"]
+                .as_str()
+                .ok_or_else(|| "Missing tool identity".to_string())?
+                .to_owned();
+            let name = tool["name"]
+                .as_str()
+                .ok_or_else(|| "Missing tool name".to_string())?
+                .to_owned();
+            tools.push(store::ToolCallRecord {
+                id,
+                run_id: run_id.to_owned(),
+                kind: name.clone(),
+                name,
+                input: tool
+                    .get("arguments")
+                    .filter(|value| !value.is_null())
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| value.to_string())
+                    }),
+                status: tool["status"]
+                    .as_str()
+                    .ok_or_else(|| "Missing tool status".to_string())?
+                    .to_owned(),
+                started_at: tool["startedAtMs"].as_i64(),
+                ended_at: tool["completedAtMs"].as_i64(),
+                created_at: tool["startedAtMs"].as_i64().unwrap_or(0),
+            });
+        }
+        if page["hasMore"].as_bool() != Some(true) {
+            break;
+        }
+        let next = page["nextOffset"]
+            .as_i64()
+            .filter(|next| *next > offset)
+            .ok_or_else(|| "Tool cursor did not advance".to_string())?;
+        offset = next;
+    }
+    Ok(tools)
+}
+
+pub async fn list_tool_outputs(
+    run_id: String,
+    tool_call_id: String,
+) -> Result<Vec<store::ToolOutputRecord>, crate::Error> {
+    let session_id = tool_session(&run_id).await?;
+    let payload =
+        agent_bridge::query_tools(session_id, run_id, Some(tool_call_id.clone()), 0).await?;
+    let Some(output) = payload.get("output").filter(|value| !value.is_null()) else {
+        return Ok(Vec::new());
+    };
+    let error = output["isError"].as_bool().unwrap_or(false);
+    Ok(vec![store::ToolOutputRecord {
+        id: format!("{tool_call_id}:result"),
+        tool_call_id,
+        kind: if error { "error" } else { "text" }.into(),
+        content: Some(
+            serde_json::json!({if error {"error"}else{"text"}:output["text"]}).to_string(),
+        ),
+        created_at: output["createdAtMs"].as_i64().unwrap_or(0),
+    }])
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::await_holding_lock)]
+    use super::*;
+
+    use crate::auth_store::test_support::HomeGuard;
+    use crate::store;
+
+    fn seeded(label: &str) -> (HomeGuard, store::ThreadRecord) {
+        let home = HomeGuard::new(label);
+        crate::store::initialize_app_store().expect("init store");
+        let ws = crate::store::create_workspace(store::CreateWorkspaceInput {
+            name: Some("WS".into()),
+            path: std::env::temp_dir()
+                .join(format!("futureos-cmd-run-ws-{}", std::process::id()))
+                .display()
+                .to_string(),
+            description: None,
+            create_directory: Some(true),
+        })
+        .expect("create workspace");
+        let thread = crate::store::create_thread(store::CreateThreadInput {
+            mode: "workspace".into(),
+            title: Some("Runs".into()),
+            workspace_id: Some(ws.id.clone()),
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: Some("synthetic-session".into()),
+        })
+        .expect("create thread");
+        (home, thread)
+    }
+
+    fn run_input(thread_id: &str, id: &str) -> store::CreateRunInput {
+        store::CreateRunInput {
+            id: Some(id.into()),
+            thread_id: thread_id.into(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        }
+    }
+
+    #[test]
+    fn update_run_status_returns_the_row_truth() {
+        let (_home, thread) = seeded("cmd_run_status");
+        create_run(run_input(&thread.id, "run_2")).expect("create run");
+        let updated = update_run_status(store::UpdateRunStatusInput {
+            run_id: "run_2".into(),
+            status: "completed".into(),
+            error_message: Some("boom".into()),
+            error_type: Some("model".into()),
+        })
+        .expect("update status");
+        assert_eq!(updated.status, "completed");
+        assert_eq!(updated.error_message.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn update_run_status_errors_on_a_ghost_run() {
+        let (_home, _thread) = seeded("cmd_run_ghost");
+        assert!(update_run_status(store::UpdateRunStatusInput {
+            run_id: "ghost".into(),
+            status: "completed".into(),
+            error_message: None,
+            error_type: None,
+        })
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn list_run_events_reads_the_agent_journal() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events");
+        create_run(run_input(&thread.id, "run_ev")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "get_events_since".to_string(),
+                "{\"events\":[]}".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let events = list_run_events("run_ev".into()).await.expect("events");
+        assert!(events.is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn list_run_events_maps_agent_journal_rows_into_records() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events_map");
+        create_run(run_input(&thread.id, "run_map")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        let data = serde_json::json!({
+            "events": [
+                {
+                    "eventId": "e1",
+                    "type": "assistant",
+                    "data": "{\"x\":1}",
+                    "idx": 0,
+                    "timestamp": "2024-01-01T00:00:00Z"
+                },
+                {
+                    "eventId": "",
+                    "type": null,
+                    "data": 123,
+                    "idx": null,
+                    "timestamp": "not-a-date"
+                }
+            ]
+        })
+        .to_string();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("get_events_since".to_string(), data)]),
+            ..Default::default()
+        });
+        let events = list_run_events("run_map".into()).await.expect("events");
+        assert_eq!(events.len(), 2);
+        // Full row: every field read from the journal.
+        assert_eq!(events[0].id, "e1");
+        assert_eq!(events[0].event_type, "assistant");
+        assert_eq!(events[0].payload.as_deref(), Some("{\"x\":1}"));
+        assert_eq!(events[0].sequence, 0);
+        assert_eq!(events[0].created_at, 1704067200000);
+        // Sparse row: every fallback fires (generated id, empty type, no
+        // payload, index-derived sequence, epoch timestamp).
+        assert_eq!(events[1].id, "agent_run_map_1");
+        assert_eq!(events[1].event_type, "");
+        assert_eq!(events[1].payload, None);
+        assert_eq!(events[1].sequence, 1);
+        assert_eq!(events[1].created_at, 0);
+        script_mock_agent(MockScript::default());
+    }
+
+    /// A finished run's raw rows are retired into a projection snapshot when the
+    /// run completes, after which `get_events_since` answers with no events and
+    /// only the folded projection. Reading just the event list made the run look
+    /// empty, so the settle-time re-projection of the reply threw its segment
+    /// timeline away — the settled reply reloaded as prose followed by its tool
+    /// rows instead of the chronological slices it streamed as.
+    #[tokio::test]
+    async fn list_run_events_reads_a_retired_runs_projection_snapshot() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events_snapshot");
+        create_run(run_input(&thread.id, "run_snap")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([snapshot_replay()]),
+            ..Default::default()
+        });
+        let events = list_run_events("run_snap".into()).await.expect("events");
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| (event.event_type.as_str(), event.sequence))
+                .collect::<Vec<_>>(),
+            vec![("agent_start", 0), ("tool_start", 1), ("agent_end", 2)]
+        );
+        assert_eq!(
+            events[1].payload.as_deref(),
+            Some("{\"tool_name\":\"shell\"}")
+        );
+        assert_eq!(events[2].created_at, 1704067202000);
+        script_mock_agent(MockScript::default());
+    }
+
+    /// The snapshot is a whole run, not a tail: a client that already ingested
+    /// part of it must not be handed the prefix again.
+    #[tokio::test]
+    async fn list_run_events_since_trims_a_projection_snapshot_to_the_cursor() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events_snapshot_since");
+        create_run(run_input(&thread.id, "run_snap_since")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([snapshot_replay()]),
+            ..Default::default()
+        });
+        let events = list_run_events_since("run_snap_since".into(), 1)
+            .await
+            .expect("events");
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| (event.event_type.as_str(), event.sequence))
+                .collect::<Vec<_>>(),
+            vec![("agent_end", 2)]
+        );
+        script_mock_agent(MockScript::default());
+    }
+
+    /// The mocked `get_events_since` answer for a run whose rows were retired.
+    fn snapshot_replay() -> (String, String) {
+        (
+            "get_events_since".to_string(),
+            serde_json::json!({
+                "events": [],
+                "projection": {
+                    "runId": "run_snap",
+                    "cursor": 2,
+                    "events": [
+                        {
+                            "eventId": "s0",
+                            "type": "agent_start",
+                            "data": "{}",
+                            "idx": 0,
+                            "timestamp": "2024-01-01T00:00:00Z",
+                        },
+                        {
+                            "eventId": "s1",
+                            "type": "tool_start",
+                            "data": "{\"tool_name\":\"shell\"}",
+                            "idx": 1,
+                            "timestamp": "2024-01-01T00:00:01Z",
+                        },
+                        {
+                            "eventId": "s2",
+                            "type": "agent_end",
+                            "data": "{}",
+                            "idx": 2,
+                            "timestamp": "2024-01-01T00:00:02Z",
+                        },
+                    ],
+                },
+            })
+            .to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn list_run_events_reports_agent_unavailable() {
+        use crate::test_support::command_agent::{mock_agent_lock, with_broken_endpoint};
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events_down");
+        create_run(run_input(&thread.id, "run_down")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        let events = with_broken_endpoint(|| list_run_events("run_down".into()))
+            .await
+            .expect_err("Agent failure must propagate");
+        assert!(!events.to_string().is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_run_events_since_negative_delegates() {
+        use crate::test_support::command_agent::{mock_agent_lock, with_broken_endpoint};
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events_since");
+        create_run(run_input(&thread.id, "run_since")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        let events = with_broken_endpoint(|| list_run_events_since("run_since".into(), -1))
+            .await
+            .expect_err("Agent failure must propagate");
+        assert!(!events.to_string().is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_run_events_since_reads_the_agent_when_up() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events_since_up");
+        create_run(run_input(&thread.id, "run_since_up")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "get_events_since".to_string(),
+                "{\"events\":[]}".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let events = list_run_events_since("run_since_up".into(), 0)
+            .await
+            .expect("events");
+        assert!(events.is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn list_run_events_since_propagates_rejection() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events_since_reject");
+        create_run(run_input(&thread.id, "run_since_rej")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([("get_events_since".to_string(), "unknown run".to_string())]),
+            ..Default::default()
+        });
+        let events = list_run_events_since("run_since_rej".into(), 0)
+            .await
+            .expect_err("Agent failure must propagate");
+        assert!(!events.to_string().is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn list_run_events_since_incremental_reports_unavailable() {
+        use crate::test_support::command_agent::{mock_agent_lock, with_broken_endpoint};
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events_since_inc");
+        create_run(run_input(&thread.id, "run_since_inc")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        let events = with_broken_endpoint(|| list_run_events_since("run_since_inc".into(), 3))
+            .await
+            .expect_err("Agent failure must propagate");
+        assert!(!events.to_string().is_empty());
+    }
+
+    #[tokio::test]
+    async fn agent_events_treats_a_non_array_events_field_as_empty() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events_noarray");
+        create_run(run_input(&thread.id, "run_noarray")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "get_events_since".to_string(),
+                "{\"events\":\"not-an-array\"}".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let events = list_run_events("run_noarray".into()).await.expect("events");
+        assert!(events.is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn list_run_events_bulk_keeps_non_empty_runs() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events_bulk_full");
+        create_run(run_input(&thread.id, "run_bulk_full")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "get_events_since".to_string(),
+                "{\"events\":[{\"eventId\":\"e1\",\"type\":\"assistant\",\"data\":\"{}\",\"idx\":0,\"timestamp\":\"2024-01-01T00:00:00Z\"}]}".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let bulk = list_run_events_bulk(vec!["run_bulk_full".into()])
+            .await
+            .expect("bulk");
+        assert_eq!(bulk.len(), 1);
+        assert_eq!(bulk[0].1.len(), 1);
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn tool_events_since_reads_the_agent_when_up() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_tools_up");
+        create_run(run_input(&thread.id, "run_tools_up")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "list_tool_calls".to_string(),
+                "{\"tools\":[],\"hasMore\":false,\"nextOffset\":0}".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let calls = list_tool_calls("run_tools_up".into())
+            .await
+            .expect("tool calls");
+        assert!(calls.is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    /// Every field of a tool row is mapped onto the record the panel renders,
+    /// including the two argument shapes (an object is re-serialized, a string
+    /// is passed through) and rows with no end timestamp.
+    #[tokio::test]
+    async fn tool_rows_are_mapped_onto_records() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_tools_map");
+        create_run(run_input(&thread.id, "run_tools_map")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "list_tool_calls".to_string(),
+                serde_json::json!({
+                    "tools": [
+                        {
+                            "toolCallId": "tc-1",
+                            "name": "Read",
+                            "arguments": { "path": "a.rs" },
+                            "status": "completed",
+                            "startedAtMs": 10,
+                            "completedAtMs": 20
+                        },
+                        {
+                            "toolCallId": "tc-2",
+                            "name": "Bash",
+                            "arguments": "ls",
+                            "status": "failed"
+                        },
+                        {
+                            "toolCallId": "tc-3",
+                            "name": "Null",
+                            "arguments": null,
+                            "status": "running"
+                        }
+                    ],
+                    "hasMore": false,
+                    "nextOffset": 0
+                })
+                .to_string(),
+            )]),
+            ..Default::default()
+        });
+        let tools = list_tool_calls("run_tools_map".into())
+            .await
+            .expect("tool calls");
+        assert_eq!(tools.len(), 3);
+        assert_eq!(tools[0].id, "tc-1");
+        assert_eq!(tools[0].run_id, "run_tools_map");
+        assert_eq!(tools[0].kind, "Read");
+        assert_eq!(tools[0].name, "Read");
+        assert_eq!(tools[0].input.as_deref(), Some("{\"path\":\"a.rs\"}"));
+        assert_eq!(tools[0].status, "completed");
+        assert_eq!(tools[0].started_at, Some(10));
+        assert_eq!(tools[0].ended_at, Some(20));
+        assert_eq!(tools[0].created_at, 10);
+        // A string argument is passed through untouched...
+        assert_eq!(tools[1].input.as_deref(), Some("ls"));
+        assert_eq!(tools[1].ended_at, None);
+        assert_eq!(tools[1].created_at, 0);
+        // ...and a null argument becomes "no input" rather than the text "null".
+        assert_eq!(tools[2].input, None);
+        script_mock_agent(MockScript::default());
+    }
+
+    /// A page that claims more tools without moving the cursor is refused: the
+    /// loop would otherwise re-request the same page forever.
+    #[tokio::test]
+    async fn a_tool_page_that_does_not_advance_the_cursor_is_refused() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_tools_stuck");
+        create_run(run_input(&thread.id, "run_tools_stuck")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "list_tool_calls".to_string(),
+                "{\"tools\":[],\"hasMore\":true,\"nextOffset\":0}".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let error = list_tool_calls("run_tools_stuck".into())
+            .await
+            .expect_err("a stuck cursor must fail rather than loop");
+        assert!(error.to_string().contains("did not advance"), "{error}");
+        script_mock_agent(MockScript::default());
+    }
+
+    /// A page that *does* advance the cursor is followed, and the loop's second
+    /// round trip is what detects a peer that then stops advancing.
+    ///
+    /// The sibling test above sends `nextOffset: 0`, so it fails on the very
+    /// first page and never exercises the advance. Here the first page advances
+    /// (`nextOffset: 1`) and the mock — which answers every call with the same
+    /// scripted payload — then reports the same cursor again, so the failure can
+    /// only come from the *second* iteration. That the rows collected from the
+    /// first page survive into the error path is what proves the loop ran rather
+    /// than the command rejecting the payload up front.
+    #[tokio::test]
+    async fn an_advancing_tool_page_is_followed_and_a_repeat_is_refused() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_tools_advance");
+        create_run(run_input(&thread.id, "run_tools_advance")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "list_tool_calls".to_string(),
+                "{\"tools\":[{\"toolCallId\":\"tc-adv\",\"name\":\"read\",\"status\":\"ok\"}],\
+                  \"hasMore\":true,\"nextOffset\":1}"
+                    .to_string(),
+            )]),
+            ..Default::default()
+        });
+        let error = list_tool_calls("run_tools_advance".into())
+            .await
+            .expect_err("a cursor that stops advancing must be refused");
+        assert!(
+            error.to_string().contains("did not advance"),
+            "the second page repeats the first page's cursor, so the refusal is \
+             the cursor's: {error}"
+        );
+
+        // The advancing page is also usable on its own: request a page the
+        // agent reports as final and the rows come back mapped.
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "list_tool_calls".to_string(),
+                "{\"tools\":[{\"toolCallId\":\"tc-adv\",\"name\":\"read\",\"status\":\"ok\"}],\
+                  \"hasMore\":false}"
+                    .to_string(),
+            )]),
+            ..Default::default()
+        });
+        let tools = list_tool_calls("run_tools_advance".into())
+            .await
+            .expect("a final page is returned as-is");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].id, "tc-adv");
+        assert_eq!(tools[0].name, "read");
+        script_mock_agent(MockScript::default());
+    }
+
+    /// A row the agent sends without an identity or a name is reported as an
+    /// invalid page instead of being silently dropped.
+    #[tokio::test]
+    async fn an_incomplete_tool_row_is_reported() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_tools_incomplete");
+        create_run(run_input(&thread.id, "run_tools_incomplete")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        for (page, needle) in [
+            (
+                "{\"tools\":[{\"name\":\"Read\",\"status\":\"running\"}],\"hasMore\":false}",
+                "tool identity",
+            ),
+            (
+                "{\"tools\":[{\"toolCallId\":\"tc\",\"status\":\"running\"}],\"hasMore\":false}",
+                "tool name",
+            ),
+            (
+                "{\"tools\":[{\"toolCallId\":\"tc\",\"name\":\"Read\"}],\"hasMore\":false}",
+                "tool status",
+            ),
+            (
+                "{\"tools\":\"nope\",\"hasMore\":false}",
+                "Invalid tool page",
+            ),
+        ] {
+            script_mock_agent(MockScript {
+                data: HashMap::from([("list_tool_calls".to_string(), page.to_string())]),
+                ..Default::default()
+            });
+            let error = list_tool_calls("run_tools_incomplete".into())
+                .await
+                .expect_err("an incomplete row must be reported");
+            assert!(
+                error.to_string().contains(needle),
+                "expected {needle:?} in {error}"
+            );
+        }
+        script_mock_agent(MockScript::default());
+    }
+
+    /// Tool *output* is fetched through the same agent call and mapped onto the
+    /// record the transcript renders — including the error shape and the case
+    /// where the agent has no output for the call at all.
+    #[tokio::test]
+    async fn tool_outputs_are_mapped_including_the_error_shape() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_tool_outputs");
+        create_run(run_input(&thread.id, "run_tool_out")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+
+        // A single tool call is read through `get_tool_output`; `list_tool_calls`
+        // is the *bulk* command (`agent_bridge::queries::query_tools` picks by
+        // whether a `tool_call_id` is present). Scripting the wrong one made the
+        // mock answer with an empty payload, so the mapping under test never ran.
+        let script = |payload: &str| {
+            script_mock_agent(MockScript {
+                data: HashMap::from([("get_tool_output".to_string(), payload.to_string())]),
+                ..Default::default()
+            });
+        };
+
+        script("{\"tools\":[],\"output\":{\"isError\":false,\"text\":\"done\",\"createdAtMs\":7}}");
+        let outputs = list_tool_outputs("run_tool_out".into(), "tc-1".into())
+            .await
+            .expect("outputs");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].id, "tc-1:result");
+        assert_eq!(outputs[0].tool_call_id, "tc-1");
+        assert_eq!(outputs[0].kind, "text");
+        assert_eq!(outputs[0].created_at, 7);
+        assert!(outputs[0]
+            .content
+            .as_deref()
+            .expect("content")
+            .contains("\"text\":\"done\""));
+
+        // The error shape is tagged so the UI can render it as a failure.
+        script("{\"tools\":[],\"output\":{\"isError\":true,\"text\":\"boom\"}}");
+        let outputs = list_tool_outputs("run_tool_out".into(), "tc-2".into())
+            .await
+            .expect("outputs");
+        assert_eq!(outputs[0].kind, "error");
+        assert_eq!(outputs[0].created_at, 0, "a missing timestamp is epoch");
+        assert!(outputs[0]
+            .content
+            .as_deref()
+            .expect("content")
+            .contains("\"error\""));
+
+        // No output at all is an empty list, not a fabricated row.
+        script("{\"tools\":[]}");
+        assert!(list_tool_outputs("run_tool_out".into(), "tc-3".into())
+            .await
+            .expect("outputs")
+            .is_empty());
+        script_mock_agent(MockScript::default());
+    }
+
+    /// The bulk tool reader keeps one entry per requested run — the panel's
+    /// `Object.fromEntries` shape — and returns the tools the agent reported.
+    #[tokio::test]
+    async fn tool_bulk_readers_return_one_entry_per_run() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_tools_bulk");
+        create_run(run_input(&thread.id, "run_bulk_a")).expect("create run");
+        create_run(run_input(&thread.id, "run_bulk_b")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "list_tool_calls".to_string(),
+                "{\"tools\":[{\"toolCallId\":\"tc-1\",\"name\":\"Read\",\"status\":\"completed\",\"startedAtMs\":3}],\"hasMore\":false,\"nextOffset\":0}".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let bulk = list_tool_calls_bulk(vec!["run_bulk_a".into(), "run_bulk_b".into()])
+            .await
+            .expect("bulk tools");
+        assert_eq!(bulk.len(), 2, "every requested run appears");
+        assert_eq!(bulk[0].0, "run_bulk_a");
+        assert_eq!(bulk[0].1.len(), 1);
+        assert_eq!(bulk[0].1[0].run_id, "run_bulk_a");
+        assert_eq!(bulk[1].1.len(), 1);
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn list_run_events_bulk_skips_empty_runs() {
+        use crate::test_support::command_agent::{mock_agent_lock, with_broken_endpoint};
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_events_bulk");
+        create_run(run_input(&thread.id, "run_bulk")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        let bulk =
+            with_broken_endpoint(|| list_run_events_bulk(vec!["run_bulk".into(), "ghost".into()]))
+                .await
+                .expect_err("Agent failure must propagate");
+        assert!(!bulk.to_string().is_empty());
+    }
+
+    #[tokio::test]
+    async fn tool_readers_report_agent_unavailable() {
+        use crate::test_support::command_agent::{mock_agent_lock, with_broken_endpoint};
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_tools_down");
+        create_run(run_input(&thread.id, "run_tools")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+
+        assert!(with_broken_endpoint(|| list_tool_calls("run_tools".into()))
+            .await
+            .is_err());
+        assert!(
+            with_broken_endpoint(|| list_tool_calls_bulk(vec!["run_tools".into()]))
+                .await
+                .is_err()
+        );
+        assert!(
+            with_broken_endpoint(|| list_tool_outputs("run_tools".into(), "tool_1".into()))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn list_tool_calls_errors_on_an_unknown_run() {
+        use crate::test_support::command_agent::{mock_agent_lock, with_broken_endpoint};
+
+        let _lock = mock_agent_lock();
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd_tools_ghost");
+        crate::store::initialize_app_store().expect("init store");
+        crate::test_support::command_agent::ensure_mock_agent();
+        let result = with_broken_endpoint(|| list_tool_calls("ghost".into())).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn abort_run_cancels_locally_when_the_agent_is_down() {
+        use crate::test_support::command_agent::{mock_agent_lock, with_broken_endpoint};
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_abort");
+        create_run(run_input(&thread.id, "run_abort")).expect("create run");
+        crate::test_support::command_agent::ensure_mock_agent();
+        let aborted = with_broken_endpoint(|| abort_run(thread.id.clone(), "run_abort".into()))
+            .await
+            .expect("abort");
+        assert_eq!(aborted.status, "cancelled");
+    }
+
+    #[tokio::test]
+    async fn abort_run_errors_for_a_missing_thread() {
+        use crate::test_support::command_agent::{mock_agent_lock, with_broken_endpoint};
+
+        let _lock = mock_agent_lock();
+        let _home = crate::auth_store::test_support::HomeGuard::new("cmd_abort_ghost");
+        crate::store::initialize_app_store().expect("init store");
+        crate::test_support::command_agent::ensure_mock_agent();
+        assert!(
+            with_broken_endpoint(|| abort_run("ghost".into(), "run".into()))
+                .await
+                .is_err()
+        );
+    }
+}

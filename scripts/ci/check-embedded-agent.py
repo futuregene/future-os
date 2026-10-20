@@ -12,10 +12,14 @@ from pathlib import Path
 import platform
 import re
 import subprocess
+import sys
 import time
 
 
 def main():
+    # Windows runners may use a legacy console code page; QR output is UTF-8.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     root = Path(__file__).resolve().parents[2]
     output = root / "target" / "embedded-agent-ci"
     output.mkdir(parents=True, exist_ok=True)
@@ -25,25 +29,40 @@ def main():
     suites = [
         ("connection", ["-p", "future-rpc", "--lib", "connection::tests"]),
         ("service", ["-p", "future-agent", "--test", "service_startup"]),
+        # Shared cli_tool/agent_host cases belong to the complete future-host
+        # native suites. Only real entry effects are repeated at this boundary.
         (
-            "cli-tools",
-            ["--manifest-path", "desktop/src-tauri/Cargo.toml",
-             "--no-default-features", "--features", "headless",
-             "--lib", "cli_tool::tests"],
+            "gui-entry-state",
+            ["-p", "futureos", "--lib",
+             "gui::startup_paths_tests::process_state_initializes_without_a_window"],
         ),
         (
-            "gui-host",
-            ["--manifest-path", "desktop/src-tauri/Cargo.toml", "--lib", "agent_host::tests"],
+            "gui-entry-providers",
+            ["-p", "futureos", "--lib",
+             "commands::providers::tests::command_wrappers_delegate_to_the_agent"],
         ),
         (
-            "headless-host",
-            [
-                "--manifest-path", "desktop/src-tauri/Cargo.toml",
-                "--no-default-features", "--features", "headless",
-                "--lib", "agent_host::tests",
-            ],
+            "gui-entry-ready",
+            ["-p", "futureos", "--lib",
+             "gui::startup_paths_tests::the_ready_event_starts_the_window_work_and_serves_the_terminal"],
+        ),
+        (
+            "gui-entry-exit",
+            ["-p", "futureos", "--lib",
+             "gui::startup_paths_tests::the_exit_event_closes_admission_and_publishes_the_stop"],
+        ),
+        (
+            "headless-entry",
+            ["-p", "future-cli", "--test", "headless_cli"],
         ),
     ]
+    if platform.system() != "Linux":
+        # Linux's complete CLI owner suite already runs these once. Native
+        # macOS/Windows jobs exercise terminal, signal and real broker fixtures.
+        suites.extend([
+            ("headless-terminal", ["-p", "future-cli", "--lib", "headless::"]),
+            ("headless-remote", ["-p", "future-cli", "--test", "remote_start_refusal"]),
+        ])
     if platform.system() == "Windows":
         suites.append((
             "windows-gui-image",
@@ -67,7 +86,7 @@ def main():
     summary = {
         "platform": platform.platform(),
         "commit": subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=root, text=True
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True, encoding="utf-8"
         ).strip(),
         "suites": [],
         "status": "running",

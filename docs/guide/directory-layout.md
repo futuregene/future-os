@@ -86,7 +86,7 @@ vars:
   Queued prompts are in memory, not durable here.
 - `agent-instance.lock` — singleton lock for this FutureOS home. Tests isolate
   HOME (and USERPROFILE on Windows), or point the Agent at another FutureOS
-  home (`FUTURE_HOME` / `future agent --home`, see
+  home (`FUTURE_HOME`, see
   [Running several isolated instances](#running-several-isolated-instances-future_home));
   changing only the TCP port does not bypass the lock.
 - `agent-instance.json` — readable process identity for installer diagnostics
@@ -94,7 +94,7 @@ vars:
   creation time). It may remain after a crash; the operating-system lock is
   authoritative. When the lock conflicts, the Agent reports the owning PID,
   host and executable — and whether that host is reachable from here — with
-  the command to stop it or to run beside it via `--home` (essential on
+  the command to stop it or to run beside it via `FUTURE_HOME` (essential on
   shared-home hosts such as HPC clusters, where the conflicting Agent runs
   on another node).
 - `skills/` — one of the two skill discovery directories
@@ -132,16 +132,15 @@ The reset refuses cleanup while sandbox permissions are in use.
 ## Running several isolated instances (`FUTURE_HOME`)
 
 `FUTURE_HOME` replaces the whole FutureOS home — the `~/.future` root itself —
-for the process that sets it. `future agent --home DIR` is the same switch at
-startup (the flag defaults to `$FUTURE_HOME`), and it is what makes a second,
-fully isolated Agent possible:
+for the process that sets it, and it is what makes a second, fully isolated
+Agent possible:
 
 ```bash
 # Instance A: the default home
 future agent
 
 # Instance B: its own lock, database, sessions, logs, skills and IPC endpoint
-future agent --home /tmp/futureos-b
+FUTURE_HOME=/tmp/futureos-b future agent
 
 # A client joins instance B by resolving the same home
 FUTURE_HOME=/tmp/futureos-b future tui
@@ -155,9 +154,8 @@ a database or an endpoint, and neither has to be stopped for the other.
 
 What does **not** move is the operating-system home: sandbox guards over
 `~/.ssh` and the shared `~/.agents/skills` scope still refer to the real user
-home. The override must be an absolute path — a relative or empty `FUTURE_HOME`
-is ignored, and `future agent --home` rejects it — and the directory is created
-if missing. Clients select the instance by setting the same `FUTURE_HOME`; their
+home. The override must be an absolute path — a relative or empty value is
+ignored — and the directory is created if missing. Clients select the instance by setting the same `FUTURE_HOME`; their
 own UI state (`~/.future/tui/`, the desktop app's `~/.future/app/`) stays in
 the real home.
 

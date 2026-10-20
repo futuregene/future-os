@@ -12,7 +12,7 @@
 # one place instead of chasing drift across the Cargo.tomls. Members opt in
 # with `{ workspace = true }` and may add features (cargo unifies them).
 [workspace]
-members = ["agent", "channels", "packages/rpc", "packages/remote-crypto", "packages/remote-protocol", "packages/remote-client", "packages/remote-server", "packages/app-settings", "packages/app-workspaces", "orchestration/goal", "orchestration/tasks", "tui", "cli", "desktop/src-tauri", "tests/remote-interop"]
+members = ["host", "agent", "channels", "packages/rpc", "packages/remote-crypto", "packages/remote-protocol", "packages/remote-client", "packages/remote-server", "packages/app-settings", "packages/app-workspaces", "orchestration/goal", "orchestration/tasks", "tui", "cli", "desktop/src-tauri", "tests/remote-interop"]
 default-members = ["agent", "channels", "packages/rpc"]
 resolver = "2"
 

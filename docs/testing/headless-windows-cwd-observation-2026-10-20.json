@@ -1,0 +1,163 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "ebaaf0c4",
+  "ci": {
+    "conclusion": "failure",
+    "headSha": "8291d272c7ee3f1677ad2d9c2553dd61037b7bc8",
+    "jobs": [
+      {
+        "conclusion": "success",
+        "databaseId": 118484979711,
+        "name": "Detect affected checks",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118484979865,
+        "name": "macOS notarization recovery",
+        "status": "completed"
+      },
+      {
+        "conclusion": "skipped",
+        "databaseId": 118484980731,
+        "name": "Matched Windows Rust compilation",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031631,
+        "name": "Rust tests (Linux) (desktop gui)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031654,
+        "name": "Rust tests (Linux) (channels, rpc, goal)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031702,
+        "name": "Rust tests (Linux) (tui, cli)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031706,
+        "name": "Rust tests (Linux) (desktop headless)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031733,
+        "name": "Rust tests (Linux) (agent)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031735,
+        "name": "Rust fmt + clippy (Linux)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031739,
+        "name": "Remote packages + interoperability",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031743,
+        "name": "Mobile typecheck + lint + test",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031747,
+        "name": "Windows update fixtures",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031778,
+        "name": "Desktop typecheck + lint + test",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031784,
+        "name": "Rust build (Linux)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031786,
+        "name": "Rust tests (Linux) (host)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031803,
+        "name": "Shared host (macOS)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031805,
+        "name": "Rust build (macOS)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "failure",
+        "databaseId": 118485031807,
+        "name": "Shared host (Windows)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031824,
+        "name": "Rust build (Windows)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118486106130,
+        "name": "Rust tests (Linux) (desktop backend)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "failure",
+        "databaseId": 118491731974,
+        "name": "Rust tests (Linux)",
+        "status": "completed"
+      }
+    ],
+    "status": "completed"
+  },
+  "failure": {
+    "job": 118485031807,
+    "test": "agent_bridge::import::tests::import_one_spawns_cwd_write_back_and_logs_its_failure",
+    "result": "1544 passed; 1 failed; 10 original ignored; 893.06s",
+    "assertion": "the write-back must have been attempted: []",
+    "logSha256": "77efdfc541abd1f77f45bb9b2929f6fad7c64befe0997ec8b5be96decbeb6875"
+  },
+  "repair": "Observe the exact session new_session request on the real loopback RPC server under a 5-second fixture deadline before the original 120ms reply-drain wait. Original imported-run count, exact-session request assertion and sticky rejection remain unchanged. No production changes. The prior 120ms was a scheduling assumption, not a product latency assertion.",
+  "local": {
+    "command": "cargo test -p future-host --lib --offline --locked -- agent_bridge::import::",
+    "environment": {
+      "CARGO_INCREMENTAL": "0",
+      "RUST_LOG": "unset",
+      "CARGO_PROFILE_TEST_DEBUG": "1"
+    },
+    "results": [
+      "test result: ok. 48 passed; 0 failed; 0 ignored; 0 measured; 1554 filtered out; finished in 3.39s"
+    ],
+    "logSha256": "7264aa648675af584a7694b30c5a372cfa19738ee15b0226cde9554b2828cd1d"
+  },
+  "limits": [
+    "No local Windows execution or deterministic local red claimed. Windows native revalidation is pending.",
+    "CI is completed failure, despite all other independent jobs passing. Matched compilation was skipped.",
+    "Later Host lifecycle/startup/maintenance commits and uncommitted CLI entry are outside CI candidate 8291d272."
+  ]
+}

@@ -14,6 +14,8 @@ name = "future_cli"
 path = "src/lib.rs"
 
 [dependencies]
+# Shared application backend, used directly by `future headless`.
+future-host = { path = "../host" }
 tokio.workspace = true
 tonic.workspace = true
 # Single proto codegen owner (PR #112): generated proto code lives in the
@@ -70,8 +72,18 @@ nkeys = "0.4"
 rand = "0.8"
 
 [dev-dependencies]
+future-host = { path = "../host", features = ["test-support"] }
+tokio = { workspace = true, features = ["test-util"] }
+libc = "0.2"
+future-remote-crypto = { path = "../packages/remote-crypto" }
 tokio-stream = { workspace = true, features = ["net"] }
 # The relay's broker-level test drives a real `nats-server`; see
 # `cli/tests/relay_nats_auth.rs`.
 async-nats = "0.49"
 futures-util.workspace = true
+
+[target.'cfg(windows)'.dev-dependencies]
+portable-pty = "0.9"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console"] }

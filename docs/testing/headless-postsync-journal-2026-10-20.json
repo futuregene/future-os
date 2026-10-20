@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "candidateBase": "225afa77",
+  "upstream": "edb9d134",
+  "mergeResolution": "Retain upstream deferred batch replies until health publication, plus storage_failed tracking independent of retry queue length. All durable-only storage failures publish unhealthy before reply and flush remains failed.",
+  "checks": {
+    "journal": {
+      "status": "pass",
+      "logSha256": "e2bb94fe5a58a12b25bf454477813b3562c2008a3402efc70d3a5875648801f6",
+      "summary": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 17.24s",
+        "test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 2425 filtered out; finished in 0.36s"
+      ]
+    },
+    "typecheck": {
+      "status": "pass",
+      "logSha256": "31aa54b6adb3dce916df48ad891154be60d05d520a3cacbfc24514f3d124ef04",
+      "summary": []
+    },
+    "eslint": {
+      "status": "pass",
+      "logSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "summary": []
+    },
+    "tasks": {
+      "status": "pass",
+      "logSha256": "d5676f552fa878c22a20b0c17c00679b63e0cd6e8074661d3a6a962548b676da",
+      "summary": [
+        " Test Files  1 passed (1)",
+        "      Tests  46 passed (46)"
+      ]
+    },
+    "clippy": {
+      "status": "pass",
+      "logSha256": "b13528934de8dfe114bc07912aac1a22b9163e4fa951dc1db80a473d0f29957a",
+      "summary": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 9.81s"
+      ]
+    },
+    "fmt": {
+      "status": "pass"
+    },
+    "docs": {
+      "status": "pass",
+      "checked": 295
+    }
+  },
+  "dependencySetup": "Only temporary symlinks from this worktree to installed root/Desktop node_modules. Removed after checks; no dependency or lockfile changes.",
+  "limits": [
+    "No PR; working branch acceptance only.",
+    "Uncommitted unified CLI entry temporarily stashed as 67877555aebf85c80fe7ab41df0439b51ea4be92 during candidate checks; it is not in this candidate.",
+    "Native Windows repair needs CI revalidation."
+  ]
+}

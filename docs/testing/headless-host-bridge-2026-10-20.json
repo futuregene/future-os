@@ -1,0 +1,365 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "1979dc73ef6a7cacade4e21a72b794f13e76e453",
+  "change": "Complete Agent application bridge SCC and Store/Agent reconciliation now live once in Host; Desktop owns entry runtimes, Tauri emission and five GUI IPC/presentation cases. Preserve whitelist, source fences, cursor/replay, exact-run ownership, sandbox/approval and real persistence.",
+  "testOwnership": {
+    "newlyMovedOriginalDeclarations": 311,
+    "totalMovedOriginalDeclarations": 931,
+    "retainedGuiCases": {
+      "forward_settings_event_emits_or_skips_without_a_handle": "desktop/src-tauri/src/agent_bridge/presentation.rs",
+      "emit_settings_event_emits_through_a_mock_handle": "desktop/src-tauri/src/agent_bridge/presentation.rs",
+      "foreign_session_metadata_does_not_overwrite_a_conversation_title": "desktop/src-tauri/src/agent_bridge/presence.rs",
+      "history_does_not_follow_a_reconnected_cache_to_another_database": "desktop/src-tauri/src/agent_bridge/presence.rs",
+      "gui_prompt_notifies_acceptance_before_stream_completion": "desktop/src-tauri/src/agent_bridge/tests.rs"
+    },
+    "sourceChecks": [
+      {
+        "source": "desktop/src-tauri/src/agent_bridge/approval.rs",
+        "target": "host/src/agent_bridge/approval.rs",
+        "originalDeclarations": 12,
+        "originalAssertionMacros": 51,
+        "movedAssertionMacros": 51
+      },
+      {
+        "source": "desktop/src-tauri/src/agent_bridge/headless.rs",
+        "target": "host/src/agent_bridge/headless.rs",
+        "originalDeclarations": 7,
+        "originalAssertionMacros": 16,
+        "movedAssertionMacros": 16
+      },
+      {
+        "source": "desktop/src-tauri/src/agent_bridge/import.rs",
+        "target": "host/src/agent_bridge/import.rs",
+        "originalDeclarations": 48,
+        "originalAssertionMacros": 127,
+        "movedAssertionMacros": 127
+      },
+      {
+        "source": "desktop/src-tauri/src/agent_bridge/observer.rs",
+        "target": "host/src/agent_bridge/observer.rs",
+        "originalDeclarations": 53,
+        "originalAssertionMacros": 138,
+        "movedAssertionMacros": 138
+      },
+      {
+        "source": "desktop/src-tauri/src/agent_bridge/presence.rs",
+        "target": "host/src/agent_bridge/presence.rs",
+        "originalDeclarations": 5,
+        "originalAssertionMacros": 21,
+        "movedAssertionMacros": 13
+      },
+      {
+        "source": "desktop/src-tauri/src/agent_bridge/reconciliation.rs",
+        "target": "host/src/agent_bridge/reconciliation.rs",
+        "originalDeclarations": 5,
+        "originalAssertionMacros": 20,
+        "movedAssertionMacros": 20
+      },
+      {
+        "source": "desktop/src-tauri/src/agent_bridge/replica.rs",
+        "target": "host/src/agent_bridge/replica.rs",
+        "originalDeclarations": 5,
+        "originalAssertionMacros": 11,
+        "movedAssertionMacros": 11
+      },
+      {
+        "source": "desktop/src-tauri/src/agent_bridge/run_control.rs",
+        "target": "host/src/agent_bridge/run_control.rs",
+        "originalDeclarations": 25,
+        "originalAssertionMacros": 99,
+        "movedAssertionMacros": 99
+      },
+      {
+        "source": "desktop/src-tauri/src/agent_bridge/session.rs",
+        "target": "host/src/agent_bridge/session.rs",
+        "originalDeclarations": 28,
+        "originalAssertionMacros": 109,
+        "movedAssertionMacros": 109
+      },
+      {
+        "source": "desktop/src-tauri/src/agent_bridge/session_events.rs",
+        "target": "host/src/agent_bridge/session_events.rs",
+        "originalDeclarations": 13,
+        "originalAssertionMacros": 22,
+        "movedAssertionMacros": 22
+      },
+      {
+        "source": "desktop/src-tauri/src/agent_bridge/stream.rs",
+        "target": "host/src/agent_bridge/stream.rs",
+        "originalDeclarations": 28,
+        "originalAssertionMacros": 73,
+        "movedAssertionMacros": 73
+      },
+      {
+        "source": "desktop/src-tauri/src/agent_bridge/tests.rs",
+        "target": "host/src/agent_bridge/tests.rs",
+        "originalDeclarations": 78,
+        "originalAssertionMacros": 301,
+        "movedAssertionMacros": 299
+      }
+    ],
+    "storeCoordination": {
+      "original": 9,
+      "target": "host/src/store/reconcile.rs",
+      "fixture": "Same real SQLite seeds and loopback RPC; canonical HOME-before-RPC ordering and persistent catalogue/entries/rejection/transport-unavailable answers. All original assertion macros preserved."
+    }
+  },
+  "localTests": [
+    {
+      "command": "cargo test -p future-host --lib --offline --locked",
+      "passed": 933,
+      "failed": 0,
+      "ignored": 0,
+      "executionSeconds": 78.94,
+      "logSha256": "fd2101eb62eba9e1c5e9a31397d3dcd38b0685452f05ae3f08f7ad90132fa162"
+    },
+    {
+      "command": "cargo test -p futureos --lib agent_bridge:: --offline --locked",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "executionSeconds": 3.09,
+      "logSha256": "2af0903e0cea078da30440259a94456877fb09bb4d99d328a40eb3822b5d08ad"
+    },
+    {
+      "command": "cargo test -p futureos --no-default-features --features headless --test headless_cli --test remote_start_refusal --offline --locked",
+      "passed": 26,
+      "failed": 0,
+      "ignored": 0,
+      "suites": [
+        {
+          "target": "headless_cli",
+          "passed": 13,
+          "executionSeconds": 4.61
+        },
+        {
+          "target": "remote_start_refusal",
+          "passed": 13,
+          "executionSeconds": 68.49
+        }
+      ],
+      "logSha256": "c2deef8932aa4b668368a072993401879f7141a261f4349af4bbfcdd41f4a153",
+      "note": "Actual legacy product binary; final future headless entry still pending. These are not matched performance measurements."
+    }
+  ],
+  "entryBoundary": "Entries explicitly install task and channel runtimes before shared services; production Host bridge constructs no runtime. Test-support preserves observer completion tracking for retained entry tests before HOME changes. One canonical Host RPC family replaces the old Desktop Remote outer fixture lock, with no assertion changes.",
+  "dependencyGraph": {
+    "target": "aarch64-apple-darwin",
+    "desktopGuiFeatures": [
+      "default",
+      "gui"
+    ],
+    "future-host": {
+      "packages": 369,
+      "forbidden": []
+    },
+    "future-cli": {
+      "packages": 395,
+      "forbidden": []
+    }
+  },
+  "localChecks": [
+    "Host/GUI/CLI Clippy --all-targets PASS",
+    "Original headless Clippy --all-targets PASS",
+    "fmt PASS",
+    "Strict 295-doc placement/pairing/link checks PASS",
+    "Standalone Host Clippy --all-targets PASS"
+  ],
+  "limits": [
+    "Native local macOS tests only; Windows left to CI as requested.",
+    "Current CI candidate 8bc9e614 predates this batch; Linux headless remains in_progress with NATS reconnect logging. It is not accepted as passed.",
+    "Remote, maintenance, scheduling, complete stop coordination, future headless and release/manual acceptance remain open."
+  ],
+  "nativeGate": {
+    "summary": {
+      "platform": "macOS-27.0.1-arm64-arm-64bit",
+      "commit": "1979dc73ef6a7cacade4e21a72b794f13e76e453",
+      "suites": [
+        {
+          "name": "connection",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "future-rpc",
+            "--lib",
+            "connection::tests",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 20,
+          "seconds": 0.425
+        },
+        {
+          "name": "service",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "future-agent",
+            "--test",
+            "service_startup",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 15,
+          "seconds": 8.411
+        },
+        {
+          "name": "cli-tools",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--manifest-path",
+            "desktop/src-tauri/Cargo.toml",
+            "--no-default-features",
+            "--features",
+            "headless",
+            "--lib",
+            "cli_tool::tests",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 15,
+          "seconds": 28.25
+        },
+        {
+          "name": "shared-host",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "future-host",
+            "--lib",
+            "agent_host::",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 22,
+          "seconds": 26.91
+        },
+        {
+          "name": "gui-entry-state",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "futureos",
+            "--lib",
+            "gui::startup_paths_tests::process_state_initializes_without_a_window",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "seconds": 19.755
+        },
+        {
+          "name": "gui-entry-providers",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "futureos",
+            "--lib",
+            "commands::providers::tests::command_wrappers_delegate_to_the_agent",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "seconds": 0.613
+        },
+        {
+          "name": "gui-entry-ready",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "futureos",
+            "--lib",
+            "gui::startup_paths_tests::the_ready_event_starts_the_window_work_and_serves_the_terminal",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "seconds": 3.321
+        },
+        {
+          "name": "gui-entry-exit",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "futureos",
+            "--lib",
+            "gui::startup_paths_tests::the_exit_event_closes_admission_and_publishes_the_stop",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "seconds": 0.269
+        },
+        {
+          "name": "headless-entry",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "futureos",
+            "--no-default-features",
+            "--features",
+            "headless",
+            "--test",
+            "headless_cli",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 13,
+          "seconds": 13.165
+        }
+      ],
+      "status": "passed"
+    },
+    "command": "env -u RUST_LOG RUSTC_WRAPPER= CARGO_TARGET_DIR=<shared-root-target> CARGO_NET_OFFLINE=true python3 scripts/ci/check-embedded-agent.py",
+    "logSha256": "60dd4f01810bc1c3764b2c85ac49d0659905258fd1b6b878ba2b8afe8f7a4e2d",
+    "logDigests": {
+      "gui-entry-state.log": "cd5ed9244c84ca617e3f5753f820940dee19ab75f39c3a7d165012a02d3424a6",
+      "gui-entry-providers.log": "ddde2c06d9786345ddc722ededdf49537efd2389a0a13e427e659676dbc84feb",
+      "shared-host.log": "f995a2c2c549fab5795bbc31c3835ad1c8163bba8a8deb6fb4705e2d7915d17d",
+      "service.log": "99a017d3fa66283668a4c495a67a000761c40d2a187730faf878219895afdee9",
+      "gui-entry-exit.log": "b107a91a07e01dcec7b3fcc270f9ec905e0341218f07972913986ffaafc8bb6f",
+      "cli-tools.log": "bd49bd09b3880f2fce7b85021cf912399569ccd260dac21e2d55458abd142cef",
+      "gui-entry-ready.log": "cffd36a13facba0ab399b17ab41e924c654bc159857b671bc2f2305a46cfd2fd",
+      "connection.log": "d021d8981319baba00845d2e53a952c4f076dcd85ce3dded51fffcae9b73ab5d",
+      "headless-entry.log": "a95cf3e9e6f99d966a295280a52ceab2c993cc598e6b43fb1c0f71ac02934c2d"
+    },
+    "note": "Native macOS only, all nine nonempty groups; native Windows suite remains for CI."
+  }
+}

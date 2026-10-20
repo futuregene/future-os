@@ -116,7 +116,7 @@ says.
 
 ```bash
 futureos --relay https://relay.example.com           # GUI
-futureos-headless --relay https://relay.example.com  # server, no GUI
+future headless --relay https://relay.example.com  # server, no GUI
 ```
 
 The address applies to **this launch only**. Nothing is written down, so the
@@ -129,7 +129,7 @@ the official relay).
 
 In relay mode:
 
-* no FutureOS login is required for remote control, and `futureos-headless`
+* no FutureOS login is required for remote control, and `future headless`
   skips the login gate entirely;
 * the desktop mints its own pair id, Noise identity, invitation PSK and join
   token;

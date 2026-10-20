@@ -205,7 +205,7 @@ AGENT_SKILL_RECO=.../agent/src/skill_reco/mod.rs \
 **还有一个手动的 gRPC 端到端检查**（不进 CI：要 grpcurl、真实凭据和活网关，会花钱）：
 
 ```bash
-future agent --home /tmp/reco-test --verbose --log-file    # 隔离实例，不碰你在用的 agent
+FUTURE_HOME=/tmp/reco-test future agent --verbose --log-file    # 隔离实例，不碰你在用的 agent
 python3 suggest-skill-tests.py              # 35 项、5 个套件；≈33 次调用 ≈¥0.04
 python3 suggest-skill-tests.py --only A,B,D # 不花钱的三个套件（不发网络）
 python3 order-sensitivity.py --runs 8       # 顺序敏感性 vs 运行间噪音
