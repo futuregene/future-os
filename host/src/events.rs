@@ -38,6 +38,11 @@ pub fn attach(sink: Sink) -> Result<(), Sink> {
     SINK.set(sink)
 }
 
+/// Whether the entry has presentation resources that need synchronous cleanup.
+pub(crate) fn has_presentation() -> bool {
+    SINK.get().is_some()
+}
+
 pub fn publish(event: Event<'_>) {
     publish_to(SINK.get().copied(), event);
 }

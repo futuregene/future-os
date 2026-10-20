@@ -54,11 +54,15 @@ pub async fn delete_workspace(
     // Resolve terminal ownership before deleting its conversation rows. The
     // optional entry presentation sink closes embedded GUI terminals after
     // the database deletion succeeds; headless leaves that sink unbound.
-    let thread_ids: Vec<String> = store::list_threads()?
-        .into_iter()
-        .filter(|thread| thread.workspace_id == workspace_id)
-        .map(|thread| thread.id)
-        .collect();
+    let thread_ids: Vec<String> = if crate::events::has_presentation() {
+        store::list_threads()?
+            .into_iter()
+            .filter(|thread| thread.workspace_id == workspace_id)
+            .map(|thread| thread.id)
+            .collect()
+    } else {
+        Vec::new()
+    };
     // Hard-delete the workspace, its threads, and all their child rows.
     let workspace = store::delete_workspace(&workspace_id)?;
     for thread_id in &thread_ids {

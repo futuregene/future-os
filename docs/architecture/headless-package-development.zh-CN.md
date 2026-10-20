@@ -441,3 +441,5 @@ CI `39371045462` 已完成，整体为 failure。Windows 独立 Host 分组、�
 `host/src/tasks/service.rs` 承接任务表单归一化、列表、启停、立即运行与修订应用；继续复用 `future-tasks` 的存储与内核。`host/src/workspaces.rs` 承接工作区业务，保持删除数据库记录、同步关闭入口终端、协调 Agent 删除 outbox、清理孤立应用目录的顺序。Desktop 只保留 IPC 包装，Remote 的工作区、路径边界和缩略图调用直接指向 Host。数据格式、任务来源与用户工作区文件策略保持。
 
 本批迁入 17 个原测试（任务 13、工作区 4），测试主体逐项比对保持原样；两个直接操作真实 SQLite 的往返用例从入口归属改判为共享业务，GUI 仍保留两个 malformed-body IPC 用例。Host 全量本地 1047 通过、2 个原有忽略；GUI 两组各 1 通过；Remote 宿主 162 通过、1 个原有忽略。联合 Clippy `--all-targets`、旧 headless Clippy、fmt、严格 Rustdoc 和联合依赖边界通过。[验证证据](../testing/headless-host-application-services-2026-10-20.json)记录环境与摘要。运行中的 CI [39374836837](https://github.com/futuregene/future-os/actions/runs/39374836837)固定在 `70f3d786`，不包含本批；Remote 本体、完整生命周期和 CLI 接入仍未完成。
+
+工作区删除随后补齐展示绑定守卫：仅在入口绑定展示资源时读取终端归属，维持原 headless 不执行该 GUI 读取的路径；工作区相关 20 项与联合 Clippy 再验通过。`c32ddf29` 的真实旧入口两组进程测试各 13 项通过（4.73s / 68.99s）；它们不代表尚未接入的 `future headless`，也不覆盖随后发生的源码修改。

@@ -86,5 +86,23 @@
   "sourceSha256": {
     "host/src/tasks/service.rs": "adbc1a475d5b9e7997978c091df83e8e568ccdcf6b4b217fe4921317495ee2c4",
     "host/src/workspaces.rs": "0e50ac6970f2de1e013f81e82bc46be8f42eebc1a5086b6aa3b34e3f60aa91fd"
+  },
+  "legacyProcessValidation": {
+    "sourceCommit": "c32ddf29",
+    "command": "cargo test -p futureos --no-default-features --features headless --test headless_cli --test remote_start_refusal --offline --locked",
+    "results": [
+      "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.73s",
+      "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 68.99s"
+    ],
+    "logSha256": "b07533aeef220128fb9cf4b16d9154c30ab51c34d2cbd86c270624ba010c38b4",
+    "limits": "Actual legacy futureos-headless process, not the future headless entry that is still pending. This run predates the presentation-read guard and the later idle-test clock repair."
+  },
+  "presentationReadGuard": {
+    "change": "Read terminal ownership only when entry presentation is attached, preserving the original headless deletion path without that GUI-only read. No change to synchronous close-after-delete ordering.",
+    "results": [
+      "test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 1029 filtered out; finished in 0.22s"
+    ],
+    "logSha256": "5b0b0132369a51780d132017fde569100c72dfac2c846653c74b10297bcb0352",
+    "checks": "Host/GUI/CLI all-targets Clippy passed after this guard; no runtime tests claimed for the later idle-test repair."
   }
 }
