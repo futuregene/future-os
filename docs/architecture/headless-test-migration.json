@@ -2859,7 +2859,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::parses_write_and_edit_success_prose"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:527:ignores_output_without_a_path",
@@ -2870,7 +2878,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::ignores_output_without_a_path"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:535:unknown_event_types_are_ignored",
@@ -2881,7 +2897,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::unknown_event_types_are_ignored"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:543:parses_nonzero_exit_footer",
@@ -2892,7 +2916,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::parses_nonzero_exit_footer"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:553:no_prefix_or_zero_is_not_nonzero",
@@ -2903,7 +2935,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::no_prefix_or_zero_is_not_nonzero"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:563:bare_soft_fail_commands_are_exempt",
@@ -2914,7 +2954,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::bare_soft_fail_commands_are_exempt"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:573:windows_forms_are_exempt",
@@ -2925,7 +2973,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::windows_forms_are_exempt"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:581:pipelines_lists_and_other_commands_are_not_exempt",
@@ -2936,7 +2992,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::pipelines_lists_and_other_commands_are_not_exempt"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:591:structured_exit_fields_beat_the_output_prose",
@@ -2947,7 +3011,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::structured_exit_fields_beat_the_output_prose"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:648:only_gui_projection_events_require_blocking_work",
@@ -2958,7 +3030,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::only_gui_projection_events_require_blocking_work"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:692:none_run_id_and_invalid_payloads_are_dropped",
@@ -2969,7 +3049,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::none_run_id_and_invalid_payloads_are_dropped"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:704:value_string_picks_strings_objects_and_skips_nulls",
@@ -2980,7 +3068,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::value_string_picks_strings_objects_and_skips_nulls"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:723:approval_request_event_is_projected_with_full_field_mapping",
@@ -2991,7 +3087,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::approval_request_event_is_projected_with_full_field_mapping"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:782:approval_request_defaults_and_null_suggestion",
@@ -3002,7 +3106,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::approval_request_defaults_and_null_suggestion"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:816:approval_request_for_a_terminal_run_is_cancelled_immediately",
@@ -3013,7 +3125,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::approval_request_for_a_terminal_run_is_cancelled_immediately"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:851:approval_decision_variants",
@@ -3024,7 +3144,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::approval_decision_variants"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:964:failed_tool_end_records_no_artifact",
@@ -3035,7 +3163,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::failed_tool_end_records_no_artifact"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:984:write_and_edit_tool_ends_record_file_artifacts",
@@ -3046,7 +3182,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::write_and_edit_tool_ends_record_file_artifacts"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:1043:tool_end_guards_drop_unrecordable_artifacts",
@@ -3057,7 +3201,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::tool_end_guards_drop_unrecordable_artifacts"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:1075:git_workspaces_opt_out_of_artifacts",
@@ -3068,7 +3220,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::git_workspaces_opt_out_of_artifacts"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:1110:artifact_created_event_field_mapping",
@@ -3079,7 +3239,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::artifact_created_event_field_mapping"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:1158:soft_fail_exit_one_from_grep_is_not_a_failure",
@@ -3090,7 +3258,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::soft_fail_exit_one_from_grep_is_not_a_failure"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:1205:tool_input_unwraps_double_encoded_json",
@@ -3101,7 +3277,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::tool_input_unwraps_double_encoded_json"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:1246:tool_input_string_layer_that_is_not_json_is_dropped",
@@ -3112,7 +3296,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::tool_input_string_layer_that_is_not_json_is_dropped"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:1268:shell_command_double_encoded_is_unwrapped_for_soft_fail",
@@ -3123,7 +3315,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::shell_command_double_encoded_is_unwrapped_for_soft_fail"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:1298:footer_exit_codes_above_one_are_failures",
@@ -3134,7 +3334,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::footer_exit_codes_above_one_are_failures"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:1311:whitespace_only_command_is_not_soft_fail",
@@ -3145,7 +3353,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::whitespace_only_command_is_not_soft_fail"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:1317:approval_persistence_failures_are_logged_not_raised",
@@ -3156,7 +3372,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::approval_persistence_failures_are_logged_not_raised"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:1380:artifact_write_failures_are_logged_not_raised",
@@ -3167,7 +3391,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::artifact_write_failures_are_logged_not_raised"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:1416:an_unrecordable_assessment_is_logged_and_dropped",
@@ -3178,7 +3410,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::an_unrecordable_assessment_is_logged_and_dropped"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/persist.rs:1437:live_and_replayed_assessments_never_create_pending_requests",
@@ -3189,7 +3429,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/persist.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::persist::tests::live_and_replayed_assessments_never_create_pending_requests"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/presence.rs:119:foreign_database_cannot_compact_or_rename_the_original_conversation",
@@ -3365,7 +3613,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/review.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::review::tests::shadow_review_lifecycle_smoke"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/review.rs:493:resolve_returns_none_for_non_workspace_contexts",
@@ -3376,7 +3632,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/review.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::review::tests::resolve_returns_none_for_non_workspace_contexts"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/review.rs:543:retry_error_paths",
@@ -3387,7 +3651,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/review.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::review::tests::retry_error_paths"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/review.rs:618:capture_and_materialize_swallow_store_failures",
@@ -3398,7 +3670,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/review.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::review::tests::capture_and_materialize_swallow_store_failures"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/review.rs:639:retry_re_materializes_from_existing_commits",
@@ -3409,7 +3689,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/review.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::review::tests::retry_re_materializes_from_existing_commits"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/review.rs:670:retry_marks_partial_completeness",
@@ -3420,7 +3708,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/review.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::review::tests::retry_marks_partial_completeness"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/review.rs:700:try_capture_and_materialize_skip_non_applicable_threads",
@@ -3431,7 +3727,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/review.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::review::tests::try_capture_and_materialize_skip_non_applicable_threads"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/review.rs:739:try_materialize_paths_with_failed_or_commitless_snapshots",
@@ -3442,7 +3746,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/review.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::review::tests::try_materialize_paths_with_failed_or_commitless_snapshots"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/review.rs:777:retry_fails_when_commits_are_missing_from_the_repo",
@@ -3453,7 +3765,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/review.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::review::tests::retry_fails_when_commits_are_missing_from_the_repo"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/review.rs:810:capture_before_skips_non_git_workspace_over_volume_redline",
@@ -3464,7 +3784,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/review.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::review::tests::capture_before_skips_non_git_workspace_over_volume_redline"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/review.rs:839:capture_and_materialize_fail_when_the_snapshot_store_is_gone",
@@ -3475,7 +3803,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/review.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::review::tests::capture_and_materialize_fail_when_the_snapshot_store_is_gone"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/review.rs:886:a_failed_after_capture_is_recorded_and_reported_as_empty",
@@ -3486,7 +3822,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/review.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::review::tests::a_failed_after_capture_is_recorded_and_reported_as_empty"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/review.rs:934:materialize_marks_partial_completeness",
@@ -3497,7 +3841,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/review.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::review::tests::materialize_marks_partial_completeness"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/review.rs:970:materialize_fails_when_the_changeset_store_is_gone",
@@ -3508,7 +3860,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/review.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::review::tests::materialize_fails_when_the_changeset_store_is_gone"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/review.rs:1009:fixture_drop_removes_home_when_unset_before",
@@ -3519,7 +3879,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/review.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::review::tests::fixture_drop_removes_home_when_unset_before"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/review.rs:1032:retry_reports_a_run_deleted_while_the_changeset_is_materialized",
@@ -3530,7 +3898,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/review.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+        "cases": [
+          "agent_bridge::review::tests::retry_reports_a_run_deleted_while_the_changeset_is_materialized"
+        ],
+        "evidence": "docs/testing/headless-host-projection-review-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/run_control.rs:490:an_unanswered_state_rpc_cannot_exceed_the_idle_confirmation_budget",

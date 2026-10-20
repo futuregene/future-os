@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "dc72011119f8e2b3a1013f3a6c35d3ee531a08bc",
+  "change": "Shared run-event tool/approval/artifact projection and run shadow-review capture/materialization move once into the host. Store, path/sensitive-file checks, original event whitelist and best-effort persistence remain. Desktop imports the same semantic services.",
+  "testOwnership": [
+    {
+      "source": "desktop/src-tauri/src/agent_bridge/persist.rs",
+      "target": "host/src/agent_bridge/persist.rs",
+      "names": [
+        "parses_write_and_edit_success_prose",
+        "ignores_output_without_a_path",
+        "unknown_event_types_are_ignored",
+        "parses_nonzero_exit_footer",
+        "no_prefix_or_zero_is_not_nonzero",
+        "bare_soft_fail_commands_are_exempt",
+        "windows_forms_are_exempt",
+        "pipelines_lists_and_other_commands_are_not_exempt",
+        "structured_exit_fields_beat_the_output_prose",
+        "only_gui_projection_events_require_blocking_work",
+        "none_run_id_and_invalid_payloads_are_dropped",
+        "value_string_picks_strings_objects_and_skips_nulls",
+        "approval_request_event_is_projected_with_full_field_mapping",
+        "approval_request_defaults_and_null_suggestion",
+        "approval_request_for_a_terminal_run_is_cancelled_immediately",
+        "approval_decision_variants",
+        "failed_tool_end_records_no_artifact",
+        "write_and_edit_tool_ends_record_file_artifacts",
+        "tool_end_guards_drop_unrecordable_artifacts",
+        "git_workspaces_opt_out_of_artifacts",
+        "artifact_created_event_field_mapping",
+        "soft_fail_exit_one_from_grep_is_not_a_failure",
+        "tool_input_unwraps_double_encoded_json",
+        "tool_input_string_layer_that_is_not_json_is_dropped",
+        "shell_command_double_encoded_is_unwrapped_for_soft_fail",
+        "footer_exit_codes_above_one_are_failures",
+        "whitespace_only_command_is_not_soft_fail",
+        "approval_persistence_failures_are_logged_not_raised",
+        "artifact_write_failures_are_logged_not_raised",
+        "an_unrecordable_assessment_is_logged_and_dropped",
+        "live_and_replayed_assessments_never_create_pending_requests"
+      ],
+      "originalAssertionMacros": 100,
+      "movedAssertionMacros": 100
+    },
+    {
+      "source": "desktop/src-tauri/src/agent_bridge/review.rs",
+      "target": "host/src/agent_bridge/review.rs",
+      "names": [
+        "shadow_review_lifecycle_smoke",
+        "resolve_returns_none_for_non_workspace_contexts",
+        "retry_error_paths",
+        "capture_and_materialize_swallow_store_failures",
+        "retry_re_materializes_from_existing_commits",
+        "retry_marks_partial_completeness",
+        "try_capture_and_materialize_skip_non_applicable_threads",
+        "try_materialize_paths_with_failed_or_commitless_snapshots",
+        "retry_fails_when_commits_are_missing_from_the_repo",
+        "capture_before_skips_non_git_workspace_over_volume_redline",
+        "capture_and_materialize_fail_when_the_snapshot_store_is_gone",
+        "a_failed_after_capture_is_recorded_and_reported_as_empty",
+        "materialize_marks_partial_completeness",
+        "materialize_fails_when_the_changeset_store_is_gone",
+        "fixture_drop_removes_home_when_unset_before",
+        "retry_reports_a_run_deleted_while_the_changeset_is_materialized"
+      ],
+      "originalAssertionMacros": 38,
+      "movedAssertionMacros": 38
+    }
+  ],
+  "localTests": {
+    "command": "cargo test --offline --locked -p future-host --lib agent_bridge::",
+    "passed": 60,
+    "failed": 0,
+    "ignored": 0,
+    "executionSeconds": 14.52,
+    "newlyMovedOriginalDeclarations": 47,
+    "logSha256": "80299f96144a771998679ca8c893f899c39572646e9dc7aa20f0123a1b04cb59"
+  },
+  "checks": [
+    "fmt PASS",
+    "Host Clippy --all-targets PASS",
+    "Combined GUI/CLI Clippy --all-targets PASS",
+    "Original headless Clippy --all-targets PASS"
+  ],
+  "limits": [
+    "Test results are local macOS, not complete cross-platform/final product acceptance.",
+    "Batch postdates CI candidate 8bc9e614.",
+    "Observer/collector/stream/prompt/session business, Remote hosting and full exit coordination still need extraction."
+  ]
+}

@@ -10,7 +10,7 @@ use crate::shadow_review::{
     self, Limits, MaterializedDiff, ShadowRepo, VolumeRedline, VolumeVerdict,
 };
 use crate::store::{self, InsertReviewFileChangeInput, UpsertRunChangesetInput};
-use crate::AppError;
+use crate::Error as AppError;
 
 /// Append metadata-only rows for changed sensitive files (§13): path + status,
 /// no blob or diff.
@@ -94,7 +94,7 @@ fn try_capture_before(thread_id: &str, run_id: &str) -> Result<(), AppError> {
 /// Convenience for synchronous callers (tests): capture the after snapshot then
 /// materialize the changeset in one call. The lifecycle splits these — capture
 /// runs under the prompt guard, materialize runs off the IPC path (§6.1).
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn finalize_after(thread_id: &str, run_id: &str) {
     let sensitive = capture_after(thread_id, run_id);
     materialize_changeset(thread_id, run_id, sensitive);

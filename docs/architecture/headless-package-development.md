@@ -278,7 +278,7 @@ Current phase status:
 | 1 | Ordinary GUI-free crate, task registry, presentation outlet and consumer dependencies established; complete lifecycle/config boundary still open |
 | 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, Remote, maintenance and stop coordination remain |
 | 3 | Not implemented; the product entry is still `futureos-headless` |
-| 4 | 566 original test declarations moved and pass locally on macOS; this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
+| 4 | 613 original test declarations moved and pass locally on macOS; this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
 | 5 | Host CI group and affected propagation added; builds, release artifacts, signing/install/update/uninstall still open |
 | 6 | Not started; no frozen final candidate, matched performance, artifact acceptance or confirmed manual results |
 
@@ -363,3 +363,9 @@ Before pushing, main's pairing invitation API update at `c3a7ea10` was merged as
 ### 2026-10-20 Device-management test inventory supplement
 
 Before adding the CLI headless entry, 50 existing device/control/invitation tests in `cli/src/commands/remote.rs` were audited from immutable baseline `904eab2b`. They remain owned by CLI and do not increase the migrated count. This supplements the initial 2,143 declarations to 2,193 baseline declarations. Three subsequent CLI invitation display/cleanup tests and three Desktop pairing cleanup tests from main are recorded separately in `upstreamTests`, with their actual introducing commits. They are not authored additions for this extraction, folded into the old baseline, or claimed as migrated.
+
+### 2026-10-20 Run projection and review lifecycle services
+
+Tool/approval/artifact Store projection and run shadow-review capture/materialization move into the host. Original event whitelist, real storage, sensitive-path restrictions and best-effort behavior remain. Desktop imports semantic operations without duplicating the backend or exposing database internals.
+
+Forty-seven original declarations move with their names and assertions unchanged. Together with existing model/skills/config RPC tests, targeted host bridge execution passes 60 tests, zero failed or ignored (14.52 seconds), including real database, filesystem and Git lifecycle checks. Host-only, combined GUI/CLI and original headless Clippy `--all-targets` plus formatting pass; see [evidence](../testing/headless-host-projection-review-2026-10-20.json). This batch postdates CI candidate `8bc9e614`. Complete observer/collector/stream/prompt/session business, Remote hosting and exit coordination still need migration.

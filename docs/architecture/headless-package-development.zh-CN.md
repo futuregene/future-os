@@ -278,7 +278,7 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 | 1 | 已建立无 GUI 普通库、任务注册、展示出口和消费者依赖；完整生命周期/配置边界未完成 |
 | 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端/托管与请求归属已迁入；完整业务桥、Remote、维护和停止协调未迁入 |
 | 3 | 尚未实现；产品入口仍是 `futureos-headless` |
-| 4 | 已迁移 566 个原测试声明并在本地 macOS 执行通过；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
+| 4 | 已迁移 613 个原测试声明并在本地 macOS 执行通过；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
 | 5 | 已加宿主 CI 分组和 affected 传播；构建、发行物、签名/安装/升级/卸载未完成 |
 | 6 | 尚未开始；无最终冻结候选、同条件性能、产物验收或确认的人工结果 |
 
@@ -363,3 +363,9 @@ CI `39363398726` 在 Linux 原生脚本中拦住 `gui-host failed: exit=0, passe
 ### 2026-10-20 设备管理测试清单补审
 
 在接入 CLI headless 前，从不可变基线 `904eab2b` 补审既有 `cli/src/commands/remote.rs` 的 50 个设备/控制/邀请测试，均明确保留在 CLI，不计入已迁移数量。初始 2143 个声明的清单由此补齐为 2193 个基线声明。主干另新增 3 个 CLI 邀请展示/清理测试和 3 个 Desktop 配对清理测试，单独记录于 `upstreamTests`，标明真实引入提交；它们不是本轮新增用例，也没有被并入旧基线或宣称已迁移。
+
+### 2026-10-20 Run 投影与 review 生命周期服务
+
+工具/审批/文件事件的 Store 投影，以及 run 的 shadow review capture/materialize 服务迁入宿主。保留原事件白名单、真实存储、敏感路径限制及 best-effort 行为；Desktop 只导入共享语义操作，不复制后端或公开内部数据库。
+
+47 个原声明随服务迁移，原名称和断言不变。连同已有模型/技能/配置 RPC，宿主业务桥定向测试 60 项通过、0 失败、0 忽略（14.52 秒），包含真实数据库、文件与 Git 生命周期验证。宿主单包、GUI/CLI 组合及旧 headless Clippy `--all-targets`、fmt 通过，见[证据](../testing/headless-host-projection-review-2026-10-20.json)。本批晚于 CI 候选 `8bc9e614`；完整 observer/collector/stream/prompt/session、Remote 宿主和退出协调仍待迁移。

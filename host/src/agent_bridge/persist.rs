@@ -10,7 +10,7 @@ use crate::{git_review, store};
 /// Whether an Agent event contributes to a GUI-owned projection. The Agent
 /// journal remains the canonical, complete event log; events outside this set
 /// need no duplicate SQLite/tool projection work in the desktop process.
-pub(super) fn requires_gui_projection(event_type: &str) -> bool {
+pub fn requires_gui_projection(event_type: &str) -> bool {
     matches!(
         event_type,
         "tool_start"
@@ -25,12 +25,7 @@ pub(super) fn requires_gui_projection(event_type: &str) -> bool {
     )
 }
 
-pub(super) fn persist_run_event(
-    run_id: Option<&str>,
-    event_type: &str,
-    payload: &str,
-    sequence: i64,
-) {
+pub fn persist_run_event(run_id: Option<&str>, event_type: &str, payload: &str, sequence: i64) {
     let Some(run_id) = run_id else {
         return;
     };
@@ -373,7 +368,7 @@ fn persist_artifact(run_id: &str, value: &serde_json::Value) {
 /// workspace, so it's safe to persist as an artifact. Git workspaces opt out
 /// entirely (their changes flow through the review pipeline, not artifacts); a
 /// `None` path (inline artifact) is always allowed.
-fn path_allowed_for_run(run_id: &str, path: Option<&str>) -> Result<bool, crate::AppError> {
+fn path_allowed_for_run(run_id: &str, path: Option<&str>) -> Result<bool, crate::Error> {
     let run = store::get_run(run_id)?.ok_or_else(|| "Run could not be loaded.".to_string())?;
     let thread = store::get_thread(&run.thread_id)?
         .ok_or_else(|| "Thread could not be loaded.".to_string())?;
