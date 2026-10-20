@@ -46,6 +46,7 @@ fuzzy-matcher = "0.3"
 rand = "0.8"
 
 fs2 = "0.4"
+tempfile = "3"
 nkeys = "0.4"
 tonic.workspace = true
 
@@ -56,4 +57,3 @@ future-remote-server = { path = "../packages/remote-server", features = ["test-s
 future-remote-client = { path = "../packages/remote-client", features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
 libc = "0.2"
-tempfile = "3"

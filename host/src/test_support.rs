@@ -40,3 +40,9 @@ pub mod agent;
 pub mod provider_responses;
 
 pub mod tasks;
+
+/// Retained entry unit fixtures opt into their original test configuration.
+/// Cargo's test-support feature alone never changes a product child process.
+pub fn configure_entry_fixture() {
+    crate::remote::enable_fixture_mode();
+}

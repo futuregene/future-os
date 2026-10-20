@@ -74,3 +74,5 @@ pub mod remote_peer;
 mod remote_platform;
 
 pub mod shutdown;
+
+pub mod cli_tool;

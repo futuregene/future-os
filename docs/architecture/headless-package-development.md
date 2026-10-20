@@ -278,7 +278,7 @@ Current phase status:
 | 1 | Ordinary GUI-free crate, task registry, presentation outlet and consumer dependencies established; complete lifecycle/config boundary still open |
 | 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, task/conversation, OAuth/account and maintenance scheduler moved; Remote host/Peer moved with local core execution; cross-platform revalidation, stop coordination state moved; shared service teardown moved; CLI maintenance bootstrap and unified startup boundary remain |
 | 3 | Not implemented; the product entry is still `futureos-headless` |
-| 4 | 1582 original test declarations moved (1569 executed locally on macOS, ten retain original ignores, two real broker cases await CI and one platform case awaits CI); this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
+| 4 | 1597 original test declarations moved (1584 executed locally on macOS, ten retain original ignores and three locally unavailable cases passed Linux CI); this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
 | 5 | Host CI group and affected propagation added; builds, release artifacts, signing/install/update/uninstall still open |
 | 6 | Not started; no frozen final candidate, matched performance, artifact acceptance or confirmed manual results |
 
@@ -489,3 +489,13 @@ Nine original shared tests move to Host. The original GUI stopping-status poll a
 Host prepare_process now installs tracing/TLS and hydrates the login-shell environment once, before entries select Future home, acquire the instance lock or create a runtime. Entries retain argument parsing and maintenance CLI discovery. Relay launch-option persistence also belongs to Host, preserving paths, normalization, empty-value clearing and existing pairing slots. The original real persistence test executes once in Host; GUI argument/initialization wiring remains at the entry.
 
 Local Host persistence passed one case, entry wiring passed seven and the real process file passed 13. Clippy --all-targets passed for both entry configurations; see the [evidence](../testing/headless-host-startup-preparation-2026-10-20.json). New CLI integration and release acceptance remain open.
+
+### 2026-10-20 Linux CI evidence for Remote extraction
+
+Linux Host job 118485031786 passed on candidate 8291d272: 1566 passed, zero failed and ten original ignores; one existing doc-test remains ignored. After the isolated broker was ready, both real NATS multi-device cases actually executed successfully with no missing-environment skip. The non-macOS approval-tier case also passed. The inventory records exact candidate/platform evidence for these three declarations, without counting them as local passes. See the [evidence](../testing/headless-host-remote-linux-ci-2026-10-20.json). The workflow snapshot is still in progress, including Windows Host/build; later shutdown/startup commits cannot borrow this candidate result.
+
+### 2026-10-20 Maintenance CLI discovery and capability contract
+
+Host now owns maintenance executable discovery, identity cache, version/capability validation, the 3-second probe deadline, output cap and PATH preparation without depending on the future-cli crate. Original development targets and Desktop staged sidecar paths remain valid; absent Desktop paths do not prevent independent Host builds. Desktop retains a thin adapter and explicitly configures its unit/child fixtures, while Cargo test-support unification alone cannot change a real product process.
+
+All 15 original Host cases passed, alongside 39 GUI/terminal/environment entry cases and 13 real legacy process cases. A GUI child fixture inherited another test's temporary PATH, making sleep unavailable; parent run_case now holds the existing HomeGuard with all cancellation/deadline assertions preserved. Clippy --all-targets, fmt, strict Rustdoc and combined dependency boundaries passed; see the [evidence](../testing/headless-host-maintenance-discovery-2026-10-20.json). This batch needs its own cross-platform CI; unified CLI integration follows.

@@ -8,7 +8,8 @@
     "Planned targets are ownership intent, not proof of implementation or execution.",
     "Mixed-module ownership decisions are per test and reference ownershipRules; planned targets are not implementation or runtime evidence.",
     "migrated-local-pass records only local aarch64-apple-darwin execution; other platforms, CI and final candidate acceptance remain separate.",
-    "migrated-existing-ignore retains the immutable baseline ignore attribute/reason; it is compiled but never counted as a passing execution."
+    "migrated-existing-ignore retains the immutable baseline ignore attribute/reason; it is compiled but never counted as a passing execution.",
+    "migrated-ci-pass requires the exact candidate, platform and named execution evidence; it does not accept a later candidate or the complete workflow."
   ],
   "sources": [
     {
@@ -11619,7 +11620,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/cli_tool.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-maintenance-discovery-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/cli_tool.rs:442:bundled_cli_is_preferred_over_path_cli",
@@ -11630,7 +11632,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/cli_tool.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-maintenance-discovery-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/cli_tool.rs:454:placeholders_and_directories_do_not_hide_a_usable_path_cli",
@@ -11641,7 +11644,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/cli_tool.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-maintenance-discovery-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/cli_tool.rs:473:relative_path_entries_are_never_searched",
@@ -11652,7 +11656,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/cli_tool.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-maintenance-discovery-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/cli_tool.rs:487:non_executable_bundle_does_not_hide_a_usable_path_cli",
@@ -11663,7 +11668,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/cli_tool.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-maintenance-discovery-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/cli_tool.rs:546:a_runnable_cli_on_path_is_discovered_and_probed",
@@ -11674,7 +11680,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/cli_tool.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-maintenance-discovery-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/cli_tool.rs:571:a_missing_capability_is_reported_with_the_cli_identity",
@@ -11685,7 +11692,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/cli_tool.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-maintenance-discovery-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/cli_tool.rs:596:a_cli_that_changes_during_discovery_is_rejected",
@@ -11696,7 +11704,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/cli_tool.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-maintenance-discovery-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/cli_tool.rs:623:prepare_path_prepends_the_discovered_cli",
@@ -11707,7 +11716,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/cli_tool.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-maintenance-discovery-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/cli_tool.rs:643:a_blank_display_version_is_rejected",
@@ -11718,7 +11728,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/cli_tool.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-maintenance-discovery-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/cli_tool.rs:659:a_silent_cli_is_killed_and_reported_as_a_timeout",
@@ -11729,7 +11740,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/cli_tool.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-maintenance-discovery-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/cli_tool.rs:682:a_flooding_cli_is_killed_at_the_output_limit",
@@ -11740,7 +11752,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/cli_tool.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-maintenance-discovery-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/cli_tool.rs:700:a_failing_cli_is_reported_with_its_exit_status",
@@ -11751,7 +11764,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/cli_tool.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-maintenance-discovery-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/cli_tool.rs:712:the_production_probe_deadline_is_unchanged_without_an_override",
@@ -11762,7 +11776,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/cli_tool.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-maintenance-discovery-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/cli_tool.rs:738:a_reply_that_arrives_after_the_deadline_is_captured_only_without_one",
@@ -11773,7 +11788,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/cli_tool.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-maintenance-discovery-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/commands/agent.rs:108:async_command_wrappers_reject_malformed_bodies",
@@ -19835,8 +19851,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/remote/commands.rs",
-      "status": "migrated-platform-validation-pending",
-      "validationEvidence": "docs/testing/headless-host-remote-2026-10-20.json"
+      "status": "migrated-ci-pass",
+      "validationEvidence": "docs/testing/headless-host-remote-2026-10-20.json",
+      "ciValidation": {
+        "candidate": "8291d272c7ee3f1677ad2d9c2553dd61037b7bc8",
+        "platform": "Linux",
+        "run": 39379461294,
+        "job": 118485031786,
+        "evidence": "docs/testing/headless-host-remote-linux-ci-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/remote/commands.rs:3495:automatic_approval_tier_requires_a_future_account",
@@ -22127,8 +22150,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/remote/verify_e2e.rs",
-      "status": "migrated-ci-broker-validation-pending",
-      "validationEvidence": "docs/testing/headless-host-remote-2026-10-20.json"
+      "status": "migrated-ci-pass",
+      "validationEvidence": "docs/testing/headless-host-remote-2026-10-20.json",
+      "ciValidation": {
+        "candidate": "8291d272c7ee3f1677ad2d9c2553dd61037b7bc8",
+        "platform": "Linux",
+        "run": 39379461294,
+        "job": 118485031786,
+        "evidence": "docs/testing/headless-host-remote-linux-ci-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/remote/verify_e2e.rs:3127:two_simultaneous_reconnects_leave_control_where_it_was",
@@ -22139,8 +22169,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/remote/verify_e2e.rs",
-      "status": "migrated-ci-broker-validation-pending",
-      "validationEvidence": "docs/testing/headless-host-remote-2026-10-20.json"
+      "status": "migrated-ci-pass",
+      "validationEvidence": "docs/testing/headless-host-remote-2026-10-20.json",
+      "ciValidation": {
+        "candidate": "8291d272c7ee3f1677ad2d9c2553dd61037b7bc8",
+        "platform": "Linux",
+        "run": 39379461294,
+        "job": 118485031786,
+        "evidence": "docs/testing/headless-host-remote-linux-ci-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/remote_host/availability.rs:107:availability_requires_a_recent_success",

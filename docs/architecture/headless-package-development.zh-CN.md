@@ -278,7 +278,7 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 | 1 | 已建立无 GUI 普通库、任务注册、展示出口和消费者依赖；完整生命周期/配置边界未完成 |
 | 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端/托管与请求归属已迁入；完整业务桥、任务/会话、登录账户与维护调度已迁入；Remote 宿主/Peer 已迁入并完成本地核心执行，跨平台复验待完成；停止协调状态已迁入；共享服务停止顺序已迁入；CLI 维护引导和统一启动边界未完成 |
 | 3 | 尚未实现；产品入口仍是 `futureos-headless` |
-| 4 | 已迁移 1582 个原测试声明（1569 个本地 macOS 执行通过、10 个保留原忽略声明、2 个真实中继待 CI、1 个平台专用待 CI）；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
+| 4 | 已迁移 1597 个原测试声明（1584 个本地 macOS 执行通过、10 个保留原忽略声明，另 3 个本机不可执行声明已在 Linux CI 通过）；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
 | 5 | 已加宿主 CI 分组和 affected 传播；构建、发行物、签名/安装/升级/卸载未完成 |
 | 6 | 尚未开始；无最终冻结候选、同条件性能、产物验收或确认的人工结果 |
 
@@ -489,3 +489,13 @@ Linux Host CI 将使用独立子进程中继，在同一次核心测试执行中
 Host 现在以一次性 prepare_process 统一 tracing、TLS provider 和登录 shell 环境恢复，入口在选定 Future home、获取实例锁和创建 runtime 前调用。解析参数与 CLI 维护发现仍由入口执行。中继参数持久化也归 Host，保留路径、规范化、空值清理和已有配对不变的语义。原真实持久化测试只在 Host 执行一次；GUI 参数/初始化接线保留。
 
 本地 Host 持久化 1 项、入口接线 7 项、真实进程 13 项通过，两个入口配置 Clippy --all-targets 通过，见[证据](../testing/headless-host-startup-preparation-2026-10-20.json)。新 CLI 接入和发行验收仍待完成。
+
+### 2026-10-20 Remote 迁移的 Linux CI 证据
+
+候选 8291d272 的 Linux Host job 118485031786 已通过：1566 项通过、0 失败、10 个原 ignore；一个既有 doc-test 保留 ignore。独立中继就绪后，两个多设备真实 NATS 用例实际执行并通过，没有缺失环境跳过；非 macOS 审批层级用例也执行通过。清单对这三个此前本机无法执行的声明记录精确候选和平台，不将其算作本地通过。见[证据](../testing/headless-host-remote-linux-ci-2026-10-20.json)。快照中的整体运行仍未结束，Windows 宿主和构建仍在运行；后续停止/初始化提交不在此候选内，不能借用本次结果。
+
+### 2026-10-20 维护 CLI 发现与能力合同
+
+CLI 可执行文件发现、身份缓存、版本/能力校验、3 秒探测期限、输出上限和 PATH 准备迁入 Host，不引入 future-cli crate 依赖。原开发目标和 Desktop staged sidecar 路径继续有效，Host 在 Desktop 路径不存在时也能独立编译。Desktop 留薄适配，并为单元/子夹具显式注入原测试配置，test-support 的 Cargo 合并本身不会改变真实产品进程行为。
+
+15 个原测试在 Host 全部通过；GUI/终端/环境接线共 39 项、真实旧入口进程 13 项通过。GUI 子进程夹具曾并发继承另一个测试的临时 PATH，导致 sleep 不存在；父 run_case 现持有原 HomeGuard，保留所有取消和有界等待断言。Clippy --all-targets、fmt、严格 Rustdoc 和联合依赖边界通过，见[证据](../testing/headless-host-maintenance-discovery-2026-10-20.json)。本批仍待自己的跨平台 CI，下一步接入统一 CLI。
