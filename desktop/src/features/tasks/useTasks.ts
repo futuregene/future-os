@@ -128,11 +128,6 @@ export function useTasks(backend: TaskBackend = localTaskBackend) {
     await reload();
   }, [backend, reload]);
 
-  const runNow = useCallback(async (id: string) => {
-    await backend.runNow(id);
-    await reload();
-  }, [backend, reload]);
-
   const listRuns = useCallback(
     (id: string, limit = 20) => backend.listRuns(id, limit),
     [backend],
@@ -148,7 +143,6 @@ export function useTasks(backend: TaskBackend = localTaskBackend) {
     updateTask,
     deleteTask,
     setEnabled,
-    runNow,
     listRuns,
   };
 }
