@@ -17,6 +17,7 @@ import { DialogSurface } from "../../components/DialogSurface";
 import { RenameModal } from "../../features/chat/components/RenameModal";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
 import { SessionList, type SessionListHandle } from "../SessionList";
+import { RECENT_PAGE_SIZE } from "../recentRows";
 import { currentAppAlert, finishAppAlert } from "../../components/appAlerts";
 import { ActionMenu } from "../../components/ActionMenu";
 import type { DesktopCommands } from "../../remote/desktopCommands";
@@ -479,6 +480,51 @@ test("the recency page puts a run in flight above the rest, newest first", () =>
   )).toBe(true);
   // The recency row also says where the conversation lives.
   expect(textsOf("Busy")).toContain("sessions.chatLabel");
+
+  // Back to the fixture every other test starts from.
+  mockRemote.sessions = [
+    { sessionId: "s1", threadId: "t1", title: "First", streaming: false },
+    { sessionId: "s2", threadId: "t2", title: "Second", streaming: false },
+    { sessionId: "child", threadId: "tc", title: "Child", parentSessionId: "s1", streaming: false },
+  ];
+  renderChatTab();
+});
+
+test("the recency page windows the finished rows and opens the window on request", () => {
+  const now = Date.now();
+  const minute = 60_000;
+  // Forty finished conversations, plus one in flight.
+  mockRemote.sessions = [
+    { sessionId: "busy", threadId: "tb", title: "Busy", streaming: true, lastMessageAt: now - 20_000 },
+    ...Array.from({ length: 40 }, (_, index) => ({
+      sessionId: `idle-${index}`,
+      threadId: `t${index}`,
+      title: `Idle ${index}`,
+      streaming: false,
+      lastMessageAt: now - (index + 1) * minute - 30_000,
+    })),
+  ];
+  const mount = () => act(() => tree.update(createElement(SessionList, {
+    tab: "recent",
+    empty: null,
+    onMenu,
+    onTabChange,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+  })));
+  mount();
+  const drawn = () => recentPage().filter(key => !key.startsWith("#"));
+  // One window of finished rows, and a footer that says how many are held back.
+  expect(drawn()).toHaveLength(RECENT_PAGE_SIZE + 1);
+  expect(drawn()[0]).toBe("busy");
+  expect(button("sessions.showMore")).toBeDefined();
+  expect(tree.root.findAll(node => node.props.children === "sessions.showMoreCount:20").length)
+    .toBeGreaterThan(0);
+
+  act(() => button("sessions.showMore").props.onPress());
+  expect(drawn()).toHaveLength(40 + 1);
+  // Nothing left to offer, so the footer goes with it.
+  expect(button("sessions.showMore")).toBeUndefined();
 
   // Back to the fixture every other test starts from.
   mockRemote.sessions = [

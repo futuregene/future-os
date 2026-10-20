@@ -4600,6 +4600,54 @@
             "shot": "m-recent.png"
           }
         ]
+      },
+      "recent-window": {
+        "url": "http://localhost:8099/?recent=1&recentMany=1",
+        "_comment": "A phone with a few dozen finished conversations: the recency page draws one window of them and offers the rest. The assertions are about counts and document order, not about text being present somewhere on the page.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "最近"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "var cap=document.querySelector('[data-testid=\"recent-section:sessions.earlierSection\"]');if(!cap) throw new Error('no earlier caption');var total=parseInt((cap.textContent||'').replace(/[^0-9]/g,''),10);var drawn=[...document.querySelectorAll('[data-testid^=\"recent-row:earlier:\"]')];if(drawn.length!==20) throw new Error('the window is not one page of rows: '+drawn.length);var more=[...document.querySelectorAll('[role=button]')].find(b=>b.getAttribute('aria-label')==='显示更多');if(!more) throw new Error('the window has no way to open');if(!(cap.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING)) throw new Error('the footer is not after the earlier caption');var last=drawn[drawn.length-1];if(!(last.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING)) throw new Error('the footer is not under the last drawn row');var held=parseInt((more.textContent||'').replace(/[^0-9]/g,''),10);if(held!==total-drawn.length) throw new Error('the footer offers '+held+' of '+(total-drawn.length)+' held back');if(total<=20) throw new Error('the fixture has no rows to hold back');'window: '+drawn.length+' of '+total+', footer under the rows'"
+          },
+          {
+            "shot": "m-recent-window.png"
+          },
+          {
+            "eval": "var more=[...document.querySelectorAll('[role=button]')].find(b=>b.getAttribute('aria-label')==='显示更多');if(!more) throw new Error('no footer to press');more.click(); 'pressed'"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "var cap=document.querySelector('[data-testid=\"recent-section:sessions.earlierSection\"]');var total=parseInt((cap.textContent||'').replace(/[^0-9]/g,''),10);var drawn=[...document.querySelectorAll('[data-testid^=\"recent-row:earlier:\"]')];var want=Math.min(20*2, total);if(drawn.length!==want) throw new Error('after 2 press(es) the window holds '+drawn.length+', not '+want);var more=[...document.querySelectorAll('[role=button]')].find(b=>b.getAttribute('aria-label')==='显示更多');var held=more?parseInt((more.textContent||'').replace(/[^0-9]/g,''),10):0;if(drawn.length<total){ if(!more) throw new Error('rows are held back with no way to open them'); if(held!==total-drawn.length) throw new Error('the footer offers '+held+' of '+(total-drawn.length)); }else if(more) throw new Error('the footer still offers rows it has drawn');'window: '+drawn.length+' of '+total"
+          },
+          {
+            "eval": "var more=[...document.querySelectorAll('[role=button]')].find(b=>b.getAttribute('aria-label')==='显示更多');if(!more) throw new Error('no footer to press');more.click(); 'pressed'"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "var cap=document.querySelector('[data-testid=\"recent-section:sessions.earlierSection\"]');var total=parseInt((cap.textContent||'').replace(/[^0-9]/g,''),10);var drawn=[...document.querySelectorAll('[data-testid^=\"recent-row:earlier:\"]')];var want=Math.min(20*3, total);if(drawn.length!==want) throw new Error('after 3 press(es) the window holds '+drawn.length+', not '+want);var more=[...document.querySelectorAll('[role=button]')].find(b=>b.getAttribute('aria-label')==='显示更多');var held=more?parseInt((more.textContent||'').replace(/[^0-9]/g,''),10):0;if(drawn.length<total){ if(!more) throw new Error('rows are held back with no way to open them'); if(held!==total-drawn.length) throw new Error('the footer offers '+held+' of '+(total-drawn.length)); }else if(more) throw new Error('the footer still offers rows it has drawn');'window: '+drawn.length+' of '+total"
+          },
+          {
+            "shot": "m-recent-window-open.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label=\"稍后再说\"]') || document.body.innerText.includes('工作区')",

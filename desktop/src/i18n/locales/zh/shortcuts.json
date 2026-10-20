@@ -5,7 +5,8 @@
     "panels": "面板",
     "terminal": "终端",
     "settings": "设置",
-    "vibe": "Vibe 面板"
+    "vibe": "Vibe 面板",
+    "palette": "搜索与帮助"
   },
   "commands": {
     "chat": {
@@ -91,6 +92,12 @@
         "close": "退出输入层",
         "send": "把这次输入发出去"
       }
+    },
+    "palette": {
+      "open": "跳转到命令或对话"
+    },
+    "shortcuts": {
+      "help": "查看全部快捷键"
     }
   },
   "page": {
@@ -127,5 +134,10 @@
     "approve": "批准请求",
     "transcript": "跳到上一条 / 下一条提问",
     "menu": "在打开的菜单中移动"
+  },
+  "cheatSheet": {
+    "ariaLabel": "全部快捷键",
+    "title": "快捷键",
+    "hint": "这里列出的是当前生效的键位"
   }
 }
