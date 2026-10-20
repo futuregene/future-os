@@ -7,6 +7,7 @@ use crate::commands::UpdateStatus;
 use crate::AppError;
 #[cfg(feature = "gui")]
 pub(crate) use future_host::scheduler::refresh_future_balance_now;
+#[cfg(feature = "gui")]
 pub(crate) use future_host::scheduler::refresh_future_models_now;
 #[cfg(feature = "gui")]
 use future_host::scheduler::{

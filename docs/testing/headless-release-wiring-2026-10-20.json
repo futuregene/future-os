@@ -1,0 +1,126 @@
+{
+  "status": "implemented-static-passed-native-and-artifact-execution-pending",
+  "baseCommit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+  "changes": [
+    "Remove Desktop headless feature and duplicate backend test leg; preserve CLI/Host owners and required aggregate gates",
+    "Preserve and re-enable disabled-GUI negative entry assertions",
+    "Add make run-headless and retain build/install aliases",
+    "Inspect and smoke actual ELF/PE/Mach-O CLI payloads",
+    "Preserve unknown same-name portable-prefix files without an ownership manifest",
+    "Repair Windows Console API dependency and native installer probe fixture",
+    "Isolate three shared RPC fixture self-tests with MOCK-before-HOME locking"
+  ],
+  "staticChecks": [
+    {
+      "command": "cargo clippy -p future-host -p future-cli -p futureos --all-targets --offline --locked -- -D warnings",
+      "result": "passed",
+      "seconds": 0.44,
+      "log": "/tmp/headless-release-wiring-clippy-final-2026-10-20.log",
+      "note": "Final source check; previous full combined check took 10.59 seconds. Not a performance comparison."
+    },
+    {
+      "command": "cargo clippy -p futureos --no-default-features --all-targets --offline --locked -- -D warnings",
+      "result": "passed",
+      "seconds": 0.83
+    },
+    {
+      "command": "cargo fmt -p future-host -p future-cli -p futureos --check",
+      "result": "passed"
+    },
+    {
+      "command": "python3 scripts/ci/host-boundaries.py",
+      "result": "passed",
+      "metadata": {
+        "checked": {
+          "future-cli": {
+            "forbidden": [],
+            "packages": 395
+          },
+          "future-host": {
+            "forbidden": [],
+            "packages": 370
+          }
+        },
+        "desktopGuiFeatures": [
+          "default",
+          "gui"
+        ],
+        "executedTests": 0,
+        "target": "aarch64-apple-darwin"
+      }
+    },
+    {
+      "command": "Python AST, YAML parse, bash -n, make -n run-headless ARGS=--help",
+      "result": "passed"
+    },
+    {
+      "command": "python3 scripts/docs/check-docs.py",
+      "result": "passed",
+      "documents": 295,
+      "pendingBilingualPairs": 0
+    }
+  ],
+  "localTestsExecuted": 0,
+  "currentCi": {
+    "run": 39385601564,
+    "candidate": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+    "observedStatus": "in_progress",
+    "knownFailures": [
+      {
+        "job": 118504643536,
+        "name": "Rust build (Windows)",
+        "step": "cargo check (workspace)",
+        "reason": "Migrated prepare_terminal still referenced Desktop-only windows crate; missing Console API dependency.",
+        "fix": "CLI declares existing windows-sys 0.59 Console/Foundation and preserves UTF-8/VT setup."
+      },
+      {
+        "job": 118504643470,
+        "name": "Windows update fixtures",
+        "step": "Installer preflight and update recovery",
+        "reason": "New headless health probe fell into fixture cleanup-failure marker.",
+        "fix": "New fixture recognizes headless --help independently; retain cleanup-failure assertions and add headless-only health failure rollback."
+      },
+      {
+        "job": 118504643539,
+        "name": "Rust fmt + clippy (Linux)",
+        "step": "clippy (desktop backend), old no-GUI leg",
+        "reason": "GUI-only forwarding imports and an empty test module remained visible after application extraction.",
+        "fix": "Gate actual GUI adapters at their use boundary; no-GUI all-target Clippy passes without suppressing warnings."
+      }
+    ],
+    "confirmedPassedGroups": [
+      "Linux Host core",
+      "Linux CLI/TUI including migrated process fixtures",
+      "Linux Desktop GUI",
+      "Linux Agent",
+      "macOS Host",
+      "Remote interoperability",
+      "Desktop frontend",
+      "Mobile"
+    ],
+    "stillRunningAtObservation": [
+      "Windows Host",
+      "macOS native build/lifecycle"
+    ]
+  },
+  "artifactChecker": {
+    "path": "scripts/ci/check-headless-artifact.py",
+    "sha256": "e8691f69060a8e762a202b4c95ce3a222b89cac88e5dbeb741c463bc0df96e19",
+    "execution": "pending actual release builds",
+    "covers": [
+      "ELF NEEDED/static when required",
+      "PE regular and delayed DLL imports",
+      "Mach-O linked libraries",
+      "GUI library rejection",
+      "Fresh isolated home help and first noninteractive refusal",
+      "No pairing/database/credential creation"
+    ]
+  },
+  "pending": [
+    "Native Windows repairs and process fixtures",
+    "Current CI complete results and any further fixes",
+    "Actual signed payload, install/update/uninstall verification",
+    "Matched compilation/link/test/size/startup measurements",
+    "Frozen same-commit manual acceptance and user confirmation"
+  ]
+}

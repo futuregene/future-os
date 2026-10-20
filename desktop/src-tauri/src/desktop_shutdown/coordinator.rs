@@ -1,5 +1,5 @@
 //! Desktop supplies the cleanup runtime and GUI follow-up actions.
-#[cfg(any(feature = "gui", test))]
+#[cfg(feature = "gui")]
 pub(crate) use future_host::shutdown::snapshot;
 pub(crate) use future_host::shutdown::Operation;
 #[cfg(feature = "gui")]
@@ -74,7 +74,7 @@ pub(crate) fn begin_quit() -> Option<Arc<Operation>> {
     Some(begin("quit"))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "gui"))]
 mod tests {
     use super::*;
 

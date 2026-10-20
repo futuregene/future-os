@@ -162,6 +162,7 @@ Unix 也处理 SIGTERM 和 SIGHUP。SSH 断开后不承诺继续运行；若确�
 ```bash
 make build-cli
 make install-cli
+make run-headless ARGS=--help
 # 兼容别名：make build-desktop-headless / install-desktop-headless
 ```
 

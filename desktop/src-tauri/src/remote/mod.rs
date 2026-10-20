@@ -1,4 +1,5 @@
 //! Desktop entry forwarding to the shared Remote application services.
+#[cfg(any(feature = "gui", test))]
 pub(crate) use future_host::remote::*;
 
 #[cfg(test)]

@@ -1955,6 +1955,7 @@ dependencies = [
  "tokio-stream",
  "tokio-tungstenite",
  "tonic",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]

@@ -1,4 +1,5 @@
 //! Entry-owned native runtime driver for the single shared Agent owner.
+#[cfg(feature = "gui")]
 pub(crate) use future_host::agent_host::Phase;
 
 pub(crate) fn host() -> &'static future_host::agent_host::AgentHost {

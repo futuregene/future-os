@@ -84,3 +84,6 @@ futures-util.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 portable-pty = "0.9"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console"] }

@@ -66,7 +66,7 @@ use error::AppError;
 /// Process-wide lock for tests that mutate the global `HOME` env var
 /// (`auth_store` and the shadow-review smoke test). `HOME` is process-global, so
 /// those tests must run one at a time or they clobber each other's paths.
-#[cfg(test)]
+#[cfg(all(test, feature = "gui"))]
 pub(crate) use future_host::TEST_HOME_LOCK;
 
 #[cfg(all(test, feature = "gui"))]

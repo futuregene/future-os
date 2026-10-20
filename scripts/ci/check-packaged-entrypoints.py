@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import zipfile
@@ -94,6 +95,9 @@ def main():
                     probe(f"{name}-cli-version", directory / "future", ["--version"], version, home)
                     probe(f"{name}-agent-help", directory / "future", ["agent", "--help"],
                           "--grpc-addr", home)
+                    run(f"{name}-headless-artifact", [sys.executable,
+                        "scripts/ci/check-headless-artifact.py", directory / "future", "--require-static",
+                        "--output", args.output / f"{name}-headless-artifact.json"], timeout=60)
                     # Every Linux CLI distribution promises a static musl binary.
                     dynamic = run(f"{name}-cli-linkage", ["readelf", "-d", directory / "future"])
                     require("NEEDED" not in dynamic, f"{name} CLI is dynamically linked")
@@ -140,6 +144,9 @@ def main():
                         require(not list(directory.rglob("futureos-headless.exe")),
                                 f"{name} ships the retired headless executable")
                         if binary_name == "future.exe":
+                            run(f"{name}-headless-artifact", [sys.executable,
+                                "scripts/ci/check-headless-artifact.py", binary,
+                                "--output", args.output / f"{name}-headless-artifact.json"], timeout=60)
                             probe(f"{name}-headless-help", binary, ["headless", "--help"],
                                   "Usage: future headless", home)
                             probe(f"{name}-agent-help", binary, ["agent", "--help"],

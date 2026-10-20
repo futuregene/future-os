@@ -206,6 +206,7 @@ Build and install from the repository root without npm or Desktop:
 ```bash
 make build-cli
 make install-cli
+make run-headless ARGS=--help
 # Compatibility aliases: make build-desktop-headless / install-desktop-headless
 ```
 

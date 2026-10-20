@@ -99,7 +99,7 @@ jobs:
       # affect every workspace crate.
       rust_host: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_host == 'true' || steps.filter.outputs.ci == 'true' }}
       rust_agent: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_agent == 'true' || steps.filter.outputs.ci == 'true' }}
-      rust_tui_cli: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_tui_cli == 'true' || steps.filter.outputs.ci == 'true' }}
+      rust_tui_cli: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_tui_cli == 'true' || steps.filter.outputs.ci == 'true' || (github.event_name == 'workflow_dispatch' && (inputs.scope == 'headless-cli' || inputs.scope == 'agent-lifecycle')) }}
       rust_channels_rpc_goal: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_channels_rpc_goal == 'true' || steps.filter.outputs.ci == 'true' }}
       # Proto/codegen freshness only needs re-checking when a proto source,
       # its build script, the generated output, or a build-dep version changes.
@@ -512,7 +512,7 @@ jobs:
         if: steps.affected.outputs.run == 'true' && needs.changes.outputs.desktop_tauri == 'true'
         run: |
           cargo clippy -p future-cli -p futureos --all-targets -- -D warnings
-          cargo clippy --no-default-features --features headless --all-targets --manifest-path desktop/src-tauri/Cargo.toml -- -D warnings
+          cargo clippy -p future-host -p future-cli --all-targets -- -D warnings
           python3 scripts/ci/host-boundaries.py
 
   # ─── Rust test gates (Linux) ──────────────────────────────────────────────
@@ -636,6 +636,8 @@ jobs:
         run: |
           if [ "${{ matrix.filter }}" = "rust_host" ]; then
             python3 scripts/ci/host-tests.py --with-broker
+          elif [ "${{ matrix.filter }}" = "rust_tui_cli" ] && { [ "${{ inputs.scope }}" = "headless-cli" ] || [ "${{ inputs.scope }}" = "agent-lifecycle" ]; }; then
+            cargo test -p future-cli --test headless_cli --test remote_start_refusal
           else
             cargo test ${{ matrix.packages }}
           fi
@@ -686,10 +688,8 @@ jobs:
           CARGO_PROFILE_TEST_DEBUG: 1
         run: cargo test -p future-host
 
-  # The desktop backend suite: one job per feature configuration, so the gui
-  # suite (~7 min of tests) and the headless suite (~6 min) overlap instead of
-  # queueing behind each other. Each flavor saves its own PR cache so the
-  # first finisher cannot prevent the other configuration from being saved.
+  # Desktop owns GUI/IPC/entry integration. Host and CLI core/process suites
+  # run once in their package groups; there is no Desktop headless backend.
   rust-tests-desktop:
     name: Rust tests (Linux) (desktop ${{ matrix.flavor }})
     needs: changes
@@ -697,12 +697,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        flavor: [gui, headless]
+        flavor: [gui]
     steps:
-      # Same always-present ± affected pattern as the groups above: the gate
-      # below turns these two entries into the required
-      # `Rust tests (Linux) (desktop backend)` context, so neither may be
-      # skipped (a skipped required check blocks the PR).
+      # Keep the required desktop-backend context present even when unaffected.
       - name: Is this test group affected?
         id: affected
         env:
@@ -723,10 +720,7 @@ jobs:
         if: steps.affected.outputs.run == 'true'
         run: node scripts/ci/setup-rust.mjs
 
-      # GUI and headless are distinct entries under this shared-key family,
-      # both written by the merge-to-main run. Warming this suite is the one
-      # test cache that pays: it is the PR critical path, and the entry removes
-      # ~2.5 min of compiles from a ~10 min job.
+      # Preserve the GUI cache family after retiring the Desktop headless leg.
       - name: Cache Rust
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
@@ -751,11 +745,7 @@ jobs:
             librsvg2-dev \
             libwebkit2gtk-4.1-dev
 
-      # The manual `headless-cli` / `agent-lifecycle` scopes narrow the desktop
-      # suite to the headless CLI integration test, exactly as before the split;
-      # the gui flavor then has nothing to run.
-      - name: cargo test (desktop ${{ matrix.flavor }})
-        # Fail a stalled full suite with archived logs instead of retrying for six hours.
+      - name: cargo test (desktop GUI and disabled-GUI boundary)
         timeout-minutes: 30
         if: steps.affected.outputs.run == 'true'
         env:
@@ -763,36 +753,29 @@ jobs:
           REQUESTED_SCOPE: ${{ inputs.scope }}
         run: |
           if [ "$REQUESTED_SCOPE" = 'headless-cli' ] || [ "$REQUESTED_SCOPE" = 'agent-lifecycle' ]; then
-            if [ "${{ matrix.flavor }}" = 'headless' ]; then
-              cargo test -p future-cli --test headless_cli --test remote_start_refusal
-            else
-              echo "Scope $REQUESTED_SCOPE runs the headless CLI suite only; no gui desktop tests."
-            fi
-          elif [ "${{ matrix.flavor }}" = 'headless' ]; then
-            cargo test --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml
+            echo "Headless process suites run in their CLI owner group."
           else
-            cargo test --manifest-path desktop/src-tauri/Cargo.toml
+            cargo test -p futureos
+            # A Desktop build with GUI disabled must refuse hosting and name
+            # the unified CLI. This is a negative entry boundary, not a server.
+            cargo test -p futureos --no-default-features --test headless_cli
           fi
 
-  # Keeps the branch-protection context "Rust tests (Linux) (desktop backend)"
-  # reporting after the desktop suite split: that string was the single entry's
-  # name, and the ruleset requires it by name (as it does the three workspace
-  # group names). It is red iff either flavor failed, so the split does not
-  # weaken the gate. `if: always()` for the same reason as the group gate
-  # below.
+  # Keep the required context and require both Desktop and the package-owner
+  # groups (including Host and CLI/headless) to succeed after retiring the leg.
   rust-tests-desktop-gate:
     name: Rust tests (Linux) (desktop backend)
-    needs: [rust-tests-desktop]
+    needs: [rust-tests-desktop, rust-tests]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Both desktop test flavors passed?
+      - name: Desktop and package-owner suites passed?
         run: |
-          if [ "${{ needs.rust-tests-desktop.result }}" != 'success' ]; then
-            echo "Desktop test flavors result: ${{ needs.rust-tests-desktop.result }}"
+          if [ "${{ needs.rust-tests-desktop.result }}" != 'success' ] || [ "${{ needs.rust-tests.result }}" != 'success' ]; then
+            echo "Desktop: ${{ needs.rust-tests-desktop.result }}; package owners: ${{ needs.rust-tests.result }}"
             exit 1
           fi
-          echo "Desktop test flavors passed."
+          echo "Desktop and package-owner suites passed."
 
   # Aggregator keeping the required check name stable across group splits:
   # fails iff any Rust test group failed. `if: always()` so a failed group
@@ -825,7 +808,7 @@ jobs:
           if [ "${{ needs.rust-tests.result }}" != 'success' ] || [ "${{ needs.rust-tests-host-native.result }}" != 'success' ] || [ "${{ needs.rust-tests-desktop.result }}" != 'success' ] || [ "${{ needs.windows-update.result }}" != 'success' ]; then
             echo "Rust test groups result: ${{ needs.rust-tests.result }}"
             echo "Native host tests result: ${{ needs.rust-tests-host-native.result }}"
-            echo "Desktop test flavors result: ${{ needs.rust-tests-desktop.result }}"
+            echo "Desktop: ${{ needs.rust-tests-desktop.result }}; package owners: ${{ needs.rust-tests.result }}"
             echo "Windows update fixtures result: ${{ needs.windows-update.result }}"
             exit 1
           fi
@@ -910,9 +893,9 @@ jobs:
         if: needs.changes.outputs.desktop_tauri == 'true'
         run: cargo check -p future-cli -p futureos
 
-      - name: cargo check (desktop Tauri backend, no default features)
+      - name: cargo check (independent Host and CLI)
         if: needs.changes.outputs.desktop_tauri == 'true'
-        run: cargo check --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml
+        run: cargo check -p future-host -p future-cli --all-targets
 
       - name: Fetch combined feature dependency metadata
         if: needs.changes.outputs.desktop_tauri == 'true'

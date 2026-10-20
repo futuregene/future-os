@@ -42,7 +42,7 @@ def main():
     commands = [
         ("workspace", ["check", "--workspace", "--exclude", "futureos", "--manifest-path", "Cargo.toml"]),
         ("desktop-gui", ["check", "-p", "future-cli", "-p", "futureos"]),
-        ("desktop-headless", ["check", "--no-default-features", "--features", "headless", "--manifest-path", "desktop/src-tauri/Cargo.toml"]),
+        ("desktop-no-gui-library", ["check", "--no-default-features", "--manifest-path", "desktop/src-tauri/Cargo.toml"]),
     ]
     target_root = Path(os.environ["RUNNER_TEMP"]) / "remote-compilation-targets"
     target_root.mkdir(exist_ok=False)

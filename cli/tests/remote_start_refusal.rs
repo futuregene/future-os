@@ -550,7 +550,7 @@ impl ChildRun {
         if matches!(self.child.try_wait(), Ok(Some(_))) {
             return;
         }
-        interrupt_child(&self.child);
+        interrupt_child(&mut self.child);
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
             if matches!(self.child.try_wait(), Ok(Some(_))) {
@@ -574,20 +574,26 @@ impl Drop for ChildRun {
 }
 
 #[cfg(unix)]
-fn interrupt_child(child: &Child) {
+fn interrupt_child(child: &mut Child) {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return;
+    }
     unsafe {
         libc::kill(child.id() as i32, libc::SIGINT);
     }
 }
 
 #[cfg(windows)]
-fn interrupt_child(child: &Child) {
+fn interrupt_child(child: &mut Child) {
     let status = Command::new(std::env::current_exe().expect("fixture executable"))
         .args(["--exact", "windows_interrupt_helper", "--nocapture"])
         .env("FUTURE_FIXTURE_INTERRUPT_PID", child.id().to_string())
         .status()
         .expect("spawn owned-console signal helper");
-    assert!(status.success(), "owned-console Ctrl+C delivery failed");
+    assert!(
+        status.success() || matches!(child.try_wait(), Ok(Some(_))),
+        "owned-console Ctrl+C delivery failed while the child was still alive"
+    );
 }
 
 #[cfg(windows)]
@@ -725,7 +731,7 @@ impl PtyRun {
         if matches!(self.child.try_wait(), Ok(Some(_))) {
             return;
         }
-        interrupt_child(&self.child);
+        interrupt_child(&mut self.child);
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
             if matches!(self.child.try_wait(), Ok(Some(_))) {

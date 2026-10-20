@@ -28,6 +28,8 @@ cli = local_package('future-cli')
 gui = local_package('futureos')
 if 'gui' not in nodes[gui['id']]['features']:
     raise SystemExit('Desktop GUI must participate in the combined feature resolution')
+if 'headless' in gui['features'] or any(target['name'] == 'futureos-headless' for target in gui['targets']):
+    raise SystemExit('Desktop must not retain a headless feature or executable')
 if 'gui' in host['features']:
     raise SystemExit('future-host must not declare a GUI feature')
 if not any('lib' in target['kind'] for target in host['targets']):

@@ -108,6 +108,9 @@ mod tests {
     #[tokio::test]
     async fn mock_answers_the_scripted_commands() {
         let _lock = mock_agent_lock();
+        let _home = crate::auth_store::test_support::HomeGuard::new(
+            "command-fixture-mock_answers_the_scripted_commands",
+        );
         ensure_mock_agent();
         script_mock_agent(MockScript {
             down: false,
@@ -146,6 +149,9 @@ mod tests {
     #[tokio::test]
     async fn mock_down_mode_is_indistinguishable_from_a_dead_agent() {
         let _lock = mock_agent_lock();
+        let _home = crate::auth_store::test_support::HomeGuard::new(
+            "command-fixture-mock_down_mode_is_indistinguishable_from_a_dead_agent",
+        );
         ensure_mock_agent();
         // Verify the process-wide Agent connection while the mock is up.
         script_mock_agent(MockScript::default());
@@ -176,6 +182,9 @@ mod tests {
     #[tokio::test]
     async fn failed_enumeration_surfaces_as_a_rejection() {
         let _lock = mock_agent_lock();
+        let _home = crate::auth_store::test_support::HomeGuard::new(
+            "command-fixture-failed_enumeration_surfaces_as_a_rejection",
+        );
         ensure_mock_agent();
         script_mock_agent(MockScript {
             fail_list_session_ids: true,

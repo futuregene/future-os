@@ -27,9 +27,6 @@ required-features = ["gui"]
 
 [features]
 default = ["gui"]
-# Compatibility feature for existing check commands. Foreground hosting is
-# provided solely by the independently installed `future headless` CLI.
-headless = []
 gui = [
     "dep:tauri", "dep:tauri-build", "dep:tauri-plugin-shell",
     "dep:tauri-plugin-updater", "dep:tauri-plugin-dialog",

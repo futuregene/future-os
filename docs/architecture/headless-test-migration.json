@@ -35929,6 +35929,13 @@
       "owner": "futureos",
       "status": "local-pass-awaiting-ci",
       "reason": "Retained Desktop fixtures are scanned by the same Host lock-order checker; Host core scan remains independent of Desktop."
+    },
+    {
+      "name": "Headless-only installed CLI health failure restores old CLI and Desktop",
+      "target": "scripts/tests/test-windows-installer-preflight.ps1",
+      "owner": "Windows installer integration",
+      "status": "implemented-pending-native-ci",
+      "evidence": "docs/testing/headless-release-wiring-2026-10-20.json"
     }
   ],
   "ownershipRules": {

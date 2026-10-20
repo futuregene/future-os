@@ -615,13 +615,15 @@ pub(crate) fn invitation_text(label: &str, link: &str, qr: bool, columns: Option
 fn prepare_terminal() {
     #[cfg(windows)]
     unsafe {
-        use windows::Win32::System::Console::*;
+        use windows_sys::Win32::System::Console::{
+            GetConsoleMode, GetStdHandle, SetConsoleMode, SetConsoleOutputCP,
+            ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_OUTPUT_HANDLE,
+        };
         let _ = SetConsoleOutputCP(65001);
-        if let Ok(handle) = GetStdHandle(STD_OUTPUT_HANDLE) {
-            let mut mode = CONSOLE_MODE::default();
-            if GetConsoleMode(handle, &mut mode).is_ok() {
-                let _ = SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
-            }
+        let handle = GetStdHandle(STD_OUTPUT_HANDLE);
+        let mut mode = 0;
+        if GetConsoleMode(handle, &mut mode) != 0 {
+            let _ = SetConsoleMode(handle, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
         }
     }
 }

@@ -1,4 +1,5 @@
 //! Shared credentials with a Desktop-only test resource adapter.
+#[cfg(feature = "gui")]
 pub(crate) use future_host::auth_store::*;
 
 #[cfg(test)]

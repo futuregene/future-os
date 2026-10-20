@@ -534,3 +534,17 @@ Phases 1–3 have their shared implementation and entries connected; phase 4 own
 ### 2026-10-20 Unified candidate main synchronization
 
 The implementation branch merged remote `6b89bd4f`, including TUI current-executable Agent launch, Desktop add-device gateway error text and Mobile lone-held-pair takeover, without conflicts. Post-merge combined Host/CLI/GUI/TUI all-target Clippy with warnings denied, Desktop/Mobile typechecks and affected TS ESLint passed; no unit tests ran. Temporary dependency symlinks were removed. See [post-sync static evidence](../testing/headless-postsync-bulk-2026-10-20.json). This is not a final freeze or manual acceptance.
+
+
+### 2026-10-20 Release boundaries and native Windows wiring (runtime acceptance pending)
+
+Desktop's empty `headless` feature is removed. CI no longer repeats a complete Desktop headless backend: Host/CLI owner suites run once, Desktop keeps GUI/IPC and the disabled-GUI negative entry check, and the required Desktop-backend aggregate requires both Desktop and package groups. The previous migration's file-level GUI gate obscured that negative case; its original refusal, unified-command hint and no-state assertions are effective again. `make run-headless ARGS=...` is added; old build/install targets are CLI aliases. The historical Remote measurement uses a no-GUI library command supported by both revisions and is not this migration's performance evidence.
+
+The new `scripts/ci/check-headless-artifact.py` inspects ELF NEEDED, normal/delayed PE DLL imports or Mach-O linkage for GUI dependencies, then runs help and first noninteractive refusal against the same released CLI in temporary Future home, checking database/pairing/credential side effects. Linux deb/portable/CLI-only, Windows NSIS/portable and macOS app packaging invoke it. Static ELF and old Rocky 8 smoke remain. This is wiring, not evidence of actual signed-payload acceptance.
+
+Candidate `fac28351` CI [39385601564](https://github.com/futuregene/future-os/actions/runs/39385601564) was still running when two Windows failures were confirmed: missing Console API dependency after the CLI move, and the installer fixture treating new headless health probes as cleanup calls. Console/Foundation now use the existing `windows-sys`; the fixture recognizes the probe and adds an actual NSIS rollback case for headless-only health failure, retaining original assertions. Three shared command-RPC fixture self-tests now hold HomeGuard in MOCK→HOME order to isolate endpoints in the combined core process. Native revalidation remains pending; no local Windows pass is claimed.
+
+Portable prefixes lack ownership manifests, so the installer preserves pre-existing same-name files instead of deleting them blindly. Managed installer upgrade/uninstall retains existing ownership and rollback rules. New programs, builds and releases do not depend on the retired standalone entry.
+
+
+Later observations confirmed Linux Host, CLI/TUI (including actual migrated process fixtures), GUI, Agent, Remote and frontend/Mobile groups passed, plus macOS Host. The run remains incomplete and is not accepted as passing. Linux's static gate failed on GUI-only imports in the old no-GUI Desktop configuration, matching the dedicated local reproduction; actual GUI conditions now resolve the imports and no-GUI Clippy passes without warning exemptions. Still-running Windows/macOS jobs remain unclassified. See [release wiring evidence](../testing/headless-release-wiring-2026-10-20.json) for fixes, pending payload execution and limitations.

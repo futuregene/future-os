@@ -1,6 +1,4 @@
 //! Retained Desktop launch/retirement wiring. Actual headless process checks live in CLI.
-#![cfg(feature = "gui")]
-
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -22,6 +20,7 @@ fn isolated_command(binary: &str, home: &Path) -> Command {
     command
 }
 
+#[cfg(feature = "gui")]
 #[test]
 fn help_and_invalid_arguments_have_no_startup_side_effects() {
     let home = tempfile::tempdir().unwrap();

@@ -4,7 +4,7 @@
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
 	check-docs test-docs-check \
-	run-agent run-tui run-cli run-desktop run-mobile-android run-mobile-ios run-channels run-goal \
+	run-agent run-tui run-cli run-headless run-desktop run-mobile-android run-mobile-ios run-channels run-goal \
 	profile-agent-build profile-agent profile-quick profile-heap \
 	generate-models generate-proto \
 	install install-cli install-desktop install-desktop-headless install-skills update-skills uninstall package-desktop clean setup
@@ -247,7 +247,7 @@ lint: lint-rust lint-desktop stylelint-desktop lint-mobile
 lint-rust:
 	$(CARGO_PINNED) fmt --check --all
 	$(CARGO_PINNED) clippy --workspace --all-targets -- -D warnings
-	$(CARGO_PINNED) clippy -p futureos --no-default-features --features headless --all-targets -- -D warnings
+	$(CARGO_PINNED) clippy -p future-host -p future-cli --all-targets -- -D warnings
 
 lint-desktop:
 	$(call npm-install-if-needed,desktop)
@@ -285,6 +285,9 @@ run-tui:
 
 run-cli:
 	cd cli && cargo run
+
+run-headless:
+	$(CARGO_PINNED) run -p future-cli --bin future -- headless $(ARGS)
 
 run-channels:
 	cd channels && cargo run
@@ -431,6 +434,7 @@ endif
 
 help:
 	@echo "  build / build-cli / build-desktop   Build desktop + unified CLI (or each part)"
+	@echo "  run-headless                      Run future headless in the foreground (ARGS=...)"
 	@echo "  build-desktop-headless             Build GUI-free CLI with headless"
 	@echo "  build-mobile-android / -ios         Build & install the mobile app (Expo)"
 	@echo "  test                                All unit tests (Rust crates + desktop + mobile)"

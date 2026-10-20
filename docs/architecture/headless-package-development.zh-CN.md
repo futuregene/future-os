@@ -534,3 +534,17 @@ Linux musl、deb/portable 与 CLI-only 使用同一 `future`；兼容 make 目�
 ### 2026-10-20 统一候选主干同步
 
 已在实施分支合入远程 `6b89bd4f`，包括 TUI 从当前可执行程序启动 Agent 的修复、Desktop 加设备网关错误文案与 Mobile 单一待接管配对流程。无冲突。合并后 Host/CLI/GUI/TUI 联合 Clippy `--all-targets -D warnings`、Desktop/Mobile type-check 与受影响 TS 文件 ESLint 通过，未运行单元测试。临时依赖符号链接已移除。见[同步静态证据](../testing/headless-postsync-bulk-2026-10-20.json)。这不是最终冻结或人工验收。
+
+
+### 2026-10-20 发行边界与原生 Windows 接线收尾（待运行验收）
+
+删除 Desktop 的空 `headless` feature。CI 不再运行整套 Desktop headless 后端：Host/CLI 归属套件各执行一次，Desktop 保留 GUI/IPC 与禁用 GUI 的负向入口检查；必需的 Desktop backend 汇总门禁同时依赖 Desktop 与共享包分组。修正前批迁移中覆盖该负向用例的文件级 GUI gate，原拒绝启动、统一命令提示及不创建状态的断言恢复有效。新增 `make run-headless ARGS=...`；旧 build/install 目标仅为 CLI 别名。历史 Remote 测量脚本改用两版本均支持的无 GUI 库检查，不作为本轮 Headless 性能证据。
+
+新增实际产物检查器 `scripts/ci/check-headless-artifact.py`：读取 ELF NEEDED、PE 普通/延迟 DLL 导入或 Mach-O 链接列表，拒绝 GUI 依赖；对同一发布 CLI 在临时 Future home 中执行帮助和首次非交互拒绝，检查无数据库、配对或凭据副作用。Linux deb/portable/CLI-only、Windows NSIS/portable 与 macOS app 的打包步骤调用它。Linux 静态链接与旧 Rocky 8 smoke 保留。此处仅完成接线，实际签名包及检查结果仍待产物构建。
+
+统一 CI [39385601564](https://github.com/futuregene/future-os/actions/runs/39385601564) 在候选 `fac28351` 仍运行时已暴露 Windows 两项失败：CLI 终端代码漏 Console API 依赖；新增 headless 健康探测被旧安装夹具误当清理调用。前者已接入现有 `windows-sys` 的 Console/Foundation，后者已更新夹具并增加仅 headless 探测失败的真实 NSIS 回滚检查，保留原断言。共享命令 RPC 夹具的三个自测补齐 HomeGuard，遵守 MOCK→HOME 锁序，避免新同进程核心套件互相改写端点。全部待下一候选 CI 复验，未声称 Windows 本地执行通过。
+
+portable 安装目录没有文件所有权清单，因此安装脚本不再盲删同名旧文件；受安装器管理的升级/卸载保留已有归属及回滚策略。新程序、构建和发布均不依赖遗留独立入口。
+
+
+同轮 CI 后续确认 Linux Host、CLI/TUI（含真实迁移入口进程）、GUI、Agent、Remote 与前端/Mobile 分组已通过，macOS Host 通过；整轮仍未完成且不是通过。Linux 静态门禁失败来自旧无 GUI Desktop 配置的未使用 GUI 导入，与本机专门复现一致；已按实际职责加 GUI 条件并通过无 GUI Clippy，未添加 warning 豁免。Windows 与 macOS 尚未终结的 job 不提前判定。当前修复、产物检查接线和限制见[发行验证记录](../testing/headless-release-wiring-2026-10-20.json)。

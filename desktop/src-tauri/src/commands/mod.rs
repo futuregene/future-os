@@ -3,7 +3,7 @@
 
 #[cfg(feature = "gui")]
 mod agent;
-#[cfg(test)]
+#[cfg(all(test, feature = "gui"))]
 pub(crate) mod agent_mock;
 #[cfg(feature = "gui")]
 mod app;
