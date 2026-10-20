@@ -23118,16 +23118,15 @@ mod tests {
             let dir =
                 std::env::temp_dir().join(format!("future-app-worktree-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&dir).unwrap();
-            // `git worktree list` prints resolved paths, so the fixture
-            // resolves once on macOS (`/var` → `/private/var`) and nothing
-            // below compares a resolved path with an unresolved one. Windows
-            // is deliberately left alone: there is no symlink to resolve in
-            // the temp dir, and `canonicalize` would add the `\\?\` verbatim
-            // prefix git never prints.
-            #[cfg(not(windows))]
+            // Git reports long Windows names even when TEMP uses an 8.3 alias.
+            // Resolve once, removing only the verbatim prefix Git omits.
             let root = std::fs::canonicalize(&dir).unwrap();
             #[cfg(windows)]
-            let root = dir;
+            let root = PathBuf::from(
+                root.to_string_lossy()
+                    .strip_prefix(r"\\?\")
+                    .expect("canonical Windows temp path has a verbatim prefix"),
+            );
             git_setup(&root, &["init", "-q", "-b", "main"]);
             git_setup(&root, &["config", "user.email", "tui@example.com"]);
             git_setup(&root, &["config", "user.name", "TUI Test"]);

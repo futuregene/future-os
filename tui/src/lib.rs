@@ -145,6 +145,8 @@ pub mod test_env {
                 r"C:\Windows\System32",
                 r"C:\Windows\System32\WindowsPowerShell\v1.0",
                 r"C:\Program Files\Git\cmd",
+                r"C:\Program Files\Git\bin",
+                r"C:\Program Files\Git\usr\bin",
             ]
         } else {
             &["/usr/bin", "/bin", "/usr/local/bin", "/opt/homebrew/bin"]

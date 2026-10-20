@@ -47,6 +47,12 @@ impl Prompter for StdioPrompter {
     }
 
     fn read_secret(&mut self) -> Result<String, String> {
+        // Reject a detached Windows process before opening CONIN$: without a
+        // console the password reader does not reliably return an input error.
+        #[cfg(windows)]
+        if unsafe { windows_sys::Win32::System::Console::GetConsoleCP() } == 0 {
+            return Err("Failed to read API key: no console is attached.".into());
+        }
         rpassword::read_password()
             .map(|value| value.trim().to_string())
             .map_err(|error| format!("Failed to read API key: {error}"))

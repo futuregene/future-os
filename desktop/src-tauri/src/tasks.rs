@@ -79,7 +79,12 @@ mod tests {
                 break run;
             }
             if std::time::Instant::now() > deadline {
-                panic!("the woken loop never executed the queued request");
+                panic!(
+                    "the woken loop never executed the queued request; runs: {:?}; commands: {:?}; streams: {:?}",
+                    store.list_runs_for_task(&queued.id, 5).unwrap(),
+                    mock.requests(),
+                    mock.stream_requests(),
+                );
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         };

@@ -915,9 +915,16 @@ mod tests {
     #[test]
     fn build_command_appends_the_path_after_the_arguments() {
         let path = Path::new("draft dir").join("buffer.md");
-        let parts = vec!["vim".to_string(), "-c".to_string(), "set paste".to_string()];
+        // An explicit editor path avoids ambient PATH/PATHEXT resolution;
+        // this test asserts argument ordering, not editor discovery.
+        let editor = Path::new("editor dir").join("vim");
+        let parts = vec![
+            editor.to_string_lossy().into_owned(),
+            "-c".to_string(),
+            "set paste".to_string(),
+        ];
         let command = build_command(&parts, &path);
-        assert_eq!(command.get_program(), std::ffi::OsStr::new("vim"));
+        assert_eq!(command.get_program(), editor.as_os_str());
         let args: Vec<&std::ffi::OsStr> = command.get_args().collect();
         assert_eq!(
             args,
