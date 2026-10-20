@@ -203,11 +203,6 @@ export async function unpairRemoteDevice(pairId: string) {
   return invokeCommand<RemoteStatus>("remote_unpair_device", { pairId });
 }
 
-/** Disconnect one device but keep it paired, so it can connect again later. */
-export async function disconnectRemoteDevice(pairId: string) {
-  return invokeCommand<RemoteStatus>("remote_disconnect_device", { pairId });
-}
-
 /** Make `pairId` the device that drives this computer. */
 export async function takeoverRemote(pairId: string) {
   return invokeCommand<RemoteStatus>("remote_takeover", { pairId });
