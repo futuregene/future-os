@@ -78,10 +78,12 @@ describe("peerIcons", () => {
     const DEFAULT_EMOJI = new Set([
       0x1F4BB /* 💻 */,
       0x1F4F1 /* 📱 */, 0x1F3E0 /* 🏠 */, 0x1F3E2 /* 🏢 */, 0x2615 /* ☕ */,
-      0x1F3EB /* 🏫 */, 0x1F3ED /* 🏭 */, 0x1F3EA /* 🏪 */, 0x1F680 /* 🚀 */,
-      0x1F9EA /* 🧪 */, 0x1F916 /* 🤖 */, 0x1F4E6 /* 📦 */, 0x1F4CA /* 📊 */,
+      0x1F3EB /* 🏫 */, 0x1F680 /* 🚀 */,
+      0x1F9EA /* 🧪 */, 0x1F916 /* 🤖 */, 0x1F4CA /* 📊 */, 0x1F4BE /* 💾 */,
+      0x1F4FA /* 📺 */, 0x1F3A8 /* 🎨 */, 0x1F9E0 /* 🧠 */,
       0x1F52C /* 🔬 */, 0x1F512 /* 🔒 */, 0x26A1 /* ⚡ */, 0x2B50 /* ⭐ */,
       0x1F3AC /* 🎬 */, 0x1F3AE /* 🎮 */, 0x1F310 /* 🌐 */,
+      0x1FA9F /* 🪟 */, 0x1F34E /* 🍎 */, 0x1F427 /* 🐧 */,
     ]);
     for (const icon of PEER_ICONS) {
       const points = [...icon.glyph].map(char => char.codePointAt(0)!);
