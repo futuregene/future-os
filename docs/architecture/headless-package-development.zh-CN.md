@@ -580,3 +580,8 @@ CI [39385601564](https://github.com/futuregene/future-os/actions/runs/3938560156
 按用户要求，提交 `9250e100a16205cea3f773109ab3bf6ccd9388d7` 的 CI 39395390467 仅重跑失败项（attempt 2），没有先推修复。整轮已结束：Linux Agent 通过，Windows 仍失败在首次配对终端用例，输出只有 `ESC[6n`。因此不能将 Windows 失败当作并发偶发问题。
 
 修复提交 `6642c3fe` 保留真实进程与原断言：ConPTY 夹具通过共享输入锁应答光标查询，支持跨读取分片，不绕过终端或首次配对；Agent 测试在有界期限内观察活动 run 后再取消，避免预先取消与快照锁竞争造成偶发失败。产品退出/鉴权逻辑未改变。随后合入远程 `eaf859f6` 的 Remote 在线状态/即时解绑与协议覆盖，冲突保留新行为及统一 CLI/Host 归属。相关 Rust all-target Clippy、fmt、Desktop/Mobile typecheck、相关 ESLint、协议生成、文档及联合依赖边界检查通过；本地未运行单元/NATS 测试，Windows 修复等待新 PR CI。详见[修复证据](../testing/headless-pr1259-retry-repair-2026-10-20.json)。
+
+
+### 2026-10-20 原生缓存淘汰观察
+
+提交 `24f196a3` 的 CI 39400905275 已结束失败：Windows Host 1692 通过、1 失败、10 个原有忽略。Windows 原生生命周期和 Linux Agent 均已通过，前次修复在该候选上得到验证。新失败为 `duplicate_command_ids_get_one_execution_and_cached_replies`：测试 runtime 固定等待 650ms，并不代表另一个 Host executor 已淘汰 500ms 回复缓存。修复 `be424f09` 仅新增 test-support 只读观察，在 5s 失败边界内等待真实条目消失，再保留原有精确执行次数和回复断言。不主动清空缓存，不修改 TTL/产品行为，也不通过重复业务请求等待。原生复验仍待新 CI。同步远程 `4eb594f4`，其共享 home 注释跟随已迁入 Host 的测试，不恢复 Desktop 的完整鉴权副本。见[证据](../testing/headless-pr1259-cache-retirement-2026-10-20.json)。

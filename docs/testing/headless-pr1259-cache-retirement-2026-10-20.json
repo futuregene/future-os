@@ -1,0 +1,27 @@
+{
+  "date": "2026-10-20",
+  "run": 39400905275,
+  "candidate": "24f196a3f5a200f1c51dc9ee08a918bc5f3504a5",
+  "status": "completed",
+  "conclusion": "failure",
+  "actualFailure": {
+    "owner": "future-host",
+    "platform": "Windows",
+    "case": "duplicate_command_ids_get_one_execution_and_cached_replies",
+    "passed": 1692,
+    "failed": 1,
+    "originalIgnored": 10,
+    "expectedAgentExecutions": 2,
+    "actualAgentExecutions": 1,
+    "logSha256": "6a8855af1c339952c865f8c2ad4b2eff788c9d83c9dc96daab9e2f285f50909d"
+  },
+  "precedingFixChecks": {
+    "WindowsNativeLifecycle": "success",
+    "LinuxAgent": "success"
+  },
+  "repair": "be424f09",
+  "mechanism": "Read-only test-support observation of actual ReplySlots removal under 5s deadline before one re-execution request; original first=1 and final=2 assertions retained. No cache mutation or TTL/product change.",
+  "syncedMain": "4eb594f4",
+  "localUnitOrNatsTests": 0,
+  "pending": "Fresh native CI; no local Windows pass claimed."
+}

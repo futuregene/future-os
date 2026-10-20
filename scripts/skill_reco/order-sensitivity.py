@@ -14,7 +14,7 @@ description changed the answer from 0/16 to 12/12.
 
 Not part of CI (needs grpcurl, a credential and a live gateway):
 
-  future agent --home /tmp/reco-test --verbose --log-file
+  FUTURE_HOME=/tmp/reco-test future agent --verbose --log-file
   python3 scripts/skill_reco/order-sensitivity.py --runs 8
 """
 

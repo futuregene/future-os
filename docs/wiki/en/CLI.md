@@ -268,11 +268,11 @@ future models --json     # machine-readable output
 future agent              # start the agent gRPC server
 future agent --help       # agent options: transport override, logging, profiling
 future agent --probe-sandbox # one-shot OS sandbox diagnostic; no server startup
-future agent --home /tmp/futureos-b  # second instance with its own state and IPC endpoint
+FUTURE_HOME=/tmp/futureos-b future agent  # second instance with its own state and IPC endpoint
 ```
 
 `future agent <args>` runs the agent backend directly with the same arguments
-as the standalone `future-agent` binary — including `--home DIR`, which makes
+as the standalone `future-agent` binary; `FUTURE_HOME=DIR` makes
 the FutureOS home (`~/.future` by default, or `$FUTURE_HOME`) something else
 for this instance, so several Agents can run beside each other without sharing
 sessions, a lock or a socket (see

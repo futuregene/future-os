@@ -96,14 +96,14 @@ fn agent_is_singleton_per_user_even_on_different_ports() {
     );
 }
 
-/// A second Agent launched with its own FutureOS home (`--home`, the supported
-/// form of `FUTURE_HOME`) must run beside the default instance: separate
-/// singleton lock, state root and local IPC endpoint. Regression guard for
+/// A second Agent launched with its own FutureOS home (an absolute
+/// `FUTURE_HOME`) must run beside the default instance: separate singleton
+/// lock, state root and local IPC endpoint. Regression guard for
 /// multi-instance isolation — before the override, the second instance shared
 /// the per-user socket and could take over the default instance's endpoint.
 #[cfg(unix)]
 #[test]
-fn home_flag_runs_a_second_isolated_instance() {
+fn future_home_env_runs_a_second_isolated_instance() {
     fn wait_for(what: &str, child: &mut std::process::Child, ready: impl Fn() -> bool) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while !ready() {
@@ -140,11 +140,10 @@ fn home_flag_runs_a_second_isolated_instance() {
     );
 
     let mut isolated_agent = Command::new(env!("CARGO_BIN_EXE_future-agent"))
-        .args(["--home", isolated.path().to_str().unwrap()])
+        .env("FUTURE_HOME", isolated.path())
         .args(["--profile-seconds", "60"])
         .env("HOME", home.path())
         .env("USERPROFILE", home.path())
-        .env_remove("FUTURE_HOME")
         .env_remove("XDG_RUNTIME_DIR")
         .env_remove("FUTURE_AGENT_SOCKET")
         .spawn()
@@ -166,7 +165,7 @@ fn home_flag_runs_a_second_isolated_instance() {
     );
     assert!(
         !isolated.path().join(".future").exists(),
-        "--home sets the FutureOS root itself, not a home above it"
+        "FUTURE_HOME sets the FutureOS root itself, not a home above it"
     );
 
     isolated_agent.kill().expect("force-stop isolated agent");
@@ -224,20 +223,19 @@ fn agent_default_mode_binds_per_user_local_socket() {
 /// the whole graceful sequence: it binds the local endpoint (not a TCP
 /// fallback), shuts itself down through the timer, exits 0 — not killed, not
 /// 130 — and releases the instance lock and the endpoint so the same home can
-/// start again immediately. `--home` gives the instance its own endpoint, so the
-/// test never touches the developer's own agent socket/pipe.
+/// start again immediately. An absolute `FUTURE_HOME` gives the instance its
+/// own endpoint, so the test never touches the developer's own agent
+/// socket/pipe.
 #[test]
 fn agent_default_ipc_shuts_down_gracefully_and_releases_its_endpoint() {
     let home = isolated_home();
     let run = || {
         Command::new(env!("CARGO_BIN_EXE_future-agent"))
-            .arg("--home")
-            .arg(home.path())
+            .env("FUTURE_HOME", home.path())
             .args(["--profile-seconds", "0"])
             .env("HOME", home.path())
             .env("USERPROFILE", home.path())
             .env("RUST_LOG", "info")
-            .env_remove("FUTURE_HOME")
             .env_remove("FUTURE_AGENT_SOCKET")
             .env_remove("XDG_RUNTIME_DIR")
             .output()

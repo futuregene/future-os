@@ -36,7 +36,7 @@ current controls and limitations, and vulnerability reporting.
   macOS/Linux (private directory and peer-UID checks) or a current-user-only
   Windows named pipe. Unix honors `FUTURE_AGENT_SOCKET`; otherwise the endpoint
   always lives under the instance's FutureOS home — `<home>/run/agent.sock`
-  (`FUTURE_HOME` / `future agent --home`), defaulting to
+  (`FUTURE_HOME`), defaulting to
   `~/.future/run/agent.sock`. A shared runtime directory such as
   `$XDG_RUNTIME_DIR` is deliberately not used (per-user, not per-instance, and
   potentially unwritable on hosts without a systemd login session).

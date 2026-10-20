@@ -153,7 +153,7 @@ The terminal and CLI clients are thin gRPC clients. They connect over
 a current-user-only named pipe on Windows). Unix honors `FUTURE_AGENT_SOCKET`;
 otherwise the endpoint always lives under the instance's FutureOS home:
 `~/.future/run/agent.sock` by default, `<FUTURE_HOME>/run/agent.sock` for an
-instance started with its own home (`future agent --home DIR`) — see
+instance started with its own home (`FUTURE_HOME=DIR`) — see
 [isolated instances](docs/guide/directory-layout.md#running-several-isolated-instances-future_home).
 If the FutureOS home sits on a filesystem that cannot host Unix sockets (e.g.
 NFS), point `FUTURE_HOME` at a directory on a local filesystem.
