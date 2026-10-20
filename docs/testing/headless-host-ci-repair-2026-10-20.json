@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "parent": "a862ba76",
+  "ci": {
+    "runId": 39356975686,
+    "headSha": "b5bd2f53b4d2c3c8414610c6ff4de25fbb2dc4c8",
+    "url": "https://github.com/futuregene/future-os/actions/runs/39356975686",
+    "overallAtSnapshot": "in_progress; not accepted",
+    "host": {
+      "jobId": 118413941758,
+      "conclusion": "success",
+      "unitTests": {
+        "passed": 354,
+        "failed": 0,
+        "ignored": 0,
+        "executionSeconds": 5.35
+      },
+      "docTests": {
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1
+      }
+    },
+    "agent": {
+      "jobId": 118413941736,
+      "conclusion": "failure",
+      "test": "rpc::broadcaster::tests::writer::a_refused_batch_retries_singly_and_separates_refusal_from_storage_failure",
+      "passed": 2437,
+      "failed": 1,
+      "ignored": 1,
+      "executionSeconds": 98.09,
+      "assertion": "the journal is now unhealthy, with the refusing batch error: None"
+    },
+    "hostLogSha256": "7072a07a67d8982c5e98a214d76a96eb475b3f4226bea58ff143c3452867c21b",
+    "agentLogSha256": "3481c7e18301cfb888b64897396be7b232af477ee301027bc3bb2a34c3d20aa0"
+  },
+  "diagnosis": "In refused-batch fallback, storage failures replied to durable callers before publishing journal health. The branch also reported success when every storage failure had a reply and no fire-and-forget retry remained.",
+  "change": "Publish failed health before the durable failure reply and return failure based on observed storage failures independently of the pending queue. Preserve original test assertions. Add a parked-worker, real-SQLite regression covering no retained retry and the worker remaining fail-closed.",
+  "newTest": "rpc::broadcaster::tests::writer::refused_batch_with_only_durable_storage_failures_stays_unhealthy",
+  "localChecks": [
+    {
+      "command": "cargo fmt -p future-agent --check",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p future-agent --all-targets -- -D warnings",
+      "result": "PASS"
+    }
+  ],
+  "executedLocalTests": 0,
+  "limits": [
+    "Fix has not executed in CI yet.",
+    "CI run predates later identity/request-scope migrations.",
+    "Host test execution time is provenance only, not matched performance comparison."
+  ]
+}

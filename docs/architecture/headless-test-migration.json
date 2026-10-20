@@ -24545,5 +24545,26 @@
       "target": "cli/src/version.rs",
       "status": "retained"
     }
+  ],
+  "addedTests": [
+    {
+      "name": "absent_presentation_accepts_every_backend_notification",
+      "target": "host/src/events.rs",
+      "owner": "future-host",
+      "status": "compiled-not-executed-locally"
+    },
+    {
+      "name": "presentation_receives_the_committed_runtime_identity_and_reset",
+      "target": "host/src/events.rs",
+      "owner": "future-host",
+      "status": "compiled-not-executed-locally"
+    },
+    {
+      "name": "refused_batch_with_only_durable_storage_failures_stays_unhealthy",
+      "target": "agent/src/rpc/broadcaster/tests/writer.rs",
+      "owner": "future-agent",
+      "status": "compiled-awaiting-ci",
+      "reason": "CI failure repair; original assertions retained"
+    }
   ]
 }

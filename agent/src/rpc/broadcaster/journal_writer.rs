@@ -431,6 +431,7 @@ fn flush_event_batch(
         Err(error) if is_event_rejected(&error) => {
             let refused = format!("event batch commit failed: {error:#}");
             let mut retry = Vec::new();
+            let mut storage_failed = false;
             for item in pending.drain(..) {
                 let event_id = item
                     .event
@@ -468,6 +469,13 @@ fn flush_event_batch(
                     }
                     // Still a storage problem: keep it for the next attempt.
                     Err(error) => {
+                        // Publish health before acknowledging failure to a durable
+                        // caller. All failed events may have replies, leaving no
+                        // pending items; that still makes this flush unsuccessful.
+                        if !storage_failed {
+                            health.fail(refused.clone());
+                            storage_failed = true;
+                        }
                         if let Some(reply) = item.reply {
                             let _ = reply.send(Err(AppendFailure::Unavailable(format!(
                                 "event batch commit failed: {error:#}"
@@ -479,11 +487,7 @@ fn flush_event_batch(
                 }
             }
             *pending = retry;
-            if pending.is_empty() {
-                return true;
-            }
-            health.fail(refused);
-            false
+            !storage_failed
         }
         Err(error) => {
             let message = format!("event batch commit failed: {error:#}");

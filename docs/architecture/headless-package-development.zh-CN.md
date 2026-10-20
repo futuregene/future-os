@@ -287,3 +287,9 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 `host/src/request_scope.rs` 现拥有唯一的命令接入计数和已提交 run 归属表，包含有界调用者等待、精确 run 取消/对账、正向终态证据及原有接入 RAII 夹具。Desktop 停止协调只调用这些操作，不访问内部 mutex/状态字段；重置仍保留活跃 guard 计数，不把外部 Agent 或无关 run 加入取消范围。
 
 原 RPC 构造和响应分类只保留于 `host/src/agent_commands.rs`，继续使用 `future-rpc` wire 类型，保留 `desktop_` 请求 ID 前缀和全部 payload 字段。10 个原纯逻辑测试随代码迁入。真实 RPC、确认/观察器竞态及完整停止测试仍完整留于 Desktop，待业务桥一起迁移。[静态证据](../testing/headless-host-request-scope-2026-10-20.json)记录宿主、联合消费者、旧 headless 和边界检查通过，本地未执行测试。中间 CI `39356975686` 的宿主分组通过，但 Agent 分组失败；正在诊断，不接受为自动化通过。
+
+### 2026-10-20 中间 CI 失败与日志批写修复
+
+`b5bd2f53` 上的中间运行 `39356975686` 实际通过 354 个宿主测试（失败/忽略均为 0）；1 个既有 doc-test 仍为忽略。Agent 测试 2437 通过、1 失败、1 忽略，不接受整次运行。[证据与修复记录](../testing/headless-host-ci-repair-2026-10-20.json)列明具体 job、失败断言及日志摘要。
+
+失败的日志混合批次测试暴露确认/健康状态竞态：事件拒绝后的逐项重试路径先回复 durable 存储失败、再发布不健康状态；没有未确认重试时还可能把 flush 报为成功。现改为先发布健康失败再回复，并独立于队列长度按存储失败决定 flush 结果。保留原失败用例及全部断言，另加真实 SQLite 回归，通过暂停实际 writer、确定性排入混合批次，验证空重试队列在健康报告被清除后仍保持失败。Agent fmt 和 Clippy `--all-targets` 通过，本地未运行测试，修复仍需 CI 复验。
