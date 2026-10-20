@@ -47,11 +47,13 @@ impl Prompter for StdioPrompter {
     }
 
     fn read_secret(&mut self) -> Result<String, String> {
-        // Reject a detached Windows process before opening CONIN$: without a
-        // console the password reader does not reliably return an input error.
+        // CONIN$ can remain usable independently of redirected stdin. Never
+        // wait on that unrelated console when the questionnaire is piped.
         #[cfg(windows)]
-        if unsafe { windows_sys::Win32::System::Console::GetConsoleCP() } == 0 {
-            return Err("Failed to read API key: no console is attached.".into());
+        if !io::IsTerminal::is_terminal(&io::stdin())
+            || unsafe { windows_sys::Win32::System::Console::GetConsoleCP() } == 0
+        {
+            return Err("Failed to read API key: an interactive console is required.".into());
         }
         rpassword::read_password()
             .map(|value| value.trim().to_string())

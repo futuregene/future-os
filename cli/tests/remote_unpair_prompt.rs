@@ -418,6 +418,13 @@ fn a_single_key_answers_without_enter() {
         "one key must be the whole answer; transcript:\n{}",
         terminal.text()
     );
+    // Child exit and the background terminal reader are independent. ConPTY
+    // may still be delivering the final output after try_wait reports success.
+    assert!(
+        terminal.wait_for("1 device remains paired.", BUDGET),
+        "the terminal must deliver the completion output: {}",
+        terminal.text()
+    );
     let transcript = terminal.text();
     assert!(
         transcript.contains("Unpaired 024E1F1C08A644579F7ED64B27558187"),
