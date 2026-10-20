@@ -276,9 +276,9 @@ Current phase status:
 |---|---|
 | 0 | Source/dependency baseline and named inventory captured; mixed-module ownership reviewed per test; matched build/runtime measurements open |
 | 1 | Ordinary GUI-free crate, task registry, presentation outlet and consumer dependencies established; complete lifecycle/config boundary still open |
-| 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, task/conversation, OAuth/account and maintenance scheduler moved; Remote host/Peer moved with local core execution; cross-platform revalidation, CLI maintenance bootstrap and stop coordination remain |
+| 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, task/conversation, OAuth/account and maintenance scheduler moved; Remote host/Peer moved with local core execution; cross-platform revalidation, stop coordination state moved; CLI maintenance bootstrap and full service teardown ordering remain |
 | 3 | Not implemented; the product entry is still `futureos-headless` |
-| 4 | 1571 original test declarations moved (1558 executed locally on macOS, ten retain original ignores, two real broker cases await CI and one platform case awaits CI); this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
+| 4 | 1572 original test declarations moved (1559 executed locally on macOS, ten retain original ignores, two real broker cases await CI and one platform case awaits CI); this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
 | 5 | Host CI group and affected propagation added; builds, release artifacts, signing/install/update/uninstall still open |
 | 6 | Not started; no frozen final candidate, matched performance, artifact acceptance or confirmed manual results |
 
@@ -471,3 +471,9 @@ This batch maps 525 original declarations and three upstream pairing additions b
 Linux Host CI will own an isolated broker child and execute both real broker cases in its single core suite, cleaning up only that child. No local NATS server was started. Broker URL reads now share the measurement fixtures' environment writer lock. Host/GUI/CLI and legacy headless Clippy `--all-targets`, fmt, strict Rustdoc, combined dependency boundaries and script syntax passed. Cross-platform extraction CI, the new CLI entry, release artifacts, matched performance and manual acceptance remain pending; see the [validation record](../testing/headless-host-remote-2026-10-20.json).
 
 Local process validation exposed Cargo dev feature unification applying fixture recovery options to real headless children. HomeGuard now explicitly enables fixture configuration; test-support alone cannot change TLS, recovery, revoke cleanup, HTTP deadlines or platform listener rules. Original assertions and deadlines remain. After repair, all 52 GUI entry cases passed again, and both real legacy headless process files passed 13 each (26 total). These remain legacy entry evidence, not new CLI acceptance.
+
+### 2026-10-20 Shared stop operation and deadline watchdog
+
+Stop single-flight, admission linearization, the 20-second total deadline watchdog, sticky failure and snapshots now live in `host/src/shutdown.rs`. GUI progress uses the existing presentation outlet. The entry still supplies its cleanup worker and runtime; Host builds no Tokio runtime, calls no block_on and exposes no state mutex/condvar. One original private-state deadline test moves with the coordinator. Actual RPC/run ownership and full GUI exit tests stay at the entry, observing worker completion through a bounded API with original assertions and deadlines preserved.
+
+The local Host deadline case passed once; all 34 entry stop/GUI drain cases passed. See the [evidence](../testing/headless-host-shutdown-coordinator-2026-10-20.json). Ordered service teardown and GUI terminal cleanup still reside at the entry and are the next extraction batch; moving the coordinator does not complete lifecycle work. This batch postdates live CI 39379461294 and does not borrow its result.

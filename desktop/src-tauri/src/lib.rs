@@ -82,8 +82,6 @@ fn install_rustls_provider() {
 #[cfg(feature = "gui")]
 pub(crate) use future_host::events::{emit_remote_activity, emit_threads_updated};
 #[cfg(feature = "gui")]
-pub(crate) use gui::APP_HANDLE;
-#[cfg(feature = "gui")]
 pub use gui::{run, run_with};
 // The menu builder is reachable from an integration test only through a public path:
 // `cfg(test)` is false for an integration build, so a `#[cfg(test)]` re-export would be

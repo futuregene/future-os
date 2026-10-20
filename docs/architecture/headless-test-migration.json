@@ -15981,8 +15981,9 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown/coordinator.rs",
-      "status": "planned"
+      "target": "host/src/shutdown.rs",
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-shutdown-coordinator-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown/coordinator.rs:539:worker_panic_is_shared_terminal_failure",

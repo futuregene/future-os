@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "8291d272c7ee3f1677ad2d9c2553dd61037b7bc8",
+  "scope": "Shared stop coordination and watchdog; ordered service teardown remains at the entry for the next batch.",
+  "moved": [
+    "Single process-wide stop operation and admission linearization",
+    "20-second total deadline watchdog independent of cleanup worker",
+    "Sticky failure and bounded worker observation",
+    "Stop snapshot and shared presentation event forwarding"
+  ],
+  "runtime": "Entry supplies the cleanup worker and creates its runtime. Host coordinator creates no Tokio runtime and never calls block_on.",
+  "privateState": "No mutex, condvar or operation fields exposed. Entry uses failure queries and bounded test-only worker observation.",
+  "tests": {
+    "host": {
+      "command": "cargo test -p future-host --lib --offline --locked -- shutdown::",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1576 filtered out; finished in 0.00s"
+      ],
+      "logSha256": "50879cc95fa93f580b3fc21a8971842b9e4a30b5df5f57369b220337193ca0d1"
+    },
+    "entry": {
+      "command": "cargo test -p futureos --lib --offline --locked -- desktop_shutdown:: gui::runtime_update_tests::",
+      "results": [
+        "test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 482 filtered out; finished in 11.34s"
+      ],
+      "logSha256": "08775eda381effe0e7decea0988af64559084d612c1d107e4914e301aaad6dc2"
+    }
+  },
+  "limits": [
+    "Not included in CI run 39379461294, which validates baseCommit only.",
+    "Desktop terminal teardown and service stop ordering still require extraction.",
+    "No full phase or final acceptance claim."
+  ],
+  "boundaries": {
+    "checked": {
+      "future-cli": {
+        "forbidden": [],
+        "packages": 395
+      },
+      "future-host": {
+        "forbidden": [],
+        "packages": 370
+      }
+    },
+    "desktopGuiFeatures": [
+      "default",
+      "gui"
+    ],
+    "executedTests": 0,
+    "target": "aarch64-apple-darwin"
+  },
+  "static": {
+    "Host_GUI_CLI_Clippy_all_targets": {
+      "status": "pass",
+      "logSha256": "c0a2d18978134c5ea5855ab926ccfbeb24386d1f5b8d53455686b76e2786821e",
+      "tail": [
+        "    Checking future-cli v0.0.0 (/Volumes/ZHITAI/Workspace/future-os/.worktrees/headless-unified/cli)",
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.57s"
+      ]
+    },
+    "legacy_headless_Clippy_all_targets": {
+      "status": "pass",
+      "logSha256": "d0604caf0144c5ddef4f9ec816eda97e1a09f0bb336998a3dbea761b110fa1f7",
+      "tail": [
+        "    Checking futureos v0.0.0 (/Volumes/ZHITAI/Workspace/future-os/.worktrees/headless-unified/desktop/src-tauri)",
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.35s"
+      ]
+    },
+    "strict_Host_Rustdoc": {
+      "status": "pass",
+      "logSha256": "3993a8db654596043323ac3b48564822af50b55b0a0a9942742ccc52efc383aa",
+      "tail": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 11.07s",
+        "   Generated /Volumes/ZHITAI/Workspace/future-os/target/doc/future_host/index.html"
+      ]
+    },
+    "docs": {
+      "status": "pass",
+      "checked": 295,
+      "pendingPairs": 0
+    },
+    "fmt": {
+      "status": "pass",
+      "crates": [
+        "future-host",
+        "futureos"
+      ]
+    }
+  }
+}

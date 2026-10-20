@@ -72,3 +72,5 @@ pub mod remote;
 mod remote_host;
 pub mod remote_peer;
 mod remote_platform;
+
+pub mod shutdown;

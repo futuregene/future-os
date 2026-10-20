@@ -157,6 +157,8 @@ pub mod test_support {
     use std::sync::MutexGuard;
 
     pub(crate) fn cleanup_host() {
+        crate::shutdown::reset_for_test();
+        crate::shutdown::clear_failure_for_test();
         crate::runtime::cancel_test_tasks();
         crate::agent_bridge::cancel_all_observers();
         crate::request_scope::reset_for_test();

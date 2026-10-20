@@ -1,9 +1,6 @@
 //! Stop Desktop producers before draining the Agent. External ownership is
 //! preserved; only prompts submitted by this Desktop receive exact-run aborts.
-use std::{
-    sync::Mutex,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 mod coordinator;
 pub(crate) use coordinator::begin;
@@ -11,7 +8,6 @@ pub(crate) use coordinator::begin;
 pub(crate) use coordinator::{begin_quit, claim_action};
 #[cfg(feature = "gui")]
 pub(crate) use coordinator::{snapshot, StopSnapshot};
-static STOP_FAILURE: Mutex<Option<String>> = Mutex::new(None);
 
 #[cfg(any(feature = "gui", test))]
 pub(crate) use future_host::request_scope::is_stopping;
@@ -44,7 +40,7 @@ fn perform_stop(
     build: impl FnOnce() -> std::io::Result<tokio::runtime::Runtime>,
     operation: &coordinator::Operation,
 ) -> Result<(), crate::AppError> {
-    if let Some(error) = STOP_FAILURE.lock().unwrap().clone() {
+    if let Some(error) = future_host::shutdown::failure() {
         return Err(error.into());
     }
     // Cancel the Agent immediately and bound the Desktop caller drain separately.
@@ -141,21 +137,21 @@ fn perform_stop(
         Ok(())
     } else {
         let error = errors.join("; ");
-        *STOP_FAILURE.lock().unwrap() = Some(error.clone());
+        future_host::shutdown::record_failure(error.clone());
         Err(error.into())
     }
 }
 
 #[cfg(all(test, feature = "gui"))]
 pub(crate) fn fail_for_test(error: &str) {
-    *STOP_FAILURE.lock().unwrap() = Some(error.to_owned());
+    future_host::shutdown::record_failure(error.to_owned());
 }
 
 #[cfg(test)]
 pub(crate) fn reset_for_test() {
     coordinator::reset_for_test();
     future_host::request_scope::reset_for_test();
-    *STOP_FAILURE.lock().unwrap() = None;
+    future_host::shutdown::clear_failure_for_test();
     crate::tasks::reset_for_test();
     crate::remote_peer::runtime::reset_after_shutdown_for_test();
     crate::remote::reset_after_shutdown_for_test();
@@ -179,7 +175,7 @@ mod tests {
                 .build()
         })
         .unwrap();
-        assert!(super::STOP_FAILURE.lock().unwrap().is_none());
+        assert!(future_host::shutdown::failure().is_none());
     }
 
     #[test]
@@ -291,7 +287,7 @@ mod tests {
             .unwrap()
             .unwrap_err();
         assert!(error.to_string().contains("could not be confirmed stopped"));
-        assert!(super::STOP_FAILURE.lock().unwrap().is_some());
+        assert!(future_host::shutdown::failure().is_some());
         assert_eq!(super::owned_count(), 1);
     }
 
