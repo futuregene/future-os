@@ -389,9 +389,15 @@ pub fn check_instance_lock(home: &Path) -> Result<(), ConnectionError> {
     };
     let mut lock = fd_lock::RwLock::new(file);
     let _guard = lock.try_write().map_err(|error| {
-        ConnectionError::StartupBlocked(format!(
-            "instance lock is occupied or unavailable: {error}; do not start another Agent"
-        ))
+        // A held lock gets the same owner-identifying report the Agent itself
+        // prints on a conflicting start: pid, host, executable and the advice
+        // for shared-home setups. Anything else stays a plain I/O complaint.
+        let reason = if error.kind() == io::ErrorKind::WouldBlock {
+            crate::instance_lock::lock_conflict_message(&path, home)
+        } else {
+            format!("instance lock is occupied or unavailable: {error}; do not start another Agent")
+        };
+        ConnectionError::StartupBlocked(reason)
     })?;
     Ok(())
 }
