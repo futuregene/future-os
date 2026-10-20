@@ -2424,7 +2424,7 @@ mod tests {
                   "api": "openai-completions",
                   "baseUrl": "https://custom.example.com/v1",
                   "apiKey": "sk-custom",
-                  "compat": {"providerFlag": true},
+                  "compat": {"providerFlag": true, "reasoningEffortValues": ["low", "high", "xhigh", "max"]},
                   "thinkingLevelMap": {"high": {"budget": 1234}},
                   "models": [
                     {
@@ -2462,6 +2462,11 @@ mod tests {
         );
         // …and provider-level compat / thinking map filled the rest.
         assert_eq!(m.compat.get("providerFlag"), Some(&json!(true)));
+        assert_eq!(
+            m.compat.get("reasoningEffortValues"),
+            Some(&json!(["low", "high", "xhigh", "max"])),
+            "provider-level effort vocabulary propagates too"
+        );
         assert_eq!(
             m.thinking_level_map.get("high"),
             Some(&json!({"budget": 1234}))
