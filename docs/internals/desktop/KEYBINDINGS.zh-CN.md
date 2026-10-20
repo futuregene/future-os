@@ -288,8 +288,29 @@ desktop/src/features/settings/
 | `features/settings/ShortcutsPage.test.tsx` | 录制、拒绝（缺修饰键 / 保留 / 冲突）、取消、解绑、恢复、搜索 |
 | `ThreadSearch*`、`Composer.focus`、`AgentThread`、`ActivityRail.nav`、`AppShell` | 各视图自己的命令，走真实分发链路 |
 
-除自动化测试外还人工验过：Linux 上中文输入法组词中按修饰键不触发命令；终端里
-`Ctrl+B`、`Ctrl+F`、`Ctrl+A`、`Ctrl+K`、`Ctrl+[`（ESC）仍然交给 shell。
+### 哪些真的人工验过、哪些没有
+
+上面每一条规则都有表里那些自动化测试兜着。其中**一条**另外在跑起来的应用上人工验过；
+没验的那条在下面点名——后来人要判断能不能信某条规则，得知道它背后是哪一类证据，
+「有单测」和「在发布版真正跑的引擎上见过」不是同一个说法。
+
+**人工验过——终端保留 shell 的键。** 在**真实 Chromium webview + Linux UA** 下
+（用 CDP 驱动的无头会话操作真实应用）：终端持有焦点时按 `Ctrl+[`，伪终端收到 `0x1b`
+（ESC）；按 `Ctrl+]` 收到 `0x1d`；两者都没有被应用抢走。这是 Chromium，**不是**
+WebKitGTK——Linux 打包版实际跑的是前者。
+
+**没有人工验过——Linux + WebKitGTK + 中文输入法。** 「组词过程中按修饰键不触发命令」
+这条只在逻辑层有覆盖：`dispatchShortcut` 对 `isComposing`、`keyCode 229`、
+`key: "Unidentified"` 三种形态各有用例，也就是这些引擎会报告的三种形状
+（`dispatch.test.ts`）。它**没有**在 WebKitGTK + ibus-libpinyin 下跑过，而这正是本文
+这条规则所继承的终端事故的现场组合（`embedded-terminal.md`）。写这段时手上既没有
+Linux 桌面，也没有能跑起带输入法的 WebKitGTK webview 的容器。
+
+> **待办。** 关闭它：在一台装了 `ibus-libpinyin`（或任何会组词的 CJK 输入法）的 Linux
+> 桌面上，打开应用、进入一个会话、开始组词，然后按一个已绑定命令的修饰键（例如
+> `Ctrl+B`）。预期：没有命令执行，预编辑框仍在。再在嵌入式终端里重复一次，预期相同，
+> 而要防的旧故障是组词被提交两次（`keyPolicy.ts` 就是为此存在）。验完把两次结果写进
+> 本节。
 
 ## 后续（P2 / P3，未实现）
 

@@ -336,15 +336,43 @@ different risk.
 | `features/settings/ShortcutsPage.test.tsx` | recording, refusal (modifier / reserved / conflict), cancel, unbind, restore, search |
 | `ThreadSearch*`, `Composer.focus`, `AgentThread`, `ActivityRail.nav`, `AppShell` | each view's own command, through the dispatcher |
 
-Verified by hand as well as by tests: on Linux with a Chinese IME, a modified key
-pressed mid-composition does not fire a command; inside the terminal, `Ctrl+B`,
-`Ctrl+F`, `Ctrl+A`, `Ctrl+K` and `Ctrl+[` (ESC) still reach the shell.
+### What was actually verified by hand, and what was not
+
+Every rule above is covered by the automated tests in the table. One rule was
+also checked against a running app by hand, and the one that was not is called
+out below — a reader deciding whether to trust a rule needs to know which kind of
+evidence stands behind it, and "covered by tests" is not the same claim as "seen
+working on the engine a release ships".
+
+**Verified by hand — the terminal keeps the shell's keys.** In the **real
+Chromium webview with a Linux user agent** (a headless session driving the real
+app over CDP): with the terminal focused, `Ctrl+[` delivered `0x1b` (ESC) to the
+pseudo-terminal and `Ctrl+]` delivered `0x1d`, and neither was taken by the app.
+This is Chromium, not WebKitGTK — the engine a packaged Linux build actually runs.
+
+**Not verified by hand — Linux + WebKitGTK + a Chinese IME.** The rule "a key
+pressed mid-composition does not fire a command" is covered at the logic level
+only: `dispatchShortcut` has cases for `isComposing`, `keyCode 229` and
+`key: "Unidentified"`, the three shapes those engines report
+(`dispatch.test.ts`). It has **not** been exercised against WebKitGTK with
+ibus-libpinyin, the combination that produced the original terminal bug this rule
+descends from (`embedded-terminal.md`). Neither a Linux desktop nor a container
+able to run a WebKitGTK webview with an IME was available on the machine this was
+written on.
+
+> **TODO.** To close it, on a Linux desktop with `ibus-libpinyin` (or any IME
+> that composes CJK): run the app, open a conversation, start composing a word,
+> then press a modified key a command is bound to (e.g. `Ctrl+B`). Expected: no
+> command runs and the preedit box stays. Repeat inside the embedded terminal,
+> where the expectation is the same and the stale failure mode is the composition
+> being committed twice (`keyPolicy.ts`). When it is done, the two outcomes belong
+> in this section.
 
 ## Going further (P2 / P3, not implemented)
 
 * Command palette on `mod+k`: commands + conversations + workspaces in one entry.
   `mod+shift+f` stays what it is — a filter for the list — so the two do not
-  compete.
+  compete. (In progress.)
 * `mod+/`: a cheat sheet listing the *live* bindings, including overrides.
 * macOS menu items for Settings and New Conversation. They must emit events and
   carry **no** accelerators: an accelerator in the menu would keep printing the
