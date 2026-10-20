@@ -625,23 +625,21 @@ pub(crate) fn handle_set_parent_session(
     id: &str,
 ) -> String {
     let parent = cmd.parent_session.trim().to_string();
-    let (session_manager, session_id, persistence) = {
-        let sess = session.read();
-        if !parent.is_empty() && parent == sess.session_id {
-            return RpcResponse::build_fail(
-                id,
-                "set_parent_session",
-                "a session cannot be its own parent",
-            );
-        }
+    let session_id = session.read().session_id.clone();
+    if !parent.is_empty() && parent == session_id {
+        return RpcResponse::build_fail(
+            id,
+            "set_parent_session",
+            "a session cannot be its own parent",
+        );
+    }
+    // An empty id detaches, which is how a user deliberately moves a session out
+    // of a lineage, so it is never refused.
+    if !parent.is_empty() {
         // A parent may be a live session that has no entries yet, so check the
-        // in-memory map before the session store. An empty id detaches.
-        let known = if parent.is_empty() {
-            true
-        } else {
-            state.sessions.read().contains_key(&parent)
-                || state.session_manager.contains(&parent).unwrap_or(false)
-        };
+        // in-memory map before the session store.
+        let known = state.sessions.read().contains_key(&parent)
+            || state.session_manager.contains(&parent).unwrap_or(false);
         if !known {
             return RpcResponse::build_fail(
                 id,
@@ -649,11 +647,15 @@ pub(crate) fn handle_set_parent_session(
                 &format!("parent session not found: {parent}"),
             );
         }
-        (
-            sess.session_manager.clone(),
-            sess.session_id.clone(),
-            sess.persistence.clone(),
-        )
+        // Same lineage limit as `new_session`: the parent must be a root. This
+        // is the check that makes an agent-spawned chain stop after one jump.
+        if let Some(error) = super::session_lifecycle::reject_deep_parent(state, &parent) {
+            return RpcResponse::build_fail(id, "set_parent_session", &error);
+        }
+    }
+    let (session_manager, persistence) = {
+        let sess = session.read();
+        (sess.session_manager.clone(), sess.persistence.clone())
     };
     session.write().parent_session_id = parent.clone();
     // Persist to the session record so both `list_sessions` and the next run's

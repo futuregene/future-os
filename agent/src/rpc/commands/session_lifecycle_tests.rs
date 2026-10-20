@@ -884,6 +884,69 @@ fn new_session_honors_explicit_id_cwd_model_level_and_provenance() {
     assert_eq!(sess.cwd, "/tmp/some-workspace");
 }
 
+/// Delegation is one jump deep: a session that already has a parent cannot
+/// become a parent. Without this an agent can spawn an agent that spawns an
+/// agent, and each level re-summarises the level below until the top session can
+/// no longer tell what was actually done.
+#[test]
+fn a_session_at_the_lineage_limit_cannot_be_a_parent() {
+    let state = make_app_state();
+
+    // root -> child is the allowed jump (the root has no parent).
+    let mut child = make_cmd_for("new_session", "lineage-child");
+    child.parent_session = "lineage-root".to_string();
+    let resp = parse_response(&handle_command_internal(&state, child));
+    assert_eq!(resp["success"], true, "{resp}");
+
+    // child -> grandchild is not.
+    let mut grandchild = make_cmd_for("new_session", "lineage-grandchild");
+    grandchild.parent_session = "lineage-child".to_string();
+    let resp = parse_response(&handle_command_internal(&state, grandchild));
+    assert_eq!(resp["success"], false, "{resp}");
+    assert!(
+        resp["error"].as_str().unwrap_or_default().contains("depth"),
+        "the refusal must name the reason: {resp}"
+    );
+    assert!(
+        state.get_session("lineage-grandchild").is_none(),
+        "a refused child must not be left behind as a session"
+    );
+}
+
+/// The limit is a lineage fact, not a live-session fact: after a restart the
+/// parent is only on disk, and the chain must still be refused.
+#[test]
+fn the_lineage_limit_reads_a_parent_that_is_only_on_disk() {
+    let state = make_app_state();
+    let info = crate::session::SessionEntry::session_info(
+        serde_json::json!({
+            "cwd": state.welcome_cwd,
+            "model": "mock",
+            "parent_session_id": "disk-root",
+        }),
+        "mock".to_string(),
+        "low".to_string(),
+    );
+    let snapshot = crate::session::Session::snapshot(
+        "disk-child".to_string(),
+        state.welcome_cwd.clone(),
+        "mock".to_string(),
+        String::new(),
+        "disk-root".to_string(),
+        vec![info],
+    );
+    state.session_manager.save(&snapshot).unwrap();
+    assert!(
+        !state.sessions.read().contains_key("disk-child"),
+        "the test is only meaningful while the parent is not live"
+    );
+
+    let mut cmd = make_cmd_for("new_session", "disk-grandchild");
+    cmd.parent_session = "disk-child".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false, "{resp}");
+}
+
 #[test]
 fn new_session_accepts_an_initial_system_prompt_append() {
     let state = make_app_state();

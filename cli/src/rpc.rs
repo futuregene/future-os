@@ -733,11 +733,13 @@ impl RunClient {
         cwd: &str,
         name: &str,
         append_system_prompt: Option<&str>,
+        parent: Option<&str>,
     ) -> Result<Value, String> {
         let cmd = RpcCommand {
             cwd: cwd.to_string(),
             name: name.to_string(),
             system_prompt: append_system_prompt.unwrap_or_default().to_string(),
+            parent_session: parent.unwrap_or_default().to_string(),
             created_by: "cli".to_string(),
             ..Default::default()
         };

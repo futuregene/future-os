@@ -138,6 +138,16 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
         if !opts.thinking_level.is_empty() {
             info.push(format!("Thinking level: {}", opts.thinking_level));
         }
+        if opts.is_subsession {
+            // No number: the rule is what the model acts on, and a chain can be
+            // longer than the limit (a fork inherits its parent's lineage), so a
+            // digit here would sometimes be wrong in a way nothing checks.
+            info.push(
+                "This session was started by another session, so it cannot start \
+                 one of its own — do the work directly and report the result."
+                    .to_string(),
+            );
+        }
         info.push(os_hint());
         sections.push(info.join("\n"));
     }
@@ -335,6 +345,12 @@ pub struct PromptOptions {
     /// Thinking level — injected into the environment section so the model
     /// knows its reasoning mode.
     pub thinking_level: String,
+    /// Whether this session was created under another session. Such a session
+    /// is at the lineage limit (`MAX_SUBSESSION_DEPTH`), so the prompt names the
+    /// rule instead of the commands: the agent refuses a deeper chain anyway
+    /// (`reject_deep_parent`), and offering the commands would invite a run
+    /// that cannot succeed.
+    pub is_subsession: bool,
 }
 
 // ─── Identity Section ───────────────────────────────────────────────────────
@@ -372,7 +388,7 @@ fn build_identity_section(opts: &PromptOptions) -> String {
         .iter()
         .map(|t| t.def.function.name.as_str())
         .collect();
-    let mut guidelines = build_dynamic_tool_guidelines(&tool_names);
+    let mut guidelines = build_dynamic_tool_guidelines(&tool_names, !opts.is_subsession);
     guidelines.extend(opts.tools.iter().flat_map(|t| t.guidelines.iter()).cloned());
     let guidelines = dedup(guidelines)
         .into_iter()
@@ -399,7 +415,7 @@ fn build_identity_section(opts: &PromptOptions) -> String {
     parts.join("\n\n")
 }
 
-fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
+fn build_dynamic_tool_guidelines(tool_names: &[&str], may_delegate: bool) -> Vec<String> {
     let has_shell = tool_names.contains(&"shell");
 
     let mut guidelines = vec![];
@@ -427,6 +443,26 @@ fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
             "A user message may reference another conversation as [title](futureos://session/<session-id>): the id in that link identifies that conversation. Read it with the shell tool — `future session transcript --session <id>` (add --select/--grep/--limit/--counts to read it cheaply, --runs for its run outcomes) or `future session history search --session <id> --query \"<text>\"` to find a passage. To send it a message use `future run --session <id> \"<message>\"`, which starts a real run there and spends the user's credits; if that conversation is mid-run, you decide whether to append behind it (the default) or interrupt it with --steer. By default the command waits for that run to end, so raise the shell tool's timeout for a long one (max 600s); `future run --no-wait --session <id> \"<message>\"` gets an ack immediately and continues, and the answer comes back later from `future session wait <id> [--run <run-id>]` — the ack carries the run id — while `future session status <id>` shows whether that run is still active. The target sees only a bare user turn, so state what it cannot infer: that the message comes from another conversation (name the sending session id) and whether you expect it to act on the content or merely take note. When the payload is long or non-ASCII, write it to a file and pass it as `@<file>` — the CLI reads the file itself — instead of reading it into a shell variable first: on Windows PowerShell 5.1 `Get-Content` decodes a BOM-less UTF-8 file with the ANSI code page, and the mojibake is what lands in the other conversation."
                 .to_string(),
         );
+        // Delegation writes into exactly the same machinery, so it is stated as
+        // an extension of the paragraph above rather than a second copy of it:
+        // the commands already named there are not repeated, and the user's own
+        // words for the thing are given because the model matches wording before
+        // it matches concepts.
+        //
+        // `--parent` is what makes the child a child: without it the new session
+        // is an unrelated conversation that merely happens to be busy, and the
+        // rail, `session list --parent` and the lineage guard would all miss it.
+        //
+        // The closing rules are the failure modes seen when this is left to the
+        // model's judgement: a prompt that assumes shared history, a turn that
+        // ends while a child still runs, and a wait per spawn that serializes
+        // work which was delegated precisely to run in parallel.
+        if may_delegate {
+            guidelines.push(
+                "Work can also be handed to another conversation of your own — a sub-session, which the user may also call a subagent, a sub-agent, or 子会话 / 子agent / 子代理; treat those words as asking for one. Create it with the lineage recorded in the same step — `future session new --parent <this-session-id> --name \"<short task>\" --json` — and start it with the `future run --no-wait --session <child>` form above: reading it, appending behind it, --steer and the provenance/intent requirement are all exactly as described there. What that pair does not cover: `future session abort <child>` stops its run and clears its queue, `future session delete <child>` removes it once its result is no longer wanted, `future session approvals <child>` lists the approvals it is parked on — a --no-wait child waiting there looks exactly like a slow one — and `future session list --parent <this-session-id> --json` lists your own children with their isStreaming flags. A child cannot see this conversation, so its prompt must stand alone: the goal, the files to touch, the acceptance check, and that it should return the result rather than a narration. Delegate only when the work is genuinely independent or long enough that its tool chatter would otherwise fill this conversation: the child is a full run on the user's credits, so do not spawn one to answer something you could read yourself, and a child cannot start its own child. Never end your turn with one still running — wait for it, or abort it and say so. Keep at most three in flight, launched first and awaited one at a time, because a blocking wait per spawn serializes the work and loses the point of delegating."
+                    .to_string(),
+            );
+        }
     }
 
     guidelines
@@ -979,6 +1015,60 @@ mod tests {
         assert!(!read_only.contains("futureos://session/<session-id>"));
     }
 
+    /// Delegation reuses the reference commands, so the prompt states it as an
+    /// extension: the aliases the user may say, the one command that makes the
+    /// child a child, and the lifecycle the reference paragraph does not cover.
+    #[test]
+    fn delegation_guideline_names_the_aliases_and_the_parent_flag() {
+        let prompt = build_prompt(&PromptOptions {
+            tools: vec![crate::tools::shell_tool()],
+            ..Default::default()
+        });
+        // The user's words, before the concept: the model matches wording first.
+        for alias in ["subagent", "子agent", "子代理"] {
+            assert!(prompt.contains(alias), "missing alias {alias}");
+        }
+        // `--parent` in the same step is what creates a child rather than an
+        // unrelated session that merely happens to be busy.
+        assert!(prompt.contains("future session new --parent <this-session-id>"));
+        // The lifecycle commands are named, and each for the thing it alone does.
+        assert!(prompt.contains("future session abort <child>"));
+        assert!(prompt.contains("future session delete <child>"));
+        assert!(prompt.contains("future session approvals <child>"));
+        assert!(prompt.contains("future session list --parent <this-session-id>"));
+        // The three failure modes: a child with no shared history, a turn that
+        // ends while a child runs, and a wait per spawn that serializes it.
+        assert!(prompt.contains("cannot see this conversation"));
+        assert!(prompt.contains("Never end your turn with one still running"));
+        assert!(prompt.contains("at most three in flight"));
+        // It defers to the reference paragraph instead of restating it.
+        assert!(prompt.contains("the `future run --no-wait --session <child>` form above"));
+        // A child cannot delegate again: the model must not promise otherwise.
+        assert!(prompt.contains("a child cannot start its own child"));
+
+        // A sub-session is at the lineage limit, so the commands are withheld
+        // and the rule is stated instead — the agent refuses a deeper chain, so
+        // offering the commands would only invite a run that cannot succeed.
+        let sub = build_prompt(&PromptOptions {
+            tools: vec![crate::tools::shell_tool()],
+            is_subsession: true,
+            ..Default::default()
+        });
+        assert!(!sub.contains("future session new --parent"));
+        assert!(!sub.contains("at most three in flight"));
+        assert!(sub.contains("cannot start one of its own"));
+        // Reading and messaging an existing conversation still works from a
+        // child, so that half stays.
+        assert!(sub.contains("futureos://session/<session-id>"));
+
+        // Without a shell there is no way to run any of it.
+        let read_only = build_prompt(&PromptOptions {
+            tools: vec![crate::tools::read_tool()],
+            ..Default::default()
+        });
+        assert!(!read_only.contains("future session new --parent"));
+    }
+
     #[test]
     fn first_sentence_truncates_at_period() {
         assert_eq!(first_sentence("Hello world. Rest"), "Hello world.");
@@ -1062,7 +1152,7 @@ mod tests {
 
     #[test]
     fn build_dynamic_tool_guidelines_returns_vec() {
-        let guidelines = build_dynamic_tool_guidelines(&["shell", "read", "write", "edit"]);
+        let guidelines = build_dynamic_tool_guidelines(&["shell", "read", "write", "edit"], true);
         assert!(!guidelines.is_empty());
     }
 
