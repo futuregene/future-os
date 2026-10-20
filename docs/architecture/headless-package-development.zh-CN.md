@@ -259,3 +259,7 @@ HOME 夹具在 Desktop 与宿主之间共享序列化锁。入口提供的夹具
 277 个原测试声明（包括真实连接池文件释放回归）迁入宿主。9 个 Agent/Store 协调测试暂留 `desktop/src-tauri/src/store/reconcile.rs`，保留原 RPC 与数据库断言；清单明确记录业务桥迁移前的中间归属。过渡适配只调用限定候选查询 API，不直接打开 Store 内部连接。真实数据库 seed 夹具共用一份；旧事件 writer/buffer 仅在 test/test-support 构建可用，保留入口集成中已有的落盘读取断言。
 
 Agent 事件投影和失效通知也随原 Remote sink 迁入宿主，与 GUI 展示 sink 独立。宿主单包、GUI/CLI 联合与原 headless 的 Clippy `--all-targets`、格式、依赖边界通过。[证据](../testing/headless-host-store-2026-10-20.json)记录 SQL 摘要、过渡测试及限制。本地未执行测试。这是阶段 2 进展，Agent 托管、业务桥、Remote、新 CLI 命令、CI 与发行验收仍未完成。
+
+### 2026-10-20 宿主 CI 归属
+
+CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建/schema/Remote 输入选中该归属；宿主变更也选中 CLI、GUI、原生生命周期消费者，不仅因 Rust 宿主迁移就选中 Mobile 或前端单元套件。现有 Desktop 静态检查阶段增加联合 GUI feature 的依赖边界验证。实施分支使用完整 workflow dispatch 验收，不创建 PR、不在本地运行测试；具体 CI run 完成前均记为待验证。
