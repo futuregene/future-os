@@ -315,3 +315,7 @@ CI `39358154196` 的 Agent 与宿主测试分组通过，证明该候选的日�
 `host/src/files.rs` 现拥有路径规范化/凭据访问检查、附件与图片校验、缩略图、临时导入/删除、目录列表、相对预览解析、有界文本读取/导出及粘贴图片/文件持久化。保留原业务函数体、限制、私有序列化字段和 `futureos-attachments` 路径。Desktop 保留薄 IPC、原生剪贴板、Tauri asset 授权、OS 打开/回退；图片预览注册使用共享校验及原 stamp 来源/格式，不把 asset scope 带入宿主。
 
 27 个原真实文件系统/图片/持久化测试迁入宿主，9 个 GUI/剪贴板/OS 用例留适配。真实 asset-scope 用例保留全部断言，并使用拥有生命周期的临时目录作为夹具。[静态证据](../testing/headless-host-files-2026-10-20.json)覆盖宿主单包、GUI/CLI 联合、原 headless、格式和依赖边界。本地未执行测试，本批仍需 CI 执行及后续产品验收。
+
+### 2026-10-20 共享宿主原生 CI 覆盖
+
+宿主已有独立 Linux 测试分组。CI 现增加 macOS/Windows 原生宿主 fmt、Clippy `--all-targets` 和 `cargo test -p future-host`，不安装 npm、不构建 Desktop 包；稳定 Rust 测试 gate 纳入两个原生结果。每个原生构建目标在 Desktop 编译后显式拉取依赖，并验证联合 GUI/CLI 的依赖闭包。原生命令拆为独立步骤，避免 PowerShell 后一条成功命令掩盖前一条失败。YAML 语法检查通过；新 job 及 Windows import 修复仍待实际 CI 执行。

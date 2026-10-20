@@ -575,6 +575,52 @@ jobs:
           CARGO_PROFILE_TEST_DEBUG: 1
         run: cargo test ${{ matrix.packages }}
 
+  # Core host tests need neither npm nor Tauri; exercise their native file,
+  # database and process behavior on the other supported desktop platforms too.
+  rust-tests-host-native:
+    name: Shared host (${{ matrix.name }})
+    needs: changes
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+          - name: Windows
+            os: windows-latest
+    steps:
+      - name: No affected host changes
+        if: needs.changes.outputs.rust_host != 'true'
+        run: echo "No affected shared host tests."
+      - name: Checkout
+        if: needs.changes.outputs.rust_host == 'true'
+        uses: actions/checkout@v7
+      - name: Setup Rust
+        if: needs.changes.outputs.rust_host == 'true'
+        run: node scripts/ci/setup-rust.mjs
+      - name: Cache Rust
+        if: needs.changes.outputs.rust_host == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-tests-host-native
+          save-if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+          workspaces: .
+          cache-on-failure: true
+          cache-all-crates: true
+      - name: Host formatting
+        if: needs.changes.outputs.rust_host == 'true'
+        run: cargo fmt -p future-host --check
+      - name: Host all-target Clippy
+        if: needs.changes.outputs.rust_host == 'true'
+        run: cargo clippy -p future-host --all-targets -- -D warnings
+      - name: Host tests without Desktop or npm
+        if: needs.changes.outputs.rust_host == 'true'
+        env:
+          CARGO_PROFILE_TEST_DEBUG: 1
+        run: cargo test -p future-host
+
   # The desktop backend suite: one job per feature configuration, so the gui
   # suite (~7 min of tests) and the headless suite (~6 min) overlap instead of
   # queueing behind each other. Each flavor saves its own PR cache so the
@@ -687,7 +733,7 @@ jobs:
     # Keep the existing required-check name. New installer failures must also
     # block this gate without requiring a branch-protection configuration edit.
     # Remote failures (including TS-only regressions) must also fail this gate.
-    needs: [changes, rust-tests, rust-tests-desktop, windows-update, remote]
+    needs: [changes, rust-tests, rust-tests-host-native, rust-tests-desktop, windows-update, remote]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -706,8 +752,9 @@ jobs:
             echo "Unexpected Remote result: ${{ needs.remote.result }}"
             exit 1
           fi
-          if [ "${{ needs.rust-tests.result }}" != 'success' ] || [ "${{ needs.rust-tests-desktop.result }}" != 'success' ] || [ "${{ needs.windows-update.result }}" != 'success' ]; then
+          if [ "${{ needs.rust-tests.result }}" != 'success' ] || [ "${{ needs.rust-tests-host-native.result }}" != 'success' ] || [ "${{ needs.rust-tests-desktop.result }}" != 'success' ] || [ "${{ needs.windows-update.result }}" != 'success' ]; then
             echo "Rust test groups result: ${{ needs.rust-tests.result }}"
+            echo "Native host tests result: ${{ needs.rust-tests-host-native.result }}"
             echo "Desktop test flavors result: ${{ needs.rust-tests-desktop.result }}"
             echo "Windows update fixtures result: ${{ needs.windows-update.result }}"
             exit 1
@@ -725,10 +772,13 @@ jobs:
         include:
           - name: Linux
             os: ubuntu-latest
+            python: python3
           - name: Windows
             os: windows-latest
+            python: python
           - name: macOS
             os: macos-latest
+            python: python3
     steps:
       # Keep the three matrix statuses present for branch protection. A
       # job-level `if` would skip matrix expansion entirely, leaving the
@@ -794,9 +844,16 @@ jobs:
         if: needs.changes.outputs.desktop_tauri == 'true'
         run: cargo check --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml
 
-      # These are real services in isolated fixture processes: Windows pipes,
-      # Unix sockets, instance locks, CLI-origin work and bounded shutdown.
-      # Linux's full unit suites stay in rust-tests; do not duplicate them here.
+      - name: Fetch combined feature dependency metadata
+        if: needs.changes.outputs.desktop_tauri == 'true'
+        run: cargo fetch --locked
+
+      - name: Combined GUI and CLI dependency boundaries
+        if: needs.changes.outputs.desktop_tauri == 'true'
+        run: ${{ matrix.python }} scripts/ci/host-boundaries.py
+
+      # Real services in isolated processes: native endpoints, instance locks,
+      # CLI-origin work and bounded shutdown. Full Linux suites run separately.
       - name: Embedded Agent native lifecycle
         if: needs.changes.outputs.agent_lifecycle == 'true'
         run: python scripts/ci/check-embedded-agent.py
