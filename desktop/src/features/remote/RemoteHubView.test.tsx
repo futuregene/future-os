@@ -129,10 +129,14 @@ let root: ReturnType<typeof createRoot>;
 async function mount(overrides: Partial<Parameters<typeof RemoteHubView>[0]> = {}) {
   const props = {
     leftPanelExpanded: true,
+    onRefreshPeers: vi.fn(async () => {}),
     onRefreshRemote: vi.fn(async () => {}),
     onReconnectRemoteAll: vi.fn(async () => {}),
     onOpenRemoteSession: vi.fn(),
     onToggleLeftPanel: vi.fn(),
+    peers: [],
+    peersError: null,
+    peersLoading: false,
     remoteStatus: status(),
     ...overrides,
   };
@@ -233,6 +237,10 @@ it("gives each direction what it needs, and nothing crossed over", async () => {
   expect(sections.host).not.toHaveProperty("onOpenDevice");
   expect(sections.host).not.toHaveProperty("onOpenSettings");
   expect(sections.client).toMatchObject({ onReconnectAll: props.onReconnectRemoteAll });
+  // The client half draws the shell's live list rather than reading its own: a
+  // takeover made on the other machine has to land on these rows while the page
+  // is open (see `RemoteClientSection`).
+  expect(sections.client).toMatchObject({ onRefresh: props.onRefreshPeers, peers: props.peers });
   // The host half has no machines to reconnect, and the client half has no
   // pairing state: a prop on the wrong side would be invisible until it
   // misbehaved.
@@ -327,15 +335,15 @@ it("reports a rename that could not be stored", async () => {
  * A setting written on the page re-reads the machine list.
  *
  * The values live on the host, so nothing local would show what was just changed
- * until the list is read again — and the list is what the user returns to.
+ * until the list is read again — and the list is what the user returns to. The
+ * read is the shell's (`onRefreshPeers`), which is also the list the client
+ * section draws, so one call refreshes both.
  */
 it("re-reads the machines when the settings page reports a change", async () => {
-  await mount();
+  const props = await mount();
   await openSettings();
-  const before = (sections.client as { refreshNonce?: number }).refreshNonce;
 
   await act(async () => container.querySelector<HTMLButtonElement>("[data-changed='1']")!.click());
-  await act(async () => container.querySelector<HTMLButtonElement>("[data-back='1']")!.click());
 
-  expect((sections.client as { refreshNonce?: number }).refreshNonce).not.toBe(before);
+  expect(props.onRefreshPeers).toHaveBeenCalledTimes(1);
 });
