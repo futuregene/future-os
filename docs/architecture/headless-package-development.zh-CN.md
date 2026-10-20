@@ -359,3 +359,7 @@ CI `39363398726` 在 Linux 原生脚本中拦住 `gui-host failed: exit=0, passe
 本地首次完整脚本在更早的 Agent 日志用例失败，因为终端继承 `RUST_LOG=warn` 抑制了 INFO 启动进度；没有改日志策略或断言。按 CI 默认条件仅对本次命令清除该变量后，原失败日志用例通过，完整 8 个非零分组通过：连接 20、服务 15、CLI 工具 15、共享宿主 22、GUI 三组各 1、真实 headless 13。命令、实际 profile、首轮失败、日志摘要及完整结果见[原生验证证据](../testing/headless-native-routing-repair-2026-10-20.json)。本地结果仅为 macOS；Linux/Windows 和同一完整候选仍需 CI，旧入口及最终发布/人工验收仍未完成。
 
 推送前再合入主干 `c3a7ea10` 的配对邀请接口更新，合并提交为 `a59dcf30`。受影响的宿主/CLI/Desktop/Remote Server、旧 headless 及独立互通工程 Clippy `--all-targets`、fmt 通过；合并后两个真实入口文件再次各 13 项通过。具体命令、耗时与源码 ID 已追加到同一原生证据中，不将合并前的执行冒充合并后完整 CI 验收。
+
+### 2026-10-20 设备管理测试清单补审
+
+在接入 CLI headless 前，从不可变基线 `904eab2b` 补审既有 `cli/src/commands/remote.rs` 的 50 个设备/控制/邀请测试，均明确保留在 CLI，不计入已迁移数量。初始 2143 个声明的清单由此补齐为 2193 个基线声明。主干另新增 3 个 CLI 邀请展示/清理测试和 3 个 Desktop 配对清理测试，单独记录于 `upstreamTests`，标明真实引入提交；它们不是本轮新增用例，也没有被并入旧基线或宣称已迁移。
