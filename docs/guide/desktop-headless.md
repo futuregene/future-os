@@ -171,9 +171,11 @@ future remote devices use <id|#>       # choose the one in control
   in-memory decision (a device asking to take over moves it too), so a takeover is
   what makes the choice apply now rather than at the next start. The Desktop
   publishes the new controller, stands the previous one down and stores the same
-  pointer. A device that is not connected has no bridge to receive commands, so it
-  cannot be handed the machine — the choice is still recorded and applies when the
-  Desktop next starts serving.
+  pointer. A device this Desktop has no bridge for cannot be handed the machine —
+  there is no channel to send it commands — and the choice is still recorded and
+  applies when the Desktop next starts serving. A device whose bridge is up but
+  whose app is closed is handed the machine too, and the answer says that nothing
+  will command it until it reconnects.
 - `list` reads and `use` writes `~/.future/remote_pairings.json` (an older
   single-pairing file is read as one slot), so both work with no running Desktop
   and, on a self-hosted relay, no account.
