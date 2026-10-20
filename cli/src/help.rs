@@ -206,7 +206,7 @@ Settable keys (camelCase, as the desktop API spells them):
   approvalTier            off|manual|sandbox|auto  Approval tier for file access and shell
   hiddenModels            list               Model ids hidden from the model picker
   autoUpgradeSkills       true|false         Upgrade installed skills on app open
-  autoConnectRemote       true|false         Auto-connect the paired remote device
+  autoConnectRemote       true|false         Keep the remote desktop on after a restart
   skillGuideDismissed     true|false         Skills onboarding banner dismissed
   skillIntroDismissed     true|false         Skills intro bubble acknowledged
   bellOnComplete          true|false         Bell when a run finishes

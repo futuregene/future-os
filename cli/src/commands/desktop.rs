@@ -246,7 +246,7 @@ mod tests {
             "{listed}"
         );
         assert!(listed.contains("approvalTier = off"), "{listed}");
-        assert!(listed.contains("autoConnectRemote = false"), "{listed}");
+        assert!(listed.contains("autoConnectRemote = true"), "{listed}");
         assert!(listed.contains("bellOnComplete = true"), "{listed}");
         assert!(listed.contains("titleLanguage = en"), "{listed}");
         assert!(listed.contains("hiddenModels = []"), "{listed}");

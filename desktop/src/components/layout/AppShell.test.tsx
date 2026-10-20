@@ -1778,16 +1778,13 @@ describe("app shell collapsed-panel affordances", () => {
     view.unmount();
   });
 
-  it("forwards the remote view's settings and refresh callbacks", () => {
+  it("forwards the remote view's refresh callbacks", () => {
     const view = mount(<AppShell />);
     act(() => railButton(view.container, "rail:remote").click());
     const remote = children.remoteHub as {
       onRefreshRemote: () => void;
-      onToggleAutoConnect: (value: boolean) => void;
       onToggleLeftPanel: () => void;
     };
-    act(() => remote.onToggleAutoConnect(true));
-    expect(mocks.changeSettings).toHaveBeenCalledWith({ autoConnectRemote: true });
     act(() => remote.onRefreshRemote());
     expect(mocks.hooks.refreshRemote).toHaveBeenCalled();
     // Collapsing removes the rail column entirely, so the collapsed state is

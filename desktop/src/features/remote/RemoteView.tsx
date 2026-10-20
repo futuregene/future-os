@@ -29,9 +29,11 @@ import {
  * "Let other devices connect here" — the host half of the Remote page.
  *
  * The section is **one switch plus the connections it carries**. The switch is
- * the only start/stop control; while it is off nothing below it is shown (no
- * list, no add button, no preference), because an "off" section that still lists
- * connections reads as a service that is up.
+ * the only start/stop control, and it is also the preference: turning it on
+ * stores that the machine comes back on next launch (off stores off), so there
+ * is no second "auto-connect" setting to keep in step with it. While it is off
+ * nothing below it is shown (no list, no add button), because an "off" section
+ * that still lists connections reads as a service that is up.
  *
  * Turning the switch on is not turning a connection on. Every connection is
  * created one at a time, by "add a device", and a machine with none is simply
@@ -56,12 +58,9 @@ export interface RemoteHostSectionProps {
   remoteStatus: RemoteStatus | null;
   /** Refresh the shared status immediately after a user action. */
   onRefreshRemote: () => Promise<void>;
-  /** Open this direction's settings (the auto-connect preference). */
-  onOpenSettings: () => void;
 }
 
 export function RemoteHostSection({
-  onOpenSettings,
   onRefreshRemote,
   remoteStatus,
 }: RemoteHostSectionProps) {
@@ -394,12 +393,7 @@ export function RemoteHostSection({
         {running
           ? (
               <>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="text-sm font-medium text-ink">{t("clientsTitle")}</span>
-                  <Button onClick={onOpenSettings} size="sm" variant="ghost">
-                    {t("hostSettings")}
-                  </Button>
-                </div>
+                <span className="text-sm font-medium text-ink">{t("clientsTitle")}</span>
 
                 <div className="rounded-lg border border-line-soft bg-surface-subtle">
                   {devices.length === 0

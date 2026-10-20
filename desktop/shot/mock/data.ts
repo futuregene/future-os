@@ -776,7 +776,7 @@ export const appSettings = {
   // off — the state the picker's list cannot represent.
   hiddenModels: ["future/future-vision"],
   autoUpgradeSkills: true,
-  autoConnectRemote: false,
+  autoConnectRemote: true,
   skillGuideDismissed: true,
   skillIntroDismissed: true,
   bellOnComplete: true,

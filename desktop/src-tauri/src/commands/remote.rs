@@ -3,6 +3,40 @@
 use crate::remote;
 use serde::Serialize;
 
+/// Remember the remote desktop switch across restarts.
+///
+/// The switch on the Remote page *is* the preference: "remote desktop on" and
+/// "come back on at launch" are one state, not two, so turning it on or off
+/// stores itself. Only the user's own switch writes here — the shutdown,
+/// suspend and crash paths stop the bridge without touching this value, so
+/// quitting the app is not the same as turning the remote desktop off.
+///
+/// A failure is reported and swallowed: the bridge is already running (or
+/// already stopped), which is what the switch renders. Failing the command over
+/// an unwritten preference would leave the UI describing a state it cannot
+/// show.
+fn remember_switch(on: bool) {
+    if let Err(error) = crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+        auto_connect_remote: Some(on),
+        ..Default::default()
+    }) {
+        eprintln!("remote: could not store the switch state: {error}");
+    }
+}
+
+/// Whether a phase describes a machine that is serving (and so is "on").
+///
+/// The same set the Remote page's switch renders as on: stopped, failed and
+/// revoked are the three states that read as off. Everything else — including
+/// a start that is retrying its connection — is the machine still trying to
+/// serve, which is what the user asked for by turning it on.
+fn is_on(phase: remote::RemotePhase) -> bool {
+    !matches!(
+        phase,
+        remote::RemotePhase::Stopped | remote::RemotePhase::Failed | remote::RemotePhase::Revoked
+    )
+}
+
 #[tauri::command]
 pub async fn remote_start(
     input: remote::RemoteStartInput,
@@ -17,6 +51,12 @@ pub async fn remote_start(
             if let Some(reason) = &status.reason {
                 eprintln!("remote: start completed in {:?} [{reason:?}]", status.phase);
             }
+            // A start that came up failed or revoked is not an "on" switch, so
+            // it must not be remembered as one: the next launch must not replay
+            // a state the user never saw.
+            if is_on(status.phase) {
+                remember_switch(true);
+            }
             Ok(status)
         }
         Err(error) => {
@@ -30,7 +70,9 @@ pub async fn remote_start(
 
 #[tauri::command]
 pub async fn remote_stop() -> Result<remote::RemoteStatus, crate::AppError> {
-    Ok(remote::stop_gracefully("user_disconnect").await)
+    let status = remote::stop_gracefully("user_disconnect").await;
+    remember_switch(false);
+    Ok(status)
 }
 
 #[tauri::command]
@@ -183,6 +225,103 @@ mod tests {
         assert!(!matches!(status.phase, remote::RemotePhase::Ready));
         let stopped = tauri::async_runtime::block_on(remote_stop()).expect("stop");
         assert!(!matches!(stopped.phase, remote::RemotePhase::Ready));
+    }
+
+    /// The switch *is* the preference: turning the remote desktop on stores it,
+    /// so the next launch serves the same devices without being asked again.
+    #[tokio::test]
+    async fn remote_start_remembers_the_switch_on() {
+        let _home = HomeGuard::new("remote_start_remembers");
+        crate::store::initialize_app_store().expect("init store");
+        crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+            auto_connect_remote: Some(false),
+            ..Default::default()
+        })
+        .expect("seed the switch off");
+
+        let status = remote_start(remote::RemoteStartInput {})
+            .await
+            .expect("start");
+        assert!(
+            matches!(status.phase, remote::RemotePhase::Enabled),
+            "an empty machine comes up on and empty, got {status:?}"
+        );
+        assert!(
+            crate::store::get_app_settings()
+                .expect("settings")
+                .auto_connect_remote,
+            "the switch must be remembered as on"
+        );
+    }
+
+    /// A start whose bridge is still retrying is a switch that is on: the user
+    /// turned it on, and the machine keeps trying to serve. It must survive a
+    /// restart, or a network blip would silently turn the remote desktop off.
+    #[tokio::test]
+    async fn a_start_that_is_still_retrying_is_remembered_as_on() {
+        let _home = HomeGuard::new("remote_start_retry_remembers");
+        crate::store::initialize_app_store().expect("init store");
+        crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+            auto_connect_remote: Some(false),
+            ..Default::default()
+        })
+        .expect("seed the switch off");
+        crate::remote::test_support::sign_in("http://127.0.0.1:9");
+        crate::remote::pairing::save_creds(&crate::remote::test_support::pairing_creds(
+            "pair_deg2",
+        ))
+        .expect("seed a paired device");
+
+        let status = remote_start(remote::RemoteStartInput {})
+            .await
+            .expect("start");
+        assert_eq!(status.reason, Some(remote::RemoteFailureReason::Network));
+        assert!(
+            is_on(status.phase),
+            "a retrying bridge is still on, got {status:?}"
+        );
+        assert!(
+            crate::store::get_app_settings()
+                .expect("settings")
+                .auto_connect_remote,
+            "a start that is retrying must be remembered as on"
+        );
+    }
+
+    /// The three phases the switch renders as off are the three that must not be
+    /// stored as an on switch, so a failure the user never saw is not replayed
+    /// at every launch.
+    #[test]
+    fn only_a_stopped_failed_or_revoked_start_is_off() {
+        use remote::RemotePhase::*;
+        for phase in [Enabled, Connecting, Ready, Reconnecting, Refreshing] {
+            assert!(is_on(phase), "{phase:?} is an on switch");
+        }
+        for phase in [Stopped, Failed, Revoked] {
+            assert!(!is_on(phase), "{phase:?} is an off switch");
+        }
+    }
+
+    /// Turning the switch off stores that too — quitting the app is not the
+    /// same decision, and only this command writes here.
+    #[tokio::test]
+    async fn remote_stop_remembers_the_switch_off() {
+        let _home = HomeGuard::new("remote_stop_remembers");
+        crate::store::initialize_app_store().expect("init store");
+        assert!(
+            crate::store::get_app_settings()
+                .expect("settings")
+                .auto_connect_remote,
+            "the switch is on until the user turns it off"
+        );
+
+        remote_stop().await.expect("stop");
+        assert!(
+            !crate::store::get_app_settings()
+                .expect("settings")
+                .auto_connect_remote,
+            "the switch must be remembered as off"
+        );
     }
 
     #[test]
