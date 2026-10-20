@@ -1,8 +1,8 @@
 //! FutureOS home resolution — the directory that owns this instance's local
 //! state (`<home>/agent`, `<home>/run`, ...), normally `~/.future`.
 //!
-//! `FUTURE_HOME` (set by `future agent --home DIR`) replaces that root for the
-//! whole process, which is how several fully isolated Agent instances run side
+//! `FUTURE_HOME` replaces that root for the whole process, which is how several
+//! fully isolated Agent instances run side
 //! by side: each one gets its own singleton lock, database, sessions, logs and
 //! local IPC endpoint. The resolution lives in this crate because the local
 //! transport (socket path / named-pipe name) and the Agent's own path helpers

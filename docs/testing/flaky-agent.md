@@ -115,12 +115,12 @@ confused with a transport regression.
 ### 1.4 Negative control — the assertions still fire when the bind really fails
 
 Occupy the instance's own local endpoint, then run the same binary with the same
-`--home … --profile-seconds 0`:
+`FUTURE_HOME=… … --profile-seconds 0`:
 
 ```bash
 H=$(mktemp -d); mkdir -p "$H/run"
 python3 -c 'import socket,sys,time; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(1); time.sleep(30)' "$H/run/agent.sock" &
-HOME=$H USERPROFILE=$H target/debug/future-agent --home "$H" --profile-seconds 0 --verbose
+HOME=$H USERPROFILE=$H FUTURE_HOME="$H" target/debug/future-agent --profile-seconds 0 --verbose
 # EXIT=1
 # "gRPC server listening on local IPC" occurrences: 0
 # stderr: Agent exited with error: local endpoint is active or cannot be classified as stale: …/run/agent.sock

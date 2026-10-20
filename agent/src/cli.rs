@@ -118,14 +118,6 @@ pub struct Cli {
     )]
     reset_windows_sandbox: bool,
 
-    /// FutureOS home directory: the root that owns all Agent state (normally
-    /// ~/.future). Point a second Agent at another directory to run a fully
-    /// isolated instance beside the default one — its own singleton lock,
-    /// database, sessions, logs and local IPC endpoint. FUTURE_HOME has the
-    /// same effect.
-    #[arg(long, value_name = "DIR")]
-    home: Option<std::path::PathBuf>,
-
     /// Explicit TCP gRPC address for remote/development compatibility.
     /// Omit this option to use secure per-user local IPC.
     #[arg(long)]
@@ -216,7 +208,7 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
         #[cfg(not(target_os = "linux"))]
         anyhow::bail!("Linux sandbox helper is unavailable on this platform");
     }
-    apply_future_home(&cli)?;
+    apply_future_home()?;
     if cli.probe_sandbox {
         let result = crate::sandbox::platform_sandbox_probe_product()?;
         println!("{}", serde_json::to_string(&result)?);
@@ -279,30 +271,29 @@ pub fn run_from_args(args: &[String]) -> Result<()> {
     })
 }
 
-/// Apply the FutureOS home of this process: an explicit `--home`, or the
-/// inherited `FUTURE_HOME`.
+/// Apply the FutureOS home of this process from the inherited `FUTURE_HOME`.
 ///
-/// `--home` is validated strictly — a bad value must fail loudly instead of
-/// silently starting against the default `~/.future` and sharing another
-/// instance's lock, database and socket. `FUTURE_HOME` keeps the lenient rule
-/// every client uses (empty/relative values are ignored), so an unrelated
-/// empty variable can never stop the Agent from starting.
-fn apply_future_home(cli: &Cli) -> Result<()> {
-    if let Some(dir) = cli.home.as_deref() {
-        return set_future_home(dir, "--home");
-    }
+/// An absolute value is validated strictly — a bad directory must fail loudly
+/// instead of silently starting against the default `~/.future` and sharing
+/// another instance's lock, database and socket. Empty and relative values are
+/// ignored (the lenient rule every client uses), so an unrelated empty variable
+/// can never stop the Agent from starting.
+fn apply_future_home() -> Result<()> {
     match future_rpc::home::future_home_override() {
-        Some(inherited) => set_future_home(&inherited, future_rpc::home::FUTURE_HOME_ENV),
+        Some(inherited) => set_future_home(&inherited),
         None => Ok(()),
     }
 }
 
 /// Validate the directory, create it, and publish it for this process (and for
-/// every child process it spawns). `source` names the input the user gave, so
-/// the error points at the right one.
-fn set_future_home(dir: &Path, source: &str) -> Result<()> {
+/// every child process it spawns).
+fn set_future_home(dir: &Path) -> Result<()> {
     if !dir.is_absolute() {
-        anyhow::bail!("{source} must be an absolute path: {}", dir.display());
+        anyhow::bail!(
+            "{} must be an absolute path: {}",
+            future_rpc::home::FUTURE_HOME_ENV,
+            dir.display()
+        );
     }
     std::fs::create_dir_all(dir)
         .with_context(|| format!("could not create FutureOS home {}", dir.display()))?;
@@ -624,27 +615,12 @@ mod tests {
     }
 
     #[test]
-    fn home_flag_parses_the_directory() {
-        let cli = Cli::parse_from([
-            "future-agent",
-            "--home",
-            "/tmp/futureos-instance-b",
-            "--grpc-addr",
-            "127.0.0.1:0",
-        ]);
-        assert_eq!(
-            cli.home.as_deref(),
-            Some(std::path::Path::new("/tmp/futureos-instance-b"))
-        );
-    }
-
-    #[test]
-    fn home_flag_rejects_relative_and_non_directory_paths() {
-        assert!(set_future_home(Path::new("relative/future-home"), "--home").is_err());
+    fn future_home_rejects_relative_and_non_directory_paths() {
+        assert!(set_future_home(Path::new("relative/future-home")).is_err());
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("not-a-directory");
         std::fs::write(&file, "x").unwrap();
-        assert!(set_future_home(&file, "--home").is_err());
+        assert!(set_future_home(&file).is_err());
     }
 
     /// A `FUTURE_HOME` the Agent cannot use is ignored, not fatal — the same
@@ -654,15 +630,13 @@ mod tests {
         let _guard = crate::test_support::home_env_lock();
         let previous = std::env::var_os(future_rpc::home::FUTURE_HOME_ENV);
         std::env::set_var(future_rpc::home::FUTURE_HOME_ENV, "relative/future-home");
-        let cli = Cli::parse_from(["future-agent"]);
-        assert!(cli.home.is_none());
-        apply_future_home(&cli).unwrap();
+        apply_future_home().unwrap();
         assert_eq!(future_rpc::home::future_home_override(), None);
         crate::test_support::restore_env(future_rpc::home::FUTURE_HOME_ENV, &previous);
     }
 
-    /// An inherited absolute `FUTURE_HOME` is applied (and created) exactly
-    /// like the flag, so a client-launched sidecar lands in the same home.
+    /// An inherited absolute `FUTURE_HOME` is applied (and created), so a
+    /// client-launched sidecar lands in the same home as its launcher.
     #[test]
     fn inherited_future_home_is_applied() {
         let _guard = crate::test_support::home_env_lock();
@@ -670,19 +644,18 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let inherited = dir.path().join("instance-b");
         std::env::set_var(future_rpc::home::FUTURE_HOME_ENV, &inherited);
-        let cli = Cli::parse_from(["future-agent"]);
-        apply_future_home(&cli).unwrap();
+        apply_future_home().unwrap();
         assert!(inherited.is_dir());
         assert_eq!(crate::utils::future_home(), inherited);
         crate::test_support::restore_env(future_rpc::home::FUTURE_HOME_ENV, &previous);
     }
 
-    /// `--home` moves every FutureOS path of the process (lock, database,
+    /// `FUTURE_HOME` moves every FutureOS path of the process (lock, database,
     /// sessions, and — on Unix — the local IPC endpoint), which is what makes a
     /// second Agent instance isolated instead of a second writer to the same
     /// state. The override is process-global, hence the shared home lock.
     #[test]
-    fn home_flag_selects_an_isolated_futureos_root() {
+    fn future_home_selects_an_isolated_futureos_root() {
         let _guard = crate::test_support::home_env_lock();
         let previous_home = std::env::var_os(future_rpc::home::FUTURE_HOME_ENV);
         let previous_socket = std::env::var_os("FUTURE_AGENT_SOCKET");
@@ -690,8 +663,8 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let isolated = dir.path().join("instance-b");
-        let cli = Cli::parse_from(["future-agent", "--home", isolated.to_str().unwrap()]);
-        apply_future_home(&cli).unwrap();
+        std::env::set_var(future_rpc::home::FUTURE_HOME_ENV, &isolated);
+        apply_future_home().unwrap();
 
         assert_eq!(crate::utils::future_home(), isolated);
         assert_eq!(crate::utils::default_config_dir(), isolated.join("agent"));
@@ -738,8 +711,6 @@ mod tests {
             "fd:999".into(),
             "--linux-sandbox-host-version".into(),
             "not-this-build".into(),
-            "--home".into(),
-            "relative-root".into(),
         ])
         .unwrap_err();
         assert!(error.to_string().contains("helper build mismatch"));
@@ -832,25 +803,25 @@ mod tests {
 mod future_home_tests {
     use super::*;
 
-    /// `--home` points at a directory; a path that exists as a *file* fails at
-    /// the creation step with a message naming the input the user gave. This is
-    /// also the evidence for the classification of the following
-    /// `is_dir()` check: `create_dir_all` cannot succeed on an existing file, so
-    /// that check is only a belt-and-braces guard (it can be reached only if the
-    /// path is swapped between the two calls).
+    /// `FUTURE_HOME` points at a directory; a path that exists as a *file*
+    /// fails at the creation step with a message naming the input the user
+    /// gave. This is also the evidence for the classification of the following
+    /// `is_dir()` check: `create_dir_all` cannot succeed on an existing file,
+    /// so that check is only a belt-and-braces guard (it can be reached only if
+    /// the path is swapped between the two calls).
     #[test]
     fn a_home_path_that_is_a_file_fails_at_creation_and_names_the_input() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("not-a-directory");
         std::fs::write(&file, "occupied").unwrap();
 
-        let error = set_future_home(&file, "--home").expect_err("a file is not a home");
+        let error = set_future_home(&file).expect_err("a file is not a home");
         let message = format!("{error:#}");
         assert!(
             message.contains("could not create FutureOS home"),
             "creation fails first: {message}"
         );
-        // The creation arm names the *path*; its two siblings name `source`.
+        // The creation arm names the *path*; its two siblings name the variable.
         // Asserted as-is and recorded as F-11 in the module record rather than
         // "fixed" here, because changing a user-visible message is a behaviour
         // change and belongs with a deliberate decision.
@@ -864,7 +835,7 @@ mod future_home_tests {
         );
 
         // A relative path is refused before touching the filesystem.
-        let error = set_future_home(std::path::Path::new("relative/home"), "--home")
+        let error = set_future_home(std::path::Path::new("relative/home"))
             .expect_err("a relative home is refused");
         assert!(
             error.to_string().contains("must be an absolute path"),
@@ -875,7 +846,7 @@ mod future_home_tests {
         let fresh = dir.path().join("nested/new-home");
         let previous = std::env::var_os(future_rpc::home::FUTURE_HOME_ENV);
         let _guard = crate::test_support::home_env_lock();
-        set_future_home(&fresh, "--home").expect("a fresh absolute directory is accepted");
+        set_future_home(&fresh).expect("a fresh absolute directory is accepted");
         assert!(fresh.is_dir());
         assert_eq!(
             std::env::var_os(future_rpc::home::FUTURE_HOME_ENV),

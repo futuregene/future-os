@@ -269,7 +269,7 @@ pub(crate) mod test_support {
     }
 
     /// `FUTURE_HOME` is the documented way to relocate the whole FutureOS root
-    /// (`future agent --home DIR`, an embedded host). The fixture clears it
+    /// (an embedded host sets it). The fixture clears it
     /// while it is live — the tests must resolve *its* home, not the caller's —
     /// and `restore` puts the caller's value back, the same way it does HOME.
     #[test]
