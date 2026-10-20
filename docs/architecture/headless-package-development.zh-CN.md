@@ -499,3 +499,9 @@ Host 现在以一次性 prepare_process 统一 tracing、TLS provider 和登录 
 CLI 可执行文件发现、身份缓存、版本/能力校验、3 秒探测期限、输出上限和 PATH 准备迁入 Host，不引入 future-cli crate 依赖。原开发目标和 Desktop staged sidecar 路径继续有效，Host 在 Desktop 路径不存在时也能独立编译。Desktop 留薄适配，并为单元/子夹具显式注入原测试配置，test-support 的 Cargo 合并本身不会改变真实产品进程行为。
 
 15 个原测试在 Host 全部通过；GUI/终端/环境接线共 39 项、真实旧入口进程 13 项通过。GUI 子进程夹具曾并发继承另一个测试的临时 PATH，导致 sleep 不存在；父 run_case 现持有原 HomeGuard，保留所有取消和有界等待断言。Clippy --all-targets、fmt、严格 Rustdoc 和联合依赖边界通过，见[证据](../testing/headless-host-maintenance-discovery-2026-10-20.json)。本批仍待自己的跨平台 CI，下一步接入统一 CLI。
+
+### 2026-10-20 Windows 导入写回夹具观察
+
+CI 39379461294 已结束且整体失败。除 Windows Host 外的独立分组通过，包括 Windows 原生构建；Windows Host 1544 通过、1 失败、10 个原 ignore。失败用例固定等待 120ms 后尚未看到后台 new_session 写回，实际请求列表为空。现先在真实 loopback RPC 服务有界观察该会话的写回请求，再保留原回复清理等待和全部原断言；不修改产品逻辑。
+
+本地完整导入组 48 项通过，没有声称本地复现 Windows 失败，原生复验仍交给 CI。见[证据](../testing/headless-windows-cwd-observation-2026-10-20.json)。当前统一 CLI 入口正在开发和本地验证，尚未计入这个已完成候选。

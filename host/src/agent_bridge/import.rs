@@ -1387,6 +1387,20 @@ mod tests {
         let s = summary("sess-cwd-fail", "");
         let runs = import_one(&s).await.expect("import");
         assert_eq!(runs, 1, "the history is imported before the write-back");
+        // A fixed scheduling delay is not evidence that a real RPC reached
+        // its server, especially on the loaded Windows runner. Observe the
+        // exact session's request before allowing the original reply drain.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !mock
+                .requests_of("new_session")
+                .iter()
+                .any(|cmd| cmd.session_id == "sess-cwd-fail")
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the real cwd write-back RPC must reach the Agent fixture");
         settle_spawns().await;
         // The spawned write-back is what must fail here — assert on the request
         // it made, since the log line inside the arm is not observable.
