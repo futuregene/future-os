@@ -1,41 +1,8 @@
 //! Remote control Tauri commands (embedded Bridge start/stop/status). Delegates to `crate::remote`.
 
 use crate::remote;
+use crate::remote::{is_on, remember_switch};
 use serde::Serialize;
-
-/// Remember the remote desktop switch across restarts.
-///
-/// The switch on the Remote page *is* the preference: "remote desktop on" and
-/// "come back on at launch" are one state, not two, so turning it on or off
-/// stores itself. Only the user's own switch writes here — the shutdown,
-/// suspend and crash paths stop the bridge without touching this value, so
-/// quitting the app is not the same as turning the remote desktop off.
-///
-/// A failure is reported and swallowed: the bridge is already running (or
-/// already stopped), which is what the switch renders. Failing the command over
-/// an unwritten preference would leave the UI describing a state it cannot
-/// show.
-fn remember_switch(on: bool) {
-    if let Err(error) = crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
-        auto_connect_remote: Some(on),
-        ..Default::default()
-    }) {
-        eprintln!("remote: could not store the switch state: {error}");
-    }
-}
-
-/// Whether a phase describes a machine that is serving (and so is "on").
-///
-/// The same set the Remote page's switch renders as on: stopped, failed and
-/// revoked are the three states that read as off. Everything else — including
-/// a start that is retrying its connection — is the machine still trying to
-/// serve, which is what the user asked for by turning it on.
-fn is_on(phase: remote::RemotePhase) -> bool {
-    !matches!(
-        phase,
-        remote::RemotePhase::Stopped | remote::RemotePhase::Failed | remote::RemotePhase::Revoked
-    )
-}
 
 #[tauri::command]
 pub async fn remote_start(

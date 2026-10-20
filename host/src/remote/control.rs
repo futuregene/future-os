@@ -76,6 +76,18 @@ const REQUEST_SUFFIX: &str = ".request.json";
 /// refusal instead of a silence it would have to time out on.
 const OP_ADD_DEVICE: &str = "add-device";
 const OP_REMOVE_DEVICE: &str = "remove-device";
+/// Read this Desktop's own runtime state, without changing anything.
+///
+/// It exists because the phase of the switch lives in this process and nowhere
+/// on disk: `future remote devices` can always say what is paired, but only the
+/// Desktop that owns the data directory can say whether it is serving.
+const OP_STATUS: &str = "status";
+/// Turn the switch on: the same `remote::enable()` the window's Remote page
+/// calls, reached from a terminal.
+const OP_ENABLE: &str = "enable";
+/// Turn the switch off: the same graceful stop the window's switch performs,
+/// which also stops the Desktop serving (and persists the switch).
+const OP_DISABLE: &str = "disable";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,6 +129,15 @@ pub(crate) struct Reply {
     /// request" (fall back to editing the book, which is slower but final).
     #[serde(default, skip_serializing_if = "is_false")]
     pub(crate) removed: bool,
+    /// This Desktop's runtime state, answering `status`.
+    ///
+    /// A structured snapshot rather than the raw `RemoteStatus`: the status
+    /// carries the pending invitation (a single-use secret) and the desktop's
+    /// key material, and an answer to "is it on" has no business carrying
+    /// either. Everything a reader needs to decide *whether* it is on, and what
+    /// is connected, survives the projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) status: Option<StatusSnapshot>,
     /// Invitations forgotten on the platform so this one could be minted.
     ///
     /// Carried out to the terminal because the alternative is another silent
@@ -128,6 +149,149 @@ pub(crate) struct Reply {
 
 fn is_false(value: &bool) -> bool {
     !*value
+}
+
+/// One paired device, as a terminal needs it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeviceSnapshot {
+    pub(crate) pair_id: String,
+    /// This device's own phase, spelled as the wire spells it (`ready`, …).
+    pub(crate) phase: String,
+    /// `active` or `standby`: whether this device may command the machine.
+    pub(crate) control: String,
+    /// The bridge for this pairing is connected.
+    pub(crate) connected: bool,
+    /// The client is actually there, as opposed to a bridge serving a pairing
+    /// whose device was closed or lost. A `connected` bridge with no `present`
+    /// client is what a page used to show as "in control" when nobody was.
+    pub(crate) present: bool,
+    /// Who is on the other end, as that client described itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) client: Option<ClientSnapshot>,
+}
+
+/// A client's own name for itself, as it declared it on `secure_ready`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ClientSnapshot {
+    pub(crate) name: String,
+    pub(crate) kind: String,
+}
+
+/// Where a retrying connection has got to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RecoverySnapshot {
+    pub(crate) attempt: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) max_attempts: Option<u64>,
+    pub(crate) since: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) next_retry_at: Option<u64>,
+}
+
+/// This Desktop's runtime state, without the secrets a `RemoteStatus` carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StatusSnapshot {
+    /// `stopped`, `enabled`, `connecting`, `ready`, `reconnecting`,
+    /// `refreshing`, `failed` or `revoked`.
+    pub(crate) phase: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recovery: Option<RecoverySnapshot>,
+    pub(crate) agent_available: bool,
+    /// Where this machine connects, with any userinfo removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) transport: Option<String>,
+    /// The device in control, when one is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) active: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) client: Option<ClientSnapshot>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) devices: Vec<DeviceSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) warning_code: Option<String>,
+    /// When the invitation this Desktop is showing lapses. The code itself is
+    /// deliberately *not* carried: it is a single-use secret, and a terminal
+    /// asking whether the switch is on has not asked to mint one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) invitation_expires_at: Option<i64>,
+}
+
+impl StatusSnapshot {
+    pub(crate) fn of(status: &crate::remote::RemoteStatus) -> Self {
+        Self {
+            phase: wire_name(status.phase).unwrap_or_default(),
+            reason: status.reason.and_then(wire_name),
+            recovery: status.recovery.as_ref().map(|progress| RecoverySnapshot {
+                attempt: progress.attempt,
+                max_attempts: progress.max_attempts,
+                since: progress.since,
+                next_retry_at: progress.next_retry_at,
+            }),
+            agent_available: status.agent_available,
+            transport: Some(strip_userinfo(&status.nats_url)).filter(|url| !url.is_empty()),
+            active: status
+                .devices
+                .iter()
+                .find(|device| matches!(device.control, crate::remote::DeviceControl::Active))
+                .map(|device| device.pair_id.clone()),
+            client: status.client.as_ref().map(client_snapshot),
+            devices: status
+                .devices
+                .iter()
+                .map(|device| DeviceSnapshot {
+                    pair_id: device.pair_id.clone(),
+                    phase: wire_name(device.phase).unwrap_or_default(),
+                    control: wire_name(device.control).unwrap_or_default(),
+                    connected: device.connected,
+                    present: device.present,
+                    client: device.client.as_ref().map(client_snapshot),
+                })
+                .collect(),
+            warning_code: status.warning_code.clone(),
+            invitation_expires_at: status.pairing_code_expires_at,
+        }
+    }
+}
+
+fn client_snapshot(client: &crate::remote::ClientIdentity) -> ClientSnapshot {
+    ClientSnapshot {
+        name: client.name.clone(),
+        kind: client.kind.clone(),
+    }
+}
+
+/// The name the wire uses for a status enum value (`ready`, `credential_expired`).
+///
+/// Taken from the value's own serialization rather than a second `match`, so a
+/// phase or reason added upstream reaches a terminal without this file changing
+/// and the two spellings cannot drift apart.
+fn wire_name<T: Serialize>(value: T) -> Option<String> {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+}
+
+/// A transport URL with any userinfo removed.
+///
+/// A paired endpoint can carry a credential in the authority
+/// (`tls://token@host:4222`). What a terminal needs is where this machine
+/// connects — scheme, host and port — and the part before the `@` is a secret.
+fn strip_userinfo(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    match authority.rsplit_once('@') {
+        Some((_, host)) => format!("{scheme}://{host}{tail}"),
+        None => url.to_string(),
+    }
 }
 
 impl Reply {
@@ -152,6 +316,7 @@ impl Reply {
                 error: None,
                 removed: false,
                 cleared: status.cleared_invitations.clone(),
+                status: None,
             },
             None => Self::of_error(format!(
                 "the invitation was not issued (remote start ended in {:?}{})",
@@ -181,6 +346,16 @@ impl Reply {
             error: Some(message.into()),
             removed: false,
             cleared: Vec::new(),
+            status: None,
+        }
+    }
+
+    /// The answer to `status`: this Desktop's state, with its secrets projected
+    /// out (see [`StatusSnapshot`]).
+    pub(crate) fn of_snapshot(status: &crate::remote::RemoteStatus) -> Self {
+        Self {
+            status: Some(StatusSnapshot::of(status)),
+            ..Self::default()
         }
     }
 }
@@ -321,14 +496,16 @@ fn perform(
             OP_ADD_DEVICE => {
                 // A Desktop with the remote switch off serves nobody, so an
                 // invitation it minted would not work. Saying so is the honest
-                // answer; turning the switch on is the operator's decision.
+                // answer; turning the switch on is the operator's decision — but
+                // the sentence names the switch that can do it from any terminal,
+                // not only the window this process may not have.
                 if matches!(
                     crate::remote::status().phase,
                     crate::remote::RemotePhase::Stopped
                 ) {
                     return Err(crate::Error::Message(
-                        "the remote desktop is off in the Desktop. Turn it on there (Remote \
-                         page, or the window's Remote desktop switch) and try again."
+                        "the remote desktop is off. Turn it on with `future remote enable` (or \
+                         the Remote page's switch, which stores the same setting) and try again."
                             .to_string(),
                     ));
                 }
@@ -348,6 +525,26 @@ fn perform(
                         )
                     })?;
                 crate::remote::unpair_slot(&pair_id).await
+            }
+            // A read, not a change: the answer carries the supervisor's own
+            // projection, so a terminal sees exactly what the window's Remote
+            // page sees.
+            OP_STATUS => Ok(crate::remote::status()),
+            // The switch, from a terminal. It is deliberately the same pair of
+            // calls the window's switch makes: one machine, one meaning of
+            // "on", and the preference is stored by the same rule — an enable
+            // that came up failed is not remembered as on.
+            OP_ENABLE => {
+                let status = crate::remote::enable().await?;
+                if crate::remote::is_on(status.phase) {
+                    crate::remote::remember_switch(true);
+                }
+                Ok(status)
+            }
+            OP_DISABLE => {
+                let status = crate::remote::stop_gracefully("user_disconnect").await;
+                crate::remote::remember_switch(false);
+                Ok(status)
             }
             other => Err(crate::Error::Message(format!(
                 "this Desktop does not know the `{other}` request; update the FutureOS Desktop \
@@ -372,6 +569,12 @@ pub(crate) async fn answer(
     let removal = match request.op.as_str() {
         OP_ADD_DEVICE => false,
         OP_REMOVE_DEVICE => true,
+        OP_STATUS | OP_ENABLE | OP_DISABLE => {
+            return match result.await {
+                Ok(status) => Reply::of_snapshot(&status),
+                Err(error) => Reply::of_error(error.to_string()),
+            }
+        }
         _ => {
             return Reply::of_error(format!(
                 "this Desktop does not know the `{}` request; update the FutureOS Desktop or the \
@@ -543,6 +746,110 @@ mod tests {
         assert!(error.contains("FutureOS Desktop"), "{error}");
     }
 
+    /// `status` answers from the supervisor's projection, and the answer a
+    /// terminal reads carries no secret: not the pending invitation, not the
+    /// credential the transport URL embeds.
+    #[tokio::test]
+    async fn a_status_request_answers_with_the_runtime_state_and_no_secrets() {
+        let request = Request {
+            op: OP_STATUS.into(),
+            reply: "/tmp/unused".into(),
+            pair_id: None,
+        };
+        let mut running = status(RemotePhase::Ready, Some("futureos://remote/pair?v=2"));
+        running.nats_url = "tls://token:secret@relay.example:4222".into();
+        running.client = Some(crate::remote::ClientIdentity {
+            name: "iPhone".into(),
+            kind: "phone".into(),
+        });
+        running.devices = vec![future_remote_server::types::RemoteDevice {
+            pair_id: "pair_AAAA".into(),
+            desktop_id: "desktop_test".into(),
+            phase: RemotePhase::Ready,
+            control: crate::remote::DeviceControl::Active,
+            connected: true,
+            present: true,
+            client: None,
+            pairing_code: None,
+            pairing_code_expires_at: None,
+        }];
+        let reply = answer(&request, async { Ok(running) }).await;
+        assert_eq!(reply.error, None);
+        let snapshot = reply.status.clone().expect("a status answer");
+        assert_eq!(snapshot.phase, "ready");
+        assert_eq!(snapshot.active.as_deref(), Some("pair_AAAA"));
+        assert_eq!(
+            snapshot.transport.as_deref(),
+            Some("tls://relay.example:4222"),
+            "the transport keeps where, not who"
+        );
+        assert!(snapshot.agent_available);
+        assert_eq!(
+            snapshot.client.as_ref().map(|c| c.name.as_str()),
+            Some("iPhone")
+        );
+        assert_eq!(snapshot.devices.len(), 1);
+        assert!(snapshot.devices[0].connected);
+        assert_eq!(snapshot.devices[0].control, "active");
+        assert_eq!(snapshot.devices[0].phase, "ready");
+        assert_eq!(snapshot.invitation_expires_at, Some(i64::MAX));
+
+        let wire = serde_json::to_string(&reply).unwrap();
+        assert!(!wire.contains("token"), "the transport credential: {wire}");
+        assert!(!wire.contains("secret"), "the transport credential: {wire}");
+        assert!(
+            !wire.contains("futureos://remote/pair"),
+            "the invitation: {wire}"
+        );
+        assert!(!wire.contains("pairingCode"), "{wire}");
+    }
+
+    /// The switch is reachable from a terminal: both operations reach the
+    /// supervisor's own calls instead of being refused as unknown, and the answer
+    /// is the resulting state.
+    #[tokio::test]
+    async fn the_switch_operations_are_recognized_by_this_desktop() {
+        for op in [OP_ENABLE, OP_DISABLE] {
+            let request = Request {
+                op: op.into(),
+                reply: "/tmp/unused".into(),
+                pair_id: None,
+            };
+            let performed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let flag = performed.clone();
+            let reply = answer(&request, async move {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(status(RemotePhase::Stopped, None))
+            })
+            .await;
+            assert!(
+                performed.load(std::sync::atomic::Ordering::SeqCst),
+                "{op} must reach the operation"
+            );
+            assert_eq!(reply.error, None, "{op}: {reply:?}");
+            assert_eq!(
+                reply.status.map(|status| status.phase),
+                Some("stopped".into())
+            );
+        }
+    }
+
+    #[test]
+    fn a_transport_url_loses_its_credential_and_nothing_else() {
+        assert_eq!(
+            strip_userinfo("tls://token@relay.example:4222"),
+            "tls://relay.example:4222"
+        );
+        assert_eq!(
+            strip_userinfo("tls://relay.example:4222"),
+            "tls://relay.example:4222"
+        );
+        assert_eq!(strip_userinfo("nats://u:p@host:1/x"), "nats://host:1/x");
+        // No scheme is nothing to redact: the string is returned as it came.
+        assert_eq!(strip_userinfo("relay.example:4222"), "relay.example:4222");
+        assert_eq!(strip_userinfo(""), "");
+    }
+
     #[test]
     fn a_request_round_trips_through_the_wire_shape() {
         let request: Request =
@@ -581,6 +888,7 @@ mod tests {
             error: None,
             removed: false,
             cleared: Vec::new(),
+            status: None,
         };
         let value = serde_json::to_value(&reply).unwrap();
         assert_eq!(value["pairId"], "pair_A");
@@ -772,6 +1080,7 @@ mod tests {
                 error: None,
                 removed: false,
                 cleared: Vec::new(),
+                status: None,
             },
         )
         .unwrap();

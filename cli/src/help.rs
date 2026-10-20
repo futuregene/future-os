@@ -289,11 +289,24 @@ made in the app's own Settings screen applies immediately."#;
 pub const REMOTE_HELP: &str = r#"future remote — manage the devices paired to this machine's remote desktop
 
 Usage:
+  future remote status [--json]                      Whether the remote desktop is on, and who is connected
+  future remote enable [--json]                      Turn it on now (no restart), and keep it on
+  future remote disable [--json]                     Turn it off now (no restart), and keep it off
   future remote devices [list] [--json]              Every paired device, and the one in control
   future remote devices add [--json]                 Pair a new device: print its invitation
   future remote devices remove <id|#> [--yes]        Unpair one device; the others stay paired
   future remote devices remove --all [--yes]         Unpair every device
   future remote devices use <id|#>                   Make a paired device the one in control
+
+status answers two different questions and keeps them apart: whether this
+machine is serving its devices right now (runtime state, which only a running
+Desktop knows), and the stored autoConnectRemote switch that decides whether it
+serves again after a restart. Run `future remote status --help` for its fields,
+its --json document and its exit codes.
+
+enable and disable are that switch, from a terminal: they take effect at once
+when a Desktop is running (the window, or futureos-headless) and are stored for
+the next launch either way, so neither needs a restart.
 
 Every action takes --json and prints the same document `future remote devices
 --json` prints (except `add`, which prints the invitation: pairId, link,
@@ -334,11 +347,117 @@ Run `future remote devices --help` for the ids remove and use accept."#;
 
 /// The one-line usage every `future remote` argument error repeats.
 pub const REMOTE_USAGE: &str = r#"Usage:
+  future remote status [--json]
+  future remote enable [--json]
+  future remote disable [--json]
   future remote devices [list] [--json]
   future remote devices add [--json]
   future remote devices remove <id|#> [--yes] [--json]
   future remote devices remove --all [--yes] [--json]
   future remote devices use <id|#> [--json]"#;
+
+/// `future remote status --help` output.
+pub const REMOTE_STATUS_HELP: &str = r#"future remote status — is the remote desktop on, and who is connected
+
+Usage:
+  future remote status [--json]
+
+Two facts, printed separately because they are different facts:
+
+  Remote desktop      Whether this machine is serving its devices right now.
+                      Only a running Desktop (the window, or futureos-headless)
+                      can answer; with none running this reads "off — no
+                      Desktop is running for this machine".
+  Saved switch        autoConnectRemote, the same value the window's Remote page
+                      stores. It decides whether the machine serves again at the
+                      next launch.
+
+The Devices block lists every paired device: whether it is in control, whether
+its bridge is connected (only a running Desktop knows that), the device's own
+name when it declared one, and where it was minted (the Future platform, or a
+self-hosted relay).
+
+--json prints one object:
+  desktopRunning             a Desktop owns this data directory (window or headless)
+  state                      off | unknown | on | connecting | serving | degraded |
+                             failed | revoked — the word to test in a script
+  phase                      the Desktop's own phase, or null when it did not answer
+  serving                    the machine is trying to serve (connecting, ready,
+                             reconnecting or refreshing)
+  reachable                  phase is ready: a device can connect right now
+  reason                     why it is not serving (network, credential_expired, …)
+  recovery                   a retry in progress: attempt, maxAttempts, nextRetryAt
+  switch.autoConnectRemote   the stored switch
+  agentAvailable             this machine's Agent, or null when unknown
+  transport                  where it connects, with any credential in the URL removed
+  active                     the device in control, or null
+  devicesTotal, devices      every paired device: pairId, control, connected
+                             (the bridge), present (the client is actually
+                             there), phase, endpoint (platform | relay),
+                             relayUrl, client
+  warningCode                a non-fatal local problem (e.g. the web listener)
+  invitationExpiresAt        when an unscanned invitation lapses; the code itself
+                             is never printed by this command
+
+Exit codes:
+  0  the status was read — including "off", "failed" and "revoked": a machine
+     that is off answered the question.
+  1  it was not read: a Desktop that owns this directory did not answer (an
+     older build, or one that died mid-request), or the settings store could not
+     be read. --json still prints the document — state "unknown", plus the half
+     read from disk — so a script gets a document either way.
+
+Test `state`, not the exit code:
+  future remote status --json | jq -e '.state == "serving"'"#;
+
+/// `future remote enable --help` output.
+pub const REMOTE_ENABLE_HELP: &str = r#"future remote enable — turn the remote desktop on, now
+
+Usage:
+  future remote enable [--json]
+
+Turns on the same switch the window's Remote page has, and stores it: the
+machine keeps serving its paired devices at the next launch.
+
+With a Desktop running (the window, or futureos-headless) it takes effect
+immediately — the request goes to that process, which starts the bridge, so
+nothing has to be restarted. With none running there is no bridge to start: the
+switch is stored, the command says so, and it exits 1 because the machine is not
+serving yet.
+
+Enabling does not pair anything. A machine with no device comes up on and empty,
+which is a valid state; pair the first one with `future remote devices add`.
+
+--json prints the same document `future remote status --json` prints.
+
+Exit codes:
+  0  the machine is serving (or connecting, or retrying)
+  1  it is not: no Desktop was running to start it, the running Desktop did not
+     answer, or the start came up failed or revoked. The report says which, and
+     whether the switch was stored anyway."#;
+
+/// `future remote disable --help` output.
+pub const REMOTE_DISABLE_HELP: &str = r#"future remote disable — turn the remote desktop off, now
+
+Usage:
+  future remote disable [--json]
+
+Turns off the same switch the window's Remote page has, and stores it: the
+machine does not serve again at the next launch.
+
+With a Desktop running it takes effect immediately — the bridge is stopped, and a
+connected device is told the machine went away, so nothing has to be restarted. A
+headless entry keeps running (it is the machine's control endpoint) and waits to
+be enabled again. With none running there is nothing to stop: the switch is
+stored, and that is the whole answer.
+
+Paired devices are kept. Disabling serves nobody; it does not unpair anything —
+`future remote devices remove` does that.
+
+--json prints the same document `future remote status --json` prints.
+
+Exit code:
+  0  the remote desktop is off"#;
 
 /// `future remote devices add --help` output.
 pub const REMOTE_ADD_HELP: &str = r#"future remote devices add — pair a new device
@@ -360,6 +479,10 @@ all prints an invitation as it starts, which is also the recovery path after
 The invitation is whatever the Desktop is configured to mint: an official
 `v=2` link, or a self-hosted relay's `v=3` one. Relay mode needs no FutureOS
 account, and neither does this command — it only asks the Desktop.
+
+An invitation is only usable while the Desktop serves, so with the remote desktop
+switch off this refuses instead of minting one, and says to run
+`future remote enable` (which starts serving at once when a Desktop is running).
 
 Existing devices stay paired: this adds beside them. `remove --all` followed by
 `add` is what replaces the pairing on a machine whose phone is being retired.
@@ -388,7 +511,11 @@ null), and devices[] with pairId, desktopId, control, endpoint and relayUrl.
 Credentials are never part of it.
 
 Live connection state — who is connected at this moment, and the name a device
-gave itself — is known only to a running Desktop: it is not in the pairing book."#;
+gave itself — is known only to a running Desktop: it is not in the pairing book.
+
+The list says what the machine is actually doing: serving, not serving because no
+Desktop is running, or not serving because the remote desktop switch is off — in
+which case it names `future remote enable`, the command that turns it back on."#;
 
 /// `future remote devices remove --help` output.
 pub const REMOTE_REMOVE_HELP: &str = r#"future remote devices remove — unpair one device, leaving the others paired
