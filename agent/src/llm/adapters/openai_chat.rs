@@ -307,22 +307,24 @@ fn apply_reasoning(
         return;
     }
     let enabled = level != "off";
-    let mapped = target
-        .capabilities
-        .reasoning
-        .levels
-        .get(level)
-        .and_then(Value::as_str)
-        .unwrap_or(level);
+    let mapped = crate::llm::schema::resolve_effort(
+        level,
+        &target.capabilities.reasoning.levels,
+        &target.capabilities.reasoning.effort_values,
+    );
     match config.reasoning {
         ChatReasoningFormat::None => {
-            if enabled && target.capabilities.reasoning.supported {
-                body["reasoning_effort"] = json!(mapped);
+            if enabled {
+                if let Some(mapped) = mapped {
+                    body["reasoning_effort"] = mapped;
+                }
             }
         }
         ChatReasoningFormat::ReasoningEffort => {
             if enabled && config.supports_reasoning_effort {
-                body["reasoning_effort"] = json!(mapped);
+                if let Some(mapped) = mapped {
+                    body["reasoning_effort"] = mapped;
+                }
             }
         }
         ChatReasoningFormat::Qwen { chat_template } => {
@@ -335,13 +337,17 @@ fn apply_reasoning(
                 body["enable_thinking"] = json!(enabled);
             }
             if enabled {
-                body["reasoning_effort"] = json!(mapped);
+                if let Some(mapped) = mapped {
+                    body["reasoning_effort"] = mapped;
+                }
             }
         }
         ChatReasoningFormat::DeepSeek => {
             body["thinking"] = json!({"type": if enabled { "enabled" } else { "disabled" }});
             if enabled {
-                body["reasoning_effort"] = json!(mapped);
+                if let Some(mapped) = mapped {
+                    body["reasoning_effort"] = mapped;
+                }
             }
         }
         ChatReasoningFormat::Zai => body["enable_thinking"] = json!(enabled),
