@@ -1113,7 +1113,12 @@ async fn run_recovers_after_the_socket_drops_and_still_stops_on_shutdown() {
         // platform, so the reconnect has to authenticate again.
         vec![
             WsAction::SendText(hello.to_string()),
-            WsAction::Delay(std::time::Duration::from_millis(200)),
+            // The server reader must record the first challenge before its
+            // task is aborted on close; a fixed delay races on loaded runners.
+            WsAction::WaitForReceived {
+                count: 1,
+                timeout: std::time::Duration::from_secs(10),
+            },
             WsAction::SendClose,
         ],
         vec![
@@ -1159,15 +1164,15 @@ async fn run_recovers_after_the_socket_drops_and_still_stops_on_shutdown() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     };
-    assert!(
-        challenges >= 2,
-        "a dropped socket must lead to a re-authenticated reconnect, saw {challenges} challenge(s)"
-    );
     shutdown.trigger();
     let result = tokio::time::timeout(std::time::Duration::from_secs(10), run)
         .await
         .expect("shutdown must end the run loop");
     assert!(result.unwrap().is_ok(), "shutdown is a clean exit");
+    assert!(
+        challenges >= 2,
+        "a dropped socket must lead to a re-authenticated reconnect, saw {challenges} challenge(s)"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
