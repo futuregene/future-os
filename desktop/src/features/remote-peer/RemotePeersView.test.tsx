@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
-import { act } from "react";
+import { act, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
 import { RemoteClientSection } from "./RemotePeersView";
@@ -90,13 +90,49 @@ async function mount() {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
-  await act(async () => {
-    root.render(
+  /**
+   * The shell, in miniature.
+   *
+   * The section is a view of the peer list the shell owns (`useRemotePeers`),
+   * not a reader of its own — that is what makes a takeover from another device
+   * land on these rows without leaving the page. So the harness here is the
+   * shell side of that contract: it reads the list once, re-reads it whenever
+   * the section asks, and can be handed a new list from outside as a push would.
+   */
+  let push: (peers: RemotePeer[]) => void = () => {};
+  function Harness() {
+    const [peers, setPeers] = useState<RemotePeer[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<string | null>(null);
+    const refresh = useCallback(async () => {
+      try {
+        setPeers(await listRemotePeers());
+        setError(null);
+      }
+      catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+      finally {
+        setLoading(false);
+      }
+    }, []);
+    useEffect(() => {
+      push = setPeers;
+      void refresh();
+    }, [refresh]);
+    return (
       <RemoteClientSection
+        error={error}
+        loading={loading}
         onOpenSettings={onOpenSettings}
         onReconnectAll={onReconnectAll}
-      />,
+        onRefresh={refresh}
+        peers={peers}
+      />
     );
+  }
+  await act(async () => {
+    root.render(<Harness />);
   });
   await act(async () => {
     for (let i = 0; i < 4; i += 1) await Promise.resolve();
@@ -106,6 +142,15 @@ async function mount() {
     input: () => container.querySelector<HTMLInputElement>("input")!,
     onOpenSettings,
     onReconnectAll,
+    /**
+     * Hand the section a new list the way the shell's push would.
+     *
+     * A control move arrives as another device's action, not as this page's:
+     * the only thing the section sees is a new `peers` array.
+     */
+    push: async (peers: RemotePeer[]) => {
+      await act(async () => push(peers));
+    },
     button: (label: string) => [...container.querySelectorAll("button")]
       .find(node => node.textContent === label),
     /**
@@ -282,9 +327,13 @@ it("will not pair an empty link", async () => {
 
 it("disconnects the connected computer, by its own id", async () => {
   const view = await mount();
+  const readsBefore = listRemotePeers.mock.calls.length;
   await act(async () => view.rowButton("Disconnect")!.click());
   await view.settle();
   expect(disconnectRemotePeer).toHaveBeenCalledWith("desktop_a");
+  // The rows are the shell's list, so the action has to ask for a re-read:
+  // otherwise its own row would look untouched until the next poll.
+  expect(listRemotePeers.mock.calls.length).toBeGreaterThan(readsBefore);
   await view.unmount();
 });
 
@@ -353,6 +402,42 @@ it("offers no takeover on a machine this desktop drives", async () => {
 
   expect(view.rowButton("Take over")).toBeUndefined();
   expect(view.container.querySelector("[data-testid='peer-held']")).toBeNull();
+  await view.unmount();
+});
+
+/**
+ * A takeover happens on the *other* machine, while this page is open.
+ *
+ * The section used to read its own list once, when the page opened, so the row
+ * kept saying "Connected" with nothing to take until the user left the page and
+ * came back — the state on screen described a control the user no longer had.
+ * The list is the shell's live one now, so all this page has to do is draw it.
+ */
+it("draws a takeover that happened elsewhere without the page being reopened", async () => {
+  listRemotePeers.mockResolvedValue([peer({ control: "active" })]);
+  const view = await mount();
+  expect(view.rowButton("Take over")).toBeUndefined();
+
+  await view.push([peer({ control: "standby", holder: { name: "Hui's phone" } })]);
+
+  expect(view.text()).toContain("Taken over");
+  expect(view.container.querySelector("[data-testid='peer-held']")?.textContent)
+    .toBe("In use by Hui's phone");
+  expect(view.rowButton("Take over")).toBeTruthy();
+  await view.unmount();
+});
+
+/** And the reverse move, which is the same defect seen from the other side. */
+it("draws control coming back to this desktop without the page being reopened", async () => {
+  listRemotePeers.mockResolvedValue([peer({ control: "standby", holder: { name: "Hui's phone" } })]);
+  const view = await mount();
+  expect(view.text()).toContain("Taken over");
+
+  await view.push([peer({ control: "active" })]);
+
+  expect(view.text()).toContain("Connected");
+  expect(view.text()).not.toContain("Taken over");
+  expect(view.rowButton("Take over")).toBeUndefined();
   await view.unmount();
 });
 

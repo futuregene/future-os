@@ -46,12 +46,16 @@ export function RemoteHubView({
   leftPanelExpanded,
   onOpenRemoteSession,
   onReconnectRemoteAll,
-  onToggleLeftPanel,
+  onRefreshPeers,
   onRefreshRemote,
+  onToggleLeftPanel,
+  peers,
+  peersError,
+  peersLoading,
   remoteStatus,
 }: {
   leftPanelExpanded: boolean;
-  /** Open one of a paired computer's conversations, by its session id. */
+  /** Open one of a paired computer's conversation, by its session id. */
   onOpenRemoteSession: (desktopId: string, sessionId: string) => void;
   /**
    * Bring every paired computer up, the ones the user stopped included.
@@ -60,8 +64,23 @@ export function RemoteHubView({
    * for the machines it is supposed to keep live — so this page only asks for it.
    */
   onReconnectRemoteAll: () => Promise<void>;
+  /**
+   * Re-read the paired computers after an action on this page changed one.
+   *
+   * The list is the shell's (`useRemotePeers`), the same live one the merged
+   * conversation list is built from: it is polled and it follows the backend's
+   * `control` packet, so a takeover made on the other machine lands on these
+   * rows without the user leaving and returning to this page.
+   */
+  onRefreshPeers: () => Promise<void>;
   onToggleLeftPanel: () => void;
   onRefreshRemote: () => Promise<void>;
+  /** The paired computers, as the shell's live list has them. */
+  peers: readonly RemotePeer[];
+  /** Why the shell's peer-list read failed, if it did. */
+  peersError: string | null;
+  /** Whether the shell's first peer-list read has answered yet. */
+  peersLoading: boolean;
   remoteStatus: RemoteStatus | null;
 }) {
   const { t } = useTranslation("remoteHub");
@@ -71,12 +90,6 @@ export function RemoteHubView({
   const [settingsFor, setSettingsFor] = useState<RemotePeer | null>(null);
   /** The machine whose tasks are open, if any. They need the whole column. */
   const [tasksFor, setTasksFor] = useState<RemotePeer | null>(null);
-  /**
-   * Bumped whenever something outside the machine list changed it — a rename on
-   * a machine's settings page — so the list re-reads when the user comes back
-   * instead of showing what it read when the page was first opened.
-   */
-  const [refreshNonce, setRefreshNonce] = useState(0);
 
   /** A rename that could not be stored locally: said out loud, not swallowed. */
   function reportLabelFailure(error: unknown) {
@@ -99,7 +112,7 @@ export function RemoteHubView({
     return (
       <RemotePeerSettings
         onBack={() => setSettingsFor(null)}
-        onChanged={() => setRefreshNonce(nonce => nonce + 1)}
+        onChanged={() => void onRefreshPeers()}
         onOpenTasks={() => setTasksFor(settingsFor)}
         onUpdateLabel={(patch) => {
           void setRemotePeerLabel(settingsFor.desktopId, patch)
@@ -107,7 +120,7 @@ export function RemoteHubView({
             // the name and icon live in the local credential book, so the page
             // has to be told what it just became.
             .then(() => setSettingsFor(current => (current ? { ...current, ...patch } : current)))
-            .then(() => setRefreshNonce(nonce => nonce + 1))
+            .then(() => onRefreshPeers())
             .catch(reportLabelFailure);
         }}
         peer={settingsFor}
@@ -141,9 +154,12 @@ export function RemoteHubView({
           title={t("clientTitle")}
         >
           <RemoteClientSection
+            error={peersError}
+            loading={peersLoading}
             onOpenSettings={setSettingsFor}
             onReconnectAll={onReconnectRemoteAll}
-            refreshNonce={refreshNonce}
+            onRefresh={onRefreshPeers}
+            peers={peers}
           />
         </Direction>
       </div>
