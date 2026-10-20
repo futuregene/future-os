@@ -40,6 +40,7 @@ import type { RemoteSession, RemoteWorkspace } from "../remote/types";
 import { SessionList } from "./SessionList";
 import { DesktopPicker } from "./DesktopPicker";
 import { DisconnectedScreen } from "./DisconnectedScreen";
+import { StandbyScreen } from "./StandbyScreen";
 import { layout, radius, spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 import { promptUpgrade } from "../update/prompt";
@@ -751,6 +752,20 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const showStandaloneStatus =
     !anotherMachineAnswers
     && (connection.level === "disconnected" || standaloneConnecting);
+  /**
+   * Whether the only machine this phone holds is in someone else's hands.
+   *
+   * A single pairing leaves nowhere else to read, and a taken-over desktop
+   * refuses this list's own actions — every command answers null and sending is
+   * blocked — so drawing the conversations first is a page the user cannot use.
+   * The takeover is the only thing that changes that, and it used to wait behind
+   * the status dot; with one machine the page asks for it directly. Several
+   * pairings keep the list: those rows are still this phone's to read, and the
+   * badge names the open machine's standby.
+   */
+  const onlyMachineHeld = remote.desktops.length === 1
+    && connected
+    && remote.presence?.control === "standby";
 
   const offlineEmpty = (
     <View style={styles.emptyState}>
@@ -930,6 +945,11 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
             onReconnect={reconnect}
             onUnpair={confirmUnpair}
           />
+        ) : onlyMachineHeld ? (
+          <StandbyScreen
+            holder={remote.presence?.holder ?? null}
+            onTakeControl={remote.takeControl}
+          />
         ) : <SessionList
           key={tab}
           tab={tab}
@@ -943,7 +963,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
           onMenu={openSessionMenu}
         />}
 
-        {canStartConversation && (
+        {canStartConversation && !onlyMachineHeld && (
           <Pressable
             accessibilityLabel={t("sessions.new")}
             accessibilityRole="button"

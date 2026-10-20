@@ -642,6 +642,28 @@ describe("adding a connection", () => {
     }
   });
 
+  /// The platform can answer with a bare gateway error (`502` from the mint
+  /// call, no JSON body). That is the service being briefly unavailable — the
+  /// same request succeeds seconds later — so it must not be dressed up as a
+  /// fault on this device (`LC999`), which sends the user looking locally.
+  it("names a platform gateway error as the service being unavailable", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await mount({
+        remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control] }),
+      });
+      addRemoteDevice.mockRejectedValue(new Error("Failed to create pairing code (HTTP 502)"));
+      await act(async () => buttonByText("Add a device")!.click());
+      await flush();
+      expect(container.textContent).toContain("Service temporarily unavailable. Try again later. (SV001)");
+      expect(container.textContent).not.toContain("LC999");
+      expect(addDialog()).toBeNull();
+    }
+    finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("asks for a sign-in again when the account is what refused the invitation", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
