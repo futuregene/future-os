@@ -236,8 +236,10 @@ mod gui {
         let area_x = area_x / scale;
         let area_y = area_y / scale;
 
-        let width = (area_w * 0.94).clamp(1024.0, area_w);
-        let height = (area_h * 0.94).clamp(720.0, area_h);
+        // A small display can be below the preferred minimum; the work area
+        // remains the upper bound, and clamp must never receive min > max.
+        let width = (area_w * 0.94).clamp(1024.0_f64.min(area_w), area_w);
+        let height = (area_h * 0.94).clamp(720.0_f64.min(area_h), area_h);
         let x = area_x + (area_w - width) / 2.0;
         let y = area_y + (area_h - height) * 0.35;
         (width, height, x, y)
@@ -1498,6 +1500,14 @@ mod gui {
             let (width, height, _, _) = main_window_geometry(1.0, 1050.0, 730.0, 0.0, 0.0);
             assert_eq!(width, 1024.0);
             assert_eq!(height, 720.0);
+        }
+
+        #[test]
+        fn main_window_geometry_fits_a_work_area_below_the_preferred_minimum() {
+            // A scaled or virtual display can have only 674 logical pixels of
+            // usable height. Fit both dimensions rather than panicking at startup.
+            let geometry = main_window_geometry(2.0, 1600.0, 1348.0, 100.0, 50.0);
+            assert_eq!(geometry, (800.0, 674.0, 50.0, 25.0));
         }
 
         #[test]
