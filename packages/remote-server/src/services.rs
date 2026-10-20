@@ -71,6 +71,22 @@ pub struct Invitation {
     pub cleared: Vec<String>,
 }
 
+/// Printed without the credential or the link.
+///
+/// A code is a bearer invitation and the credentials behind it open one
+/// namespace in the broker; both belong in neither a log line nor a panic
+/// message. What a failing test needs to see is the pair id and what the mint
+/// cleared.
+impl std::fmt::Debug for Invitation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Invitation")
+            .field("pair_id", &self.creds.pair_id)
+            .field("expires_at", &self.expires_at)
+            .field("cleared", &self.cleared)
+            .finish_non_exhaustive()
+    }
+}
+
 pub trait PairingHost: Send + Sync {
     /// The device in control, else the first one paired.
     fn load(&self) -> Option<PairingCreds>;

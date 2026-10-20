@@ -8,6 +8,33 @@ pub struct SlotPlan {
     pub pairing_code_expires_at: Option<i64>,
 }
 
+/// How many times one `add` builds the bridge for the invitation it minted.
+///
+/// Minting and serving are two different round trips, and the second one is the
+/// slower of them: the broker has to be reachable and the credential accepted.
+/// An invitation whose bridge never came up is a QR code that pairs nothing, so a
+/// first attempt that failed on the network alone — a machine that just woke, a
+/// relay still coming up — gets another couple of tries instead of being handed
+/// back as "try again later".
+pub(super) const ADD_CONNECT_ATTEMPTS: u8 = 3;
+/// The pause before attempt `attempt + 1`.
+///
+/// Grows so a broker that is coming up is not raced by a tight loop, and stays
+/// short because a user is waiting for a QR code: the whole retry budget is
+/// under a second, next to the platform round trip that precedes it.
+pub(super) fn add_connect_pause(attempt: u8) -> std::time::Duration {
+    std::time::Duration::from_millis(250 * u64::from(attempt))
+}
+
+/// Whether a failed `start_slot` deserves another go with the same invitation.
+///
+/// Only a network failure does. A refused credential is refused however often it
+/// is presented, and a local fault (an unreadable NKey, a full disk) is not
+/// something waiting repairs — retrying those would delay the one answer the user
+/// can act on by the whole retry budget.
+pub(super) fn add_retryable(attempt: u8, error: &crate::Error) -> bool {
+    attempt < ADD_CONNECT_ATTEMPTS && pairing::error_code(error) == Some("network")
+}
 impl Supervisor {
     pub async fn start(self: &Arc<Self>) -> Result<RemoteStatus, crate::Error> {
         self.start_with(true).await
@@ -209,11 +236,6 @@ impl Supervisor {
             .host
             .invite(keep_existing, &self.shown_invitations())
             .await?;
-        let plan = SlotPlan {
-            creds,
-            pairing_code: Some(code),
-            pairing_code_expires_at: expires_at,
-        };
         if self
             .access
             .commit(epoch, || {
@@ -223,12 +245,45 @@ impl Supervisor {
         {
             return Ok(self.empty());
         }
-        let added = plan.creds.pair_id.clone();
+        let added = creds.pair_id.clone();
         let _start_guard = self.start_lock.lock().await;
-        self.start_slot(plan, epoch, true, false).await?;
-        let mut status = self.status_focused(Some(&added));
-        status.cleared_invitations = cleared;
-        Ok(status)
+        // The bridge is started from the invitation that was just minted, and the
+        // same one is retried: minting again would put a *second* code on the
+        // platform (each is a row that counts towards the cap) while the user is
+        // looking at the first, and the first would serve nobody.
+        let mut attempt = 0u8;
+        loop {
+            attempt += 1;
+            #[cfg(any(test, feature = "test-support"))]
+            self.hooks.add_attempts.fetch_add(1, Ordering::AcqRel);
+            let plan = SlotPlan {
+                creds: creds.clone(),
+                pairing_code: Some(code.clone()),
+                pairing_code_expires_at: expires_at,
+            };
+            match self.start_slot(plan, epoch, true, false).await {
+                Ok(()) => {
+                    let mut status = self.status_focused(Some(&added));
+                    // Carried out by this one answer: the codes that had to go so
+                    // this one could exist are news, not state.
+                    status.cleared_invitations = cleared;
+                    return Ok(status);
+                }
+                Err(error) if add_retryable(attempt, &error) => {
+                    // Only a broker that is not answering yet is worth the next
+                    // attempt. A refused credential or a local fault (disk, NKey)
+                    // fails the same way however long one waits, and waiting would
+                    // only delay the answer the user can act on.
+                    tokio::time::sleep(add_connect_pause(attempt)).await;
+                    if !self.start_requested.load(Ordering::Acquire) {
+                        return Ok(self.empty());
+                    }
+                }
+                // Reported as it is, so the caller can name the class: a code
+                // nothing serves is worse than an error that says why.
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     pub async fn pair_new_device(self: &Arc<Self>) -> Result<RemoteStatus, crate::Error> {

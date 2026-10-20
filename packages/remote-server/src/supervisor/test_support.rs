@@ -11,6 +11,9 @@ type InvitePause = (
 pub(super) struct MemoryHost {
     pub slots: Mutex<Vec<PairingCreds>>,
     pub invitation: Mutex<Option<InvitePause>>,
+    /// How many invitations were asked for. A retry that reaches the platform
+    /// again instead of retrying what it already minted shows up here.
+    pub invites: std::sync::atomic::AtomicU64,
     pub active: Mutex<Option<String>>,
     pub catalog_reads: Mutex<Vec<String>>,
     pub catalog_pause: Mutex<
@@ -62,6 +65,7 @@ impl PairingHost for MemoryHost {
         Ok(())
     }
     fn invite(&self, _: bool, _: &[String]) -> BoxFuture<'_, Result<Invitation, crate::Error>> {
+        self.invites.fetch_add(1, Ordering::AcqRel);
         let pause = self.invitation.lock().unwrap().take();
         Box::pin(async move {
             let Some((entered, result)) = pause else {

@@ -7,7 +7,17 @@ pub async fn enable() -> Result<RemoteStatus, crate::AppError> {
     SUPERVISOR.enable().await.map_err(Into::into)
 }
 pub async fn add_device() -> Result<RemoteStatus, crate::AppError> {
-    SUPERVISOR.add_device().await.map_err(Into::into)
+    match SUPERVISOR.add_device().await {
+        Ok(status) => Ok(status),
+        Err(error) => {
+            // The GUI shows a classified sentence, so the cause itself has to
+            // reach a log or an "add failed" report has nothing to go on. `report`
+            // is what mirrors into `desktop.log`; the crate's own `eprintln!` lines
+            // go to stderr, which a windowed launch does not keep.
+            crate::host_environment::report(&format!("remote: add device failed: {error}"));
+            Err(error.into())
+        }
+    }
 }
 pub async fn pair_new_device() -> Result<RemoteStatus, crate::AppError> {
     SUPERVISOR.pair_new_device().await.map_err(Into::into)
