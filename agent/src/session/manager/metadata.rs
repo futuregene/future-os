@@ -9,6 +9,41 @@ impl Manager {
         self.update_session_info_fields(id, [(key.to_owned(), value)].into_iter().collect())
     }
 
+    /// The parent recorded for `id`, or `None` when it has none — including
+    /// when the session has no metadata row yet or is unknown.
+    ///
+    /// Reads the metadata column directly rather than loading the session: this
+    /// answers a lineage question, and the delegation guard walks a chain with
+    /// it, so loading whole histories to read one field would make creating a
+    /// sub-session cost O(history) per level.
+    pub fn parent_session_id(&self, id: &str) -> Result<Option<String>> {
+        let id = id.to_owned();
+        self.storage()?.db.call(move |db| {
+            let raw: Option<Option<String>> = db
+                .query_row(
+                    "SELECT current_metadata_json FROM sessions WHERE id=?1",
+                    [&id],
+                    |row| row.get(0),
+                )
+                .optional()
+                .context("session metadata could not be read")?;
+            let Some(Some(raw)) = raw else {
+                return Ok(None);
+            };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                // Corrupt metadata is not a lineage fact. Reporting "no parent"
+                // keeps an unrelated corruption from blocking session creation.
+                return Ok(None);
+            };
+            Ok(value
+                .get("parent_session_id")
+                .and_then(|parent| parent.as_str())
+                .map(str::trim)
+                .filter(|parent| !parent.is_empty())
+                .map(str::to_owned))
+        })
+    }
+
     /// Save one metadata snapshot so related usage counters survive restart together.
     /// The journal payloads needed to price a session's spend request by
     /// request; see `SqliteStore::pricing_event_payloads`.

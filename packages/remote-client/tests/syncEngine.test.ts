@@ -1,4 +1,4 @@
-import { emptyTimeline, timelineFromEntries } from "../src/timeline";
+import { emptyTimeline, timelineFromEntries, commitAcknowledgedUserMessage } from "../src/timeline";
 import { SyncEngine, type ReplayResult } from "../src/syncEngine";
 import type { HistoryEntry, StreamEvent } from "../src/types";
 
@@ -997,6 +997,88 @@ describe("SyncEngine", () => {
     h.engine.reconcile("s1", "open");
     await h.settle();
     expect(h.textOf("s1")).toBe("HelloHi there");
+  });
+
+  test("a run the window no longer covers is not re-drawn as the newest content", async () => {
+    // Measured on a phone watching a long session (2026-10-20): a 31-minute run
+    // was streamed live, the app then slept across several newer exchanges, and
+    // the first history refresh afterwards drew that old exchange *below* the
+    // newest one — the transcript read backwards at its tail. The window is a
+    // contiguous tail (`HISTORY_PAGE_USER_EXCHANGES`), so an exchange it does
+    // not carry is history's business: reachable by paging up, never appended
+    // after the window as if it had just happened.
+    const h = new Harness("");
+    const older: HistoryEntry[] = [
+      { id: "u0", kind: "user", role: "user", createdAtMs: 1, runId: "r0", blocks: [{ kind: "text", text: "first" }] },
+      { id: "a0", kind: "assistant", role: "assistant", createdAtMs: 2, runId: "r0", blocks: [{ kind: "text", text: "first reply" }] },
+    ];
+    h.history = timelineFromEntries(older);
+    try {
+      await h.engine.open("s");
+      await h.settle();
+
+      // The next prompt is streamed and settles while the app is still awake.
+      h.active("r1");
+      const live = [
+        evt("user_message", "r1", 0, JSON.stringify({ entry_id: "u1", run_id: "r1", text: "the long ask" })),
+        agentStart("r1", 1),
+        textChunk("r1", 2, "the long reply"),
+        textChunk("r1", 3, " finished"),
+        agentEnd("r1", 4),
+      ];
+      for (const event of live) h.engine.event("s", event);
+      await h.settle();
+      expect(h.textOf("s")).toBe("firstfirst replythe long askthe long reply finished");
+
+      // The phone was away while newer exchanges landed; the tail window it
+      // reads on return no longer covers r1.
+      h.active("");
+      const newer: HistoryEntry[] = [
+        { id: "u2", kind: "user", role: "user", createdAtMs: 10, runId: "r2", blocks: [{ kind: "text", text: "later" }] },
+        { id: "a2", kind: "assistant", role: "assistant", createdAtMs: 11, runId: "r2", blocks: [{ kind: "text", text: "later reply" }] },
+      ];
+      h.history = timelineFromEntries(newer);
+      h.engine.restart("s", "open");
+      await h.settle();
+
+      expect(h.timelineOf("s").items.map((item) => item.id)).toEqual(["m_u2", "m_a2"]);
+    } finally {
+      h.engine.clear();
+    }
+  });
+
+  test("a prompt this client minted survives a window that cannot carry it yet", async () => {
+    // The complement of the test above: dropping a message outside the window
+    // must not take the sender's own bubble with it. A prompt admitted while the
+    // host is still busy with an earlier run is acked with a run id and a local
+    // id, and the journal has no row for it until that run starts — so the
+    // window cannot carry it, and it is the only copy on this device.
+    const h = new Harness("");
+    const older: HistoryEntry[] = [
+      { id: "u0", kind: "user", role: "user", createdAtMs: 1, runId: "r0", blocks: [{ kind: "text", text: "first" }] },
+      { id: "a0", kind: "assistant", role: "assistant", createdAtMs: 2, runId: "r0", blocks: [{ kind: "text", text: "first reply" }] },
+    ];
+    h.history = timelineFromEntries(older);
+    try {
+      await h.engine.open("s");
+      await h.settle();
+      h.engine.mutate("s", (live) => commitAcknowledgedUserMessage(live, {
+        id: "local:1", runId: "r9", text: "queued ask",
+      }));
+      await h.settle();
+
+      const newer: HistoryEntry[] = [
+        { id: "u2", kind: "user", role: "user", createdAtMs: 10, runId: "r2", blocks: [{ kind: "text", text: "later" }] },
+        { id: "a2", kind: "assistant", role: "assistant", createdAtMs: 11, runId: "r2", blocks: [{ kind: "text", text: "later reply" }] },
+      ];
+      h.history = timelineFromEntries(newer);
+      h.engine.restart("s", "open");
+      await h.settle();
+
+      expect(h.timelineOf("s").items.map((item) => item.id)).toEqual(["m_u2", "m_a2", "local:1"]);
+    } finally {
+      h.engine.clear();
+    }
   });
 
   test("first live contact on an idle-established session keeps live tail", async () => {

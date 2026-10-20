@@ -259,9 +259,9 @@ future session set <id> --context-files off --auto-compact off --auto-retry on
 `context compaction budget exceeded`）的唯一出口。不加 `--yes` 时它只做预演；历史只由
 Agent 写入；真正执行前会把完整的历史（含将被删的条目）无损备份，并打印文件路径。
 
-一个最好提前知道、而不是踩到的缺口：**从未运行过的会话，改动要等首次运行时才落盘。**
-已有记录的会话，其标题或 cwd 会立即写入；从未产生过 entry 的会话则在首次运行时一并存储，
-所以新建的会话在第一次运行前不会出现在 `session list` 里。
+一个最好提前知道、而不是踩到的缺口：**从未运行过的会话只有元数据，没有对话。**
+`future session new` 会立即写入会话行，所以它马上出现在 `session list` 里，
+对它执行 `session set` 也是立刻落盘；它缺的只是「首次运行前没有任何消息」。
 
 有两条命令是「花钱」或「动手」而非读取，因此是显式的：`future session title <id>` 会请该
 会话的模型生成标题（一次模型调用；只打印建议，加 `--apply` 才改名），
@@ -295,6 +295,27 @@ future run --session <id> "<message>"     # 在那个会话里起一次 run
 不要先把它读进 shell 变量：Windows PowerShell 5.1 下 `Get-Content` 会用 ANSI
 码页解码无 BOM 的 UTF-8 文件，最终落到另一个会话里的就是乱码（与 shell 工具
 「读已知文件用 read 工具、不要用 `Get-Content`」是同一条坑）。
+
+委派用的是同一套机制，只是目标换成了你自己的另一个会话 —— 子会话，用户也可能
+叫它 subagent、子agent、子代理：
+
+```sh
+future session new --parent <你的会话 id> --name "<短任务名>" --json
+future run --no-wait --session <子会话 id> "<自包含的提示词>"
+```
+
+在创建命令上就写下父会话，才让这个子会话真的是「子」：血缘在它首次运行之前就已存在，
+桌面端会把它画在这个会话下面，而子会话的系统提示词也会告诉它不能再向下委派。
+上面那一节说的一切 —— `--no-wait` 与 `wait`、`--steer`、`status`、`transcript`、
+来源与意图 —— 全部照旧适用；`future session list --parent <id>` 列出一个会话的子会话，
+`abort` / `delete` 停掉并删除一个，`future session approvals <子会话>` 回答它是不是
+卡在审批上 —— 这在外部观察起来和「跑得慢」完全一样。
+
+只允许一跳，而且是强制的、不是靠提示词劝阻：已经有父会话的会话不能再当父会话
+（`new_session` 与 `set_parent_session` 都拒绝），所以子会话无法再开孙会话。
+每多一跳，上面对下面那次工作的了解就被重新摘要一次；超过一跳，提出需求的那个会话
+已经无法拿答案对照它当初要的东西。用户仍可以主动把一个会话移出血缘链：
+`future session set <id> --parent ""`。
 
 改设置会改变此后每一个会话的行为，所以技能把它当作用户的决定：说明旧值与新值，
 在用户同意后再改。
