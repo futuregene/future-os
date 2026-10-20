@@ -271,10 +271,10 @@ pub struct SessionSummary {
 }
 
 // ============================================================================
-// Model Info (from get_available_models / list_models)
+// Model Info (from list_models)
 // ============================================================================
 
-/// Port of `ModelInfo` from `rpc/types.ts` (from get_available_models).
+/// Port of `ModelInfo` from `rpc/types.ts` (from list_models).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
