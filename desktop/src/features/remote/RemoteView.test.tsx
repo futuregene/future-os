@@ -89,14 +89,12 @@ let root: ReturnType<typeof createRoot>;
 let refresh: Mock<() => Promise<void>>;
 
 interface Props {
-  onOpenSettings?: () => void;
   onRefreshRemote?: () => Promise<void>;
   remoteStatus?: RemoteStatus | null;
 }
 
 async function mount(overrides: Props = {}) {
   const props = {
-    onOpenSettings: vi.fn<() => void>(),
     onRefreshRemote: refresh,
     remoteStatus: status(),
     ...overrides,
@@ -290,15 +288,14 @@ describe("the switch", () => {
 });
 
 describe("off hides everything the switch enables", () => {
-  it("renders no list, no add button and no settings for a null status", async () => {
+  it("renders no list and no add button for a null status", async () => {
     await mount({ remoteStatus: null });
     expect(hostSwitch().getAttribute("aria-checked")).toBe("false");
     expect(buttonByText("Add a device")).toBeUndefined();
-    expect(buttonByText("Settings")).toBeUndefined();
     expect(container.textContent).not.toContain("Paired devices");
   });
 
-  it("hides the client list, adding and settings while off", async () => {
+  it("hides the client list and adding while off", async () => {
     await mount({
       remoteStatus: status({
         pairId: "pair_alpha",
@@ -308,12 +305,11 @@ describe("off hides everything the switch enables", () => {
     });
 
     // The switch is the whole off state: no client list, no add control, no
-    // settings control, no footnote explaining what a closed switch would do.
+    // footnote explaining what a closed switch would do.
     expect(hostSwitch().getAttribute("aria-checked")).toBe("false");
     expect(container.textContent).not.toContain("Pixel 9");
     expect(container.textContent).not.toContain("Paired devices");
     expect(buttonByText("Add a device")).toBeUndefined();
-    expect(buttonByText("Settings")).toBeUndefined();
     expect(container.textContent).not.toContain("Download mobile app");
     expect(addDialog()).toBeNull();
   });
@@ -350,8 +346,9 @@ describe("the list", () => {
       .some(button => (button.textContent ?? "").includes("studio-imac"))).toBe(false);
     expect(buttonByText("Disconnect")).toBeUndefined();
     expect(buttonByText("Remove")).toBeUndefined();
-    // The list is the whole body; the settings live behind their own control.
-    expect(container.textContent).not.toContain("Auto-connect on launch");
+    // The list is the whole body; the switch above it is the only preference,
+    // so it is the only switch on the section.
+    expect(container.querySelectorAll("button[role='switch']").length).toBe(1);
   });
 
   it("hands control to a standby device from its own row", async () => {
@@ -386,15 +383,6 @@ describe("the list", () => {
     await flush();
 
     expect(unpairRemoteDevice).toHaveBeenCalledWith("pair_beta");
-  });
-
-  it("opens this direction's settings from its own control", async () => {
-    const props = await mount({
-      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control] }),
-    });
-
-    await act(async () => buttonByText("Settings")!.click());
-    expect(props.onOpenSettings).toHaveBeenCalledTimes(1);
   });
 
   it("says so when nothing is connected yet, and offers to add one", async () => {

@@ -12,9 +12,9 @@ export interface AppSettings {
    */
   autoUpgradeSkills: boolean;
   /**
-   * Auto-connect the single paired remote device on app launch (the user can
-   * still disconnect by hand). Off by default. The Remote feature is dev-only,
-   * so this only takes effect on non-release builds.
+   * Whether the remote desktop is on: the Remote page's switch stores its own
+   * state here, so the machine serves its paired devices again after a restart.
+   * On by default — an empty machine is "on and empty" and mints no invitation.
    */
   autoConnectRemote: boolean;
   /**
@@ -52,7 +52,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   approvalTier: "off",
   hiddenModels: [],
   autoUpgradeSkills: false,
-  autoConnectRemote: false,
+  autoConnectRemote: true,
   skillGuideDismissed: false,
   skillIntroDismissed: false,
   bellOnComplete: true,

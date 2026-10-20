@@ -1389,6 +1389,11 @@ mod gui {
     /// event loop. Calling this from `setup` is too early on macOS: the detached
     /// task can be scheduled before the process runtime is ready and never obtain
     /// a lasting NATS connection.
+    ///
+    /// The preference is the Remote page's own switch (on by default), so a
+    /// machine the user left serving comes back serving. An unreadable settings
+    /// store does not count as "on": opening remote access without a preference
+    /// that can be read would serve on a guess.
     fn spawn_remote_auto_connect() {
         // Pairing codes are issued by the FutureOS service, so auto-connect needs a
         // sign-in even when the feature is enabled and credentials are persisted.

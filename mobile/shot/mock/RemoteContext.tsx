@@ -97,7 +97,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   const [desktopSettings, setDesktopSettings] = useState<DesktopSettings>({
     autoUpgradeSkills: true,
     autoTitleFirstTurn: true,
-    autoConnectRemote: false,
+    autoConnectRemote: true,
     // The desktop always reports this one; omitting it would make the harness
     // exercise the phone's older-desktop fallback instead of the real path.
     skillRecommend: true,
