@@ -81,8 +81,9 @@ jobs:
       - name: Test submission recovery and publication policy
         run: node --test scripts/tests/notarize-macos-dmg.test.mjs
 
-  # On PRs, run only affected suites. Manual default runs cover everything;
-  # explicit scopes select Remote, offline updates, or Desktop Rust validation.
+  # On PRs and merges to main, run only affected suites. Manual default runs
+  # cover everything; explicit scopes select Remote, offline updates, or Desktop
+  # Rust validation.
   changes:
     name: Detect affected checks
     runs-on: ubuntu-latest
@@ -108,19 +109,34 @@ jobs:
       desktop_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
       mobile: ${{ steps.remote.outputs.remote_mobile == 'true' || steps.force.outputs.all == 'true' || steps.filter.outputs.mobile == 'true' || steps.filter.outputs.ci == 'true' }}
     steps:
+      # Needed before the changed-file filter: on a push to main
+      # dorny/paths-filter diffs the pushed tree against the previous main tip
+      # with git, so that commit must be in the clone. Pull requests go through
+      # the REST API and ignore the depth.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # One merge commit deep is enough: main gets squash merges.
+          fetch-depth: 2
+
       - id: force
         shell: bash
         env:
           REQUESTED_SCOPE: ${{ inputs.scope }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" || ( -n "$REQUESTED_SCOPE" && "$REQUESTED_SCOPE" != "all" ) ]]; then
+          # A merge to main narrows to its own affected suites exactly like a PR:
+          # the entries it warms then stay valid for every later PR until an
+          # input changes, and a short filtered run keeps the single cache
+          # writer from queueing behind full-suite runs while merges keep
+          # landing.
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || ( -n "$REQUESTED_SCOPE" && "$REQUESTED_SCOPE" != "all" ) ]]; then
             echo "all=false" >> "$GITHUB_OUTPUT"
           else
             echo "all=true" >> "$GITHUB_OUTPUT"
           fi
 
       - id: filter
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'workflow_dispatch'
         uses: dorny/paths-filter@v4
         with:
           # v4.0.3+ supports 'some-with-excludes': a file is included only if it
@@ -275,7 +291,6 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
 
-      - uses: actions/checkout@v7
       - name: Select Remote packages and consumers
         id: remote
         env:
