@@ -38,6 +38,7 @@ Development happens in an isolated git worktree at `.worktrees/<name>` on its **
   ```
   Fast-forward it whenever it is behind and nothing is holding it: `git branch -f dev-$GH_USER origin/dev-$GH_USER` (or `origin/main` right after a merge). A *checked-out* branch cannot be updated that way — the main worktree normally holds it, so update it there with `git merge --ff-only origin/dev-$GH_USER`, and never yank it out from under a running session.
   If the local branch is **ahead** of the remote, those commits are unpushed work — usually a finished task merged but not pushed yet: push them from the main worktree, or report them. Never reset or force such a branch to "make it current", with one exception: **a branch whose content is already on `main`** (`git diff --quiet origin/main origin/dev-$GH_USER` succeeds) is a squash merge's leftover, not work — collapse it onto `origin/main` before cutting the task branch (*Collapse a stranded branch* below). Cutting from a stranded branch is what hands the next PR a commit list full of landed commits.
+- **The PR's head is the sweep's own frozen branch, never `dev-<username>`** (*Freeze the PR onto its own branch* below). `dev-<username>` is a moving branch — every task merges into it — and a moving PR head cancels its own CI and stops the review from matching what lands. Only the sweep creates, pushes or deletes `pr/dev-<username>`; a task session neither touches it nor opens a PR.
 - Create the worktree on a **fresh task branch** cut from the integration branch tip, after the fetch above:
   ```bash
   git worktree add --no-track .worktrees/<name> -b <type>/<name> origin/dev-$GH_USER
@@ -46,7 +47,7 @@ Development happens in an isolated git worktree at `.worktrees/<name>` on its **
   `--no-track` matters: without it the branch tracks `origin/main`, and a bare `git push` would target `main`.
   **Never check out `dev-<username>` in a task worktree.** A branch lives in one worktree at a time, so doing that locks the integration branch for as long as the worktree exists: the next task cannot create its worktree, the user's own `git checkout dev-<username>` in the main worktree fails, and the post-merge fast-forward has to wait. That is exactly why the task branch exists — cutting and merging one costs nothing. (Measured 2026-10-20: `.worktrees/standby-rows` had taken `dev-huichen`, and the user's `git checkout dev-huichen` in the main worktree died with "already used by worktree".) If `git worktree list` shows `dev-<username>` held by a worktree, that is a session running the old flow: leave it alone, create your own worktree on a task branch, and merge when theirs is finished.
 - All code changes, including fmt / clippy / lint fixes, are made and committed in the worktree on its task branch `<type>/<name>`, with Conventional Commit messages (a squash-merged PR title uses the same type).
-- **Task branches stay local**: do not push them and do not open a PR from one. The only branch this developer pushes is `dev-<username>`, once, at the end of the task (*Finishing a task* below); the PR on top of it belongs to the scheduled task, never to a task session. `--no-track` keeps a bare `git push` from ever targeting `main`; never add an upstream. **Never force-push** from a task session.
+- **Task branches stay local**: do not push them and do not open a PR from one. The only branches this developer pushes are `dev-<username>`, once, at the end of the task (*Finishing a task* below), and the sweep's `pr/dev-<username>` PR freeze; the PR belongs to the scheduled task, never to a task session. `--no-track` keeps a bare `git push` from ever targeting `main`; never add an upstream. **Never force-push** from a task session.
 - **Remove the worktree only after its work is merged** (*Finishing a task* below) — the task branch lives nowhere else until then, so deleting the worktree earlier throws the work away:
   ```bash
   git -C .worktrees/<name> status --short                              # must be clean
@@ -96,23 +97,43 @@ The drift is only collapsible while the branch's content still equals `main` —
 
 If either guard fails, leave the branch alone: a dirty worktree is someone's work in progress, and a non-empty diff is work that has not landed — that content belongs in the PR, so say so in the summary instead of dropping it. Never `reset --hard` a worktree whose `status --short` is not empty.
 
+### Freeze the PR onto its own branch
+
+`dev-<username>` moves: every task merges into it. A PR whose head is that branch therefore keeps restarting its own CI — `ci.yml` cancels the in-progress run on any push — and keeps growing between review and merge. Measured 2026-10-20 on `dev-huichen`: 13 of 20 runs cancelled, 7 of them because a session landed new work while the PR was in flight (two of those were documentation pushes made by the session that was editing the PR description), and the merged content no longer matched the reviewed diff.
+
+So the sweep opens the PR from a branch of its own, frozen at the `dev-<username>` tip:
+
+```bash
+git fetch origin --prune
+# dev is already collapsed onto origin/main (above), so what is frozen is only new work
+git push --force origin "origin/dev-$GH_USER:refs/heads/pr/dev-$GH_USER"
+gh pr create --base main --head "pr/dev-$GH_USER" --title "<covers the branch, not its last commit>"
+gh pr merge <n> --squash --auto
+```
+
+- **Work keeps landing on `dev-<username>` while the PR is open, and that is the point**: it is not in this PR, it belongs to the next one. Nothing is lost — the freeze is a pointer, and the branch behind it keeps moving.
+- **A red check is fixed on a task branch and merged into `dev-<username>` as usual; the sweep then re-freezes** (same command, `--force`) and the new head restarts CI. Never fix on the frozen branch directly: that content would exist nowhere but the PR.
+- **BEHIND**: merge `origin/main` into `pr/dev-<username>` (a scratch worktree is enough) and push that branch. `dev-<username>` and the main worktree are untouched.
+- **The frozen branch is disposable**: delete it with `git push origin --delete pr/dev-<username>` once the PR is `MERGED` — but only *after* the step below replays anything that landed on `dev-<username>` meanwhile (*After a PR merges* step 2 needs it as the upstream). *Never delete the remote `dev-<username>`* above is about the integration branch; this one is a per-PR freeze whose content is on `main` by then.
+- Re-freezing and updating still cancel a run — that is one per deliberate event (a fix, a main move) instead of one per task on the branch.
+
 ### PRs and merges
 
 **A scheduled task owns the PR.** `dev 分支 PR 合并` runs on a timer in this repo, on whichever machine has it, and does the whole lifecycle **for the branch of the account it runs as** (`dev-<that account's login>`) — never for a different author's branch, and never by folding other branches into it:
 
-- No open PR and `origin/dev-<username>` has commits `origin/main` lacks → it opens one against `main` and arms squash auto-merge (`gh pr create --base main --head dev-$GH_USER --fill`, then `gh pr merge <n> --squash --auto`). A PR never stays open without auto-merge armed.
-- PR is BEHIND → it merges `origin/main` into `dev-<username>` in the main worktree (the one that holds the branch) and pushes, instead of letting the PR bounce between BEHIND and re-queued CI. If that worktree is dirty, leave the branch alone for this pass and report it.
-- Required checks fail → it opens a **new session** in this repo with the failing job/run evidence, rather than messaging the session that wrote the code. That session fixes the failure on a task branch and merges it into `dev-<username>` by the flow above, then pushes; the next pass re-checks. Do not merge a red PR, re-run checks indefinitely, or weaken assertions to get it green.
-- Checks pass → the squash merge lands by itself; the task then runs *After a PR merges* and prints a short report (branch, ahead count, PR number, check result, fix session id).
+- No open PR and `origin/dev-<username>` has commits `origin/main` lacks → it freezes that tip into `pr/dev-<username>` (*above*), opens the PR from it against `main` and arms squash auto-merge (`gh pr create --base main --head pr/dev-$GH_USER`, then `gh pr merge <n> --squash --auto`). A PR never stays open without auto-merge armed. A PR already open with `dev-<username>` as its head predates this rule — let it finish rather than closing it to retarget.
+- PR is BEHIND → it merges `origin/main` into `pr/dev-<username>` and pushes, instead of letting the PR bounce between BEHIND and re-queued CI. `dev-<username>` is not touched for this.
+- Required checks fail → it opens a **new session** in this repo with the failing job/run evidence, rather than messaging the session that wrote the code. That session fixes the failure on a task branch and merges it into `dev-<username>` by the flow above, then pushes; the sweep re-freezes so the fix is in the PR, and the next pass re-checks. Do not merge a red PR, re-run checks indefinitely, or weaken assertions to get it green.
+- Checks pass → the squash merge lands by itself; the task then runs *After a PR merges* (collapse the branch, delete the freeze) and prints a short report (branch, ahead count, PR number, check result, fix session id).
 
 **There is no session-side fallback.** If this machine has no `dev 分支 PR 合并` task — or its runs look broken — a task session still ends with `git push origin dev-$GH_USER` and nothing else: no `gh pr create`, no `gh pr merge --auto`. Another machine runs that task and opens the PR, so a branch that waits for it is fine; say in your summary that the PR has not been opened yet instead of opening it. The cadence deliberately lives in the task's trigger, not here or in its prompt — it is tuned over time, and a number written down in three places is a number that will be wrong in two of them.
 
 ### When a PR is failing or stale
 
-The scheduled task owns this as well: on BEHIND it merges `origin/main` into `dev-<username>` on the machine that holds the branch, and on a red required check it opens a session carrying the failing evidence. A session acts here only when it is asked to — as the session that wrote the code, or by the user.
+The scheduled task owns this as well: on BEHIND it merges `origin/main` into `pr/dev-<username>`, and on a red required check it opens a session carrying the failing evidence. A session acts here only when it is asked to — as the session that wrote the code, or by the user.
 
-- **Red required check**: read the failing job's log (`gh run view <run-id> --log-failed`), fix the cause on a task branch, merge it into `dev-<username>` by *Finishing a task*, and push. Never weaken an assertion or re-run checks until they go green.
-- **BEHIND / "update branch" requested**: `git fetch origin main && git merge origin/main` into `dev-<username>` in the main worktree, resolve conflicts there, re-run the scoped checks the merge touches, and push; `--auto` re-fires by itself.
+- **Red required check**: read the failing job's log (`gh run view <run-id> --log-failed`), fix the cause on a task branch, merge it into `dev-<username>` by *Finishing a task*, and push; the sweep's next pass re-freezes the PR onto the new tip.
+- **BEHIND / "update branch" requested**: `git fetch origin main && git merge origin/main` into `pr/dev-<username>` in a scratch worktree, resolve conflicts there, push that branch; `--auto` re-fires by itself. Never satisfy BEHIND by pushing to `dev-<username>` — that is the stall this freeze exists to avoid.
 - **Check PR status synchronously — never `sleep`-poll.** Wait with `gh pr checks <n> --watch --required --fail-fast` (add `--interval 5`); `--watch` blocks until the required checks finish and `--fail-fast` returns on the first failure. Do not loop `sleep N; gh pr checks`.
 
 ### After a PR merges
@@ -123,7 +144,19 @@ The scheduled task does this right after the squash merge. A session that merely
    - `git log --oneline origin/main..main` lists the commits upstream does not have.
    - A **stale duplicate** is a branch commit that was later squash-merged: its tree matches the squashed commit, and that squashed commit is already an ancestor of `origin/main`. Confirm both (`git diff --stat <local-sha> <squashed-sha>` prints nothing; `git merge-base --is-ancestor <squashed-sha> origin/main` succeeds), then ask the user before dropping it with `git reset --hard origin/main`.
    - **Anything else is live work** — the user's, or another session's (`git worktree list`, and `git branch --contains <sha>` says whose). Never rebase, reset, or force it: stop and tell the user the commit, its branch, and that it has not been pushed.
-2. **Re-point `dev-<username>` at the new `main`** so the next task starts from what actually landed — the branch's own commits are upstream already, under different squash SHAs. If nothing holds it (the main worktree is parked elsewhere): `git branch -f dev-$GH_USER origin/main`, then `git push --force-with-lease origin dev-$GH_USER` if the remote branch still needs the reset — the lease, not a bare `--force`, so a push that lands on a stale fetch cannot delete a commit another machine pushed meanwhile. This is *Collapse a stranded branch* seen from the merge's side: do it as soon as the merge lands, because the next task to start is what makes the drift permanent. **Keep commits made after the PR head**: rebase them onto the new `origin/main` and push them — never drop them. This post-merge reset is the **only** sanctioned force-push in this repo; task sessions never force-push otherwise. **Do not delete the remote branch** — it is the continuous per-developer branch the next task continues on, and deleting it discards the PR review timeline.
+2. **Re-point `dev-<username>` at the new `main`** so the next task starts from what actually landed — the branch's own commits are upstream already, under different squash SHAs. This is *Collapse a stranded branch* seen from the merge's side: do it as soon as the merge lands, because the next task to start is what makes the drift permanent. **Do not delete the remote branch** — it is the continuous per-developer branch the next task continues on, and deleting it discards the PR review timeline.
+
+   The frozen PR branch is what tells the two cases apart, so **do this before deleting it**:
+
+   ```bash
+   # Work landed on dev while the PR was in flight?
+   git rev-list --count origin/pr/dev-$GH_USER..origin/dev-$GH_USER
+   ```
+
+   - **Zero** — the PR carried everything. Reset the branch, as before. If nothing holds it (the main worktree is parked elsewhere): `git branch -f dev-$GH_USER origin/main`, then `git push --force-with-lease origin dev-$GH_USER` — the lease, not a bare `--force`, so a push that lands on a stale fetch cannot delete a commit another machine pushed meanwhile. **Keep commits made after the PR head**: rebase them onto the new `origin/main` and push them — never drop them. This post-merge reset is the **only** sanctioned force-push in this repo; task sessions never force-push otherwise.
+   - **Non-zero** — those commits are real work (they were never in the PR). Replay them onto what landed instead of resetting: `git rebase --onto origin/main origin/pr/dev-$GH_USER dev-$GH_USER`, then `git push --force-with-lease origin dev-$GH_USER`. Both guards first (`status --short` empty, and no rebase in progress), and compare the content before and after — `git diff origin/main..dev-$GH_USER` must print the same patch as before the rebase, which is what proves nothing was dropped. A conflict stops here: report it, do not `--skip` or choose sides on the user's behalf.
+
+   Only then delete the freeze: `git push origin --delete pr/dev-$GH_USER`.
 
    **When the main worktree holds `dev-<username>`** — the normal case, since that is where the user parks it — `git branch -f` is refused, and `git merge --ff-only origin/main` inside it **cannot work**: after a squash merge the branch has its own commits, so the two are diverged and `--ff-only` is *not possible to fast-forward*. Nothing is lost by that refusal, but the branch then reads "N commits ahead of main" forever while `git diff --stat origin/main...dev-<username>` is empty. Do this instead, in the worktree that holds it, and only when **both** guards pass:
 
@@ -134,7 +167,7 @@ The scheduled task does this right after the squash merge. A session that merely
    git push --force-with-lease origin dev-$GH_USER
    ```
 
-   If either guard fails, leave the branch alone and say so: a dirty worktree is someone's work in progress, and a non-empty diff means commits that have not landed yet.
+   If either guard fails, leave the branch alone and say so: a dirty worktree is someone's work in progress, and a non-empty diff means commits that have not landed yet — that is the `rebase --onto` case above, not a reason to reset.
 
    **An empty diff is a reset, never a PR.** After a squash merge the branch still shows commits "ahead" (`origin/main..dev-<username>` non-zero) while `git diff --stat origin/main...dev-<username>` is empty — the content is already in `main`. Run the reset above; an empty-diff PR merges nothing and only resets the branch the long way round.
 3. **Clean up temporary files**: scratch scripts, logs, captured CI output, temp HOME dirs, and any other debris created while working. `git status --short` in every remaining worktree must show no untracked scratch files.
