@@ -51,7 +51,7 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 ├── windows-capabilities.json  # Windows sandbox ACL cleanup metadata
 ├── run/
 │   ├── agent.sock             # Unix IPC endpoint (not used by Windows)
-│   └── remote-control/        # transient device requests (`future remote devices add|remove`)
+│   └── remote-control/        # transient device requests (`future remote devices add|remove|use`)
 └── bin/                       # CLI / agent links: `future`, `future-agent` (see below)
 ```
 
@@ -239,8 +239,9 @@ Nothing here is data: it is how a running process and a terminal find each other
 
 - `agent.sock` — the agent's Unix IPC endpoint (Windows uses a named pipe; and
   with `--grpc-addr`, TCP). See the endpoint section above.
-- `remote-control/` — the request/reply files `future remote devices add|remove`
-  uses to ask the running Desktop to pair a device, or to stop serving one. A
+- `remote-control/` — the request/reply files `future remote devices add|remove|use`
+  uses to ask the running Desktop to pair a device, stop serving one, or hand the
+  machine to one. A
   request names a reply path
   the asking process created for itself in the OS temp directory, so the
   directory holds no secrets beyond invitations that are about to be printed, and

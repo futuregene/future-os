@@ -16,9 +16,11 @@ import { useTranslation } from "react-i18next";
  * reader up the page. A direction with nothing to go to stays in place, inert,
  * so the pair never moves under the pointer.
  *
- * The same walk is on the arrow keys (`useQuestionNav`), so the button's tooltip
- * names the key: the pair is the only place a reader can learn that the arrows
- * page the transcript, and a shortcut nobody can discover is not a shortcut.
+ * The same walk is on Page Up / Page Down (`useQuestionNav`), so the button's
+ * tooltip names the key: the pair is the only place a reader can learn that a
+ * page key pages the transcript, and a shortcut nobody can discover is not a
+ * shortcut. The bare arrows are not on this walk — they keep the page's own line
+ * scroll — so the tooltip must not suggest them.
  */
 export function QuestionNavControl({
   hasPrevious,
@@ -38,14 +40,14 @@ export function QuestionNavControl({
         disabled={!hasPrevious}
         icon={<ArrowUp className="size-4" />}
         label={t("thread.questionPrevious")}
-        shortcut="↑"
+        shortcut="PgUp"
         onClick={onPrevious}
       />
       <NavButton
         disabled={!hasNext}
         icon={<ArrowDown className="size-4" />}
         label={t("thread.nextPassage")}
-        shortcut="↓"
+        shortcut="PgDn"
         onClick={onNext}
       />
     </div>
@@ -62,7 +64,7 @@ function NavButton({
   disabled: boolean;
   icon: React.ReactNode;
   label: string;
-  /** The arrow key that does the same thing, shown in the tooltip. */
+  /** The key that does the same thing, shown in the tooltip. */
   shortcut: string;
   onClick: () => void;
 }) {

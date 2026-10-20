@@ -805,15 +805,18 @@ viewport's top edge. A direction with nothing to go to stays in place, inert,
 and one that could not move the viewport is skipped rather than offered — an
 enabled button always does something.
 
-**The same walk is on the bare ↑/↓ keys.** A press answers only when the
+**The same walk is on Page Up / Page Down.** The bare ↑/↓ arrows are left to the
+page, where they are the reader's ordinary line scroll — the finer control on a
+long reply — so the walk never answers one. A page key answers only when the
 transcript's own reading is what is on top: not while the caret is in the
-composer holding text (there the arrows move the caret), not while a modal or a
-floating menu is up, not with Shift/Alt/Cmd/Ctrl held (selection, word motion,
-the platform's line motion), and not while an input method is composing. An
-**empty** composer does not count as somewhere text is being typed in — it
-autofocuses, so otherwise the keyboard could not page a reply at all until the
-user clicked away. A press with nowhere to go is left to the page, so a short
-transcript still line-scrolls. Each button's tooltip names its key.
+composer holding text (there the key belongs to the field), not while a modal or
+a floating menu is up, not with Shift/Alt/Cmd/Ctrl held (selection, word motion,
+the platform's line motion, Ctrl+Page Up/Page Down for tabs), and not while an
+input method is composing. An **empty** composer does not count as somewhere
+text is being typed in — it autofocuses, so otherwise the keyboard could not page
+a reply at all until the user clicked away. A press with nowhere to go is left to
+the page, so a short transcript still scrolls by a screenful. Each button's
+tooltip names its key (`PgUp` / `PgDn`).
 
 The input box supports local file attachments via three methods: attachment
 button, copy-paste, and drag-drop; at most 4 images per message, non-images

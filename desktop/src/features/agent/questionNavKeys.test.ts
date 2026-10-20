@@ -2,11 +2,12 @@
 /**
  * The transcript's keyboard half.
  *
- * The whole value of this policy is what it *refuses*: an unmodified arrow key
- * belongs to the caret, to an IME candidate list, to an open menu, or to an
- * ordinary line scroll — and every one of those is a case where answering it
- * would take the key away from the user. So most of these cases assert null, and
- * the two that don't pin the pair of keys that do move the transcript.
+ * The whole value of this policy is what it *refuses*: a key belongs to a text
+ * field, to a tab switch, to an open menu — and every one of those is a case
+ * where answering it would take the key away from the user. So most of these
+ * cases assert null, and two pin the page keys that do move the transcript. The
+ * bare arrows are asserted *null* on purpose: they are the reader's ordinary line
+ * scroll, the finer control on a long reply, and the walk must not own them.
  */
 import { describe, expect, it } from "vitest";
 import { navDirectionForKey } from "./questionNavKeys";
@@ -26,45 +27,53 @@ function key(k: string, init: KeyInit = {}) {
 }
 
 describe("navDirectionForKey", () => {
-  it("maps the two arrows to the two directions", () => {
-    expect(navDirectionForKey(key("ArrowUp"), { editable: false, owned: false })).toBe("previous");
-    expect(navDirectionForKey(key("ArrowDown"), { editable: false, owned: false })).toBe("next");
+  it("maps the two page keys to the two directions", () => {
+    expect(navDirectionForKey(key("PageUp"), { editable: false, owned: false })).toBe("previous");
+    expect(navDirectionForKey(key("PageDown"), { editable: false, owned: false })).toBe("next");
+  });
+
+  it("leaves the bare arrows to the page's own scroll", () => {
+    // ↑/↓ scrolls a container a line at a time, which is what a reader pressing
+    // them asked for — not a jump of a whole turn.
+    expect(navDirectionForKey(key("ArrowUp"), { editable: false, owned: false })).toBeNull();
+    expect(navDirectionForKey(key("ArrowDown"), { editable: false, owned: false })).toBeNull();
   });
 
   it("ignores every other key", () => {
-    for (const other of ["ArrowLeft", "ArrowRight", "PageUp", "PageDown", "Home", "End", "j", "Enter"]) {
+    for (const other of ["ArrowLeft", "ArrowRight", "Home", "End", "Space", "j", "Enter"]) {
       expect(navDirectionForKey(key(other), { editable: false, owned: false })).toBeNull();
     }
   });
 
-  it("leaves a modified arrow to the platform", () => {
-    // Shift extends a selection, Option/Alt moves word-wise, Cmd/Ctrl is the
-    // platform's own line motion. None of them is a request to page the
-    // transcript, and taking them would break text interaction everywhere.
+  it("leaves a modified page key to the platform", () => {
+    // Ctrl+Page Up/Page Down switches tabs, Shift+Page Up extends a selection,
+    // Option/Alt and Cmd are the platform's own motions. None of them is a
+    // request to page the transcript, and taking them would break a tab-switch
+    // shortcut the app (or the webview around it) already has.
     for (const modifier of ["altKey", "ctrlKey", "metaKey", "shiftKey"] as const) {
-      expect(navDirectionForKey(key("ArrowUp", { [modifier]: true }), { editable: false, owned: false })).toBeNull();
-      expect(navDirectionForKey(key("ArrowDown", { [modifier]: true }), { editable: false, owned: false })).toBeNull();
+      expect(navDirectionForKey(key("PageUp", { [modifier]: true }), { editable: false, owned: false })).toBeNull();
+      expect(navDirectionForKey(key("PageDown", { [modifier]: true }), { editable: false, owned: false })).toBeNull();
     }
   });
 
-  it("leaves a composing arrow to the input method", () => {
+  it("leaves a composing press to the input method", () => {
     expect(navDirectionForKey(
-      key("ArrowDown", { isComposing: true }),
+      key("PageDown", { isComposing: true }),
       { editable: false, owned: false },
     )).toBeNull();
   });
 
-  it("leaves the caret's arrows to the caret", () => {
-    // The composer is a contentEditable the reader is usually sitting in: there
-    // an arrow moves the caret, and jumping the transcript would be the app
+  it("leaves the keys to a text field", () => {
+    // The composer is a contentEditable the reader is usually sitting in: a page
+    // key there scrolls the field, and jumping the transcript would be the app
     // fighting the user for every keystroke they type.
-    expect(navDirectionForKey(key("ArrowUp"), { editable: true, owned: false })).toBeNull();
-    expect(navDirectionForKey(key("ArrowDown"), { editable: true, owned: false })).toBeNull();
+    expect(navDirectionForKey(key("PageUp"), { editable: true, owned: false })).toBeNull();
+    expect(navDirectionForKey(key("PageDown"), { editable: true, owned: false })).toBeNull();
   });
 
-  it("leaves the arrows to whatever surface is on top", () => {
-    // A modal, or a menu whose rows the arrows walk.
-    expect(navDirectionForKey(key("ArrowUp"), { editable: false, owned: true })).toBeNull();
-    expect(navDirectionForKey(key("ArrowDown"), { editable: false, owned: true })).toBeNull();
+  it("leaves the keys to whatever surface is on top", () => {
+    // A modal, or a menu whose rows the page keys walk.
+    expect(navDirectionForKey(key("PageUp"), { editable: false, owned: true })).toBeNull();
+    expect(navDirectionForKey(key("PageDown"), { editable: false, owned: true })).toBeNull();
   });
 });
