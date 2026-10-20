@@ -28,5 +28,5 @@ pub(crate) fn prepare_path() -> Result<(), crate::AppError> {
     future_host::cli_tool::prepare_path()
 }
 
-#[cfg(all(test, feature = "gui"))]
+#[cfg(all(test, unix, feature = "gui"))]
 pub(crate) use future_host::cli_tool::EnvGuard;

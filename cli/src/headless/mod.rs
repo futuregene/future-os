@@ -1304,7 +1304,7 @@ mod tests {
         runtime
             .block_on(ensure_login())
             .expect("an accepted key must not require an interactive terminal");
-        let _ = server.join();
+        server.join().expect("profile HTTP fixture must complete");
     }
 
     /// A platform that rejects the stored key is named as such, and the entry
@@ -1325,7 +1325,7 @@ mod tests {
             error.to_string().contains("interactive terminal"),
             "a rejected key falls through to the terminal requirement: {error}"
         );
-        let _ = server.join();
+        server.join().expect("profile HTTP fixture must complete");
     }
 
     /// A network failure while checking the profile is not a logout: the key
@@ -1371,22 +1371,44 @@ mod tests {
             while std::time::Instant::now() < deadline {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        let mut request = [0_u8; 4096];
-                        let _ = stream.read(&mut request);
+                        // Winsock can inherit the nonblocking listener mode.
+                        // Read the complete request before closing the socket:
+                        // unread input can otherwise reset a valid response.
+                        stream.set_nonblocking(false).unwrap();
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(10)))
+                            .unwrap();
+                        stream
+                            .set_write_timeout(Some(Duration::from_secs(10)))
+                            .unwrap();
+                        let mut request = Vec::new();
+                        while !request.ends_with(b"\r\n\r\n") {
+                            let mut byte = [0_u8; 1];
+                            stream
+                                .read_exact(&mut byte)
+                                .expect("profile request header");
+                            request.push(byte[0]);
+                            assert!(
+                                request.len() <= 64 * 1024,
+                                "profile request header too large"
+                            );
+                        }
+                        assert!(request.starts_with(b"GET /client/v1/account/profile HTTP/1.1\r\n"));
                         let response = format!(
                             "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                             body.len()
                         );
-                        let _ = stream.write_all(response.as_bytes());
-                        let _ = stream.flush();
+                        stream.write_all(response.as_bytes()).unwrap();
+                        stream.flush().unwrap();
                         return;
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(10));
                     }
-                    Err(_) => return,
+                    Err(error) => panic!("profile HTTP accept failed: {error}"),
                 }
             }
+            panic!("profile HTTP fixture received no request within its deadline");
         });
         (url, handle)
     }

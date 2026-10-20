@@ -1103,11 +1103,13 @@ impl FakeNats {
     /// The credential a client reconnects with is the observable a rotation test
     /// needs: a replaced generation must present the renewed grant, and a refused
     /// one must stop being presented at all.
+    #[cfg(test)]
     pub(crate) fn presented_jwts(&self) -> Vec<String> {
         self.state.lock().unwrap().presented.clone()
     }
 
     /// How many `CONNECT`s carried exactly `jwt`.
+    #[cfg(test)]
     pub(crate) fn jwt_attempts(&self, jwt: &str) -> usize {
         self.state
             .lock()
@@ -1120,6 +1122,7 @@ impl FakeNats {
 
     /// Refuse `jwt` from now on, as the relay does for an expired grant: the
     /// handshake gets `-ERR 'Authorization Violation'` and the socket closes.
+    #[cfg(test)]
     pub(crate) fn revoke_jwt(&self, jwt: &str) {
         self.state.lock().unwrap().revoked.insert(jwt.to_string());
     }
@@ -1127,6 +1130,7 @@ impl FakeNats {
     /// End every live connection that presented `jwt`, as the relay does when a
     /// grant expires under it (`User Authentication Expired`, then the socket
     /// closes). The client's own reconnect then decides what to present.
+    #[cfg(test)]
     pub(crate) fn expire_jwt(&self, jwt: &str) {
         let mut state = self.state.lock().unwrap();
         let mut expired = Vec::new();

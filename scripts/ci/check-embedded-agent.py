@@ -12,10 +12,14 @@ from pathlib import Path
 import platform
 import re
 import subprocess
+import sys
 import time
 
 
 def main():
+    # Windows runners may use a legacy console code page; QR output is UTF-8.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     root = Path(__file__).resolve().parents[2]
     output = root / "target" / "embedded-agent-ci"
     output.mkdir(parents=True, exist_ok=True)

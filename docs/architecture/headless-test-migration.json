@@ -37396,7 +37396,7 @@
       "observedMain": "5cf84dbc778a5881a4765553985139848f4f5aeb",
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "source": "desktop/src-tauri/src/commands/remote.rs",
@@ -37441,6 +37441,26 @@
       "target": "desktop/src-tauri/src/commands/remote.rs",
       "status": "retained",
       "ownershipDecision": "gui-entry"
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_peer/runtime_tests.rs",
+      "target": "host/src/remote_peer/runtime_tests.rs",
+      "name": "a_refused_grant_ends_its_generation_instead_of_looping",
+      "introducedBy": "e8747623",
+      "observedMain": "e8747623",
+      "plannedOwner": "future-host",
+      "status": "migrated-pending-unified-validation",
+      "reason": "Rename-aware merge retains the upstream real relay/grant generation assertions in their shared backend owner."
+    },
+    {
+      "source": "desktop/src-tauri/src/remote_peer/runtime_tests.rs",
+      "target": "host/src/remote_peer/runtime_tests.rs",
+      "name": "a_live_generation_rotates_its_grant_before_it_lapses",
+      "introducedBy": "e8747623",
+      "observedMain": "e8747623",
+      "plannedOwner": "future-host",
+      "status": "migrated-pending-unified-validation",
+      "reason": "Rename-aware merge retains the upstream real relay/grant generation assertions in their shared backend owner."
     }
   ],
   "upstreamAmendments": [
@@ -37468,6 +37488,17 @@
       "Original source/line/name/attributes/hashes remain baseline records.",
       "Unix PTY and signals retained; native Windows console/ConPTY fixtures added, execution pending.",
       "Pre-bulk local CLI process results are intermediate evidence, not final candidate acceptance."
+    ],
+    "fixtureRepairs": [
+      {
+        "source": "cli/src/headless/mod.rs",
+        "cases": [
+          "an_accepted_platform_key_needs_no_terminal",
+          "a_rejected_platform_key_is_reported_as_expired_authorization"
+        ],
+        "reason": "Explicit blocking accepted socket, complete bounded HTTP request header read, checked writes and server join; retains original authorization assertions. Native Windows revalidation pending.",
+        "observedRun": 39389611663
+      }
     ]
   }
 }

@@ -2,7 +2,7 @@
 
 > [中文](headless-manual-acceptance.zh-CN.md)
 >
-> Status: primary-workspace exploratory build handed off; no confirmed manual results. This is not final acceptance.
+> Status: on 2026-10-20 the user reported manual testing complete and requested cleanup and a PR. Individual platform/case evidence was not separately supplied; exploratory results are not transferred to later source candidates.
 
 ## Candidate and order
 
@@ -62,4 +62,4 @@ Use isolated test homes for M02/M03/M04/M06/M13. Do not modify or terminate an e
 
 For each result record full candidate SHA, host OS/architecture, actual Desktop/CLI versions, phone OS/app build, data root, actions/expectations, observed result, evidence references and retest status. Credential values are not public evidence. Results without evidence stay unconfirmed.
 
-Confirmed manual passes: none. Confirmed manual failures: none. Exploratory reports, final same-candidate manual results, signed payloads, real install/upgrade/uninstall, old-Linux static smoke and matched measurements remain to be consolidated. Keep the overall Goal open until automation and user confirmation satisfy every final requirement.
+The user reported this manual round complete and authorized PR preparation, with no remaining failure reported. The exploratory commit is `a0d4d8402064dab1b82b0ad39bbd645837446236`. The table retains per-case feedback status so this aggregate report is not represented as independent evidence for every platform/case. Later main synchronization and CI fixture repairs are outside that tested revision. Signed payloads, real install/upgrade/uninstall, old-Linux static smoke, matched measurements and final same-candidate results remain to be consolidated. Opening or merging the PR does not establish final Goal acceptance.
