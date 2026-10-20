@@ -438,3 +438,67 @@ fn a_refused_batch_retries_singly_and_separates_refusal_from_storage_failure() {
     let error = writer.append(valid_a, true).expect_err("still unavailable");
     assert!(matches!(error, AppendFailure::Unavailable(_)), "{error:?}");
 }
+
+/// Durable failures must publish unhealthy state even when there is no
+/// unacknowledged event to retain. The real queue is parked so both shapes
+/// reach one batch without depending on the timer or runner scheduling.
+#[test]
+fn refused_batch_with_only_durable_storage_failures_stays_unhealthy() {
+    let directory = tempfile::tempdir().unwrap();
+    let manager = crate::session::Manager::new(directory.path().to_path_buf());
+    let store = manager.storage().unwrap().clone();
+    let session = "session-durable-refused-batch";
+    store.bind_events(session).unwrap();
+    let health = std::sync::Arc::new(EventJournalHealth::default());
+    let writer = EventBatchWriter::new(store.clone(), session.into(), health.clone()).unwrap();
+    manager.test_execute("DROP TABLE storage_meta");
+
+    let gate = writer.hold_worker_for_test();
+    gate.wait();
+    writer
+        .append(
+            serde_json::json!({
+                "event_type":"agent_end", "run_id":"run", "idx":0, "session_id":session
+            }),
+            false,
+        )
+        .unwrap();
+    let valid = serde_json::json!({
+        "event_type":"agent_end", "run_id":"run", "epoch":0, "idx":1, "session_id":session
+    });
+    let (reply, result) = std::sync::mpsc::sync_channel(1);
+    writer
+        .sender
+        .send(EventWriteCommand::Append {
+            event: valid.clone(),
+            reply: Some(reply),
+        })
+        .unwrap();
+    gate.wait();
+
+    let failure = result
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        matches!(failure, AppendFailure::Unavailable(_)),
+        "{failure:?}"
+    );
+    assert!(
+        health.error().is_some(),
+        "health must precede the durable failure reply"
+    );
+    assert_eq!(store.event_cursors(session).unwrap().1, 0);
+
+    // Even if another caller clears the health report, the worker must retain
+    // its failed state after a storage failure with no fire-and-forget retry.
+    health.clear();
+    let failure = writer.append(valid, true).unwrap_err();
+    assert!(
+        failure
+            .to_string()
+            .contains("event persistence is unavailable"),
+        "{failure}"
+    );
+    assert_eq!(writer.commit_count(), 0);
+}

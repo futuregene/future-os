@@ -210,6 +210,7 @@ futureos_preinstall_lease_acquired:
   ClearErrors
   Delete "$INSTDIR\future.exe"
   Delete "$INSTDIR\future-agent.exe"
+  Delete "$INSTDIR\futureos-headless.exe"
   IfErrors 0 futureos_preinstall_sidecars_removed
 futureos_preinstall_backup_failed:
   DetailPrint "$(FutureOSInstallNotWritable)"

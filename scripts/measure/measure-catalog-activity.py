@@ -121,7 +121,7 @@ def local_session_rows():
 
 
 def target_dir():
-    """Where the desktop crate's test binary was built.
+    """Where the shared host crate's test binary was built.
 
     `CARGO_TARGET_DIR` wins when set (a worktree that shares the main checkout's
     target dir is the common case while iterating), and a relative value is
@@ -131,25 +131,25 @@ def target_dir():
     if not configured:
         return ROOT / "target"
     path = Path(configured)
-    return path if path.is_absolute() else ROOT / "desktop" / "src-tauri" / path
+    return path if path.is_absolute() else ROOT / "host" / path
 
 
 def newest_test_binary():
-    """The newest desktop test binary.
+    """The newest shared host test binary.
 
     Not alphabetically first: `target/debug/deps` keeps every historical build,
     and a stale one silently measures an older revision.
     """
     candidates = [
         path
-        for path in (target_dir() / "debug" / "deps").glob("futureos_lib-*")
+        for path in (target_dir() / "debug" / "deps").glob("future_host-*")
         if path.is_file() and os.access(path, os.X_OK)
     ]
     binary = max(candidates, key=lambda path: path.stat().st_mtime, default=None)
     if binary is None:
         raise SystemExit(
-            "build the desktop test binary first: "
-            "cd desktop/src-tauri && cargo test --no-default-features --lib "
+            "build the shared host test binary first: "
+            "cd host && cargo test --lib "
             "measure_catalog_activity_lane --no-run"
         )
     return binary

@@ -1,0 +1,155 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "run": 39379461294,
+  "candidate": "8291d272c7ee3f1677ad2d9c2553dd61037b7bc8",
+  "job": 118485031786,
+  "jobConclusion": "success",
+  "workflowSnapshot": {
+    "conclusion": "",
+    "headSha": "8291d272c7ee3f1677ad2d9c2553dd61037b7bc8",
+    "jobs": [
+      {
+        "conclusion": "success",
+        "databaseId": 118484979711,
+        "name": "Detect affected checks",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118484979865,
+        "name": "macOS notarization recovery",
+        "status": "completed"
+      },
+      {
+        "conclusion": "skipped",
+        "databaseId": 118484980731,
+        "name": "Matched Windows Rust compilation",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031631,
+        "name": "Rust tests (Linux) (desktop gui)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031654,
+        "name": "Rust tests (Linux) (channels, rpc, goal)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031702,
+        "name": "Rust tests (Linux) (tui, cli)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031706,
+        "name": "Rust tests (Linux) (desktop headless)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031733,
+        "name": "Rust tests (Linux) (agent)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031735,
+        "name": "Rust fmt + clippy (Linux)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031739,
+        "name": "Remote packages + interoperability",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031743,
+        "name": "Mobile typecheck + lint + test",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031747,
+        "name": "Windows update fixtures",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031778,
+        "name": "Desktop typecheck + lint + test",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031784,
+        "name": "Rust build (Linux)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031786,
+        "name": "Rust tests (Linux) (host)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031803,
+        "name": "Shared host (macOS)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118485031805,
+        "name": "Rust build (macOS)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "",
+        "databaseId": 118485031807,
+        "name": "Shared host (Windows)",
+        "status": "in_progress"
+      },
+      {
+        "conclusion": "",
+        "databaseId": 118485031824,
+        "name": "Rust build (Windows)",
+        "status": "in_progress"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118486106130,
+        "name": "Rust tests (Linux) (desktop backend)",
+        "status": "completed"
+      }
+    ],
+    "status": "in_progress"
+  },
+  "broker": "Wrapper-owned isolated nats-server; ready before the single Host core invocation. No local NATS server.",
+  "cases": {
+    "a_second_device_is_told_who_holds_the_machine_and_only_takes_it_when_asked": "2026-10-20T06:22:06.7707709Z test remote::verify_e2e::multi_device::a_second_device_is_told_who_holds_the_machine_and_only_takes_it_when_asked ... ok",
+    "two_simultaneous_reconnects_leave_control_where_it_was": "2026-10-20T06:22:07.1552454Z test remote::verify_e2e::multi_device::two_simultaneous_reconnects_leave_control_where_it_was ... ok",
+    "the_approval_tier_reflects_what_the_desktop_can_enforce": "2026-10-20T06:21:01.7244257Z test remote::commands::bridge_tests::the_approval_tier_reflects_what_the_desktop_can_enforce ... ok"
+  },
+  "results": [
+    "2026-10-20T06:22:22.3095106Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1575 filtered out; finished in 2.54s",
+    "2026-10-20T06:22:29.7987387Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1575 filtered out; finished in 7.44s",
+    "2026-10-20T06:22:29.8348373Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1575 filtered out; finished in 5.07s",
+    "2026-10-20T06:22:29.8666368Z test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1575 filtered out; finished in 2.87s",
+    "2026-10-20T06:26:49.3967099Z test result: ok. 1566 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out; finished in 424.19s",
+    "2026-10-20T06:26:49.9055964Z test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+  ],
+  "logSha256": "ee84ad6bca88cc1d83a31241798f59dd0de448211f660c319bc6e70244b74317",
+  "limits": [
+    "Workflow still running at snapshot; Windows native jobs are not yet accepted.",
+    "Later stop coordinator/service and startup-preparation commits are not in this candidate.",
+    "Matched Windows compilation skipped; no performance gate accepted."
+  ]
+}

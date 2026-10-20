@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import zipfile
@@ -94,9 +95,18 @@ def main():
                     probe(f"{name}-cli-version", directory / "future", ["--version"], version, home)
                     probe(f"{name}-agent-help", directory / "future", ["agent", "--help"],
                           "--grpc-addr", home)
+                    run(f"{name}-headless-artifact", [sys.executable,
+                        "scripts/ci/check-headless-artifact.py", directory / "future", "--require-static",
+                        "--output", args.output / f"{name}-headless-artifact.json"], timeout=60)
                     # Every Linux CLI distribution promises a static musl binary.
                     dynamic = run(f"{name}-cli-linkage", ["readelf", "-d", directory / "future"])
                     require("NEEDED" not in dynamic, f"{name} CLI is dynamically linked")
+                    probe(f"{name}-headless-help", directory / "future", ["headless", "--help"],
+                          "Usage: future headless", home)
+                    require(not (directory / "futureos-headless").exists(),
+                            f"{name} still ships the retired standalone headless executable")
+                    run(f"{name}-headless-old-glibc", ["bash", "scripts/ci/check-headless-linux.sh",
+                        directory / "future"], timeout=240)
                     if name != "cli":
                         # Assert the stable part of the usage line, not the exact flag list:
                         # the flags change (--no-qr arrived in #1162 and went with --re-pair
@@ -106,10 +116,7 @@ def main():
                         # (desktop/src-tauri/src/launch.rs).
                         probe(f"{name}-desktop-help", directory / "futureos", ["--help"],
                               "Usage: futureos", home)
-                        probe(f"{name}-headless-help", directory / "futureos-headless", ["--help"],
-                              "Usage: futureos-headless", home)
-                        run(f"{name}-headless-old-glibc", ["bash", "scripts/ci/check-headless-linux.sh",
-                            directory / "futureos-headless"], timeout=240)
+
             else:
                 installer = archive("*-setup*.exe")
                 portable = archive("*-portable*.zip")
@@ -134,7 +141,14 @@ def main():
                         require(len(matches) == 1, f"{name}: expected one {binary_name}, found {matches}")
                         binary = matches[0]
                         probe(f"{name}-{binary_name}-{flags[0][2:]}", binary, flags, expected, home)
+                        require(not list(directory.rglob("futureos-headless.exe")),
+                                f"{name} ships the retired headless executable")
                         if binary_name == "future.exe":
+                            run(f"{name}-headless-artifact", [sys.executable,
+                                "scripts/ci/check-headless-artifact.py", binary,
+                                "--output", args.output / f"{name}-headless-artifact.json"], timeout=60)
+                            probe(f"{name}-headless-help", binary, ["headless", "--help"],
+                                  "Usage: future headless", home)
                             probe(f"{name}-agent-help", binary, ["agent", "--help"],
                                   "--reset-windows-sandbox", home)
             summary["status"] = "passed"

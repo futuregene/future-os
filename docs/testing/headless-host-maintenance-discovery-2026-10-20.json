@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "0553e8ee",
+  "scope": "Maintenance CLI discovery, capabilities, executable identity cache, bounded probe and PATH preparation moved once into Host.",
+  "compatibility": [
+    "Same sibling/PATH candidate precedence and runnable-file restrictions",
+    "Same version/capability wire contract, 3-second probe deadline and output cap",
+    "Same Windows PE probe and creation flags",
+    "Development paths resolve to the same repository targets and Desktop staged sidecar; no requirement that Desktop files exist",
+    "Entry test configuration is explicitly injected; test-support alone never changes a real product child"
+  ],
+  "checks": {
+    "host": {
+      "results": [
+        "test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 1587 filtered out; finished in 13.86s"
+      ],
+      "logSha256": "d5202cf6eb0bae31480d7a331b4ceac9d987fe7885b268d34a391726fbcf86ac",
+      "CARGO_INCREMENTAL": "0"
+    },
+    "entry": {
+      "results": [
+        "test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 452 filtered out; finished in 7.04s"
+      ],
+      "logSha256": "f662c985b79df8544f0ead89aa47cdfea047bd7b7f361be45bfaec2c5b000a0b",
+      "CARGO_INCREMENTAL": "0"
+    },
+    "process": {
+      "results": [
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.33s"
+      ],
+      "logSha256": "7f39e1bbb7902b66af3682b36cadf39e32573eb9083d6548660ede5e3554bcfd",
+      "CARGO_INCREMENTAL": "0"
+    },
+    "combinedClippy": {
+      "status": "pass",
+      "logSha256": "7c98e2713ffa94f688cf2b6c33012ab5e42fe3aa8022dd38d82922650c8e7938",
+      "tail": [
+        "    Checking futureos v0.0.0 (/Volumes/ZHITAI/Workspace/future-os/.worktrees/headless-unified/desktop/src-tauri)",
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.34s"
+      ]
+    },
+    "legacyClippy": {
+      "status": "pass",
+      "logSha256": "3fd375499141a4bb93dff72639149fa4b2e5e0ed98fabf0a30562e23f0924f43",
+      "tail": [
+        "    Checking futureos v0.0.0 (/Volumes/ZHITAI/Workspace/future-os/.worktrees/headless-unified/desktop/src-tauri)",
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.53s"
+      ]
+    },
+    "strictRustdoc": {
+      "status": "pass",
+      "logSha256": "c9b6ff787c3bbe31fc24b14c04a5fcac88727de551318eada07eb2e250a7431e",
+      "tail": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.12s",
+        "   Generated /Volumes/ZHITAI/Workspace/future-os/target/doc/future_host/index.html"
+      ]
+    }
+  },
+  "repair": {
+    "case": "GUI skills bootstrap parent child creation",
+    "red": "10 passed; 2 failed. Concurrent fixture PATH inherited by a child made sleep unavailable, bypassing cancellation/pipe-drain assertions.",
+    "redLogSha256": "da879e52eb727ac328dfc8380b4398695c85dd65fa952079acb04f7203f029c1",
+    "fix": "Existing HomeGuard in parent run_case keeps PATH stable during child creation. No assertion/deadline change. Entry wrapper explicitly configures original unit-fixture behavior, including child fixtures that do not own a HomeGuard."
+  },
+  "limits": [
+    "Not included in CI 39379461294.",
+    "Windows behavior remains for native CI.",
+    "New future headless entry and final release/manual acceptance remain open."
+  ],
+  "boundaries": {
+    "checked": {
+      "future-cli": {
+        "forbidden": [],
+        "packages": 395
+      },
+      "future-host": {
+        "forbidden": [],
+        "packages": 370
+      }
+    },
+    "desktopGuiFeatures": [
+      "default",
+      "gui"
+    ],
+    "executedTests": 0,
+    "target": "aarch64-apple-darwin"
+  }
+}

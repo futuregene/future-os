@@ -7,6 +7,7 @@
 pub mod browser;
 pub mod commands;
 pub mod constants;
+pub mod headless;
 pub mod help;
 pub mod output;
 pub mod relay;

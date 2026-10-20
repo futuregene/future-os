@@ -335,12 +335,20 @@ mod tests {
     /// cannot own, so a poll through it cannot disagree with the plain poll.
     #[tokio::test]
     async fn the_recovery_poll_reports_the_same_phase_as_the_plain_poll() {
+        // Both polls compare the same service, not a sibling fixture changing
+        // readiness or shutdown state between two reads of global state.
+        let _home = crate::auth_store::test_support::HomeGuard::new("supervision-recovery-poll");
+        let _mock = crate::agent_bridge::test_support::mock_agent();
         let app = tauri::test::mock_builder()
             .build(tauri::test::mock_context(tauri::test::noop_assets()))
             .unwrap();
         let recovered = agent_status_with_recovery(app.handle().clone()).await;
         let plain = agent_status().await;
         assert_eq!(recovered.phase, plain.phase);
+        assert_eq!(
+            recovered.phase, "ready",
+            "the isolated RPC fixture is ready"
+        );
         assert_eq!(recovered.desktop_version, crate::build_info::VERSION);
         assert_eq!(recovered.agent_version, plain.agent_version);
         assert_eq!(recovered.error, plain.error);

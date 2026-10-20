@@ -1,0 +1,79 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "779ef8864fe5bda2f6105829692f3629c99ddca8",
+  "change": "Committed provider/auth revision observer now lives once in future-host, preserving global stream/revision/snapshot invalidation, reconnection and Remote/GUI fan-out. GUI installs its task runtime explicitly after the instance lock and before shared services.",
+  "testOwnership": {
+    "source": "desktop/src-tauri/src/agent_bridge/config_observer.rs",
+    "target": "host/src/agent_bridge/config_observer.rs",
+    "names": [
+      "observe_once_ping_snapshot_invalidates_and_ends",
+      "observe_once_tracks_revisions_and_skips_stale_and_unknown",
+      "observe_once_surfaces_attach_failure",
+      "observe_once_surfaces_stream_close_error",
+      "observe_once_connect_failure_propagates",
+      "run_loop_reconnects_and_backs_off",
+      "spawn_provider_config_observer_runs_once"
+    ],
+    "originalAssertionMacros": 8,
+    "movedAssertionMacros": 8
+  },
+  "observerLocalTests": {
+    "command": "cargo test --offline --locked -p future-host --lib agent_bridge::config_observer::",
+    "passed": 7,
+    "failed": 0,
+    "ignored": 0,
+    "executionSeconds": 0.39,
+    "logSha256": "5225e6f58b91d063f047006b99c1cee05104366ca3656bb41ca20cc98532e54f"
+  },
+  "independentEntry": {
+    "noGuiSelection": {
+      "matched": 0,
+      "accepted": false,
+      "reason": "Provider IPC module is GUI-feature-only."
+    },
+    "initialGui": {
+      "failed": 1,
+      "reason": "Shared Agent client correctly requires entry channel runtime; old fixture implicitly relied on a previous test installing it."
+    },
+    "repair": "The retained Remote/IPC mock harness explicitly installs the Desktop entry-owned channel runtime. Production shared services keep no fallback and original RPC assertions remain.",
+    "results": [
+      {
+        "name": "Provider GUI command RPC in fresh process",
+        "passed": 1,
+        "failed": 0,
+        "profile": "default test debug",
+        "executionSeconds": 0.03
+      },
+      {
+        "name": "GUI process state/runtime initialization",
+        "passed": 1,
+        "failed": 0,
+        "executionSeconds": 0.02
+      },
+      {
+        "name": "Provider GUI command RPC in native CI test debug profile 1",
+        "passed": 1,
+        "failed": 0,
+        "executionSeconds": 0.03
+      }
+    ],
+    "logDigests": {
+      "headless-local-provider-entry-alone-2026-10-20.log": "50d8d28e84b35a74df1c312b23fc5f8ea613f8642608c623f7afdf349726378e",
+      "headless-local-provider-gui-alone-2026-10-20.log": "87fb597360d7ee5e34774bb9be545a82a52b05e1c1c8456c6a7eca001011b218",
+      "headless-local-provider-gui-fixed-2026-10-20.log": "60c4dfc126ecdca1fbe1f48b44296cfc5e0d15f2403074fa5e4e0322de9d26d7",
+      "headless-local-gui-runtime-fixed-2026-10-20.log": "98fa0623668c5ebd1061d362006c1dbafc4c572635eae1bb0e0d98f9ae805b39",
+      "headless-local-provider-native-profile-2026-10-20.log": "1b01170d0c70018e459ffb87423c4d7c93fbbd2e90cdc0e0fa8568f94b17fdca"
+    }
+  },
+  "nativeGate": "Add gui-entry-providers as a ninth independent suite, retaining zero-match rejection; full new nine-suite execution remains for CI.",
+  "localChecks": [
+    "fmt PASS",
+    "Host/GUI/CLI Clippy --all-targets PASS",
+    "Original headless Clippy --all-targets PASS"
+  ],
+  "limits": [
+    "Local macOS results; current CI candidate 8bc9e614 predates this batch.",
+    "No claim of final future headless/release/manual acceptance."
+  ]
+}

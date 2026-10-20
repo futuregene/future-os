@@ -1,0 +1,1994 @@
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
+
+use super::db::*;
+use super::records::*;
+use super::util::*;
+use super::workspaces::{
+    get_or_create_chat_workspace_in, get_or_create_user_workspace_in, get_workspace_in,
+};
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadRecord {
+    pub id: String,
+    pub workspace_id: String,
+    pub mode: String,
+    pub title: String,
+    /// The title this thread was minted with, when a generated title may still
+    /// replace it; `None` for a thread that arrived with a conversation's own
+    /// name. See `store::schema`'s `threads.title_seed`.
+    pub title_seed: Option<String>,
+    pub status: String,
+    pub pinned: bool,
+    pub readonly: bool,
+    // model_provider, model_id, thinking_level — dropped, now from agent
+    pub agent_session_id: Option<String>,
+    pub parent_session_id: Option<String>,
+    pub asset_root_id: Option<String>,
+    pub last_message_at: Option<i64>,
+    pub last_opened_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub archived_at: Option<i64>,
+    pub deleted_at: Option<i64>,
+}
+
+// `pinned`/`readonly` are `bool` fields; rusqlite's `FromSql for bool` maps the
+// stored 0/1 integers (same as the prior explicit `i64 != 0`).
+sql_record!(pub(super) THREAD_COLUMNS, thread_from_row -> ThreadRecord {
+    id, workspace_id, mode, title, title_seed, status, pinned, readonly,
+    agent_session_id, parent_session_id, asset_root_id, last_message_at, last_opened_at,
+    created_at, updated_at, archived_at, deleted_at,
+});
+
+pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::Error> {
+    let conn = connect()?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {THREAD_COLUMNS}
+             FROM threads
+             WHERE status != 'deleted'
+             ORDER BY pinned DESC, COALESCE(last_message_at, updated_at, created_at) DESC"
+    ))?;
+    let rows = stmt.query_map([], thread_from_row)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::Error::from)
+}
+
+pub fn get_recent_thread() -> Result<Option<ThreadRecord>, crate::Error> {
+    let conn = connect()?;
+    conn.query_row(
+        &format!(
+            "SELECT {THREAD_COLUMNS}
+         FROM threads
+         WHERE status = 'active'
+         ORDER BY COALESCE(last_opened_at, last_message_at, updated_at) DESC
+         LIMIT 1"
+        ),
+        [],
+        thread_from_row,
+    )
+    .optional()
+    .map_err(crate::Error::from)
+}
+
+/// Find an active thread by its `agent_session_id` (used to map a remote
+/// (phone) session id back to the GUI thread that owns it).
+pub fn find_thread_by_agent_session(
+    session_id: &str,
+) -> Result<Option<ThreadRecord>, crate::Error> {
+    let conn = connect()?;
+    conn.query_row(
+        &format!(
+            "SELECT {THREAD_COLUMNS} FROM threads \
+             WHERE agent_session_id = ?1 AND status != 'deleted' LIMIT 1"
+        ),
+        params![session_id],
+        thread_from_row,
+    )
+    .optional()
+    .map_err(crate::Error::from)
+}
+
+pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Error> {
+    let mode = normalize_mode(&input.mode)?;
+    let now = now_millis();
+    let thread_id = create_id("thread");
+    // Only use a pre-existing agent session ID (e.g. from fork). For normal
+    // threads leave it empty — the agent generates the ID on first prompt
+    // and it's persisted back via bind_thread_session_id.
+    let agent_session_id = input
+        .agent_session_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
+    let title = input.title.unwrap_or_else(|| {
+        if mode == "chat" {
+            "New Chat".to_string()
+        } else {
+            "Workspace Thread".to_string()
+        }
+    });
+    // A thread born without a session of its own is a conversation the Desktop
+    // starts from nothing: its title is a placeholder that a finished first
+    // turn may replace. One created around an *existing* session (a fork, or an
+    // import) carries that conversation's own name instead, so it is left
+    // alone — a rename made in another client never reaches this store and
+    // must not be undone here. Imported worker conversations are seeded
+    // explicitly by the importer (`seed_thread_auto_title`).
+    let title_seed = agent_session_id.is_none().then(|| title.clone());
+
+    // Resolve/create the workspace and insert the thread in one transaction so a
+    // crash between the two writes can't leave an orphan workspace with no thread
+    // pointing at it. `&tx` deref-coerces to `&Connection` for the `_in` helpers.
+    // BEGIN IMMEDIATE because the `_in` helpers are SELECT-then-INSERT: under a
+    // deferred transaction in WAL a concurrent commit between the read and the
+    // write fails the whole create with SQLITE_BUSY_SNAPSHOT instead of being
+    // serialized (matches the standalone get_or_create_user_workspace).
+    let mut conn = connect()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+
+    let workspace = if mode == "chat" {
+        get_or_create_chat_workspace_in(&tx, &thread_id, Some(title.clone()))?
+    } else if let Some(workspace_id) = input.workspace_id {
+        loaded(get_workspace_in(&tx, &workspace_id)?, "Workspace")?
+    } else {
+        let raw_path = input
+            .workspace_path
+            .ok_or_else(|| "workspacePath is required for workspace threads.".to_string())?;
+        let path = expand_tilde(&raw_path)?;
+        let name = input
+            .workspace_name
+            .unwrap_or_else(|| workspace_name_from_path(&path));
+        get_or_create_user_workspace_in(&tx, name, path, None)?
+    };
+
+    tx.execute(
+        "INSERT INTO threads (
+             id, workspace_id, mode, title, title_seed, status, pinned, readonly,
+             agent_session_id, asset_root_id, last_opened_at, created_at, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, 'active', 0, 0, ?6, ?1, ?7, ?7, ?7)",
+        params![
+            thread_id,
+            workspace.id,
+            mode,
+            title,
+            title_seed,
+            agent_session_id,
+            now
+        ],
+    )?;
+
+    let thread = loaded(get_thread_in(&tx, &thread_id)?, "Created thread")?;
+    tx.commit()?;
+    mark_catalog_dirty();
+    Ok(thread)
+}
+
+/// Create the sole Desktop projection for an Agent session.
+///
+/// The unique index is the concurrency authority. The optimistic lookup keeps
+/// the common path cheap; if another discovery task wins between that lookup
+/// and the insert, the losing insert rolls back and returns the winner instead
+/// of creating a duplicate thread/workspace pair.
+pub fn get_or_create_thread_for_agent_session(
+    mut input: CreateThreadInput,
+) -> Result<(ThreadRecord, bool), crate::Error> {
+    let session_id = input
+        .agent_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| "agentSessionId is required for an Agent-backed thread.".to_string())?
+        .to_string();
+    input.agent_session_id = Some(session_id.clone());
+
+    if let Some(thread) = find_thread_by_agent_session(&session_id)? {
+        return Ok((thread, false));
+    }
+    match create_thread(input) {
+        Ok(thread) => Ok((thread, true)),
+        Err(error) => match find_thread_by_agent_session(&session_id)? {
+            Some(thread) => Ok((thread, false)),
+            None => Err(error),
+        },
+    }
+}
+
+pub fn get_thread(thread_id: &str) -> Result<Option<ThreadRecord>, crate::Error> {
+    let conn = connect()?;
+    get_thread_in(&conn, thread_id)
+}
+
+/// Make a fork share the ancestor's durable attachment root. The root id is
+/// independent of the ancestor row's lifetime; cleanup retains the directory
+/// while any live descendant references it.
+pub fn inherit_thread_asset_root(
+    thread_id: &str,
+    parent_thread_id: &str,
+) -> Result<(), crate::Error> {
+    let conn = connect()?;
+    if conn.execute(
+        "UPDATE threads
+             SET asset_root_id = COALESCE(
+                 (SELECT NULLIF(asset_root_id, '') FROM threads WHERE id = ?2),
+                 ?2
+             ), updated_at = ?3
+         WHERE id = ?1",
+        params![thread_id, parent_thread_id, now_millis()],
+    )? == 0
+    {
+        return Err("Thread could not be loaded.".to_string().into());
+    }
+    Ok(())
+}
+
+pub fn thread_asset_root_id(thread_id: &str) -> Result<String, crate::Error> {
+    let conn = connect()?;
+    conn.query_row(
+        "SELECT COALESCE(NULLIF(asset_root_id, ''), id) FROM threads WHERE id = ?1",
+        [thread_id],
+        |row| row.get(0),
+    )
+    .optional()?
+    .ok_or_else(|| "Thread could not be loaded.".to_string().into())
+}
+
+/// Record that a thread's current title is a placeholder the Desktop may
+/// replace with a generated one.
+///
+/// Used by the importer for a *derived* conversation — a session the agent
+/// reports as belonging to another one, e.g. a goal worker named after its
+/// goal. Such a name is minted by a machine, so it is a seed like a fresh
+/// conversation's; a standalone imported conversation keeps whatever name it
+/// arrived with. Idempotent, and deliberately narrow: it seeds only a thread
+/// that was never seeded (a name someone already chose is never whitelisted)
+/// and still wears exactly `title` (an import must not whitelist a title that
+/// changed under it). Returns whether this call seeded the row.
+pub fn seed_thread_auto_title(thread_id: &str, title: &str) -> Result<bool, crate::Error> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Ok(false);
+    }
+    let conn = connect()?;
+    let seeded = conn.execute(
+        "UPDATE threads SET title_seed = ?1
+         WHERE id = ?2 AND status != 'deleted' AND title_seed IS NULL AND title = ?1",
+        params![title, thread_id],
+    )?;
+    Ok(seeded > 0)
+}
+
+/// Move an existing seed onto a title the importer re-derived for this thread
+/// (its healing pass replaces a fallback title with the one the session's first
+/// message implies). The replacement title is machine-derived like the one it
+/// replaces, so the thread stays auto-titleable. A thread that was never
+/// seeded stays unseeded — healing must not turn auto-titling on.
+pub fn reseed_thread_auto_title(thread_id: &str, title: &str) -> Result<bool, crate::Error> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Ok(false);
+    }
+    let conn = connect()?;
+    let reseeded = conn.execute(
+        "UPDATE threads SET title_seed = ?1
+         WHERE id = ?2 AND status != 'deleted' AND title_seed IS NOT NULL",
+        params![title, thread_id],
+    )?;
+    Ok(reseeded > 0)
+}
+
+pub(super) fn get_thread_in(
+    conn: &Connection,
+    thread_id: &str,
+) -> Result<Option<ThreadRecord>, crate::Error> {
+    conn.query_row(
+        &format!("SELECT {THREAD_COLUMNS} FROM threads WHERE id = ?1"),
+        params![thread_id],
+        thread_from_row,
+    )
+    .optional()
+    .map_err(crate::Error::from)
+}
+
+/// Rename a thread.
+///
+/// A rename is permanent in one direction only: it leaves `title_seed`
+/// untouched, so the thread is no longer wearing its seed and can never be
+/// auto-titled again (whether the rename came from the dialog, from the phone,
+/// from `rename_session` mirroring the agent's own name, or from another
+/// client's rename the importer synced back). Only the importer's healing pass
+/// re-seeds, via `reseed_thread_auto_title`.
+pub fn rename_thread(input: RenameThreadInput) -> Result<ThreadRecord, crate::Error> {
+    let title = input.title.trim();
+    if title.is_empty() {
+        return Err("title cannot be empty.".to_string().into());
+    }
+
+    let now = now_millis();
+    const SQL: &str = "UPDATE threads
+         SET title = ?1, updated_at = ?2
+         WHERE id = ?3 AND status != 'deleted'";
+    let conn = connect()?;
+    conn.execute(SQL, params![title, now, input.thread_id])?;
+
+    let thread = loaded(get_thread(&input.thread_id)?, "Thread")?;
+    mark_catalog_dirty();
+    Ok(thread)
+}
+
+pub(super) fn sync_thread_title_in(
+    conn: &Connection,
+    thread_id: &str,
+    title: &str,
+) -> Result<bool, crate::Error> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Ok(false);
+    }
+    const SQL: &str = "UPDATE threads
+         SET title = ?1
+         WHERE id = ?2 AND status != 'deleted' AND title != ?1";
+    let changed = conn.execute(SQL, params![title, thread_id])?;
+    if changed > 0 {
+        mark_catalog_dirty();
+    }
+    Ok(changed > 0)
+}
+
+/// Background convergence of the title toward the agent's `session_name` —
+/// the name shared with every client (TUI `/name`, CLI, channels), whose
+/// renames never reach the GUI DB. Unlike `rename_thread` this is not a user
+/// edit: `updated_at` is untouched so the sidebar order is undisturbed, and
+/// matching titles are a no-op. Returns whether the title changed.
+pub fn sync_thread_title(thread_id: &str, title: &str) -> Result<bool, crate::Error> {
+    let conn = connect()?;
+    sync_thread_title_in(&conn, thread_id, title)
+}
+
+pub fn update_thread_model(input: UpdateThreadModelInput) -> Result<ThreadRecord, crate::Error> {
+    // Model is now managed by the agent (set_model RPC). The GUI cache
+    // (agentStateCache) handles reads; DB write is a no-op.
+    loaded(get_thread(&input.thread_id)?, "Thread")
+}
+
+pub fn update_thread_thinking_level(
+    input: UpdateThreadThinkingLevelInput,
+) -> Result<ThreadRecord, crate::Error> {
+    // Thinking level is now managed by the agent (set_thinking_level RPC).
+    loaded(get_thread(&input.thread_id)?, "Thread")
+}
+
+/// Bind the agent-generated identity to a thread exactly once.
+///
+/// Conversation identity is immutable after the first successful bind. A
+/// caller may idempotently repeat the same bind, but it may never replace a
+/// non-empty identity: doing so would make the UI thread point at a different
+/// transcript and strand the original history.
+pub fn bind_thread_session_id(thread_id: &str, session_id: &str) -> Result<(), crate::Error> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err("agentSessionId cannot be empty.".to_string().into());
+    }
+    let now = now_millis();
+    const SQL: &str = "UPDATE threads SET agent_session_id = ?1, updated_at = ?2
+         WHERE id = ?3 AND status != 'deleted'
+           AND (agent_session_id IS NULL OR TRIM(agent_session_id) = '')";
+    let conn = connect()?;
+    if conn.execute(SQL, params![session_id, now, thread_id])? > 0 {
+        mark_catalog_dirty();
+        return Ok(());
+    }
+    let thread = loaded(get_thread_in(&conn, thread_id)?, "Thread")?;
+    match thread.agent_session_id.as_deref().map(str::trim) {
+        Some(existing) if existing == session_id => Ok(()),
+        Some(existing) if !existing.is_empty() => Err(format!(
+            "Thread is already bound to agent session {existing}; refusing to replace it with {session_id}."
+        )
+        .into()),
+        _ => Err("Thread is not available for session binding.".into()),
+    }
+}
+
+/// Project Agent lineage by session id, not local thread id: parents may be
+/// imported later, live in another workspace, or have been deleted. No FK and
+/// no cascade; surviving children remain accessible as roots in the UI.
+pub fn sync_thread_parent_session(
+    session_id: &str,
+    parent_session_id: &str,
+) -> Result<bool, crate::Error> {
+    let parent = parent_session_id.trim();
+    let parent = (!parent.is_empty() && parent != session_id).then_some(parent);
+    let conn = connect()?;
+    let changed = conn.execute(
+        "UPDATE threads SET parent_session_id = ?1
+         WHERE agent_session_id = ?2 AND parent_session_id IS NOT ?1",
+        params![parent, session_id],
+    )?;
+    if changed > 0 {
+        mark_catalog_dirty();
+    }
+    Ok(changed > 0)
+}
+
+/// Record that a thread was opened without treating the visit as message
+/// activity. `last_opened_at` chooses the startup thread, but deliberately
+/// does not affect the sidebar's conversation order.
+pub fn mark_thread_opened(thread_id: &str) -> Result<(), crate::Error> {
+    let now = now_millis();
+    const SQL: &str = "UPDATE threads SET last_opened_at = ?1
+         WHERE id = ?2 AND status != 'deleted'";
+    let conn = connect()?;
+    conn.execute(SQL, params![now, thread_id])?;
+    Ok(())
+}
+
+/// Record conversation activity. This is kept separate from `updated_at`:
+/// metadata changes such as a rename must not reorder the rail. Original Agent
+/// timestamps make replay safe; an older event must never move activity back.
+pub(super) fn mark_thread_message_activity_in(
+    conn: &Connection,
+    thread_id: &str,
+    timestamp: i64,
+) -> Result<bool, crate::Error> {
+    const SQL: &str = "UPDATE threads SET last_message_at = ?1
+         WHERE id = ?2 AND status != 'deleted'
+           AND (last_message_at IS NULL OR last_message_at < ?1)";
+    Ok(conn.execute(SQL, params![timestamp, thread_id])? > 0)
+}
+
+/// Advance the shared desktop/mobile catalog on assistant output as well as
+/// user prompts. Opening, renaming and replay receipt time are not activity.
+pub fn record_thread_message_activity(thread_id: &str, timestamp: i64) -> Result<(), crate::Error> {
+    let conn = connect()?;
+    if mark_thread_message_activity_in(&conn, thread_id, timestamp)? {
+        mark_catalog_dirty();
+    }
+    Ok(())
+}
+
+/// Move a thread to a different workspace (e.g. when cwd changes).
+pub fn pin_thread(input: PinThreadInput) -> Result<ThreadRecord, crate::Error> {
+    // `updated_at` is deliberately untouched: pinning is an ordering flag, not
+    // an activity event. If it stamped `updated_at`, unpinning a thread would
+    // push it to the top of the recency sort (it just became "most recently
+    // updated") and the sidebar order would appear not to change.
+    let pinned = if input.pinned { 1 } else { 0 };
+    const SQL: &str = "UPDATE threads
+         SET pinned = ?1
+         WHERE id = ?2 AND status != 'deleted'";
+    let conn = connect()?;
+    conn.execute(SQL, params![pinned, input.thread_id])?;
+
+    loaded(get_thread(&input.thread_id)?, "Thread")
+}
+
+pub(super) fn update_thread_status(
+    thread_id: &str,
+    status: &str,
+) -> Result<ThreadRecord, crate::Error> {
+    let now = now_millis();
+    let archived_at = if status == "archived" {
+        Some(now)
+    } else {
+        None
+    };
+    const SQL: &str = "UPDATE threads
+         SET status = ?1, archived_at = ?2, updated_at = ?3
+         WHERE id = ?4 AND status != 'deleted'";
+    let conn = connect()?;
+    conn.execute(SQL, params![status, archived_at, now, thread_id])?;
+
+    loaded(get_thread(thread_id)?, "Thread")
+}
+
+pub fn archive_thread(thread_id: &str) -> Result<ThreadRecord, crate::Error> {
+    update_thread_status(thread_id, "archived")
+}
+
+pub fn restore_thread(thread_id: &str) -> Result<ThreadRecord, crate::Error> {
+    update_thread_status(thread_id, "active")
+}
+
+/// FK-safe hard delete of every child row belonging to `thread_id` (the
+/// `threads` row itself is left to the caller). `PRAGMA foreign_keys = ON` is
+/// enforced, so the order matters: children before parents, and the
+/// `runs.trigger_message_id` ↔ `messages.run_id` cycle is broken by nulling
+/// `runs.trigger_message_id` before deleting messages. Artifacts are workspace
+/// assets, not conversation data — they are detached (`thread_id`/`run_id`
+/// nulled), never destroyed with the thread.
+pub(super) fn delete_thread_children_in(
+    conn: &Connection,
+    thread_id: &str,
+) -> rusqlite::Result<()> {
+    super::legacy_history::delete_history_in(conn, thread_id)?;
+    // Review data: file changes → changesets → snapshots (all source kinds).
+    const DELETE_FILE_CHANGES_SQL: &str = "DELETE FROM review_file_changes WHERE changeset_id IN (
+             SELECT id FROM review_changesets WHERE thread_id = ?1
+         )";
+    conn.execute(DELETE_FILE_CHANGES_SQL, params![thread_id])?;
+    const DELETE_CHANGESETS_SQL: &str = "DELETE FROM review_changesets WHERE thread_id = ?1";
+    conn.execute(DELETE_CHANGESETS_SQL, params![thread_id])?;
+    const DELETE_SNAPSHOTS_SQL: &str = "DELETE FROM review_snapshots WHERE thread_id = ?1";
+    conn.execute(DELETE_SNAPSHOTS_SQL, params![thread_id])?;
+    // Messages table dropped — markdown references cleaned by markdown_refs module.
+    // Approvals reference threads/runs/tool_calls — clear before tool_calls.
+    const DELETE_APPROVALS_SQL: &str = "DELETE FROM approval_requests WHERE thread_id = ?1";
+    conn.execute(DELETE_APPROVALS_SQL, params![thread_id])?;
+    // Tool outputs → tool calls (scoped through the thread's runs).
+    // tool_outputs/run_events/tool_calls tables dropped
+
+    // Detach workspace-level artifacts from the thread/run being removed.
+    const DETACH_RUN_SQL: &str = "UPDATE artifacts SET run_id = NULL
+         WHERE run_id IN (SELECT id FROM runs WHERE thread_id = ?1)";
+    conn.execute(DETACH_RUN_SQL, params![thread_id])?;
+    const DETACH_THREAD_SQL: &str = "UPDATE artifacts SET thread_id = NULL WHERE thread_id = ?1";
+    conn.execute(DETACH_THREAD_SQL, params![thread_id])?;
+    // Drop the per-run event logs (and any buffered events) for this thread's
+    // runs before the run rows go — otherwise the JSONL files leak on disk.
+    {
+        let mut stmt = conn.prepare("SELECT id FROM runs WHERE thread_id = ?1")?;
+        let rows = stmt.query_map(params![thread_id], |row| row.get::<_, String>(0))?;
+        let run_ids = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        for run_id in run_ids {
+            super::delete_run_events_file(&run_id);
+            super::clear_run_event_buffer(&run_id);
+        }
+    }
+    // Break the runs ↔ messages FK cycle, then delete both.
+    const NULL_TRIGGER_SQL: &str = "UPDATE runs SET trigger_message_id = NULL WHERE thread_id = ?1";
+    conn.execute(NULL_TRIGGER_SQL, params![thread_id])?;
+    conn.execute("DELETE FROM runs WHERE thread_id = ?1", params![thread_id])?;
+    Ok(())
+}
+
+/// Hard delete a thread and every row that hangs off it. The conversation
+/// content the GUI stores is only a rendered mirror of the agent's JSONL (the
+/// source of truth); the caller deletes that JSONL separately (see
+/// `commands::delete_thread`). Returns the pre-delete record so callers that
+/// expected the old soft-delete return value keep working. Temp chat workspaces
+/// are flagged for cleanup exactly as before.
+///
+/// When `delete_files` is true and the thread is chat-mode, the temporary
+/// workspace directory on disk is removed immediately instead of being flagged
+/// for background cleanup. Workspace-mode threads are never touched.
+///
+/// One thread only — its descendants are left in place, because a child is a
+/// projection of its own Agent session and outlives a parent that disappeared
+/// (the orphan sweep and an externally deleted session both come through here).
+/// A user deleting a conversation wants the whole conversation gone: that is
+/// [`delete_thread_tree`].
+pub fn delete_thread(thread_id: &str) -> Result<ThreadRecord, crate::Error> {
+    delete_thread_inner(thread_id, false, false)
+}
+
+/// Recursive conversation delete: the thread and every descendant it parents go
+/// together, so the tree cannot keep a child whose lineage is a session the
+/// user just removed. `delete_files` gives every deleted chat thread the same
+/// treatment as a single delete (its own temporary workspace directory).
+pub fn delete_thread_tree(
+    thread_id: &str,
+    delete_files: bool,
+) -> Result<ThreadRecord, crate::Error> {
+    delete_thread_inner(thread_id, delete_files, true)
+}
+
+/// The threads a recursive delete of `thread_id` removes: the thread itself plus
+/// every descendant, resolved through the Agent lineage. Loaded before anything
+/// is deleted, so a caller can release each one's resources (shells, active
+/// runs) first. Errors when the thread does not exist.
+pub fn thread_delete_closure(thread_id: &str) -> Result<Vec<ThreadRecord>, crate::Error> {
+    let conn = connect()?;
+    let ids = thread_delete_ids_in(&conn, thread_id)?;
+    let mut threads = Vec::with_capacity(ids.len());
+    for id in &ids {
+        threads.push(loaded(get_thread_in(&conn, id)?, "Thread")?);
+    }
+    Ok(threads)
+}
+
+/// `thread_id` and every thread below it in the Agent's session lineage (the
+/// thread itself is always included, so a delete never has an empty target set).
+///
+/// Lineage is keyed by Agent session id, not local thread id:
+/// `parent_session_id` holds the *parent's* session id, so a child of this
+/// thread is a row whose `parent_session_id` equals this thread's effective
+/// session id (`agent_session_id`, else the thread id for an unbound thread).
+/// Every row is returned regardless of status — a cascade that skipped an
+/// archived or legacy soft-deleted child would leave a mirror behind. `UNION`
+/// (not `UNION ALL`) dedupes, which also makes a malformed lineage cycle
+/// terminate instead of recursing forever.
+fn thread_delete_ids_in(conn: &Connection, thread_id: &str) -> Result<Vec<String>, crate::Error> {
+    const SQL: &str = "WITH RECURSIVE subtree(id, session_key) AS (
+             SELECT id, COALESCE(NULLIF(TRIM(agent_session_id), ''), id)
+               FROM threads WHERE id = ?1
+           UNION
+             SELECT t.id, COALESCE(NULLIF(TRIM(t.agent_session_id), ''), t.id)
+               FROM threads t JOIN subtree s ON t.parent_session_id = s.session_key
+         )
+         SELECT id FROM subtree";
+    let mut stmt = conn.prepare(SQL)?;
+    let ids = stmt
+        .query_map(params![thread_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(ids)
+}
+
+/// Internal helper with the `delete_files` and `cascade_children` flags (see
+/// [`delete_thread`] / [`delete_thread_tree`]).
+pub(crate) fn delete_thread_inner(
+    thread_id: &str,
+    delete_files: bool,
+    cascade_children: bool,
+) -> Result<ThreadRecord, crate::Error> {
+    let mut conn = connect()?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let deleted = delete_thread_tree_in(&tx, thread_id, cascade_children)?;
+    tx.commit()?;
+    mark_catalog_dirty();
+    if delete_files {
+        remove_deleted_chat_files(&conn, &deleted.targets)?;
+    }
+    Ok(deleted.root)
+}
+
+struct DeletedThreadTree {
+    root: ThreadRecord,
+    targets: Vec<ThreadRecord>,
+}
+
+fn delete_thread_tree_in(
+    conn: &Connection,
+    thread_id: &str,
+    cascade_children: bool,
+) -> Result<DeletedThreadTree, crate::Error> {
+    let now = now_millis();
+    let root = loaded(get_thread_in(conn, thread_id)?, "Thread")?;
+    let targets = if cascade_children {
+        thread_delete_ids_in(conn, thread_id)?
+            .iter()
+            .map(|id| loaded(get_thread_in(conn, id)?, "Thread"))
+            .collect::<Result<Vec<_>, _>>()?
+    } else {
+        vec![root.clone()]
+    };
+    for thread in &targets {
+        let session_id = thread
+            .agent_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .unwrap_or(&thread.id);
+        // Preserve the legacy unbound-id fallback, including whitespace, while
+        // using the effective-session expression index and stopping at one owner.
+        const OWNER_SQL: &str = "SELECT EXISTS(SELECT 1 FROM threads
+             WHERE COALESCE(NULLIF(TRIM(agent_session_id), ''), id) = ?1 AND id != ?2)";
+        let shared: bool =
+            conn.query_row(OWNER_SQL, params![session_id, thread.id], |row| row.get(0))?;
+        if !shared {
+            super::deletions::enqueue_agent_session_delete_in(conn, session_id)?;
+        }
+        super::managed_cleanup::request_thread_in(conn, &thread.id)?;
+        delete_thread_rows_in(conn, thread, now)?;
+    }
+    Ok(DeletedThreadTree { root, targets })
+}
+
+fn remove_deleted_chat_files(
+    conn: &Connection,
+    targets: &[ThreadRecord],
+) -> Result<(), crate::Error> {
+    for thread in targets.iter().filter(|thread| thread.mode == "chat") {
+        let dir = super::db::chat_workspace_path(&thread.id)?;
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir)?;
+        }
+        conn.execute(
+            "UPDATE workspaces SET cleanup_status = 'cleaned', cleaned_at = ?1, updated_at = ?1
+             WHERE id = ?2 AND kind = 'temporary'",
+            params![now_millis(), thread.workspace_id],
+        )?;
+    }
+    Ok(())
+}
+
+/// Bounded transactions share the connection and WAL commit. A savepoint per
+/// selected tree isolates failures; descendant selections count as already gone.
+/// Physical file cleanup follows the commit and retains retryable cleanup intent.
+pub fn delete_thread_trees(
+    thread_ids: &[String],
+    delete_files: bool,
+) -> Result<super::records::BatchDeleteResult, crate::Error> {
+    let mut conn = connect()?;
+    let mut result = super::records::BatchDeleteResult {
+        deleted_count: 0,
+        failed: Vec::new(),
+    };
+    let mut cascaded = std::collections::HashSet::new();
+    for batch in thread_ids.chunks(future_rpc::session_deletion::MAX_DELETE_SESSIONS) {
+        let mut tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut batch_cascaded = std::collections::HashSet::new();
+        let mut deleted = Vec::new();
+        let mut already_gone = 0;
+        let mut failed_ids = std::collections::HashSet::new();
+        for thread_id in batch {
+            if cascaded.contains(thread_id) || batch_cascaded.contains(thread_id) {
+                already_gone += 1;
+                continue;
+            }
+            let tree = (|| {
+                let savepoint = tx.savepoint()?;
+                let tree = delete_thread_tree_in(&savepoint, thread_id, true)?;
+                savepoint.commit()?;
+                Ok::<_, crate::Error>(tree)
+            })();
+            match tree {
+                Ok(tree) => {
+                    batch_cascaded.extend(tree.targets.iter().map(|thread| thread.id.clone()));
+                    deleted.push(tree);
+                }
+                Err(error) => {
+                    failed_ids.insert(thread_id);
+                    result.failed.push(format!("{thread_id}: {error}"));
+                }
+            }
+        }
+        if let Err(error) = tx.commit() {
+            // Every successful savepoint was rolled back with the outer commit.
+            for thread_id in batch {
+                if !cascaded.contains(thread_id) && !failed_ids.contains(thread_id) {
+                    result.failed.push(format!("{thread_id}: {error}"));
+                }
+            }
+            result.deleted_count += batch.iter().filter(|id| cascaded.contains(*id)).count();
+            continue;
+        }
+        cascaded.extend(batch_cascaded);
+        result.deleted_count += already_gone;
+        mark_catalog_dirty();
+        for tree in deleted {
+            let cleanup = if delete_files {
+                remove_deleted_chat_files(&conn, &tree.targets)
+            } else {
+                Ok(())
+            };
+            match cleanup {
+                Ok(()) => result.deleted_count += 1,
+                Err(error) => result.failed.push(format!("{}: {error}", tree.root.id)),
+            }
+        }
+    }
+    Ok(result)
+}
+
+/// The local half of a conversation delete: children, the chat scratch
+/// directory's cleanup intent, and the row itself. Whatever the caller owes the
+/// Agent is its own business — only a *user* delete owns the session (see
+/// [`forget_thread_mirror`]).
+fn delete_thread_rows_in(
+    conn: &Connection,
+    thread: &ThreadRecord,
+    now: i64,
+) -> rusqlite::Result<()> {
+    delete_thread_children_in(conn, &thread.id)?;
+    if thread.mode == "chat" {
+        // Keep durable cleanup intent until physical removal succeeds. A file
+        // error after this transaction is therefore retryable by the cleanup
+        // reconciler and can never be recorded as already cleaned.
+        const PENDING_SQL: &str = "UPDATE workspaces
+                 SET cleanup_status = 'pending_cleanup',
+                     cleanup_requested_at = COALESCE(cleanup_requested_at, ?1),
+                     updated_at = ?1
+                 WHERE id = ?2
+                   AND kind = 'temporary'
+                   AND cleanup_status = 'active'";
+        conn.execute(PENDING_SQL, params![now, thread.workspace_id])?;
+    }
+    conn.execute("DELETE FROM threads WHERE id = ?1", params![thread.id])?;
+    Ok(())
+}
+
+/// Drop this side's projection of a conversation **the Agent still owns**.
+///
+/// [`delete_thread`] is a user delete: it queues the Agent-side session
+/// deletion and tombstones the id, so the conversation can never come back. A
+/// reconciliation that removes a row it can prove holds no conversation must do
+/// neither — the session stays, its owner may still prompt it, and the import
+/// that mirrors it again once it has a message must not be fenced out. Only the
+/// local rows go, with the same bookkeeping as a delete.
+pub fn forget_thread_mirror(thread_id: &str) -> Result<(), crate::Error> {
+    let mut conn = connect()?;
+    let root = loaded(get_thread_in(&conn, thread_id)?, "Thread")?;
+    let now = now_millis();
+    let tx = conn.transaction()?;
+    delete_thread_rows_in(&tx, &root, now)?;
+    tx.commit()?;
+    mark_catalog_dirty();
+    Ok(())
+}
+
+/// Batch-delete multiple threads. For each thread:
+/// - The DB row and children are hard-deleted.
+/// - For chat-mode threads with `delete_files`, the temporary workspace
+///   directory on disk is removed.
+/// - For workspace-mode threads, only the DB row is deleted; files are never
+///   touched regardless of `delete_files`.
+///
+/// Each thread delete is independent — one failure does not roll back
+/// already-deleted siblings. Returns a summary.
+#[cfg(test)]
+pub fn batch_delete_threads(
+    input: &super::records::BatchDeleteThreadsInput,
+) -> Result<super::records::BatchDeleteResult, crate::Error> {
+    delete_thread_trees(&input.thread_ids, input.delete_files)
+}
+
+/// Defensive / one-time sweep: hard-delete any threads still parked in the
+/// legacy `status = 'deleted'` soft-delete state, along with all their orphaned
+/// child rows. `delete_thread` now hard-deletes, so no new such rows are
+/// created; this reclaims pre-existing ones (their temp workspaces were already
+/// flagged at soft-delete time). Runs once at startup. Returns the count purged.
+pub fn purge_soft_deleted_threads() -> Result<usize, crate::Error> {
+    let mut conn = connect()?;
+    let ids: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT id FROM threads WHERE status = 'deleted'")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.transaction()?;
+    for id in &ids {
+        super::managed_cleanup::request_thread_in(&tx, id)?;
+        delete_thread_children_in(&tx, id)?;
+        tx.execute("DELETE FROM threads WHERE id = ?1", params![id])?;
+    }
+    tx.commit()?;
+    Ok(ids.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_thread_in;
+    use crate::store::schema::SCHEMA;
+    use crate::store::workspaces::get_or_create_user_workspace_in;
+    use crate::store::workspaces::get_workspace_in;
+    use rusqlite::{params, Connection};
+    use std::path::PathBuf;
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        conn.execute_batch(SCHEMA).expect("initialize test schema");
+        conn
+    }
+
+    fn workspace_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM workspaces", [], |row| row.get(0))
+            .expect("count workspaces")
+    }
+
+    /// A hosted home plus a workspace to create threads in. `create_thread`,
+    /// `rename_thread` and the seeding helpers all resolve the database from
+    /// `HOME`, so these tests need the real store, not `test_conn`.
+    fn title_seed_fixture(
+        label: &str,
+    ) -> (
+        crate::auth_store::test_support::HomeGuard,
+        crate::store::WorkspaceRecord,
+    ) {
+        let home = crate::auth_store::test_support::HomeGuard::new(label);
+        crate::store::initialize_app_store().expect("initialize store");
+        // The guard owns `HOME` for this test and removes it on drop, so a
+        // workspace inside it leaves nothing behind.
+        let path =
+            std::path::PathBuf::from(std::env::var("HOME").expect("fake home")).join("seed-ws");
+        std::fs::create_dir_all(&path).expect("create workspace dir");
+        let workspace = crate::store::create_workspace(crate::store::CreateWorkspaceInput {
+            name: Some("Seed WS".to_string()),
+            path: path.to_string_lossy().to_string(),
+            description: None,
+            create_directory: Some(false),
+        })
+        .expect("create workspace");
+        (home, workspace)
+    }
+
+    fn title_seed_thread(
+        workspace_id: &str,
+        title: &str,
+        agent_session_id: Option<&str>,
+    ) -> ThreadRecord {
+        crate::store::create_thread(crate::store::CreateThreadInput {
+            mode: "workspace".to_string(),
+            title: Some(title.to_string()),
+            workspace_id: Some(workspace_id.to_string()),
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: agent_session_id.map(str::to_string),
+        })
+        .expect("create thread")
+    }
+
+    /// Only a conversation the Desktop mints from nothing is auto-titleable.
+    /// One created around an existing Agent session (an import, a fork) carries
+    /// a name this store did not invent, and seeding it would let the title task
+    /// overwrite a name someone chose in another client.
+    #[test]
+    fn create_thread_seeds_auto_title_only_for_a_fresh_conversation() {
+        let (_home, workspace) = title_seed_fixture("title-seed-create");
+        let fresh = title_seed_thread(&workspace.id, "New Chat", None);
+        assert_eq!(fresh.title_seed.as_deref(), Some("New Chat"));
+        let imported = title_seed_thread(&workspace.id, "from the goal", Some("sess-worker"));
+        assert_eq!(imported.title_seed, None);
+    }
+
+    /// The importer's seeding is written once and never moved by a later
+    /// import: it records that the title the importer saw is a machine
+    /// placeholder, and it refuses to whitelist any other title. A rename
+    /// leaves the seed behind (the thread is no longer wearing it, so it can
+    /// never be auto-titled again), while the importer's own healing pass is
+    /// allowed to move it.
+    #[test]
+    fn auto_title_seed_is_recorded_once_and_survives_a_rename() {
+        let (_home, workspace) = title_seed_fixture("title-seed-write");
+        let thread = title_seed_thread(&workspace.id, "from the goal", Some("sess-worker"));
+        assert!(crate::store::seed_thread_auto_title(&thread.id, "from the goal").unwrap());
+        assert!(
+            !crate::store::seed_thread_auto_title(&thread.id, "from the goal").unwrap(),
+            "seeding is idempotent"
+        );
+        assert!(
+            !crate::store::seed_thread_auto_title(&thread.id, "another title").unwrap(),
+            "only the title the importer saw may be seeded"
+        );
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .unwrap()
+                .unwrap()
+                .title_seed
+                .as_deref(),
+            Some("from the goal")
+        );
+
+        crate::store::rename_thread(crate::store::RenameThreadInput {
+            thread_id: thread.id.clone(),
+            title: "人手命名".to_string(),
+        })
+        .unwrap();
+        let renamed = crate::store::get_thread(&thread.id).unwrap().unwrap();
+        assert_eq!(renamed.title, "人手命名");
+        assert_eq!(renamed.title_seed.as_deref(), Some("from the goal"));
+        assert_ne!(renamed.title_seed.as_deref(), Some(renamed.title.as_str()));
+
+        assert!(crate::store::reseed_thread_auto_title(&thread.id, "healed title").unwrap());
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .unwrap()
+                .unwrap()
+                .title_seed
+                .as_deref(),
+            Some("healed title")
+        );
+    }
+
+    /// Healing must not turn auto-titling on for a conversation that arrived
+    /// with a name of its own.
+    #[test]
+    fn reseed_never_creates_a_seed() {
+        let (_home, workspace) = title_seed_fixture("title-seed-reseed");
+        let thread = title_seed_thread(&workspace.id, "imported name", Some("sess-imported"));
+        assert!(!crate::store::reseed_thread_auto_title(&thread.id, "healed title").unwrap());
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .unwrap()
+                .unwrap()
+                .title_seed,
+            None
+        );
+    }
+
+    /// The workspace resolve/create and the thread insert commit together — both
+    /// rows are visible after `commit`. (`create_thread` runs this on one tx; the
+    /// `_in` helpers make that injectable for the in-memory DB here.)
+    #[test]
+    fn create_thread_persists_workspace_and_thread_atomically() {
+        let mut conn = test_conn();
+        let tx = conn.transaction().unwrap();
+        let workspace = get_or_create_user_workspace_in(
+            &tx,
+            "Test Workspace".to_string(),
+            PathBuf::from("/tmp/futureos-test-ws"),
+            None,
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO threads (
+                 id, workspace_id, mode, title, status, pinned, readonly,
+                 agent_session_id, created_at, updated_at
+             ) VALUES ('thread_ok', ?1, 'workspace', 'T', 'active', 0, 0, 'sess', 1, 1)",
+            params![workspace.id],
+        )
+        .unwrap();
+        let thread = get_thread_in(&tx, "thread_ok")
+            .unwrap()
+            .expect("thread row");
+        tx.commit().unwrap();
+
+        assert_eq!(thread.workspace_id, workspace.id);
+        assert!(get_workspace_in(&conn, &workspace.id).unwrap().is_some());
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |row| row.get(0)).expect("count")
+    }
+
+    /// The hard-delete cascade removes every child row of a thread in an
+    /// FK-safe order (foreign keys ON here, so a wrong order would error),
+    /// breaks the runs↔messages cycle, and detaches — never deletes —
+    /// workspace-level artifacts.
+    #[test]
+    fn delete_thread_children_hard_deletes_and_detaches_artifacts() {
+        let conn = test_conn();
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .expect("enable fk");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws', 'W', 'user', '/tmp/ws', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, status, pinned,
+                 readonly, created_at, updated_at)
+                 VALUES ('t1', 'ws', 'workspace', 'T', 'active', 0, 0, 1, 1);
+             INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+                 VALUES ('r1', 't1', 'completed', 1, 1);
+             INSERT INTO approval_requests (id, thread_id, run_id, tool_call_id,
+                 kind, status, title, created_at, updated_at)
+                 VALUES ('ap1', 't1', 'r1', 'tc1', 'tool', 'pending', 'A', 1, 1);
+             INSERT INTO review_snapshots (id, workspace_id, thread_id, run_id,
+                 phase, status, created_at)
+                 VALUES ('rs1', 'ws', 't1', 'r1', 'before', 'ready', 1);
+             INSERT INTO review_changesets (id, thread_id, run_id, title, status,
+                 created_at, updated_at)
+                 VALUES ('rc1', 't1', 'r1', 'C', 'ready', 1, 1);
+             INSERT INTO review_file_changes (id, changeset_id, target_type,
+                 change_type, created_at, updated_at)
+                 VALUES ('rf1', 'rc1', 'file', 'modified', 1, 1);
+             INSERT INTO artifacts (id, workspace_id, thread_id, run_id, title,
+                 artifact_type, created_at, updated_at)
+                 VALUES ('a1', 'ws', 't1', 'r1', 'Art', 'markdown', 1, 1);",
+        )
+        .expect("seed thread graph");
+
+        super::delete_thread_children_in(&conn, "t1").expect("cascade delete");
+
+        // Every conversation child row is gone. (run_events / tool_calls /
+        // tool_outputs tables were dropped — their data now lives in the agent
+        // JSONL / in-memory buffer, not SQLite.)
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM runs"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM approval_requests"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM review_snapshots"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM review_changesets"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM review_file_changes"), 0);
+        // The thread row itself is left to the caller.
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM threads WHERE id = 't1'"),
+            1
+        );
+        // The artifact survives, detached from the thread and run.
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM artifacts
+                 WHERE id = 'a1' AND thread_id IS NULL AND run_id IS NULL"
+            ),
+            1
+        );
+    }
+
+    /// Regression for B-11: a crash between the workspace write and the thread
+    /// insert (modeled by dropping the tx without committing) must not leave an
+    /// orphan workspace behind.
+    #[test]
+    fn rolled_back_create_thread_leaves_no_orphan_workspace() {
+        let mut conn = test_conn();
+        {
+            let tx = conn.transaction().unwrap();
+            get_or_create_user_workspace_in(
+                &tx,
+                "Doomed".to_string(),
+                PathBuf::from("/tmp/futureos-doomed-ws"),
+                None,
+            )
+            .unwrap();
+            // tx dropped here without commit -> rollback.
+        }
+        assert_eq!(workspace_count(&conn), 0);
+    }
+
+    /// Title convergence from the agent's session_name must not disturb the
+    /// sidebar order (`updated_at` untouched), skip matching titles, and
+    /// reject empty titles.
+    #[test]
+    fn sync_thread_title_converges_without_touching_updated_at() {
+        let conn = test_conn();
+        let workspace = get_or_create_user_workspace_in(
+            &conn,
+            "Sync Workspace".to_string(),
+            PathBuf::from("/tmp/futureos-sync-ws"),
+            None,
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO threads (
+                 id, workspace_id, mode, title, status, pinned, readonly,
+                 agent_session_id, created_at, updated_at
+             ) VALUES ('thread_sync', ?1, 'chat', 'old', 'active', 0, 0, 'sess', 1, 42)",
+            params![workspace.id],
+        )
+        .unwrap();
+
+        // Matching title: no-op. New title: applied. Empty title: rejected.
+        assert!(!super::sync_thread_title_in(&conn, "thread_sync", "old").unwrap());
+        assert!(super::sync_thread_title_in(&conn, "thread_sync", "agent name").unwrap());
+        assert!(!super::sync_thread_title_in(&conn, "thread_sync", "   ").unwrap());
+
+        let (title, updated_at): (String, i64) = conn
+            .query_row(
+                "SELECT title, updated_at FROM threads WHERE id = 'thread_sync'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "agent name");
+        assert_eq!(updated_at, 42);
+    }
+
+    // ── connect()-backed API surface (fake HOME) ────────────────────────────
+
+    use super::*;
+    use crate::store::db::test_support::guarded_conn;
+    use crate::store::workspaces::get_workspace;
+
+    fn seed_two_threads(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws1', 'W1', 'user', '/tmp/ws1', 1, 1),
+                        ('ws2', 'W2', 'user', '/tmp/ws2', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, status, pinned,
+                 agent_session_id, last_message_at, last_opened_at, created_at, updated_at)
+                 VALUES
+                 ('t1', 'ws1', 'chat', 'One', 'active', 1, 'sess1', 200, NULL, 1, 1),
+                 ('t2', 'ws1', 'chat', 'Two', 'active', 0, NULL, 100, 300, 1, 1),
+                 ('t3', 'ws1', 'chat', 'Gone', 'deleted', 0, 'sess3', 400, 400, 1, 1);",
+        )
+        .expect("seed threads");
+    }
+
+    #[test]
+    fn parent_session_projection_survives_reload_and_preserves_recency() {
+        let (_home, conn) = guarded_conn("thread_parent");
+        seed_two_threads(&conn);
+        sync_thread_parent_session("sess1", " parent-not-yet-imported ").unwrap();
+        let thread = get_thread("t1").unwrap().unwrap();
+        assert_eq!(
+            thread.parent_session_id.as_deref(),
+            Some("parent-not-yet-imported")
+        );
+        assert_eq!(thread.updated_at, 1);
+        assert_eq!(
+            list_threads().unwrap()[0].parent_session_id,
+            thread.parent_session_id
+        );
+        bind_thread_session_id("t1", "sess1").unwrap();
+        assert_eq!(
+            get_thread("t1").unwrap().unwrap().parent_session_id,
+            thread.parent_session_id
+        );
+        assert!(bind_thread_session_id("t1", "replacement").is_err());
+        assert_eq!(
+            get_thread("t1").unwrap().unwrap().parent_session_id,
+            thread.parent_session_id
+        );
+    }
+
+    #[test]
+    fn list_recent_and_session_lookup() {
+        let (_home, conn) = guarded_conn("threads_lists");
+        seed_two_threads(&conn);
+        drop(conn);
+
+        let list = list_threads().expect("list");
+        let ids: Vec<&str> = list.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(ids, vec!["t1", "t2"], "pinned first, deleted hidden");
+
+        let recent = get_recent_thread().expect("recent").expect("some");
+        assert_eq!(recent.id, "t2", "last_opened_at wins");
+
+        let found = find_thread_by_agent_session("sess1")
+            .expect("find")
+            .expect("some");
+        assert_eq!(found.id, "t1");
+        assert!(find_thread_by_agent_session("ghost")
+            .expect("find")
+            .is_none());
+        // A deleted thread's session is not found.
+        assert!(find_thread_by_agent_session("sess3")
+            .expect("find")
+            .is_none());
+    }
+
+    #[test]
+    fn sidebar_sort_ignores_open_time_but_opening_is_still_recorded() {
+        let (_home, conn) = guarded_conn("threads_activity_times");
+        seed_two_threads(&conn);
+        conn.execute("UPDATE threads SET pinned = 0 WHERE id = 't1'", [])
+            .expect("unpin t1");
+        drop(conn);
+
+        // t2 was opened more recently (300), but t1's message is newer (200).
+        let ids: Vec<String> = list_threads()
+            .expect("list")
+            .into_iter()
+            .map(|thread| thread.id)
+            .collect();
+        assert_eq!(ids, vec!["t1", "t2"]);
+
+        mark_thread_opened("t1").expect("record open");
+        let thread = get_thread("t1").expect("get").expect("thread");
+        assert!(thread.last_opened_at.is_some());
+        assert_eq!(
+            thread.updated_at, 1,
+            "opening does not become sidebar activity"
+        );
+    }
+
+    #[test]
+    fn assistant_activity_reorders_threads_without_replay_or_metadata_bumps() {
+        let (_home, conn) = guarded_conn("threads_assistant_activity");
+        seed_two_threads(&conn);
+        conn.execute("UPDATE threads SET pinned = 0 WHERE id = 't1'", [])
+            .unwrap();
+        let ids = || {
+            list_threads()
+                .unwrap()
+                .into_iter()
+                .map(|t| t.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(), ["t1", "t2"]);
+        record_thread_message_activity("t2", 500).unwrap();
+        assert_eq!(ids(), ["t2", "t1"], "assistant reply beats a newer prompt");
+        record_thread_message_activity("t2", 50).unwrap();
+        record_thread_message_activity("t2", 500).unwrap();
+        assert_eq!(
+            get_thread("t2").unwrap().unwrap().last_message_at,
+            Some(500)
+        );
+        rename_thread(RenameThreadInput {
+            thread_id: "t1".into(),
+            title: "Renamed".into(),
+        })
+        .unwrap();
+        mark_thread_opened("t1").unwrap();
+        assert_eq!(ids(), ["t2", "t1"]);
+        pin_thread(PinThreadInput {
+            thread_id: "t1".into(),
+            pinned: true,
+        })
+        .unwrap();
+        assert_eq!(ids(), ["t1", "t2"], "pins still win over activity");
+        record_thread_message_activity("t3", 900).unwrap();
+        assert_eq!(
+            get_thread("t3").unwrap().unwrap().last_message_at,
+            Some(400)
+        );
+        assert_eq!(get_thread("t2").unwrap().unwrap().updated_at, 1);
+    }
+
+    fn chat_input() -> CreateThreadInput {
+        CreateThreadInput {
+            mode: "chat".to_string(),
+            title: None,
+            workspace_id: None,
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        }
+    }
+
+    #[test]
+    fn create_thread_modes_and_defaults() {
+        let (_home, conn) = guarded_conn("threads_create");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+             VALUES ('ws_user', 'User WS', 'user', '/tmp/userws', 1, 1);",
+        )
+        .expect("seed workspace");
+        drop(conn);
+
+        // Chat mode: default title + a temporary workspace.
+        let chat = create_thread(chat_input()).expect("chat thread");
+        assert_eq!(chat.title, "New Chat");
+        assert_eq!(chat.mode, "chat");
+
+        // A bogus mode is rejected.
+        let mut bad = chat_input();
+        bad.mode = "party".to_string();
+        assert!(create_thread(bad).is_err());
+
+        // Workspace mode against an existing workspace id.
+        let mut by_id = chat_input();
+        by_id.mode = "workspace".to_string();
+        by_id.title = Some("Titled".to_string());
+        by_id.workspace_id = Some("ws_user".to_string());
+        by_id.agent_session_id = Some(String::new());
+        let thread = create_thread(by_id).expect("workspace thread by id");
+        assert_eq!(thread.title, "Titled");
+        assert_eq!(thread.workspace_id, "ws_user");
+        assert_eq!(thread.agent_session_id, None, "empty session id filtered");
+
+        // Workspace mode with a fresh path: workspace created, name defaulted.
+        let dir = std::env::temp_dir().join(format!("futureos-tc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create dir");
+        let mut by_path = chat_input();
+        by_path.mode = "workspace".to_string();
+        by_path.workspace_path = Some(dir.display().to_string());
+        let thread = create_thread(by_path).expect("workspace thread by path");
+        assert_eq!(thread.title, "Workspace Thread");
+        let ws = get_workspace(&thread.workspace_id)
+            .expect("get")
+            .expect("some");
+        assert_eq!(ws.kind, "user");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // Workspace mode with neither id nor path errors.
+        let mut neither = chat_input();
+        neither.mode = "workspace".to_string();
+        assert!(create_thread(neither).is_err());
+    }
+
+    #[test]
+    fn agent_session_binding_is_normalized_and_get_or_create_is_idempotent() {
+        let (_home, _conn) = guarded_conn("threads_unique_agent_session");
+        let mut first = chat_input();
+        first.agent_session_id = Some("  sess-one  ".to_string());
+        let (created, was_created) =
+            get_or_create_thread_for_agent_session(first).expect("create binding");
+        assert!(was_created);
+        assert_eq!(created.agent_session_id.as_deref(), Some("sess-one"));
+
+        let mut repeated = chat_input();
+        repeated.agent_session_id = Some("sess-one".to_string());
+        let (existing, was_created) =
+            get_or_create_thread_for_agent_session(repeated).expect("reuse binding");
+        assert!(!was_created);
+        assert_eq!(existing.id, created.id);
+
+        let other = create_thread(chat_input()).expect("create unbound thread");
+        assert!(bind_thread_session_id(&other.id, "sess-one").is_err());
+        assert!(bind_thread_session_id(&other.id, "   ").is_err());
+    }
+
+    #[test]
+    fn fork_asset_root_is_reference_counted_by_live_descendants() {
+        let (_home, _conn) = guarded_conn("thread_asset_root");
+        let parent = create_thread(chat_input()).expect("parent");
+        let child = create_thread(chat_input()).expect("child");
+        inherit_thread_asset_root(&child.id, &parent.id).expect("inherit root");
+        assert_eq!(thread_asset_root_id(&parent.id).unwrap(), parent.id);
+        assert_eq!(thread_asset_root_id(&child.id).unwrap(), parent.id);
+
+        let root = crate::store::thread_images_dir(&parent.id).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("kept.png"), b"image").unwrap();
+
+        delete_thread(&parent.id).expect("delete parent");
+        crate::store::reconcile_orphan_images().expect("reconcile with child");
+        assert!(root.exists(), "live descendant must retain the shared root");
+
+        delete_thread(&child.id).expect("delete child");
+        crate::store::reconcile_orphan_images().expect("reconcile without owners");
+        assert!(
+            !root.exists(),
+            "last owner deletion releases the shared root"
+        );
+    }
+
+    #[test]
+    fn thread_field_updates_round_trip() {
+        let (_home, conn) = guarded_conn("threads_updates");
+        seed_two_threads(&conn);
+        drop(conn);
+
+        // rename_thread
+        assert!(rename_thread(RenameThreadInput {
+            thread_id: "t1".to_string(),
+            title: "  ".to_string(),
+        })
+        .is_err());
+        let renamed = rename_thread(RenameThreadInput {
+            thread_id: "t1".to_string(),
+            title: "Renamed".to_string(),
+        })
+        .expect("rename");
+        assert_eq!(renamed.title, "Renamed");
+        assert!(rename_thread(RenameThreadInput {
+            thread_id: "ghost".to_string(),
+            title: "X".to_string(),
+        })
+        .is_err());
+
+        // sync_thread_title (pub wrapper)
+        assert!(sync_thread_title("t1", "From Agent").expect("sync"));
+        assert_eq!(
+            get_thread("t1").expect("get").expect("some").title,
+            "From Agent"
+        );
+
+        // Model / thinking level are agent-owned: reads return the row.
+        let record = update_thread_model(UpdateThreadModelInput {
+            thread_id: "t1".to_string(),
+            model_provider: Some("p".to_string()),
+            model_id: Some("m".to_string()),
+        })
+        .expect("model");
+        assert_eq!(record.id, "t1");
+        let record = update_thread_thinking_level(UpdateThreadThinkingLevelInput {
+            thread_id: "t1".to_string(),
+            thinking_level: Some("high".to_string()),
+        })
+        .expect("thinking");
+        assert_eq!(record.id, "t1");
+        assert!(update_thread_model(UpdateThreadModelInput {
+            thread_id: "ghost".to_string(),
+            model_provider: None,
+            model_id: None,
+        })
+        .is_err());
+
+        // bind_thread_session_id + find_by_session round trip.
+        bind_thread_session_id("t2", "sess_new").expect("session id");
+        let found = find_thread_by_agent_session("sess_new")
+            .expect("find")
+            .expect("some");
+        assert_eq!(found.id, "t2");
+
+        // pin / archive / restore
+        let pinned = pin_thread(PinThreadInput {
+            thread_id: "t2".to_string(),
+            pinned: true,
+        })
+        .expect("pin");
+        assert!(pinned.pinned);
+        assert!(pin_thread(PinThreadInput {
+            thread_id: "ghost".to_string(),
+            pinned: false,
+        })
+        .is_err());
+
+        let archived = archive_thread("t2").expect("archive");
+        assert_eq!(archived.status, "archived");
+        assert!(archived.archived_at.is_some());
+        let restored = restore_thread("t2").expect("restore");
+        assert_eq!(restored.status, "active");
+    }
+
+    #[test]
+    fn delete_thread_variants() {
+        let (_home, conn) = guarded_conn("threads_delete");
+        seed_two_threads(&conn);
+        drop(conn);
+
+        // Plain delete of a chat thread flags its temp workspace for cleanup…
+        // (t1/t2 are chat threads in a *user* workspace here, so the UPDATE
+        // simply matches nothing — the thread row is still removed).
+        let deleted = delete_thread("t2").expect("delete");
+        assert_eq!(deleted.id, "t2");
+        assert!(get_thread("t2").expect("get").is_none());
+        assert!(delete_thread("t2").is_err(), "second delete errors");
+
+        // delete_files on a workspace-mode thread never touches the workspace.
+        let ws_thread = create_thread(CreateThreadInput {
+            mode: "workspace".to_string(),
+            title: None,
+            workspace_id: Some("ws1".to_string()),
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .expect("workspace thread");
+        delete_thread_tree(&ws_thread.id, true).expect("delete ws thread");
+        assert!(get_workspace("ws1").expect("get").is_some());
+
+        // A chat thread with files: the temp workspace dir is removed and the
+        // workspace row is marked cleaned.
+        let chat = create_thread(chat_input()).expect("chat thread");
+        let chat_dir = std::path::PathBuf::from(std::env::var("HOME").expect("home"))
+            .join(".future/workspaces/chat")
+            .join(&chat.id);
+        std::fs::create_dir_all(&chat_dir).expect("create chat dir");
+        std::fs::write(chat_dir.join("scratch.txt"), b"x").expect("write");
+        delete_thread_tree(&chat.id, true).expect("delete with files");
+        assert!(!chat_dir.exists(), "chat workspace dir removed");
+        let ws = get_workspace(&chat.workspace_id)
+            .expect("get")
+            .expect("some");
+        assert_eq!(ws.cleanup_status, "cleaned");
+    }
+
+    /// The **batch** path does the same post-commit physical cleanup as the
+    /// single delete, and it reports a failure per tree instead of failing the
+    /// whole batch: a blocker at the chat path leaves a retryable
+    /// `pending_cleanup` intent and one named failure, while the thread's own
+    /// rows are already gone (the commit happened first by design).
+    #[test]
+    fn batch_delete_reports_a_file_cleanup_failure_per_tree() {
+        let (_home, _conn) = guarded_conn("threads_batch_file_failure");
+        let chat = create_thread(chat_input()).expect("chat thread");
+        let chat_path = super::super::db::chat_workspace_path(&chat.id).expect("chat path");
+        let _ = std::fs::remove_dir_all(&chat_path);
+        std::fs::write(&chat_path, b"not a directory").expect("create blocker");
+
+        let result =
+            delete_thread_trees(std::slice::from_ref(&chat.id), true).expect("batch delete");
+
+        assert!(get_thread(&chat.id).expect("lookup").is_none());
+        assert_eq!(result.deleted_count, 0, "{result:?}");
+        assert_eq!(result.failed.len(), 1, "{result:?}");
+        assert!(result.failed[0].contains(&chat.id), "{result:?}");
+        let workspace = get_workspace(&chat.workspace_id)
+            .expect("workspace")
+            .expect("row remains for the cleanup reconciler");
+        assert_eq!(workspace.cleanup_status, "pending_cleanup");
+    }
+
+    #[test]
+    fn failed_directory_removal_stays_pending_cleanup() {
+        let (_home, _conn) = guarded_conn("threads_delete_file_failure");
+        let chat = create_thread(chat_input()).expect("chat thread");
+        let chat_path = super::super::db::chat_workspace_path(&chat.id).expect("chat path");
+        // Whatever a previous run left at this path must go: the assertion below
+        // needs a *file* here, so the removal cannot be conditional on the
+        // directory existing (a leftover directory would make the write fail).
+        let _ = std::fs::remove_dir_all(&chat_path);
+        std::fs::write(&chat_path, b"not a directory").expect("create blocker");
+
+        assert!(delete_thread_tree(&chat.id, true).is_err());
+        let workspace = get_workspace(&chat.workspace_id)
+            .expect("workspace")
+            .expect("workspace row remains for cleanup");
+        assert_eq!(workspace.cleanup_status, "pending_cleanup");
+        assert!(get_thread(&chat.id).expect("thread lookup").is_none());
+    }
+
+    #[test]
+    fn deleting_a_bound_thread_tombstones_its_unique_session() {
+        let (_home, conn) = guarded_conn("threads_delete_bound");
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, created_at, updated_at)
+                 VALUES ('ws1', 'W', 'user', '/tmp/ws1', 1, 1);
+             INSERT INTO threads (id, workspace_id, mode, title, agent_session_id,
+                 created_at, updated_at)
+                 VALUES ('ta', 'ws1', 'chat', 'A', 'sess_unique', 1, 1);",
+        )
+        .expect("seed");
+        drop(conn);
+
+        delete_thread("ta").expect("delete");
+        assert!(
+            crate::store::is_agent_session_tombstoned("sess_unique").expect("check"),
+            "the sole owner tombstones the session"
+        );
+    }
+
+    #[test]
+    fn deletion_ownership_preserves_blank_and_trimmed_legacy_bindings() {
+        let (_home, conn) = guarded_conn("threads_delete_fallback_owner");
+        conn.execute_batch(
+            "INSERT INTO workspaces(id,name,kind,path,created_at,updated_at)
+             VALUES ('legacy-ws','W','user','/tmp/legacy',1,1);
+             INSERT INTO threads(id,workspace_id,mode,title,agent_session_id,created_at,updated_at)
+             VALUES ('alias','legacy-ws','workspace','Alias',' fallback ',1,1),
+                    ('fallback','legacy-ws','workspace','Fallback','   ',1,1);",
+        )
+        .unwrap();
+        drop(conn);
+        delete_thread_tree("alias", false).unwrap();
+        assert!(!crate::store::is_agent_session_tombstoned("fallback").unwrap());
+        delete_thread_tree("fallback", false).unwrap();
+        assert!(crate::store::is_agent_session_tombstoned("fallback").unwrap());
+    }
+
+    #[test]
+    fn batch_delete_counts_descendants_selected_in_a_later_batch() {
+        let (_home, _conn) = guarded_conn("threads_batch_cross_boundary");
+        let parent = session_chat_thread("batch-parent", None);
+        let child = session_chat_thread("batch-child", Some("batch-parent"));
+        let mut ids = vec![parent.id.clone()];
+        ids.extend((0..31).map(|i| format!("missing-{i}")));
+        ids.push(child.id.clone());
+        let result = delete_thread_trees(&ids, false).unwrap();
+        assert_eq!(result.deleted_count, 2);
+        assert_eq!(result.failed.len(), 31);
+        assert!(get_thread(&parent.id).unwrap().is_none());
+        assert!(get_thread(&child.id).unwrap().is_none());
+    }
+
+    /// A commit that fails after every savepoint succeeded rolls the batch back
+    /// and reports each selected thread — the batch must not claim a deletion the
+    /// database refused.
+    ///
+    /// The failure is planted as a **schema-level deferred** foreign key: a probe
+    /// table references `threads(id)` `DEFERRABLE INITIALLY DEFERRED`, and a
+    /// trigger on `AFTER DELETE` records the deleted id into it. A deferred
+    /// constraint is checked at COMMIT, not at statement time, so the savepoints
+    /// commit cleanly and the violation surfaces exactly where this arm lives.
+    /// (`PRAGMA defer_foreign_keys` would not do: it is per-connection, and the
+    /// connection belongs to `delete_thread_trees`.)
+    #[test]
+    fn a_batch_whose_commit_fails_is_reported_and_rolled_back() {
+        let (_home, conn) = guarded_conn("threads_commit_failure");
+        let first = session_chat_thread("sess_commit_a", None);
+        let second = session_chat_thread("sess_commit_b", None);
+        conn.execute_batch(
+            "CREATE TABLE hostile_probe (
+                 id INTEGER PRIMARY KEY,
+                 thread_id TEXT REFERENCES threads(id) DEFERRABLE INITIALLY DEFERRED
+             );
+             CREATE TRIGGER hostile_probe_capture AFTER DELETE ON threads
+             BEGIN
+                 INSERT INTO hostile_probe (thread_id) VALUES (OLD.id);
+             END;",
+        )
+        .expect("plant the deferred constraint");
+
+        let result = delete_thread_trees(&[first.id.clone(), second.id.clone()], false)
+            .expect("a refused commit is reported, not propagated");
+
+        assert_eq!(result.deleted_count, 0, "nothing was committed");
+        assert_eq!(result.failed.len(), 2, "{:?}", result.failed);
+        assert!(
+            result.failed[0].starts_with(&format!("{}: ", first.id))
+                && result.failed[1].starts_with(&format!("{}: ", second.id)),
+            "each selected thread is named: {:?}",
+            result.failed
+        );
+        assert!(
+            crate::store::get_thread(&first.id).expect("get").is_some()
+                && crate::store::get_thread(&second.id).expect("get").is_some(),
+            "the rollback puts every conversation back"
+        );
+    }
+
+    /// The losing half of the documented create race, made deterministic.
+    ///
+    /// `get_or_create_thread_for_agent_session` looks up first and only then
+    /// inserts; if another discovery task wins in between, the losing insert must
+    /// return the **winner's** row with `created = false` rather than surfacing the
+    /// unique-index violation (two concurrent announcements converging on one
+    /// thread instead of one of them failing).
+    ///
+    /// The ordering is forced with a real second connection holding the write lock:
+    /// the winner's row is inserted inside an `IMMEDIATE` transaction and left
+    /// **uncommitted**, so this call's pre-check cannot see it (WAL isolation) and it
+    /// proceeds to insert — where it blocks on the lock. Releasing the lock commits
+    /// the winner, and our insert then hits the unique agent-session index, which is
+    /// exactly the race the function is written for.
+    #[test]
+    fn a_create_that_loses_the_race_returns_the_winners_row() {
+        let (_home, _conn) = guarded_conn("threads_create_race");
+        let workspace_dir =
+            std::env::temp_dir().join(format!("futureos-race-{}", std::process::id()));
+        std::fs::create_dir_all(&workspace_dir).expect("workspace dir");
+        let workspace = crate::store::create_workspace(crate::store::CreateWorkspaceInput {
+            name: Some("race".into()),
+            path: workspace_dir.display().to_string(),
+            description: None,
+            create_directory: Some(false),
+        })
+        .expect("workspace");
+
+        // The competing writer: holds the write lock with the winning row staged.
+        let mut other = super::super::connect().expect("second connection");
+        let tx = other
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .expect("write lock");
+        tx.execute(
+            "INSERT INTO threads (id, workspace_id, mode, title, status, pinned, readonly,
+                                 agent_session_id, asset_root_id, last_opened_at, created_at, updated_at)
+             VALUES ('thread-winner', ?1, 'chat', 'Winner', 'active', 0, 0, 'sess_race',
+                     'thread-winner', 1, 1, 1)",
+            rusqlite::params![workspace.id],
+        )
+        .expect("stage the winner");
+
+        let caller = std::thread::spawn(|| {
+            get_or_create_thread_for_agent_session(CreateThreadInput {
+                mode: "chat".into(),
+                title: Some("Loser".into()),
+                workspace_id: None,
+                workspace_path: None,
+                workspace_name: None,
+                agent_session_id: Some("sess_race".into()),
+            })
+        });
+        // Let the caller get past its lookup and block on the write lock.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        tx.commit()
+            .expect("release the lock with the winner committed");
+
+        let (thread, created) = caller
+            .join()
+            .expect("join")
+            .expect("a lost race is not an error");
+
+        assert!(!created, "the row came from the winner, not this call");
+        assert_eq!(thread.id, "thread-winner");
+        assert_eq!(thread.title, "Winner");
+    }
+
+    /// The mirror removal a reconciliation uses must leave the Agent session
+    /// untouched: no queued Agent delete, no tombstone that would fence out the
+    /// import that mirrors the session again once it has a message.
+    #[test]
+    fn forgetting_a_mirror_never_touches_the_agent_session() {
+        let (_home, _conn) = guarded_conn("threads_forget_mirror");
+        let thread = session_chat_thread("sess_mirror", None);
+
+        forget_thread_mirror(&thread.id).expect("forget");
+
+        assert!(get_thread(&thread.id).expect("thread lookup").is_none());
+        assert!(
+            !crate::store::is_agent_session_tombstoned("sess_mirror").expect("check"),
+            "the session stays importable"
+        );
+        assert!(
+            crate::store::pending_agent_session_deletes()
+                .expect("outbox")
+                .is_empty(),
+            "nothing is queued for the Agent to delete"
+        );
+        // The local bookkeeping of a delete still happens: a chat thread's
+        // scratch directory is released.
+        let workspace = get_workspace(&thread.workspace_id)
+            .expect("workspace")
+            .expect("workspace row remains for cleanup");
+        assert_eq!(workspace.cleanup_status, "pending_cleanup");
+    }
+
+    /// A chat thread bound to `session`, optionally parented to another Agent
+    /// session. Lineage is projected by session id, so an unbound thread cannot
+    /// be given a parent through `sync_thread_parent_session`.
+    fn session_chat_thread(session: &str, parent_session: Option<&str>) -> ThreadRecord {
+        let mut input = chat_input();
+        input.agent_session_id = Some(session.to_string());
+        let thread = create_thread(input).expect("create bound chat thread");
+        if let Some(parent) = parent_session {
+            sync_thread_parent_session(session, parent).expect("project lineage");
+        }
+        thread
+    }
+
+    #[test]
+    fn delete_thread_tree_removes_every_descendant_and_tombstones_each_session() {
+        let (_home, _conn) = guarded_conn("threads_cascade");
+        let parent = session_chat_thread("sess_cascade_parent", None);
+        let child = session_chat_thread("sess_cascade_child", Some("sess_cascade_parent"));
+        let grandchild = session_chat_thread("sess_cascade_grand", Some("sess_cascade_child"));
+        let unrelated = session_chat_thread("sess_cascade_other", None);
+        // Pinning moves a child in the sidebar, not in the lineage: the cascade
+        // still takes it.
+        pin_thread(PinThreadInput {
+            thread_id: child.id.clone(),
+            pinned: true,
+        })
+        .expect("pin child");
+
+        let deleted = delete_thread_tree(&parent.id, false).expect("delete parent");
+
+        assert_eq!(deleted.id, parent.id);
+        for (id, session) in [
+            (&parent.id, "sess_cascade_parent"),
+            (&child.id, "sess_cascade_child"),
+            (&grandchild.id, "sess_cascade_grand"),
+        ] {
+            assert!(get_thread(id).expect("get").is_none(), "{id} is gone");
+            assert!(
+                crate::store::is_agent_session_tombstoned(session).expect("tombstone"),
+                "{session} gets delete delivery intent"
+            );
+        }
+        assert!(
+            get_thread(&unrelated.id).expect("get").is_some(),
+            "a thread outside the lineage is kept"
+        );
+    }
+
+    #[test]
+    fn delete_thread_leaves_descendants_alone() {
+        // The orphan sweep and an externally deleted Agent session both come
+        // through `delete_thread`: a child is its own Agent session and outlives
+        // a parent that disappeared from the Agent's side.
+        let (_home, _conn) = guarded_conn("threads_delete_single");
+        let parent = session_chat_thread("sess_single_parent", None);
+        let child = session_chat_thread("sess_single_child", Some("sess_single_parent"));
+
+        delete_thread(&parent.id).expect("delete parent");
+
+        assert!(get_thread(&parent.id).expect("get").is_none());
+        let survivor = get_thread(&child.id)
+            .expect("get")
+            .expect("the child survives and re-roots in the tree");
+        assert_eq!(
+            survivor.parent_session_id.as_deref(),
+            Some("sess_single_parent"),
+            "the lineage projection is the Agent's to rewrite, not the delete's"
+        );
+    }
+
+    #[test]
+    fn delete_thread_tree_removes_each_chat_workspace_directory() {
+        let (_home, _conn) = guarded_conn("threads_cascade_files");
+        let parent = session_chat_thread("sess_files_parent", None);
+        let child = session_chat_thread("sess_files_child", Some("sess_files_parent"));
+
+        let mut dirs = Vec::new();
+        for thread in [&parent, &child] {
+            let dir = super::super::db::chat_workspace_path(&thread.id).expect("chat path");
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir).expect("clear generated directory");
+            }
+            std::fs::create_dir_all(&dir).expect("create chat dir");
+            std::fs::write(dir.join("scratch.txt"), b"x").expect("write scratch");
+            dirs.push((dir, thread.workspace_id.clone()));
+        }
+
+        delete_thread_tree(&parent.id, true).expect("delete with files");
+
+        for (dir, workspace_id) in dirs {
+            assert!(!dir.exists(), "{} removed", dir.display());
+            let workspace = get_workspace(&workspace_id)
+                .expect("get")
+                .expect("workspace row remains");
+            assert_eq!(workspace.cleanup_status, "cleaned");
+        }
+    }
+
+    #[test]
+    fn delete_thread_tree_terminates_on_a_malformed_lineage_cycle() {
+        let (_home, _conn) = guarded_conn("threads_cascade_cycle");
+        let a = session_chat_thread("sess_cycle_a", Some("sess_cycle_b"));
+        let b = session_chat_thread("sess_cycle_b", Some("sess_cycle_a"));
+
+        delete_thread_tree(&a.id, false).expect("delete terminates");
+
+        assert!(get_thread(&a.id).expect("get").is_none());
+        assert!(
+            get_thread(&b.id).expect("get").is_none(),
+            "the other side of the cycle is reachable, so it goes too"
+        );
+    }
+
+    #[test]
+    fn batch_delete_isolates_failed_tree_and_its_outbox_intent() {
+        let (_home, conn) = guarded_conn("threads_batch_savepoint");
+        seed_two_threads(&conn);
+        conn.execute_batch(
+            "CREATE TRIGGER reject_thread_delete BEFORE DELETE ON threads
+            WHEN OLD.id='t1' BEGIN SELECT RAISE(ABORT,'synthetic failure'); END;",
+        )
+        .unwrap();
+        drop(conn);
+        let result = delete_thread_trees(&["t1".into(), "t2".into()], false).unwrap();
+        assert_eq!(result.deleted_count, 1);
+        assert_eq!(result.failed.len(), 1);
+        assert!(get_thread("t1").unwrap().is_some());
+        assert!(get_thread("t2").unwrap().is_none());
+        assert!(!super::super::is_agent_session_tombstoned("sess1").unwrap());
+        assert!(super::super::is_agent_session_tombstoned("t2").unwrap());
+    }
+
+    /// The per-tree workspace write-back is a *second* failure point, after the
+    /// row delete has already committed: the tree is gone, but the cleanup intent
+    /// cannot be closed out. Plant a hostile trigger that refuses exactly the
+    /// `cleanup_status = 'cleaned'` update (the `pending_cleanup` write inside the
+    /// transaction must be left alone, or the savepoint would fail first), then
+    /// assert the batch reports it per tree and still counts the delete.
+    #[test]
+    fn a_workspace_cleanup_write_back_that_fails_is_reported_per_tree() {
+        let (_home, conn) = guarded_conn("threads_cleanup_writeback");
+        let thread = session_chat_thread("sess_cleanup_writeback", None);
+        conn.execute_batch(
+            "CREATE TRIGGER hostile_cleanup_writeback BEFORE UPDATE ON workspaces
+             WHEN NEW.cleanup_status = 'cleaned'
+             BEGIN SELECT RAISE(ABORT, 'hostile cleanup write-back'); END;",
+        )
+        .expect("plant the hostile cleanup trigger");
+
+        let result = delete_thread_trees(std::slice::from_ref(&thread.id), true)
+            .expect("a refused cleanup write-back is reported, not propagated");
+
+        assert_eq!(
+            result.deleted_count, 0,
+            "a tree whose cleanup failed is not counted as fully deleted: {result:?}"
+        );
+        assert_eq!(result.failed.len(), 1, "{result:?}");
+        assert!(
+            result.failed[0].starts_with(&format!("{}: ", thread.id)),
+            "the failing tree is named: {:?}",
+            result.failed
+        );
+        assert!(
+            get_thread(&thread.id).expect("get").is_none(),
+            "the row delete itself already committed"
+        );
+    }
+
+    #[test]
+    fn batch_delete_reports_per_thread_outcomes() {
+        let (_home, conn) = guarded_conn("threads_batch");
+        seed_two_threads(&conn);
+        drop(conn);
+
+        let result = batch_delete_threads(&BatchDeleteThreadsInput {
+            thread_ids: vec!["t1".to_string(), "ghost".to_string(), "t2".to_string()],
+            delete_files: false,
+        })
+        .expect("batch");
+        assert_eq!(result.deleted_count, 2);
+        assert_eq!(result.failed.len(), 1);
+        assert!(result.failed[0].starts_with("ghost: "));
+    }
+
+    #[test]
+    fn purge_soft_deleted_threads_cascades() {
+        let (_home, conn) = guarded_conn("threads_purge");
+        seed_two_threads(&conn);
+        conn.execute_batch(
+            "INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES ('r3', 't3', 'completed', 1, 1);",
+        )
+        .expect("seed run for deleted thread");
+        drop(conn);
+
+        assert_eq!(purge_soft_deleted_threads().expect("purge"), 1);
+        assert!(get_thread("t3").expect("get").is_none());
+        let conn = connect().expect("reconnect");
+        let runs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM runs WHERE id = 'r3'", [], |row| {
+                row.get(0)
+            })
+            .expect("count");
+        assert_eq!(runs, 0, "child rows of the purged thread are gone");
+
+        assert_eq!(purge_soft_deleted_threads().expect("purge again"), 0);
+    }
+
+    #[test]
+    fn inheriting_an_asset_root_for_a_missing_thread_is_an_error() {
+        let (_home, _conn) = guarded_conn("threads_asset_root_missing");
+        let error = inherit_thread_asset_root("no-such-thread", "parent-thread")
+            .expect_err("a thread that does not exist cannot inherit an asset root")
+            .to_string();
+        assert!(error.contains("Thread could not be loaded"), "{error}");
+    }
+
+    #[test]
+    fn binding_a_session_to_a_thread_that_is_out_of_service_is_refused() {
+        let (_home, conn) = guarded_conn("threads_bind_deleted");
+        let thread = create_thread(chat_input()).expect("chat thread");
+        // A soft-deleted row still exists — the cleanup reconciler works from
+        // exactly that state — but it is out of service, so the bind statement
+        // matches nothing and the caller gets the explicit refusal.
+        conn.execute(
+            "UPDATE threads SET status = 'deleted' WHERE id = ?1",
+            params![thread.id],
+        )
+        .expect("soft delete");
+        let error = bind_thread_session_id(&thread.id, "session-1")
+            .expect_err("a thread that is out of service cannot take a session")
+            .to_string();
+        assert!(
+            error.contains("Thread is not available for session binding"),
+            "{error}"
+        );
+    }
+}

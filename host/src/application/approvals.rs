@@ -1,0 +1,319 @@
+//! Shared approval persistence and Agent decisions.
+
+use serde::Deserialize;
+
+use crate::{agent_bridge, store};
+
+pub fn list_approval_requests(
+    thread_id: String,
+) -> Result<Vec<store::ApprovalRequestRecord>, crate::Error> {
+    store::list_approval_requests(&thread_id)
+}
+
+/// Pending approvals across ALL threads — the sidebar badge source, so an
+/// approval raised in a background conversation is visible without opening it.
+pub fn list_pending_approval_requests() -> Result<Vec<store::ApprovalRequestRecord>, crate::Error> {
+    store::list_pending_approval_requests()
+}
+
+pub async fn decide_approval_request(
+    input: store::DecideApprovalRequestInput,
+) -> Result<store::ApprovalRequestRecord, crate::Error> {
+    agent_bridge::decide_approval(input).await
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveApprovalRuleInput {
+    /// Thread the rule was created from — resolves the target workspace dir.
+    pub thread_id: String,
+    /// Path glob (workspace-relative, or `~`/absolute), possibly user-edited.
+    pub path: String,
+    /// "read" | "write".
+    pub access: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveApprovalRulesInput {
+    pub thread_id: String,
+    pub rules: Vec<SaveApprovalRuleEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveApprovalRuleEntry {
+    pub path: String,
+    pub access: String,
+}
+
+/// "Allow in this workspace/chat": append an allow rule to the workspace's
+/// `.future/approval_rule.json` (persist, read next prompt) AND inject it into
+/// the live agent session (same-run effect — docs/internals/desktop/SANDBOX/COMMON.md).
+pub async fn save_approval_rule(input: SaveApprovalRuleInput) -> Result<(), crate::Error> {
+    let workspace_id = store::get_thread(&input.thread_id)?
+        .map(|thread| thread.workspace_id)
+        .ok_or_else(|| "Thread could not be loaded.".to_string())?;
+    let workspace = store::get_workspace(&workspace_id)?
+        .ok_or_else(|| "Workspace could not be loaded.".to_string())?;
+    crate::approval_rules::append_workspace_allow_rule(
+        &workspace.path,
+        &input.path,
+        &input.access,
+    )?;
+    // Same-run effect (best-effort — persistence above already succeeded).
+    agent_bridge::inject_session_rule(&input.thread_id, &input.path, &input.access).await
+}
+
+/// Persist a capability card's complete target set in one atomic config write,
+/// then inject each exact rule into the current session.
+pub async fn save_approval_rules(input: SaveApprovalRulesInput) -> Result<(), crate::Error> {
+    let workspace_id = store::get_thread(&input.thread_id)?
+        .map(|thread| thread.workspace_id)
+        .ok_or_else(|| "Thread could not be loaded.".to_string())?;
+    let workspace = store::get_workspace(&workspace_id)?
+        .ok_or_else(|| "Workspace could not be loaded.".to_string())?;
+    let rules = input
+        .rules
+        .iter()
+        .map(|rule| (rule.path.clone(), rule.access.clone()))
+        .collect::<Vec<_>>();
+    crate::approval_rules::append_workspace_allow_rules(&workspace.path, &rules)?;
+    for rule in input.rules {
+        agent_bridge::inject_session_rule(&input.thread_id, &rule.path, &rule.access).await?;
+    }
+    Ok(())
+}
+
+pub fn list_approval_assessments(
+    run_id: String,
+) -> Result<Vec<store::ApprovalAssessmentRecord>, crate::Error> {
+    store::list_approval_assessments(&run_id)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::await_holding_lock)]
+    use super::*;
+    use crate::auth_store::test_support::HomeGuard;
+
+    fn seeded(label: &str) -> (HomeGuard, store::ThreadRecord) {
+        let home = HomeGuard::new(label);
+        crate::store::initialize_app_store().expect("init store");
+        let ws = crate::store::create_workspace(store::CreateWorkspaceInput {
+            name: Some("WS".into()),
+            path: std::env::temp_dir()
+                .join(format!("futureos-cmd-approval-ws-{}", std::process::id()))
+                .display()
+                .to_string(),
+            description: None,
+            create_directory: Some(true),
+        })
+        .expect("create workspace");
+        let thread = crate::store::create_thread(store::CreateThreadInput {
+            mode: "workspace".into(),
+            title: Some("Approvals".into()),
+            workspace_id: Some(ws.id.clone()),
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .expect("create thread");
+        (home, thread)
+    }
+
+    fn with_approval(thread: &store::ThreadRecord, id: &str) {
+        crate::store::create_run(store::CreateRunInput {
+            id: Some(id.into()),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create run");
+        crate::store::ensure_approval_request(store::EnsureApprovalRequestInput {
+            approval_request_id: Some(format!("approval_{id}")),
+            run_id: id.into(),
+            tool_call_id: None,
+            kind: "shell".into(),
+            title: "Deploy".into(),
+            summary: None,
+            risk_level: None,
+            requested_action: None,
+            action_category: None,
+            action_payload: None,
+            sandbox_boundary: None,
+            save_suggestion: None,
+            reviewer: None,
+        })
+        .expect("ensure approval");
+    }
+
+    /// The read-only projection the run detail view uses. It is a sync command
+    /// with a single `run_id` argument, so the only thing to prove is that it
+    /// forwards to the store and returns the recorded rows in order.
+    #[test]
+    fn list_approval_assessments_command_projects_the_recorded_rows() {
+        let (_home, thread) = seeded("cmd_approval_assessments");
+        with_approval(&thread, "run_assessed");
+
+        assert!(
+            list_approval_assessments("run_assessed".to_string())
+                .expect("empty projection")
+                .is_empty(),
+            "no assessment recorded yet"
+        );
+
+        crate::store::record_approval_assessment(
+            "run_assessed",
+            &serde_json::json!({
+                "assessment_id": "assessment_1",
+                "approval_request_id": "auto_run_assessed",
+                "tool_call_id": "tool_1",
+                "status": "approved",
+                "reviewer": "model",
+                "effective": { "risk": "low" },
+            }),
+        )
+        .expect("record the automatic review");
+
+        let rows = list_approval_assessments("run_assessed".to_string()).expect("projection");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "assessment_1");
+        assert_eq!(rows[0].run_id, "run_assessed");
+        assert_eq!(rows[0].tool_call_id, "tool_1");
+        assert_eq!(rows[0].status, "approved");
+        assert_eq!(rows[0].payload["effective"]["risk"], "low");
+
+        // Another run's assessments are not mixed in.
+        assert!(list_approval_assessments("run_someone_else".to_string())
+            .expect("projection")
+            .is_empty());
+    }
+
+    #[test]
+    fn list_approval_requests_returns_the_threads_pending_approval() {
+        let (_home, thread) = seeded("cmd_approvals");
+        assert!(list_approval_requests(thread.id.clone())
+            .expect("list empty")
+            .is_empty());
+        with_approval(&thread, "run_1");
+        let listed = list_approval_requests(thread.id.clone()).expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].title, "Deploy");
+    }
+
+    #[test]
+    fn pending_approvals_span_threads() {
+        let (_home, thread) = seeded("cmd_approvals_pending");
+        with_approval(&thread, "run_2");
+        let pending = list_pending_approval_requests().expect("pending");
+        assert_eq!(pending.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn decide_approval_cancels_when_the_agent_says_stale() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_approval_stale");
+        with_approval(&thread, "run_4");
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            errors: HashMap::from([(
+                "approval_decision".to_string(),
+                "approval request is not pending".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let updated = decide_approval_request(store::DecideApprovalRequestInput {
+            approval_request_id: "approval_run_4".into(),
+            status: "approved".into(),
+            decision_note: None,
+        })
+        .await
+        .expect("decide stale");
+        assert_eq!(updated.status, "cancelled");
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn save_approval_rule_writes_and_injects() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_approval_rule");
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("add_session_rule".to_string(), "{}".to_string())]),
+            ..Default::default()
+        });
+        save_approval_rule(SaveApprovalRuleInput {
+            thread_id: thread.id.clone(),
+            path: "src/**".into(),
+            access: "read".into(),
+        })
+        .await
+        .expect("save rule");
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn save_approval_rules_writes_and_injects_all() {
+        use crate::test_support::command_agent::{mock_agent_lock, script_mock_agent, MockScript};
+        use std::collections::HashMap;
+
+        let _lock = mock_agent_lock();
+        let (_home, thread) = seeded("cmd_approval_rules");
+        crate::test_support::command_agent::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([("add_session_rule".to_string(), "{}".to_string())]),
+            ..Default::default()
+        });
+        save_approval_rules(SaveApprovalRulesInput {
+            thread_id: thread.id.clone(),
+            rules: vec![
+                SaveApprovalRuleEntry {
+                    path: "src/**".into(),
+                    access: "read".into(),
+                },
+                SaveApprovalRuleEntry {
+                    path: "docs/**".into(),
+                    access: "write".into(),
+                },
+            ],
+        })
+        .await
+        .expect("save rules");
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn save_approval_rule_errors_for_unknown_thread() {
+        let _home = HomeGuard::new("cmd_approval_rule_ghost");
+        crate::store::initialize_app_store().expect("init store");
+        assert!(save_approval_rule(SaveApprovalRuleInput {
+            thread_id: "ghost".into(),
+            path: "src/**".into(),
+            access: "read".into(),
+        })
+        .await
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn save_approval_rule_rejects_an_invalid_access_scope() {
+        let (_home, thread) = seeded("cmd_approval_rule_bad_access");
+        // The persistence layer rejects a non-read/write access before any
+        // agent call happens.
+        assert!(save_approval_rule(SaveApprovalRuleInput {
+            thread_id: thread.id.clone(),
+            path: "src/**".into(),
+            access: "execute".into(),
+        })
+        .await
+        .is_err());
+    }
+}

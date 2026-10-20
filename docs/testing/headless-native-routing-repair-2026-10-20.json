@@ -1,0 +1,419 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "sourceCommit": "5e1862dc55398399346e000732affb2ac2c33437",
+  "ciFailure": {
+    "runId": 39363398726,
+    "candidate": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+    "jobId": 118434853598,
+    "error": "gui-host failed: exit=0, passed=0",
+    "logSha256": "1b7bfd9d58c25be43cfd5c7104fa67cbe6beb9cea24b65aeccc855d884b4f9d8"
+  },
+  "change": "Route shared Agent lifecycle to future-host once and add separate GUI state/Ready/Exit wiring plus actual headless process suites. Keep the nonzero-test guard. Preserve Windows image/shell suites.",
+  "firstLocalAttempt": {
+    "summary": {
+      "platform": "macOS-27.0.1-arm64-arm-64bit",
+      "commit": "5e1862dc55398399346e000732affb2ac2c33437",
+      "suites": [
+        {
+          "name": "connection",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "future-rpc",
+            "--lib",
+            "connection::tests",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 20,
+          "seconds": 23.728
+        },
+        {
+          "name": "service",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "future-agent",
+            "--test",
+            "service_startup",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 101,
+          "passed": 1,
+          "seconds": 53.105
+        }
+      ],
+      "status": "failed",
+      "error": "service failed: exit=101, passed=1"
+    },
+    "environment": {
+      "RUST_LOG": "warn (inherited operator filter)"
+    },
+    "failedTest": "startup_progress_reaches_the_hosts_logging_layer",
+    "serviceTests": {
+      "passed": 14,
+      "failed": 1,
+      "ignored": 0
+    },
+    "diagnosis": "INFO startup phases are intentionally suppressed by the operator warn filter. The test asserts normal default startup logging. Product logging and test assertions are unchanged.",
+    "logSha256": "89ffe415be1724f2825b02aa453b7cace5e01bf5c4f22dc202ea02c0eeee1179"
+  },
+  "rerunEnvironment": {
+    "RUST_LOG": "unset for the test command, matching CI default startup logging",
+    "CARGO_PROFILE_TEST_DEBUG": "1",
+    "CARGO_BUILD_JOBS": "2",
+    "RUSTC_WRAPPER": "",
+    "CARGO_TARGET_DIR": "/Volumes/ZHITAI/Workspace/future-os/target"
+  },
+  "rerunStatus": "passed",
+  "limits": [
+    "Windows verification remains native CI only.",
+    "This interim native gate does not establish final future headless CLI/release/manual acceptance."
+  ],
+  "rerunSummary": {
+    "platform": "macOS-27.0.1-arm64-arm-64bit",
+    "commit": "5e1862dc55398399346e000732affb2ac2c33437",
+    "suites": [
+      {
+        "name": "connection",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "future-rpc",
+          "--lib",
+          "connection::tests",
+          "--",
+          "--test-threads=1",
+          "--nocapture"
+        ],
+        "exit_code": 0,
+        "passed": 20,
+        "seconds": 0.263
+      },
+      {
+        "name": "service",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "future-agent",
+          "--test",
+          "service_startup",
+          "--",
+          "--test-threads=1",
+          "--nocapture"
+        ],
+        "exit_code": 0,
+        "passed": 15,
+        "seconds": 1.063
+      },
+      {
+        "name": "cli-tools",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "--manifest-path",
+          "desktop/src-tauri/Cargo.toml",
+          "--no-default-features",
+          "--features",
+          "headless",
+          "--lib",
+          "cli_tool::tests",
+          "--",
+          "--test-threads=1",
+          "--nocapture"
+        ],
+        "exit_code": 0,
+        "passed": 15,
+        "seconds": 62.343
+      },
+      {
+        "name": "shared-host",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "future-host",
+          "--lib",
+          "agent_host::",
+          "--",
+          "--test-threads=1",
+          "--nocapture"
+        ],
+        "exit_code": 0,
+        "passed": 22,
+        "seconds": 34.198
+      },
+      {
+        "name": "gui-entry-state",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "futureos",
+          "--lib",
+          "gui::startup_paths_tests::process_state_initializes_without_a_window",
+          "--",
+          "--test-threads=1",
+          "--nocapture"
+        ],
+        "exit_code": 0,
+        "passed": 1,
+        "seconds": 92.782
+      },
+      {
+        "name": "gui-entry-ready",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "futureos",
+          "--lib",
+          "gui::startup_paths_tests::the_ready_event_starts_the_window_work_and_serves_the_terminal",
+          "--",
+          "--test-threads=1",
+          "--nocapture"
+        ],
+        "exit_code": 0,
+        "passed": 1,
+        "seconds": 7.954
+      },
+      {
+        "name": "gui-entry-exit",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "futureos",
+          "--lib",
+          "gui::startup_paths_tests::the_exit_event_closes_admission_and_publishes_the_stop",
+          "--",
+          "--test-threads=1",
+          "--nocapture"
+        ],
+        "exit_code": 0,
+        "passed": 1,
+        "seconds": 0.264
+      },
+      {
+        "name": "headless-entry",
+        "command": [
+          "cargo",
+          "test",
+          "--locked",
+          "-p",
+          "futureos",
+          "--no-default-features",
+          "--features",
+          "headless",
+          "--test",
+          "headless_cli",
+          "--",
+          "--test-threads=1",
+          "--nocapture"
+        ],
+        "exit_code": 0,
+        "passed": 13,
+        "seconds": 13.973
+      }
+    ],
+    "status": "passed"
+  },
+  "scriptSha256": "dfab6239427905c3ca1d76a09e5fe524161eb35f6f1c93eea9652f75e1c5b4f8",
+  "rerunLogSha256": "463d007b988b487fd014409c0d7d6e0c54273c7e71e96ec06b279b574a9cf0e3",
+  "loggingCaseRerun": {
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0,
+    "executionSeconds": 0.06,
+    "logSha256": "7a2fbf25f189e57c8084a86758e5ee1d2107ea62690942988ba24e5af3e01cf8"
+  },
+  "suiteLogSha256": {
+    "gui-entry-state.log": "d62449c0fc570a0228663b54f968bff624ceef6359ffa979bed849134328b8e8",
+    "shared-host.log": "0b8f71a46200628b857617a0495476cd9111c91509eda6370342df32441bf868",
+    "service.log": "4f8f69f6d1d4e9e295a1259b5debd545dca4601217a0efbc3aa7ed6758933b06",
+    "gui-entry-exit.log": "9cd73210ff1559848f9ab8a4771ab0811f0ed4b8bf748e80a4b0522ce487b600",
+    "cli-tools.log": "70add43acbdac77b35e7d7754fc0c862a2d26429404580201548eaebddf735d7",
+    "gui-entry-ready.log": "8dba2d122a3bcdbda8b61222558bc136cedb9952b2f62f53737e793f86754ce7",
+    "connection.log": "e28f6d10fe679e64d49b0b6a226176971fc205e9b7c8ffa504b05d0f3d13571e",
+    "headless-entry.log": "6ee7acbf4808ec573181a89cb8f445074867f8350374418afe35c5d72a1b920a"
+  },
+  "ciSnapshot": {
+    "headSha": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+    "status": "in_progress",
+    "conclusion": "",
+    "jobs": [
+      {
+        "name": "Detect affected checks",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118434815676
+      },
+      {
+        "name": "macOS notarization recovery",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118434816043
+      },
+      {
+        "name": "Matched Windows Rust compilation",
+        "status": "completed",
+        "conclusion": "skipped",
+        "jobId": 118434817085
+      },
+      {
+        "name": "Remote packages + interoperability",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118434853495
+      },
+      {
+        "name": "Rust tests (Linux) (channels, rpc, goal)",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118434853513
+      },
+      {
+        "name": "Rust fmt + clippy (Linux)",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118434853531
+      },
+      {
+        "name": "Rust tests (Linux) (agent)",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118434853535
+      },
+      {
+        "name": "Windows update fixtures",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118434853558
+      },
+      {
+        "name": "Shared host (macOS)",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118434853566
+      },
+      {
+        "name": "Rust tests (Linux) (desktop gui)",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118434853583
+      },
+      {
+        "name": "Rust build (Linux)",
+        "status": "completed",
+        "conclusion": "failure",
+        "jobId": 118434853598
+      },
+      {
+        "name": "Shared host (Windows)",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118434853609
+      },
+      {
+        "name": "Rust tests (Linux) (tui, cli)",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118434853622
+      },
+      {
+        "name": "Rust tests (Linux) (host)",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118434853629
+      },
+      {
+        "name": "Rust build (macOS)",
+        "status": "completed",
+        "conclusion": "failure",
+        "jobId": 118434853663
+      },
+      {
+        "name": "Mobile typecheck + lint + test",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118434853679
+      },
+      {
+        "name": "Rust tests (Linux) (desktop headless)",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118434853708
+      },
+      {
+        "name": "Rust build (Windows)",
+        "status": "in_progress",
+        "conclusion": "",
+        "jobId": 118434853741
+      },
+      {
+        "name": "Desktop typecheck + lint + test",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118434853751
+      },
+      {
+        "name": "Rust tests (Linux) (desktop backend)",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118438915346
+      },
+      {
+        "name": "Rust tests (Linux)",
+        "status": "completed",
+        "conclusion": "success",
+        "jobId": 118438915463
+      }
+    ]
+  },
+  "postMainSync": {
+    "sourceCommit": "a59dcf30cb61f78dbe480698f057369964337d46",
+    "originMain": "c3a7ea10362d2ce557bbdc15d3f477274b72facd",
+    "change": "Upstream pairing invitation API/control reply updates merged before push; no conflicts.",
+    "staticChecks": [
+      "fmt Host/CLI/Desktop/Remote Server PASS",
+      "Clippy --all-targets Host/CLI/Desktop/Remote Server PASS",
+      "Clippy --all-targets legacy headless PASS",
+      "Clippy --all-targets standalone remote-interop PASS"
+    ],
+    "localEntryTests": {
+      "headlessCli": {
+        "passed": 13,
+        "failed": 0,
+        "ignored": 0,
+        "executionSeconds": 7.34
+      },
+      "remoteStartRefusal": {
+        "passed": 13,
+        "failed": 0,
+        "ignored": 0,
+        "executionSeconds": 186.48
+      },
+      "command": "cargo test --offline --locked --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml --test headless_cli --test remote_start_refusal -- --test-threads=1",
+      "RUST_LOG": "unset",
+      "logSha256": "cb8adac2b8060834a1fd1b96055c2bc2d3429e7562c6635fccaecc0b36139331"
+    }
+  }
+}

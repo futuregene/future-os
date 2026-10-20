@@ -216,7 +216,7 @@ pub fn kill_tree(pgid: Option<i32>, pid: i32, grace: Duration) {
 
     #[cfg(windows)]
     {
-        use crate::proc::NoWindow;
+        use future_host::NoWindow;
         let _ = (pgid, grace);
         // ConPTY children are not a process group; `taskkill /T` walks the tree
         // by parent links, which is the closest portable equivalent. (A Job

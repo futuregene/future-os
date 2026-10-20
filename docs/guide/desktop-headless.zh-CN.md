@@ -9,15 +9,14 @@
 **默认前台运行、持续占用终端；按 Ctrl+C 关闭远程入口并退出。**
 不会自动转入后台，也不会安装系统服务。
 
+本分支已接入统一命令，跨平台、发布与最终验收仍待完成。进度见 [Headless 拆分开发计划](../architecture/headless-package-development.zh-CN.md)。
+
 ## 1. 启动前准备
 
-- Linux `.deb` 和 portable 发布包已包含 `futureos-headless` 及匹配版本的 `future` CLI；
-  也可以按第 5 节从源码构建，源码安装（`make install`）会把 `futureos-headless`
-  装在 `futureos` 同一个 bin 目录。独立入口不依赖 GTK/WebKit，默认无头启动。
-  CLI-only 压缩包仍只提供 `future`，不提供 Desktop 后端入口。
-- 默认端点和数据目录没有外部服务占用时，完整 Agent 运行在 headless Desktop 自身进程中。
-  匹配 CLI 放在程序旁边或 PATH 中，用于技能和维护。也可以提前独立启动外部 Agent，
-  Desktop 会在兼容性和 readiness 检查通过后连接它。
+- 安装统一 `future` CLI，CLI-only 压缩包也包含完整无头后端。
+  使用 `future headless`，无需单独安装 Desktop 或服务器程序。
+- 默认端点和数据目录没有外部服务占用时，完整 Agent 在当前进程内运行。
+  维护直接调用当前 CLI；外部 Agent 仍需通过兼容性和 readiness 检查才会连接。
 - 手机安装匹配生产/测试环境的 FutureOS App。编译渠道与手机环境必须一致。
 - 主机能够访问 Future OS 平台和配置的 NATS 中继；手机也需要联网。
 - 使用普通系统用户运行。平台登录、主机配对和工具执行均属于该运行用户；不要为方便而使用 root。
@@ -28,22 +27,22 @@
 
 ## 2. 前台启动
 
-`.deb` 安装后可以直接运行 `futureos-headless`；portable 或源码构建请进入该可执行程序所在目录。
+`.deb` 安装后可以直接运行 `future headless`；portable 或源码构建请进入该可执行程序所在目录。
 
 Linux / macOS：
 
 ```bash
-./futureos-headless
+./future headless
 ```
 
 Windows PowerShell：
 
 ```powershell
-.\futureos-headless.exe
+.\future.exe headless
 ```
 
 不需要也不接受 `--headless` 参数。`futureos` 只启动图形 Desktop，原来的 `--headless` 选项已移除。
-旧命令如 `futureos --headless --no-qr` 应改成 `futureos-headless`。
+旧命令如 `futureos --headless --no-qr` 应改成 `future headless`。
 两个入口都不再接受配对相关参数：设备统一用 `future remote devices` 管理（见 3.1），
 由它在运行中的 Desktop 里完成配对。
 两个程序共享后端、数据和手机协议，不是另一套实现。
@@ -105,8 +104,8 @@ GUI 的另外两个定时任务在服务器端没有对应物：应用更新检�
 例如：
 
 ```bash
-./futureos-headless --relay https://relay.example.com
-./futureos-headless --help
+./future headless --relay https://relay.example.com
+./future headless --help
 ```
 
 邀请会以二维码加完整链接的形式打印。终端过窄时自动回退为只打印链接并说明原因，
@@ -151,71 +150,53 @@ Ctrl+C 在登录等待、配对、连接启动和正常运行阶段都可用。�
 
 - **内置 Agent**：取消所有客户端的活动和排队任务，包括 CLI/TUI 对话，然后停止服务。
 - **原本独立运行的 Agent**：不终止它。无头 Desktop 的远程入口仍会关闭。
-- **已保存的登录与完成的配对**：保留；下次 `futureos-headless` 启动时可复用。退出不等于解绑。
+- **已保存的登录与完成的配对**：保留；下次 `future headless` 启动时可复用。退出不等于解绑。
 
 Unix 也处理 SIGTERM 和 SIGHUP。SSH 断开后不承诺继续运行；若确实需要跨 SSH 会话保活，
 可以由用户显式选择 tmux 或系统服务托管，但这不是无头模式的默认行为。
 
 ## 5. 无图形依赖的服务器构建
 
-图形程序 `futureos` 链接 GUI 系统库，Linux 加载器在**解析参数前**就需要加载这些库。
-独立的 `futureos-headless` 构建排除了 Tauri/GTK/WebKit，不需要 X11/Wayland 会话。
-官方 Linux 发布将 `futureos-headless` 构建为完全静态的 musl 二进制，因此也没有
-glibc 版本要求，可以在老的企业/HPC 系统（CentOS 7 / Rocky 8 年代）上运行。
-本地源码构建使用 host 工具链，不一定完全静态链接。
-这条源码构建路径不需要修改发布工作流。
+统一 CLI 直接调用无 GUI 的 `future-host` 库，不加载 Tauri、GTK、WebKit，
+无需 X11/Wayland 会话。官方 Linux CLI 产物使用静态 musl；本地 host 工具链构建不一定静态。
 
-从仓库根目录构建两个程序，无需 npm/Tauri 打包：
+从仓库根目录构建和安装，无需 npm 或 Desktop：
 
 ```bash
-make build-desktop-headless
+make build-cli
+make install-cli
+make run-headless ARGS=--help
+# 兼容别名：make build-desktop-headless / install-desktop-headless
 ```
-
-若要像 `make install` 一样装到同一个 `PREFIX`（macOS `/opt/homebrew/bin`、
-Linux `/usr/local/bin`、Windows `%USERPROFILE%\.future\bin`）：
-
-```bash
-make install-desktop-headless
-```
-
-`make install` 已包含这一步，完整源码安装无需再单独执行。
 
 也可以显式构建：
 
 ```bash
-cargo build --release --no-default-features --features headless \
-  --bin futureos-headless --manifest-path desktop/src-tauri/Cargo.toml
-cargo build --release -p future-cli
+cargo build --release -p future-cli --bin future
+./target/release/future headless
 ```
 
-默认产物为 `target/release/futureos-headless`，Windows 后缀为 `.exe`。
-将 `target/release/future`（Windows 为 `future.exe`）放在它旁边或 PATH 中；Make 目标会自动复制到同目录。
-使用自定义 Cargo 输出目录时，请显式构建并复制相应产物。
-`headless` feature 选择独立入口；同时开启 `gui` 会被拒绝，避免生成名字像服务器版、实际仍依赖 GUI 的程序。
-通用构建要求见
-[构建与安装](build-and-install.zh-CN.md)。
+默认产物为 `target/release/future`（Windows 为 `future.exe`），不再需要独立
+`futureos-headless`。原 Future home、登录和配对记录保持原位。
+通用要求见[构建与安装](build-and-install.zh-CN.md)。
 
-`--release` 是编译优化等级，不决定生产/测试平台渠道；渠道仍遵循项目现有版本与环境策略。
-不要修改配对链接来绕过手机的环境校验。
+`--release` 是优化等级，不决定生产/测试渠道；主机与手机仍须匹配环境，不应修改邀请绕过校验。
 
-本地验证独立 CLI 与进程生命周期：
+进程夹具执行实际 CLI：
 
 ```bash
-cargo test --no-default-features --features headless \
-  --manifest-path desktop/src-tauri/Cargo.toml --test headless_cli
+cargo test -p future-cli --test headless_cli --test remote_start_refusal
 ```
 
-在已启动 Docker 的原生 Linux 上，可以检查官方静态 musl 产物的 ELF 链接，并在无网络、
-无 GUI 库的 Rocky Linux 8／旧 glibc 容器中验证启动。从仓库根目录传入已解包程序：
+原生 Linux 上启动 Docker 后，可验证静态发行产物在无网络、无 GUI 的 Rocky Linux 8
+容器中的启动和首次非交互拒绝行为：
 
-~~~bash
-bash scripts/ci/check-headless-linux.sh /path/to/futureos-headless
-~~~
+```bash
+bash scripts/ci/check-headless-linux.sh /path/to/future
+```
 
-该检查要求静态 musl 构建，默认 host/glibc 构建会被拒绝。Linux 发布 CI 在打包前、
-以及从实际 deb/portable 解包后执行同一检查。
-
-服务模式、日志和升级故障处理见 [Desktop Agent 生命周期与恢复](desktop-agent.zh-CN.md)。
+检查会拒绝动态构建。发布 CI 对 CLI-only、deb 和 portable 中的实际程序执行此检查。
+Agent 归属、日志和恢复见[Desktop Agent 生命周期](desktop-agent.zh-CN.md)。
 
 ## 6. 数据、权限与排障
 
@@ -230,14 +211,14 @@ Agent 会按阶段记录启动过程（模型目录、数据库、历史会话�
 
 | 现象 | 处理方式 |
 |---|---|
-| 缺少 `libwebkit2gtk-4.1.so.0` | 当前运行的是 GUI 二进制；请构建并运行 `futureos-headless` |
-| 提示 `--headless` 已移除或未知参数 | 使用不带该参数的 `futureos-headless`；`--re-pair`/`--no-qr` 已移除，改用 `future remote devices add` 与 `remove --all`；`--relay`/`--relay-ca` 两个入口都支持 |
+| 缺少 `libwebkit2gtk-4.1.so.0` | 当前运行的是 GUI 二进制；请构建并运行 `future headless` |
+| 提示 `--headless` 已移除或未知参数 | 使用不带该参数的 `future headless`；`--re-pair`/`--no-qr` 已移除，改用 `future remote devices add` 与 `remove --all`；`--relay`/`--relay-ca` 两个入口都支持 |
 | Agent 不可用、不兼容或实例锁占用 | 根据错误确认 owner、版本、用户和数据根，升级或正常退出外部服务；不删除锁或绕过互斥。显式端点与 external 模式只连接、不接管 |
-| 内置技能没有装上 | 查看 stderr 上的 `[skills]` 输出：`future init` 需要 `futureos-headless` 旁的 CLI 或在 PATH 上，且能访问技能目录。手机仍可自行安装技能 |
+| 内置技能没有装上 | 查看 stderr 上的 `[skills]` 输出：维护使用当前程序执行 `future init`，需要能访问技能目录。手机仍可自行安装技能 |
 | 提示需要交互终端 | 首次登录/配对请在真实终端执行，不要使用管道、重定向或非交互服务启动 |
 | 平台授权拒绝或过期 | 按提示重新启动并登录，不要把登录码当作 App 配对码 |
 | 配对邀请过期 | 用 `future remote devices add` 重新申请（或在一台设备都没有时重启）；已完成配对无需因此重配 |
-| `future remote devices add` 超时 | 它问的是运行中的 Desktop，而对方只能用自己的构建回答。若提示"没有任何进程领取请求"，说明那个进程早于"设备请求"这个功能——用当前版本（`futureos` 或 `futureos-headless`）重启后再试 |
+| `future remote devices add` 超时 | 它问的是运行中的 Desktop，而对方只能用自己的构建回答。若提示"没有任何进程领取请求"，说明那个进程早于"设备请求"这个功能——用当前版本（`futureos` 或 `future headless`）重启后再试 |
 | 已有 Desktop 占用目录 | 退出使用该数据目录的 GUI 或另一无头进程；不要删除锁文件来绕过互斥 |
 | 进程直接消失，或节点管理员反馈被清理 | 主机的 OOM killer 或登录节点按用户配额会直接发 SIGKILL，进程自身无法报告。先看 `<根目录>/app/logs/desktop.log` 最后记录到哪个启动阶段，再查主机侧记录（`dmesg -T`、`journalctl -k`，以及节点自己的配额/作业日志）。若触发配额的是历史会话导入，可用 `FUTURE_HOME` 把数据根目录移出共享存储 |
 | 手机无法领取邀请 | 检查手机与主机的生产/测试环境是否匹配，确认邀请未过期且未被使用 |

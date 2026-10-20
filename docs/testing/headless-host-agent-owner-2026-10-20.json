@@ -1,0 +1,91 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "parent": "20113caa28f1ccef9a4b4278b98f0e27e3c28713",
+  "change": "Agent owner state, discovery policy, scoped service lease, preparation, readiness, drain and bounded stop move once into future-host. Entry retains probe and serving runtime construction, driving and teardown via an injected native driver. Host has an opaque consumed discovery result and scoped prepared-service callback; no internal mutex or raw Agent store is exposed.",
+  "productionRuntimeCheck": {
+    "hostServiceFile": "host/src/agent_host.rs",
+    "runtimeBuilderOccurrences": 0,
+    "blockOnOccurrences": 0,
+    "entryFile": "desktop/src-tauri/src/agent_host.rs",
+    "probe": "current-thread enable_all; dropped before local-start scope",
+    "agent": "multi-thread enable_all; 2 workers; 32 blocking; 2 MiB stack; shutdown_timeout 1s; lifetime inside service cleanup scope"
+  },
+  "compatibility": [
+    "Original FUTURE_DESKTOP_AGENT_MODE values and errors remain.",
+    "Agent singleton and endpoint/start permission logic still come from future-agent/future-rpc.",
+    "External ownership never receives Agent shutdown; stopped/failed/starting transitions and deadlines remain.",
+    "Log path stays app/logs/desktop.log; mirror uses the same future-agent logfile singleton.",
+    "No data, pairing, wire, approval, sandbox or requested-run cancellation changes."
+  ],
+  "tests": [
+    {
+      "source": "desktop/src-tauri/src/agent_host.rs",
+      "target": "host/src/agent_host.rs",
+      "names": [
+        "a_stopping_desktop_refuses_a_start_before_any_worker_exists",
+        "a_ready_host_accepts_a_repeated_start_without_a_second_worker",
+        "a_start_that_never_becomes_ready_fails_at_the_startup_deadline",
+        "a_worker_that_cannot_finish_fails_the_stop_at_the_cleanup_deadline",
+        "a_stop_during_the_external_environment_check_never_publishes_ready",
+        "a_stop_before_prepare_is_reported_as_a_clean_cancellation",
+        "a_prepare_that_sees_a_moved_home_is_a_real_failure",
+        "host_fixture",
+        "a_fresh_host_is_idle_unowned_and_reports_no_activity"
+      ],
+      "originalAssertionMacros": 32,
+      "movedAssertionMacros": 32
+    },
+    {
+      "source": "desktop/src-tauri/src/agent_host/tests.rs",
+      "target": "host/src/agent_host/tests.rs",
+      "names": [
+        "clean_shutdown_before_first_serve_poll_is_not_a_sticky_startup_failure",
+        "embedded_startup_and_restart_keep_the_agent_in_the_desktop_process",
+        "an_attached_host_does_not_stop_the_external_owner",
+        "occupied_endpoint_lease_rejects_startup_before_database_initialization",
+        "cancellation_during_import_preserves_committed_sessions_and_allows_resume",
+        "held_lock_rejects_startup_before_database_initialization",
+        "a_stalled_client_fails_stop_without_releasing_the_lock_or_restarting",
+        "a_cli_shell_is_cancelled_by_the_embedded_owner",
+        "concurrent_starts_share_one_service_and_stop_is_idempotent",
+        "stopping_during_startup_never_publishes_a_ready_service",
+        "cancelling_an_external_probe_stops_cleanly_and_allows_a_fresh_start",
+        "cli_prompt_and_queued_follow_up_are_persisted_as_cancelled_on_exit",
+        "host_fixture"
+      ],
+      "originalAssertionMacros": 55,
+      "movedAssertionMacros": 55
+    }
+  ],
+  "fixtureAdjustment": "The isolated stopping test now closes shared admission directly; Desktop full-coordinator tests retain integration coverage. Test-only native driver lives in cfg(test) module. Canonical real-loopback fixture is reused for attach policy cases. All original assertions and platform conditions remain.",
+  "localChecks": [
+    {
+      "command": "cargo fmt -p future-host -p futureos --check",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p future-host --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p futureos -p future-cli --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml --all-targets -- -D warnings",
+      "result": "PASS"
+    }
+  ],
+  "executedLocalTestsForThisBatch": 0,
+  "ci": {
+    "runId": 39361847974,
+    "candidate": "5da65cceaec979103e76e4a41c93f30fa6e74941",
+    "doesNotCoverThisBatch": true
+  },
+  "limits": [
+    "Static compilation does not establish runtime/lifecycle acceptance.",
+    "True process, RPC and database/Agent ownership tests need execution in subsequent CI.",
+    "Full business bridge, Remote host adapters, scheduling and exit coordinator are still in Desktop."
+  ]
+}

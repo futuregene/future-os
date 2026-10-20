@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "sourceCommit": "0bf843e0726ee853b127e32e05178e08e1c073f9",
+  "originMain": "c53191cf50738702308294d467d7113f128995f0",
+  "change": "Rename-aware merge preserves Remote preference persistence, default-on schema semantics and GUI/CLI/Mobile copy; upstream Desktop store assertion is applied in Host without restoring a backend copy.",
+  "newUpstreamTestDeclarations": 4,
+  "baselineDeclarations": 2193,
+  "localTests": [
+    {
+      "command": "cargo test -p future-host -p future-app-settings --lib --offline --locked",
+      "results": [
+        "test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1047 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 75.65s"
+      ],
+      "logSha256": "c808ab05bd1494f960464b8b38de5c4bbaccbe3503775d8d4f4793e3ca6cfc9e"
+    },
+    {
+      "command": "cargo test -p futureos --lib commands::remote::tests:: --offline --locked",
+      "results": [
+        "test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 1026 filtered out; finished in 0.09s"
+      ],
+      "logSha256": "c5f85f3dcb61b7da6eaf6558dd25f8b29d1b14492df62c6cec1a14fd7b914065"
+    },
+    {
+      "command": "cargo test -p future-cli --lib commands::desktop::tests:: --offline --locked",
+      "results": [
+        "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 1259 filtered out; finished in 0.02s"
+      ],
+      "logSha256": "0d857186998da280f95bf51e76a99b893e39b9f91d8cfea135573d423fbc50f0"
+    }
+  ],
+  "localStatic": {
+    "npm --prefix desktop run lint (includes typecheck)": {
+      "status": "pass",
+      "logSha256": "1f7937ca20acac5d5cd62e8468b764777cc0e627290a61c52dec5ce5e5e6dc40"
+    },
+    "npm --prefix mobile run typecheck (includes version generation)": {
+      "status": "pass",
+      "logSha256": "50dafd5640bace65e55af9467267a3d1836c21545a0b327814d8b0d2537200c5"
+    },
+    "npm --prefix mobile run lint": {
+      "status": "pass",
+      "logSha256": "6181776b4cc898f8e610138f2ffce2b308caf4a825602ab647ff29184d071c9e"
+    },
+    "Host/GUI/CLI/app-settings Clippy --all-targets": {
+      "status": "pass",
+      "logSha256": "4090d32f58aa6d4e3ab1c9e0bb9c136c2a383debb0777948e436b57ea40e78e7"
+    },
+    "Legacy headless Clippy --all-targets": {
+      "status": "pass",
+      "logSha256": "e88b78b1ad26d9508a59bec382e6609bae4a1c389b182dc52beb665d928a65ae"
+    }
+  },
+  "nodeDependencies": {
+    "packageLockSha256": "d0b59d06ee62f587503861b8151bddbc262522f55e8c8e615e76dfcebc97f700",
+    "method": "Temporary worktree-only links to existing repository-root dependencies with identical lock file. All three links removed after checks; no npm install or user-directory writes."
+  },
+  "limits": [
+    "Results recorded at the merged source; subsequent GUI fixture guard has its own 26-case red/green evidence.",
+    "Full cross-platform CI, future headless entry, release and manual acceptance remain open."
+  ]
+}

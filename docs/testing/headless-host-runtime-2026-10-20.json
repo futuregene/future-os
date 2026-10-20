@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "parent": "b6c6b185",
+  "scope": "Shared background-task registry and GUI-free presentation outlet.",
+  "migratedTestDeclarations": 7,
+  "newOutletTestDeclarations": 2,
+  "executedTests": 0,
+  "checks": [
+    {
+      "command": "cargo clippy --offline --locked -p future-host -p future-cli -p futureos --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p future-host --features test-support --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p futureos --no-default-features --features headless --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo fmt -p future-host -p future-cli -p futureos --check",
+      "result": "PASS"
+    },
+    {
+      "command": "python3 scripts/ci/host-boundaries.py",
+      "result": "PASS"
+    },
+    {
+      "command": "python3 scripts/docs/check-docs.py --scope docs/architecture,docs/testing",
+      "result": "PASS"
+    }
+  ],
+  "environment": {
+    "target": "aarch64-apple-darwin",
+    "rust": "1.97.0",
+    "RUSTC_WRAPPER": "",
+    "CARGO_TARGET_DIR": "<root>/target (shared incremental; not matched performance evidence)"
+  },
+  "limits": [
+    "No local unit or NATS test execution.",
+    "Shared registry migrated, full lifecycle/Agent/runtime ownership migration incomplete.",
+    "No artifact, runtime, CI or cross-platform acceptance."
+  ]
+}

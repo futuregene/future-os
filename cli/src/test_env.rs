@@ -13,8 +13,22 @@
 pub static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Acquire [`ENV_LOCK`] for the duration of a test body.
-pub async fn lock_env() -> tokio::sync::MutexGuard<'static, ()> {
-    ENV_LOCK.lock().await
+pub struct EnvironmentGuard {
+    // Release Host first, then the CLI async lock (reverse acquisition order).
+    _host: std::sync::MutexGuard<'static, ()>,
+    _cli: tokio::sync::MutexGuard<'static, ()>,
+}
+
+pub async fn lock_env() -> EnvironmentGuard {
+    let cli = ENV_LOCK.lock().await;
+    // Shared Host/entry tests use this same process environment after migration.
+    let host = future_host::TEST_HOME_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    EnvironmentGuard {
+        _host: host,
+        _cli: cli,
+    }
 }
 
 /// Save/restore a set of env vars around a test body.

@@ -1930,13 +1930,17 @@ dependencies = [
  "future-app-workspaces",
  "future-channel",
  "future-goal",
+ "future-host",
+ "future-remote-crypto",
  "future-rpc",
  "future-tasks",
  "future-tui",
  "futures-util",
  "humantime",
  "indexmap 2.14.0",
+ "libc",
  "nkeys",
+ "portable-pty",
  "qrcode",
  "rand 0.8.7",
  "reqwest 0.12.28",
@@ -1951,6 +1955,7 @@ dependencies = [
  "tokio-stream",
  "tokio-tungstenite",
  "tonic",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1975,6 +1980,45 @@ dependencies = [
  "tonic",
  "uuid",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "future-host"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "async-nats",
+ "base64 0.22.1",
+ "chrono",
+ "flate2",
+ "fs2",
+ "future-agent",
+ "future-app-settings",
+ "future-app-workspaces",
+ "future-remote-client",
+ "future-remote-crypto",
+ "future-remote-protocol",
+ "future-remote-server",
+ "future-rpc",
+ "future-tasks",
+ "futures",
+ "fuzzy-matcher",
+ "ignore",
+ "image",
+ "libc",
+ "nkeys",
+ "rand 0.8.7",
+ "reqwest 0.13.4",
+ "rusqlite",
+ "rustls",
+ "rustls-native-certs",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tokio",
+ "tonic",
 ]
 
 [[package]]
@@ -2144,6 +2188,7 @@ dependencies = [
  "future-agent",
  "future-app-settings",
  "future-app-workspaces",
+ "future-host",
  "future-remote-client",
  "future-remote-crypto",
  "future-remote-protocol",

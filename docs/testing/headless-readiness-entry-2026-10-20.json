@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "af6956792487debf6014e8584d2a857ae8b7468d",
+  "ci": {
+    "run": 39371045462,
+    "candidate": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+    "job": 118458805814,
+    "jobName": "Rust tests (Linux) (desktop gui)",
+    "conclusion": "failure",
+    "result": "1122 passed, 1 failed, 10 pre-existing ignored",
+    "failedCase": "agent_supervisor::block_fixtures::an_owned_host_counts_its_activity_and_a_stopped_host_reports_none",
+    "failure": "Expected ready after starting an owned real Agent; received unavailable.",
+    "logSha256": "3d20ab84730c15f5dd3d40c8678ad0cb3169be372cf301fae1710450f7c4b8e7"
+  },
+  "repair": "Restore Desktop readiness forwarding that installs the entry-owned channel runtime before invoking future-host AgentClient. The bridge migration had forwarded status/login directly via the shared glob reexport. Keep Host production free of fallback runtime construction.",
+  "preservedAssertions": [
+    "Status phase ready",
+    "Agent version matches the product build",
+    "Owned idle Agent allows quit",
+    "Complete real stop changes host phase to Stopped",
+    "Stopped host allows quit"
+  ],
+  "localValidation": {
+    "before": {
+      "logSha256": "317f945030b7de20f951a6887c62a328e76ce1cfd2ed38516ebd4b954859fe3a",
+      "results": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1069 filtered out; finished in 0.04s",
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1069 filtered out; finished in 0.06s"
+      ],
+      "command": "cargo test -p futureos --lib agent_supervisor::block_fixtures::an_owned_host_counts_its_activity_and_a_stopped_host_reports_none -- --exact --nocapture"
+    },
+    "after": {
+      "logSha256": "f30c5eda570b6647b9c5d6354ed9e6c50a77ad51100bb0f450122231a3f21a24",
+      "results": [
+        "test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 1061 filtered out; finished in 0.08s"
+      ],
+      "command": "cargo test -p futureos --lib agent_supervisor::block_fixtures::"
+    }
+  },
+  "limits": [
+    "Native local macOS repro and repair only; Linux/native CI revalidation pending.",
+    "Current CI run remains incomplete/failed in two groups; not accepted as passing."
+  ],
+  "localChecks": [
+    "Host/GUI/CLI Clippy --all-targets PASS",
+    "Original headless Clippy --all-targets PASS",
+    "fmt PASS",
+    "Strict docs PASS"
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "482a8e6a",
+  "scope": "Common pre-runtime process hydration and relay launch-setting persistence.",
+  "preserved": [
+    "Login shell hydration before Future home/instance lock/runtime",
+    "Tracing and rustls provider install once",
+    "Same relay configuration path, trimming and empty-value clearing; no change to existing pairing slots",
+    "Entry retains parsed arguments and CLI maintenance path discovery"
+  ],
+  "checks": {
+    "host": {
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1586 filtered out; finished in 0.04s"
+      ],
+      "logSha256": "804367b1afa8b273c4eeaa98ff8e8075b24af06e1d1b8f1cfb0c099e7b2c789f",
+      "CARGO_INCREMENTAL": "0"
+    },
+    "entry": {
+      "results": [
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 499 filtered out; finished in 0.03s"
+      ],
+      "logSha256": "e537f4038bb1e3be28a8cc362de613f67257c466d1769a37482bd6f2d413c0e8",
+      "CARGO_INCREMENTAL": "0"
+    },
+    "process": {
+      "results": [
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.41s"
+      ],
+      "logSha256": "2d82162f267803a4f7f32ea69c35de9064767a4ee786116c1d884750c92fd35b",
+      "CARGO_INCREMENTAL": "0"
+    },
+    "combinedClippy": {
+      "status": "pass",
+      "logSha256": "f26e457c9ee6f2dc86728b5d3507f6660a2c3e96ed364d00724e534309903083",
+      "tail": [
+        "    Checking future-cli v0.0.0 (/Volumes/ZHITAI/Workspace/future-os/.worktrees/headless-unified/cli)",
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.52s"
+      ]
+    },
+    "legacyClippy": {
+      "status": "pass",
+      "logSha256": "6cef5acfecc5cb72c323bc686e65704464e58ce7abba16b038f53418852f154e",
+      "tail": [
+        "    Checking futureos v0.0.0 (/Volumes/ZHITAI/Workspace/future-os/.worktrees/headless-unified/desktop/src-tauri)",
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 14.48s"
+      ]
+    }
+  },
+  "limits": [
+    "No actual future headless entry yet.",
+    "Current CI validates 8291d272, not these later commits."
+  ]
+}

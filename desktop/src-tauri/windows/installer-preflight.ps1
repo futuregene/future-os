@@ -60,7 +60,8 @@ function Invoke-FutureOSInstallVerification {
         # corrupt files, wrong architectures and missing DLLs fail here.
         foreach ($probe in @(
             @{ Name = 'futureos.exe'; Arguments = '--help' },
-            @{ Name = 'future.exe'; Arguments = '--version' }
+            @{ Name = 'future.exe'; Arguments = '--version' },
+            @{ Name = 'future.exe'; Arguments = 'headless --help' }
         )) {
             $executable = [IO.Path]::Combine($directoryPath, $probe.Name)
             if (-not [IO.File]::Exists($executable)) {

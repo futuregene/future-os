@@ -190,11 +190,6 @@ async fn accepted_run_cancels_persists_and_releases_its_monitor_before_stop() {
     let lease = runtime.begin(Some("cli-run"), Some("cli-request")).unwrap();
     let (interrupt, mut cancelled) = tokio::sync::mpsc::channel(1);
     assert!(runtime.install_cancellation(&lease, interrupt, Arc::new(AtomicBool::new(false))));
-    session
-        .read()
-        .runtime
-        .request_abort(None)
-        .expect("the run is cancellable");
     let persistence = session.read().persistence.clone();
     persistence
         .append(vec![crate::session::SessionEntry::run_started(
@@ -219,7 +214,21 @@ async fn accepted_run_cancels_persists_and_releases_its_monitor_before_stop() {
             assert!(task_runtime.begin_finalizing(&task_lease));
         })
         .unwrap();
-    assert_eq!(handle.activity_snapshot().unwrap().running, 1);
+    // The scheduler may briefly hold a session lock. Unknown is part of the
+    // snapshot contract; observe a settled active run before allowing it to
+    // finish, rather than racing a pre-sent cancellation against this read.
+    let activity = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Ok(activity) = handle.activity_snapshot() {
+                break activity;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the active run must become observable before cancellation");
+    assert_eq!(activity.running, 1);
+    runtime.request_abort(None).expect("the run is cancellable");
     let report = handle.shutdown(Duration::from_secs(3)).await;
     assert_eq!(
         report.status,

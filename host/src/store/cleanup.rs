@@ -1,0 +1,1313 @@
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use rusqlite::{params, Connection};
+
+use super::db::connect;
+use super::records::ThreadCleanupSummary;
+use super::status::TERMINAL_RUN_STATUSES_SQL;
+
+/// A run that was cancelled by startup convergence after a GUI crash.
+#[allow(dead_code)]
+pub struct InterruptedRun {
+    pub run_id: String,
+    pub thread_id: String,
+    pub session_id: String,
+}
+
+/// A run that is still non-terminal, with the session the agent knows it by.
+/// Consumed by the runtime watchdog (`agent_bridge::spawn_active_run_watchdog`),
+/// which reconciles rows whose owning pipeline/collector never finalized them.
+pub struct ActiveRun {
+    pub run_id: String,
+    pub thread_id: String,
+    pub session_id: String,
+    pub created_at: i64,
+}
+
+/// The terminal shapes the desktop writes **without** the Agent's evidence, and
+/// which a later Agent-ledger read may therefore legitimately correct:
+///
+/// - `failed` — the send pipeline's failure settle. The prompt invoke can answer
+///   while the Agent is still working on the run (an accepted-but-queued
+///   submission returns at the ack), so the row can be wrong about a run the
+///   Agent goes on to complete.
+/// - `cancelled` + `error_type='interrupted'` — the startup convergence guess.
+///
+/// These are the *only* terminal shapes the settled-run repair may touch: a
+/// `completed` row has the Agent's own terminal marker behind it, and a user
+/// abort (`error_type='abort_requested'`) is the user's decision, never ours to
+/// overrule. Qualified with its table name so the same fragment fits both the
+/// repair writers and the query that finds their candidates (which joins
+/// `threads`, where a bare `status` would be ambiguous).
+const UNVERIFIED_TERMINAL_RUN_SQL: &str =
+    "(runs.status = 'failed' OR (runs.status = 'cancelled' AND runs.error_type = 'interrupted'))";
+
+/// A run the desktop settled in one of the shapes above, with the session the
+/// agent knows it by and the start time a repaired end time is anchored on.
+/// Consumed by the settled-run repair pass
+/// (`agent_bridge::reconcile_settled_runs`) which re-reads the Agent ledger.
+pub struct UnverifiedRun {
+    pub run_id: String,
+    pub thread_id: String,
+    pub session_id: String,
+    pub started_at: Option<i64>,
+}
+
+/// Runs settled in an unverified shape (see `UNVERIFIED_TERMINAL_RUN_SQL`)
+/// whose last write is at or after `since_ms`, oldest first. The bound is what
+/// keeps the repair pass from re-reading the whole run history on every start;
+/// `session_id` resolution mirrors [`list_active_runs`].
+pub fn list_unverified_settled_runs(since_ms: i64) -> Result<Vec<UnverifiedRun>, crate::Error> {
+    let conn = connect()?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT runs.id, runs.thread_id, runs.started_at,
+                COALESCE(NULLIF(TRIM(threads.agent_session_id), ''), threads.id) AS session_id
+         FROM runs
+         JOIN threads ON threads.id = runs.thread_id
+         WHERE {UNVERIFIED_TERMINAL_RUN_SQL}
+           AND runs.updated_at >= ?1
+         ORDER BY runs.updated_at"
+    ))?;
+    let rows = stmt.query_map(params![since_ms], |row| {
+        Ok(UnverifiedRun {
+            run_id: row.get(0)?,
+            thread_id: row.get(1)?,
+            started_at: row.get(2)?,
+            session_id: row.get(3)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::Error::from)
+}
+
+/// CAS an unverified row back to `running` because the Agent's ledger still owns
+/// the run — it is executing it, or holding it in its queue behind another run.
+/// The failure markers and the end time are cleared so the row is a live run
+/// again, which is what makes the active-run watchdog and the re-attach path
+/// take it over and settle it from the Agent's own terminal marker.
+///
+/// Returns whether a row changed; the guard is a compare-and-set over the
+/// unverified terminal shapes, so a row another writer already moved is left
+/// alone. The caller owns the UI notification (see `desktop/CLAUDE.md` #11).
+pub fn revive_unverified_run(run_id: &str) -> Result<bool, crate::Error> {
+    let now = now_millis();
+    let conn = connect()?;
+    let affected = conn.execute(
+        &format!(
+            "UPDATE runs
+         SET status = 'running',
+             error_message = NULL,
+             error_type = NULL,
+             ended_at = NULL,
+             updated_at = ?1
+         WHERE id = ?2
+           AND {UNVERIFIED_TERMINAL_RUN_SQL}"
+        ),
+        params![now, run_id],
+    )?;
+    Ok(affected > 0)
+}
+
+/// CAS an unverified row to the Agent journal's own terminal state — the
+/// correction for a run the desktop had settled as failed or interrupted while
+/// the Agent went on to complete it. `ended_at` is the ledger's duration
+/// anchored on the row's start when both are known; otherwise the row keeps the
+/// time it already carried. The caller owns the UI notification.
+pub fn settle_unverified_run_from_agent(
+    run_id: &str,
+    agent_state: &str,
+    error: Option<&str>,
+    ended_at: Option<i64>,
+) -> Result<bool, crate::Error> {
+    let Some((status, error_type, default_message)) = agent_terminal_settlement(agent_state) else {
+        return Ok(false);
+    };
+    let now = now_millis();
+    let conn = connect()?;
+    let affected = conn.execute(
+        &format!(
+            "UPDATE runs
+         SET status = ?1,
+             error_message = ?2,
+             error_type = ?3,
+             ended_at = COALESCE(?4, ended_at),
+             updated_at = ?5
+         WHERE id = ?6
+           AND {UNVERIFIED_TERMINAL_RUN_SQL}"
+        ),
+        params![
+            status,
+            error.or(default_message),
+            error_type,
+            ended_at,
+            now,
+            run_id
+        ],
+    )?;
+    Ok(affected > 0)
+}
+
+/// Returns runs that were interrupted by a previous process crash and
+/// need re-examination against the agent's actual state.
+pub fn list_interrupted_runs() -> Result<Vec<InterruptedRun>, crate::Error> {
+    let conn = connect()?;
+    let mut stmt = conn.prepare(
+        "SELECT r.id, r.thread_id,
+                COALESCE(NULLIF(TRIM(t.agent_session_id), ''), t.id) AS session_id
+         FROM runs r
+         JOIN threads t ON t.id = r.thread_id
+         WHERE r.error_type = 'interrupted'
+           AND r.status = 'cancelled'",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(InterruptedRun {
+            run_id: row.get(0)?,
+            thread_id: row.get(1)?,
+            session_id: row.get(2)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::Error::from)
+}
+
+/// Every run that has not reached a terminal state (`running` /
+/// `waiting_approval`), ordered oldest first. The runtime watchdog uses this to
+/// find rows whose owning pipeline or collector never settled them and
+/// reconcile each against the agent's authoritative state. `session_id`
+/// resolution mirrors [`list_interrupted_runs`].
+pub fn list_active_runs() -> Result<Vec<ActiveRun>, crate::Error> {
+    let conn = connect()?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT r.id, r.thread_id, r.created_at,
+                COALESCE(NULLIF(TRIM(t.agent_session_id), ''), t.id, r.thread_id) AS session_id
+         FROM runs r
+         LEFT JOIN threads t ON t.id = r.thread_id
+         WHERE r.status NOT IN ({TERMINAL_RUN_STATUSES_SQL})
+         ORDER BY r.created_at"
+    ))?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ActiveRun {
+            run_id: row.get(0)?,
+            thread_id: row.get(1)?,
+            created_at: row.get(2)?,
+            session_id: row.get(3)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::Error::from)
+}
+
+/// Reset a run back to "running", clearing interrupted/error markers — but only
+/// when it is still in the interrupted state startup convergence created
+/// (`status='cancelled' AND error_type='interrupted'`). Returns whether a row
+/// changed. The guard is a compare-and-set so a run the user already aborted or
+/// that another path settled (a terminal state that is NOT the interrupted
+/// marker) is left untouched and the caller skips spawning a collector for it.
+/// This honors the "no unguarded status writer" rule (see desktop/CLAUDE.md #11).
+pub fn reanimate_run(run_id: &str) -> Result<bool, crate::Error> {
+    let now = now_millis();
+    let conn = connect()?;
+    let affected = conn.execute(
+        "UPDATE runs
+         SET status = 'running',
+             error_message = NULL,
+             error_type = NULL,
+             ended_at = NULL,
+             updated_at = ?1
+         WHERE id = ?2
+           AND status = 'cancelled'
+           AND error_type = 'interrupted'",
+        params![now, run_id],
+    )?;
+    Ok(affected > 0)
+}
+
+/// Apply the Agent journal's authoritative terminal state to a run recovered
+/// after GUI restart. Unknown states remain interrupted rather than being
+/// guessed as successful.
+pub fn settle_interrupted_run_from_agent(
+    run_id: &str,
+    agent_state: &str,
+    error: Option<&str>,
+) -> Result<(), crate::Error> {
+    let Some((status, error_type, default_message)) = agent_terminal_settlement(agent_state) else {
+        return Ok(());
+    };
+    let now = now_millis();
+    let conn = connect()?;
+    conn.execute(
+        "UPDATE runs
+         SET status = ?1,
+             error_message = ?2,
+             error_type = ?3,
+             ended_at = COALESCE(ended_at, ?4),
+             updated_at = ?4
+         WHERE id = ?5
+           AND error_type = 'interrupted'",
+        params![status, error.or(default_message), error_type, now, run_id],
+    )?;
+    Ok(())
+}
+
+fn agent_terminal_settlement(
+    agent_state: &str,
+) -> Option<(&'static str, Option<&'static str>, Option<&'static str>)> {
+    Some(match agent_state {
+        "completed" => ("completed", None, None),
+        "cancelled" => ("cancelled", Some("cancelled"), Some("Run was cancelled.")),
+        "error" | "failed" => (
+            "failed",
+            Some("agent_error"),
+            Some("Future Agent run failed."),
+        ),
+        "incomplete" | "interrupted" => (
+            "failed",
+            Some("stream_interrupted"),
+            Some("Future Agent response ended before a clean terminal."),
+        ),
+        _ => return None,
+    })
+}
+use super::util::{count_workspace_files, loaded, now_millis};
+use super::{get_thread, get_workspace};
+
+/// Decide which active threads have lost their agent base data. Split out from
+/// the deletion so the (subtle) detection rules can be unit-tested against an
+/// in-memory DB and a fixture session set.
+fn orphan_thread_ids(
+    conn: &Connection,
+    live_sessions: &HashSet<String>,
+) -> Result<Vec<String>, crate::Error> {
+    // Thread ids that have produced base data (a completed run) at least once.
+    let threads_with_base: HashSet<String> = {
+        let mut stmt =
+            conn.prepare("SELECT DISTINCT thread_id FROM runs WHERE status = 'completed'")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+
+    let candidates: Vec<(String, Option<String>)> = {
+        let mut stmt =
+            conn.prepare("SELECT id, agent_session_id FROM threads WHERE status != 'deleted'")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+
+    let mut orphans = Vec::new();
+    for (id, agent_session_id) in candidates {
+        if !threads_with_base.contains(&id) {
+            continue;
+        }
+        // Mirror the GUI's own session-id resolution: agentSessionId when set,
+        // else the thread id (see useAgentThreadState).
+        let session_id = agent_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(id.as_str());
+        if !live_sessions.contains(session_id) {
+            orphans.push(id);
+        }
+    }
+    Ok(orphans)
+}
+
+/// How long a mirrored conversation must exist before it can be pronounced
+/// empty. A remote prompt binds its Agent session a moment before the message
+/// is persisted, so a thread created just now can be message-less for a few
+/// hundred milliseconds while it is very much alive.
+const EMPTY_CONVERSATION_GRACE_MS: i64 = 10 * 60 * 1000;
+
+/// The `(thread, agent session)` pairs worth probing for emptiness: threads
+/// bound to a session that never produced a run and are past the bind grace.
+fn empty_thread_candidates(
+    conn: &Connection,
+    created_before: i64,
+) -> Result<Vec<(String, String)>, crate::Error> {
+    let mut stmt = conn.prepare(
+        "SELECT id, agent_session_id FROM threads
+          WHERE status != 'deleted'
+            AND COALESCE(TRIM(agent_session_id), '') != ''
+            AND created_at < ?1
+            AND NOT EXISTS (SELECT 1 FROM runs WHERE runs.thread_id = threads.id)",
+    )?;
+    let rows = stmt.query_map([created_before], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(crate::Error::from)
+}
+
+/// Preserve unowned image directories unless an explicit delete authorized cleanup.
+/// A restored app.db may be older than the files beside it.
+pub fn reconcile_orphan_images() -> Result<usize, crate::Error> {
+    reclaim_orphan_subdirs(crate::store::app_images_root()?, "images", live_thread_ids)
+}
+
+/// Retain unowned chat workspaces for recovery; retry explicitly requested cleanup.
+pub fn reconcile_orphan_chat_workspaces() -> Result<usize, crate::Error> {
+    reclaim_orphan_subdirs(
+        crate::store::chat_workspaces_root()?,
+        "chat",
+        live_chat_workspace_dir_ids,
+    )
+}
+
+/// Retain unowned review repositories; retry explicitly requested cleanup.
+pub fn reconcile_orphan_review_repos() -> Result<usize, crate::Error> {
+    reclaim_orphan_subdirs(
+        crate::store::review_repos_root()?,
+        "review",
+        live_workspace_ids,
+    )
+}
+
+/// Live attachment-root ids. Fork descendants keep their ancestor's root alive
+/// even after that ancestor thread is deleted.
+fn live_thread_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT COALESCE(NULLIF(asset_root_id, ''), id)
+         FROM threads WHERE status != 'deleted'",
+    )?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect()
+}
+
+/// Live chat workspace directory names: both thread ids (legacy) and agent
+/// session ids (current).  Directories under `~/.future/workspaces/chat/` are
+/// named after the thread id, but older ones may still use the session id.
+fn live_chat_workspace_dir_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
+    const SQL: &str = "SELECT id FROM threads WHERE status != 'deleted'
+         UNION
+         SELECT agent_session_id FROM threads
+         WHERE agent_session_id IS NOT NULL AND agent_session_id != ''
+           AND status != 'deleted'
+         UNION SELECT b.session_id FROM legacy_thread_bindings b
+         JOIN threads t ON t.id=b.thread_id WHERE t.status != 'deleted'";
+    let mut stmt = conn.prepare(SQL)?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect()
+}
+
+/// Live (non-deleted) workspace ids — the owners of `review/<wsid>` repos. Uses
+/// `deleted_at IS NULL` so a soft-deleted workspace's repo becomes reclaimable
+/// while every live user workspace is kept.
+fn live_workspace_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
+    let mut stmt = conn.prepare("SELECT id FROM workspaces WHERE deleted_at IS NULL")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    rows.collect()
+}
+
+/// Subdirectories of `root` whose name is not in `live`. Shared by the image /
+/// chat-workspace / review reclaimers so they scan identically. Split out so the
+/// rule can be unit-tested against an in-memory DB and a temp dir.
+fn orphan_subdirs(root: &Path, live: &HashSet<String>) -> Result<Vec<PathBuf>, crate::Error> {
+    let mut orphans = Vec::new();
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        // Lossy: a non-UTF8 name can never match a live id (SQLite TEXT is
+        // UTF-8), so the worst case is reclaiming a dir no row could own.
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !live.contains(&name) {
+            orphans.push(entry.path());
+        }
+    }
+    Ok(orphans)
+}
+
+/// Retain unreferenced data from partial restores. Only explicit deletion intent
+/// permits removal; recheck live owners under the write lock before touching disk.
+fn reclaim_orphan_subdirs(
+    root: PathBuf,
+    kind: &str,
+    live_ids: fn(&Connection) -> rusqlite::Result<HashSet<String>>,
+) -> Result<usize, crate::Error> {
+    if !root.exists() {
+        return Ok(0);
+    }
+    let mut conn = connect()?;
+    let candidates = orphan_subdirs(&root, &live_ids(&conn)?)?;
+    let mut removed = 0;
+    for dir in candidates {
+        let Some(id) = dir.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        if live_ids(&tx)?.contains(id) {
+            continue;
+        }
+        tx.execute(
+            "INSERT INTO managed_directory_cleanup(kind,directory_id,first_seen_at)
+             VALUES (?1,?2,?3) ON CONFLICT DO NOTHING",
+            params![kind, id, now_millis()],
+        )?;
+        let authorized: bool = tx.query_row(
+            "SELECT delete_requested_at IS NOT NULL FROM managed_directory_cleanup
+             WHERE kind=?1 AND directory_id=?2",
+            params![kind, id],
+            |row| row.get(0),
+        )?;
+        if authorized {
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => {
+                    tx.execute(
+                        "DELETE FROM managed_directory_cleanup WHERE kind=?1 AND directory_id=?2",
+                        params![kind, id],
+                    )?;
+                    removed += 1;
+                }
+                Err(error) => eprintln!("FutureOS: managed directory cleanup deferred: {error}"),
+            }
+        }
+        tx.commit()?;
+    }
+    Ok(removed)
+}
+
+/// Test shim preserving the original `orphan_image_dirs` name/signature.
+#[cfg(test)]
+fn orphan_image_dirs(conn: &Connection, root: &Path) -> Result<Vec<PathBuf>, crate::Error> {
+    orphan_subdirs(root, &live_thread_ids(conn)?)
+}
+
+pub fn get_thread_cleanup_summary(thread_id: &str) -> Result<ThreadCleanupSummary, crate::Error> {
+    let thread = loaded(get_thread(thread_id)?, "Thread")?;
+    let workspace = loaded(get_workspace(&thread.workspace_id)?, "Thread workspace")?;
+    let conn = connect()?;
+    const ARTIFACT_COUNT_SQL: &str = "SELECT COUNT(*)
+             FROM artifacts
+             WHERE workspace_id = ?1
+               AND (thread_id = ?2 OR ?3 = 'workspace')
+               AND deleted_at IS NULL";
+    let artifact_count = {
+        let (ws, tid, mode) = (&workspace.id, &thread.id, &thread.mode);
+        conn.query_row(ARTIFACT_COUNT_SQL, params![ws, tid, mode], |row| row.get(0))?
+    };
+    let workspace_file_count = if workspace.kind == "temporary" {
+        count_workspace_files(&workspace.path)?
+    } else {
+        0
+    };
+
+    Ok(ThreadCleanupSummary {
+        thread_id: thread.id,
+        workspace_id: workspace.id,
+        workspace_kind: workspace.kind,
+        workspace_path: workspace.path,
+        cleanup_status: workspace.cleanup_status,
+        artifact_count,
+        workspace_file_count,
+    })
+}
+
+/// Hide terminal runs from the Runs panel while retaining their local metadata
+/// and Agent-owned event history for transcript inspection and deep links.
+pub fn archive_finished_runs(thread_id: &str) -> Result<usize, crate::Error> {
+    let mut conn = connect()?;
+    if !super::runs::run_archive_supported(&conn)? {
+        return Err(
+            "Run archiving is unavailable because the local database upgrade did not complete."
+                .into(),
+        );
+    }
+    let tx = conn.transaction()?;
+    let now = now_millis();
+    let archived_runs = tx.execute(
+        &format!(
+            "UPDATE runs
+             SET archived_at = ?2, updated_at = ?2
+             WHERE thread_id = ?1
+               AND archived_at IS NULL
+               AND status IN ({TERMINAL_RUN_STATUSES_SQL})"
+        ),
+        params![thread_id, now],
+    )?;
+    tx.commit()?;
+    Ok(archived_runs)
+}
+
+/// Snapshot the local bindings before querying the Agent. Missing catalogue
+/// sources alone never authorize deleting history.
+pub struct SessionReconcileCandidates {
+    pub missing_sources: usize,
+    pub bindings: Vec<(String, String)>,
+}
+pub fn session_reconcile_candidates(
+    live_sessions: &HashSet<String>,
+) -> Result<SessionReconcileCandidates, crate::Error> {
+    let missing_sources = {
+        let conn = connect()?;
+        orphan_thread_ids(&conn, live_sessions)?.len()
+    };
+    let conn = connect()?;
+    let mut statement = conn.prepare("SELECT id,agent_session_id FROM threads WHERE status!='deleted' AND COALESCE(agent_session_id,'')!=''")?;
+    let bindings = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(SessionReconcileCandidates {
+        missing_sources,
+        bindings,
+    })
+}
+/// Old, unrun projections eligible for an authoritative Agent emptiness probe.
+pub fn empty_conversation_candidates() -> Result<Vec<(String, String)>, crate::Error> {
+    let conn = connect()?;
+    empty_thread_candidates(&conn, now_millis() - EMPTY_CONVERSATION_GRACE_MS)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::await_holding_lock)]
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use rusqlite::Connection;
+
+    use super::*;
+    use crate::auth_store::test_support::HomeGuard;
+    use crate::store::schema::SCHEMA;
+    use crate::store::{
+        AppendRunEventInput, CreateRunInput, CreateThreadInput, CreateWorkspaceInput,
+        UpdateRunStatusInput,
+    };
+
+    fn test_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        conn.execute_batch(SCHEMA).expect("initialize test schema");
+        // Insert threads/runs directly without their workspace parents.
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")
+            .expect("disable foreign keys");
+        conn
+    }
+
+    #[test]
+    fn agent_terminal_states_preserve_non_success_outcomes() {
+        assert_eq!(
+            agent_terminal_settlement("completed").map(|value| value.0),
+            Some("completed")
+        );
+        assert_eq!(
+            agent_terminal_settlement("error").map(|value| value.0),
+            Some("failed")
+        );
+        assert_eq!(
+            agent_terminal_settlement("cancelled").map(|value| value.0),
+            Some("cancelled")
+        );
+        assert_eq!(
+            agent_terminal_settlement("incomplete").map(|value| value.1),
+            Some(Some("stream_interrupted"))
+        );
+        assert!(agent_terminal_settlement("interrupted_by_restart").is_none());
+        assert!(agent_terminal_settlement("future-state").is_none());
+    }
+
+    /// The live-root read is a `prepare` of a statement that names `threads`. A
+    /// database whose `threads` table is unreadable (dropped, renamed, corrupt) must
+    /// surface that error: read as "no live roots" it would let a cleanup pass delete
+    /// attachment roots that are still in use by live threads.
+    #[test]
+    fn live_thread_ids_reports_an_unreadable_threads_table() {
+        let conn = Connection::open_in_memory().expect("open in-memory database");
+        let error = live_thread_ids(&conn).expect_err("a missing threads table must be reported");
+        assert!(
+            error.to_string().contains("threads"),
+            "the failing statement names the table: {error}"
+        );
+    }
+
+    fn insert_thread(conn: &Connection, id: &str, agent_session_id: Option<&str>) {
+        conn.execute(
+            "INSERT INTO threads
+                 (id, workspace_id, mode, title, status, pinned, readonly,
+                  agent_session_id, created_at, updated_at)
+             VALUES (?1, 'ws', 'chat', 'T', 'active', 0, 0, ?2, 1, 1)",
+            params![id, agent_session_id],
+        )
+        .expect("insert thread");
+    }
+
+    fn insert_run(conn: &Connection, id: &str, thread_id: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO runs (id, thread_id, status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 1, 1)",
+            params![id, thread_id, status],
+        )
+        .expect("insert run");
+    }
+
+    fn temp_sessions_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "futureos-reconcile-{}-{}",
+            std::process::id(),
+            nanos
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp sessions dir");
+        dir
+    }
+
+    #[test]
+    fn orphans_are_only_threads_with_base_data_whose_session_is_gone() {
+        let conn = test_conn();
+
+        // The live session set as reported by the agent's list_sessions RPC.
+        let live_sessions: HashSet<String> =
+            ["A", "sessD"].into_iter().map(str::to_string).collect();
+
+        // A: completed run + session live -> kept.
+        insert_thread(&conn, "A", None);
+        insert_run(&conn, "rA", "A", "completed");
+
+        // B: completed run + session gone -> orphan.
+        insert_thread(&conn, "B", None);
+        insert_run(&conn, "rB", "B", "completed");
+
+        // C: never completed a run (only failed) + session gone -> kept
+        // (never produced base data, must not be deleted).
+        insert_thread(&conn, "C", None);
+        insert_run(&conn, "rC", "C", "failed");
+
+        // D: agent_session_id set, session live under it -> kept.
+        insert_thread(&conn, "D", Some("sessD"));
+        insert_run(&conn, "rD", "D", "completed");
+
+        // E: agent_session_id set, its session gone -> orphan (resolves by
+        // agent_session_id, not thread id).
+        insert_thread(&conn, "E", Some("sessE"));
+        insert_run(&conn, "rE", "E", "completed");
+
+        let mut orphans = orphan_thread_ids(&conn, &live_sessions).expect("reconcile");
+        orphans.sort();
+        assert_eq!(orphans, vec!["B".to_string(), "E".to_string()]);
+    }
+
+    #[test]
+    fn archive_finished_runs_keeps_event_log() {
+        let _home = HomeGuard::new("archive-finished-run-events");
+        crate::store::initialize_app_store().expect("initialize store");
+        let workspace = crate::store::create_workspace(CreateWorkspaceInput {
+            name: Some("test".to_string()),
+            path: PathBuf::from(std::env::var("HOME").expect("test home"))
+                .join("workspace")
+                .display()
+                .to_string(),
+            description: None,
+            create_directory: Some(true),
+        })
+        .expect("create workspace");
+        let thread = crate::store::create_thread(CreateThreadInput {
+            mode: "workspace".to_string(),
+            title: Some("test".to_string()),
+            workspace_id: Some(workspace.id),
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .expect("create thread");
+        let run = crate::store::create_run(CreateRunInput {
+            id: None,
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create run");
+        crate::store::append_run_event(AppendRunEventInput {
+            run_id: run.id.clone(),
+            event_type: "text_chunk".to_string(),
+            payload: Some(r#"{"text":"hello"}"#.to_string()),
+            sequence: 1,
+        })
+        .expect("append event");
+        // Disk writes are async (single writer thread) — flush before
+        // asserting on the file.
+        crate::store::flush_run_event_log_for_test(&run.id);
+        let log_path = PathBuf::from(
+            crate::store::app_data_path()
+                .expect("app data path")
+                .app_dir,
+        )
+        .join("run_events")
+        .join(format!("{}.jsonl", run.id));
+        assert!(log_path.exists(), "event log should exist before cleanup");
+
+        crate::store::update_run_status_if_active(UpdateRunStatusInput {
+            run_id: run.id.clone(),
+            status: "completed".to_string(),
+            error_message: None,
+            error_type: None,
+        })
+        .expect("complete run");
+        assert_eq!(archive_finished_runs(&thread.id).expect("archive runs"), 1);
+        assert!(
+            log_path.exists(),
+            "event log must remain available after archiving"
+        );
+        assert!(crate::store::get_run(&run.id)
+            .expect("get run")
+            .expect("run retained")
+            .archived_at
+            .is_some());
+    }
+
+    #[test]
+    fn archive_finished_runs_errors_when_archive_migration_did_not_complete() {
+        let _home = HomeGuard::new("archive-runs-unsupported");
+        // Build the app DB manually with a legacy `runs` table (no
+        // `archived_at` column), as an older build that never completed the
+        // optional archive migration would leave it. The command must report
+        // the unavailable error instead of touching a table it cannot archive.
+        let app_dir = crate::store::app_data_path()
+            .expect("app data path")
+            .app_dir;
+        std::fs::create_dir_all(&app_dir).expect("create app dir");
+        let conn = Connection::open(PathBuf::from(&app_dir).join("app.db")).expect("open app db");
+        // Admission must recognize this as a legacy application database,
+        // rather than an unrelated file that happens to have a runs table.
+        future_app_settings::ensure_table(&conn).expect("legacy settings bootstrap");
+        conn.execute_batch(
+            "CREATE TABLE runs (
+                 id TEXT PRIMARY KEY,
+                 thread_id TEXT NOT NULL,
+                 trigger_message_id TEXT,
+                 status TEXT NOT NULL,
+                 model_provider TEXT,
+                 model_id TEXT,
+                 started_at INTEGER,
+                 ended_at INTEGER,
+                 error_message TEXT,
+                 error_type TEXT,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL
+             );",
+        )
+        .expect("create legacy runs table");
+        drop(conn);
+
+        let error = archive_finished_runs("thread_x").expect_err("archive unavailable");
+        assert!(error.to_string().contains("unavailable"));
+    }
+
+    #[test]
+    fn orphan_image_dirs_keeps_only_live_threads() {
+        let conn = test_conn();
+        // Active thread -> its image dir is kept.
+        insert_thread(&conn, "live", None);
+        // Soft-deleted thread -> swept (there is no soft-delete undo).
+        insert_thread(&conn, "dead", None);
+        conn.execute(
+            "UPDATE threads SET status = 'deleted' WHERE id = 'dead'",
+            [],
+        )
+        .expect("soft-delete thread");
+        // "ghost" has no thread row at all -> swept.
+
+        let root = temp_sessions_dir(); // a unique, freshly-created temp dir
+        for tid in ["live", "dead", "ghost"] {
+            std::fs::create_dir_all(root.join(tid).join("thumb")).expect("create image dir");
+        }
+        // A stray file at the root must be ignored (only directories are dirs).
+        std::fs::write(root.join("stray.txt"), b"x").expect("write stray file");
+
+        let mut names: Vec<String> = orphan_image_dirs(&conn, &root)
+            .expect("sweep")
+            .into_iter()
+            .filter_map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        names.sort();
+
+        std::fs::remove_dir_all(&root).ok();
+        assert_eq!(names, vec!["dead".to_string(), "ghost".to_string()]);
+    }
+
+    fn insert_workspace(conn: &Connection, id: &str, kind: &str, deleted: bool) {
+        conn.execute(
+            "INSERT INTO workspaces
+                 (id, name, kind, path, cleanup_status, created_at, updated_at, deleted_at)
+             VALUES (?1, 'W', ?2, '/tmp/ws', 'active', 1, 1, ?3)",
+            params![id, kind, if deleted { Some(1_i64) } else { None }],
+        )
+        .expect("insert workspace");
+    }
+
+    /// review/<wsid> reclamation keeps every live workspace's repo — a user
+    /// workspace is NEVER swept (item 3) — and reclaims only absent or
+    /// soft-deleted workspaces.
+    #[test]
+    fn orphan_review_repos_keeps_live_workspaces() {
+        let conn = test_conn();
+        // Live user workspace -> kept no matter what.
+        insert_workspace(&conn, "user_ws", "user", false);
+        // Live temporary workspace -> kept.
+        insert_workspace(&conn, "temp_ws", "temporary", false);
+        // Soft-deleted workspace -> reclaimable.
+        insert_workspace(&conn, "dead_ws", "user", true);
+        // "ghost_ws" has no row at all -> reclaimable.
+
+        let root = temp_sessions_dir();
+        for wsid in ["user_ws", "temp_ws", "dead_ws", "ghost_ws"] {
+            std::fs::create_dir_all(root.join(wsid).join(".git")).expect("create review repo");
+        }
+
+        let mut names: Vec<String> = orphan_subdirs(&root, &live_workspace_ids(&conn).unwrap())
+            .expect("sweep")
+            .into_iter()
+            .filter_map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_owned)
+            })
+            .collect();
+        names.sort();
+
+        std::fs::remove_dir_all(&root).ok();
+        assert_eq!(names, vec!["dead_ws".to_string(), "ghost_ws".to_string()]);
+    }
+
+    #[test]
+    fn reanimate_is_guarded_and_late_settle_cannot_overwrite_an_abort() {
+        let _home = HomeGuard::new("reanimate-cas-guard");
+        crate::store::initialize_app_store().expect("initialize store");
+        let workspace = crate::store::create_workspace(CreateWorkspaceInput {
+            name: Some("test".to_string()),
+            path: PathBuf::from(std::env::var("HOME").expect("test home"))
+                .join("workspace")
+                .display()
+                .to_string(),
+            description: None,
+            create_directory: Some(true),
+        })
+        .expect("create workspace");
+        let thread = crate::store::create_thread(CreateThreadInput {
+            mode: "workspace".to_string(),
+            title: Some("test".to_string()),
+            workspace_id: Some(workspace.id),
+            workspace_path: None,
+            workspace_name: None,
+            agent_session_id: None,
+        })
+        .expect("create thread");
+
+        // Startup-convergence shape: cancelled + error_type='interrupted'.
+        let interrupted = crate::store::create_run(CreateRunInput {
+            id: None,
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create run");
+        crate::store::update_run_status_if_active(UpdateRunStatusInput {
+            run_id: interrupted.id.clone(),
+            status: "cancelled".to_string(),
+            error_message: Some("Interrupted because FutureOS restarted.".to_string()),
+            error_type: Some("interrupted".to_string()),
+        })
+        .expect("mark interrupted");
+
+        // User-abort shape: cancelled + error_type='abort_requested'.
+        let aborted = crate::store::create_run(CreateRunInput {
+            id: None,
+            thread_id: thread.id,
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("create run");
+        crate::store::update_run_status_if_active(UpdateRunStatusInput {
+            run_id: aborted.id.clone(),
+            status: "cancelled".to_string(),
+            error_message: Some("Cancelled because the run was terminated.".to_string()),
+            error_type: Some("abort_requested".to_string()),
+        })
+        .expect("mark aborted");
+
+        // reanimate flips the interrupted run back to running...
+        assert!(
+            reanimate_run(&interrupted.id).expect("reanimate interrupted"),
+            "interrupted run must be reanimated"
+        );
+        assert_eq!(
+            crate::store::get_run(&interrupted.id)
+                .expect("get")
+                .expect("row")
+                .status,
+            "running"
+        );
+        // ...but the CAS guard leaves an already-aborted run untouched.
+        assert!(
+            !reanimate_run(&aborted.id).expect("reanimate aborted"),
+            "an aborted run must NOT be reanimated"
+        );
+        let aborted_row = crate::store::get_run(&aborted.id)
+            .expect("get")
+            .expect("row");
+        assert_eq!(aborted_row.status, "cancelled");
+        assert_eq!(aborted_row.error_type.as_deref(), Some("abort_requested"));
+
+        // The H2 regression: a reanimated run that the user then aborts must keep
+        // its cancelled state when a late completion tries to settle it. The
+        // compare-and-set writer refuses to touch the terminal row.
+        crate::store::update_run_status_if_active(UpdateRunStatusInput {
+            run_id: interrupted.id.clone(),
+            status: "cancelled".to_string(),
+            error_message: Some("Cancelled because the run was terminated.".to_string()),
+            error_type: Some("abort_requested".to_string()),
+        })
+        .expect("user abort");
+        let changed = crate::store::update_run_status_if_active(UpdateRunStatusInput {
+            run_id: interrupted.id.clone(),
+            status: "completed".to_string(),
+            error_message: None,
+            error_type: None,
+        })
+        .expect("late settle");
+        assert!(!changed, "late completion must not overwrite the abort");
+        let final_row = crate::store::get_run(&interrupted.id)
+            .expect("get")
+            .expect("row");
+        assert_eq!(final_row.status, "cancelled");
+        assert_eq!(final_row.error_type.as_deref(), Some("abort_requested"));
+    }
+
+    // ── remaining API surface ───────────────────────────────────────────────
+
+    use crate::store::db::test_support::guarded_conn;
+
+    #[test]
+    fn interrupted_and_active_run_listings_resolve_session_ids() {
+        let (_home, conn) = guarded_conn("cleanup_lists");
+        seed_full(&conn);
+        drop(conn);
+
+        let interrupted = list_interrupted_runs().expect("interrupted");
+        assert_eq!(interrupted.len(), 1);
+        assert_eq!(interrupted[0].run_id, "r_int");
+        assert_eq!(interrupted[0].session_id, "sess_live");
+
+        let active = list_active_runs().expect("active");
+        let ids: Vec<&str> = active.iter().map(|run| run.run_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["r_run", "r_wait"],
+            "non-terminal only (cancelled r_int is terminal), oldest first"
+        );
+        // Blank session id falls back to the thread id.
+        assert_eq!(active[0].session_id, "t_blank");
+        assert_eq!(active[1].session_id, "t_none");
+    }
+
+    #[test]
+    fn settle_interrupted_run_applies_agent_terminal_state() {
+        let (_home, conn) = guarded_conn("cleanup_settle");
+        seed_full(&conn);
+        drop(conn);
+
+        // Unknown agent states are a no-op.
+        settle_interrupted_run_from_agent("r_int", "still_running", None).expect("no-op");
+        let row = crate::store::get_run("r_int").expect("get").expect("some");
+        assert_eq!(row.status, "cancelled");
+
+        // A known terminal state settles the interrupted row, preserving a
+        // caller-supplied error message over the default.
+        settle_interrupted_run_from_agent("r_int", "error", Some("agent said no")).expect("settle");
+        let row = crate::store::get_run("r_int").expect("get").expect("some");
+        assert_eq!(row.status, "failed");
+        assert_eq!(row.error_type.as_deref(), Some("agent_error"));
+        assert_eq!(row.error_message.as_deref(), Some("agent said no"));
+        assert!(row.ended_at.is_some());
+
+        // A row without the interrupted marker is left alone.
+        settle_interrupted_run_from_agent("r_done", "cancelled", None).expect("settle");
+        let row = crate::store::get_run("r_done").expect("get").expect("some");
+        assert_eq!(row.status, "completed");
+    }
+
+    /// The two unverified terminal shapes, plus one row per shape the repair
+    /// must never touch. `updated_at` distinguishes the window cases.
+    fn seed_unverified(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO runs (
+                 id, thread_id, status, error_type, error_message,
+                 started_at, created_at, updated_at
+             ) VALUES
+                 ('r_failed', 't_sess', 'failed', NULL, '[RESPONSE_UNCONFIRMED] response did not complete', 10, 10, 500),
+                 ('r_stale', 't_sess', 'failed', NULL, 'old failure', 10, 10, 10),
+                 ('r_aborted', 't_sess', 'cancelled', 'abort_requested', 'Terminated by user.', 10, 10, 500),
+                 ('r_complete', 't_sess', 'completed', NULL, NULL, 10, 10, 500);"
+        )
+        .expect("seed unverified runs");
+    }
+
+    #[test]
+    fn unverified_settled_listing_is_shape_scoped_and_windowed() {
+        let (_home, conn) = guarded_conn("cleanup_unverified_list");
+        seed_full(&conn);
+        seed_unverified(&conn);
+        drop(conn);
+
+        // Shapes: `failed` and the startup convergence's interrupted marker; a
+        // user abort and a completed row are not repair candidates at all.
+        let rows = list_unverified_settled_runs(500).expect("listing");
+        let ids: Vec<&str> = rows.iter().map(|run| run.run_id.as_str()).collect();
+        assert_eq!(ids, vec!["r_failed"]);
+        assert_eq!(rows[0].session_id, "sess_live");
+        assert_eq!(rows[0].started_at, Some(10));
+
+        // Window: one written before it is left out; ordering is oldest first.
+        let rows = list_unverified_settled_runs(1).expect("listing");
+        let ids: Vec<&str> = rows.iter().map(|run| run.run_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["r_int", "r_stale", "r_failed"],
+            "the interrupted row from the shared fixture is a candidate too"
+        );
+        assert_eq!(rows[0].session_id, "sess_live");
+    }
+
+    #[test]
+    fn unverified_run_repairs_are_guarded_cas_writes() {
+        let (_home, conn) = guarded_conn("cleanup_unverified_repair");
+        seed_full(&conn);
+        seed_unverified(&conn);
+        drop(conn);
+
+        // Revive: the row becomes a live run again, with no failure left on it.
+        assert!(revive_unverified_run("r_failed").expect("revive"));
+        let row = crate::store::get_run("r_failed")
+            .expect("get")
+            .expect("some");
+        assert_eq!(row.status, "running");
+        assert_eq!(row.error_message, None);
+        assert_eq!(row.error_type, None);
+        assert_eq!(row.ended_at, None);
+        // ... and reviving it twice cannot happen (it is no longer a candidate).
+        assert!(!revive_unverified_run("r_failed").expect("revive twice"));
+
+        // The user's abort and a completed row are never touched.
+        assert!(!revive_unverified_run("r_aborted").expect("abort"));
+        assert!(!revive_unverified_run("r_complete").expect("completed"));
+        assert!(
+            !settle_unverified_run_from_agent("r_aborted", "completed", None, None).expect("abort")
+        );
+
+        // Settle: an interrupted row the Agent completed is mirrored, with the
+        // ledger's own end time and the failure copy cleared.
+        assert!(
+            settle_unverified_run_from_agent("r_int", "completed", None, Some(7_777))
+                .expect("settle")
+        );
+        let row = crate::store::get_run("r_int").expect("get").expect("some");
+        assert_eq!(row.status, "completed");
+        assert_eq!(row.error_type, None);
+        assert_eq!(row.error_message, None);
+        assert_eq!(row.ended_at, Some(7_777));
+
+        // An unknown agent state is a no-op, and a row that already reached
+        // `completed` keeps the state (and time) it has.
+        assert!(
+            !settle_unverified_run_from_agent("r_stale", "still_running", None, None)
+                .expect("unknown")
+        );
+        assert!(
+            !settle_unverified_run_from_agent("r_complete", "completed", None, Some(1))
+                .expect("completed")
+        );
+        let row = crate::store::get_run("r_complete")
+            .expect("get")
+            .expect("some");
+        assert_eq!(row.status, "completed");
+        assert_eq!(row.ended_at, None);
+    }
+
+    #[test]
+    fn restored_database_preserves_unknown_images_until_explicit_deletion() {
+        let (_home, conn) = guarded_conn("cleanup_images");
+        seed_full(&conn);
+        drop(conn);
+
+        let root = crate::store::app_images_root().expect("images root");
+        // Missing root → 0.
+        assert_eq!(reconcile_orphan_images().expect("reconcile"), 0);
+
+        std::fs::create_dir_all(root.join("t_sess")).expect("live dir");
+        std::fs::create_dir_all(root.join("ghost")).expect("orphan dir");
+        let removed = reconcile_orphan_images().expect("reconcile");
+        assert_eq!(removed, 0);
+        assert!(root.join("t_sess").is_dir(), "live thread's dir kept");
+        assert!(root.join("ghost").is_dir(), "unknown owner is preserved");
+        let conn = connect().unwrap();
+        let pending: i64 = conn.query_row("SELECT count(*) FROM managed_directory_cleanup WHERE directory_id='ghost' AND delete_requested_at IS NULL", [], |r| r.get(0)).unwrap();
+        assert_eq!(pending, 1);
+        conn.execute(
+            "UPDATE managed_directory_cleanup SET delete_requested_at=1 WHERE directory_id='ghost'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        assert_eq!(reconcile_orphan_images().unwrap(), 1);
+        assert!(!root.join("ghost").exists());
+        assert_eq!(reconcile_orphan_images().unwrap(), 0);
+    }
+
+    #[test]
+    fn reconcile_orphan_chat_workspaces_and_review_repos() {
+        let (_home, conn) = guarded_conn("cleanup_dirs");
+        seed_full(&conn);
+        drop(conn);
+
+        // Chat workspaces: live names are thread ids AND session ids.
+        let chat_root = std::path::PathBuf::from(std::env::var("HOME").expect("home"))
+            .join(".future/workspaces/chat");
+        std::fs::create_dir_all(chat_root.join("t_sess")).expect("thread dir");
+        std::fs::create_dir_all(chat_root.join("sess_live")).expect("session dir");
+        std::fs::create_dir_all(chat_root.join("gone")).expect("orphan dir");
+        assert_eq!(reconcile_orphan_chat_workspaces().expect("reconcile"), 0);
+        assert!(chat_root.join("t_sess").is_dir());
+        assert!(chat_root.join("sess_live").is_dir());
+        assert!(chat_root.join("gone").exists());
+
+        // Review repos: keyed by workspace id.
+        let review_root = std::path::PathBuf::from(std::env::var("HOME").expect("home"))
+            .join(".future/app/review");
+        std::fs::create_dir_all(review_root.join("ws1")).expect("live repo");
+        std::fs::create_dir_all(review_root.join("ws_ghost")).expect("orphan repo");
+        assert_eq!(reconcile_orphan_review_repos().expect("reconcile"), 0);
+        assert!(review_root.join("ws1").is_dir());
+        assert!(review_root.join("ws_ghost").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn orphan_subdirs_sweep_non_utf8_names_as_orphans() {
+        use std::os::unix::ffi::OsStrExt;
+        let root = temp_sessions_dir();
+        let non_utf8 = std::ffi::OsStr::from_bytes(b"bad-\xff-name");
+        // Branch-free: APFS rejects non-UTF8 names (EILSEQ), Linux allows them.
+        let created = std::fs::create_dir_all(root.join(non_utf8)).is_ok();
+        let orphans = orphan_subdirs(&root, &HashSet::new()).expect("scan");
+        // A non-UTF8 name never matches a live (UTF-8) id, so when the
+        // platform allowed creating it, it is reclaimed.
+        assert_eq!(orphans.len(), usize::from(created));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn thread_cleanup_summary_counts_artifacts_and_files() {
+        // A temporary workspace whose path holds two real files.
+        let files_dir =
+            std::env::temp_dir().join(format!("futureos-cleanup-summary-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&files_dir);
+        std::fs::create_dir_all(&files_dir).expect("create files dir");
+        std::fs::write(files_dir.join("a.txt"), b"a").expect("write");
+        std::fs::write(files_dir.join("b.txt"), b"b").expect("write");
+
+        let (_home, conn) = guarded_conn("cleanup_summary");
+        conn.execute_batch(&format!(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws1', 'WS', 'temporary', '{}', 'active', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, created_at, updated_at
+             ) VALUES ('t1', 'ws1', 'chat', 'T', 1, 1),
+                      ('t_other', 'ws1', 'chat', 'T2', 1, 1);
+             INSERT INTO artifacts (
+                 id, workspace_id, thread_id, title, artifact_type, created_at, updated_at
+             ) VALUES
+                 ('a1', 'ws1', 't1', 'A', 'document', 1, 1),
+                 ('a2', 'ws1', 't_other', 'B', 'document', 1, 1);",
+            files_dir.display()
+        ))
+        .expect("seed");
+        drop(conn);
+
+        let summary = get_thread_cleanup_summary("t1").expect("summary");
+        assert_eq!(summary.workspace_kind, "temporary");
+        // Chat mode: only the thread's own artifact counts.
+        assert_eq!(summary.artifact_count, 1);
+        assert_eq!(summary.workspace_file_count, 2);
+        let _ = std::fs::remove_dir_all(&files_dir);
+
+        assert!(get_thread_cleanup_summary("ghost").is_err());
+    }
+
+    #[test]
+    fn thread_cleanup_summary_user_workspace_counts_all_artifacts_no_files() {
+        let (_home, conn) = guarded_conn("cleanup_summary_user");
+        conn.execute_batch(
+            "INSERT INTO workspaces (
+                 id, name, kind, path, cleanup_status, created_at, updated_at
+             ) VALUES ('ws1', 'WS', 'user', '/tmp/userws', 'active', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, created_at, updated_at
+             ) VALUES ('t1', 'ws1', 'workspace', 'T', 1, 1),
+                      ('t_other', 'ws1', 'workspace', 'T2', 1, 1);
+             INSERT INTO artifacts (
+                 id, workspace_id, thread_id, title, artifact_type, created_at, updated_at
+             ) VALUES
+                 ('a1', 'ws1', 't1', 'A', 'document', 1, 1),
+                 ('a2', 'ws1', 't_other', 'B', 'document', 1, 1);",
+        )
+        .expect("seed");
+        drop(conn);
+
+        let summary = get_thread_cleanup_summary("t1").expect("summary");
+        // Workspace mode: every artifact of the workspace counts…
+        assert_eq!(summary.artifact_count, 2);
+        // …but a user workspace's files are never walked.
+        assert_eq!(summary.workspace_file_count, 0);
+    }
+
+    // ── reconcile_orphan_sessions against the shared mock agent ─────────────
+
+    use super::super::test_support::{seed_full, seed_message_less_threads};
+
+    // ── reconcile_empty_conversations against the shared mock agent ─────────
+
+    /// Only a session-bound thread with no run at all, past the bind grace, is
+    /// worth probing: a thread that produced a run has something to show, an
+    /// unbound one is a local draft, and a fresh one may be mid-bind.
+    #[test]
+    fn empty_thread_candidates_are_unrun_bound_threads_past_the_grace() {
+        let (_home, conn) = guarded_conn("reconcile_empty_candidates");
+        seed_message_less_threads(
+            &conn,
+            &[
+                ("t_old", "sess_old", 1),
+                ("t_fresh", "sess_fresh", 5_000),
+                ("t_blank", "   ", 1),
+            ],
+        );
+        conn.execute_batch(
+            "INSERT INTO threads (
+                 id, workspace_id, mode, title, created_at, updated_at
+             ) VALUES ('t_draft', 'ws_empty', 'chat', 'T', 1, 1);
+             INSERT INTO threads (
+                 id, workspace_id, mode, title, agent_session_id, created_at, updated_at
+             ) VALUES ('t_old2', 'ws_empty', 'chat', 'T', 'sess_run', 1, 1);
+             INSERT INTO runs (
+                 id, thread_id, status, created_at, updated_at
+             ) VALUES ('r_any', 't_old2', 'completed', 1, 1);",
+        )
+        .expect("seed filtered shapes");
+
+        let candidates = empty_thread_candidates(&conn, 1_000).expect("candidates");
+        assert_eq!(
+            candidates,
+            vec![("t_old".to_string(), "sess_old".to_string())]
+        );
+    }
+}

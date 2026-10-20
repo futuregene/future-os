@@ -3,28 +3,24 @@
 
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
 mod agent_bridge;
-mod agent_events;
 mod agent_host;
-mod agent_proto;
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
 mod agent_providers;
 #[cfg(feature = "gui")]
 mod agent_supervisor;
-mod approval_rules;
 mod auth_store;
+#[cfg(feature = "gui")]
 mod build_info;
 mod cli_tool;
 mod commands;
+#[cfg(feature = "gui")]
 mod config_io;
-mod conversations;
 mod desktop_shutdown;
-mod device_identity;
 mod error;
 mod future_login;
 mod future_platform;
-mod git_diff_parse;
+#[cfg(feature = "gui")]
 mod git_review;
-pub mod headless;
 mod host_environment;
 mod instance;
 pub mod launch;
@@ -46,12 +42,8 @@ mod linux_power;
 mod macos_power;
 #[cfg(all(feature = "gui", target_os = "macos"))]
 mod menu;
-mod proc;
 mod remote;
-mod remote_host;
 mod remote_peer;
-mod remote_platform;
-mod run_error;
 mod runtime;
 mod scheduler;
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
@@ -71,114 +63,19 @@ mod windows_power;
 use commands::*;
 use error::AppError;
 
-/// Cross-platform home directory. Prefers `HOME` (always set on macOS/Linux, and
-/// what the test suite overrides to redirect storage) and falls back to
-/// `USERPROFILE` on Windows, where `HOME` is normally unset.
-pub(crate) fn home_dir() -> Option<String> {
-    home_dir_from(
-        std::env::var("HOME").ok(),
-        std::env::var("USERPROFILE").ok(),
-    )
-}
-
-fn home_dir_from(home: Option<String>, userprofile: Option<String>) -> Option<String> {
-    [home, userprofile]
-        .into_iter()
-        .flatten()
-        .find(|value| !value.is_empty() && std::path::Path::new(value).is_absolute())
-}
-
-#[cfg(test)]
-mod home_tests {
-    #[test]
-    fn rejects_empty_and_relative_home_overrides() {
-        let absolute = std::env::temp_dir().to_string_lossy().into_owned();
-        for invalid in ["", "relative-home"] {
-            assert_eq!(
-                super::home_dir_from(Some(invalid.into()), Some(absolute.clone())),
-                Some(absolute.clone())
-            );
-            assert_eq!(
-                super::home_dir_from(Some(invalid.into()), Some(invalid.into())),
-                None
-            );
-        }
-        assert_eq!(
-            super::home_dir_from(Some(absolute.clone()), None),
-            Some(absolute)
-        );
-    }
-}
-
 /// Process-wide lock for tests that mutate the global `HOME` env var
 /// (`auth_store` and the shadow-review smoke test). `HOME` is process-global, so
 /// those tests must run one at a time or they clobber each other's paths.
-#[cfg(test)]
-pub(crate) static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+#[cfg(all(test, feature = "gui"))]
+pub(crate) use future_host::TEST_HOME_LOCK;
 
-#[cfg(test)]
-mod helper_dispatch_tests {
-    /// Two callers reach this dispatcher with the same request spelled
-    /// differently: a launcher passes its own `argv` unchanged, while a sandbox
-    /// child arrives behind the `agent` subcommand token. Stripping that token is
-    /// the whole of `dispatch_agent_helper`'s parsing, so both spellings must end
-    /// up in the same place — an unstripped `agent` would be read as the helper's
-    /// own positional argument and silently change what runs.
-    ///
-    /// `--linux-sandbox-helper` is Linux-only: on every other platform the helper
-    /// CLI refuses the request (agent/src/cli.rs:213-218), which is the answer
-    /// asserted here. On Linux the same argv would execute the real helper
-    /// instead, so this comparison is not a portable test — see
-    /// docs/testing/module-tauri-shell.md for the `platform-unmeasured` row that
-    /// covers the Linux success arm.
-    #[cfg(not(target_os = "linux"))]
-    #[test]
-    fn an_agent_subcommand_prefix_reaches_the_same_helper_request() {
-        let request: Vec<String> = ["--linux-sandbox-helper", "probe"]
-            .iter()
-            .map(|part| (*part).to_string())
-            .collect();
-        let direct = super::dispatch_agent_helper(&request).expect("the flag dispatches");
-        let mut prefixed_args = vec!["agent".to_string()];
-        prefixed_args.extend(request.iter().cloned());
-        let prefixed = super::dispatch_agent_helper(&prefixed_args).expect("the flag dispatches");
-
-        assert!(
-            direct.is_err(),
-            "off Linux the helper CLI refuses the request instead of running it"
-        );
-        assert_eq!(
-            direct.map_err(|error| error.to_string()),
-            prefixed.map_err(|error| error.to_string()),
-            "the `agent` prefix must be stripped before the helper CLI parses the request"
-        );
-    }
-}
-
+#[cfg(all(test, feature = "gui"))]
 fn install_rustls_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-}
-
-/// FutureOS home root (`<home>/agent`, `<home>/tasks`, …), normally `~/.future`.
-///
-/// `FUTURE_HOME` replaces the whole root (matching the agent); otherwise the
-/// desktop app dir's parent is used, so the tasks store and the GUI store can
-/// never disagree about which home they belong to.
-pub(crate) fn future_home_root() -> std::path::PathBuf {
-    if let Some(override_dir) = future_rpc::home::future_home_override() {
-        return override_dir;
-    }
-    future_app_settings::app_dir()
-        .ok()
-        .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
-        .unwrap_or_else(|| std::env::temp_dir().join(".future"))
+    future_host::install_rustls_provider();
 }
 
 #[cfg(feature = "gui")]
-pub(crate) use gui::{
-    emit_approvals_updated, emit_remote_activity, emit_review_updated, emit_thread_runtime_updated,
-    emit_threads_updated, APP_HANDLE,
-};
+pub(crate) use future_host::events::{emit_remote_activity, emit_threads_updated};
 #[cfg(feature = "gui")]
 pub use gui::{run, run_with};
 // The menu builder is reachable from an integration test only through a public path:
@@ -188,10 +85,6 @@ pub use gui::{run, run_with};
 #[cfg(all(feature = "gui", target_os = "macos"))]
 #[doc(hidden)]
 pub use menu::build_macos_menu;
-#[cfg(not(feature = "gui"))]
-mod no_gui;
-#[cfg(not(feature = "gui"))]
-pub(crate) use no_gui::*;
 
 #[cfg(feature = "gui")]
 mod gui {
@@ -201,6 +94,46 @@ mod gui {
     /// background tasks (e.g. deferred shadow-review materialization).
     pub(crate) static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> =
         std::sync::OnceLock::new();
+
+    fn present_host_event(event: future_host::events::Event<'_>) {
+        use future_host::events::Event;
+        match event {
+            Event::CloseThreadTerminals(thread_id) => {
+                crate::commands::close_thread_terminals(thread_id)
+            }
+            Event::AgentSettings {
+                session_id,
+                thread_id,
+                event_type,
+                data,
+            } => crate::agent_bridge::forward_settings_event(
+                APP_HANDLE.get(),
+                session_id,
+                thread_id,
+                event_type,
+                data,
+            ),
+            Event::ReviewUpdated(thread_id) => emit_review_updated(thread_id),
+            Event::RemoteActivity(thread_id) => emit_remote_activity(thread_id),
+            Event::ThreadsUpdated => emit_threads_updated(),
+            Event::ThreadRuntimeUpdated {
+                thread_id,
+                run_id,
+                status,
+                reset_projection,
+            } => emit_thread_runtime_updated(thread_id, run_id, status, reset_projection),
+            Event::ApprovalsUpdated {
+                thread_id,
+                approval_request_id,
+            } => emit_approvals_updated(thread_id, approval_request_id),
+            Event::Notification { name, payload } => {
+                if let Some(app) = APP_HANDLE.get() {
+                    use tauri::Emitter;
+                    let _ = app.emit(name, payload);
+                }
+            }
+        }
+    }
 
     /// Both the initial launch and a second-instance notification must activate
     /// the window, including when it was created hidden for icon setup.
@@ -1003,6 +936,7 @@ mod gui {
         let app = gui_builder::<tauri::Wry>()
             .setup(|app| {
                 let _ = APP_HANDLE.set(app.handle().clone());
+                let _ = future_host::events::attach(present_host_event);
                 #[cfg(target_os = "macos")]
                 macos_power::install_disconnect_notifier();
                 #[cfg(target_os = "windows")]
@@ -1232,6 +1166,8 @@ mod gui {
         let guard = instance::InstanceGuard::acquire()?;
         tauri::Manager::manage(app, guard);
         crate::host_environment::start_logging()?;
+        crate::runtime::set(tauri::async_runtime::handle().inner().clone());
+        agent_bridge::install_channel_runtime();
         store::initialize_app_store()?;
         if let Err(error) = terminal::server::bind() {
             eprintln!("FutureOS terminal server bind failed: {error}");
@@ -1655,6 +1591,10 @@ mod gui {
         /// (`Timeout` → `break`), and a dropped sender (`Disconnected` → return).
         #[test]
         fn runtime_update_drain_loop_covers_every_receive_exit() {
+            // Resetting the shared task/admission registry also clears owned
+            // runs. Hold the same process-state lock as the real RPC shutdown
+            // fixtures for the entire drain, including its final reset.
+            let _home = crate::auth_store::test_support::HomeGuard::new("runtime-update-drain");
             crate::desktop_shutdown::reset_for_test();
             crate::runtime::cancel_test_tasks();
             let (tx, rx) = std::sync::mpsc::channel::<ThreadRuntimeUpdate>();
@@ -2664,5 +2604,44 @@ mod gui {
             }
             eprintln!("{ARM}: the stopping-process confirm path executed");
         }
+    }
+}
+
+#[cfg(test)]
+mod helper_dispatch_tests {
+    /// Two callers reach this dispatcher with the same request spelled
+    /// differently: a launcher passes its own `argv` unchanged, while a sandbox
+    /// child arrives behind the `agent` subcommand token. Stripping that token is
+    /// the whole of `dispatch_agent_helper`'s parsing, so both spellings must end
+    /// up in the same place — an unstripped `agent` would be read as the helper's
+    /// own positional argument and silently change what runs.
+    ///
+    /// `--linux-sandbox-helper` is Linux-only: on every other platform the helper
+    /// CLI refuses the request (agent/src/cli.rs:213-218), which is the answer
+    /// asserted here. On Linux the same argv would execute the real helper
+    /// instead, so this comparison is not a portable test — see
+    /// docs/testing/module-tauri-shell.md for the `platform-unmeasured` row that
+    /// covers the Linux success arm.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn an_agent_subcommand_prefix_reaches_the_same_helper_request() {
+        let request: Vec<String> = ["--linux-sandbox-helper", "probe"]
+            .iter()
+            .map(|part| (*part).to_string())
+            .collect();
+        let direct = super::dispatch_agent_helper(&request).expect("the flag dispatches");
+        let mut prefixed_args = vec!["agent".to_string()];
+        prefixed_args.extend(request.iter().cloned());
+        let prefixed = super::dispatch_agent_helper(&prefixed_args).expect("the flag dispatches");
+
+        assert!(
+            direct.is_err(),
+            "off Linux the helper CLI refuses the request instead of running it"
+        );
+        assert_eq!(
+            direct.map_err(|error| error.to_string()),
+            prefixed.map_err(|error| error.to_string()),
+            "the `agent` prefix must be stripped before the helper CLI parses the request"
+        );
     }
 }

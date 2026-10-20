@@ -10,18 +10,15 @@ file handling; it is not a separate Remote service or SDK.
 **The process stays in the foreground. Press Ctrl+C to close remote access and exit.**
 It does not daemonize or install a system service.
 
+The unified entry is implemented on this branch; final cross-platform and release acceptance remains pending. See the [Headless extraction plan](../architecture/headless-package-development.md).
+
 ## 1. Before you start
 
-- Linux `.deb` and portable releases include `futureos-headless` and the matching
-  `future` CLI; you can also build them from source (section 5). A source install
-  (`make install`) puts `futureos-headless` in the same `bin` directory as
-  `futureos`. The standalone entrypoint needs no GTK/WebKit and starts headless
-  by default. The CLI-only archive still contains only `future`, not the Desktop
-  backend entrypoint.
-- The complete Agent runs inside headless Desktop when no external service owns
-  the default endpoint/data directory. Keep the matching CLI beside the executable
-  or on PATH for skills and maintenance. You can also run `future agent` separately;
-  Desktop attaches only after compatibility/readiness checks.
+- Install the unified `future` CLI, including from a CLI-only archive. Run
+  `future headless`; no separate server executable or Desktop installation is needed.
+- The complete Agent runs inside this process when no external service owns the
+  default endpoint/data directory. Maintenance invokes this same CLI executable.
+  An external Agent is attached only after compatibility/readiness checks.
 - Install a FutureOS mobile app matching the host's production/test environment.
 - Allow the host to reach the Future OS platform and configured NATS relay. The
   phone also needs network access.
@@ -36,24 +33,24 @@ do not redirect the output to a file.
 
 ## 2. Start in the foreground
 
-After a `.deb` install, run `futureos-headless` directly. For a portable or source
+After a `.deb` install, run `future headless` directly. For a portable or source
 build, change to the directory containing the executable.
 
 Linux / macOS:
 
 ```bash
-./futureos-headless
+./future headless
 ```
 
 Windows PowerShell:
 
 ```powershell
-.\futureos-headless.exe
+.\future.exe headless
 ```
 
 No `--headless` flag is needed or accepted. `futureos` starts only the graphical
 Desktop; its former `--headless` option has been removed. Replace old commands
-such as `futureos --headless --no-qr` with `futureos-headless`.
+such as `futureos --headless --no-qr` with `future headless`.
 Neither entry point takes pairing flags any more: devices are managed with
 `future remote devices` (section 3.1), which asks the running Desktop.
 Both executables share the backend, data and phone protocol; this is not a second
@@ -133,8 +130,8 @@ event the phone does not read.
 For example:
 
 ```bash
-./futureos-headless --relay https://relay.example.com
-./futureos-headless --help
+./future headless --relay https://relay.example.com
+./future headless --help
 ```
 
 Invitations are printed as a QR code with the complete link beside it. A narrow
@@ -195,7 +192,7 @@ performs bounded resource cleanup.
   conversations, then stop the service.
 - **Independently running Agent:** leave it running. This Desktop's remote entry
   still closes.
-- **Saved login and completed pairing:** retain them for the next `futureos-headless`
+- **Saved login and completed pairing:** retain them for the next `future headless`
   launch. Exiting is not unpairing.
 
 Unix also handles SIGTERM and SIGHUP. Continuity after SSH disconnect is not
@@ -204,70 +201,49 @@ the default behavior of headless mode.
 
 ## 5. Server build without graphical dependencies
 
-The graphical `futureos` binary links GUI libraries, which the Linux loader needs
-**before** parsing arguments. The standalone `futureos-headless` build excludes
-Tauri/GTK/WebKit and needs no X11/Wayland session. Official Linux releases build
-`futureos-headless` as a fully static musl binary, so it also imposes no glibc
-version and runs on old enterprise/HPC systems (CentOS 7 / Rocky 8 era). Local
-source builds use the host toolchain instead and are not necessarily static.
-No release workflow changes are required for this source-build path.
+The unified CLI calls the GUI-free `future-host` library directly. It does not
+load Tauri, GTK or WebKit and needs no X11/Wayland session. Official Linux CLI
+artifacts use static musl; local builds use the host toolchain and may be dynamic.
 
-To build both binaries from the repository root without npm/Tauri packaging:
+Build and install from the repository root without npm or Desktop:
 
 ```bash
-make build-desktop-headless
+make build-cli
+make install-cli
+make run-headless ARGS=--help
+# Compatibility aliases: make build-desktop-headless / install-desktop-headless
 ```
-
-To install them into the same `PREFIX` as `make install` (`/opt/homebrew/bin` on
-macOS, `/usr/local/bin` on Linux, `%USERPROFILE%\.future\bin` on Windows):
-
-```bash
-make install-desktop-headless
-```
-
-`make install` already includes this step, so a full source install needs no extra
-command.
 
 Or build explicitly:
 
 ```bash
-cargo build --release --no-default-features --features headless \
-  --bin futureos-headless --manifest-path desktop/src-tauri/Cargo.toml
-cargo build --release -p future-cli
+cargo build --release -p future-cli --bin future
+./target/release/future headless
 ```
 
-The default output is `target/release/futureos-headless`, with
-`.exe` on Windows. Put `target/release/future` (Windows: `future.exe`) beside it or
-on PATH; the Make target copies it beside the server automatically. If using
-custom Cargo output directories, build and copy the outputs explicitly.
-The `headless` feature selects the standalone entrypoint; combining it with the
-`gui` feature is rejected rather than producing a misleading GUI-linked server.
-See [Build & Install](build-and-install.md) for general build requirements.
+The output is `target/release/future` (`future.exe` on Windows). No separate
+`futureos-headless` binary is required. Existing Future home paths and paired
+credentials stay in place. See [Build & Install](build-and-install.md).
 
 `--release` selects compiler optimization, not the production/test platform
-channel. The existing project version and environment policy still applies. Do
-not edit pairing links to bypass the mobile app's environment checks.
+channel. Keep the host and mobile environment consistent; do not edit invitations.
 
-For local validation, run the standalone CLI/lifecycle tests with:
-
-```bash
-cargo test --no-default-features --features headless \
-  --manifest-path desktop/src-tauri/Cargo.toml --test headless_cli
-```
-
-On native Linux with Docker running, check an official static musl artifact's
-ELF linkage and startup in a networkless Rocky Linux 8 container (old glibc,
-no GUI stack). Run from the repository root and pass the extracted binary:
+The process fixtures run the actual CLI:
 
 ```bash
-bash scripts/ci/check-headless-linux.sh /path/to/futureos-headless
+cargo test -p future-cli --test headless_cli --test remote_start_refusal
 ```
 
-The verifier requires a static musl build; a default host/glibc build is rejected.
-Linux release CI runs it before packaging and on headless binaries extracted
-from actual deb/portable archives.
+On native Linux with Docker, verify a released static artifact in a networkless
+Rocky Linux 8 container, including first noninteractive startup refusal:
 
-See [Desktop Agent lifecycle and recovery](desktop-agent.md) for service modes, logs and upgrade failures.
+```bash
+bash scripts/ci/check-headless-linux.sh /path/to/future
+```
+
+The verifier rejects dynamic builds. Release CI applies it to CLI-only, deb and
+portable payloads. See [Desktop Agent lifecycle](desktop-agent.md) for ownership,
+logs and recovery.
 
 ## 6. Data, permissions and troubleshooting
 
@@ -287,14 +263,14 @@ hang.
 
 | Symptom | Action |
 |---|---|
-| `libwebkit2gtk-4.1.so.0` missing | This is the GUI binary; build and run `futureos-headless` instead |
-| `--headless` option removed or unknown | Use `futureos-headless` without that flag; `--re-pair`/`--no-qr` are gone — use `future remote devices add` and `remove --all` — while `--relay`/`--relay-ca` exist on both entry points |
+| `libwebkit2gtk-4.1.so.0` missing | This is the GUI binary; build and run `future headless` instead |
+| `--headless` option removed or unknown | Use `future headless` without that flag; `--re-pair`/`--no-qr` are gone — use `future remote devices add` and `remove --all` — while `--relay`/`--relay-ca` exist on both entry points |
 | Agent unavailable/incompatible or instance lock occupied | Read the reported owner/version, check the same user/data root, and upgrade or exit the external owner; never delete the lock or bypass it. Explicit endpoints and external mode are attach-only |
-| Built-in skills were not installed | Check the `[skills]` lines on stderr: `future init` needs the CLI beside `futureos-headless` or on PATH, and a network route to the skill catalogue. The phone can still install skills itself |
+| Built-in skills were not installed | Check the `[skills]` lines on stderr: maintenance runs this same executable as `future init` and needs a network route to the skill catalogue. The phone can still install skills itself |
 | Interactive terminal required | Complete initial login/pairing in a real terminal, without pipes, redirection or non-interactive service startup |
 | Platform authorization denied or expired | Restart and sign in as instructed; the login code is not the app pairing code |
 | Pairing invitation expired | Run `future remote devices add` for a new one (or restart with no device paired); completed pairings do not require this |
-| `future remote devices add` times out | The running Desktop is asked, and it answers from *its own* build. If the message says nothing picked the request up, that process predates device requests — restart it with the current version (`futureos` or `futureos-headless`) and try again |
+| `future remote devices add` times out | The running Desktop is asked, and it answers from *its own* build. If the message says nothing picked the request up, that process predates device requests — restart it with the current version (`futureos` or `future headless`) and try again |
 | Another Desktop owns the directory | Exit its GUI or headless process; do not delete the lock file to bypass mutual exclusion |
 | The process disappears, or a node operator reports it was killed | A host OOM killer or a login node's per-user CPU/memory budget sends SIGKILL, which no process can report itself. Read `<root>/app/logs/desktop.log`: the last startup phase it recorded shows where it stopped; then check the host (`dmesg -T`, `journalctl -k`, or the node's own quota/job logs). If the legacy import is what trips the budget, move the data root off shared storage with `FUTURE_HOME` |
 | Phone cannot claim an invitation | Check matching production/test environments and that the invitation is unused and unexpired |
