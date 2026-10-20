@@ -4,7 +4,7 @@ import en from "../../i18n/locales/en/shortcuts.json";
 import zhSettings from "../../i18n/locales/zh/settings.json";
 import zh from "../../i18n/locales/zh/shortcuts.json";
 import { bindingProblem, parseBinding, serializeBinding } from "../../lib/keybinding";
-import { CATEGORIES, COMMANDS, defaultBinding, FIXED_KEYS, isCommandId } from "./catalog";
+import { CATEGORIES, COMMANDS, defaultBindingTexts, FIXED_KEYS, isCommandId, scopeOf } from "./catalog";
 
 /** Resolve a dotted key (`commands.chat.new`) against a locale bundle. */
 function lookup(bundle: unknown, path: string): unknown {
@@ -23,20 +23,51 @@ describe("command catalog", () => {
 
   it("keeps every default legal on both platforms", () => {
     for (const spec of COMMANDS) {
-      const binding = defaultBinding(spec);
-      expect(serializeBinding(binding), spec.id).not.toBe("");
-      for (const isMac of [true, false])
-        expect(bindingProblem(binding, isMac), `${spec.id} on ${isMac ? "mac" : "other"}`).toBeNull();
+      // A bare key is legal only inside a scope: the global keymap must be
+      // modifier chords, because the app has no way to know what a bare key was
+      // aimed at outside a mode.
+      const allowBare = scopeOf(spec) !== "global";
+      for (const text of defaultBindingTexts(spec)) {
+        const binding = parseBinding(text)!;
+        expect(serializeBinding(binding), `${spec.id} (${text})`).not.toBe("");
+        for (const isMac of [true, false])
+          expect(bindingProblem(binding, isMac, { allowBare }), `${spec.id} (${text}) on ${isMac ? "mac" : "other"}`).toBeNull();
+      }
     }
   });
 
-  it("gives every command its own default", () => {
+  it("gives every command its own default within its scope", () => {
+    // Uniqueness is per keymap, not per app: a mode is allowed to put a key where a
+    // global command already has one (that is how the panel takes over `←`), and
+    // two commands in *one* keymap still may not share a key.
     const seen = new Map<string, string>();
     for (const spec of COMMANDS) {
-      const text = serializeBinding(defaultBinding(spec));
-      expect(seen.get(text), `${spec.id} collides with ${seen.get(text)}`).toBeUndefined();
-      seen.set(text, spec.id);
+      for (const text of defaultBindingTexts(spec)) {
+        const key = `${scopeOf(spec)}|${serializeBinding(parseBinding(text)!)}`;
+        expect(seen.get(key), `${spec.id} collides with ${seen.get(key)} in ${scopeOf(spec)}`).toBeUndefined();
+        seen.set(key, spec.id);
+      }
     }
+  });
+
+  it("scopes the panel's bare keys and nothing else", () => {
+    const bare = COMMANDS
+      .filter(spec => defaultBindingTexts(spec).every(text => !/mod|ctrl|alt/.test(text)))
+      .map(spec => spec.id)
+      .sort();
+    expect(bare).toEqual([
+      "vibe.back",
+      "vibe.cell",
+      "vibe.focus.down",
+      "vibe.focus.left",
+      "vibe.focus.right",
+      "vibe.focus.up",
+      "vibe.open",
+      "vibe.zoom.next",
+      "vibe.zoom.previous",
+    ]);
+    for (const id of bare)
+      expect(scopeOf(COMMANDS.find(spec => spec.id === id)!), id).not.toBe("global");
   });
 
   it("lets the terminal's own toggle in, and nothing else", () => {
@@ -51,6 +82,12 @@ describe("command catalog", () => {
       "group.previous",
       "thread.next",
       "thread.previous",
+      "vibe.focus.down",
+      "vibe.focus.left",
+      "vibe.focus.right",
+      "vibe.focus.up",
+      "vibe.zoom.next",
+      "vibe.zoom.previous",
     ]);
   });
 

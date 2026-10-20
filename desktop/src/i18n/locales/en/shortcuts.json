@@ -4,7 +4,8 @@
     "navigation": "Navigation",
     "panels": "Panels",
     "terminal": "Terminal",
-    "settings": "Settings"
+    "settings": "Settings",
+    "vibe": "Vibe panel"
   },
   "commands": {
     "chat": {
@@ -42,6 +43,42 @@
     "group": {
       "previous": "Previous workspace or conversation",
       "next": "Next workspace or conversation"
+    },
+    "vibe": {
+      "toggle": "Open or close the Vibe panel",
+      "focus": {
+        "up": "Move to the cell above",
+        "down": "Move to the cell below",
+        "left": "Move to the cell on the left",
+        "right": "Move to the cell on the right"
+      },
+      "open": "Zoom into the selected conversation",
+      "back": "Leave the zoomed conversation",
+      "zoom": {
+        "previous": "Previous conversation in the zoomed cell",
+        "next": "Next conversation in the zoomed cell"
+      },
+      "cell": "Go to the numbered cell",
+      "columns": {
+        "cycle": "Cycle the grid layout",
+        "more": "More columns",
+        "fewer": "Fewer columns",
+        "auto": "Automatic layout"
+      },
+      "move": {
+        "left": "Move this cell earlier",
+        "right": "Move this cell later"
+      },
+      "panel": {
+        "hide": "Show or hide the side panel",
+        "pin": "Pin the side panel for this conversation"
+      },
+      "device": "Switch which machines the panel shows",
+      "attention": "Jump to the next conversation that needs you",
+      "add": "Add a conversation to the panel",
+      "remove": "Remove the selected conversation from the panel",
+      "fullscreen": "Toggle native full screen",
+      "help": "Show all shortcuts"
     }
   },
   "page": {
@@ -52,7 +89,10 @@
     "resetAll": "Restore all defaults",
     "unbound": "Not set",
     "terminalBlocked": "Ignored while the terminal has focus: this key belongs to the shell",
-    "levels": "{{coarse}} steps between workspaces and conversations; {{fine}} steps through every conversation; inside one, {{questions}} jumps between questions. Changes apply immediately."
+    "levels": "{{coarse}} steps between workspaces and conversations; {{fine}} steps through every conversation; inside one, {{questions}} jumps between questions. Changes apply immediately.",
+    "scopedGlobal": "Works anywhere.",
+    "scopedVibe": "Only while the Vibe panel is open; inside it these keys may replace the ones above.",
+    "multiKey": "These keys are fixed for now."
   },
   "recorder": {
     "prompt": "Press a new combination…",
