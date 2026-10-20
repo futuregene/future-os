@@ -113,52 +113,22 @@ jobs:
       projects: ${{ needs.affected.outputs.rust }}
 
   typescript-test:
-    name: TypeScript test (${{ matrix.name }})
+    name: TypeScript test
     needs: affected
     if: needs.affected.outputs.typescript != '[]'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.affected.outputs.typescript) }}
-    env:
-      CI_DIRECTORY: ${{ matrix.directory }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - name: Typecheck
-        run: node scripts/ci/typescript-checks.mjs typecheck
-      - name: Build
-        run: node scripts/ci/typescript-checks.mjs build
-      - name: Tests
-        run: node scripts/ci/typescript-checks.mjs test
+    uses: ./.github/workflows/typescript-ci.yml
+    with:
+      mode: test
+      projects: ${{ needs.affected.outputs.typescript }}
 
   typescript-check:
-    name: TypeScript check (${{ matrix.name }})
+    name: TypeScript check
     needs: affected
     if: needs.affected.outputs.typescript != '[]'
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.affected.outputs.typescript) }}
-    env:
-      CI_DIRECTORY: ${{ matrix.directory }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - name: ESLint and applicable Stylelint
-        run: node scripts/ci/typescript-checks.mjs lint
+    uses: ./.github/workflows/typescript-ci.yml
+    with:
+      mode: check
+      projects: ${{ needs.affected.outputs.typescript }}
 
   android-test:
     name: Android test

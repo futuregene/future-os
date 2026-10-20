@@ -135,6 +135,12 @@ native OS for build/test and on Linux for fmt/Clippy. A group contains only its
 selected crates; absent groups allocate no runner. TS projects each get a Linux
 build/test runner and a separate Linux lint runner.
 
+[`typescript-ci.yml`](../../.github/workflows/typescript-ci.yml) owns the TS package
+matrix and execution steps. The main workflow calls it through `TypeScript test`
+and `TypeScript check`, matching Rust's reusable-workflow structure. Both languages
+therefore appear as collapsible parent groups in the Actions sidebar, with their
+crate groups or packages nested below them.
+
 | Group | Possible members |
 |---|---|
 | libraries | rpc, app-settings, app-workspaces, channel, goal, tasks |

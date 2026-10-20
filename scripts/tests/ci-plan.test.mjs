@@ -101,7 +101,8 @@ test('specialty tooling and docs do not schedule regular suites', () => {
 });
 
 test('manual and planner changes select every regular project, excluding interop', () => {
-  for (const result of [affected([], projects, true), plan('scripts/ci/affected.mjs')]) {
+  for (const result of [affected([], projects, true), plan('scripts/ci/affected.mjs'),
+    plan('.github/workflows/typescript-ci.yml')]) {
     assert.equal(rust(result).length, projects.rust.length - 1);
     assert.equal(ts(result).length, projects.typescript.length - 1);
     assert.ok(result.android && result.ios);

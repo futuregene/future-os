@@ -126,6 +126,11 @@ CLI、Desktop Rust。remote-protocol 的共享 schema 选择受影响的两种�
 分组，在 Linux 展开 fmt/Clippy 分组。每组只带入本次选中的 crate；空组不分配 runner。
 TS 项目各自拥有一个 Linux build/test runner 和一个独立 Linux lint runner。
 
+[`typescript-ci.yml`](../../.github/workflows/typescript-ci.yml) 负责 TS package
+矩阵和执行步骤，主工作流通过 `TypeScript test`、`TypeScript check` 调用它，
+与 Rust 使用相同的可复用 workflow 结构。因此两种语言在 Actions 左侧栏都显示为
+可折叠的父分组，展开后查看各 crate 分组或 package。
+
 | 组 | 可能包含的 crate |
 |---|---|
 | libraries | rpc、app-settings、app-workspaces、channel、goal、tasks |

@@ -69,7 +69,7 @@ export function affected(files, projects, force = false) {
     if (['desktop/src-tauri/windows/installer-hooks.nsh',
       'desktop/src-tauri/windows/installer-preflight.ps1'].includes(file)) continue;
     // A workflow helper changes the execution semantics; validate every regular suite.
-    if (['.github/workflows/ci.yml', '.github/workflows/rust-ci.yml', 'scripts/ci/affected.mjs',
+    if (['.github/workflows/ci.yml', '.github/workflows/rust-ci.yml', '.github/workflows/typescript-ci.yml', 'scripts/ci/affected.mjs',
       'scripts/ci/rust-checks.mjs', 'scripts/ci/typescript-checks.mjs', 'scripts/ci/ci-result.mjs',
       'scripts/tests/ci-plan.test.mjs'].includes(file)) {
       for (const language of Object.keys(selected)) all(language, file);
