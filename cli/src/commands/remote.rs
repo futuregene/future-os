@@ -667,15 +667,40 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
     ));
     out.log("");
     match expires_at {
-        Some(expiry) => out.log(&format!(
-            "Single-use. It expires at Unix time {expiry}; the Desktop keeps serving the new \
-             device as soon as a phone scans it."
-        )),
+        Some(expiry) => {
+            let when = local_wall_clock(expiry)
+                .map(|clock| format!("{clock} (local time)"))
+                // The Desktop's clock is far enough out that no calendar can
+                // name the day; the raw epoch at least says how far.
+                .unwrap_or_else(|| format!("Unix time {expiry}"));
+            out.log(&format!(
+                "Single-use. It expires at {when}; the Desktop keeps serving the new device as \
+                 soon as a phone scans it."
+            ))
+        }
         None => out.log(
             "Single-use. The Desktop keeps serving the new device as soon as a phone scans it.",
         ),
     }
     Ok(())
+}
+
+/// A deadline as the local clock the reader can look at, e.g.
+/// `2026-10-20 09:45:32`, or `None` for an instant no calendar can express.
+///
+/// The zone is spelled out by the caller rather than taken from `%Z`: chrono
+/// derives that from the platform, and it is inconsistent across Windows and
+/// Unix. The range guard keeps `with_timezone` inside what the platform's time
+/// zone database answers for.
+fn local_wall_clock(unix: i64) -> Option<String> {
+    let instant = chrono::DateTime::from_timestamp(unix, 0)
+        .filter(|instant| (1970..=9999).contains(&chrono::Datelike::year(instant)))?;
+    Some(
+        instant
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
+    )
 }
 
 /// Hold the "one `add` at a time" lock for as long as this lives.
@@ -1400,6 +1425,7 @@ mod tests {
     use super::*;
     use crate::output::Output;
     use crate::test_env::EnvGuard;
+    use chrono::TimeZone;
 
     async fn run(args: &[&str]) -> (i32, String, String) {
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
@@ -1900,6 +1926,37 @@ mod tests {
     const LINK: &str =
         "futureos://remote/pair?v=2&code=abc&desktopId=d&desktopKey=U&desktopSecret=S";
 
+    /// The `It expires at <clock> (local time)` clause of an invitation, parsed.
+    fn printed_clock(stdout: &str) -> chrono::NaiveDateTime {
+        let line = stdout
+            .lines()
+            .find(|line| line.contains("Single-use."))
+            .unwrap_or_else(|| panic!("no single-use line: {stdout}"));
+        assert!(
+            !line.contains("Unix time"),
+            "a deadline a calendar can name is printed as a clock: {line}"
+        );
+        let clock = line
+            .split("expires at ")
+            .nth(1)
+            .and_then(|rest| rest.split(" (local time)").next())
+            .unwrap_or_else(|| panic!("no expiry in {line}"));
+        chrono::NaiveDateTime::parse_from_str(clock, "%Y-%m-%d %H:%M:%S")
+            .unwrap_or_else(|error| panic!("{clock:?} is not YYYY-MM-DD HH:MM:SS: {error}"))
+    }
+
+    #[test]
+    fn a_deadline_no_calendar_can_name_keeps_the_epoch() {
+        assert_eq!(
+            local_wall_clock(1_800_000_000).map(|clock| clock.len()),
+            Some(19)
+        );
+        // A Desktop whose clock is absurd keeps the invitation readable instead
+        // of panicking in the formatter.
+        assert_eq!(local_wall_clock(i64::MAX), None);
+        assert_eq!(local_wall_clock(-1), None);
+    }
+
     #[tokio::test]
     async fn add_prints_the_invitation_the_desktop_answered_with() {
         let _guard = crate::test_env::lock_env().await;
@@ -1915,9 +1972,19 @@ mod tests {
         assert!(stderr.is_empty(), "{stderr}");
         assert!(stdout.contains(LINK), "{stdout}");
         assert!(stdout.contains("for NEW"), "the device is named: {stdout}");
-        assert!(
-            stdout.contains("expires at Unix time 1800000000"),
-            "{stdout}"
+        // The deadline is a wall clock a person can compare with their own
+        // watch, not an epoch; `--json` keeps the epoch for scripts. The zone
+        // is the machine's, so the test reads the printed clock back instead of
+        // hard-coding what CI's timezone would render.
+        let clock = printed_clock(&stdout);
+        assert_eq!(
+            chrono::Local
+                .from_local_datetime(&clock)
+                .single()
+                .expect("an unambiguous local time")
+                .timestamp(),
+            1_800_000_000,
+            "the printed clock is the deadline itself: {stdout}"
         );
         // The request carried the operation and a reply path, and was cleaned up.
         let seen = seen.lock().unwrap();
