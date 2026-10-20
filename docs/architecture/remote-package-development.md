@@ -439,6 +439,8 @@ This batch changes only fixture data, drivers and test-host observation, with no
 
 Phase 4/5 still needs common live recovery budgets/handoff, event dedup/replay and catalog projection, multi-endpoint/transfer cancellation, further real interoperability faults and application core-test migration. Affected CI, comparable performance and same-candidate manual confirmation remain unfinished; the overall goal stays active.
 
+> Current CI entry points (2026-10-20): the `remote`/`all` scopes and single Remote runner below describe the historical implementation. Regular CI now separates Rust/TS checks by affected projects; interoperability and generated-source validation are manual `misc.yml` suites. See [Continuous integration](../guide/ci.md).
+
 ### 2026-10-19: Remote affected selection and branch CI entry
 
 Added [`remote-affected.mjs`](../../scripts/ci/remote-affected.mjs) to select four Rust packages, three TS packages and the independent interoperability project by actual language dependencies. Rust implementation changes propagate from Crypto through Protocol to Client/Server and the Desktop GUI/headless and native lifecycle checks. TS implementation changes propagate through Protocol/Client to Mobile. Desktop TS does not import Remote npm packages and retains its existing dependency selection. Production `thread-projection` inputs affect TS Protocol/Client. Cargo/npm manifests and locks expand their respective language; schema, generation and unclassified package build inputs conservatively include consumers.

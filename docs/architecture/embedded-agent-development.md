@@ -896,6 +896,8 @@ four scripts, workspace fmt, `git diff --check` and structural checks of 260
 documents passed. Actual macOS packaging smoke also ran as recorded in section
 10.11. PowerShell parsing on macOS does not validate Windows API/NSIS behavior.
 
+> Current CI entry points (2026-10-20): the scope commands and required-check names below describe historical acceptance. Regular CI now uses affected project matrices and `CI result`; specialty checks use `misc.yml`. See [Continuous integration](../guide/ci.md) for current commands and migration requirements.
+
 Manual CI defaults to the full scope. For Windows installer/observer fixture
 changes alone, use `gh workflow run ci.yml --ref <work-branch> -f scope=windows-update`
 to avoid repeating three-platform Rust builds and unrelated suites. PRs still

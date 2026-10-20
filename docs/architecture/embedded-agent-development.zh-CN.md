@@ -565,6 +565,8 @@ Windows GUI/headless 同样必须顺序执行。占位 CLI 仅供编译，NSIS �
 
 本轮不在本地重跑单测，生命周期断言回归和原生 fixture 交给 CI。actionlint、Python 语法、四份 PowerShell 脚本的官方解析器校验、workspace fmt、`git diff --check` 以及 260 份文档结构检查通过；另外执行了第 10.11 节的 macOS 真实打包 smoke。PowerShell 语法检查运行于 macOS，不代表 Windows API/NSIS 行为已验证。
 
+> 当前入口（2026-10-20）：下文 scope 命令及 required-check 名称属于历史验收记录。常规 CI 已改为 affected 项目矩阵与 `CI result`，专项检查迁入 `misc.yml`；当前命令和门禁迁移要求见[持续集成](../guide/ci.zh-CN.md)。
+
 手动 CI 默认执行完整范围；仅调整 Windows 安装/观察器 fixture 时，可用 `gh workflow run ci.yml --ref <工作分支> -f scope=windows-update` 单独验收，避免重复三平台 Rust 构建和无关单测。PR 仍按路径依赖选取检查，不能用手动窄范围运行替代合并条件。
 
 `scope=desktop-rust` 仅选取 Desktop GUI/headless 的静态检查、Linux 全量测试及三平台编译，不重跑 Agent/CLI/前端套件或原生宿主专项，适合本轮调度器测试隔离修复的复验。

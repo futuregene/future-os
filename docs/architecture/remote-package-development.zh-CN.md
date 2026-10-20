@@ -439,6 +439,8 @@ TS 驱动调用真实 expiry helper、刷新入口、取消/后台退役和 shut
 
 阶段 4/5 仍需共用实际恢复预算/连接更换、事件去重/补齐与目录投影、同实例多远端和传输取消等场景、更多真实互通故障及应用核心测试迁移收尾。affected CI、同条件性能证据和同候选版本人工确认仍未完成，整体目标继续进行。
 
+> 当前入口（2026-10-20）：下文 `remote`/`all` scope 和单个 Remote runner 属于历史实现。常规 CI 已按 affected 项目拆分 Rust/TS 检查，互操作及生成一致性改为 `misc.yml` 手动专项，见[持续集成](../guide/ci.zh-CN.md)。
+
 ### 2026-10-19：Remote affected 调度与分支 CI 验收入口
 
 新增 [`remote-affected.mjs`](../../scripts/ci/remote-affected.mjs)，按实际依赖分别选择四个 Rust 包、三个 TS 包及独立互通项目。Rust 源码沿 Crypto → Protocol → Client/Server 选择消费者，并触发 Desktop GUI/headless 编译及生命周期检查；TS 源码沿 Crypto → Protocol → Client 触发 Mobile，Desktop TS 没有导入 Remote npm 包，仍按自己的依赖选择。`thread-projection` 的产品输入影响 TS Protocol/Client。根 Cargo/npm 清单和锁分别扩展对应语言，schema、生成器和未归类的包构建输入保守选择消费者。
