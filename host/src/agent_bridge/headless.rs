@@ -34,7 +34,7 @@ pub fn prepare_prompt_persisted(
     model_id: Option<String>,
     thinking_level: Option<String>,
     attachments: Vec<AttachmentInput>,
-) -> Result<PreparedPrompt, crate::AppError> {
+) -> Result<PreparedPrompt, crate::Error> {
     prepare_prompt_persisted_with_trigger(
         thread,
         message,
@@ -55,7 +55,7 @@ pub fn prepare_prompt_persisted_with_trigger(
     thinking_level: Option<String>,
     attachments: Vec<AttachmentInput>,
     trigger_message_id: Option<String>,
-) -> Result<PreparedPrompt, crate::AppError> {
+) -> Result<PreparedPrompt, crate::Error> {
     let session_id = thread
         .agent_session_id
         .clone()
@@ -85,7 +85,7 @@ pub fn prepare_prompt_persisted_with_trigger(
 /// Drive the agent for a [`PreparedPrompt`] and finalize local run metadata.
 /// Conversation messages are persisted once, by the Agent JSONL writer.
 #[cfg(test)]
-pub async fn run_prepared_prompt(prepared: PreparedPrompt) -> Result<(), crate::AppError> {
+pub async fn run_prepared_prompt(prepared: PreparedPrompt) -> Result<(), crate::Error> {
     run_prepared_prompt_inner(prepared, None).await
 }
 
@@ -95,14 +95,14 @@ pub async fn run_prepared_prompt(prepared: PreparedPrompt) -> Result<(), crate::
 pub async fn run_prepared_prompt_with_acceptance(
     prepared: PreparedPrompt,
     receipt: tokio::sync::oneshot::Sender<Result<(), String>>,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     run_prepared_prompt_inner(prepared, Some(receipt)).await
 }
 
 async fn run_prepared_prompt_inner(
     prepared: PreparedPrompt,
     receipt: Option<tokio::sync::oneshot::Sender<Result<(), String>>>,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     let PreparedPrompt {
         thread_id,
         session_id,
@@ -146,7 +146,7 @@ async fn run_prepared_prompt_inner(
                 let _ = receipt.send(accepted);
             }
             let result = prompt.await.map_err(|error| {
-                crate::AppError::Message(format!("Agent prompt task failed: {error}"))
+                crate::Error::Message(format!("Agent prompt task failed: {error}"))
             })?;
             if retry_receipt_commit {
                 if let Some(command_id) = remote_command_id.as_deref() {
@@ -157,7 +157,7 @@ async fn run_prepared_prompt_inner(
         }
         Err(_) => {
             let result = prompt.await.map_err(|error| {
-                crate::AppError::Message(format!("Agent prompt task failed: {error}"))
+                crate::Error::Message(format!("Agent prompt task failed: {error}"))
             })?;
             if let Some(receipt) = receipt {
                 let error = result

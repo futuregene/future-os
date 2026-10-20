@@ -69,7 +69,7 @@ pub fn publish_snapshot(
     session_id: &str,
     run_id: &str,
     snapshot_cursor: i64,
-    snapshot_events: &[crate::agent_proto::ProjectedRunEvent],
+    snapshot_events: &[future_rpc::proto::ProjectedRunEvent],
     run_sequence: i64,
 ) {
     let events: Vec<serde_json::Value> = snapshot_events

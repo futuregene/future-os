@@ -109,7 +109,7 @@ async fn list_agent_sessions() -> Vec<AgentSessionSummary> {
 /// still reported as live here — reconciliation must never mistake a transient
 /// read failure for a deleted session and hard-delete local threads.
 pub(crate) async fn list_agent_session_ids(
-) -> Result<std::collections::HashSet<String>, crate::AppError> {
+) -> Result<std::collections::HashSet<String>, crate::Error> {
     let mut client = connect_agent().await?;
     let response = client
         .execute_command(list_session_ids_command())
@@ -134,9 +134,7 @@ pub(crate) async fn list_agent_session_ids(
 
 /// Fetch the full entry list for a session. An unreadable journal is a real
 /// import failure, not an empty conversation.
-async fn fetch_session_entries(
-    session_id: &str,
-) -> Result<Vec<serde_json::Value>, crate::AppError> {
+async fn fetch_session_entries(session_id: &str) -> Result<Vec<serde_json::Value>, crate::Error> {
     let data = super::get_session_entries(session_id.to_string()).await?;
     Ok(data
         .get("entries")
@@ -248,7 +246,7 @@ const MESSAGE_PROBE_PAGE: i64 = 50;
 ///
 /// Errors (an unreadable journal, an offline Agent) propagate: no caller may
 /// treat "could not read" as "empty" — one of them deletes local rows.
-pub(crate) async fn session_has_messages(session_id: &str) -> Result<bool, crate::AppError> {
+pub(crate) async fn session_has_messages(session_id: &str) -> Result<bool, crate::Error> {
     let mut client = connect_agent().await?;
     let response = client
         .execute_command(get_session_entries_page_command(
@@ -261,7 +259,7 @@ pub(crate) async fn session_has_messages(session_id: &str) -> Result<bool, crate
         .into_inner()
         .ok_or_rpc_error("get_session_entries rejected")?;
     let page = future_rpc::decode::decode_session_entries_page(&response).ok_or_else(|| {
-        crate::AppError::Message("get_session_entries typed page is missing or invalid".to_string())
+        crate::Error::Message("get_session_entries typed page is missing or invalid".to_string())
     })?;
     // A page that stops mid-journal proves nothing about the entries it did not
     // include, so it counts as "has messages".
@@ -306,7 +304,7 @@ fn create_imported_run(
     model: &str,
     run_id: String,
     terminated: bool,
-) -> Result<store::RunRecord, crate::AppError> {
+) -> Result<store::RunRecord, crate::Error> {
     let (provider, model_id) = super::session::split_model(model);
     let run = store::create_run(store::CreateRunInput {
         id: Some(run_id),
@@ -459,7 +457,7 @@ fn seed_auto_title_best_effort(thread_id: &str, title: &str) {
 
 /// Import a single agent session. Creates workspace, thread, and per-reply run
 /// records. Idempotent via `find_thread_by_agent_session`.
-async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppError> {
+async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::Error> {
     #[cfg(test)]
     if summary.id == "cov-test-import-panic" {
         panic!("cov test seam: simulated import panic");
@@ -647,7 +645,7 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::AppEr
 /// pass, which has richer summaries. Returns `true` when a stub was created,
 /// `false` when the session was already known, tombstoned, or still without a
 /// message of its own.
-pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, crate::AppError> {
+pub(crate) async fn import_discovered_session(session_id: &str) -> Result<bool, crate::Error> {
     let import_lock = session_import_lock(session_id);
     let _import_guard = import_lock.lock().await;
     if store::is_agent_session_tombstoned(session_id)? {

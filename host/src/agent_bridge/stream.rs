@@ -10,7 +10,7 @@ use super::{
     connect_agent,
     persist::{persist_run_event, requires_gui_projection},
 };
-use crate::agent_proto::StreamRequest;
+use future_rpc::proto::StreamRequest;
 
 const AGENT_EVENT_STREAM_TIMEOUT_SECS: u64 = 600;
 
@@ -35,12 +35,12 @@ fn agent_event_stream_timeout() -> Duration {
 /// instead of retrying the attach or marking the run failed.
 #[derive(Debug)]
 pub(super) enum CollectError {
-    App(crate::AppError),
+    App(crate::Error),
     RunGone(String),
 }
 
-impl From<crate::AppError> for CollectError {
-    fn from(error: crate::AppError) -> Self {
+impl From<crate::Error> for CollectError {
+    fn from(error: crate::Error) -> Self {
         CollectError::App(error)
     }
 }
@@ -51,12 +51,12 @@ impl From<String> for CollectError {
     }
 }
 
-impl From<CollectError> for crate::AppError {
+impl From<CollectError> for crate::Error {
     fn from(error: CollectError) -> Self {
         match error {
             CollectError::App(error) => error,
             CollectError::RunGone(reason) => {
-                crate::AppError::from(format!("Future Agent run no longer active: {reason}"))
+                crate::Error::from(format!("Future Agent run no longer active: {reason}"))
             }
         }
     }
@@ -372,7 +372,7 @@ pub(super) async fn collect_agent_response(
                     clean,
                     termination_kind,
                 } => {
-                    crate::desktop_shutdown::release_run(session_id, canonical_run_id);
+                    crate::request_scope::release_run(session_id, canonical_run_id);
                     break 'attach (clean, termination_kind);
                 }
             }
@@ -386,7 +386,7 @@ pub(super) async fn collect_agent_response(
         sleep(reconnect_delay(reconnect_attempt)).await;
     };
 
-    crate::desktop_shutdown::release_run(session_id, canonical_run_id);
+    crate::request_scope::release_run(session_id, canonical_run_id);
     Ok(AgentResponse {
         content,
         complete: clean_end,
@@ -411,7 +411,7 @@ fn fold_response_event(
     data: &str,
     content: &mut String,
     waiting_for_approval: &mut bool,
-) -> Result<FoldOutcome, crate::AppError> {
+) -> Result<FoldOutcome, crate::Error> {
     match event_type {
         "approval_request" => {
             *waiting_for_approval = true;
@@ -645,7 +645,7 @@ mod tests {
         mock_agent, seed_run, seed_thread, seed_workspace, stream_event, StreamScript, TestHome,
     };
     use super::{collect_agent_response, CollectError};
-    use crate::agent_proto::ProjectedRunEvent;
+    use future_rpc::proto::ProjectedRunEvent;
 
     fn projected(event_type: &str, data: &str, idx: i64) -> ProjectedRunEvent {
         ProjectedRunEvent {
@@ -660,8 +660,8 @@ mod tests {
         run_id: &str,
         cursor: i64,
         events: Vec<ProjectedRunEvent>,
-    ) -> crate::agent_proto::StreamEvent {
-        crate::agent_proto::StreamEvent {
+    ) -> future_rpc::proto::StreamEvent {
+        future_rpc::proto::StreamEvent {
             projection_snapshot: true,
             snapshot_cursor: cursor,
             snapshot_events: events,
@@ -674,8 +674,8 @@ mod tests {
         event_type: &str,
         session_idx: i64,
         data: &str,
-    ) -> crate::agent_proto::StreamEvent {
-        crate::agent_proto::StreamEvent {
+    ) -> future_rpc::proto::StreamEvent {
+        future_rpc::proto::StreamEvent {
             r#type: event_type.to_string(),
             data: data.to_string(),
             run_id: String::new(),
@@ -804,7 +804,7 @@ mod tests {
             .await
             .expect_err("error event");
         assert!(matches!(error, CollectError::App(_)));
-        assert_eq!(crate::AppError::from(error).to_string(), "model exploded");
+        assert_eq!(crate::Error::from(error).to_string(), "model exploded");
 
         // No error/message field → generic message.
         mock.push_stream(StreamScript::Events(
@@ -815,7 +815,7 @@ mod tests {
             .await
             .expect_err("error event");
         assert_eq!(
-            crate::AppError::from(error).to_string(),
+            crate::Error::from(error).to_string(),
             "Future Agent returned an error event."
         );
     }
@@ -836,7 +836,7 @@ mod tests {
             .await
             .expect_err("wrong run");
         assert_eq!(
-            crate::AppError::from(error).to_string(),
+            crate::Error::from(error).to_string(),
             "Future Agent sent event for run run-other, expected run-1"
         );
     }
@@ -953,7 +953,7 @@ mod tests {
         match error {
             CollectError::RunGone(reason) => {
                 assert!(reason.contains("unknown run"), "reason: {reason}");
-                let app_error = crate::AppError::from(CollectError::RunGone(reason));
+                let app_error = crate::Error::from(CollectError::RunGone(reason));
                 assert!(app_error
                     .to_string()
                     .contains("Future Agent run no longer active"));
@@ -1020,9 +1020,7 @@ mod tests {
             .await
             .expect_err("permanent failure");
         assert!(
-            crate::AppError::from(error)
-                .to_string()
-                .contains("forbidden"),
+            crate::Error::from(error).to_string().contains("forbidden"),
             "the original status should be preserved"
         );
     }
@@ -1172,7 +1170,7 @@ mod tests {
         let error = collect_agent_response(None, "run-1", "sess-1", "thread-1")
             .await
             .expect_err("error inside a projection snapshot");
-        assert_eq!(crate::AppError::from(error).to_string(), "snapshot error");
+        assert_eq!(crate::Error::from(error).to_string(), "snapshot error");
     }
 
     #[tokio::test]

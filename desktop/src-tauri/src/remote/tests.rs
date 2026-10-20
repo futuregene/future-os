@@ -402,7 +402,7 @@ mod runtime_tests {
             "sess-a",
             "run-1",
             9,
-            &[crate::agent_proto::ProjectedRunEvent {
+            &[future_rpc::proto::ProjectedRunEvent {
                 r#type: "text_chunk".to_string(),
                 data: r#"{"text":"folded"}"#.to_string(),
                 idx: 2,

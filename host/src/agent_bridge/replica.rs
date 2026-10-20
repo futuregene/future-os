@@ -122,9 +122,7 @@ impl ReplicaLease {
             )
             .into());
         }
-        let lease = self
-            .bind_local(local_run_id)
-            .map_err(crate::AppError::from)?;
+        let lease = self.bind_local(local_run_id).map_err(crate::Error::from)?;
         let response = super::stream::collect_agent_response(
             local_run_id,
             canonical_run_id,

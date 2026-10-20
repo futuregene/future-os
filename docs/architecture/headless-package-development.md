@@ -276,9 +276,9 @@ Current phase status:
 |---|---|
 | 0 | Source/dependency baseline and named inventory captured; mixed-module ownership reviewed per test; matched build/runtime measurements open |
 | 1 | Ordinary GUI-free crate, task registry, presentation outlet and consumer dependencies established; complete lifecycle/config boundary still open |
-| 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, Remote, maintenance and stop coordination remain |
+| 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge moved; Remote, maintenance and stop coordination remain |
 | 3 | Not implemented; the product entry is still `futureos-headless` |
-| 4 | 620 original test declarations moved and pass locally on macOS; this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
+| 4 | 931 original test declarations moved and pass locally on macOS; this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
 | 5 | Host CI group and affected propagation added; builds, release artifacts, signing/install/update/uninstall still open |
 | 6 | Not started; no frozen final candidate, matched performance, artifact acceptance or confirmed manual results |
 
@@ -375,3 +375,13 @@ Forty-seven original declarations move with their names and assertions unchanged
 Committed provider revision observation moves into the host, retaining snapshot invalidation, deduplication, reconnect/backoff and Remote/GUI fan-out. Seven original real-stream/RPC cases move and pass locally. GUI explicitly installs the task runtime after acquiring its instance lock and before shared services; the original initialization wiring case passes.
 
 Running the retained Provider GUI entry case independently exposed an old fixture dependency on earlier tests installing the channel runtime. Alone, it reported `Entry must configure the Agent channel runtime`. The Desktop test entry now installs its driver explicitly. Production shared services retain no fallback and original RPC assertions remain. The GUI case passes independently with default and native CI test debug profile 1, and becomes the ninth native script suite; complete new-gate execution still needs CI. Selecting this GUI-only case under no-GUI features initially matched zero tests, which was not accepted as a pass. Host/GUI/CLI and original headless Clippy `--all-targets` plus formatting pass; see [verification](../testing/headless-host-config-observer-2026-10-20.json). This batch postdates candidate `8bc9e614`; Windows native success for that previous source does not validate this batch.
+
+### 2026-10-20 Complete Agent bridge and Store coordination
+
+The remaining prompt/session, collector/stream/replica, observers/discovery/event sync, import, approval, compaction/abort and run recovery move as one dependency-connected group into Host. Store/Agent cleanup coordination joins the same library. State, cursors, leases and request ownership remain single implementations. Desktop keeps entry runtimes, Tauri settings emission and synchronous GUI terminal cleanup; terminal closure still precedes observer removal and conversation deletion, with no presentation action in a headless entry.
+
+This batch moves 311 original declarations, including the nine real database/RPC coordination cases previously waiting for the bridge, bringing the moved total to 931. Standalone Host core execution passes 933 tests, zero failed or ignored (78.94 seconds), including the two existing added outlet cases. Five GUI IPC/presentation cases remain in Desktop and pass locally (3.09 seconds). Both real legacy headless entry and Remote process targets pass 13 tests each. Original assertions remain; core tests need no Desktop, Tauri mock or npm. Entry fixtures explicitly install their runtimes; Host production code constructs none. See [bridge evidence](../testing/headless-host-bridge-2026-10-20.json).
+
+Host/GUI/CLI and original headless Clippy `--all-targets`, fmt, strict docs and actual combined-GUI dependency checks pass. These are local macOS results; native Windows stays with subsequent CI. CI candidate `8bc9e614` still outputs NATS reconnects in its running Linux headless group and is not accepted as passed. Remote, scheduling/maintenance, complete stop coordination, the new CLI entry, distribution and manual acceptance remain open.
+
+The complete nine-suite native script also passes locally on macOS: 20 connection, 15 service, 15 CLI tools, 22 shared Agent host, one each GUI state/Provider/Ready/Exit, and 13 actual headless entry cases. The zero-match guard remains; actual debug profile 1, commands, durations and log digests are recorded in the same evidence.

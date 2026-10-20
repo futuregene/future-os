@@ -216,7 +216,7 @@ pub(super) async fn reconcile_run_gone(
         let error = terminal.get("error").and_then(|value| value.as_str());
         settle_from_agent_terminal(local_run_id, agent_state, error)
             .map_err(|error| format!("reconcile terminal status: {error}"))?;
-        crate::desktop_shutdown::release_run(session_id, canonical_run_id);
+        crate::request_scope::release_run(session_id, canonical_run_id);
         return Ok(());
     }
 
@@ -232,7 +232,7 @@ pub(super) async fn reconcile_run_gone(
             error_type: Some("interrupted".to_string()),
         })
         .map_err(|error| format!("reconcile interrupted status: {error}"))?;
-        crate::desktop_shutdown::release_run(session_id, canonical_run_id);
+        crate::request_scope::release_run(session_id, canonical_run_id);
         return Ok(());
     }
 
@@ -257,7 +257,7 @@ pub(super) fn settle_from_agent_terminal(
     local_run_id: &str,
     agent_state: &str,
     error: Option<&str>,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     let (status, error_type, default_message) = match agent_state {
         "completed" => ("completed", None, None),
         "cancelled" => ("cancelled", Some("cancelled"), Some("Run was cancelled.")),
@@ -582,7 +582,7 @@ pub fn spawn_active_run_watchdog() {
 /// the pending approvals. Extracted from the spawn loop so tests can drive it
 /// with a synthetic clock (run rows cannot be backdated through the store API).
 pub(super) async fn active_run_watchdog_pass(now_ms: i64, settled_verified: &mut HashSet<String>) {
-    crate::desktop_shutdown::reconcile_owned_runs().await;
+    crate::request_scope::reconcile_owned_runs().await;
     let Ok(active_runs) = crate::store::list_active_runs() else {
         return;
     };

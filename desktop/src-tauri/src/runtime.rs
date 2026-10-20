@@ -13,14 +13,8 @@ where
 {
     #[cfg(feature = "gui")]
     set(tauri::async_runtime::handle().inner().clone());
-    #[cfg(all(test, not(feature = "gui")))]
-    {
-        static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> =
-            std::sync::LazyLock::new(|| {
-                tokio::runtime::Runtime::new().expect("test entry runtime")
-            });
-        set(RUNTIME.handle().clone());
-    }
+    #[cfg(test)]
+    install_test_runtime();
     future_host::runtime::spawn(future)
 }
 
@@ -28,4 +22,19 @@ where
 pub(crate) fn cancel_test_tasks() {
     future_host::runtime::cancel_test_tasks();
     crate::desktop_shutdown::reset_for_test();
+}
+
+/// Retained entry fixtures install their own ambient runtime before Host calls.
+#[cfg(test)]
+pub(crate) fn install_test_runtime() {
+    #[cfg(feature = "gui")]
+    set(tauri::async_runtime::handle().inner().clone());
+    #[cfg(not(feature = "gui"))]
+    {
+        static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> =
+            std::sync::LazyLock::new(|| {
+                tokio::runtime::Runtime::new().expect("test entry runtime")
+            });
+        set(RUNTIME.handle().clone());
+    }
 }

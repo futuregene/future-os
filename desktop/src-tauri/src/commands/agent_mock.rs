@@ -100,8 +100,8 @@ mod tests {
     use tonic::Code;
 
     /// Bare command with just a type — all the mock reads.
-    fn typed_command(r#type: &str) -> crate::agent_proto::RpcCommand {
-        crate::agent_proto::RpcCommand {
+    fn typed_command(r#type: &str) -> future_rpc::proto::RpcCommand {
+        future_rpc::proto::RpcCommand {
             r#type: r#type.to_string(),
             ..Default::default()
         }

@@ -12,7 +12,7 @@ use crate::store;
 /// A missing session is already stopped; an accepted abort still needs idle
 /// confirmation before a conversation can be deleted.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum AbortSessionOutcome {
+pub enum AbortSessionOutcome {
     SessionMissing,
     AbortRequested,
 }
@@ -33,7 +33,7 @@ enum SessionProbe {
 async fn probe_session(
     client: &mut super::client::AgentClient,
     session_id: &str,
-) -> Result<SessionProbe, crate::AppError> {
+) -> Result<SessionProbe, crate::Error> {
     let response = client
         .execute_command(get_state_command(session_id.to_string()))
         .await
@@ -74,7 +74,7 @@ async fn abort_run_on_agent(
     context: &str,
     session_id: &str,
     canonical_run_id: Option<String>,
-) -> Result<AbortSessionOutcome, crate::AppError> {
+) -> Result<AbortSessionOutcome, crate::Error> {
     let response = client
         .execute_command(run_control_command(
             "abort",
@@ -152,7 +152,7 @@ async fn abort_run_on_agent(
 pub(super) async fn abort_agent_thread(
     thread_id: &str,
     local_run_id: Option<&str>,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     let thread =
         store::get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
     let session_id = thread.agent_session_id.unwrap_or(thread.id);
@@ -195,9 +195,7 @@ pub(super) async fn abort_agent_thread(
 /// session it names (a prompt that never reached the Agent, or an agent-side
 /// delete). Reporting "nothing to abort" for it lets the caller that only wants
 /// the session stopped — deleting the conversation — go on with its work.
-pub(crate) async fn abort_session(
-    session_id: &str,
-) -> Result<AbortSessionOutcome, crate::AppError> {
+pub async fn abort_session(session_id: &str) -> Result<AbortSessionOutcome, crate::Error> {
     let mut client = connect_agent().await?;
     super::verify_session_database(&mut client, session_id).await?;
     let canonical_run_id = match probe_session(&mut client, session_id).await? {
@@ -219,7 +217,7 @@ pub(crate) async fn abort_session(
 pub async fn abort_run(
     thread_id: String,
     run_id: String,
-) -> Result<store::RunRecord, crate::AppError> {
+) -> Result<store::RunRecord, crate::Error> {
     let run = store::get_run(&run_id)?.ok_or_else(|| "Run could not be loaded.".to_string())?;
     if run.thread_id != thread_id {
         return Err("Run does not belong to this thread.".into());
@@ -318,7 +316,7 @@ pub(super) fn mark_run_completed_if_active(
 /// The gate therefore fires on the completion *after* the last queued turn, and
 /// the title it saves changes the thread's title away from its seed, so it can
 /// never fire twice for a conversation or overwrite a name someone chose.
-async fn title_settled_thread_if_enabled(run_id: &str) -> Result<(), crate::AppError> {
+async fn title_settled_thread_if_enabled(run_id: &str) -> Result<(), crate::Error> {
     if !store::get_app_settings()?.auto_title_first_turn {
         return Ok(());
     }
@@ -384,9 +382,7 @@ async fn title_settled_thread_if_enabled(run_id: &str) -> Result<(), crate::AppE
 }
 
 /// Compact a thread's Agent context only on an explicit manual request.
-pub async fn compact_thread_context(
-    thread_id: String,
-) -> Result<serde_json::Value, crate::AppError> {
+pub async fn compact_thread_context(thread_id: String) -> Result<serde_json::Value, crate::Error> {
     let thread = store::get_thread(&thread_id)?.ok_or_else(|| "Thread not found.".to_string())?;
     let session_id = thread
         .agent_session_id
@@ -402,9 +398,7 @@ pub async fn compact_thread_context(
 /// same operation and validate the same acknowledgement. The Agent answers an
 /// acceptance carrying the operation id; the checkpoint itself is reported
 /// later on the compacting session's event stream.
-pub async fn compact_agent_session(
-    session_id: String,
-) -> Result<serde_json::Value, crate::AppError> {
+pub async fn compact_agent_session(session_id: String) -> Result<serde_json::Value, crate::Error> {
     let mut client = connect_agent()
         .await
         .map_err(|error| format!("Future Agent unreachable: {error}"))?;
@@ -434,7 +428,7 @@ pub async fn compact_agent_session(
 /// A session the Agent has no record of *is* idle — nothing can be streaming for
 /// it, and no later poll would answer differently — so that definitive answer
 /// counts as confirmation rather than a timeout.
-pub(crate) async fn wait_for_agent_idle(session_id: &str) -> bool {
+pub async fn wait_for_agent_idle(session_id: &str) -> bool {
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         let Ok(mut client) = connect_agent().await else {
             return false;
@@ -474,8 +468,8 @@ pub(crate) async fn wait_for_agent_idle(session_id: &str) -> bool {
     .unwrap_or(false)
 }
 
-fn is_agent_unavailable_error(error: &crate::AppError) -> bool {
-    matches!(error, crate::AppError::AgentUnavailable(_))
+fn is_agent_unavailable_error(error: &crate::Error) -> bool {
+    matches!(error, crate::Error::AgentUnavailable(_))
 }
 
 #[cfg(test)]

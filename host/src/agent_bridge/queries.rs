@@ -38,7 +38,7 @@ pub async fn get_events_since_payload(
     session_id: String,
     run_id: String,
     since_idx: i64,
-) -> Result<future_rpc::payloads::EventsSincePayload, crate::AppError> {
+) -> Result<future_rpc::payloads::EventsSincePayload, crate::Error> {
     read_events_since(session_id, run_id, since_idx, None).await
 }
 
@@ -47,12 +47,12 @@ pub(super) async fn read_events_since(
     run_id: String,
     since_idx: i64,
     page_limit: Option<i64>,
-) -> Result<future_rpc::payloads::EventsSincePayload, crate::AppError> {
+) -> Result<future_rpc::payloads::EventsSincePayload, crate::Error> {
     let mut client = connect_agent().await?;
     let mut cursor = since_idx;
     let mut merged: Option<future_rpc::payloads::EventsSincePayload> = None;
     loop {
-        let command = crate::agent_proto::RpcCommand {
+        let command = future_rpc::proto::RpcCommand {
             run_id: run_id.clone(),
             since_idx: cursor,
             max_events: page_limit
@@ -143,20 +143,20 @@ pub async fn get_events_since(
     session_id: String,
     run_id: String,
     since_idx: i64,
-) -> Result<serde_json::Value, crate::AppError> {
+) -> Result<serde_json::Value, crate::Error> {
     serde_json::to_value(get_events_since_payload(session_id, run_id, since_idx).await?)
         .map_err(|error| format!("Could not serialize get_events_since response: {error}").into())
 }
 
 /// Optional semantic bootstrap. Only explicit legacy/size responses fall back
 /// to raw replay; transport errors and corrupt snapshots must remain failures.
-pub(crate) async fn get_run_snapshot(
+pub async fn get_run_snapshot(
     session_id: String,
     run_id: String,
-) -> Result<Option<serde_json::Value>, crate::AppError> {
+) -> Result<Option<serde_json::Value>, crate::Error> {
     let mut client = connect_agent().await?;
     let response = client
-        .execute_command(crate::agent_proto::RpcCommand {
+        .execute_command(future_rpc::proto::RpcCommand {
             run_id: run_id.clone(),
             ..base_command("get_run_snapshot", session_id)
         })
@@ -191,12 +191,12 @@ pub(crate) async fn get_run_snapshot(
 
 /// One bounded Agent page for a remote continuation with a pinned watermark.
 /// Unlike the native full-tail API, this must not drain subsequent pages.
-pub(crate) async fn get_events_since_page(
+pub async fn get_events_since_page(
     session_id: String,
     run_id: String,
     since_idx: i64,
     limit: usize,
-) -> Result<serde_json::Value, crate::AppError> {
+) -> Result<serde_json::Value, crate::Error> {
     let limit = limit.min(EVENTS_PAGE_SIZE as usize) as i64;
     serde_json::to_value(read_events_since(session_id, run_id, since_idx, Some(limit)).await?)
         .map_err(|error| format!("Could not serialize get_events_since response: {error}").into())
@@ -208,9 +208,7 @@ pub(crate) async fn get_events_since_page(
 /// including TUI/CLI sessions the GUI store only holds as imported thread stubs
 /// with no message rows — so the remote bridge serves history from here rather
 /// than from the store.
-pub async fn get_session_messages(
-    session_id: String,
-) -> Result<serde_json::Value, crate::AppError> {
+pub async fn get_session_messages(session_id: String) -> Result<serde_json::Value, crate::Error> {
     let mut client = connect_agent().await?;
     super::verify_session_database(&mut client, &session_id).await?;
     let response = client
@@ -230,26 +228,26 @@ pub async fn get_session_messages(
 /// the agent. Unlike `get_session_messages` (LLM wire shape), entries are
 /// display-shaped — plain-text content plus per-entry `meta` (user attachments
 /// with cached thumbnails), which is how the GUI rebuilds attachment chips.
-pub async fn get_session_entries(session_id: String) -> Result<serde_json::Value, crate::AppError> {
+pub async fn get_session_entries(session_id: String) -> Result<serde_json::Value, crate::Error> {
     let mut client = connect_agent().await?;
     super::verify_session_database(&mut client, &session_id).await?;
     get_session_entries_with_client(&mut client, session_id).await
 }
 
-pub(crate) async fn get_session_entries_with_client(
+pub async fn get_session_entries_with_client(
     client: &mut super::client::AgentClient,
     session_id: String,
-) -> Result<serde_json::Value, crate::AppError> {
+) -> Result<serde_json::Value, crate::Error> {
     let entries = fetch_all_session_entries_with_client(client, &session_id).await?;
     Ok(serde_json::json!({ "entries": entries }))
 }
 
-pub(crate) async fn query_tools(
+pub async fn query_tools(
     session_id: String,
     run_id: String,
     tool_call_id: Option<String>,
     offset: i64,
-) -> Result<serde_json::Value, crate::AppError> {
+) -> Result<serde_json::Value, crate::Error> {
     let mut client = connect_agent().await?;
     let command = if tool_call_id.is_some() {
         "get_tool_output"
@@ -281,7 +279,7 @@ pub async fn get_tool_call_args(
     session_id: String,
     run_id: String,
     tool_call_id: String,
-) -> Result<serde_json::Value, crate::AppError> {
+) -> Result<serde_json::Value, crate::Error> {
     let mut client = connect_agent().await?;
     let response = client
         .execute_command(future_rpc::proto::RpcCommand {
@@ -303,18 +301,18 @@ pub async fn get_session_entries_before(
     session_id: String,
     before: i64,
     user_exchange_limit: i64,
-) -> Result<serde_json::Value, crate::AppError> {
+) -> Result<serde_json::Value, crate::Error> {
     let mut client = connect_agent().await?;
     super::verify_session_database(&mut client, &session_id).await?;
     get_session_entries_before_with_client(&client, session_id, before, user_exchange_limit).await
 }
 
-pub(crate) async fn get_session_entries_before_with_client(
+pub async fn get_session_entries_before_with_client(
     client: &super::client::AgentClient,
     session_id: String,
     before: i64,
     user_exchange_limit: i64,
-) -> Result<serde_json::Value, crate::AppError> {
+) -> Result<serde_json::Value, crate::Error> {
     let page = read_history_page_with_client(
         client,
         get_session_entries_before_command(session_id, before, user_exchange_limit),
@@ -330,7 +328,7 @@ pub(crate) async fn get_session_entries_before_with_client(
 pub(super) async fn fetch_all_session_entries_with_client(
     client: &mut super::client::AgentClient,
     session_id: &str,
-) -> Result<Vec<future_rpc::payloads::SessionEntryPayload>, crate::AppError> {
+) -> Result<Vec<future_rpc::payloads::SessionEntryPayload>, crate::Error> {
     const PAGE_SIZE: i64 = 250;
     let mut offset = 0_i64;
     let mut entries = Vec::new();
@@ -358,7 +356,7 @@ pub(super) async fn fetch_all_session_entries_with_client(
 async fn read_history_page_with_client(
     client: &super::client::AgentClient,
     command: future_rpc::proto::RpcCommand,
-) -> Result<future_rpc::payloads::SessionEntriesPage, crate::AppError> {
+) -> Result<future_rpc::payloads::SessionEntriesPage, crate::Error> {
     future_rpc::history::read_page(command, |command| {
         // Cloning a tonic client shares the existing channel/connection.
         let mut client = client.clone();
@@ -385,7 +383,7 @@ async fn read_history_page_with_client(
 /// Fetch the session's current state (model, thinkingLevel, isStreaming, etc.)
 /// from the agent. Used by the remote bridge to populate the web client's
 /// model/thinking selectors.
-pub async fn get_session_state(session_id: String) -> Result<serde_json::Value, crate::AppError> {
+pub async fn get_session_state(session_id: String) -> Result<serde_json::Value, crate::Error> {
     let mut client = connect_agent().await?;
     super::verify_session_database(&mut client, &session_id).await?;
     let response = client
@@ -403,7 +401,7 @@ pub async fn get_session_state(session_id: String) -> Result<serde_json::Value, 
 }
 
 /// Fetch the available model list from the agent (for the web client's model selector).
-pub async fn get_available_models() -> Result<serde_json::Value, crate::AppError> {
+pub async fn get_available_models() -> Result<serde_json::Value, crate::Error> {
     let mut client = connect_agent().await?;
     let response = client
         .execute_command(get_available_models_command())
@@ -430,7 +428,7 @@ pub struct SandboxProbeResult {
     pub capabilities: Option<serde_json::Value>,
 }
 
-pub async fn probe_sandbox() -> Result<SandboxProbeResult, crate::AppError> {
+pub async fn probe_sandbox() -> Result<SandboxProbeResult, crate::Error> {
     let mut client = connect_agent().await?;
     let response = client
         .execute_command(base_command("probe_sandbox", String::new()))
@@ -449,7 +447,7 @@ pub struct WindowsSandboxProbeResult {
     pub code: String,
 }
 
-pub async fn probe_windows_sandbox() -> Result<WindowsSandboxProbeResult, crate::AppError> {
+pub async fn probe_windows_sandbox() -> Result<WindowsSandboxProbeResult, crate::Error> {
     let mut client = connect_agent().await?;
     let response = client
         .execute_command(base_command("probe_windows_sandbox", String::new()))
@@ -461,7 +459,7 @@ pub async fn probe_windows_sandbox() -> Result<WindowsSandboxProbeResult, crate:
         .map_err(|error| format!("Invalid Windows sandbox probe response: {error}").into())
 }
 
-pub async fn reset_windows_sandbox() -> Result<usize, crate::AppError> {
+pub async fn reset_windows_sandbox() -> Result<usize, crate::Error> {
     let mut client = connect_agent().await?;
     let response = client
         .execute_command(base_command("reset_windows_sandbox", String::new()))
@@ -477,10 +475,7 @@ pub async fn reset_windows_sandbox() -> Result<usize, crate::AppError> {
 }
 
 /// Set the model on a live agent session (remote bridge).
-pub async fn set_session_model(
-    session_id: String,
-    model_id: String,
-) -> Result<(), crate::AppError> {
+pub async fn set_session_model(session_id: String, model_id: String) -> Result<(), crate::Error> {
     let mut client = connect_agent().await?;
     super::verify_session_database(&mut client, &session_id).await?;
     client
@@ -494,7 +489,7 @@ pub async fn set_session_model(
 
 /// Persist the onboarding model-picker's choice as the agent's global default
 /// model (sessionless `set_default_model` RPC → settings.json `defaultModel`).
-pub async fn set_default_model(model_id: String) -> Result<(), crate::AppError> {
+pub async fn set_default_model(model_id: String) -> Result<(), crate::Error> {
     let mut client = connect_agent().await?;
     client
         .execute_command(set_default_model_command(model_id))
@@ -509,7 +504,7 @@ pub async fn set_default_model(model_id: String) -> Result<(), crate::AppError> 
 pub async fn set_session_thinking_level(
     session_id: String,
     level: String,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     let mut client = connect_agent().await?;
     super::verify_session_database(&mut client, &session_id).await?;
     client
@@ -525,10 +520,10 @@ pub async fn set_session_thinking_level(
 pub async fn generate_session_title(
     session_id: String,
     language: String,
-) -> Result<serde_json::Value, crate::AppError> {
+) -> Result<serde_json::Value, crate::Error> {
     let mut client = connect_agent().await?;
     super::verify_session_database(&mut client, &session_id).await?;
-    let command = crate::agent_proto::RpcCommand {
+    let command = future_rpc::proto::RpcCommand {
         mode: language,
         ..base_command("generate_session_title", session_id)
     };
@@ -549,7 +544,7 @@ pub async fn generate_session_title(
 }
 
 /// Rename a session: update the agent's session name, then mirror to the GUI store.
-pub async fn rename_session(session_id: String, name: String) -> Result<(), crate::AppError> {
+pub async fn rename_session(session_id: String, name: String) -> Result<(), crate::Error> {
     let mut client = connect_agent().await?;
     super::verify_session_database(&mut client, &session_id).await?;
     client
@@ -575,11 +570,11 @@ pub async fn rename_session(session_id: String, name: String) -> Result<(), crat
 /// the subsequent prompt under a different (agent-generated) id and every
 /// event subject / history lookup on the client would mismatch — events get
 /// filtered out and `get_messages` finds nothing.
-pub(crate) async fn provision_agent_session(
+pub async fn provision_agent_session(
     thread_id: &str,
     model_id: Option<String>,
     thinking_level: Option<String>,
-) -> Result<String, crate::AppError> {
+) -> Result<String, crate::Error> {
     provision_agent_session_with_policy(thread_id, model_id, thinking_level, "workspace", None)
         .await
 }
@@ -593,7 +588,7 @@ pub async fn provision_agent_session_with_policy(
     thinking_level: Option<String>,
     permission_level: &str,
     sandbox_tier: Option<&str>,
-) -> Result<String, crate::AppError> {
+) -> Result<String, crate::Error> {
     let cwd = workspace_path_for_thread(thread_id)?;
     let mut client = connect_agent().await?;
     let ensured = ensure_agent_session(
@@ -630,7 +625,7 @@ pub async fn provision_agent_session_with_policy(
 /// Best-effort: if the agent isn't running there's no in-memory state to
 /// refresh, so an unavailable agent is treated as success.
 #[cfg(test)]
-pub async fn reload_agent_credentials() -> Result<(), crate::AppError> {
+pub async fn reload_agent_credentials() -> Result<(), crate::Error> {
     let mut client = match connect_agent().await {
         Ok(client) => client,
         // connect_agent's only error kind is AgentUnavailable (every failure
@@ -668,7 +663,7 @@ pub struct SyncFutureModelsResult {
 /// desktop's low-frequency maintenance schedule.
 /// Best-effort like [`reload_agent_credentials`]: an unavailable agent yields a
 /// zeroed result rather than an error.
-pub async fn sync_future_models() -> Result<SyncFutureModelsResult, crate::AppError> {
+pub async fn sync_future_models() -> Result<SyncFutureModelsResult, crate::Error> {
     let mut client = match connect_agent().await {
         Ok(client) => client,
         // connect_agent's only error kind is AgentUnavailable: an unavailable

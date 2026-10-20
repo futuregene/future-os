@@ -85,7 +85,7 @@ pub struct AgentPromptRequest {
     pub model_id: Option<String>,
     pub thinking_level: Option<String>,
 }
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub async fn agent_prompt(
     message: String,
     attachments: Option<Vec<AttachmentInput>>,
@@ -94,7 +94,7 @@ pub async fn agent_prompt(
     run_id: Option<String>,
     model_id: Option<String>,
     thinking_level: Option<String>,
-) -> Result<AgentPromptResponse, crate::AppError> {
+) -> Result<AgentPromptResponse, crate::Error> {
     agent_prompt_with_model_context(AgentPromptRequest {
         message,
         model_context: String::new(),
@@ -110,7 +110,7 @@ pub async fn agent_prompt(
 
 pub async fn agent_prompt_with_model_context(
     request: AgentPromptRequest,
-) -> Result<AgentPromptResponse, crate::AppError> {
+) -> Result<AgentPromptResponse, crate::Error> {
     agent_prompt_with_acceptance(request, None).await
 }
 
@@ -118,10 +118,10 @@ pub async fn agent_prompt_with_model_context(
 /// headless caller. The signal is sent only after the Agent's prompt command
 /// returns the requested canonical run id; the Agent persists the user entry
 /// before producing that acknowledgement.
-pub(crate) async fn agent_prompt_with_acceptance(
+pub async fn agent_prompt_with_acceptance(
     request: AgentPromptRequest,
     accepted: Option<tokio::sync::oneshot::Sender<()>>,
-) -> Result<AgentPromptResponse, crate::AppError> {
+) -> Result<AgentPromptResponse, crate::Error> {
     let result = agent_prompt_inner(request.clone(), accepted).await;
 
     // Settle the run row HERE, in the backend, not only in the frontend
@@ -199,7 +199,7 @@ pub(crate) async fn agent_prompt_with_acceptance(
 pub(super) async fn agent_prompt_inner(
     request: AgentPromptRequest,
     mut accepted: Option<tokio::sync::oneshot::Sender<()>>,
-) -> Result<AgentPromptResponse, crate::AppError> {
+) -> Result<AgentPromptResponse, crate::Error> {
     let AgentPromptRequest {
         message,
         model_context,
@@ -334,8 +334,8 @@ pub(super) async fn agent_prompt_inner(
     };
     let replica_lease = AGENT_REPLICAS
         .acquire(&run_id)
-        .map_err(crate::AppError::from)?;
-    observer::ensure_observer_for_thread(&session_id, &thread_id).map_err(crate::AppError::from)?;
+        .map_err(crate::Error::from)?;
+    observer::ensure_observer_for_thread(&session_id, &thread_id).map_err(crate::Error::from)?;
 
     let prompt_response = command_client
         .execute_command(prompt_command(

@@ -43,8 +43,6 @@ use std::{
     time::Duration,
 };
 
-#[cfg(feature = "gui")]
-use tauri::Emitter;
 use tokio::sync::oneshot;
 use tonic::Code;
 
@@ -54,7 +52,7 @@ use super::{
     run_control::{mark_run_completed_if_active, mark_run_failed_if_active},
     stream,
 };
-use crate::agent_proto::StreamRequest;
+use future_rpc::proto::StreamRequest;
 
 /// Process-wide cap on live observers (design default: 128).
 const OBSERVER_MAX: usize = 128;
@@ -177,23 +175,23 @@ impl ObserverShared {
 pub(super) static OBSERVERS: LazyLock<Mutex<HashMap<String, ObserverHandle>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-#[cfg(test)]
-pub(crate) fn has_observer(session_id: &str) -> bool {
+#[cfg(any(test, feature = "test-support"))]
+pub fn has_observer(session_id: &str) -> bool {
     OBSERVERS
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .contains_key(session_id)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 type TestObserverTask = (crate::runtime::TaskHandle, std::sync::mpsc::Receiver<()>);
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static TEST_OBSERVER_TASKS: LazyLock<Mutex<Vec<TestObserverTask>>> =
     LazyLock::new(|| Mutex::new(Vec::new()));
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 struct TestObserverCompletion(std::sync::mpsc::Sender<()>);
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for TestObserverCompletion {
     fn drop(&mut self) {
         let _ = self.0.send(());
@@ -277,7 +275,7 @@ pub fn ensure_observer_for_session(session_id: &str) -> Result<bool, String> {
 /// process-level compatibility backstop for runs started by another client.
 ///
 /// Returns the corresponding Desktop thread ids for the sidebar status view.
-pub async fn reconcile_streaming_observers() -> Result<Vec<String>, crate::AppError> {
+pub async fn reconcile_streaming_observers() -> Result<Vec<String>, crate::Error> {
     let mut client = match connect_agent().await {
         Ok(client) => client,
         Err(_) => return Ok(Vec::new()),
@@ -303,7 +301,7 @@ pub async fn reconcile_streaming_observers() -> Result<Vec<String>, crate::AppEr
         let Some(thread) = crate::store::find_thread_by_agent_session(session_id)? else {
             continue;
         };
-        ensure_observer_for_thread(session_id, &thread.id).map_err(crate::AppError::from)?;
+        ensure_observer_for_thread(session_id, &thread.id).map_err(crate::Error::from)?;
         thread_ids.push(thread.id);
     }
     Ok(thread_ids)
@@ -399,11 +397,9 @@ fn discovery_interval() -> std::time::Duration {
 /// arm its observer immediately, and invalidate the sidebar when a row landed.
 /// Push notification handling uses this path; full reconciliation uses the
 /// same database get-or-create primitive through `import_missing_sessions`.
-pub(super) async fn reconcile_discovered_session(
-    session_id: &str,
-) -> Result<bool, crate::AppError> {
+pub(super) async fn reconcile_discovered_session(session_id: &str) -> Result<bool, crate::Error> {
     let created = super::import::import_discovered_session(session_id).await?;
-    ensure_discovered_session_observer(session_id).map_err(crate::AppError::Message)?;
+    ensure_discovered_session_observer(session_id).map_err(crate::Error::Message)?;
     if created {
         crate::emit_threads_updated();
     }
@@ -417,15 +413,14 @@ pub(super) async fn reconcile_discovered_session(
 /// session and keeps working; the sidebar re-roots it (see `buildThreadTree`).
 /// The deletion also tombstones the session, so a late `session_created`
 /// announcement or discovery pass can never resurrect it.
-pub(crate) fn reconcile_deleted_session(session_id: &str) -> Result<bool, crate::AppError> {
+pub(crate) fn reconcile_deleted_session(session_id: &str) -> Result<bool, crate::Error> {
     let Some(thread) = crate::store::find_thread_by_agent_session(session_id)? else {
         return Ok(false);
     };
     // Bound terminal lifetime by conversation lifetime, exactly like the GUI's
     // own delete path. The embedded terminal panel is GUI-only (the server
     // build has no shells to close).
-    #[cfg(feature = "gui")]
-    crate::commands::close_thread_terminals(&thread.id);
+    crate::events::publish(crate::events::Event::CloseThreadTerminals(&thread.id));
     drop_observer(session_id);
     crate::store::delete_thread(&thread.id)?;
     Ok(true)
@@ -458,8 +453,8 @@ pub fn drop_observer(session_id: &str) {
 /// runtime) and keep re-attaching — their `get_state`/`stream_events` calls
 /// would otherwise consume the next test's scripted replies. The mock guard
 /// calls this on acquisition so each test starts from a clean observer slate.
-#[cfg(test)]
-pub(crate) fn cancel_all_observers() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn cancel_all_observers() {
     let handles: Vec<ObserverHandle> = OBSERVERS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -626,7 +621,7 @@ impl ObserverState {
 // Only message content/lifecycle affects recency, never settings or heartbeats.
 // A projection has no per-event timestamps, but a settled run carries an
 // authoritative start + duration. Do not substitute reconnect/receipt time.
-fn message_activity_timestamp(event: &crate::agent_proto::StreamEvent) -> Option<i64> {
+fn message_activity_timestamp(event: &future_rpc::proto::StreamEvent) -> Option<i64> {
     if event.projection_snapshot {
         let start = event
             .snapshot_events
@@ -666,7 +661,7 @@ fn message_activity_timestamp(event: &crate::agent_proto::StreamEvent) -> Option
 async fn record_message_activity(
     shared: &ObserverShared,
     state: &mut ObserverState,
-    event: &crate::agent_proto::StreamEvent,
+    event: &future_rpc::proto::StreamEvent,
 ) {
     let Some(timestamp) = message_activity_timestamp(event) else {
         return;
@@ -697,24 +692,24 @@ async fn record_message_activity(
 }
 
 fn spawn_observer(session_id: String, shared: Arc<ObserverShared>, cancel: oneshot::Receiver<()>) {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     let (done, completed) = std::sync::mpsc::channel();
     // Capture the guard before spawning so cancellation before the first poll
     // still acknowledges that the future (and its database work) is gone.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     let completion = TestObserverCompletion(done);
     let task = crate::runtime::spawn(async move {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let _completion = completion;
         run_observer(&session_id, &shared, cancel).await;
         unregister(&session_id, &shared);
     });
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     TEST_OBSERVER_TASKS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .push((task, completed));
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     drop(task);
 }
 
@@ -883,7 +878,7 @@ async fn run_observer(
 async fn plain_subscribe(
     client: &mut super::client::AgentClient,
     session_id: &str,
-) -> Option<tonic::Streaming<crate::agent_proto::StreamEvent>> {
+) -> Option<tonic::Streaming<future_rpc::proto::StreamEvent>> {
     client
         .stream_events(StreamRequest {
             event_types: vec![],
@@ -936,7 +931,7 @@ async fn handle_event(
     session_id: &str,
     shared: &Arc<ObserverShared>,
     state: &mut ObserverState,
-    event: crate::agent_proto::StreamEvent,
+    event: future_rpc::proto::StreamEvent,
 ) -> bool {
     let event_type = event.r#type.as_str();
     let run_id = event.run_id.as_str();
@@ -968,15 +963,8 @@ async fn handle_event(
             }
         }
         let event_data = future_rpc::decode::event_data_json(&event);
-        #[cfg(feature = "gui")]
         if FORWARDED_EVENTS.contains(&event_type) {
-            forward_settings_event(
-                crate::APP_HANDLE.get(),
-                session_id,
-                &shared.thread_id,
-                event_type,
-                &event_data,
-            );
+            forward_settings_event(session_id, &shared.thread_id, event_type, &event_data);
         }
         crate::agent_events::publish_event(
             session_id,
@@ -1020,7 +1008,7 @@ async fn handle_event(
                 .collect();
             stream::replace_projection_off_thread(&thread_id, Some(&local_run_id), events).await;
             if let Some(agent_end_data) = terminal_agent_end {
-                crate::desktop_shutdown::release_run(session_id, run_id);
+                crate::request_scope::release_run(session_id, run_id);
                 if stream::agent_end_incomplete(&agent_end_data) {
                     mark_run_failed_if_active(
                         Some(&local_run_id),
@@ -1075,10 +1063,8 @@ async fn handle_event(
                     // drop a manual compaction's only terminal event outright
                     // whenever this observer never witnessed that run.
                     let event_data = future_rpc::decode::event_data_json(&event);
-                    #[cfg(feature = "gui")]
                     if FORWARDED_EVENTS.contains(&event_type) {
                         forward_settings_event(
-                            crate::APP_HANDLE.get(),
                             session_id,
                             &shared.thread_id,
                             event_type,
@@ -1115,7 +1101,7 @@ async fn handle_event(
     // pipeline-owned run's end would wedge has_active_run forever.
     let is_terminal = matches!(event_type, "agent_end" | "error");
     if is_terminal {
-        crate::desktop_shutdown::release_run(session_id, run_id);
+        crate::request_scope::release_run(session_id, run_id);
     }
 
     // Pipeline-owned runs are persisted by their collector; the observer only
@@ -1155,15 +1141,8 @@ async fn handle_event(
     }
 
     record_message_activity(shared, state, &event).await;
-    #[cfg(feature = "gui")]
     if FORWARDED_EVENTS.contains(&event_type) {
-        forward_settings_event(
-            crate::APP_HANDLE.get(),
-            session_id,
-            &shared.thread_id,
-            event_type,
-            &event_data,
-        );
+        forward_settings_event(session_id, &shared.thread_id, event_type, &event_data);
     }
     crate::agent_events::publish_event(
         session_id,
@@ -1186,7 +1165,7 @@ async fn replay_session_events(
     shared: &Arc<ObserverShared>,
     state: &mut ObserverState,
 ) -> bool {
-    let command = crate::agent_proto::RpcCommand {
+    let command = future_rpc::proto::RpcCommand {
         since_idx: state.session_cursor,
         ..base_command("get_session_events_since", session_id.to_string())
     };
@@ -1214,7 +1193,7 @@ async fn replay_session_events(
             .to_string();
         // Reconstructed events carry the typed payload like live ones.
         let payload = future_rpc::encode::event_payload(&event_type, &event_data);
-        let event = crate::agent_proto::StreamEvent {
+        let event = future_rpc::proto::StreamEvent {
             r#type: event_type,
             data: event_data,
             session_id: session_id.to_string(),
@@ -1279,42 +1258,10 @@ async fn observer_run(
     Some((thread_id, local_run_id))
 }
 
-/// Forward a whitelisted event to the webview as `agent-event`. Both owner
-/// identities are injected so the frontend can reject stale listeners during
-/// a thread switch instead of trusting session identity alone.
-#[cfg(feature = "gui")]
-fn forward_settings_event<R: tauri::Runtime>(
-    app_handle: Option<&tauri::AppHandle<R>>,
-    session_id: &str,
-    thread_id: &str,
-    event_type: &str,
-    data: &str,
-) {
-    if let Some(app_handle) = app_handle {
-        emit_settings_event(app_handle, session_id, thread_id, event_type, data);
-    }
-}
-
-/// Emit the enriched payload via an injectable `Emitter`. Generic over
-/// `Runtime` so unit tests can drive the emit body with a mock app handle
-/// (the process-global `APP_HANDLE` is `None` outside a running Tauri app).
-#[cfg(feature = "gui")]
-fn emit_settings_event<R: tauri::Runtime>(
-    app_handle: &tauri::AppHandle<R>,
-    session_id: &str,
-    thread_id: &str,
-    event_type: &str,
-    data: &str,
-) {
-    if let Some(payload) = settings_event_payload(session_id, thread_id, event_type, data) {
-        let _ = app_handle.emit("agent-event", &payload);
-    }
-}
-
 /// Build the enriched webview payload for a forwarded settings event, or None
 /// when `data` is not a JSON object. Pure so it can be unit-tested without a
 /// live Tauri AppHandle.
-fn settings_event_payload(
+pub fn settings_event_payload(
     session_id: &str,
     thread_id: &str,
     event_type: &str,
@@ -1336,6 +1283,15 @@ fn settings_event_payload(
         );
     }
     Some(payload)
+}
+
+fn forward_settings_event(session_id: &str, thread_id: &str, event_type: &str, data: &str) {
+    crate::events::publish(crate::events::Event::AgentSettings {
+        session_id,
+        thread_id,
+        event_type,
+        data,
+    });
 }
 
 #[cfg(test)]
@@ -1461,8 +1417,8 @@ mod tests {
 
     // ── Ordering: validation before fan-out ─────────────────────────────
 
-    fn stream_event(event_type: &str, run_id: &str, idx: i64) -> crate::agent_proto::StreamEvent {
-        crate::agent_proto::StreamEvent {
+    fn stream_event(event_type: &str, run_id: &str, idx: i64) -> future_rpc::proto::StreamEvent {
+        future_rpc::proto::StreamEvent {
             r#type: event_type.to_string(),
             data: "{}".to_string(),
             run_id: run_id.to_string(),
@@ -1509,12 +1465,12 @@ mod tests {
         }
         event.projection_snapshot = true;
         event.snapshot_events = vec![
-            crate::agent_proto::ProjectedRunEvent {
+            future_rpc::proto::ProjectedRunEvent {
                 r#type: "agent_start".into(),
                 data: r#"{"started_at_ms":1000}"#.into(),
                 ..Default::default()
             },
-            crate::agent_proto::ProjectedRunEvent {
+            future_rpc::proto::ProjectedRunEvent {
                 r#type: "agent_end".into(),
                 data: r#"{"duration_ms":2500}"#.into(),
                 ..Default::default()
@@ -1529,7 +1485,7 @@ mod tests {
         );
     }
 
-    fn session_event(event_type: &str, session_idx: i64) -> crate::agent_proto::StreamEvent {
+    fn session_event(event_type: &str, session_idx: i64) -> future_rpc::proto::StreamEvent {
         let mut event = stream_event(event_type, "", -1);
         event.session_idx = session_idx;
         event.run_sequence = -1;
@@ -2229,32 +2185,6 @@ mod tests {
         assert!(!replay_session_events(&mut client, "sess-rp", &shared, &mut state).await);
     }
 
-    #[cfg(feature = "gui")]
-    #[test]
-    fn forward_settings_event_emits_or_skips_without_a_handle() {
-        // No handle → no emit (the `if let Some` body is skipped).
-        forward_settings_event(
-            None::<&tauri::AppHandle<tauri::test::MockRuntime>>,
-            "sess",
-            "thread",
-            "model_changed",
-            "{}",
-        );
-        // A mock handle → the emit body runs (valid + malformed payloads).
-        let app = tauri::test::mock_builder()
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("mock app");
-        let handle = app.handle();
-        forward_settings_event(
-            Some(handle),
-            "sess",
-            "thread",
-            "model_changed",
-            r#"{"model":"k3"}"#,
-        );
-        forward_settings_event(Some(handle), "sess", "thread", "model_changed", "not json");
-    }
-
     #[test]
     fn settings_event_payload_enriches_objects_and_rejects_malformed() {
         let payload =
@@ -2495,14 +2425,14 @@ mod tests {
         let shared = Arc::new(ObserverShared::new(thread.id.clone()));
         let mut state = ObserverState::default();
 
-        let snapshot = crate::agent_proto::StreamEvent {
+        let snapshot = future_rpc::proto::StreamEvent {
             r#type: "projection_snapshot".to_string(),
             data: "{}".to_string(),
             run_id: "run-snap".to_string(),
             idx: -1,
             projection_snapshot: true,
             snapshot_cursor: 5,
-            snapshot_events: vec![crate::agent_proto::ProjectedRunEvent {
+            snapshot_events: vec![future_rpc::proto::ProjectedRunEvent {
                 r#type: "text_chunk".to_string(),
                 data: "hello".to_string(),
                 idx: 0,
@@ -2530,14 +2460,14 @@ mod tests {
         let _lease = lease_run("run-snap-owned");
         let shared = Arc::new(ObserverShared::new("thread-order"));
         let mut state = ObserverState::default();
-        let snapshot = crate::agent_proto::StreamEvent {
+        let snapshot = future_rpc::proto::StreamEvent {
             r#type: "projection_snapshot".to_string(),
             data: "{}".to_string(),
             run_id: "run-snap-owned".to_string(),
             idx: -1,
             projection_snapshot: true,
             snapshot_cursor: 9,
-            snapshot_events: vec![crate::agent_proto::ProjectedRunEvent {
+            snapshot_events: vec![future_rpc::proto::ProjectedRunEvent {
                 r#type: "text_chunk".to_string(),
                 data: "hi".to_string(),
                 idx: 0,
@@ -2605,14 +2535,14 @@ mod tests {
         let shared = Arc::new(ObserverShared::new(thread.id.clone()));
         let mut state = ObserverState::default();
 
-        let incomplete = crate::agent_proto::StreamEvent {
+        let incomplete = future_rpc::proto::StreamEvent {
             r#type: "projection_snapshot".to_string(),
             data: "{}".to_string(),
             run_id: "run-snap-inc".to_string(),
             idx: -1,
             projection_snapshot: true,
             snapshot_cursor: 3,
-            snapshot_events: vec![crate::agent_proto::ProjectedRunEvent {
+            snapshot_events: vec![future_rpc::proto::ProjectedRunEvent {
                 r#type: "agent_end".to_string(),
                 data: r#"{"reason":"incomplete"}"#.to_string(),
                 idx: 3,
@@ -2635,14 +2565,14 @@ mod tests {
             "failed"
         );
 
-        let complete = crate::agent_proto::StreamEvent {
+        let complete = future_rpc::proto::StreamEvent {
             r#type: "projection_snapshot".to_string(),
             data: "{}".to_string(),
             run_id: "run-snap-ok".to_string(),
             idx: -1,
             projection_snapshot: true,
             snapshot_cursor: 4,
-            snapshot_events: vec![crate::agent_proto::ProjectedRunEvent {
+            snapshot_events: vec![future_rpc::proto::ProjectedRunEvent {
                 r#type: "agent_end".to_string(),
                 data: r#"{"reason":"complete"}"#.to_string(),
                 idx: 4,
@@ -2761,12 +2691,8 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::await_holding_lock)]
     async fn run_observer_retries_connect_failures() {
-        // Serialize with the remote mock family too: breaking
-        // `FUTURE_AGENT_GRPC_ADDR` must not race a bridge/commands test's
-        // `connect_agent`. Acquire MOCK_SER before MOCK_LOCK so the lock
-        // ordering stays acyclic (bridge: MOCK_SER→TEST_HOME_LOCK; TestHome
-        // observer: TEST_HOME_LOCK→MOCK_LOCK; here: MOCK_SER→MOCK_LOCK).
-        let _remote = crate::remote::test_support::mock_agent_lock();
+        // Host core has one canonical RPC mock family. Its guard serializes
+        // endpoint changes; no Desktop/Remote outer lock belongs in this binary.
         let _mock = mock_agent();
         std::env::set_var("FUTURE_TEST_OBSERVER_BACKOFF_MS", "40");
         let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
@@ -3125,23 +3051,5 @@ mod tests {
         cancel_tx.send(()).unwrap();
         handle.await.unwrap();
         std::env::remove_var("FUTURE_TEST_IDLE_CHECK_MS");
-    }
-
-    #[cfg(feature = "gui")]
-    #[test]
-    fn emit_settings_event_emits_through_a_mock_handle() {
-        let app = tauri::test::mock_builder()
-            .build(tauri::test::mock_context(tauri::test::noop_assets()))
-            .expect("mock app");
-        let handle = app.handle();
-        // Valid object payload → emits; malformed JSON → no emit.
-        emit_settings_event(
-            handle,
-            "sess",
-            "thread",
-            "model_changed",
-            r#"{"model":"k3"}"#,
-        );
-        emit_settings_event(handle, "sess", "thread", "model_changed", "not json");
     }
 }

@@ -3,6 +3,13 @@
 use std::sync::OnceLock;
 
 pub enum Event<'a> {
+    CloseThreadTerminals(&'a str),
+    AgentSettings {
+        session_id: &'a str,
+        thread_id: &'a str,
+        event_type: &'a str,
+        data: &'a str,
+    },
     ReviewUpdated(&'a str),
     RemoteActivity(&'a str),
     ThreadsUpdated,

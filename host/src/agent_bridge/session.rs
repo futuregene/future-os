@@ -30,7 +30,7 @@ pub(super) async fn ensure_agent_session(
     cwd: &str,
     model_id: Option<&str>,
     thinking_level: Option<&str>,
-) -> Result<EnsuredSession, crate::AppError> {
+) -> Result<EnsuredSession, crate::Error> {
     // If the thread already has a stored session id, check if it's still valid.
     if !session_id.is_empty() {
         let response = client
@@ -130,7 +130,7 @@ pub(super) async fn set_agent_permission_level(
     client: &mut super::client::AgentClient,
     session_id: &str,
     level: &str,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     client
         .execute_command(set_permission_level_command(
             level.to_string(),
@@ -152,7 +152,7 @@ pub(super) async fn set_agent_sandbox_policy(
     client: &mut super::client::AgentClient,
     session_id: &str,
     _thread_id: &str,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     let tier = match store::get_app_settings() {
         Ok(settings) => settings.approval_tier,
         Err(error) => {
@@ -173,10 +173,10 @@ pub async fn set_agent_sandbox_policy_tier(
     client: &mut super::client::AgentClient,
     session_id: &str,
     tier: &str,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     // Reconcile historical sessions even when no webview is active, or logout
     // happened after the frontend last checked the account.
-    let tier = if tier == "auto" && crate::future_login::future_api_key().is_err() {
+    let tier = if tier == "auto" && crate::future_platform::future_api_key().is_err() {
         store::update_app_settings(store::UpdateAppSettingsInput {
             approval_tier: Some("sandbox".to_string()),
             ..Default::default()
@@ -185,7 +185,7 @@ pub async fn set_agent_sandbox_policy_tier(
     } else {
         tier
     };
-    let policy = crate::agent_proto::SandboxPolicy {
+    let policy = future_rpc::proto::SandboxPolicy {
         tier: if tier == "auto" { "sandbox" } else { tier }.to_string(),
         reviewer: if tier == "auto" { "model" } else { "user" }.to_string(),
     };
@@ -213,7 +213,7 @@ pub async fn set_agent_sandbox_policy_tier(
             approval_tier: Some("manual".to_string()),
             ..Default::default()
         })?;
-        let manual = crate::agent_proto::SandboxPolicy {
+        let manual = future_rpc::proto::SandboxPolicy {
             tier: "manual".to_string(),
             reviewer: String::new(),
         };
@@ -227,7 +227,7 @@ pub async fn set_agent_sandbox_policy_tier(
     Ok(())
 }
 
-pub(crate) fn workspace_path_for_thread(thread_id: &str) -> Result<String, crate::AppError> {
+pub fn workspace_path_for_thread(thread_id: &str) -> Result<String, crate::Error> {
     let thread =
         store::get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
     let workspace = store::get_workspace(&thread.workspace_id)?
@@ -245,7 +245,7 @@ pub async fn fork_agent_session(
     thread_id: &str,
     source_entry_id: &str,
     request_id: &str,
-) -> Result<String, crate::AppError> {
+) -> Result<String, crate::Error> {
     let thread =
         store::get_thread(thread_id)?.ok_or_else(|| "Thread could not be loaded.".to_string())?;
     let session_id = thread

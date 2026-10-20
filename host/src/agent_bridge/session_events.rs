@@ -45,10 +45,10 @@ async fn run() {
     }
 }
 
-async fn observe_once(backoff: &mut Duration) -> Result<(), crate::AppError> {
+async fn observe_once(backoff: &mut Duration) -> Result<(), crate::Error> {
     let mut client = connect_agent().await?;
     let mut stream = client
-        .stream_events(crate::agent_proto::StreamRequest {
+        .stream_events(future_rpc::proto::StreamRequest {
             event_types: vec!["session_created".to_string(), "session_deleted".to_string()],
             global_events: true,
             ..Default::default()
@@ -77,7 +77,7 @@ async fn observe_once(backoff: &mut Duration) -> Result<(), crate::AppError> {
             _ => {}
         }
     }
-    Err(crate::AppError::Message(
+    Err(crate::Error::Message(
         "global session events stream ended".to_string(),
     ))
 }

@@ -276,9 +276,9 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 |---|---|
 | 0 | 已固定源码/依赖基线与按名清单，混合模块归属已逐项审查；同条件构建/运行测量未完成 |
 | 1 | 已建立无 GUI 普通库、任务注册、展示出口和消费者依赖；完整生命周期/配置边界未完成 |
-| 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端/托管与请求归属已迁入；完整业务桥、Remote、维护和停止协调未迁入 |
+| 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端/托管与请求归属已迁入；完整业务桥已迁入；Remote、维护和停止协调未迁入 |
 | 3 | 尚未实现；产品入口仍是 `futureos-headless` |
-| 4 | 已迁移 620 个原测试声明并在本地 macOS 执行通过；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
+| 4 | 已迁移 931 个原测试声明并在本地 macOS 执行通过；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
 | 5 | 已加宿主 CI 分组和 affected 传播；构建、发行物、签名/安装/升级/卸载未完成 |
 | 6 | 尚未开始；无最终冻结候选、同条件性能、产物验收或确认的人工结果 |
 
@@ -375,3 +375,13 @@ CI `39363398726` 在 Linux 原生脚本中拦住 `gui-host failed: exit=0, passe
 提交后配置 revision 的全局观察器迁入宿主，保留 snapshot invalidation、去重、重连/退避及 Remote/GUI 分发；7 个原真实流/RPC 用例迁入并本地通过。GUI 在取得实例锁后、启动共享服务前显式安装任务 runtime，初始化接线原用例通过。
 
 独立运行保留的 Provider GUI 入口测试时，发现旧夹具依赖更早测试安装通道 runtime；单独执行会报 `Entry must configure the Agent channel runtime`。现由 Desktop 测试入口显式安装通道驱动，生产共享服务仍无回退，原 RPC 断言未变。该 GUI 用例在普通及原生 CI debug profile 1 下均独立通过，并加入原生脚本作为第 9 组；完整新门禁仍待后续 CI。首次 no-GUI 筛选该 GUI-only 用例得到零项，没有记为通过。宿主/GUI/CLI 及旧 headless Clippy `--all-targets`、fmt 通过，详见[验证记录](../testing/headless-host-config-observer-2026-10-20.json)。本批晚于候选 `8bc9e614`，不会使用上一候选的 Windows 原生成功替代本批验收。
+
+### 2026-10-20 完整 Agent 业务桥与 Store 协调
+
+其余 prompt/session、collector/stream/replica、观察器/发现/事件同步、导入、审批、压缩/停止及运行恢复作为相互依赖的一组迁入 Host；Store 与 Agent 的清理协调也移入同一库。状态、游标、租约和请求归属保留单份实现，未复制业务、协议或状态机。Desktop 保留入口 runtime、Tauri 设置事件发送和同步关闭 GUI 终端的适配。关闭终端仍先于撤销观察器和删除会话；无展示入口继续不执行 GUI 清理。
+
+本批迁入 311 个原声明，包括 9 个先前等待业务桥的真实数据库/RPC 协调用例；总计 931 个原声明已迁入。Host 全量核心本地执行 933 项通过、0 失败、0 忽略（78.94 秒），包含 2 个已有新增通知用例。5 个 GUI IPC/事件用例留在 Desktop 并本地通过（3.09 秒）；真实旧 headless 入口及 Remote 进程用例分别 13 项通过。保留原断言，核心测试无需 Desktop、Tauri mock 或 npm；测试夹具显式安装入口 runtime，Host 生产代码不构造 runtime。见[业务桥证据](../testing/headless-host-bridge-2026-10-20.json)。
+
+Host/GUI/CLI 及旧 headless Clippy `--all-targets`、fmt、严格文档检查、GUI 联合 feature 实际依赖图通过。这是本地 macOS 结果，Windows 原生仍由后续 CI 执行；`8bc9e614` 的 CI 尚在 Linux headless 分组输出 NATS 重连，不能记为通过。Remote 宿主、调度/维护、完整退出协调、新 CLI 入口、发行和人工验收仍未完成。
+
+完整九组原生脚本也在本地 macOS 通过：connection 20、service 15、CLI tools 15、共享 Agent host 22、GUI state/Provider/Ready/Exit 各 1、实际 headless 入口 13。保留零项拒绝检查；记录实际 debug profile 1、命令、时间和日志摘要于同一证据。

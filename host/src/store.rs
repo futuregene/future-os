@@ -327,3 +327,6 @@ mod tests {
         assert_eq!(count, 0);
     }
 }
+
+mod reconcile;
+pub use reconcile::{reconcile_empty_conversations, reconcile_orphan_sessions};

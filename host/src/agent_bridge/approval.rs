@@ -16,7 +16,7 @@ pub async fn inject_session_rule(
     thread_id: &str,
     path: &str,
     access: &str,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     let Some(thread) = store::get_thread(thread_id)? else {
         return Ok(());
     };
@@ -38,7 +38,7 @@ pub async fn inject_session_rule(
 async fn notify_agent_approval_decision(
     approval: &store::ApprovalRequestRecord,
     input: &store::DecideApprovalRequestInput,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     let thread = store::get_thread(&approval.thread_id)?
         .ok_or_else(|| "Approval thread could not be loaded.".to_string())?;
     let mut client = connect_agent().await?;
@@ -61,7 +61,7 @@ async fn notify_agent_approval_decision(
 /// agent already dropped is reconciled by cancelling it locally.
 pub async fn decide_approval(
     input: store::DecideApprovalRequestInput,
-) -> Result<store::ApprovalRequestRecord, crate::AppError> {
+) -> Result<store::ApprovalRequestRecord, crate::Error> {
     let current = store::get_approval_request(&input.approval_request_id)?
         .ok_or_else(|| "Approval request could not be loaded.".to_string())?;
     if current.status == "pending" {

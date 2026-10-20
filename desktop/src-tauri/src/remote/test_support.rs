@@ -428,7 +428,7 @@ struct MockAgentState {
     /// Last few full requests, so a test can assert the fields a forwarded
     /// read carried (run id, tool-call id) — the (command, session) log above
     /// answers "was this served", not "with what".
-    full_requests: Vec<crate::agent_proto::RpcCommand>,
+    full_requests: Vec<future_rpc::proto::RpcCommand>,
     /// One-shot scripted responses keyed by `command` or `command:session_id`.
     scripts: HashMap<String, VecDeque<ScriptedResponse>>,
     /// `get_session_entries` payloads keyed by session id.
@@ -598,10 +598,7 @@ impl MockAgent {
 
     /// The most recent full request for `command`, for assertions about the
     /// fields it carried (see [`MockAgentState::full_requests`]).
-    pub(crate) fn last_full_request(
-        &self,
-        command: &str,
-    ) -> Option<crate::agent_proto::RpcCommand> {
+    pub(crate) fn last_full_request(&self, command: &str) -> Option<future_rpc::proto::RpcCommand> {
         self.state
             .lock()
             .unwrap()
@@ -618,7 +615,7 @@ struct AgentService {
 }
 
 impl AgentService {
-    fn answer(&self, cmd: crate::agent_proto::RpcCommand) -> crate::agent_proto::RpcResponse {
+    fn answer(&self, cmd: future_rpc::proto::RpcCommand) -> future_rpc::proto::RpcResponse {
         let (success, data, error, typed) = {
             let mut state = self.state.lock().unwrap();
             state
@@ -668,7 +665,7 @@ impl AgentService {
         } else {
             (data, None)
         };
-        crate::agent_proto::RpcResponse {
+        future_rpc::proto::RpcResponse {
             id: cmd.id.clone(),
             r#type: "response".to_string(),
             command: cmd.r#type.clone(),
@@ -728,7 +725,7 @@ fn paginate_backward(entries: Value, before: Option<i64>, limit: Option<i64>) ->
 }
 
 fn default_answer(
-    cmd: &crate::agent_proto::RpcCommand,
+    cmd: &future_rpc::proto::RpcCommand,
     state: &mut MockAgentState,
 ) -> (bool, String, String) {
     match cmd.r#type.as_str() {
@@ -838,11 +835,11 @@ fn default_answer(
 }
 
 #[tonic::async_trait]
-impl crate::agent_proto::future_agent_server::FutureAgent for AgentService {
+impl future_rpc::proto::future_agent_server::FutureAgent for AgentService {
     async fn execute_command(
         &self,
-        request: tonic::Request<crate::agent_proto::RpcCommand>,
-    ) -> Result<tonic::Response<crate::agent_proto::RpcResponse>, tonic::Status> {
+        request: tonic::Request<future_rpc::proto::RpcCommand>,
+    ) -> Result<tonic::Response<future_rpc::proto::RpcResponse>, tonic::Status> {
         let cmd = request.into_inner();
         // Down mode rejects readiness, so it cannot produce a verified client.
         // Preserve the legacy streaming-list probe for existing fixtures;
@@ -865,14 +862,14 @@ impl crate::agent_proto::future_agent_server::FutureAgent for AgentService {
 
     type StreamEventsStream = std::pin::Pin<
         Box<
-            dyn futures::Stream<Item = Result<crate::agent_proto::StreamEvent, tonic::Status>>
+            dyn futures::Stream<Item = Result<future_rpc::proto::StreamEvent, tonic::Status>>
                 + Send,
         >,
     >;
 
     async fn stream_events(
         &self,
-        request: tonic::Request<crate::agent_proto::StreamRequest>,
+        request: tonic::Request<future_rpc::proto::StreamRequest>,
     ) -> Result<tonic::Response<Self::StreamEventsStream>, tonic::Status> {
         let request = request.into_inner();
         let complete = if request.run_id.is_empty() {
@@ -882,7 +879,7 @@ impl crate::agent_proto::future_agent_server::FutureAgent for AgentService {
             std::mem::take(&mut state.complete_next_run_stream)
         };
         if complete {
-            let event = crate::agent_proto::StreamEvent {
+            let event = future_rpc::proto::StreamEvent {
                 r#type: "agent_end".to_string(),
                 data: r#"{"reason":"complete"}"#.to_string(),
                 run_id: request.run_id,
@@ -925,6 +922,7 @@ pub(crate) fn ensure_mock_agent() -> MockAgent {
     // services deliberately have no implicit runtime fallback, so an isolated
     // IPC test must not rely on an earlier test having installed the driver.
     crate::agent_bridge::install_channel_runtime();
+    crate::runtime::install_test_runtime();
     static MOCK: OnceLock<MockAgent> = OnceLock::new();
     static MOCK_ADDR: OnceLock<String> = OnceLock::new();
     let agent = MOCK
@@ -949,7 +947,7 @@ pub(crate) fn ensure_mock_agent() -> MockAgent {
                             .expect("report mock agent port");
                         let server = tonic::transport::Server::builder()
                             .add_service(
-                                crate::agent_proto::future_agent_server::FutureAgentServer::new(
+                                future_rpc::proto::future_agent_server::FutureAgentServer::new(
                                     AgentService {
                                         state: service_state,
                                     },
@@ -2322,7 +2320,7 @@ mod tests {
     fn the_mock_defaults_satisfy_the_agent_readiness_handshake() {
         let mut state = MockAgentState::default();
         let info = default_answer(
-            &crate::agent_proto::RpcCommand {
+            &future_rpc::proto::RpcCommand {
                 r#type: "get_agent_info".to_string(),
                 ..Default::default()
             },
@@ -2335,7 +2333,7 @@ mod tests {
         assert_eq!(data["skillsCount"], 0);
 
         let sandbox = default_answer(
-            &crate::agent_proto::RpcCommand {
+            &future_rpc::proto::RpcCommand {
                 r#type: "probe_sandbox".to_string(),
                 ..Default::default()
             },

@@ -1,7 +1,5 @@
 //! Shared data backend plus the remaining Agent coordination adapter.
 pub(crate) use future_host::store::*;
-mod reconcile;
-pub use reconcile::{reconcile_empty_conversations, reconcile_orphan_sessions};
 
 #[cfg(test)]
 pub(crate) fn test_schema_home(label: &str) -> crate::auth_store::test_support::HomeGuard {

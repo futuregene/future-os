@@ -3,8 +3,7 @@
 pub(crate) use future_host::agent_client::raw_agent_addr;
 #[cfg(test)]
 pub(crate) use future_host::agent_client::reset_test_connection;
-pub use future_host::agent_client::{map_rpc_error, AgentClient};
-pub use future_host::agent_commands::*;
+use future_host::agent_client::AgentClient;
 
 pub(crate) fn install_channel_runtime() {
     static INITIALIZED: std::sync::Once = std::sync::Once::new();
@@ -17,12 +16,6 @@ pub(crate) fn install_channel_runtime() {
 pub async fn connect_agent() -> Result<AgentClient, crate::AppError> {
     install_channel_runtime();
     future_host::agent_client::connect_agent().await
-}
-
-pub(crate) async fn get_agent_readiness(
-) -> Result<Option<future_rpc::payloads_ext::AgentReadinessPayload>, crate::AppError> {
-    install_channel_runtime();
-    future_host::agent_client::get_agent_readiness().await
 }
 
 /// Process-lifetime runtime that owns the shared agent channel. tonic spawns

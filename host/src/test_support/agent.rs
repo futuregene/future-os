@@ -102,6 +102,7 @@ pub enum StreamScript {
 
 #[derive(Default)]
 struct MockState {
+    down: bool,
     replies: HashMap<String, VecDeque<Reply>>,
     /// Command types answered with a rejection whenever no scripted reply is
     /// queued. A one-shot `Reply::Reject` cannot express "this call must fail"
@@ -183,6 +184,9 @@ impl FutureAgent for MockAgent {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.requests.push(cmd.clone());
+            if state.down && cmd.r#type != "list_streaming_sessions" {
+                return Err(tonic::Status::unavailable("mock agent is down"));
+            }
             // get_run_state (get_state with a run id) has its own queues keyed
             // by run id: spawned session observers fire plain get_state probes
             // concurrently, and a shared FIFO would let them steal run-scoped
@@ -340,6 +344,7 @@ fn install_channel_runtime() {
 
 fn cleanup_host() {
     crate::runtime::cancel_test_tasks();
+    crate::agent_bridge::cancel_all_observers();
     crate::request_scope::reset_for_test();
 }
 
@@ -421,7 +426,7 @@ pub struct MockAgentGuard {
 }
 
 pub fn mock_agent() -> MockAgentGuard {
-    mock_agent_with_cleanup(|| {})
+    mock_agent_with_cleanup(crate::agent_bridge::cancel_all_observers)
 }
 
 pub fn mock_agent_with_cleanup(cleanup: fn()) -> MockAgentGuard {
@@ -438,6 +443,7 @@ pub fn mock_agent_with_cleanup(cleanup: fn()) -> MockAgentGuard {
     crate::agent_client::reset_test_connection();
     {
         let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
+        state.down = false;
         state.replies.clear();
         state.reject_defaults.clear();
         state.default_data.clear();
@@ -450,6 +456,12 @@ pub fn mock_agent_with_cleanup(cleanup: fn()) -> MockAgentGuard {
 }
 
 impl MockAgentGuard {
+    #[cfg(test)]
+    pub(crate) fn set_down(&self, down: bool) {
+        crate::agent_client::reset_test_connection();
+        STATE.lock().unwrap_or_else(|e| e.into_inner()).down = down;
+    }
+
     #[cfg(test)]
     pub(crate) fn default_data(&self, command: &str, data: serde_json::Value) {
         STATE

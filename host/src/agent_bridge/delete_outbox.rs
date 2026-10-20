@@ -61,12 +61,12 @@ pub async fn reconcile_delete_outbox() {
                 .map_err(|status| map_rpc_error("Agent delete delivery failed", status))?
                 .into_inner();
             if !response.success {
-                return Err(crate::AppError::Message(response.error));
+                return Err(crate::Error::Message(response.error));
             }
             let payload = future_rpc::decode::response_data(&response);
             let decoded: DeleteSessionsResponse =
                 serde_json::from_value(payload).map_err(|error| {
-                    crate::AppError::Message(format!("Invalid Agent deletion response: {error}"))
+                    crate::Error::Message(format!("Invalid Agent deletion response: {error}"))
                 })?;
             let expected: std::collections::HashSet<_> = batch.iter().map(String::as_str).collect();
             let actual: std::collections::HashSet<_> = decoded
@@ -76,7 +76,7 @@ pub async fn reconcile_delete_outbox() {
                 .collect();
             // Never clear intent on a missing, duplicate or unrelated outcome.
             if decoded.results.len() != batch.len() || actual != expected {
-                return Err(crate::AppError::Message(
+                return Err(crate::Error::Message(
                     "Incomplete Agent deletion response".to_owned(),
                 ));
             }

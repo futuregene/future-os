@@ -5,7 +5,6 @@
 mod agent_bridge;
 mod agent_events;
 mod agent_host;
-mod agent_proto;
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
 mod agent_providers;
 #[cfg(feature = "gui")]
@@ -50,7 +49,6 @@ mod remote;
 mod remote_host;
 mod remote_peer;
 mod remote_platform;
-mod run_error;
 mod runtime;
 mod scheduler;
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
@@ -85,9 +83,7 @@ fn install_rustls_provider() {
 
 pub(crate) use future_host::future_home_root;
 
-pub(crate) use future_host::events::{
-    emit_remote_activity, emit_review_updated, emit_thread_runtime_updated, emit_threads_updated,
-};
+pub(crate) use future_host::events::{emit_remote_activity, emit_threads_updated};
 #[cfg(feature = "gui")]
 pub(crate) use gui::APP_HANDLE;
 #[cfg(feature = "gui")]
@@ -112,6 +108,21 @@ mod gui {
     fn present_host_event(event: future_host::events::Event<'_>) {
         use future_host::events::Event;
         match event {
+            Event::CloseThreadTerminals(thread_id) => {
+                crate::commands::close_thread_terminals(thread_id)
+            }
+            Event::AgentSettings {
+                session_id,
+                thread_id,
+                event_type,
+                data,
+            } => crate::agent_bridge::forward_settings_event(
+                APP_HANDLE.get(),
+                session_id,
+                thread_id,
+                event_type,
+                data,
+            ),
             Event::ReviewUpdated(thread_id) => emit_review_updated(thread_id),
             Event::RemoteActivity(thread_id) => emit_remote_activity(thread_id),
             Event::ThreadsUpdated => emit_threads_updated(),
