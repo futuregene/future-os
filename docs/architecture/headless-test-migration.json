@@ -5900,7 +5900,12 @@
       },
       "validationEvidence": [
         "docs/testing/headless-host-bridge-2026-10-20.json"
-      ]
+      ],
+      "latestRepairValidation": {
+        "evidence": "docs/testing/headless-idle-retry-clock-2026-10-20.json",
+        "status": "local-pass",
+        "assertions": "Exact 25 requests retained; controlled clock added. Existing real RPC deadline case unchanged."
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/run_control.rs:1404:wait_for_agent_idle_returns_when_not_streaming",

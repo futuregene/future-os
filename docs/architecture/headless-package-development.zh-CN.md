@@ -443,3 +443,9 @@ CI `39371045462` 已完成，整体为 failure。Windows 独立 Host 分组、�
 本批迁入 17 个原测试（任务 13、工作区 4），测试主体逐项比对保持原样；两个直接操作真实 SQLite 的往返用例从入口归属改判为共享业务，GUI 仍保留两个 malformed-body IPC 用例。Host 全量本地 1047 通过、2 个原有忽略；GUI 两组各 1 通过；Remote 宿主 162 通过、1 个原有忽略。联合 Clippy `--all-targets`、旧 headless Clippy、fmt、严格 Rustdoc 和联合依赖边界通过。[验证证据](../testing/headless-host-application-services-2026-10-20.json)记录环境与摘要。运行中的 CI [39374836837](https://github.com/futuregene/future-os/actions/runs/39374836837)固定在 `70f3d786`，不包含本批；Remote 本体、完整生命周期和 CLI 接入仍未完成。
 
 工作区删除随后补齐展示绑定守卫：仅在入口绑定展示资源时读取终端归属，维持原 headless 不执行该 GUI 读取的路径；工作区相关 20 项与联合 Clippy 再验通过。`c32ddf29` 的真实旧入口两组进程测试各 13 项通过（4.73s / 68.99s）；它们不代表尚未接入的 `future headless`，也不覆盖随后发生的源码修改。
+
+### 2026-10-20 macOS 重试预算计时修复
+
+中间 CI `39374836837` 的 macOS Host 为 1029 通过、1 失败、2 个原忽略：空闲等待用例要求在真实 5 秒内精确发完 25 次 RPC，runner 到第 24 次后到达总时限。生产仍保持 5 秒总预算、最多 25 次与 200ms 间隔；私有共享循环只把等待 future 作为计时接缝。原用例仍执行真实 RPC、保留精确 25 次与非 idle 断言，改用受控 Tokio 时钟，新增逻辑耗时恰好 5 秒断言。另一个未应答真实 RPC 的生产总时限用例未变并通过。
+
+[证据](../testing/headless-idle-retry-clock-2026-10-20.json)记录失败日志、精确用例通过、完整 Host 1047 通过/2 个原忽略，以及联合/旧 headless Clippy、fmt、Rustdoc 和依赖边界通过。旧候选 Windows Host 已通过，但 Windows 构建和 Linux GUI 快照仍运行；整轮不接受为通过。远程主干随后新增的 Remote 开关持久化提交需合入后再验证，以上结果不拼接为合并后候选的完整验收。

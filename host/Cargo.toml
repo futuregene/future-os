@@ -46,5 +46,6 @@ tonic.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 libc = "0.2"
 tempfile = "3"

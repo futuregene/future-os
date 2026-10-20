@@ -429,6 +429,19 @@ pub async fn compact_agent_session(session_id: String) -> Result<serde_json::Val
 /// it, and no later poll would answer differently — so that definitive answer
 /// counts as confirmation rather than a timeout.
 pub async fn wait_for_agent_idle(session_id: &str) -> bool {
+    wait_for_agent_idle_with_wait(session_id, || {
+        tokio::time::sleep(std::time::Duration::from_millis(200))
+    })
+    .await
+}
+
+// Keep the production deadline/RPC loop shared with the deterministic retry
+// budget test. Only its inter-poll clock is supplied; replies remain real RPC.
+async fn wait_for_agent_idle_with_wait<F, W>(session_id: &str, mut wait: W) -> bool
+where
+    F: std::future::Future<Output = ()>,
+    W: FnMut() -> F,
+{
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
         let Ok(mut client) = connect_agent().await else {
             return false;
@@ -460,7 +473,7 @@ pub async fn wait_for_agent_idle(session_id: &str) -> bool {
                 }
                 Err(_) => return false,
             }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            wait().await;
         }
         false
     })
@@ -1367,10 +1380,10 @@ mod tests {
         );
     }
 
-    /// A session that never stops streaming exhausts the wait budget: the
-    /// budget is ~5 s (25 polls at 200 ms), which is why this test is the slowest
-    /// in the module — and why the assertion checks that it *waited*, not just
-    /// that it gave up.
+    /// Exercise all 25 real RPC polls with a controlled inter-poll clock.
+    /// Network/scheduler latency must not consume the five-second logical
+    /// budget before the final retry. The unanswered-RPC test above separately
+    /// checks the unchanged production deadline against the real clock.
     #[tokio::test]
     async fn wait_for_agent_idle_gives_up_when_the_agent_never_settles() {
         let _home = TestHome::new("rc-idle-exhausted");
@@ -1379,15 +1392,34 @@ mod tests {
             mock.push_state_for_session("busy", Reply::TypedData(get_state_payload("busy", true)));
         }
 
-        let started = std::time::Instant::now();
-        assert!(
-            !wait_for_agent_idle("busy").await,
-            "a session that never settles must not read as idle"
-        );
+        tokio::time::pause();
+        // A ready task prevents Tokio's idle auto-advance while the real RPC
+        // server runs on its own runtime. Only the explicit poll waits advance
+        // this test's clock, after the preceding response has been decoded.
+        let clock_guard = tokio::spawn(async {
+            loop {
+                tokio::task::yield_now().await;
+            }
+        });
+        let started = tokio::time::Instant::now();
+        let idle = wait_for_agent_idle_with_wait("busy", || async {
+            tokio::time::advance(std::time::Duration::from_millis(200)).await;
+        })
+        .await;
+        clock_guard.abort();
+        clock_guard
+            .await
+            .expect_err("the clock guard was cancelled");
+        assert!(!idle, "a session that never settles must not read as idle");
         assert_eq!(
             mock.requests_of("get_state").len(),
             25,
             "the whole retry budget is spent before giving up"
+        );
+        assert_eq!(
+            started.elapsed(),
+            std::time::Duration::from_secs(5),
+            "all 25 waits consume exactly the production deadline"
         );
         assert!(
             started.elapsed() >= std::time::Duration::from_millis(200),
