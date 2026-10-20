@@ -27,7 +27,7 @@ The Rust workspace (`Cargo.toml`) members and their slice of `~/.future/` (see `
 Development happens in an isolated git worktree at `.worktrees/<name>` on the per-developer integration branch `dev-<github username>`. `<name>` is the short slug of the worktree directory. Derive the username at runtime — `GH_USER=$(gh api user --jq .login)` — the value is never written into this file. Never work in the local main branch. The local main branch (`main`) is used by the user for local integration testing and may contain their own unrelated changes — do not treat it as a development branch.
 
 - **One branch per developer, many tasks.** Every task commits onto `dev-<username>`, which outlives the task: never delete the remote branch after a merge, and never drop it as "cleanup".
-- **Who opens the PR?** Normally the **会话总管** (session supervisor), on a ~3-hour cadence; a task session then only pushes and never creates a PR or arms auto-merge itself (*PRs and merges* below). **If that supervisor is not available** — no supervisor deployed, it is paused or not running, no PR appeared on the branch well past its cadence, or the user says to skip it — **fall back to the old path**: open the PR from `dev-<username>` yourself and take it to the merge, exactly as *Addressing a failing or stale PR* below describes (self-test → push → `gh pr create` → `gh pr merge --squash --auto` → `gh pr checks --watch`). Leaving the work unmerged is worse than a task session opening its own PR.
+- **Who opens the PR?** A **scheduled task named `dev 分支 PR 合并`** in this repo, running every 3 hours (`future task list --json` finds it; `future task show <id> --prompt` is its current instruction). While it is in charge, a task session only pushes and never creates a PR or arms auto-merge itself (*PRs and merges* below). **If that task is not doing it** — never created, disabled, its runs keep failing, no PR appeared on the branch well past its cadence, or the user says to skip it — **fall back to the old path**: open the PR from `dev-<username>` yourself and take it to the merge, exactly as *Addressing a failing or stale PR* below describes (self-test → push → `gh pr create` → `gh pr merge --squash --auto` → `gh pr checks --watch`). Leaving the work unmerged is worse than a task session opening its own PR.
 - **The local `dev-<username>` must always be current** (`= origin/dev-<username>`, and after a merge `= origin/main`). Reconcile it first:
   ```bash
   GH_USER=$(gh api user --jq .login)
@@ -51,7 +51,7 @@ Development happens in an isolated git worktree at `.worktrees/<name>` on the pe
   git ls-remote origin refs/heads/dev-$GH_USER
   git worktree remove .worktrees/<name>
   ```
-  Keep it if anything is unpushed. Keep the *branch* — it is the developer's continuous branch; only a deliberately abandoned branch gets `git branch -D`. Never remove another session's worktree. Removing the worktree frees the branch so the supervisor (or the next task) can fast-forward the local copy.
+  Keep it if anything is unpushed. Keep the *branch* — it is the developer's continuous branch; only a deliberately abandoned branch gets `git branch -D`. Never remove another session's worktree. Removing the worktree frees the branch so the scheduled task (or the next task) can fast-forward the local copy.
 - **Never commit to `main`, and never merge a worktree branch into it.** PRs are squash-merged, so a branch commit fast-forwarded into local `main` gets a *different* SHA than the squashed commit that lands on `origin/main`. That one local commit then blocks `git merge --ff-only origin/main` permanently, and the only way out is a manual `git reset --hard origin/main` — so "let the user test it" quietly becomes a divergent local `main` that every later PR has to stop and clean up. (Not hypothetical: `git reflog main` showed 12 such fast-forwards against 8 manual resets.) To let the user test a change, point them at the worktree (`cd .worktrees/<name> && make run-mobile-android`, …); to get it onto `main`, let the PR squash-merge and fast-forward from `origin/main` (see *After a PR merges*). If the user explicitly asks for the change on `main` first, do it in a scratch worktree (`git worktree add /tmp/x origin/main`) rather than committing to `main`.
 - Do not merge the local main branch (`main`) into the worktree; if `main` has user changes you need, ask the user rather than merging local main in.
 - **Other sessions work in this repo at the same time**, each in its own worktree and branch (`git worktree list` shows the live ones; `main` may have moved since you last looked). Stay inside your own worktree and branch: never `git worktree remove` or prune someone else's, never commit, reset, rebase, or force on their behalf, and if you find a commit on `main` you did not make, report it instead of cleaning it up.
@@ -66,7 +66,7 @@ Run the self-test pass in the worktree on the CI toolchain (the repo pins `rust-
    - Desktop TS: `tsc --noEmit`, `eslint`, `vitest run` only when `desktop/` files changed; plus `cargo fmt --check` / `cargo clippy` under `desktop/src-tauri` only when it changed.
    - Docs / `AGENTS.md` only: `make check-docs` (if it already fails on `origin/main` for an unrelated file, say so instead of fixing it here).
    - Do NOT run workspace-wide `make test` / `make lint-rust` for a module-scoped PR - CI runs the full matrix and is the backstop. Escalate to a full local pass only when a change cuts across many crates (e.g. `packages/rpc` wire-contract changes) or after a CI failure local repro is needed.
-3. Commit fmt/clippy fixes together with the work and push (`git push origin HEAD:dev-$GH_USER`). Do **not** open a PR or arm auto-merge here — that belongs to the supervisor (below), or to you only in the fallback case.
+3. Commit fmt/clippy fixes together with the work and push (`git push origin HEAD:dev-$GH_USER`). Do **not** open a PR or arm auto-merge here — that belongs to the scheduled task (below), or to you only in the fallback case.
 
 **Always sync with `origin/main` right before pushing** — not just at the start of the pass. Re-run `git fetch origin main`; if main moved while you were running checks, merge it again and re-run the checks it affects. Branch protection requires the PR head to be up to date with main, and on a fast-moving main a stale branch bounces between BEHIND and re-queued CI.
 
@@ -76,14 +76,14 @@ During normal development you don't need to run this full suite every time — i
 
 ### PRs and merges
 
-**Default: the 会话总管 (session supervisor) owns the PR.** It checks `origin/dev-<username>` roughly every 3 hours:
+**Default: a scheduled task owns the PR.** `dev 分支 PR 合并` runs in this repo every 3 hours and does the whole lifecycle:
 
 - No open PR and `origin/dev-<username>` has commits `origin/main` lacks → it opens one against `main` and arms squash auto-merge (`gh pr create --base main --head dev-$GH_USER --fill`, then `gh pr merge <n> --squash --auto`). A PR never stays open without auto-merge armed.
-- PR is BEHIND → it merges `origin/main` into `dev-<username>`, re-runs the checks the merge touches, and pushes, instead of letting the PR bounce between BEHIND and re-queued CI.
+- PR is BEHIND → it merges `origin/main` into `dev-<username>` in a throwaway worktree, and pushes, instead of letting the PR bounce between BEHIND and re-queued CI.
 - Required checks fail → it opens a **new session** in this repo with the failing job/run evidence, rather than messaging the session that wrote the code. That session fixes the failure on `dev-<username>` by the flow above and pushes; the next pass re-checks. Do not merge a red PR, re-run checks indefinitely, or weaken assertions to get it green.
-- Checks pass → the squash merge lands by itself; the supervisor then runs *After a PR merges*.
+- Checks pass → the squash merge lands by itself; the task then runs *After a PR merges* and prints a short report (branch, ahead count, PR number, check result, fix session id).
 
-**Fallback: the task session does the old path.** When no supervisor is going to do it — none deployed, it is paused/stopped, no PR appeared well past its cadence, or the user says so — the session that owns the work opens the PR and takes it to the merge itself:
+**Fallback: the task session does the old path.** When the scheduled task is not going to do it — never created, disabled, its runs keep failing, no PR appeared well past its cadence, or the user says so — the session that owns the work opens the PR and takes it to the merge itself:
 
 ```bash
 gh pr create --base main --head dev-$GH_USER --fill
@@ -97,11 +97,11 @@ Then *Addressing a failing or stale PR* below still applies, and so does *After 
 
 **If a PR opens BEHIND / "update branch" is requested, update it immediately — before anything else.** The moment `gh pr view` (or the GitHub banner) shows the branch is not up to date with main: `git fetch origin main && git merge origin/main` into `dev-<username>` (resolve conflicts here), re-run the scoped checks the merge touches, push, and let `--auto` re-fire. Do not start new work while your PR sits BEHIND — on a fast-moving main it bounces between BEHIND and re-queued CI, and every queued PR behind it waits too.
 
-**Check PR status synchronously — never `sleep`-poll.** Wait with `gh pr checks <n> --watch --required --fail-fast` (add `--interval 5`); `--watch` blocks until the required checks finish and `--fail-fast` returns on the first failure. Do not loop `sleep N; gh pr checks`. On a red required check, read the failing job's log (`gh run view <run-id> --log-failed`) and fix the cause; opening a separate repair session is the supervisor's move (above), not a substitute for reading the log.
+**Check PR status synchronously — never `sleep`-poll.** Wait with `gh pr checks <n> --watch --required --fail-fast` (add `--interval 5`); `--watch` blocks until the required checks finish and `--fail-fast` returns on the first failure. Do not loop `sleep N; gh pr checks`. On a red required check, read the failing job's log (`gh run view <run-id> --log-failed`) and fix the cause; opening a separate repair session is the scheduled task's move (above), not a substitute for reading the log.
 
 ### After a PR merges
 
-The supervisor does this right after the squash merge; in the fallback path the task session does it. A session that merely notices the merge only needs to bring its own local copies up to date — never re-merge or re-target anything.
+The scheduled task does this right after the squash merge; in the fallback path the task session does it. A session that merely notices the merge only needs to bring its own local copies up to date — never re-merge or re-target anything.
 
 1. **Update the local main branch**: `git fetch origin main`, then fast-forward it (`git merge --ff-only origin/main` from the main worktree). If the fast-forward is refused, identify what local `main` is carrying before concluding anything — do not assume it is the user's work:
    - `git log --oneline origin/main..main` lists the commits upstream does not have.
