@@ -179,17 +179,25 @@ short numeric code. The graphical `futureos` entrypoint no longer accepts
 
 **Pairing is managed from the terminal, through the running Desktop.** Neither
 entry point takes a pairing flag. `future remote devices` (the `future` CLI) is the
-terminal half of the Remote page: `list`, `use` and `remove` read and edit the
-pairing book directly, because those are changes to the book alone and must work
-with nothing running. `add` cannot be: an invitation is only usable while the
-bridge for its pairing is connected, so the process that owns the data directory
-has to mint it.
+terminal half of the Remote page: `list` and `use` read and edit the pairing book
+directly, because those are changes to the book alone and must work with nothing
+running. `add` and `remove` cannot be: an invitation is only usable while the
+bridge for its pairing is connected, and a removal only stops the device being
+served if that bridge is stopped — both belong to the process that owns the data
+directory.
 
-That request travels as a file. `future remote devices add` writes
-`{"op":"add-device","reply":"<path>"}` into `~/.future/run/remote-control/`, then
-polls the reply path for its answer; the running Desktop — window or headless, both
-start `remote::control::spawn_host` — claims the request by renaming it, performs
-the operation and writes `{pairId, link, expiresAt}` or `{error}` back. The reply
+That request travels as a file. `future remote devices add|remove` writes
+`{"op":"add-device","reply":"<path>"}` or
+`{"op":"remove-device","pairId":"<device>","reply":"<path>"}` into
+`~/.future/run/remote-control/`, then polls the reply path for its answer; the
+running Desktop — window or headless, both start `remote::control::spawn_host` —
+claims the request by renaming it, performs the operation and writes
+`{pairId, link, expiresAt}`, `{pairId, removed}` or `{error}` back. A removal is
+answered only after `unpair_slot` has revoked the credential, forgotten the slot,
+stopped that bridge and told the device it was unpaired; a terminal that had to
+edit the book itself (no Desktop running, or one too old to know the operation)
+says so, because the device then keeps being served until its credential comes up
+for renewal. The reply
 path is a temporary file the asking process created for itself, so two terminals
 asking at once cannot read each other's invitation, and a request older than two
 minutes is deleted rather than served: its asker has given up. The Desktop refuses

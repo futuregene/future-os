@@ -69,6 +69,21 @@ pub(crate) fn pairing_creds(pair_id: &str) -> future_remote_server::PairingCreds
     }
 }
 
+/// Persist the pairing book entry behind an installed fixture runtime.
+///
+/// A real running bridge always has its credential in the book — `start` reads
+/// the slots from there and a handshake saves one. A runtime the book does not
+/// list is a removal another process just performed, and the status projection
+/// deliberately stops presenting it as a device (`Supervisor::project_status`).
+/// A fixture that skipped this step therefore described a machine no Desktop can
+/// actually be in: a bridge serving a device it does not have.
+pub(in crate::remote) fn save_fixture_slot(pair_id: &str, nats_url: &str) {
+    let mut creds = pairing_creds(pair_id);
+    creds.nats_url = nats_url.to_string();
+    creds.nats_ws_url = nats_url.replace("nats://", "ws://");
+    super::pairing::save_creds(&creds).expect("the fixture pairing book must be writable");
+}
+
 /// Declare a capability set the way a client's `secure_ready` does.
 ///
 /// Through the production applier rather than by writing the flag directly: the
@@ -1825,6 +1840,9 @@ pub(crate) async fn install_fake_state(tag: &str) -> InstalledFakeState {
         let pair_id = state.pair_id.clone();
         slots.insert(pair_id.clone(), state);
         drop(slots);
+        // The book entry a real running bridge always has (see
+        // `save_fixture_slot`), so the projection keeps listing this device.
+        save_fixture_slot(&pair_id, broker.url());
         // One device, so it is the controller — the same rule the runtime
         // applies. Without this the installed bridge would be a standby and
         // publish nothing, which looks exactly like a broken fixture.
