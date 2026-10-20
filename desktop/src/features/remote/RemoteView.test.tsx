@@ -489,25 +489,63 @@ describe("adding a connection", () => {
     expect(container.textContent).not.toContain("Waiting to pair");
   });
 
-  it("keeps a device that scanned the code while the window was open", async () => {
+  it("closes itself once the scanned code becomes a device", async () => {
     await mount({
       remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, invited] }),
     });
     await act(async () => buttonByText("Add a device")!.click());
     await flush();
+    expect(addDialog()!.textContent).toContain("futureos://remote/pair?code=xyz");
 
-    // The invitation was claimed in the meantime: nothing is left to discard.
+    // The phone scanned it: the backend stops advertising the one-shot code and
+    // the device turns into a row. The window carries the invitation, not the
+    // connection, so it leaves with the code instead of sitting on the line
+    // that promises a QR "when it is ready" — nothing more is coming.
     await mount({
       remoteStatus: status({
         pairId: "pair_alpha",
         phase: "ready",
-        devices: [control, { ...invited, pairingCode: null, connected: true }],
+        devices: [control, {
+          ...invited,
+          pairingCode: null,
+          connected: true,
+          client: { kind: "mobile", name: "Pixel 10" },
+        }],
       }),
     });
-    await act(async () => buttonByText("Cancel")!.click());
-    await flush();
 
+    expect(addDialog()).toBeNull();
+    expect(container.textContent).not.toContain("Establishing a secure connection");
+    expect(container.textContent).toContain("Pixel 10 (a phone)");
+    // Closing the window is not unpairing a device that now exists.
     expect(unpairRemoteDevice).not.toHaveBeenCalled();
+  });
+
+  it("says the code lapsed instead of waiting for a QR that never comes", async () => {
+    invited.pairingCodeExpiresAt = Math.floor(Date.now() / 1000) + 5;
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, invited] }),
+    });
+    await act(async () => buttonByText("Add a device")!.click());
+    await flush();
+    expect(addDialog()).not.toBeNull();
+
+    // Nobody scanned it. The status drops the code at expiry — the same "no
+    // code" a claimed invitation produces — so the window that says which one
+    // happened has to be the view, and it says so instead of showing an
+    // invitation that will never appear.
+    vi.setSystemTime(new Date(Date.now() + 10_000));
+    await mount({
+      remoteStatus: status({
+        pairId: "pair_alpha",
+        phase: "ready",
+        devices: [control, { ...invited, pairingCode: null }],
+      }),
+    });
+
+    expect(addDialog()).toBeNull();
+    expect(container.textContent).toContain("That pairing code expired. Add the device again.");
+    expect(container.textContent).not.toContain("Establishing a secure connection");
   });
 
   it("says the cap is reached instead of a generic failure", async () => {
