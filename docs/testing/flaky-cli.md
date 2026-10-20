@@ -10,6 +10,7 @@ declared write set (`cli/tests`, `cli/src/browser`, `docs/testing/flaky-cli.md`)
 | agent singleton-lock contention (FLAKES.md item 5) | `cli/tests/bin.rs` | already fixed upstream (commit `ebda57c6`, PR #353) — `0/20` runs; mechanism re-injected → `12/20` |
 | safari readiness window (FLAKES.md item 6, todo (b)) | `cli/src/browser/safari/safari_manager.rs` | **fixed** in this unit; deterministic negative control fails before / passes after; `10/10` clean runs |
 | doctor version probe (FLAKES.md §5b item 14, todo (c)) | `cli/src/commands/doctor.rs:815` (assertion `:852`), sibling `:892` | **reproduced (2/4 `cargo test -p future-cli` attempts, 2/8 loaded full-suite rounds, 2/20 doctor-only rounds), mechanism named, fix handed off** — the file is outside this unit's write set |
+| `auth_login_saves_through_a_running_agent` (§11, added 2026-10-20) | `cli/tests/bin.rs:1189` | **rate measured (3 red in 16), signature captured, split check named, NOT fixed** — a test-fixture flake; the closeout's "passes 2/2 in isolation" was a two-sample miss |
 
 ## 0. Run identity and environment
 
@@ -1512,3 +1513,85 @@ the ticket's deliverable (sweep *all* the named budgets, fix or waive each with 
 then re-run the repeat sweep) is **partially** done — two of five lines unmeasured, no
 repeat-run sweep, no record from the unit, and an experiment left in the tree. The successor
 ticket carries exactly those three items; it must not re-do 10.1, which is settled.
+
+## 11. `auth_login_saves_through_a_running_agent` — 3 red in 16, split check named, **NOT FIXED**
+
+Found at the close of the cov100 campaign as F-CLI-7's "defect (2)" (`todo_a08d79901e1c`), which the
+final report could only describe as "a 2-in-6 *suite* flake that passes 2/2 in isolation — which proves
+nothing about a load-dependent flake". This section replaces that sentence with a rate, a reproduction
+and a signature, and leaves the fix to a reviewed change. **Nothing below changes product code.**
+
+| field | value |
+|---|---|
+| test | `cli/tests/bin.rs::auth_login_saves_through_a_running_agent` (assertion at `:1189`) |
+| revision measured | `63fab9ff7` (main), worktree `.worktrees/fcli7-measure` |
+| host | macOS (darwin, arm64), 32 CPUs, load 1.0–4.1 at each run's start |
+| rate, full suite | **2 red in 10** (20 %) |
+| rate, test alone | **1 red in 6** (17 %) |
+| status | **open — test-fixture flake, not a product defect** |
+
+### 11.1 The signature
+
+    ---- auth_login_saves_through_a_running_agent stdout ----
+    thread 'auth_login_saves_through_a_running_agent' (120787731) panicked at cli/tests/bin.rs:1189:5:
+    assertion `left == right` failed: stdout:
+    stderr: no such endpoint
+
+      left: Some(1)
+     right: Some(0)
+
+The CLI exits **1 with empty stdout** where the test expects 0; the only text is the mock
+platform's `no such endpoint`. The other 23 tests in `tests/bin.rs` are green in the same run,
+and the lib suite (`1269 passed`) is green in every one of the 10 runs.
+
+### 11.2 The rate, and why the recorded "2/2 in isolation" was not evidence
+
+`flake-rate.sh`-style loop, one run at a time, default parallelism:
+
+```bash
+# full suite, what CI's "Rust tests (Linux) (tui, cli)" job runs for this crate
+for i in $(seq 10); do setsid cargo test -p future-cli; done   # 2 red / 10
+
+# the test alone
+for i in $(seq 6); do setsid cargo test -p future-cli --test bin \
+  auth_login_saves_through_a_running_agent; done               # 1 red / 6
+```
+
+Pooled **3 red in 16 ≈ 19 %**. The isolated red is the finding that matters: the flake is not
+suite- or load-dependent, it is simply ~1 in 6, and two clean isolated runs had a ~70 % chance of
+looking like "passes alone" — which is exactly how the closeout recorded it.
+
+`setsid` belongs in the command, not in the test: `cli/tests/bin.rs`'s
+`config_wizard_reports_the_missing_console_at_the_secret_prompt` opens `/dev/tty` when the process
+has a controlling terminal and **blocks waiting for a human**. Without `setsid` a local full-suite
+run hangs there indefinitely (reproduced twice, ~108 KB of log, no `test result:` line), which
+looks exactly like a hang flake and is not one. CI has no controlling tty, so the detached form is
+the comparable one.
+
+### 11.3 What `no such endpoint` says
+
+It is the fixture's own 404 — the only place that string exists (`cli/tests/bin.rs:1073`), served
+for any path other than `/client/v1/oauth/device/code` and `/client/v1/oauth/device/token`. So in
+the red runs the mock platform answered a path it does not serve (or an empty path).
+
+### 11.4 Mechanism — hypothesis, with the split check that would settle it
+
+The mock accepts a connection, reads **once** into a 4 KiB buffer and parses the request line out
+of that single read (`:1055-1064`); a partial or empty read yields an empty `path`, which falls
+through to the 404. That is the strongest reading the evidence supports, and it is stated as a
+hypothesis: a flake of this shape (empty/partial first read under load) is indistinguishable, from
+the CLI's side, from a real bad request.
+
+**Split check, for whoever fixes it:** the fixture already records every path it served
+(`paths`, asserted by the sibling test `auth_login_writes_the_key_itself_when_no_agent_is_running`);
+add `platform.requested_paths()` to the failure message at `:1189`. If the red run shows one
+recorded path and one empty/partial entry, the single-read parse is it — then read until the blank
+line as the fix. If it shows two well-formed paths and still 404s, the cause is elsewhere, and this
+section's hypothesis is wrong. **Do not "fix" it by lengthening a timeout**: no timeout is involved
+— each red run's `tests/bin.rs` finished in 12.5–12.7 s, the same as the green ones.
+
+### 11.5 Scope
+
+Not fixed here on purpose. It costs a test change that should be reviewed and then re-measured at
+the rate above (`0 red in 10` would be the bar, as §1 and §2 did with their negative controls), and
+that is a separate change from the measurement that produced this record.
