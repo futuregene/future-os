@@ -1,7 +1,7 @@
 import type { RemoteStatus } from "./remoteClient";
 import { ChevronRight } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ConfirmDeleteDialog } from "../../components/layout/EntityDialogs";
 import { Badge } from "../../components/ui/Badge";
@@ -73,6 +73,16 @@ export function RemoteHostSection({
   const [addOpen, setAddOpen] = useState(false);
   /** The connection this window created, while it is still unclaimed. */
   const [pendingPairId, setPendingPairId] = useState<string | null>(null);
+  /** Whether the window has already shown the invitation it was opened for. */
+  const invitationShownRef = useRef(false);
+  /**
+   * When the invitation on screen lapses, captured while it is still shown.
+   *
+   * The status stops reporting a one-shot code both when a device claims it and
+   * when it expires, so "no code" alone cannot say which happened — and the two
+   * need different words for the user.
+   */
+  const invitationExpiryRef = useRef<number | null>(null);
   /** The device whose unpair is being confirmed, if any. */
   const [confirmUnpair, setConfirmUnpair] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -208,6 +218,8 @@ export function RemoteHostSection({
       // The returned status is *about* the connection just created; that is the
       // one the window speaks for, even if the list later shows others.
       setPendingPairId(status.pairId || null);
+      invitationShownRef.current = false;
+      invitationExpiryRef.current = null;
       setAddOpen(true);
     }
     catch (err) {
@@ -228,7 +240,9 @@ export function RemoteHostSection({
    * invitation that was never scanned has no device behind it, so discarding it
    * leaves nothing half-made in the list.
    */
-  async function closeAdd() {
+  const closeAdd = useCallback(async () => {
+    invitationShownRef.current = false;
+    invitationExpiryRef.current = null;
     setAddOpen(false);
     const discarded = pendingPairId;
     setPendingPairId(null);
@@ -253,7 +267,28 @@ export function RemoteHostSection({
       setBusy(false);
       await onRefreshRemote();
     }
-  }
+  }, [allDevices, onRefreshRemote, pendingPairId, t]);
+
+  // The invitation is over once its code leaves the status, and the window has
+  // nothing left to show: it carries the invitation, not the connection. A
+  // device that claimed it now has a row of its own in the list; an invitation
+  // nobody claimed leaves a lapsed code, which only this line can explain.
+  // Left open either way, the window falls through to the "preparing" line —
+  // the wording for a code that is still being minted — and promises a QR that
+  // is never coming.
+  useEffect(() => {
+    if (pairingCode != null) {
+      invitationShownRef.current = true;
+      invitationExpiryRef.current ??= pendingDevice?.pairingCodeExpiresAt ?? null;
+      return;
+    }
+    if (!addOpen || !invitationShownRef.current)
+      return;
+    const lapsed = invitationExpiryRef.current;
+    if (lapsed != null && Date.now() >= lapsed * 1000)
+      setError(t("pairingCodeExpired"));
+    void closeAdd();
+  }, [addOpen, closeAdd, pairingCode, pendingDevice?.pairingCodeExpiresAt, t]);
 
   async function handleUnpairDevice(pairId: string) {
     setBusy(true);
