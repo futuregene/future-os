@@ -33,7 +33,7 @@ This changes entry points and code ownership. Data paths, locks, communication c
 
 ## 2 Current coupling and target structure
 
-The [current headless launcher](../../desktop/src-tauri/src/headless/mod.rs) belongs to `futureos`. Features already exclude GUI system libraries, but it still uses Desktop Store, Agent management, login, Remote host adapters, scheduling, observers and shutdown coordination. Adding a CLI dependency on Desktop would retain these build and test ownership problems.
+At baseline the launcher belonged to `futureos` (current entry: [CLI headless](../../cli/src/headless/mod.rs)). Features already exclude GUI system libraries, but it still uses Desktop Store, Agent management, login, Remote host adapters, scheduling, observers and shutdown coordination. Adding a CLI dependency on Desktop would retain these build and test ownership problems.
 
 Create `host/` with the crate name `future-host`, as an application host library in the root Cargo workspace, sharing the lockfile and build artifacts. It is an ordinary Rust library, with no separate executable or `staticlib`/`cdylib` targets. `host/` is an application runtime and may compose services such as `future-agent`; it differs from the product-independent protocol and role libraries under `packages/`.
 
@@ -132,7 +132,7 @@ Independent testing includes units and necessary library integration. GUI-free d
 | `headless/agent.rs`, `agent_host`, shutdown coordinator and shared scheduling | `future-host` units/integration | Agent ownership, startup/readiness failure, stop order, total deadline and cleanup |
 | Store, business bridge, config/identity and Remote business host | `future-host` or existing shared packages | Original database/file/approval assertions, beyond verifying interface calls |
 | [headless_cli.rs](../../desktop/src-tauri/tests/headless_cli.rs) | Real CLI `future headless` process tests; retain GUI-specific portions in Desktop | Built `future`, first-run non-TTY refusal, existing config, signals, exclusion and external-Agent survival |
-| [remote_start_refusal.rs](../../desktop/src-tauri/tests/remote_start_refusal.rs) | CLI headless product process tests; shared fault policy in host/Remote libraries | Real active host, platform refusal, single-device revocation, recovery budgets and persisted results |
+| [remote_start_refusal.rs](../../cli/tests/remote_start_refusal.rs) | CLI headless product process tests; shared fault policy in host/Remote libraries | Real active host, platform refusal, single-device revocation, recovery budgets and persisted results |
 | Remote packages and [standalone interoperability](../../tests/remote-interop/Cargo.toml) | Retain their existing owners | Protocol, crypto, role state machines and real endpoint interoperability remain outside the host |
 | Tauri commands, windows/menus, IPC and GUI lifecycle | Desktop | Real shared-backend wiring, window exit and GUI plugin behavior |
 
@@ -276,8 +276,8 @@ Current phase status:
 |---|---|
 | 0 | Source/dependency baseline and named inventory captured; mixed-module ownership reviewed per test; matched build/runtime measurements open |
 | 1 | Ordinary GUI-free crate, task registry, presentation outlet and consumer dependencies established; complete lifecycle/config boundary still open |
-| 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, task/conversation, OAuth/account and maintenance scheduler moved; Remote host/Peer moved with local core execution; cross-platform revalidation, stop coordination state moved; shared service teardown moved; CLI maintenance bootstrap and unified startup boundary remain |
-| 3 | Not implemented; the product entry is still `futureos-headless` |
+| 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, task/conversation, OAuth/account and maintenance scheduler moved; Remote host/Peer moved with local core execution; cross-platform revalidation, stop coordination state moved; shared service teardown moved; CLI maintenance bootstrap and unified startup boundary connected; bulk validation remains |
+| 3 | `future headless` connected; CLI owns terminal/signals/Agent runtime; old entry removed; bulk changes await unified validation |
 | 4 | 1597 original test declarations moved (1584 executed locally on macOS, ten retain original ignores and three locally unavailable cases passed Linux CI); this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
 | 5 | Host CI group and affected propagation added; builds, release artifacts, signing/install/update/uninstall still open |
 | 6 | Not started; no frozen final candidate, matched performance, artifact acceptance or confirmed manual results |
@@ -509,3 +509,12 @@ All 48 local import cases passed. No local Windows or deterministic red reproduc
 ### 2026-10-20 Mainline journal-health merge
 
 Synced remote main edb9d134 before pushing. Conflict resolution retains upstream deferred batch replies and this branch's storage_failed decision independent of the retry queue. Durable-only failures still publish unhealthy before replies and make flush fail. All 47 real SQLite/journal cases passed, including the branch regression. The upstream task-page file passed 46 cases; type-check, ESLint, fmt and relevant Clippy --all-targets passed. Temporary dependency links were removed; see the [evidence](../testing/headless-postsync-journal-2026-10-20.json). Unified CLI work was saved separately and is outside this backend acceptance candidate.
+
+
+### 2026-10-20 Unified CLI entry and release wiring (unified validation pending)
+
+CLI calls `future-host` directly and owns foreground/Agent/cleanup runtimes, terminal interaction, signals and exit status. Maintenance invokes the current executable as `init`. Desktop's old headless source and binary target are removed, with no external launcher or backend copy. The 53 original terminal/process declarations moved to CLI; two GUI argument/retirement checks remain Desktop-owned. Original assertions/platform boundaries stay tracked; migration status is `migrated-pending-unified-validation`. Native Windows console Ctrl+C and ConPTY fixtures await CI execution.
+
+Linux musl, deb/portable and CLI-only distributions use the same `future`. Compatibility make aliases build/install CLI. Windows upgrade retains executable backup/rollback and uninstall handling while retiring the old entry; installer, macOS app and Windows/Linux payload probes now exercise `headless --help` and reject the retired binary. Actual signing, upgrade and release artifact acceptance remains open.
+
+Following the user's latest direction, per-batch tests are deferred to unified validation after implementation. Earlier 11 CLI and 13 Remote process passes cover intermediate source only, excluding subsequent unit migration, Windows fixtures and release changes. Previous candidate `5c56a885` CI [39382550090](https://github.com/futuregene/future-os/actions/runs/39382550090) failed all three native build jobs because the old Desktop `cli_tool::tests` selector matched zero cases. The current script leaves shared cases to complete native Host suites once and retains real entry probes plus zero-test failure enforcement. That CI does not contain this section's changes. Matched performance, artifacts and manual acceptance remain pending.

@@ -3,24 +3,56 @@
 #[derive(Default)]
 pub(super) struct Agent;
 impl Agent {
-    pub(super) async fn ensure_running(&mut self) -> Result<(), crate::AppError> {
-        let address = crate::agent_bridge::raw_agent_addr();
-        tokio::task::spawn_blocking(move || crate::agent_host::host().start(address))
+    pub(super) async fn ensure_running(&mut self) -> Result<(), future_host::Error> {
+        let address = future_host::agent_client::raw_agent_addr();
+        tokio::task::spawn_blocking(move || host().start(address))
             .await
             .map_err(|error| error.to_string())??;
         Ok(())
     }
-    pub(super) fn check_running(&mut self) -> Result<(), crate::AppError> {
-        match crate::agent_host::host().phase() {
-            crate::agent_host::Phase::Failed(error) => Err(error.into()),
+    pub(super) fn check_running(&mut self) -> Result<(), future_host::Error> {
+        match host().phase() {
+            future_host::agent_host::Phase::Failed(error) => Err(error.into()),
             _ => Ok(()),
         }
     }
-    pub(super) async fn shutdown(&mut self) -> Result<(), crate::AppError> {
-        tokio::task::spawn_blocking(|| crate::desktop_shutdown::stop("headless_exit"))
+    pub(super) async fn shutdown(&mut self) -> Result<(), future_host::Error> {
+        tokio::task::spawn_blocking(|| super::stop("headless_exit"))
             .await
             .map_err(|error| error.to_string())?
     }
+}
+
+fn host() -> &'static future_host::agent_host::AgentHost {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        future_host::agent_host::configure_driver(drive)
+            .expect("entry installs its Agent driver once");
+    });
+    future_host::agent_host::host()
+}
+
+fn drive(
+    host: &future_host::agent_host::AgentHost,
+    configured: &str,
+) -> Result<(), future_host::Error> {
+    let probe = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let selected = probe.block_on(host.select(configured));
+    drop(probe);
+    host.run_selected(selected?, |prepared| {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("agent-runtime")
+            .worker_threads(2)
+            .max_blocking_threads(32)
+            .thread_stack_size(2 * 1024 * 1024)
+            .build()?;
+        let result = runtime.block_on(host.serve(prepared));
+        runtime.shutdown_timeout(std::time::Duration::from_secs(1));
+        result
+    })
 }
 
 #[cfg(test)]
@@ -29,12 +61,12 @@ mod tests {
 
     #[tokio::test]
     async fn shutdown_without_an_owned_service_is_a_noop() {
-        let _home = crate::auth_store::test_support::HomeGuard::new("headless-stop");
-        let _mock = crate::agent_bridge::test_support::mock_agent();
+        let _home = future_host::auth_store::test_support::HomeGuard::new("headless-stop");
+        let _mock = future_host::test_support::agent::mock_agent();
         let mut agent = Agent;
         agent.check_running().unwrap();
         agent.shutdown().await.unwrap();
-        assert!(!crate::agent_host::host().owns_agent());
+        assert!(!super::host().owns_agent());
     }
 }
 
@@ -138,13 +170,13 @@ mod block_fixtures {
         // Both are read before the assertion that consumes them: a `match` arm or
         // a second `assert!` that can only fire on a bug would become a residual
         // line of this file, and this file is measured.
-        let refused = crate::agent_host::host()
+        let refused = super::host()
             .start("auto".into())
             .err()
             .map(|error| error.to_string());
         let phase_failed = matches!(
-            crate::agent_host::host().phase(),
-            crate::agent_host::Phase::Failed(_)
+            super::host().phase(),
+            future_host::agent_host::Phase::Failed(_)
         );
         let mut agent = Agent;
         let reported = agent.check_running().unwrap_err().to_string();

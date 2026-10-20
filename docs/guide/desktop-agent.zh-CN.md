@@ -2,7 +2,7 @@
 
 [English](desktop-agent.md)
 
-GUI 和 `futureos-headless` 默认在自身进程中运行完整 Agent。CLI、TUI、手机和其他客户端仍通过同一 RPC 使用服务，现有配置、数据库、会话和凭据格式不变。打包的 `future` CLI 继续用于技能、维护和独立 `future agent`，不再是 Desktop 默认启动 Agent 的必需进程。
+GUI 和 `future headless` 默认在自身进程中运行完整 Agent。CLI、TUI、手机和其他客户端仍通过同一 RPC 使用服务，现有配置、数据库、会话和凭据格式不变。打包的 `future` CLI 继续用于技能、维护和独立 `future agent`，不再是 Desktop 默认启动 Agent 的必需进程。
 
 ## 启动与外部服务
 

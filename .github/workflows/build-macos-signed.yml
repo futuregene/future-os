@@ -427,6 +427,12 @@ jobs:
                   assert result.returncode == 0, result.stderr
                   if binary == 'future':
                       assert result.stdout.strip() == 'future v' + os.environ['FUTURE_VERSION'], result.stdout
+              path = apps[0] / 'Contents/MacOS/future'
+              result = subprocess.run([str(path.resolve()), 'headless', '--help'], env=env,
+                                      stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
+              assert result.returncode == 0, result.stderr
+              assert 'Usage: future headless' in result.stdout, result.stdout
+              assert not list(apps[0].rglob('futureos-headless*')), 'Retired headless executable bundled'
               assert not state.exists(), 'Early package probes initialized Agent state'
           PY
 

@@ -53,12 +53,8 @@ CARGO_PINNED := rustup run $(RUST_TOOLCHAIN) cargo
 # ─── Install ────────────────────────────────────────────────────────────────
 # The unified `future` CLI embeds agent/tui/channel/goal; the desktop bundles
 # it for CLI tools and maintenance; Desktop hosts Agent in process by default.
-# Standalone future-agent/-tui/-channel/-goal
-# binaries are dev-only (cargo run -p <crate>) — install puts three files in
-# PREFIX: `future`, `futureos`, and the GUI-free `futureos-headless`.
-# The headless server keeps its release-package name (Linux .deb and portable
-# tarball install `futureos-headless` too), and its own help text names it
-# that way; it finds `future` beside it for skill initialisation.
+# Standalone component binaries are dev-only. Full installs put `future` and
+# `futureos` in PREFIX; `future headless` runs the shared backend inside the CLI.
 
 # One-time developer bootstrap for a fresh clone. Installs the workspace JS
 # deps (shared packages, desktop, mobile) and the skills submodule,
@@ -69,7 +65,7 @@ setup:
 	$(call npm-install-if-needed,desktop)
 	$(call npm-install-if-needed,mobile)
 
-install: install-desktop install-desktop-headless install-skills
+install: install-desktop install-skills
 
 install-cli: build-cli
 ifeq ($(OS),windows)
@@ -92,17 +88,13 @@ else
 	$(SUDO) install -m 755 target/release/futureos "$(PREFIX)/futureos"
 endif
 
-# GUI-free server, plus the matching CLI it looks for beside itself. The server
-# keeps its release-package name (the Linux .deb and portable tarball install
-# `futureos-headless` too), and its own help text names it that way.
+# Compatibility alias for a GUI-free CLI installation, including headless.
 install-desktop-headless: build-desktop-headless
 ifeq ($(OS),windows)
 	@if not exist "$(USERPROFILE)\.future\bin" mkdir "$(USERPROFILE)\.future\bin"
 	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "$(PREFIX)\future$(EXE_SUFFIX)"
-	$(COPY_CMD) target\release\futureos-headless$(EXE_SUFFIX) "$(PREFIX)\futureos-headless$(EXE_SUFFIX)"
 else
 	$(SUDO) install -m 755 target/release/future "$(PREFIX)/future"
-	$(SUDO) install -m 755 target/release/futureos-headless "$(PREFIX)/futureos-headless"
 endif
 
 # Also removes pre-unification installs (future-agent/-tui/-channel).
@@ -193,9 +185,9 @@ build-desktop:
 	$(call npm-install-if-needed,desktop)
 	cd desktop && npm run tauri:build -- --no-bundle
 
-# GUI-free server binary plus the matching Agent/CLI, with no npm/Tauri build.
+# Compatibility target: GUI-free `future headless`, with no npm/Tauri build.
 build-desktop-headless:
-	$(CARGO_PINNED) build --release -p future-cli -p futureos --no-default-features --features futureos/headless --bin future --bin futureos-headless
+	$(CARGO_PINNED) build --release -p future-cli --bin future
 
 # Mobile native projects are generated locally by Expo (gitignored).
 build-mobile-android:
@@ -439,7 +431,7 @@ endif
 
 help:
 	@echo "  build / build-cli / build-desktop   Build desktop + unified CLI (or each part)"
-	@echo "  build-desktop-headless             Build GUI-free server + matching CLI"
+	@echo "  build-desktop-headless             Build GUI-free CLI with headless"
 	@echo "  build-mobile-android / -ios         Build & install the mobile app (Expo)"
 	@echo "  test                                All unit tests (Rust crates + desktop + mobile)"
 	@echo "  test-<crate>                        test-agent / -channels / -cli / -tui / -desktop(-rust) / -mobile"

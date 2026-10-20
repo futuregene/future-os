@@ -10,11 +10,6 @@ default-run = "futureos"
 name = "futureos_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
-[[bin]]
-name = "futureos-headless"
-path = "src/bin/futureos-headless.rs"
-required-features = ["headless"]
-
 # The main-thread driver (TAU-C8). `harness = false` gives this target a real `fn main()`
 # — i.e. the process's main thread — which is what makes the AppKit/`muda` family
 # (`menu.rs`, `run_with`'s own body, the `.setup` hook) reachable at all; libtest runs
@@ -32,8 +27,8 @@ required-features = ["gui"]
 
 [features]
 default = ["gui"]
-# Opt-in binary, built with --no-default-features so GUI libraries cannot leak
-# into the server distribution. It reuses the same Desktop backend.
+# Compatibility feature for existing check commands. Foreground hosting is
+# provided solely by the independently installed `future headless` CLI.
 headless = []
 gui = [
     "dep:tauri", "dep:tauri-build", "dep:tauri-plugin-shell",

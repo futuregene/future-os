@@ -26,7 +26,6 @@ mod future_login;
 mod future_platform;
 #[cfg(feature = "gui")]
 mod git_review;
-pub mod headless;
 mod host_environment;
 mod instance;
 pub mod launch;

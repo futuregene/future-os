@@ -1,16 +1,15 @@
-//! Foreground Desktop without a window or WebView. Business and remote
-//! protocol implementations are the same ones used by the graphical Desktop.
+//! Foreground CLI application entry backed by the shared GUI-free Host library.
 mod agent;
 
 use std::io::{IsTerminal, Write};
 use std::process::Stdio;
 use std::time::Duration;
 
-use crate::{future_login, remote, AppError};
+use future_host::{future_login, remote, Error as AppError};
 
-pub const HELP: &str = "Usage: futureos-headless [--relay URL [--relay-ca PEM]] [--help]
+pub const HELP: &str = "Usage: future headless [--relay URL [--relay-ca PEM]] [--help]
 
-Run Desktop's mobile remote entry in this terminal; Ctrl+C stops it.
+Run the application host in this terminal; Ctrl+C stops it.
 Guide platform login and phone pairing when needed; reuse an existing pairing.
 With --relay, no Future account is needed at all.
 
@@ -19,7 +18,7 @@ With --relay, no Future account is needed at all.
               remembered for later launches; pass an empty value to go back.
   --relay-ca  PEM file with the relay's CA, when its certificate is not issued
               by a public CA.
-  --help      Show this help without starting Desktop or Agent.
+  --help      Show this help without starting Host or Agent.
 
 Login uses your phone/computer browser; phone pairing uses the FutureOS app.
 First-time setup requires an interactive terminal. No background service is installed.
@@ -81,12 +80,18 @@ impl Options {
 /// event loop is constructed on this path.
 pub fn run(options: Options) -> Result<(), String> {
     // Hydration may supply FUTURE_HOME; freeze it before selecting the lock.
-    crate::host_environment::initialize().map_err(|e| e.to_string())?;
-    let _guard = crate::instance::InstanceGuard::acquire().map_err(|e| e.to_string())?;
+    future_host::environment::prepare_process();
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    future_host::cli_tool::prepare_path_for(&executable).map_err(|e| e.to_string())?;
+    let _guard = future_host::instance::InstanceGuard::acquire().map_err(|e| e.to_string())?;
     // Applied before anything reads the pairing store: a `--relay` on this
     // launch decides which relay the invitation it prints will point at.
-    crate::launch::apply_relay_settings(options.relay.as_deref(), options.relay_ca.as_deref())?;
-    crate::host_environment::start_logging().map_err(|e| e.to_string())?;
+    future_host::remote::relay::apply_launch_settings(
+        options.relay.as_deref(),
+        options.relay_ca.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
+    future_host::environment::start_logging().map_err(|e| e.to_string())?;
     // Say where diagnostics land before any Agent work starts — after the data
     // root is final, because hydration above can still change it. The Agent logs
     // each startup phase to that file as well as this terminal, and on a host
@@ -94,7 +99,7 @@ pub fn run(options: Options) -> Result<(), String> {
     // file is the only surviving evidence.
     eprintln!(
         "FutureOS: startup progress is logged to {} and mirrored in this terminal.",
-        crate::host_environment::log_file_path().display()
+        future_host::environment::log_file_path().display()
     );
     prepare_terminal();
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -104,7 +109,7 @@ pub fn run(options: Options) -> Result<(), String> {
         .thread_stack_size(2 * 1024 * 1024)
         .build()
         .map_err(|e| e.to_string())?;
-    crate::runtime::set(runtime.handle().clone());
+    future_host::runtime::set(runtime.handle().clone());
     let result = runtime.block_on(async {
         let signals = ShutdownSignals::new()?;
         let mut agent = agent::Agent;
@@ -121,7 +126,7 @@ pub fn run(options: Options) -> Result<(), String> {
 /// must be able to finish: name the log that holds the preceding startup phases
 /// whenever one was written.
 fn with_log_hint(message: String) -> String {
-    let log = crate::host_environment::log_file_path();
+    let log = future_host::environment::log_file_path();
     if log.is_file() {
         format!(
             "{message}\nThe Agent's last startup phase and any failure are in {}.",
@@ -144,23 +149,23 @@ async fn until_shutdown(
 }
 
 async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
-    eprintln!("FutureOS headless Desktop - foreground mode. Press Ctrl+C to stop.");
+    eprintln!("FutureOS headless - foreground mode. Press Ctrl+C to stop.");
     // Fail on corrupt credentials rather than silently replacing the account.
-    crate::auth_store::read()?;
-    let paired = crate::remote::pairing::load_creds_checked()?.is_some();
+    future_host::auth_store::read()?;
+    let paired = future_host::remote::pairing::load_creds_checked()?.is_some();
     // A self-hosted relay is the whole answer to "which account": it has none.
     // The login gate exists because the Future platform mints the invitation,
     // and with `--relay` it no longer does.
-    let relay = crate::remote::relay::endpoint();
+    let relay = future_host::remote::relay::endpoint();
     if relay.is_none() && (!paired || future_login::future_api_key().is_err()) {
         require_terminal()?;
     }
     if relay.is_some() {
         require_terminal()?;
     }
-    crate::store::initialize_app_store()?;
+    future_host::store::initialize_app_store()?;
     ensure_agent_running(agent).await?;
-    crate::agent_bridge::install_channel_runtime();
+    install_channel_runtime();
     let account_key = if let Some(url) = relay.as_deref() {
         eprintln!(
             "Self-hosted relay ({url}). No Future account is used for phone pairing; \
@@ -170,41 +175,41 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     } else {
         ensure_login().await?;
         let key = future_login::future_api_key()?;
-        let platform = crate::future_platform::current_platform_url();
+        let platform = future_host::future_platform::current_platform_url();
         eprintln!("Platform login authorized ({platform}).");
         // Fresh servers have no WebView to trigger the usual initial model sync.
         // Through the scheduler so the automatic loop shares this run's clock, the
         // same way the window's `sync_future_models` command does.
-        if let Err(error) = crate::scheduler::refresh_future_models_now().await {
+        if let Err(error) = future_host::scheduler::refresh_future_models_now().await {
             eprintln!(
                 "Model catalog refresh failed; existing configured models remain available: {error}"
             );
         }
         Some(key)
     };
-    let platform = crate::future_platform::current_platform_url();
+    let platform = future_host::future_platform::current_platform_url();
     // The window's fixed-interval maintenance (app updates and the balance
     // event need a WebView; see `scheduler::start_headless`).
-    crate::scheduler::start_headless();
+    future_host::scheduler::start_headless();
     // Built-in skills are installed by the window's post-login onboarding. A
     // server never renders that flow, so it runs the same CLI step itself.
-    crate::runtime::spawn(bootstrap_builtin_skills());
+    future_host::runtime::spawn(bootstrap_builtin_skills());
     // Same background projections, approvals and persistence paths as Desktop.
     // Headless has no active-thread UI hint, so its compatibility monitor
     // observes only sessions the Agent reports as actively streaming.
-    crate::agent_bridge::spawn_streaming_observer_monitor();
-    crate::agent_bridge::spawn_provider_config_observer();
-    crate::agent_bridge::spawn_session_events_observer();
-    crate::agent_bridge::spawn_session_discovery();
-    crate::agent_bridge::spawn_delete_outbox_worker();
-    crate::agent_bridge::spawn_active_run_watchdog();
+    future_host::agent_bridge::spawn_streaming_observer_monitor();
+    future_host::agent_bridge::spawn_provider_config_observer();
+    future_host::agent_bridge::spawn_session_events_observer();
+    future_host::agent_bridge::spawn_session_discovery();
+    future_host::agent_bridge::spawn_delete_outbox_worker();
+    future_host::agent_bridge::spawn_active_run_watchdog();
     // User-defined tasks run here too: headless desktop has no webview, so the
     // executor's notifications downgrade to ledger-only (the run rows are the
     // signal). This is what lets a server box run tasks with no GUI attached.
-    crate::tasks::start_headless();
-    crate::runtime::spawn(async {
-        crate::agent_bridge::reconcile_interrupted_runs().await;
-        crate::agent_bridge::reconcile_pending_approvals().await;
+    future_host::tasks::start_headless();
+    future_host::runtime::spawn(async {
+        future_host::agent_bridge::reconcile_interrupted_runs().await;
+        future_host::agent_bridge::reconcile_pending_approvals().await;
     });
 
     eprintln!("Preparing the remote connection...");
@@ -214,7 +219,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     // window to print it in — the terminal that asked does. Started after the
     // remote entry, so a request that arrives during startup is answered by a
     // Desktop that is actually serving rather than refused as "off".
-    crate::remote::control::spawn_host();
+    future_host::remote::control::spawn_host();
     let mut shown_invitation = None;
     let mut invitation_expiry = None;
     let mut previous_state = String::new();
@@ -227,7 +232,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
         // room registration are the whole authorization.
         if let Some(account_key) = account_key.as_deref() {
             if future_login::future_api_key().ok().as_deref() != Some(account_key)
-                || crate::future_platform::current_platform_url() != platform
+                || future_host::future_platform::current_platform_url() != platform
             {
                 return Err("Platform login changed or was removed. Remote access is closing; restart to authorize again.".into());
             }
@@ -268,14 +273,14 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
                 shown_invitation = Some(link);
             }
         }
-        let paired = crate::remote::pairing::load_creds_checked()?.is_some();
+        let paired = future_host::remote::pairing::load_creds_checked()?.is_some();
         if paired && !was_paired && status.phase == remote::RemotePhase::Ready {
             eprintln!("Phone pairing saved. Remote access is open; connect with the paired FutureOS app. Ctrl+C closes this entry.");
             was_paired = true;
         }
         if !paired && invitation_expiry.is_some_and(|expiry| expiry <= unix_seconds()) {
             return Err(
-                "Phone pairing invitation expired. Restart headless Desktop to request a new one."
+                "Phone pairing invitation expired. Restart future headless to request a new one."
                     .into(),
             );
         }
@@ -366,7 +371,7 @@ the host killed it (memory or per-user budget); the phases it reached are in {}.
 async fn ensure_agent_running(agent: &mut agent::Agent) -> Result<(), AppError> {
     starting_with_notice(
         agent.ensure_running(),
-        &crate::host_environment::log_file_path(),
+        &future_host::environment::log_file_path(),
     )
     .await
 }
@@ -394,7 +399,7 @@ fn require_terminal() -> Result<(), AppError> {
     if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         Ok(())
     } else {
-        Err("Login/pairing requires an interactive terminal. Run `futureos-headless` as the same user first; authorization links are not written to redirected logs.".into())
+        Err("Login/pairing requires an interactive terminal. Run `future headless` as the same user first; authorization links are not written to redirected logs.".into())
     }
 }
 
@@ -409,7 +414,7 @@ fn require_terminal() -> Result<(), AppError> {
 /// skills from its own Skills page, and the catalog fetch behind `future init`
 /// is a network call this foreground process must not stall on.
 async fn bootstrap_builtin_skills() {
-    let executable = match crate::cli_tool::resolve_for("skills.init") {
+    let executable = match maintenance_executable() {
         Ok(executable) => executable,
         Err(error) => {
             eprintln!("Skipping built-in skill setup: {error}");
@@ -448,7 +453,7 @@ async fn bootstrap_builtin_skills() {
     // refreshes that cache on startup, so a server that just gained built-ins
     // must give the Agent the same signal or a run started from the phone would
     // not be offered them until the next restart.
-    crate::agent_bridge::refresh_skills().await;
+    future_host::agent_bridge::refresh_skills().await;
 }
 
 async fn ensure_login() -> Result<(), AppError> {
@@ -465,7 +470,7 @@ async fn ensure_login() -> Result<(), AppError> {
         }
     }
     require_terminal()?;
-    let login = future_login::start_with_browser(false).await?;
+    let login = future_login::start().await?;
     print_invitation(
         "PLATFORM LOGIN - scan with your phone camera/browser and authorize this server",
         &login.verification_uri_complete,
@@ -703,6 +708,74 @@ impl ShutdownSignals {
     }
 }
 
+fn install_channel_runtime() {
+    static INITIALIZED: std::sync::Once = std::sync::Once::new();
+    INITIALIZED.call_once(|| {
+        future_host::agent_client::configure_channel_runtime(agent_channel_runtime())
+            .expect("entry configures the Agent channel runtime once");
+    });
+}
+
+fn stop(reason: &'static str) -> Result<(), AppError> {
+    future_host::shutdown::begin(reason, move |operation| {
+        let mut services = future_host::shutdown::ServiceStop::prepare(operation, reason, || {})
+            .map_err(|error| error.to_string())?;
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => Some(runtime),
+            Err(error) => {
+                services.runtime_unavailable(error);
+                None
+            }
+        };
+        if let Some(runtime) = &runtime {
+            runtime.block_on(services.disconnect());
+        }
+        if let Some(runtime) = runtime {
+            runtime.shutdown_timeout(operation.remaining(Duration::from_secs(1)));
+        }
+        services.finish().map_err(|error| error.to_string())
+    })
+    .wait()
+    .map_err(Into::into)
+}
+
+fn agent_channel_runtime() -> tokio::runtime::Handle {
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Handle> = std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .thread_name("agent-channel")
+                .build()
+                .expect("build agent channel runtime");
+            let handle = runtime.handle().clone();
+            std::thread::Builder::new()
+                .name("agent-channel-runtime".to_string())
+                .spawn(move || {
+                    // Park forever: dropping the runtime would kill the shared
+                    // connection's driver task.
+                    runtime.block_on(std::future::pending::<()>());
+                })
+                .expect("spawn agent channel runtime thread");
+            handle
+        })
+        .clone()
+}
+
+#[cfg(not(test))]
+fn maintenance_executable() -> Result<std::path::PathBuf, AppError> {
+    std::env::current_exe().map_err(Into::into)
+}
+#[cfg(test)]
+fn maintenance_executable() -> Result<std::path::PathBuf, AppError> {
+    future_host::test_support::configure_entry_fixture();
+    future_host::cli_tool::resolve_for("skills.init")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,7 +887,7 @@ mod tests {
     /// not claim a log that was never written.
     #[test]
     fn the_exit_hint_names_an_existing_log_only() {
-        let _home = crate::auth_store::test_support::HomeGuard::new("headless-log-hint");
+        let _home = future_host::auth_store::test_support::HomeGuard::new("headless-log-hint");
         let log = crate::host_environment::log_file_path();
         assert_eq!(with_log_hint("failed".into()), "failed");
         std::fs::create_dir_all(log.parent().unwrap()).unwrap();
@@ -1044,7 +1117,7 @@ mod tests {
     /// endpoint, and restore both.
     #[cfg(unix)]
     fn with_path_and_broken_agent<T>(directory: &std::path::Path, body: impl FnOnce() -> T) -> T {
-        let _lock = crate::TEST_HOME_LOCK
+        let _lock = future_host::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let saved_path = std::env::var_os("PATH");
@@ -1081,7 +1154,7 @@ mod tests {
             "the marker must only appear once `init` has run"
         );
         let outcome = with_path_and_broken_agent(&directory, || {
-            crate::cli_tool::resolve_for("skills.init").map_err(|error| error.to_string())
+            future_host::cli_tool::resolve_for("skills.init").map_err(|error| error.to_string())
         });
         match outcome {
             Ok(path) => assert_eq!(path, cli, "discovery must return the fixture CLI"),
@@ -1161,7 +1234,7 @@ mod tests {
         std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let discovered = with_path_and_broken_agent(&directory, || {
-            crate::cli_tool::resolve_for("skills.init").map_err(|error| error.to_string())
+            future_host::cli_tool::resolve_for("skills.init").map_err(|error| error.to_string())
         });
         let identity_before = std::fs::metadata(&cli).unwrap();
         // The state this test is about: the CLI is byte-for-byte the file
@@ -1219,9 +1292,9 @@ mod tests {
     /// server that is already authorized starts unattended.
     #[test]
     fn an_accepted_platform_key_needs_no_terminal() {
-        let _home = crate::auth_store::test_support::HomeGuard::new("headless-login-ok");
+        let _home = future_host::auth_store::test_support::HomeGuard::new("headless-login-ok");
         let (url, server) = mock_http_server(200, r#"{"email":"operator@example.com"}"#);
-        crate::auth_store::set_future_login("sekret", &format!("{url}/api")).unwrap();
+        future_host::auth_store::set_future_login("sekret", &format!("{url}/api")).unwrap();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1236,9 +1309,9 @@ mod tests {
     /// point then stops at the terminal requirement it cannot satisfy headless.
     #[test]
     fn a_rejected_platform_key_is_reported_as_expired_authorization() {
-        let _home = crate::auth_store::test_support::HomeGuard::new("headless-login-401");
+        let _home = future_host::auth_store::test_support::HomeGuard::new("headless-login-401");
         let (url, server) = mock_http_server(401, r#"{"message":"expired"}"#);
-        crate::auth_store::set_future_login("sekret", &format!("{url}/api")).unwrap();
+        future_host::auth_store::set_future_login("sekret", &format!("{url}/api")).unwrap();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1257,8 +1330,8 @@ mod tests {
     /// must survive, and the error must reach the operator.
     #[test]
     fn a_network_failure_while_checking_the_platform_login_is_not_a_logout() {
-        let _home = crate::auth_store::test_support::HomeGuard::new("headless-login-net");
-        crate::auth_store::set_future_login("sekret", "http://127.0.0.1:1/api").unwrap();
+        let _home = future_host::auth_store::test_support::HomeGuard::new("headless-login-net");
+        future_host::auth_store::set_future_login("sekret", "http://127.0.0.1:1/api").unwrap();
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1273,7 +1346,7 @@ mod tests {
             "{error}"
         );
         assert_eq!(
-            crate::auth_store::read()
+            future_host::auth_store::read()
                 .unwrap()
                 .get("future")
                 .and_then(|future| future.get("key"))

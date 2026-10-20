@@ -764,7 +764,7 @@ jobs:
         run: |
           if [ "$REQUESTED_SCOPE" = 'headless-cli' ] || [ "$REQUESTED_SCOPE" = 'agent-lifecycle' ]; then
             if [ "${{ matrix.flavor }}" = 'headless' ]; then
-              cargo test --manifest-path desktop/src-tauri/Cargo.toml --no-default-features --features headless --test headless_cli
+              cargo test -p future-cli --test headless_cli --test remote_start_refusal
             else
               echo "Scope $REQUESTED_SCOPE runs the headless CLI suite only; no gui desktop tests."
             fi

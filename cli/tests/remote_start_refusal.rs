@@ -2,7 +2,7 @@
 //! `#[cfg(not(test))]` bodies.
 //!
 //! Why a spawned child and not a lib test: those bodies are compiled only into the
-//! **non-test** copy of `futureos_lib` (the one the bins link). A `#[test]` body links the
+//! **non-test** copy of `future_host` and the CLI entry (the one the bins link). A `#[test]` body links the
 //! test copy, where `spawn_start_retry`, `spawn_runtime_reconnect`, `GenerationWatch` and
 //! `spawn_runtime_supervisor` are replaced by `return;`/`()` stubs. `docs/testing/
 //! module-tauri-remote.md` §10.4 named this fixture; §11 records the landing.
@@ -54,11 +54,8 @@
 //! server (the child's `auth.json` `base_url` is pointed at it), so no real account,
 //! relay, or NATS server is involved.
 //!
-//! Headless only: the `futureos-headless` bin has `required-features = ["headless"]`, so
-//! the GUI leg of the two-flavour measurement cannot name it. The GUI leg compiles this
-//! file to nothing; the headless leg runs it, and the union is the campaign's metric.
-
-#![cfg(feature = "headless")]
+//! Runs the actual unified CLI independently of Desktop. Unix fixtures own a PTY;
+//! Windows fixtures own a ConPTY or a separate console for native Ctrl+C delivery.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -342,7 +339,7 @@ impl Broker {
 }
 
 async fn serve_broker(stream: tokio::net::TcpStream, mode: BrokerMode) {
-    use futures::{SinkExt, StreamExt};
+    use futures_util::{SinkExt, StreamExt};
     use tokio_tungstenite::tungstenite::Message;
 
     let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
@@ -460,7 +457,8 @@ impl ChildRun {
         // The previous child may still be unwinding; it holds the shared web port until it
         // exits (see wait_for_web_port_free).
         wait_for_web_port_free();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_futureos-headless"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_future"));
+        command.arg("headless");
         // Hermetic: the fixture controls every variable the child reads. A developer
         // shell (or cargo's own environment) must not decide whether this child attaches
         // to a real Agent or to a real Desktop.
@@ -469,6 +467,9 @@ impl ChildRun {
             "PATH",
             "SHELL",
             "TMPDIR",
+            "TEMP",
+            "TMP",
+            "SystemRoot",
             "LANG",
             "LLVM_PROFILE_FILE",
             "RUST_BACKTRACE",
@@ -476,6 +477,13 @@ impl ChildRun {
             if let Some(value) = std::env::var_os(key) {
                 command.env(key, value);
             }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // Give this child its own console. The signal helper attaches only to
+            // that console; neither the runner nor an existing Agent is signalled.
+            command.creation_flags(0x0000_0010); // CREATE_NEW_CONSOLE
         }
         let mut child = command
             .env("HOME", &home)
@@ -485,7 +493,7 @@ impl ChildRun {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("spawn futureos-headless");
+            .expect("spawn future headless");
         let transcript = Arc::new(Mutex::new(String::new()));
         for pipe in [
             child
@@ -539,9 +547,10 @@ impl ChildRun {
 
     /// Interrupt the child the way an operator does (Ctrl+C), then wait for its own exit.
     fn interrupt(&mut self) {
-        unsafe {
-            libc::kill(self.child.id() as i32, libc::SIGINT);
+        if matches!(self.child.try_wait(), Ok(Some(_))) {
+            return;
         }
+        interrupt_child(&self.child);
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
             if matches!(self.child.try_wait(), Ok(Some(_))) {
@@ -564,24 +573,81 @@ impl Drop for ChildRun {
     }
 }
 
+#[cfg(unix)]
+fn interrupt_child(child: &Child) {
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGINT);
+    }
+}
+
+#[cfg(windows)]
+fn interrupt_child(child: &Child) {
+    let status = Command::new(std::env::current_exe().expect("fixture executable"))
+        .args(["--exact", "windows_interrupt_helper", "--nocapture"])
+        .env("FUTURE_FIXTURE_INTERRUPT_PID", child.id().to_string())
+        .status()
+        .expect("spawn owned-console signal helper");
+    assert!(status.success(), "owned-console Ctrl+C delivery failed");
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_interrupt_helper() {
+    let Ok(pid) = std::env::var("FUTURE_FIXTURE_INTERRUPT_PID") else {
+        return;
+    };
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn FreeConsole() -> i32;
+        fn AttachConsole(pid: u32) -> i32;
+        fn SetConsoleCtrlHandler(
+            handler: Option<unsafe extern "system" fn(u32) -> i32>,
+            add: i32,
+        ) -> i32;
+        fn GenerateConsoleCtrlEvent(event: u32, group: u32) -> i32;
+    }
+    unsafe {
+        FreeConsole();
+        assert_ne!(AttachConsole(pid.parse().expect("owned child pid")), 0);
+        assert_ne!(SetConsoleCtrlHandler(None, 1), 0);
+        assert_ne!(GenerateConsoleCtrlEvent(0, 0), 0); // CTRL_C_EVENT
+                                                       // Delivery is asynchronous. Keep the attached console alive until the
+                                                       // child can receive the event; the parent separately bounds its exit.
+        std::thread::sleep(Duration::from_millis(100));
+        FreeConsole();
+    }
+}
+
+#[cfg(windows)]
+#[path = "support/headless_windows_pty.rs"]
+mod windows_pty;
+#[cfg(windows)]
+use windows_pty::PtyRun;
+
 /// A child that prints invitation material needs a terminal, so it gets a pty on
 /// stdin/stdout/stderr. `openpty` is the platform call the launcher record's test achieves
 /// with `/usr/bin/script`; owning the child directly keeps signals simple.
+#[cfg(unix)]
 struct PtyRun {
     child: Child,
     transcript: Arc<Mutex<String>>,
     home: PathBuf,
 }
 
+#[cfg(unix)]
 impl PtyRun {
     fn spawn(home: PathBuf, args: &[&str]) -> Self {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_futureos-headless"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_future"));
+        command.arg("headless");
         command.args(args);
         command.env_clear();
         for key in [
             "PATH",
             "SHELL",
             "TMPDIR",
+            "TEMP",
+            "TMP",
+            "SystemRoot",
             "LANG",
             "LLVM_PROFILE_FILE",
             "RUST_BACKTRACE",
@@ -617,7 +683,7 @@ impl PtyRun {
                 slave_file.try_clone().expect("clone the pty slave"),
             ))
             .stderr(Stdio::from(slave_file));
-        let child = command.spawn().expect("spawn futureos-headless on a pty");
+        let child = command.spawn().expect("spawn future headless on a pty");
         let transcript = Arc::new(Mutex::new(String::new()));
         let sink = transcript.clone();
         std::thread::spawn(move || {
@@ -656,9 +722,10 @@ impl PtyRun {
     }
 
     fn interrupt(&mut self) {
-        unsafe {
-            libc::kill(self.child.id() as i32, libc::SIGINT);
+        if matches!(self.child.try_wait(), Ok(Some(_))) {
+            return;
         }
+        interrupt_child(&self.child);
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
             if matches!(self.child.try_wait(), Ok(Some(_))) {
@@ -671,6 +738,7 @@ impl PtyRun {
     }
 }
 
+#[cfg(unix)]
 impl Drop for PtyRun {
     fn drop(&mut self) {
         if matches!(self.child.try_wait(), Ok(None)) {

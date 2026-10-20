@@ -33,7 +33,7 @@ future remote devices use <id>
 
 ## 2 当前耦合与目标结构
 
-当前 [headless 启动](../../desktop/src-tauri/src/headless/mod.rs)属于 `futureos` crate。它已通过 feature 排除 GUI 系统依赖，但仍使用 Desktop 的 Store、Agent 管理、登录、Remote 宿主适配、调度、观察器和退出协调。仅增加 CLI 对 Desktop crate 的依赖，会保留这些编译与测试归属问题。
+基线时 headless 启动属于 `futureos` crate（现入口：[CLI headless](../../cli/src/headless/mod.rs)）。它已通过 feature 排除 GUI 系统依赖，但仍使用 Desktop 的 Store、Agent 管理、登录、Remote 宿主适配、调度、观察器和退出协调。仅增加 CLI 对 Desktop crate 的依赖，会保留这些编译与测试归属问题。
 
 新建 `host/`，crate 名为 `future-host`，作为应用宿主库加入根 Cargo workspace，共用根锁文件与构建产物。它是普通 Rust 库，不增加独立二进制或 `staticlib`/`cdylib` 产物。`host/` 是产品应用运行时；不同于 `packages/` 中保持产品无关的协议和角色库，它可以组合 `future-agent` 等应用服务。
 
@@ -132,7 +132,7 @@ GUI 和 headless 分别升级后都应能读取同一份旧数据。验收使用
 | `headless/agent.rs`、`agent_host`、退出协调及通用调度用例 | `future-host` 单元/集成测试 | Agent 归属、启动/readiness 失败、停止顺序、总截止时间、失败回收 |
 | Store、业务桥、配置/身份与 Remote 业务宿主测试 | `future-host` 或既有共享包 | 原数据库/文件/审批业务断言，不能仅断言调用了接口 |
 | [headless_cli.rs](../../desktop/src-tauri/tests/headless_cli.rs) | CLI 的真实 `future headless` 进程测试；GUI 特有部分留 Desktop | 真正构建的 `future`、首次非 TTY 拒绝、已有配置、信号、互斥、外部 Agent 存活 |
-| [remote_start_refusal.rs](../../desktop/src-tauri/tests/remote_start_refusal.rs) | CLI headless 产品进程测试；共用故障决策归宿主/Remote 包 | 活跃真实宿主、平台拒绝、撤销单设备、恢复预算及持久化结果 |
+| [remote_start_refusal.rs](../../cli/tests/remote_start_refusal.rs) | CLI headless 产品进程测试；共用故障决策归宿主/Remote 包 | 活跃真实宿主、平台拒绝、撤销单设备、恢复预算及持久化结果 |
 | Remote 包与[独立互通工程](../../tests/remote-interop/Cargo.toml) | 保留原归属 | 协议、加密、主控/被控状态机与真实角色互通，不移回宿主 |
 | Tauri commands、窗口/菜单、IPC 与 GUI 生命周期 | Desktop | 使用共享后端的真实接线、窗口退出、GUI 插件行为 |
 
@@ -276,8 +276,8 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 |---|---|
 | 0 | 已固定源码/依赖基线与按名清单，混合模块归属已逐项审查；同条件构建/运行测量未完成 |
 | 1 | 已建立无 GUI 普通库、任务注册、展示出口和消费者依赖；完整生命周期/配置边界未完成 |
-| 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端/托管与请求归属已迁入；完整业务桥、任务/会话、登录账户与维护调度已迁入；Remote 宿主/Peer 已迁入并完成本地核心执行，跨平台复验待完成；停止协调状态已迁入；共享服务停止顺序已迁入；CLI 维护引导和统一启动边界未完成 |
-| 3 | 尚未实现；产品入口仍是 `futureos-headless` |
+| 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端/托管与请求归属已迁入；完整业务桥、任务/会话、登录账户与维护调度已迁入；Remote 宿主/Peer 已迁入并完成本地核心执行，跨平台复验待完成；停止协调状态已迁入；共享服务停止顺序已迁入；CLI 维护引导与统一启动边界已接入，批量变更待统一验证 |
+| 3 | 已接入 `future headless`，终端/信号/Agent runtime 归 CLI；旧入口已删除；批量变更待统一验证 |
 | 4 | 已迁移 1597 个原测试声明（1584 个本地 macOS 执行通过、10 个保留原忽略声明，另 3 个本机不可执行声明已在 Linux CI 通过）；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
 | 5 | 已加宿主 CI 分组和 affected 传播；构建、发行物、签名/安装/升级/卸载未完成 |
 | 6 | 尚未开始；无最终冻结候选、同条件性能、产物验收或确认的人工结果 |
@@ -509,3 +509,12 @@ CI 39379461294 已结束且整体失败。除 Windows Host 外的独立分组通
 ### 2026-10-20 主干日志健康修复合并
 
 推送前同步远程主干 edb9d134。日志写入冲突同时保留主干的批次回复延后和本分支独立于待重试队列的 storage_failed 判定；所有失败项都有 durable 回执时也先发布不健康再回复，并让 flush 返回失败。真实 SQLite/journal 组 47 项通过，包含本分支 durable-only 回归；主干任务页变更的 46 项通过，type-check、ESLint、fmt 和相关 Clippy --all-targets 通过。临时依赖链接已移除，见[证据](../testing/headless-postsync-journal-2026-10-20.json)。统一 CLI 工作单独保存，不夹带在这批后端验收候选中。
+
+
+### 2026-10-20 统一 CLI 入口与发布收尾（待统一验证）
+
+CLI 现直接调用 `future-host`，拥有前台 Tokio、Agent 与 cleanup runtime、终端交互、信号和退出码；维护通过当前可执行程序运行 `init`。旧 Desktop headless 源码/二进制目标删除，不保留外置转发或后端副本。原 53 个入口/进程测试声明迁至 CLI，另 2 个 GUI 参数/旧入口提示验证留在 Desktop；原断言与平台边界保留，清单状态为 `migrated-pending-unified-validation`。Windows 进程夹具新增独立控制台 Ctrl+C 与 ConPTY，尚待原生 CI 执行。
+
+Linux musl、deb/portable 与 CLI-only 使用同一 `future`；兼容 make 目标转为 CLI 构建/安装。Windows 安装器保留旧文件备份回滚与卸载路径，升级时移除旧入口，新增实际 `headless --help` 探测；macOS app 与 Windows/Linux 包探测也验证统一入口并拒绝旧程序。安装、签名和发布产物的实际验收仍未完成。
+
+按用户最新安排，暂停逐批测试，完成实现后统一验证。此前 CLI 进程 11 项、Remote 进程 13 项通过只覆盖中间源码；不能代表随后单元迁移、Windows 夹具及发布修改通过。上一候选 `5c56a885` 的 CI [39382550090](https://github.com/futuregene/future-os/actions/runs/39382550090) 三个平台构建因旧 Desktop `cli_tool::tests` 选择器匹配 0 项而失败；当前脚本将共享核心交给完整 Host 原生套件执行一次，保留真实入口验证和零测试失败检查。此候选 CI 不包含本节改动。最终性能、产物和人工验收仍待完成。

@@ -25,15 +25,8 @@ def main():
     suites = [
         ("connection", ["-p", "future-rpc", "--lib", "connection::tests"]),
         ("service", ["-p", "future-agent", "--test", "service_startup"]),
-        (
-            "cli-tools",
-            ["--manifest-path", "desktop/src-tauri/Cargo.toml",
-             "--no-default-features", "--features", "headless",
-             "--lib", "cli_tool::tests"],
-        ),
-        # Shared lifecycle assertions run in their owner once, independent of
-        # either entry's features. Keep real entry effects in separate suites.
-        ("shared-host", ["-p", "future-host", "--lib", "agent_host::"]),
+        # Shared cli_tool/agent_host cases belong to the complete future-host
+        # native suites. Only real entry effects are repeated at this boundary.
         (
             "gui-entry-state",
             ["-p", "futureos", "--lib",
@@ -56,8 +49,7 @@ def main():
         ),
         (
             "headless-entry",
-            ["-p", "futureos", "--no-default-features", "--features", "headless",
-             "--test", "headless_cli"],
+            ["-p", "future-cli", "--test", "headless_cli"],
         ),
     ]
     if platform.system() == "Windows":

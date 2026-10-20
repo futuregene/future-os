@@ -32,12 +32,14 @@ Apps (run the FutureOS components — same as their standalone binaries):
   tui       Launch the terminal UI (future-tui)
   channel   Start the IM channel bridge (future-channel)
   goal      Goal control plane: goals/todos/gates (future-goal)
+  headless  Foreground application host for mobile remote access
   relay     Self-hosted, account-free NATS relay for remote control
 
 Quick start:
   future init                                Initialize Future OS
   future config                              Configure a model provider
   future auth login                          Sign in to the Future platform
+  future headless                            Start the foreground application host
   future agent                               Start the agent server
   future tui                                 Launch the terminal UI
   future run "Explain this project"          One-shot agent prompt
@@ -46,6 +48,7 @@ Quick start:
   future doctor                              Check everything is working
 
 Run 'future <group> --help' for per-group details.
+  future headless --help     Foreground host, login and pairing
   future init --help         Initialization behavior
   future config --help       Interactive model-provider setup
   future desktop --help      Desktop app settings
@@ -297,14 +300,14 @@ Every action takes --json and prints the same document `future remote devices
 expiresAt).
 
 A device is a phone or another computer that paired with this machine's remote
-desktop — the Remote page in the window, or futureos-headless. The list, remove
+desktop — the Remote page in the window, or future headless. The list, remove
 and use read and write the pairing book the Desktop itself reads
 (~/.future/remote_pairings.json), so they need no running Desktop; a self-hosted
 relay needs no account either.
 
 add is the exception: an invitation is only usable while the bridge for that
 pairing is connected, so the request goes to the running Desktop (the window, or
-futureos-headless) and the answer carries the invitation. A machine with no
+future headless) and the answer carries the invitation. A machine with no
 device at all prints one as the Desktop starts.
 
 Self-hosted relays work the same way, and a machine may hold an official device
@@ -346,7 +349,7 @@ Add device and scan it, or paste the complete link. The same invitation is also
 on the Remote page while it lasts.
 
 The invitation is minted by the running Desktop, which is the only process that
-can serve the new device, so this needs one: a window, or futureos-headless. With
+can serve the new device, so this needs one: a window, or future headless. With
 none running, the answer is "start the Desktop" — and a machine with no device at
 all prints an invitation as it starts, which is also the recovery path after
 `remove --all`.

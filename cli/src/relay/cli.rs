@@ -43,7 +43,7 @@ relay.json, so a restart does not cost a re-pair, and it never stores a
 credential: only hashes of the invitation and refresh tokens.
 
 A desktop points at it with `futureos --relay URL` or
-`futureos-headless --relay URL`; the invitation it prints then carries the
+`future headless --relay URL`; the invitation it prints then carries the
 relay's address, and the phone talks to the relay instead of the Future
 platform. Devices paired through the Future platform keep working: the choice
 is recorded per pairing.";

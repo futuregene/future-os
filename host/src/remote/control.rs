@@ -4,7 +4,7 @@
 //! A device can only be *added* by the process that will serve it: the invitation
 //! carries a single-use secret and the pair-scoped credential, and the bridge for
 //! that pairing has to be up when the phone scans. That process is whichever
-//! Desktop owns this data directory — the window, or `futureos-headless` — so the
+//! Desktop owns this data directory — the window, or `future headless` — so the
 //! request travels to it as a file and the answer comes back as one.
 //!
 //! This is the same one-shot hand-off the launcher's old `--re-pair` performed

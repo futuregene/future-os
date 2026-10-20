@@ -11551,8 +11551,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-cli",
-      "target": "cli/src/headless.rs",
-      "status": "planned"
+      "target": "cli/tests/headless_cli.rs",
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/src/build_info.rs:54:release_channel_derives_from_version_prefix",
@@ -18291,9 +18291,9 @@
       "name": "shutdown_without_an_owned_service_is_a_noop",
       "attribute": "    #[tokio::test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/headless/agent.rs",
-      "status": "planned"
+      "plannedOwner": "future-cli",
+      "target": "cli/src/headless/agent.rs",
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/src/headless/agent.rs:64:a_failed_host_is_reported_with_its_own_error",
@@ -18302,9 +18302,9 @@
       "name": "a_failed_host_is_reported_with_its_own_error",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/headless/agent.rs",
-      "status": "planned"
+      "plannedOwner": "future-cli",
+      "target": "cli/src/headless/agent.rs",
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/src/headless/agent.rs:118:host_fixture",
@@ -18313,9 +18313,9 @@
       "name": "host_fixture",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/headless/agent.rs",
-      "status": "planned"
+      "plannedOwner": "future-cli",
+      "target": "cli/src/headless/agent.rs",
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:673:standalone_launch_takes_only_the_relay_flags",
@@ -18326,7 +18326,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18338,7 +18338,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18350,7 +18350,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18362,7 +18362,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18374,7 +18374,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18386,7 +18386,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18398,7 +18398,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18410,7 +18410,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18422,7 +18422,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18434,7 +18434,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18446,7 +18446,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18458,7 +18458,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18470,7 +18470,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18482,7 +18482,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18494,7 +18494,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18506,7 +18506,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18518,7 +18518,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18530,7 +18530,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18542,7 +18542,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18554,7 +18554,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18566,7 +18566,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18578,7 +18578,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18590,7 +18590,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18602,7 +18602,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -18614,7 +18614,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "cli-entry"
     },
     {
@@ -34884,9 +34884,9 @@
       "name": "help_and_invalid_arguments_have_no_startup_side_effects",
       "attribute": "#[test]",
       "ignored": false,
-      "plannedOwner": "future-cli",
-      "target": "cli/tests/headless_cli.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/tests/headless_cli.rs",
+      "status": "retained"
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:62:standalone_help_and_invalid_arguments_have_no_startup_side_effects",
@@ -34897,7 +34897,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:91:relay_flags_are_accepted_in_both_spellings",
@@ -34908,7 +34908,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:121:a_plain_launch_needs_no_headless_flag",
@@ -34919,7 +34919,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:134:first_setup_refuses_redirected_logs_without_printing_authorization_material",
@@ -34930,7 +34930,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:147:occupied_data_directory_exits_cleanly_without_startup_side_effects",
@@ -34941,7 +34941,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:179:corrupt_credentials_are_not_overwritten_or_treated_as_signed_out",
@@ -34952,7 +34952,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:194:gui_free_build_points_to_standalone_entrypoint",
@@ -34961,9 +34961,9 @@
       "name": "gui_free_build_points_to_standalone_entrypoint",
       "attribute": "#[test]",
       "ignored": false,
-      "plannedOwner": "future-cli",
-      "target": "cli/tests/headless_cli.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/tests/headless_cli.rs",
+      "status": "retained"
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:204:terminal_signals_cancel_startup_and_leave_the_external_endpoint_alone",
@@ -34974,7 +34974,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:647:a_deferred_remote_start_keeps_serving_and_stops_on_a_signal",
@@ -34985,7 +34985,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:721:a_login_change_while_supervising_stops_the_run_with_that_reason",
@@ -34996,7 +34996,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:808:a_revoked_pairing_stops_the_run_with_the_reason_and_drops_the_credential",
@@ -35007,7 +35007,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:865:a_non_auto_agent_mode_never_starts_an_embedded_agent",
@@ -35018,7 +35018,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:779:a_broker_that_refuses_the_credential_is_reported",
@@ -35029,7 +35029,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:841:an_unreadable_revoke_queue_is_reported_and_the_refusal_still_stands",
@@ -35040,7 +35040,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:879:a_device_request_is_answered_by_the_running_headless_desktop",
@@ -35051,7 +35051,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:978:a_live_broker_drives_the_generation_watch_and_reconnect",
@@ -35062,7 +35062,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1063:a_healthy_generation_resets_the_budget_and_a_retryable_reconnect_arms_the_retry",
@@ -35073,7 +35073,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1172:a_retry_that_cannot_be_classified_ends_the_worker_and_rearms_it",
@@ -35084,7 +35084,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1227:a_freshly_refreshed_credential_rejected_on_a_live_link_is_terminal",
@@ -35095,7 +35095,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1279:a_reconnect_for_a_device_the_book_no_longer_holds_stops_that_runtime",
@@ -35106,7 +35106,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1362:a_reconnect_with_a_pre_v2_slot_forgets_it",
@@ -35117,7 +35117,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "planned",
+      "status": "migrated-pending-unified-validation",
       "validationEvidence": [
         "docs/testing/headless-remote-start-repair-2026-10-20.json"
       ]
@@ -35131,7 +35131,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1524:a_reconnect_refreshes_the_credential_and_rebuilds_the_slot",
@@ -35142,7 +35142,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1606:the_reconnect_budget_exhausts_into_a_terminal_watch",
@@ -35153,7 +35153,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1683:a_reconnect_whose_rebuild_cannot_connect_is_retryable",
@@ -35164,7 +35164,7 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "planned"
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/tests/windows_stack.rs:16:the_desktop_binary_uses_the_windows_gui_subsystem",
@@ -36088,5 +36088,16 @@
       "name": "the_flat_listing_reports_defaults_and_never_creates_the_database",
       "change": "Preserve upstream flat listing default autoConnectRemote=true assertion."
     }
-  ]
+  ],
+  "entryMigration": {
+    "status": "implemented-pending-unified-validation",
+    "sharedBackend": "future-host",
+    "entry": "future headless",
+    "retiredEntry": "futureos-headless",
+    "notes": [
+      "Original source/line/name/attributes/hashes remain baseline records.",
+      "Unix PTY and signals retained; native Windows console/ConPTY fixtures added, execution pending.",
+      "Pre-bulk local CLI process results are intermediate evidence, not final candidate acceptance."
+    ]
+  }
 }

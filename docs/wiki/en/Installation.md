@@ -72,10 +72,9 @@ redownload before overriding security controls.
 
 - **Debian/Ubuntu:** install the downloaded package with
   `sudo apt install ./<downloaded-file>.deb`, then launch FutureOS from the app menu
-  or run `futureos-headless` for foreground phone access without a graphical UI.
-- **Portable desktop:** extract the downloaded tarball, keep `futureos`,
-  `futureos-headless`, and `future` together, and run `./futureos` or
-  `./futureos-headless`.
+  or run `future headless` for foreground phone access without a graphical UI.
+- **Portable desktop:** extract the downloaded tarball, keep `futureos` and `future` together, and run `./futureos` or
+  `./future headless`.
 - **Headless CLI:** extract the CLI-only tarball and run `./future config`, then
   `./future tui` (starts its agent when needed), or start `./future agent` for CLI
   commands that require an agent. Add the executable directory to PATH as needed.
@@ -83,7 +82,7 @@ redownload before overriding security controls.
 The published GUI packages require a recent glibc-based distribution (glibc ≥ 2.39,
 roughly Ubuntu 24.04+) and WebKitGTK 4.1. Portable users may need
 `sudo apt install libwebkit2gtk-4.1-0` or `sudo dnf install webkit2gtk4.1`.
-Official Linux CI builds the CLI and `futureos-headless` with static musl, so
+Official Linux CI builds the CLI (including headless) with static musl, so
 neither requires those GUI libraries or any particular glibc version. Local
 source builds depend on their selected target.
 

@@ -1608,7 +1608,7 @@ mod tests {
     /// running, so a run queued from the CLI (`future task run --wait`) actually
     /// gets executed. Ignored by default like the smoke test above.
     ///
-    /// `futureos-headless` is the real host, but it insists on a platform login
+    /// `future headless` is the real host, but it insists on a platform login
     /// and starts the remote bridge; this is the same `tick`, without either. It
     /// reconciles runs left running by a host that exited mid-flight, as
     /// `run_loop` does.

@@ -22,7 +22,7 @@ code or endpoint.
 ## Headless Desktop over SSH
 
 Install the Linux `.deb` or portable package, or build from source, then run
-`futureos-headless` to open phone remote access in the foreground without GUI
+`future headless` to open phone remote access in the foreground without GUI
 libraries or a desktop UI. `futureos` is GUI-only; its former
 `--headless` option has been removed. When needed, it prints a browser login QR followed by a
 pairing invitation to scan or paste in the FutureOS app. Valid login and pairing
@@ -72,7 +72,7 @@ code and link), `remove` drops one, `remove --all` drops every device, and `use`
 chooses the one in control. `list`/`remove`/`use` read and write the pairing book
 directly and need no running Desktop; `add` is the exception — an invitation can
 only be minted by the process serving that pairing, so it needs a live Desktop
-(the window or `futureos-headless`) and fails with a non-zero exit if there is
+(the window or `future headless`) and fails with a non-zero exit if there is
 none.
 
 ## Privacy and transport

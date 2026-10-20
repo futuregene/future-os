@@ -347,6 +347,12 @@ pub fn prepare_path() -> Result<(), crate::Error> {
             return Ok(());
         }
     };
+    prepare_path_for(&cli)
+}
+
+/// Prepend an executable selected by the entry, without discovering another CLI.
+/// Call before runtime/service threads start, after process hydration.
+pub fn prepare_path_for(cli: &Path) -> Result<(), crate::Error> {
     let parent = cli
         .parent()
         .ok_or("CLI executable has no parent directory")?;

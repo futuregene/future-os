@@ -55,7 +55,7 @@ impl InstanceGuard {
                 format!(
                     "Desktop is already running for data directory {}. \
                      GUI and headless mode cannot use the same data directory at the same time. \
-                     Please quit the running Desktop first (Ctrl+C for futureos-headless), \
+                     Please quit the running Desktop first (Ctrl+C for future headless), \
                      then try again.",
                     directory.display()
                 )
@@ -136,7 +136,7 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(error.contains("Desktop is already running"), "{error}");
-        assert!(error.contains("futureos-headless"), "{error}");
+        assert!(error.contains("future headless"), "{error}");
         assert!(
             error.contains(&directory.path().display().to_string()),
             "{error}"

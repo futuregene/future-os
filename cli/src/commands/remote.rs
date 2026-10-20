@@ -3,7 +3,7 @@
 //!
 //! The window's Remote page manages the same list through Tauri commands; a
 //! headless server has no window, and its only knob used to be
-//! `futureos-headless --re-pair`, which revoked *every* device and issued a
+//! `future headless --re-pair`, which revoked *every* device and issued a
 //! replacement invitation. That answered "switch phones" and nothing else: a
 //! machine with several paired clients could not say who they were, could not
 //! drop one of them, and could not choose which one drives it.
@@ -19,7 +19,7 @@
 //!
 //! `add` cannot work that way. An invitation is only usable while the bridge for
 //! its pairing is connected, so it has to be minted by the process that serves
-//! the machine — the window, or `futureos-headless`. That request goes to the
+//! the machine — the window, or `future headless`. That request goes to the
 //! running Desktop as a file and comes back as one (see [`request_invitation`]).
 //!
 //! The document is parsed and rewritten as a [`serde_json::Value`] rather than a
@@ -492,7 +492,7 @@ fn list(args: &[String], out: &Output) -> Result<(), String> {
     }
     if book.devices.is_empty() {
         out.log("No devices are paired to this machine.");
-        out.log("Start the Desktop (windowed or futureos-headless) to pair one.");
+        out.log("Start the Desktop (windowed or future headless) to pair one.");
         return Ok(());
     }
     let controller = book.controller().map(|device| device.pair_id.clone());
@@ -604,7 +604,7 @@ const ADD_LOCK_FILE: &str = "add.lock";
 /// The request goes to the running Desktop rather than being performed here: an
 /// invitation is only usable while a bridge for its pairing is connected, and
 /// that bridge lives in the Desktop process that owns this data directory. So
-/// this needs a Desktop running — the window, or `futureos-headless` — and on a
+/// this needs a Desktop running — the window, or `future headless` — and on a
 /// machine that has never paired, starting it already prints an invitation.
 async fn add(args: &[String], out: &Output) -> Result<(), String> {
     let values = positional(args, &["--json"], help::REMOTE_USAGE)?;
@@ -619,7 +619,7 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
     if !desktop_running() {
         return Err(format!(
             "No Desktop is running for {} — a new device can only be paired by the process \
-             that serves it. Start the Desktop (the window, or futureos-headless) and run this \
+             that serves it. Start the Desktop (the window, or future headless) and run this \
              again. A machine with no device at all prints an invitation as it starts.",
             future_dir()?.display()
         ));
@@ -707,7 +707,7 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
 /// their watch, and the time left to act (`2026-10-20 09:45:32 (local time, in
 /// 9m 58s)`). `None` for an instant no calendar can express.
 ///
-/// Spelled the same way in `futureos-headless`, which prints an invitation of
+/// Spelled the same way in `future headless`, which prints an invitation of
 /// its own — one wording, both entry points.
 fn deadline_phrase(expiry: i64, now: i64) -> Option<String> {
     let clock = local_wall_clock(expiry)?;
@@ -881,7 +881,7 @@ async fn wait_for_answer(
         if !still_running() {
             return Err(
                 "The Desktop stopped before it answered. Start it again (the window, or \
-                 futureos-headless) and re-run this; nothing was paired."
+                 future headless) and re-run this; nothing was paired."
                     .to_string(),
             );
         }
@@ -2333,7 +2333,7 @@ mod tests {
         assert_eq!(code, 1);
         assert_eq!(stdout, "");
         assert!(stderr.contains("No Desktop is running"), "{stderr}");
-        assert!(stderr.contains("futureos-headless"), "{stderr}");
+        assert!(stderr.contains("future headless"), "{stderr}");
         // Nothing was written for a Desktop that is not there.
         assert!(!home.future().join("run").join(CONTROL_DIRECTORY).exists());
     }
