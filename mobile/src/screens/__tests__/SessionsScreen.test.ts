@@ -34,6 +34,18 @@ const mockRemote = {
   ],
   credentials: { pairId: "p1", expectedDesktopId: "desktop_1" },
   workspaces: [] as { id: string; name: string }[],
+  // The active machine's catalogue. The header's batch entry reads it to decide
+  // whether a selection has anything to hold, so it is part of the screen's
+  // contract with the provider even when nothing is paired yet.
+  sessions: [] as {
+    sessionId: string;
+    threadId: string;
+    title: string;
+    mode?: "chat" | "workspace";
+    workspaceId?: string;
+    pinned?: boolean;
+    streaming: boolean;
+  }[],
   connectionPresentation: { level: "connected", titleKey: "connection.connected", hintKey: "connection.offlineHint" },
   desktopOnline: true,
   capabilities: new Set(["desktop_settings_v1", "skill_management_v1", "workspace_create_v1"]),
@@ -102,7 +114,7 @@ jest.mock("../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }
 jest.mock("../../update/prompt", () => ({ promptUpgrade: jest.fn() }));
 jest.mock("../../update/update", () => ({ checkForUpdate: jest.fn() }));
 jest.mock("lucide-react-native", () => Object.fromEntries(
-  ["ArrowLeft", "ChevronLeft", "ChevronRight", "ChevronDown", "Check", "Folder", "Layers", "LogOut", "MessageCircle", "Monitor", "MonitorOff", "Plus", "Pin", "Pencil", "Trash2", "Settings", "Unplug", "X"].map(name => [name, name]),
+  ["ArrowLeft", "ChevronLeft", "ChevronRight", "ChevronDown", "Check", "Folder", "Layers", "ListChecks", "LogOut", "MessageCircle", "Monitor", "MonitorOff", "MoreHorizontal", "Plus", "Pin", "Pencil", "Search", "Trash2", "Settings", "Unplug", "X"].map(name => [name, name]),
 ));
 jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",
@@ -125,6 +137,20 @@ const onManageDesktops = jest.fn();
 const button = (label: string) => tree.root.findAll(node =>
   node.props.accessibilityLabel === label && typeof node.props.onPress === "function",
 )[0]!;
+/**
+ * The action sheet that is actually up.
+ *
+ * The header carries one of its own now (the list's tools), and a closed sheet
+ * is still in the tree — so "the sheet" has to mean the visible one rather than
+ * whichever was rendered first.
+ */
+const visibleMenu = () => {
+  // Both sheets are always in the tree; a tapped item closes its own before the
+  // test can read it, so the open one is preferred and the conversation's own
+  // sheet (rendered first, above the header) is the fallback.
+  const menus = tree.root.findAllByType(ActionMenu);
+  return menus.find(node => node.props.visible) ?? menus[0]!;
+};
 beforeEach(() => {
   jest.clearAllMocks();
   mockDimensions = { width: 320, height: 640, scale: 1, fontScale: 1 };
@@ -520,7 +546,7 @@ test("iOS update checking waits until the settings modal has dismissed", async (
 test("session ellipsis and long-press callback use the shared app action sheet", async () => {
   const session = { sessionId: "s", threadId: "t", title: "Reply", streaming: false };
   act(() => tree.root.findByType(SessionList).props.onMenu(session));
-  const menu = tree.root.findByType(ActionMenu);
+  const menu = visibleMenu();
   expect(menu.props.visible).toBe(true);
   expect(menu.props.actions.map((action: { label: string }) => action.label)).toEqual(["sessions.pin", "chat.rename", "sessions.delete"]);
   const modal = menu.findByType(Modal);
@@ -707,7 +733,7 @@ describe("screen-owned surfaces", () => {
 
   test("a session rename trims, submits once and reports failure", async () => {
     act(() => tree.root.findByType(SessionList).props.onMenu(session));
-    const menu = tree.root.findByType(ActionMenu);
+    const menu = visibleMenu();
     act(() => button("chat.rename").props.onPress());
     await act(async () => { menu.findByType(Modal).props.onDismiss(); });
     expect(tree.root.findByType(RenameModal).props.renameOpen).toBe(true);
@@ -729,7 +755,7 @@ describe("screen-owned surfaces", () => {
     jest.mocked(mockRemote.rename).mockRejectedValueOnce(new Error("desktop busy"));
     act(() => tree.root.findByType(SessionList).props.onMenu(session));
     act(() => button("chat.rename").props.onPress());
-    await act(async () => { tree.root.findByType(ActionMenu).findByType(Modal).props.onDismiss(); });
+    await act(async () => { visibleMenu().findByType(Modal).props.onDismiss(); });
     act(() => tree.root.findByType(RenameModal).props.setRenameValue("Again"));
     await act(async () => { await tree.root.findByType(RenameModal).props.submitRename(); });
     expect(modalText()).toContain("common.error");
@@ -738,7 +764,7 @@ describe("screen-owned surfaces", () => {
   test("a failed pin toggle surfaces an error instead of a stuck row", async () => {
     jest.mocked(mockRemote.setSessionPinned).mockRejectedValueOnce(new Error("offline"));
     act(() => tree.root.findByType(SessionList).props.onMenu(session));
-    const menu = tree.root.findByType(ActionMenu);
+    const menu = visibleMenu();
     act(() => button("sessions.pin").props.onPress());
     await act(async () => { menu.findByType(Modal).props.onDismiss(); });
     expect(modalText()).toContain("common.error");
@@ -746,7 +772,7 @@ describe("screen-owned surfaces", () => {
 
   test("deleting a session confirms with the title and reports a failed delete", async () => {
     act(() => tree.root.findByType(SessionList).props.onMenu(session));
-    const menu = tree.root.findByType(ActionMenu);
+    const menu = visibleMenu();
     act(() => button("sessions.delete").props.onPress());
     await act(async () => { menu.findByType(Modal).props.onDismiss(); });
     expect(modalText()).toContain("sessions.deleteConfirm");
@@ -759,7 +785,7 @@ describe("screen-owned surfaces", () => {
     // A refused delete is reported instead of leaving the row in place silently.
     jest.mocked(mockRemote.deleteSession).mockRejectedValueOnce(new Error("file is open"));
     act(() => tree.root.findByType(SessionList).props.onMenu(session));
-    const again = tree.root.findByType(ActionMenu);
+    const again = visibleMenu();
     act(() => button("sessions.delete").props.onPress());
     await act(async () => { again.findByType(Modal).props.onDismiss(); });
     const second = visibleModal()!;
@@ -907,7 +933,7 @@ describe("conversations on other machines", () => {
 
   const openMenu = () =>
     act(() => tree.root.findByType(SessionList).props.onMenu(session, "desktop_2"));
-  const actions = () => tree.root.findByType(ActionMenu).props.actions;
+  const actions = () => visibleMenu().props.actions;
 
   test("the menu names the machine its actions are addressed to", () => {
     mockCatalogs.machines = [
@@ -935,13 +961,13 @@ describe("conversations on other machines", () => {
     openMenu();
 
     act(() => button("sessions.pin").props.onPress());
-    await act(async () => { tree.root.findByType(ActionMenu).findByType(Modal).props.onDismiss(); });
+    await act(async () => { visibleMenu().findByType(Modal).props.onDismiss(); });
     expect(peerCommands.setSessionPinned).toHaveBeenCalledWith("elsewhere", "t-elsewhere", true);
     expect(mockRemote.setSessionPinned).not.toHaveBeenCalled();
 
     openMenu();
     act(() => button("chat.rename").props.onPress());
-    await act(async () => { tree.root.findByType(ActionMenu).findByType(Modal).props.onDismiss(); });
+    await act(async () => { visibleMenu().findByType(Modal).props.onDismiss(); });
     // The title generator is the owning machine's too, not the active one's.
     expect(tree.root.findByType(RenameModal).props.generationKey).toBe("elsewhere");
     await act(async () => { await tree.root.findByType(RenameModal).props.onGenerate(); });
@@ -962,7 +988,7 @@ describe("conversations on other machines", () => {
     act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
     openMenu();
 
-    expect(tree.root.findByType(ActionMenu).props.visible).toBe(false);
+    expect(visibleMenu().props.visible).toBe(false);
     expect(mockCatalogs.commandsFor).not.toHaveBeenCalled();
   });
 
@@ -979,7 +1005,7 @@ describe("conversations on other machines", () => {
 
     act(() => button("sessions.pin").props.onPress());
     await act(async () => {
-      tree.root.findByType(ActionMenu).findByType(Modal).props.onDismiss();
+      visibleMenu().findByType(Modal).props.onDismiss();
     });
 
     expect(peerCommands.setSessionPinned).not.toHaveBeenCalled();
@@ -1001,7 +1027,7 @@ test("a conversation on the machine the phone is reading names it too", () => {
   act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
   act(() => tree.root.findByType(SessionList).props.onMenu(local, "desktop_1"));
 
-  const actions = tree.root.findByType(ActionMenu).props.actions;
+  const actions = visibleMenu().props.actions;
   // The machine as this phone labels it — the name, not the id, because the
   // reader has given it one.
   expect(actions[0]).toMatchObject({

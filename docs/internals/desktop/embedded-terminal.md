@@ -110,11 +110,15 @@ replays). A detached viewer never grows memory without bound.
   emits `futureos:focus-composer` and the Composer answers it (declining while
   it cannot hold a caret). Otherwise focus would sit on an unmounted terminal
   and the next keystrokes would go nowhere.
-* The shortcut (`Ctrl+J`, `⌘J` on macOS) belongs to the app, not to the shell.
-  `TerminalView` releases it from xterm's key handling so the window listener
-  still sees it while the terminal has focus — without that, xterm would cancel
-  the event and send a line feed to the shell instead. The single definition
-  lives in `features/terminal/shortcut.ts`.
+* The shortcut (`Ctrl+J`, `⌘J` on macOS, rebindable in Settings → Keyboard
+  shortcuts) belongs to the app, not to the shell. `TerminalView` releases it from
+  xterm's key handling so the window listener still sees it while the terminal has
+  focus — without that, xterm would cancel the event and send a line feed to the
+  shell instead. The binding is the command table's (`terminal.toggle`); the
+  release predicate lives in `features/terminal/shortcut.ts`, and this is the
+  **only** command the terminal lets through — every other shortcut is ignored
+  there so `Ctrl+B`, `Ctrl+F`, `Ctrl+A` and `Ctrl+K` keep reaching readline. See
+  [KEYBINDINGS.md](KEYBINDINGS.md).
 * **The IME owns the keyboard while it is composing.** The same custom key
   handler also stands down for every event flagged `isComposing`, so a composing
   keystroke reaches the input method instead of the terminal. xterm's own

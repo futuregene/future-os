@@ -13,6 +13,8 @@ import { saveComposerDraft } from "../../features/agent/composerDraft";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { sessionMentionOptions } from "../../features/agent/sessionMention";
 import { useSkillRecommendation } from "../../features/agent/useSkillRecommendation";
+import { useCommand } from "../../features/keyboard/commands";
+import { useShortcutDispatcher } from "../../features/keyboard/useDispatcher";
 import { peerStatus } from "../../features/remote-peer/peerStatus";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
@@ -1049,6 +1051,30 @@ function ReadyAppShell({
     setCenterMode("thread");
     setNewChatWorkspaceId(null);
   }
+
+  // ---- Keyboard shortcuts ---------------------------------------------
+  // One listener for the whole window, and the commands that are the *shell's*
+  // own: navigation, panels, settings. Everything that belongs to a view — the
+  // transcript's find bar, the composer's caret, the rail's row order, a run's
+  // interrupt — is registered by that view while it is mounted (see
+  // `features/keyboard`), which is also what makes a command unavailable
+  // instead of silently inert.
+  useShortcutDispatcher();
+  // Nothing on the onboarding gate: there is no conversation, no rail and no
+  // settings page to reach yet.
+  const shortcutsLive = !showGate;
+  useCommand("chat.new", () => handleOpenNewChat(), shortcutsLive);
+  useCommand("panel.left", handleToggleLeftPanel, shortcutsLive);
+  useCommand("panel.right", () => setRightExpanded(value => !value), shortcutsLive && !hideRightPanel);
+  useCommand("settings.open", () => {
+    setSettingsTab("general");
+    setSettingsOpen(true);
+  }, shortcutsLive);
+  useCommand("section.chat", () => handleSectionChange("chat"), shortcutsLive);
+  useCommand("section.workspace", () => handleSectionChange("workspace"), shortcutsLive);
+  useCommand("section.skill", () => handleSectionChange("skill"), shortcutsLive);
+  useCommand("section.tasks", () => handleSectionChange("tasks"), shortcutsLive);
+  useCommand("section.remote", () => handleSectionChange("remote"), shortcutsLive);
 
   const activityRailProps = {
     active: section,

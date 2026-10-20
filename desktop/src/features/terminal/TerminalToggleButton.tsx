@@ -7,6 +7,7 @@
 import { SquareTerminal } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { IconButton } from "../../components/ui/IconButton";
+import { terminalPanelLabel } from "./panelLabel";
 
 export interface TerminalToggleButtonProps {
   open: boolean;
@@ -16,7 +17,7 @@ export interface TerminalToggleButtonProps {
 
 export function TerminalToggleButton({ open, shortcut, onToggle }: TerminalToggleButtonProps) {
   const { t } = useTranslation("terminal");
-  const label = open ? t("collapse", { shortcut }) : t("expand", { shortcut });
+  const label = terminalPanelLabel(t, open, shortcut);
   return (
     <IconButton
       active={open}

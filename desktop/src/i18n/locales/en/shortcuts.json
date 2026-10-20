@@ -1,0 +1,131 @@
+{
+  "categories": {
+    "chat": "Conversation",
+    "navigation": "Navigation",
+    "panels": "Panels",
+    "terminal": "Terminal",
+    "settings": "Settings",
+    "vibe": "Vibe panel"
+  },
+  "commands": {
+    "chat": {
+      "new": "New conversation",
+      "stop": "Stop generating"
+    },
+    "composer": {
+      "focus": "Focus the composer"
+    },
+    "thread": {
+      "find": "Find in this conversation",
+      "previous": "Previous conversation",
+      "next": "Next conversation"
+    },
+    "rail": {
+      "search": "Filter the conversation list"
+    },
+    "section": {
+      "chat": "Go to Chats",
+      "workspace": "Go to Workspaces",
+      "skill": "Go to Skills",
+      "tasks": "Go to Scheduled tasks",
+      "remote": "Go to Remote"
+    },
+    "panel": {
+      "left": "Show or hide the sidebar",
+      "right": "Show or hide the context panel"
+    },
+    "terminal": {
+      "toggle": "Show or hide the terminal"
+    },
+    "settings": {
+      "open": "Open settings"
+    },
+    "group": {
+      "previous": "Previous workspace or conversation",
+      "next": "Next workspace or conversation"
+    },
+    "vibe": {
+      "toggle": "Open or close the Vibe panel",
+      "focus": {
+        "up": "Move to the cell above",
+        "down": "Move to the cell below",
+        "left": "Move to the cell on the left",
+        "right": "Move to the cell on the right"
+      },
+      "open": "Zoom into the selected conversation",
+      "back": "Leave the zoomed conversation",
+      "close": "Close the Vibe panel",
+      "zoom": {
+        "previous": "Previous conversation in the zoomed cell",
+        "next": "Next conversation in the zoomed cell"
+      },
+      "cell": "Go to the numbered cell",
+      "columns": {
+        "cycle": "Cycle the grid layout",
+        "more": "More columns",
+        "fewer": "Fewer columns",
+        "auto": "Automatic layout"
+      },
+      "move": {
+        "left": "Move this cell earlier",
+        "right": "Move this cell later"
+      },
+      "panel": {
+        "hide": "Show or hide the side panel",
+        "pin": "Pin the side panel for this conversation"
+      },
+      "device": "Switch which machines the panel shows",
+      "attention": "Jump to the next conversation that needs you",
+      "add": "Add a conversation to the panel",
+      "remove": "Remove the selected conversation from the panel",
+      "fullscreen": "Toggle native full screen",
+      "help": "Show all shortcuts",
+      "menu": "Open this layer’s menu",
+      "home": "Jump to the live end of the conversation",
+      "block": {
+        "previous": "Previous message block",
+        "next": "Next message block"
+      },
+      "input": {
+        "open": "Start the input layer (type or dictate)",
+        "close": "Leave the input layer",
+        "send": "Send the dictation"
+      }
+    }
+  },
+  "page": {
+    "hint": "Shortcuts work anywhere in the app.",
+    "deviceKey": "A remote control’s key: always on this command",
+    "search": "Search commands",
+    "noMatches": "No command matches “{{query}}”",
+    "reset": "Restore default",
+    "resetAll": "Restore all defaults",
+    "unbound": "Not set",
+    "terminalBlocked": "Ignored while the terminal has focus: this key belongs to the shell",
+    "levels": "{{coarse}} steps between workspaces and conversations; {{fine}} steps through every conversation; inside one, {{questions}} jumps between questions. Changes apply immediately.",
+    "scopedGlobal": "Works anywhere.",
+    "scopedVibe": "Only while the Vibe panel is open; inside it these keys may replace the ones above.",
+    "multiKey": "These keys are fixed for now."
+  },
+  "recorder": {
+    "prompt": "Press a new combination…",
+    "cancel": "Cancel",
+    "clear": "Remove binding",
+    "needsModifierMac": "Include ⌘, ⌃ or ⌥",
+    "needsModifierOther": "Include Ctrl or Alt",
+    "reserved": "Reserved by the system",
+    "conflict": "Already used by “{{command}}”",
+    "unsupported": "This key cannot be used",
+    "hint": "Esc to cancel, Backspace to remove"
+  },
+  "fixed": {
+    "title": "Fixed keys",
+    "description": "These keep their meaning everywhere and cannot be changed.",
+    "send": "Send the message",
+    "newline": "Insert a line break",
+    "escape": "Close a dialog, or reject a request",
+    "approve": "Approve a request",
+    "transcript": "Jump to the previous / next question",
+    "menu": "Move within an open menu"
+  }
+}

@@ -3,6 +3,7 @@ import type { Root } from "react-dom/client";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { installShortcuts } from "../../test/installShortcuts";
 import { ThreadSearch } from "./ThreadSearch";
 
 /**
@@ -49,7 +50,10 @@ async function flushRescan() {
   }
 }
 
+let uninstallShortcuts: () => void;
+
 beforeEach(() => {
+  uninstallShortcuts = installShortcuts();
   vi.useFakeTimers();
   stubFrameScheduler();
   Object.defineProperty(Element.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
@@ -61,6 +65,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  uninstallShortcuts();
   act(() => root.unmount());
   container.remove();
   thread.remove();

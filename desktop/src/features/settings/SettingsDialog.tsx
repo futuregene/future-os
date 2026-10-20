@@ -2,7 +2,7 @@ import type { FutureBalanceStatus, FutureSessionStatus } from "../../components/
 import type { UpdateStatus } from "../../components/layout/hooks/useUpdateChecker";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { AppSettings } from "../../integrations/storage/appSettings";
-import { Boxes, FlaskConical, Info, RefreshCw, RotateCcw, Settings2, Sparkles, UserRound } from "lucide-react";
+import { Boxes, FlaskConical, Info, Keyboard, RefreshCw, RotateCcw, Settings2, Sparkles, UserRound } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Overlay } from "../../components/ui/Overlay";
@@ -16,9 +16,10 @@ import { GeneralPage } from "./GeneralPage";
 import { ModelsPage } from "./ModelsPage";
 import { ProvidersPage } from "./ProvidersPage";
 import { ResetPage } from "./ResetPage";
+import { ShortcutsPage } from "./ShortcutsPage";
 import { UpdatePage } from "./UpdatePage";
 
-export type SettingsTab = "general" | "account" | "update" | "about" | "providers" | "models" | "environment" | "reset";
+export type SettingsTab = "general" | "shortcuts" | "account" | "update" | "about" | "providers" | "models" | "environment" | "reset";
 
 // `devOnly` items are only shown on non-release builds — the environment switch
 // is a dev affordance; release builds are production-locked.
@@ -26,6 +27,7 @@ const NAV_GROUPS = [
   {
     items: [
       { icon: Settings2, labelKey: "dialog.tabs.general", value: "general" as const },
+      { icon: Keyboard, labelKey: "dialog.tabs.shortcuts", value: "shortcuts" as const },
       { icon: UserRound, labelKey: "dialog.tabs.account", value: "account" as const },
       { icon: RefreshCw, labelKey: "dialog.tabs.update", value: "update" as const },
       { icon: Info, labelKey: "dialog.tabs.about", value: "about" as const },
@@ -50,6 +52,7 @@ const NAV_GROUPS = [
 
 const TAB_TITLE_KEYS: Record<SettingsTab, string> = {
   general: "dialog.tabs.general",
+  shortcuts: "dialog.tabs.shortcuts",
   account: "dialog.tabs.account",
   update: "dialog.tabs.update",
   about: "dialog.tabs.about",
@@ -194,6 +197,7 @@ export function SettingsDialog({
                   />
                 )
               : null}
+            {tab === "shortcuts" ? <ShortcutsPage /> : null}
             {tab === "account"
               ? (
                   <AccountPage

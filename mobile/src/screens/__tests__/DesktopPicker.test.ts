@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { Text } from "react-native";
+import { StyleSheet, Text } from "react-native";
 import { DesktopPicker } from "../DesktopPicker";
 import type { MachineSummary } from "../../remote/desktopStatus";
 import type { PairedDesktop } from "../../remote/types";
@@ -52,6 +52,24 @@ const openPicker = (tree: ReactTestRenderer) => {
 
 const painted = (tree: ReactTestRenderer) =>
   tree.root.findAllByType(Text).map(node => node.props.children);
+
+describe("the picker's trigger", () => {
+  it("keeps the machine's whole name on screen at the largest text size", () => {
+    const tree = render([]);
+    const trigger = tree.root.findAll(node => node.props.accessibilityRole === "button"
+      && node.props.accessibilityLabel === "Desktops")[0]!;
+    const label = trigger.findAllByType(Text).find(node => node.props.children === "All desktops")!;
+    // Two lines rather than one: this row shares its width with the list's own
+    // tools, the status dot and settings, and a name the reader chose can be
+    // longer than what is left. Wrapping shows all of it; one line with an
+    // ellipsis showed only its beginning.
+    expect(label.props.numberOfLines).toBe(2);
+    expect(StyleSheet.flatten(label.props.style)).toMatchObject({ flex: 1, minWidth: 0 });
+    // The trigger itself stays a full touch target after losing width.
+    expect(StyleSheet.flatten(trigger.props.style({ pressed: false })))
+      .toMatchObject({ minHeight: 44, flex: 1 });
+  });
+});
 
 describe("the desktop picker", () => {
   it("says which machine is in standby and offers to take it over there", async () => {

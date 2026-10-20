@@ -13,6 +13,7 @@ import { Component, lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconButton } from "../../components/ui/IconButton";
 import { cn } from "../../lib/cn";
+import { terminalPanelLabel } from "./panelLabel";
 import { defaultTitle, useTerminalTabs } from "./useTerminalTabs";
 
 /** xterm is heavy; the panel is the only consumer, so it loads on first open. */
@@ -128,7 +129,7 @@ export function TerminalPanel({ threadId, panel }: TerminalPanelProps) {
         <IconButton
           className="size-7 shrink-0"
           icon={<X className="size-3.5" />}
-          label={t("collapse", { shortcut: panel.shortcut })}
+          label={terminalPanelLabel(t, true, panel.shortcut)}
           onClick={collapse}
         />
       </header>
