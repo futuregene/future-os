@@ -90,6 +90,13 @@ pub(crate) struct Reply {
     /// Why there is no invitation, when there is none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
+    /// Invitations forgotten on the platform so this one could be minted.
+    ///
+    /// Carried out to the terminal because the alternative is another silent
+    /// success: the user asked for one code and four of their earlier ones
+    /// disappeared to make it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) cleared: Vec<String>,
 }
 
 impl Reply {
@@ -112,6 +119,7 @@ impl Reply {
                 link: Some(link),
                 expires_at: status.pairing_code_expires_at,
                 error: None,
+                cleared: status.cleared_invitations.clone(),
             },
             None => Self::of_error(format!(
                 "the invitation was not issued (remote start ended in {:?}{})",
@@ -130,6 +138,7 @@ impl Reply {
             link: None,
             expires_at: None,
             error: Some(message.into()),
+            cleared: Vec::new(),
         }
     }
 }
@@ -382,6 +391,7 @@ mod tests {
             web_url: None,
             web_lan_url: None,
             warning_code: None,
+            cleared_invitations: Vec::new(),
         }
     }
 
@@ -478,6 +488,7 @@ mod tests {
             link: Some("futureos://remote/pair?v=2".into()),
             expires_at: Some(7),
             error: None,
+            cleared: Vec::new(),
         };
         let value = serde_json::to_value(&reply).unwrap();
         assert_eq!(value["pairId"], "pair_A");
@@ -603,6 +614,7 @@ mod tests {
                 link: Some("futureos://remote/pair?v=2".into()),
                 expires_at: None,
                 error: None,
+                cleared: Vec::new(),
             },
         )
         .unwrap();

@@ -223,7 +223,7 @@ impl PairingHost for MemoryServerHost {
         *self.creds.lock().unwrap() = None;
         Ok(())
     }
-    fn invite(&self, _: bool) -> BoxFuture<'_, Result<Invitation, Error>> {
+    fn invite(&self, _: bool, _: &[String]) -> BoxFuture<'_, Result<Invitation, Error>> {
         Box::pin(async { Err(Error::Message("fixture credentials are explicit".into())) })
     }
     fn refresh(&self, creds: PairingCreds) -> BoxFuture<'_, Result<PairingCreds, Error>> {
