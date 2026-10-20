@@ -187,6 +187,30 @@ fn probe_deadline() -> Option<Duration> {
     Some(PROBE_DEADLINE)
 }
 
+/// How long a killed probe child gets to actually die before discovery gives up
+/// on reaping it. SIGKILL is normally delivered in milliseconds.
+const PROBE_REAP_GRACE: Duration = Duration::from_millis(500);
+
+/// End a timed-out probe child without ever blocking the caller on its exit.
+///
+/// `Child::wait` after `kill` is not a bounded operation: a child wedged in an
+/// uninterruptible syscall (network home directory, hung antivirus filter) keeps
+/// the caller — and with it the launch that is discovering the CLI — waiting
+/// forever. An unreaped child leaks one process slot; a blocked launch costs the
+/// whole app. The probe's own deadline is what bounds *discovery*; this bound
+/// keeps the cleanup half of it honest too.
+fn kill_without_blocking(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let deadline = std::time::Instant::now() + PROBE_REAP_GRACE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) if std::time::Instant::now() >= deadline => return,
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+}
+
 // Test-only override for `probe_deadline` (a plain comment: rustdoc does not
 // document macro invocations, and `unused_doc_comments` is denied here).
 // `Some(None)` = no deadline (the capture tests), `Some(Some(d))` = a `d`
@@ -270,8 +294,7 @@ fn probe(path: &Path, source: &str) -> Result<Descriptor, String> {
         let oversized = stdout.metadata().map(|m| m.len() > LIMIT).unwrap_or(true)
             || stderr.metadata().map(|m| m.len() > LIMIT).unwrap_or(true);
         if oversized || deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_without_blocking(&mut child);
             return Err(if oversized {
                 "CLI discovery exceeded its output limit"
             } else {
@@ -283,8 +306,7 @@ fn probe(path: &Path, source: &str) -> Result<Descriptor, String> {
             Ok(Some(status)) => break status,
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_without_blocking(&mut child);
                 return Err(error.to_string());
             }
         }
@@ -645,6 +667,34 @@ mod tests {
             started.elapsed() >= std::time::Duration::from_secs(3),
             "the probe deadline must be honoured: {:?}",
             started.elapsed()
+        );
+    }
+
+    /// The cleanup half of the probe deadline is bounded too. This asserts the
+    /// reachable half of the contract: a live child is killed and reaped
+    /// promptly, without the caller ever entering a blocking `wait()` (which is
+    /// what the previous code did, and what a child stuck in an uninterruptible
+    /// syscall would have turned into a permanent launch stall).
+    #[cfg(unix)]
+    #[test]
+    fn kill_without_blocking_ends_a_live_child_promptly() {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exec sleep 30"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        kill_without_blocking(&mut child);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "kill_without_blocking must stay bounded: {:?}",
+            started.elapsed()
+        );
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "a killed probe child must be reaped"
         );
     }
 

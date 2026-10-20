@@ -64,8 +64,31 @@ pub struct OwnedAgent {
 
 impl Drop for OwnedAgent {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        kill_and_reap(&mut self.child);
+    }
+}
+
+/// How long a sidecar that refuses to die gets before the TUI stops waiting for
+/// it. SIGKILL lands in milliseconds; a process stuck in an uninterruptible
+/// syscall is the case this bound covers.
+const REAP_GRACE: Duration = Duration::from_millis(500);
+
+/// End a sidecar child without ever blocking on its exit.
+///
+/// `Child::wait` is unbounded, and the launch reaches this code precisely when
+/// the sidecar is unhealthy — a wedged child would then turn "the agent did not
+/// start" into "the terminal never came up". Leaving one child unreaped costs a
+/// process slot; a blocking wait costs the whole launch (and, in `Drop`, the
+/// whole exit).
+fn kill_and_reap(child: &mut Child) {
+    let _ = child.kill();
+    let deadline = std::time::Instant::now() + REAP_GRACE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return,
+            Ok(None) if std::time::Instant::now() >= deadline => return,
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+        }
     }
 }
 
@@ -175,8 +198,7 @@ pub async fn ensure_agent_running_within(
                 | future_rpc::connection::ConnectionError::Unverified(_),
             ) => {}
             Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                kill_and_reap(&mut child);
                 let mut failure = error.to_string();
                 attach_last_output(
                     &mut failure,
@@ -197,8 +219,7 @@ pub async fn ensure_agent_running_within(
             }
         }
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    kill_and_reap(&mut child);
     attach_last_output(
         &mut failure,
         tail_after_exit(&stdout_done, &stderr_done, &stdout_tail, &stderr_tail),
