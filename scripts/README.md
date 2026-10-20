@@ -139,8 +139,9 @@ Offline regression tests and native acceptance scripts (not run by CI by default
 
 CI helper scripts (invoked from the workflow files).
 
-- `check-embedded-agent.py` — native launcher dry-runs, CLI discovery and RPC/service/GUI/headless lifecycle
-  gate on Linux, Windows and macOS; uploads logs and a JSON summary through CI.
+- `check-embedded-agent.py` — native launcher dry-runs, CLI discovery, RPC/service and shared-host
+  lifecycle, plus separate GUI state/Ready/Exit and real headless process gates on Linux,
+  Windows and macOS; uploads logs and a JSON summary through CI. Zero matched tests fail.
 - `check-packaged-entrypoints.py` — extracts actual deb/NSIS, portable and CLI
   archives, probes isolated early entry points and exact CLI versions, and verifies
   packaged Linux static binaries in the old-glibc headless check; keeps JSON/log evidence.

@@ -31,17 +31,28 @@ def main():
              "--no-default-features", "--features", "headless",
              "--lib", "cli_tool::tests"],
         ),
+        # Shared lifecycle assertions run in their owner once, independent of
+        # either entry's features. Keep real entry effects in separate suites.
+        ("shared-host", ["-p", "future-host", "--lib", "agent_host::"]),
         (
-            "gui-host",
-            ["--manifest-path", "desktop/src-tauri/Cargo.toml", "--lib", "agent_host::tests"],
+            "gui-entry-state",
+            ["-p", "futureos", "--lib",
+             "gui::startup_paths_tests::process_state_initializes_without_a_window"],
         ),
         (
-            "headless-host",
-            [
-                "--manifest-path", "desktop/src-tauri/Cargo.toml",
-                "--no-default-features", "--features", "headless",
-                "--lib", "agent_host::tests",
-            ],
+            "gui-entry-ready",
+            ["-p", "futureos", "--lib",
+             "gui::startup_paths_tests::the_ready_event_starts_the_window_work_and_serves_the_terminal"],
+        ),
+        (
+            "gui-entry-exit",
+            ["-p", "futureos", "--lib",
+             "gui::startup_paths_tests::the_exit_event_closes_admission_and_publishes_the_stop"],
+        ),
+        (
+            "headless-entry",
+            ["-p", "futureos", "--no-default-features", "--features", "headless",
+             "--test", "headless_cli"],
         ),
     ]
     if platform.system() == "Windows":
@@ -67,7 +78,7 @@ def main():
     summary = {
         "platform": platform.platform(),
         "commit": subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], cwd=root, text=True
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True, encoding="utf-8"
         ).strip(),
         "suites": [],
         "status": "running",

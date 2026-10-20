@@ -351,3 +351,9 @@ CI `39361847974` 的 Windows Desktop 编译通过，原缺失 trait 已修复；
 模型目录、技能 RPC、Provider/auth RPC 及 Provider 校验/视图服务迁入宿主；Desktop 转发至同一实现。生产写入仍只由 Agent 提交，本地事务 helper 仍仅用于原有真实文件事务、原子写入及回滚测试。未改 RPC 类型、数据字段或配置路径。
 
 68 个原声明随服务迁移：模型/技能/配置 RPC 13 项、Provider 55 项，本地定向执行均通过，原断言保持。Provider RPC 用例复用共用 gRPC 夹具，原 Remote mock 的目录/快照响应提取为一份共享测试数据，两边复用；Provider 用例遵循 canonical 夹具的 HOME→mock 锁顺序，不引入第二个协议或后端。宿主、GUI/CLI 组合及旧 headless Clippy `--all-targets`、fmt 通过，见[证据](../testing/headless-host-providers-2026-10-20.json)。本批晚于 CI 候选 `6e0ec7e7`，跨平台执行仍待后续运行。
+
+### 2026-10-20 原生生命周期门禁随测试归属调整
+
+CI `39363398726` 在 Linux 原生脚本中拦住 `gui-host failed: exit=0, passed=0`：共享测试已迁入宿主，脚本却仍在 Desktop 筛选旧路径。保留零匹配失败检查，改为宿主 `agent_host::` 执行一次，另加 GUI 初始化/Ready/Exit 真实副作用断言和 headless 真实进程文件；Windows 镜像与 Shell 专项保留。
+
+本地首次完整脚本在更早的 Agent 日志用例失败，因为终端继承 `RUST_LOG=warn` 抑制了 INFO 启动进度；没有改日志策略或断言。按 CI 默认条件仅对本次命令清除该变量后，原失败日志用例通过，完整 8 个非零分组通过：连接 20、服务 15、CLI 工具 15、共享宿主 22、GUI 三组各 1、真实 headless 13。命令、实际 profile、首轮失败、日志摘要及完整结果见[原生验证证据](../testing/headless-native-routing-repair-2026-10-20.json)。本地结果仅为 macOS；Linux/Windows 和同一完整候选仍需 CI，旧入口及最终发布/人工验收仍未完成。

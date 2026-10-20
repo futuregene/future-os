@@ -14683,7 +14683,13 @@
       "plannedOwner": "futureos",
       "target": "desktop/src-tauri/src/lib.rs",
       "status": "retained",
-      "ownershipDecision": "gui-entry"
+      "ownershipDecision": "gui-entry",
+      "nativeGateValidation": {
+        "sourceCommit": "5e1862dc55398399346e000732affb2ac2c33437",
+        "target": "aarch64-apple-darwin",
+        "evidence": "docs/testing/headless-native-routing-repair-2026-10-20.json",
+        "result": "PASS"
+      }
     },
     {
       "key": "desktop/src-tauri/src/lib.rs:2273:the_ready_event_starts_the_window_work_and_serves_the_terminal",
@@ -14695,7 +14701,13 @@
       "plannedOwner": "futureos",
       "target": "desktop/src-tauri/src/lib.rs",
       "status": "retained",
-      "ownershipDecision": "gui-entry"
+      "ownershipDecision": "gui-entry",
+      "nativeGateValidation": {
+        "sourceCommit": "5e1862dc55398399346e000732affb2ac2c33437",
+        "target": "aarch64-apple-darwin",
+        "evidence": "docs/testing/headless-native-routing-repair-2026-10-20.json",
+        "result": "PASS"
+      }
     },
     {
       "key": "desktop/src-tauri/src/lib.rs:2321:the_exit_event_closes_admission_and_publishes_the_stop",
@@ -14707,7 +14719,13 @@
       "plannedOwner": "futureos",
       "target": "desktop/src-tauri/src/lib.rs",
       "status": "retained",
-      "ownershipDecision": "gui-entry"
+      "ownershipDecision": "gui-entry",
+      "nativeGateValidation": {
+        "sourceCommit": "5e1862dc55398399346e000732affb2ac2c33437",
+        "target": "aarch64-apple-darwin",
+        "evidence": "docs/testing/headless-native-routing-repair-2026-10-20.json",
+        "result": "PASS"
+      }
     },
     {
       "key": "desktop/src-tauri/src/lib.rs:2372:activate_main_window_restores_shows_and_focuses_the_main_window",

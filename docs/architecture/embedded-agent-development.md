@@ -925,7 +925,10 @@ Agent dependency changes now trigger Desktop GUI/headless and CLI/TUI checks in
 dependencies. Linux full unit suites remain split by crate instead of repeating
 every suite on three platforms. `Rust build (Linux/Windows/macOS)` runs
 `scripts/ci/check-embedded-agent.py`: RPC connection gates, Agent
-`service_startup`, GUI `agent_host::tests`, then headless `agent_host::tests`.
+`service_startup`, CLI discovery, shared `future-host` `agent_host::` assertions
+once, separate GUI initialization/Ready/Exit wiring, then real headless process
+tests. This replaces the former duplicate GUI/headless `agent_host::tests`
+filters after the [Headless package extraction](headless-package-development.md).
 Separate fixture processes isolate HOME, FUTURE_HOME and local endpoints while
 exercising Windows pipes/Unix sockets, occupied locks, startup cancellation,
 global shutdown, durable CLI-origin cancellation, restart and external-owner
