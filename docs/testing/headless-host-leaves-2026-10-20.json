@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "parent": "5d7b168d",
+  "scope": "Pure approval-rule persistence, run-error classification, git diff parsing and child-process flags moved to host, keeping original tests and Desktop facades.",
+  "migratedTestDeclarations": 26,
+  "executedTests": 0,
+  "checks": [
+    {
+      "command": "RUSTC_WRAPPER= CARGO_TARGET_DIR=<root>/target cargo clippy --offline --locked -p future-host -p future-cli -p futureos --all-targets -- -D warnings",
+      "result": "PASS",
+      "target": "aarch64-apple-darwin"
+    },
+    {
+      "command": "cargo fmt -p future-host -p future-cli -p futureos --check",
+      "result": "PASS"
+    },
+    {
+      "command": "RUSTC_WRAPPER= python3 scripts/ci/host-boundaries.py",
+      "result": "PASS"
+    },
+    {
+      "command": "python3 scripts/docs/check-docs.py",
+      "result": "FAIL",
+      "detail": "Pre-existing agent/tests/fixtures/database/README.md outside docs whitelist; unrelated file preserved."
+    }
+  ],
+  "performance": "Shared incremental target. No matched timing or runtime claims.",
+  "limits": [
+    "No local unit or NATS tests executed.",
+    "No product/runtime or cross-platform acceptance.",
+    "Remaining shared backend and CLI wiring incomplete."
+  ]
+}

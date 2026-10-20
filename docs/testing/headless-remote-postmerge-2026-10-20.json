@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "candidateBase": "1c427b04338e770a5eab74fdb505fd4310155c6a",
+  "upstream": "671a1003",
+  "scope": "Sync remote main Agent reasoning vocabulary behavior before pushing the Remote extraction batch. No TypeScript changes.",
+  "checks": {
+    "clippy": {
+      "command": "cargo clippy -p future-agent -p future-host -p futureos -p future-cli --all-targets --offline --locked -- -D warnings",
+      "status": "pass",
+      "logSha256": "042a13dc0fdfa3f6147b6fd9099ea313a05501c7470a30f8e7f7e080a4809655",
+      "summary": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 15.14s"
+      ]
+    },
+    "reasoning": {
+      "command": "cargo test -p future-agent --lib --offline --locked -- reasoning",
+      "status": "pass",
+      "logSha256": "3cf843ff7e5117306df384dcde8eeb1f5ce15cf041f0f381b1c0329ac2e38e5d",
+      "summary": [
+        "    Finished `test` profile [unoptimized + debuginfo] target(s) in 28.97s",
+        "test result: ok. 64 passed; 0 failed; 0 ignored; 0 measured; 2408 filtered out; finished in 0.57s"
+      ]
+    },
+    "fmt": {
+      "status": "pass",
+      "command": "cargo fmt -p future-agent -p future-host -p futureos -p future-cli --check"
+    }
+  },
+  "limits": [
+    "Reasoning filter executes 64 related cases, not the full Agent suite.",
+    "Full matrix CI and final CLI/release/manual acceptance remain pending."
+  ]
+}

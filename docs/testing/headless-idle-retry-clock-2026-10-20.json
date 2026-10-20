@@ -1,0 +1,181 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "b07cc4978eba7c1dfcd9a060c3eb87789ceb7645",
+  "ci": {
+    "run": 39374836837,
+    "candidate": "70f3d7866437c31af8bbb8cfedd7faf7e08e3fe9",
+    "job": 118470599614,
+    "jobName": "Shared host (macOS)",
+    "conclusion": "failure",
+    "result": "1029 passed; 1 failed; 2 existing ignored",
+    "failedCase": "agent_bridge::run_control::tests::wait_for_agent_idle_gives_up_when_the_agent_never_settles",
+    "failure": "Expected exactly 25 get_state requests before the real 5-second deadline; runner completed 24.",
+    "logSha256": "a855fd9351432a8e342eeea7b9e26677b00f773cf47bcff646e41159b086d48f"
+  },
+  "snapshot": {
+    "conclusion": "",
+    "headSha": "70f3d7866437c31af8bbb8cfedd7faf7e08e3fe9",
+    "jobs": [
+      {
+        "conclusion": "success",
+        "id": 118470546870,
+        "name": "Detect affected checks",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "id": 118470546979,
+        "name": "macOS notarization recovery",
+        "status": "completed"
+      },
+      {
+        "conclusion": "skipped",
+        "id": 118470548152,
+        "name": "Matched Windows Rust compilation",
+        "status": "completed"
+      },
+      {
+        "conclusion": "",
+        "id": 118470599535,
+        "name": "Rust tests (Linux) (desktop gui)",
+        "status": "in_progress"
+      },
+      {
+        "conclusion": "success",
+        "id": 118470599573,
+        "name": "Shared host (Windows)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "id": 118470599581,
+        "name": "Remote packages + interoperability",
+        "status": "completed"
+      },
+      {
+        "conclusion": "",
+        "id": 118470599583,
+        "name": "Rust build (Windows)",
+        "status": "in_progress"
+      },
+      {
+        "conclusion": "success",
+        "id": 118470599587,
+        "name": "Rust tests (Linux) (host)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "id": 118470599593,
+        "name": "Desktop typecheck + lint + test",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "id": 118470599599,
+        "name": "Rust tests (Linux) (agent)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "id": 118470599609,
+        "name": "Rust tests (Linux) (desktop headless)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "failure",
+        "id": 118470599614,
+        "name": "Shared host (macOS)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "id": 118470599621,
+        "name": "Rust fmt + clippy (Linux)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "id": 118470599631,
+        "name": "Rust tests (Linux) (tui, cli)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "id": 118470599634,
+        "name": "Rust build (macOS)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "id": 118470599636,
+        "name": "Rust build (Linux)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "id": 118470599645,
+        "name": "Windows update fixtures",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "id": 118470599703,
+        "name": "Mobile typecheck + lint + test",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "id": 118470599711,
+        "name": "Rust tests (Linux) (channels, rpc, goal)",
+        "status": "completed"
+      }
+    ],
+    "status": "in_progress"
+  },
+  "repair": "Keep the production 5-second timeout, at most 25 real get_state RPCs and 200ms inter-poll sleep. A private shared helper accepts the inter-poll wait future. The retry-budget case advances a paused Tokio clock only between decoded real RPC replies. An always-ready fixture task prevents idle auto-advance during real network IO; it is explicitly aborted and joined.",
+  "assertions": [
+    "Original !idle assertion retained",
+    "Original exact 25 get_state requests retained",
+    "Original elapsed >=200ms assertion retained in the controlled clock domain",
+    "Additional elapsed ==5s assertion verifies the full logical deadline",
+    "Existing unanswered real RPC/production-deadline test remains unchanged and passed in the full Host run"
+  ],
+  "localTests": [
+    {
+      "command": "cargo test -p future-host --lib agent_bridge::run_control::tests::wait_for_agent_idle_gives_up_when_the_agent_never_settles --offline --locked -- --exact --nocapture",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1048 filtered out; finished in 0.05s"
+      ],
+      "logSha256": "0e5879f51e09671fa519974bedf3322a0f859a8ca5a590e4f35d796467b55fe2"
+    },
+    {
+      "command": "cargo test -p future-host --lib --offline --locked",
+      "results": [
+        "test result: ok. 1047 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 75.11s"
+      ],
+      "logSha256": "9857ca50ade2ee8a90a2aaa1b0a098801ffa8d8195c6fc7d31c30c09c579e9b2"
+    }
+  ],
+  "localChecks": {
+    "Host/GUI/CLI Clippy --all-targets": {
+      "status": "pass",
+      "logSha256": "bba93aade48fb670755eba8d9355a0412494726e4b43d8d1c5fc2ce13938b184"
+    },
+    "Legacy headless Clippy --all-targets": {
+      "status": "pass",
+      "logSha256": "374f3ea8d42e353ad21c24d27975a5e4142e22be4c7f560e8a74a755d6d695b4"
+    },
+    "Host Rustdoc -D warnings": {
+      "status": "pass",
+      "logSha256": "2129efc86abbfe509e28fb48534a64cdd71efff48fa321a704e83de2b1d834e7"
+    }
+  },
+  "limits": [
+    "Local macOS evidence only; native CI revalidation pending.",
+    "CI snapshot is still in progress, with a real failed macOS group; pending Windows native build and Linux GUI are not accepted.",
+    "Remote implementation, complete lifecycle, future headless and release/manual acceptance remain open."
+  ],
+  "profile": "aarch64-apple-darwin / Rust 1.97.0 / CARGO_PROFILE_TEST_DEBUG=1 / RUST_LOG unset / RUSTC_WRAPPER empty / offline locked / existing shared root target. No matched performance claim."
+}

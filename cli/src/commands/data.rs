@@ -886,10 +886,8 @@ mod tests {
         manager.initialize().unwrap();
         drop(manager);
         let app = Connection::open(home.join("app/app.db")).unwrap();
-        app.execute_batch(include_str!(
-            "../../../desktop/src-tauri/src/store/fixtures/v1.2.1.sql"
-        ))
-        .unwrap();
+        app.execute_batch(include_str!("../../../host/src/store/fixtures/v1.2.1.sql"))
+            .unwrap();
         app.execute_batch("INSERT INTO workspaces(id,name,kind,path,created_at,updated_at) VALUES('w','W','user','.',1,1);
             INSERT INTO threads(id,workspace_id,mode,title,created_at,updated_at) VALUES('t','w','chat','old title',1,1);").unwrap();
         home

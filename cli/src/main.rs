@@ -34,6 +34,7 @@ fn run_from_args(args: &[String]) -> ExitCode {
     // before the CLI runtime starts.
     if let Some(group) = args.first().map(String::as_str) {
         match group {
+            "headless" => return run_headless(&args[1..]),
             "agent" => return run_agent(&args[1..]),
             "tui" => return run_tui(&args[1..]),
             "channel" | "channels" => return run_channel(&args[1..]),
@@ -50,6 +51,26 @@ fn run_from_args(args: &[String]) -> ExitCode {
     let code = runtime.block_on(future_cli::dispatch(args, &out));
     out.flush();
     ExitCode::from(code as u8)
+}
+
+/// Dispatch foreground hosting before any ordinary CLI runtime exists.
+fn run_headless(args: &[String]) -> ExitCode {
+    use future_cli::headless::{Launch, Options, HELP};
+    let result = match Options::parse(args) {
+        Ok(Launch::Help) => {
+            println!("{HELP}");
+            return ExitCode::SUCCESS;
+        }
+        Ok(Launch::Headless(options)) => future_cli::headless::run(options),
+        Err(error) => Err(format!("{error}\n\n{HELP}")),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("FutureOS: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// `future agent <args>` — run the agent gRPC server (same as `future-agent`).

@@ -1,0 +1,347 @@
+{
+  "date": "2026-10-20",
+  "implementationParent": "23e697159f105dfd5505fe7d0f860ec4506b883c",
+  "syncedMain": "e8747623",
+  "manual": {
+    "userReport": "Manual testing complete; authorized cleanup and PR preparation.",
+    "testedCommit": "a0d4d8402064dab1b82b0ad39bbd645837446236",
+    "perCasePlatformEvidence": "Not separately supplied; no inferred per-case passes."
+  },
+  "priorRun": {
+    "url": "https://github.com/futuregene/future-os/actions/runs/39389611663",
+    "headSha": "ce2822833b417e86fe2b8cfa8041761024b66a5c",
+    "observedStatus": "queued",
+    "observedConclusion": "",
+    "jobs": [
+      {
+        "name": "macOS notarization recovery",
+        "status": "completed",
+        "conclusion": "success",
+        "databaseId": 118517677857,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118517677857"
+      },
+      {
+        "name": "Detect affected checks",
+        "status": "completed",
+        "conclusion": "success",
+        "databaseId": 118517678374,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118517678374"
+      },
+      {
+        "name": "Matched Windows Rust compilation",
+        "status": "completed",
+        "conclusion": "skipped",
+        "databaseId": 118517679703,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118517679703"
+      },
+      {
+        "name": "Rust tests (Linux) (desktop gui)",
+        "status": "completed",
+        "conclusion": "success",
+        "databaseId": 118518018861,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118518018861"
+      },
+      {
+        "name": "Shared host (macOS)",
+        "status": "completed",
+        "conclusion": "success",
+        "databaseId": 118518018931,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118518018931"
+      },
+      {
+        "name": "Desktop typecheck + lint + test",
+        "status": "completed",
+        "conclusion": "success",
+        "databaseId": 118518018958,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118518018958"
+      },
+      {
+        "name": "Rust build (Linux)",
+        "status": "completed",
+        "conclusion": "success",
+        "databaseId": 118518018972,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118518018972"
+      },
+      {
+        "name": "Windows update fixtures",
+        "status": "completed",
+        "conclusion": "success",
+        "databaseId": 118518019026,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118518019026"
+      },
+      {
+        "name": "Rust build (macOS)",
+        "status": "completed",
+        "conclusion": "success",
+        "databaseId": 118518019055,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118518019055"
+      },
+      {
+        "name": "Rust tests (Linux) (tui, cli)",
+        "status": "completed",
+        "conclusion": "success",
+        "databaseId": 118518019067,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118518019067"
+      },
+      {
+        "name": "Rust fmt + clippy (Linux)",
+        "status": "completed",
+        "conclusion": "success",
+        "databaseId": 118518019070,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118518019070"
+      },
+      {
+        "name": "Rust build (Windows)",
+        "status": "completed",
+        "conclusion": "failure",
+        "databaseId": 118518019080,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118518019080"
+      },
+      {
+        "name": "Rust tests (Linux) (agent)",
+        "status": "completed",
+        "conclusion": "success",
+        "databaseId": 118518019086,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118518019086"
+      },
+      {
+        "name": "Mobile typecheck + lint + test",
+        "status": "completed",
+        "conclusion": "success",
+        "databaseId": 118518019096,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118518019096"
+      },
+      {
+        "name": "Shared host (Windows)",
+        "status": "completed",
+        "conclusion": "success",
+        "databaseId": 118518019130,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118518019130"
+      },
+      {
+        "name": "Remote packages + interoperability",
+        "status": "completed",
+        "conclusion": "success",
+        "databaseId": 118518019186,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118518019186"
+      },
+      {
+        "name": "Rust tests (Linux) (channels, rpc, goal)",
+        "status": "completed",
+        "conclusion": "success",
+        "databaseId": 118518019212,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118518019212"
+      },
+      {
+        "name": "Rust tests (Linux) (host)",
+        "status": "completed",
+        "conclusion": "success",
+        "databaseId": 118518019213,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118518019213"
+      },
+      {
+        "name": "Rust tests (Linux) (desktop backend)",
+        "status": "queued",
+        "conclusion": "",
+        "databaseId": 118524120896,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118524120896"
+      },
+      {
+        "name": "Rust tests (Linux)",
+        "status": "queued",
+        "conclusion": "",
+        "databaseId": 118525137672,
+        "url": "https://github.com/futuregene/future-os/actions/runs/39389611663/job/118525137672"
+      }
+    ]
+  },
+  "windowsNativeArtifact": {
+    "id": 12249517280,
+    "sha256": "e1711f9911a5fa7f2cf1259fee46af0be5f469120179cd6a332ea22a777225bb",
+    "summary": {
+      "platform": "Windows-2025Server-10.0.26100-SP0",
+      "commit": "ce2822833b417e86fe2b8cfa8041761024b66a5c",
+      "suites": [
+        {
+          "name": "connection",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "future-rpc",
+            "--lib",
+            "connection::tests",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 19,
+          "seconds": 10.906
+        },
+        {
+          "name": "service",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "future-agent",
+            "--test",
+            "service_startup",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 15,
+          "seconds": 36.703
+        },
+        {
+          "name": "gui-entry-state",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "futureos",
+            "--lib",
+            "gui::startup_paths_tests::process_state_initializes_without_a_window",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "seconds": 64.719
+        },
+        {
+          "name": "gui-entry-providers",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "futureos",
+            "--lib",
+            "commands::providers::tests::command_wrappers_delegate_to_the_agent",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "seconds": 17.172
+        },
+        {
+          "name": "gui-entry-ready",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "futureos",
+            "--lib",
+            "gui::startup_paths_tests::the_ready_event_starts_the_window_work_and_serves_the_terminal",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "seconds": 10.594
+        },
+        {
+          "name": "gui-entry-exit",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "futureos",
+            "--lib",
+            "gui::startup_paths_tests::the_exit_event_closes_admission_and_publishes_the_stop",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "seconds": 0.703
+        },
+        {
+          "name": "headless-entry",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "future-cli",
+            "--test",
+            "headless_cli",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 7,
+          "seconds": 205.625
+        }
+      ],
+      "status": "failed",
+      "error": "'charmap' codec can't encode characters in position 12-18: character maps to <undefined>"
+    },
+    "findings": [
+      "Accepted-key profile request failed in original one-read HTTP fixture.",
+      "Console QR forwarding raised a charmap encoding exception, truncating suite before remaining native fixtures."
+    ],
+    "repair": [
+      "Explicit blocking socket, bounded complete request-header read, checked response writes and join; original authorization assertions retained.",
+      "UTF-8 stdout/stderr forwarding, no selected suite removed.",
+      "Unix-only test guards match their actual consumers; no warning suppression."
+    ],
+    "revalidation": "Pending PR native Windows CI; no local Windows result claimed."
+  },
+  "localStatic": {
+    "rust": "cargo clippy --workspace --all-targets --locked --offline -- -D warnings",
+    "rustExit": 0,
+    "rustWallSeconds": 27.0,
+    "fmt": "cargo fmt --all --check",
+    "fmtExit": 0,
+    "desktopTypecheckExit": 0,
+    "desktopEslintExit": 0,
+    "docs": {
+      "checked": 297,
+      "pendingBilingualPairs": 0,
+      "exit": 0
+    },
+    "dependencyBoundary": {
+      "target": "aarch64-apple-darwin",
+      "desktopFeatures": [
+        "default",
+        "gui"
+      ],
+      "hostPackages": 370,
+      "cliPackages": 395,
+      "forbidden": []
+    },
+    "pythonSyntaxExit": 0,
+    "localUnitOrNatsTestsExecuted": 0,
+    "timingCaveat": "Cached static-check wall time is not a matched performance measurement."
+  },
+  "remaining": [
+    "Current PR CI on new full head",
+    "Post-manual release packaging/signing/install-upgrade/uninstall acceptance",
+    "Old Linux/static actual released payload smoke",
+    "Matched build/link/test/startup observations",
+    "Final same-candidate acceptance reconciliation and user confirmation"
+  ],
+  "cleanup": {
+    "policy": "Only this session scratch files, links and applied stash; preserve other worktrees/stashes, primary binaries and user skills checkout.",
+    "retained": "Traceable plans, immutable original test inventory and verification JSON; shared target cache retained.",
+    "removedTemporaryFiles": 175,
+    "removedTemporaryBytes": 9546439,
+    "removedAppliedStash": "67877555aebf85c80fe7ab41df0439b51ea4be92"
+  }
+}

@@ -1,0 +1,159 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "20faf463607adfebc20a175aad4a2465dbf8c6cb",
+  "ci": {
+    "conclusion": "failure",
+    "headSha": "20faf463607adfebc20a175aad4a2465dbf8c6cb",
+    "jobs": [
+      {
+        "conclusion": "success",
+        "databaseId": 118475974102,
+        "name": "Detect affected checks",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118475974460,
+        "name": "macOS notarization recovery",
+        "status": "completed"
+      },
+      {
+        "conclusion": "skipped",
+        "databaseId": 118475975490,
+        "name": "Matched Windows Rust compilation",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118476026870,
+        "name": "Remote packages + interoperability",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118476026917,
+        "name": "Desktop typecheck + lint + test",
+        "status": "completed"
+      },
+      {
+        "conclusion": "failure",
+        "databaseId": 118476026942,
+        "name": "Rust tests (Linux) (desktop gui)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118476026965,
+        "name": "Rust fmt + clippy (Linux)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118476027011,
+        "name": "Shared host (Windows)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118476027012,
+        "name": "Rust tests (Linux) (agent)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118476027021,
+        "name": "Rust tests (Linux) (channels, rpc, goal)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118476027025,
+        "name": "Rust build (Windows)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118476027030,
+        "name": "Shared host (macOS)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118476027048,
+        "name": "Rust build (Linux)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118476027065,
+        "name": "Rust tests (Linux) (host)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118476027069,
+        "name": "Mobile typecheck + lint + test",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118476027089,
+        "name": "Rust build (macOS)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118476027090,
+        "name": "Rust tests (Linux) (tui, cli)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118476027119,
+        "name": "Rust tests (Linux) (desktop headless)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118476027167,
+        "name": "Windows update fixtures",
+        "status": "completed"
+      },
+      {
+        "conclusion": "failure",
+        "databaseId": 118479971233,
+        "name": "Rust tests (Linux) (desktop backend)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "failure",
+        "databaseId": 118479971257,
+        "name": "Rust tests (Linux)",
+        "status": "completed"
+      }
+    ],
+    "status": "completed"
+  },
+  "failure": {
+    "job": 118476026942,
+    "test": "agent_supervisor::tests::the_recovery_poll_reports_the_same_phase_as_the_plain_poll",
+    "observed": "recovery phase ready != plain poll incompatible",
+    "result": "1013 passed; 1 failed; 8 existing ignored"
+  },
+  "repair": "Use existing HomeGuard and real loopback Agent RPC fixture for both readiness polls. Preserve all comparisons and additionally require ready. No product behavior changes.",
+  "local": {
+    "command": "cargo test -p futureos --lib --offline --locked -- agent_supervisor::",
+    "results": [
+      "test result: ok. 16 passed; 0 failed; 0 ignored; 0 measured; 501 filtered out; finished in 0.11s"
+    ],
+    "logSha256": "3fa285f1e8b3156b547b241da262c5cee930e24f87f128cb62a0f298a56bcd8b",
+    "sourceContext": "Remote migration worktree on base commit; no deterministic local red claimed."
+  },
+  "limits": [
+    "Linux CI revalidation of this repair is pending.",
+    "Completed prior CI is failure; successful Windows/Host/headless jobs apply only to its exact candidate.",
+    "Matched Windows compilation job skipped; no performance acceptance.",
+    "No final future headless entry or manual acceptance yet."
+  ]
+}

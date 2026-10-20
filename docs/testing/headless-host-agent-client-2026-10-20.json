@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "parent": "ba2daaa1",
+  "scope": "Shared verified Agent connection cache/client with entry-injected channel runtime.",
+  "migratedTestDeclarations": 1,
+  "executedTests": 0,
+  "checks": [
+    {
+      "command": "cargo clippy --offline --locked -p future-host -p future-cli -p futureos --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p future-host --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p futureos --no-default-features --features headless --all-targets -- -D warnings",
+      "result": "PASS"
+    }
+  ],
+  "runtime": "The original single-worker channel runtime remains owned/constructed by the transitional entry adapter. Host services receive a Tokio handle and construct no runtime or block_on. Both GUI and headless explicitly install it before shared calls.",
+  "limits": [
+    "Connection/RPC fixture migration remains open; existing loopback/channel-lifetime/instance-fence tests remain in Desktop with original assertions.",
+    "No local tests or comparative performance measurements.",
+    "Final CLI entry and complete lifecycle ownership not implemented."
+  ]
+}

@@ -57,7 +57,7 @@ Every handshake uses fresh ephemeral keys. Traffic keys/counters are never saved
 Old Desktop pairings are replaced with new invitations. Old mobile credential
 bundles cannot enter the v1 business channel. Existing users must pair again after
 upgrading both endpoints. There is no production plaintext fallback. The old
-`desktop/web` verification client is not a v2 client and cannot control this bridge.
+`host/web` verification client is not a v2 client and cannot control this bridge.
 Legacy Rust protocol/business fixtures are test-only, not a compatibility mode.
 
 ## Handshake ownership and readiness

@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "parent": "40f993d4",
+  "scope": "Shared application Store, historical migrations/fixtures, Agent event outlet and real database fixtures. Agent-authoritative reconciliation remains an interim Desktop adapter.",
+  "migratedTestDeclarations": 277,
+  "interimCoordinationTestDeclarations": 9,
+  "interimCoordinationTests": [
+    "desktop/src-tauri/src/store/cleanup.rs:1142:orphaned_runs_remain_discoverable_and_can_be_terminated_without_guessing_a_session",
+    "desktop/src-tauri/src/store/cleanup.rs:1429:reconcile_preserves_history_when_an_agent_database_is_missing",
+    "desktop/src-tauri/src/store/cleanup.rs:1454:reconcile_skips_when_enumeration_fails",
+    "desktop/src-tauri/src/store/cleanup.rs:1476:reconcile_skips_when_the_agent_is_unreachable",
+    "desktop/src-tauri/src/store/cleanup.rs:1532:reconcile_empty_conversations_removes_a_session_without_messages",
+    "desktop/src-tauri/src/store/cleanup.rs:1560:reconcile_empty_conversations_keeps_a_session_with_a_message",
+    "desktop/src-tauri/src/store/cleanup.rs:1580:reconcile_empty_conversations_keeps_a_partial_page",
+    "desktop/src-tauri/src/store/cleanup.rs:1599:reconcile_empty_conversations_keeps_rows_it_cannot_read",
+    "desktop/src-tauri/src/store/cleanup.rs:1621:reconcile_empty_conversations_skips_when_the_agent_is_unreachable"
+  ],
+  "unchangedSql": [
+    {
+      "old": "desktop/src-tauri/src/store/app_schema_contract.sql",
+      "new": "host/src/store/app_schema_contract.sql",
+      "sha256": "d7705fe8052e1d334af58fc223c0dd253ceff814813cfbe8d10dfc584ecde68a",
+      "unchanged": true
+    },
+    {
+      "old": "desktop/src-tauri/src/store/approval_assessments.sql",
+      "new": "host/src/store/approval_assessments.sql",
+      "sha256": "2376ac0904ee2c78d05aeff4a0f56f887f6852ac50a0fd6c2af39ef956332304",
+      "unchanged": true
+    },
+    {
+      "old": "desktop/src-tauri/src/store/delete_sources.sql",
+      "new": "host/src/store/delete_sources.sql",
+      "sha256": "fad162b5a62f116a4627068f4afbf1f81731dfcdea0cec2095639d46a0e886ac",
+      "unchanged": true
+    },
+    {
+      "old": "desktop/src-tauri/src/store/fixtures/pre-agent.sql",
+      "new": "host/src/store/fixtures/pre-agent.sql",
+      "sha256": "ffc53255dfa8d75b641622e1978e6996c8a37abcbc017c4aabb88840b8e186e7",
+      "unchanged": true
+    },
+    {
+      "old": "desktop/src-tauri/src/store/fixtures/v1.2.1.sql",
+      "new": "host/src/store/fixtures/v1.2.1.sql",
+      "sha256": "f84fe8323482b897f8d67fd254d08127539b902171ea1565945afbce97ea62c5",
+      "unchanged": true
+    },
+    {
+      "old": "desktop/src-tauri/src/store/managed_cleanup.sql",
+      "new": "host/src/store/managed_cleanup.sql",
+      "sha256": "599c1af5e8607f53beba140563cb5527e5b9076cdfaa62443124f0065300f4f6",
+      "unchanged": true
+    },
+    {
+      "old": "desktop/src-tauri/src/store/session_delete_indexes.sql",
+      "new": "host/src/store/session_delete_indexes.sql",
+      "sha256": "928a4ac689f557516e0a682501902b74523816cd7d3c3c2f33eb0d3c7499b68d",
+      "unchanged": true
+    },
+    {
+      "old": "desktop/src-tauri/src/store/thread_sources.sql",
+      "new": "host/src/store/thread_sources.sql",
+      "sha256": "2eec0088dc4c75c12f3a6a40df6c930f02eeee92587f4521b31e285f20607e76",
+      "unchanged": true
+    }
+  ],
+  "executedTests": 0,
+  "checks": [
+    {
+      "command": "cargo clippy --offline --locked -p future-host -p future-cli -p futureos --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p future-host --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p futureos --no-default-features --features headless --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo fmt -p future-host -p future-cli -p futureos --check",
+      "result": "PASS"
+    },
+    {
+      "command": "python3 scripts/ci/host-boundaries.py",
+      "result": "PASS",
+      "hostPackages": 369,
+      "cliPackages": 395
+    }
+  ],
+  "environment": {
+    "target": "aarch64-apple-darwin",
+    "rust": "1.97.0",
+    "RUSTC_WRAPPER": "",
+    "CARGO_TARGET_DIR": "<root>/target (shared incremental)"
+  },
+  "limits": [
+    "Test targets compiled; no local unit, NATS or runtime test execution.",
+    "No matched performance, release artifact or cross-platform acceptance.",
+    "9 Agent/Store coordination tests remain in the interim Desktop adapter pending business-bridge migration."
+  ]
+}

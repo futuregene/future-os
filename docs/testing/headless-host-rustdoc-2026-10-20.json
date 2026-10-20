@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "b28782863623725d3aef34e5923cd725e59c2033",
+  "change": "Repair eleven public Rustdoc references to test-only, removed or private helpers/constants left by library extraction; use accurate prose/code references without expanding visibility or suppressing warnings.",
+  "files": [
+    "host/src/auth_store.rs",
+    "host/src/future_platform.rs",
+    "host/src/store/cleanup.rs",
+    "host/src/store/runs.rs",
+    "host/src/store/reconcile.rs",
+    "host/src/store.rs",
+    "host/src/agent_bridge/queries.rs",
+    "host/src/agent_bridge/reconciliation.rs",
+    "host/src/agent_bridge/run_control.rs",
+    "host/src/agent_providers/write.rs",
+    "host/src/agent_providers/mod.rs"
+  ],
+  "check": {
+    "command": "RUSTDOCFLAGS=\"-D warnings\" cargo doc -p future-host --no-deps --offline --locked",
+    "result": "PASS",
+    "logSha256": "f8043d92cf18b0ca4f472387825348ecff7e381aa038cb297f6a2855efdcc0fe"
+  },
+  "ci": "Add one strict Host public-library documentation step to the affected Linux Host test group; no npm/Desktop prerequisite.",
+  "workflowSyntax": "Ruby YAML parse PASS",
+  "limits": [
+    "Documentation validation only, not a passing final candidate or runtime/release acceptance."
+  ]
+}

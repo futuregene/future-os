@@ -8,11 +8,12 @@ FutureOS: one AI agent everywhere — terminal (TUI), desktop (GUI), mobile (And
 
 The Rust workspace (`Cargo.toml`) members and their slice of `~/.future/` (see `docs/guide/directory-layout.md`):
 
+- `host/` — `future-host`, the GUI-free shared application backend under extraction. Owns shared Store/migrations, credentials/platform and OAuth/account services, identity/lock, files/review, Agent client/hosting, the application bridge, task execution/conversation lifetime, maintenance scheduling and request ownership. Remote host/Peer services and shared shutdown coordination/teardown now also live here. Entry points install runtimes and adapt GUI resources; CLI owns the unified `future headless` foreground entry and its runtimes; final acceptance remains in progress. See `docs/architecture/headless-package-development.zh-CN.md`.
 - `agent/` — `future-agent`, the gRPC backend. Owns `~/.future/agent/` (settings, models, auth, JSONL sessions, skills).
 - `channels/` — `future-channel`, the Feishu / DingTalk IM bridge. Owns `~/.future/channels/config.json`.
 - `orchestration/goal/` — `future-goal`, the goal control plane (durable goals/todos/gates, deterministic should-run kernel, event-sourced state). Owns project-local `<cwd>/.future/goal/` by default (`FUTURE_GOAL_ROOT` overrides it); see `docs/architecture/goal-control-plane.md`.
 - `tui/` — `future-tui`, the terminal UI (a gRPC client of the agent). Owns `~/.future/tui/`.
-- `cli/` — `future-cli`, builds the unified `future` binary that embeds agent/tui/channel/goal.
+- `cli/` — `future-cli`, builds the unified `future` binary that embeds headless/agent/tui/channel/goal.
 - `packages/rpc/` — `future-rpc`, the protobuf wire-contract crate (single source of truth; see proto notes below).
 
 `desktop/src-tauri` (`futureos`) is a workspace member: every Rust entry point shares the root `Cargo.lock`, `target/`, and release profile (Thin LTO). `default-members` keeps GUI dependencies out of ordinary root builds; select `-p futureos` explicitly for Desktop, or `--workspace --exclude futureos` for all CLI/server crates. `packages/` also holds shared npm packages (`markdown`, `thread-projection`, `json-preview`) consumed by desktop/mobile; the repo-root `package.json` declares npm workspaces `["packages/*", "desktop", "mobile"]`, so a single `npm install` at the root hoists all deps.
@@ -128,7 +129,7 @@ The scheduled task does this right after the squash merge; in the fallback path 
 
 Use `make build-desktop` / `make package-desktop` or `npm --prefix desktop run tauri:build`. `scripts/build/build-desktop.mjs` asks Tauri to build `future-cli` and `futureos` in one Cargo invocation so shared dependencies use the same resolved features. It stages the CLI only after compilation, then invokes `tauri bundle` unless `--no-bundle` was requested. Windows signs the staged sidecar between these phases. All Rust and bundle outputs live in root `target/`.
 
-Desktop's build script disables tauri-build's sidecar copy locally: copying into the shared target directory could overwrite Cargo's `future` executable with a stale sidecar. Plain Cargo checks do not require placeholder sidecars. Linux release builds compile the musl CLI + headless entry together, then set `FUTURE_DESKTOP_CLI` to that artifact for the separate GNU GUI build; machine code cannot be shared across those target triples.
+Desktop's build script disables tauri-build's sidecar copy locally: copying into the shared target directory could overwrite Cargo's `future` executable with a stale sidecar. Plain Cargo checks do not require placeholder sidecars. Linux release builds compile the musl CLI including headless, then set `FUTURE_DESKTOP_CLI` to that artifact for the separate GNU GUI build; machine code cannot be shared across those target triples.
 
 ## Design principles
 

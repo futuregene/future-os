@@ -1,0 +1,44 @@
+{
+  "status": "implemented-pending-unified-validation",
+  "baseCommit": "5c56a8853704f620b246fa05c75950a60d9265ce",
+  "entry": "future headless",
+  "entryTestDeclarationsMoved": 53,
+  "desktopDeclarationsRetained": 2,
+  "intermediateEvidence": {
+    "cliProcesses": {
+      "passed": 11,
+      "failed": 0,
+      "seconds": 4.91,
+      "log": "/tmp/headless-cli-process-migration-local-2026-10-20.log"
+    },
+    "remoteProcesses": {
+      "passed": 13,
+      "failed": 0,
+      "seconds": 70.67,
+      "log": "/tmp/headless-cli-remote-process-local-2026-10-20.log"
+    },
+    "limitations": "These intermediate local results precede the final bulk changes and are not final-candidate acceptance."
+  },
+  "latestUserDirection": "Defer repeated per-batch testing; finish implementation and validate together.",
+  "previousCandidateCi": {
+    "run": 39382550090,
+    "statusAtObservation": "in_progress",
+    "nativeBuildJobs": {
+      "linux": 118494802191,
+      "macos": 118494802228,
+      "windows": 118494802281
+    },
+    "failure": "All three failed because Desktop cli_tool::tests selected zero cases after its move to future-host. Zero-test failure guard worked.",
+    "fix": "Shared cases stay in complete Host native suites, once per platform; embedded gate retains real entry checks.",
+    "windowsHostAtObservation": "in_progress"
+  },
+  "pending": [
+    "Unified all-target Clippy/format/generation/document checks",
+    "Unified test execution on the full candidate",
+    "Native Windows console and ConPTY execution",
+    "Actual signed release payloads and install/update/uninstall validation",
+    "Matched baseline/candidate performance",
+    "Frozen-candidate Desktop, CLI/headless and Mobile manual acceptance",
+    "User confirmation"
+  ]
+}

@@ -124,12 +124,9 @@ jobs:
           set -euo pipefail
           target="${{ matrix.arch }}-unknown-linux-musl"
           rustup target add "$target"
-          cargo build --release --target "$target" -p future-cli -p futureos \
-            --no-default-features --features futureos/headless \
-            --bin future --bin futureos-headless
-          bash scripts/ci/check-headless-linux.sh "target/$target/release/futureos-headless"
+          cargo build --release --target "$target" -p future-cli --bin future
+          bash scripts/ci/check-headless-linux.sh "target/$target/release/future"
           mkdir -p target/release
-          cp "target/$target/release/futureos-headless" "target/release/futureos-headless"
           tar -czf "cli/FutureOS_${FUTURE_ARTIFACT_VERSION}_linux_${{ matrix.arch }}-cli.tar.gz" \
             -C "target/$target/release" future
           echo "FUTURE_DESKTOP_CLI=target/$target/release/future" >> "$GITHUB_ENV"
@@ -172,7 +169,6 @@ jobs:
           dir="futureos-portable-linux"
           mkdir -p "$dir"
           cp "target/release/futureos" "$dir/futureos"
-          cp "target/release/futureos-headless" "$dir/futureos-headless"
           cp "target/${{ matrix.arch }}-unknown-linux-musl/release/future" "$dir/future"
           chmod +x "$dir"/*
           cp "docs/dist/readme-linux.txt" "$dir/Readme.txt"
@@ -202,12 +198,12 @@ jobs:
           # portable archive against silently dropping the standalone entry.
           deb_extract_dir="$(mktemp -d)"
           dpkg-deb --extract "$release_deb" "$deb_extract_dir"
-          [[ -x "$deb_extract_dir/usr/bin/futureos-headless" ]] || {
+          [[ -x "$deb_extract_dir/usr/bin/future" ]] || {
             dpkg-deb --contents "$release_deb" >&2
-            echo "The .deb does not contain executable /usr/bin/futureos-headless." >&2
+            echo "The .deb does not contain executable /usr/bin/future." >&2
             exit 1
           }
-          tar -tzf "$portable" ./futureos-headless >/dev/null
+          tar -tzf "$portable" ./future >/dev/null
 
       - name: Verify actual deb, portable and CLI payloads
         run: python3 scripts/ci/check-packaged-entrypoints.py linux --version "$FUTURE_VERSION"

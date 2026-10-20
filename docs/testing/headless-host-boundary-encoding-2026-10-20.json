@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "ci": {
+    "runId": 39361847974,
+    "candidate": "5da65cceaec979103e76e4a41c93f30fa6e74941",
+    "jobId": 118429983723,
+    "url": "https://github.com/futuregene/future-os/actions/runs/39361847974/job/118429983723",
+    "conclusion": "failure",
+    "desktopCargoCheck": "PASS; original E0432/E0599 resolved",
+    "failedStep": "Combined GUI and CLI dependency boundaries",
+    "error": "UnicodeDecodeError: charmap cannot decode byte 0x81",
+    "nativeEvidenceUpload": "No files; lifecycle steps never ran after the boundary failure",
+    "logSha256": "57f504cba8309d64a0a5f6e7333fadb8989430435c843734a41b9724b55e1a57"
+  },
+  "change": "Decode rustc and cargo JSON subprocess output explicitly as UTF-8, as emitted by Cargo, instead of the Windows default locale codec. No dependency assertion changes.",
+  "localReproduction": {
+    "source": "real cargo metadata --offline --locked --format-version 1 --filter-platform aarch64-apple-darwin",
+    "oldDecode": "cp1252 raises UnicodeDecodeError at byte 0x81",
+    "fixedCheck": "Run the actual boundary script with locale.getpreferredencoding forced to cp1252; actual metadata parsing and all boundary assertions pass.",
+    "hostPackages": 369,
+    "cliPackages": 395,
+    "forbidden": []
+  },
+  "windows": "User explicitly leaves native Windows validation to CI.",
+  "limits": [
+    "Local native metadata exercises the encoding failure and real dependency traversal, not native Windows Cargo compilation.",
+    "Windows lifecycle/artifact evidence still requires the next native CI.",
+    "Whole CI candidate is not accepted while Desktop Rust/lifecycle groups remain in progress."
+  ]
+}

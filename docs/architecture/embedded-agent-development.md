@@ -84,7 +84,7 @@ while accepted runs continue. Full host shutdown is a separate lifecycle API.
 | [GUI supervisor](../../desktop/src-tauri/src/agent_supervisor.rs) | Probe and own a `future agent` child; reset Windows permissions and kill on exit | Manage an embedded handle or an external connection and use complete shutdown |
 | [GUI startup](../../desktop/src-tauri/src/lib.rs) and [host lock](../../desktop/src-tauri/src/instance.rs) | Background work starts in setup; GUI/headless lock is acquired after Tauri build | Defer dependent work until host locking and compatibility validation |
 | [Business connection](../../desktop/src-tauri/src/agent_bridge/client.rs) | Cache Channels and probe reachability; status checks compatibility separately | Gate all business calls and reconnection on compatibility and instance identity |
-| [Headless Agent owner](../../desktop/src-tauri/src/headless/agent.rs) and [TUI supervisor](../../tui/src/agent_supervisor.rs) | Independently manage children or reuse a reachable Agent | Integrate headless with the common host; retain TUI ownership and share handshake/conflict diagnostics |
+| [Headless Agent owner](../../cli/src/headless/agent.rs) and [TUI supervisor](../../tui/src/agent_supervisor.rs) | Independently manage children or reuse a reachable Agent | Integrate headless with the common host; retain TUI ownership and share handshake/conflict diagnostics |
 | [SQLite worker](../../agent/src/session/database/mod.rs), [Manager](../../agent/src/session/manager/mod.rs), [event writer](../../agent/src/rpc/broadcaster/journal_writer.rs) | Ordered writes, terminal transactions, maintenance and destructor joins | Explicitly drain, stop, join and report failures rather than relying on process death |
 | [RPC shutdown](../../agent/src/rpc/commands/session_lifecycle.rs) and [scheduler](../../agent/src/rpc/session.rs) | Reject new prompts; completed runs may still trigger dequeue | Add host shutdown that closes admission and dequeue atomically and publishes queued cancellation |
 | [RPC server](../../agent/src/grpc/mod.rs) and [global broadcaster](../../agent/src/rpc/mod.rs) | Production servers wait indefinitely; global events use process statics | Add explicit server shutdown and termination of global/session subscriptions |
@@ -925,7 +925,10 @@ Agent dependency changes now trigger Desktop GUI/headless and CLI/TUI checks in
 dependencies. Linux full unit suites remain split by crate instead of repeating
 every suite on three platforms. `Rust build (Linux/Windows/macOS)` runs
 `scripts/ci/check-embedded-agent.py`: RPC connection gates, Agent
-`service_startup`, GUI `agent_host::tests`, then headless `agent_host::tests`.
+`service_startup`, CLI discovery, shared `future-host` `agent_host::` assertions
+once, separate GUI initialization/provider-RPC/Ready/Exit wiring, then real headless process
+tests. This replaces the former duplicate GUI/headless `agent_host::tests`
+filters after the [Headless package extraction](headless-package-development.md).
 Separate fixture processes isolate HOME, FUTURE_HOME and local endpoints while
 exercising Windows pipes/Unix sockets, occupied locks, startup cancellation,
 global shutdown, durable CLI-origin cancellation, restart and external-owner

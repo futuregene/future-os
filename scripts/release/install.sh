@@ -300,17 +300,15 @@ install_linux() {
     say "Extracting portable tarball to $prefix"
     tar -xzf "$pkg" -C "$prefix"
     chmod +x "$prefix/futureos" "$prefix/future"
-    # New portable releases include the standalone headless Desktop. Keep the
-    # installer compatible with explicitly pinned older archives that predate it.
-    if [[ -f "$prefix/futureos-headless" ]]; then
-      chmod +x "$prefix/futureos-headless"
-    fi
+    # A portable prefix has no ownership manifest. Preserve any pre-existing
+    # same-name file rather than guessing whether it belongs to this product.
+    # The new archive and CLI do not use the retired separate headless entry.
     run_future_setup "$prefix/future"
     if [[ ":$PATH:" != *":$prefix:"* ]]; then
       warn "Add $prefix to your PATH: export PATH=\"$prefix:\$PATH\""
     fi
     say "Done — FutureOS $VERSION installed"
-    say "Run 'futureos' for the desktop app, 'future' for the CLI (agent|tui|channel|loop)"
+    say "Run 'futureos' for the desktop app, 'future' for the CLI (headless|agent|tui|channel|goal)"
   fi
 }
 

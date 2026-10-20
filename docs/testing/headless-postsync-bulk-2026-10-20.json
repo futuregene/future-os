@@ -1,0 +1,31 @@
+{
+  "candidateBase": "ece6f697",
+  "mergedOriginMain": "6b89bd4f",
+  "status": "static-passed-unified-runtime-validation-pending",
+  "checks": [
+    {
+      "command": "cargo clippy -p future-host -p future-cli -p futureos -p future-tui --all-targets --offline --locked -- -D warnings",
+      "result": "passed",
+      "seconds": 17.75
+    },
+    {
+      "command": "npm --prefix desktop run typecheck",
+      "result": "passed"
+    },
+    {
+      "command": "npm --prefix mobile run typecheck",
+      "result": "passed"
+    },
+    {
+      "command": "Desktop eslint: upstream RemoteView.test.tsx, remoteHostFormat.ts",
+      "result": "passed"
+    },
+    {
+      "command": "Mobile eslint: upstream RemoteContext, locales, SessionsScreen, StandbyScreen and associated tests",
+      "result": "passed"
+    }
+  ],
+  "testsExecutedThisSync": 0,
+  "temporaryDependencySymlinksRemoved": true,
+  "limitations": "Native runtime tests, actual artifacts, matched performance and frozen-candidate manual acceptance remain pending."
+}
