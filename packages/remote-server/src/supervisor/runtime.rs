@@ -66,6 +66,10 @@ pub type ReadinessPause = (
 pub struct RuntimeHooks {
     pub readiness_pause: Mutex<Option<ReadinessPause>>,
     pub inject_build_failure: std::sync::atomic::AtomicUsize,
+    /// How many times `add` built a bridge for the invitation it minted. The
+    /// retry is otherwise only visible as elapsed time, which a broken broker
+    /// spends in the same place whether or not the loop went round again.
+    pub add_attempts: std::sync::atomic::AtomicU8,
 }
 impl Supervisor {
     pub fn empty(&self) -> crate::types::RemoteStatus {

@@ -262,6 +262,97 @@ async fn a_final_shutdown_refuses_new_starts_and_late_background_work() {
     assert!(executor.futures.lock().unwrap().is_empty());
 }
 
+/// An invitation for a broker that is not there, in the shape `invite` hands back.
+fn invitation_for(pair_id: &str, nats_url: &str) -> crate::services::Invitation {
+    (
+        PairingCreds {
+            handshake_version: 2,
+            secure: None,
+            pair_id: pair_id.to_string(),
+            desktop_id: format!("desktop_{pair_id}"),
+            nkey_seed: nkeys::KeyPair::new_user().seed().unwrap(),
+            user_jwt: "fixture".into(),
+            nats_url: nats_url.to_string(),
+            nats_ws_url: "ws://127.0.0.1:1".into(),
+            jwt_expires_at: 0,
+            control_url: None,
+        },
+        format!("futureos://remote/pair?v=2&code={pair_id}"),
+        Some(1_800_000_000),
+    )
+}
+
+/// An invitation whose bridge cannot be reached is retried **with the same
+/// invitation**, and never re-minted.
+///
+/// The second half is the one that matters to the user: minting is a row on the
+/// platform that counts towards the device cap, so a retry that minted again
+/// would leave a code nobody is looking at behind, and could hit the cap without
+/// a device ever being paired.
+#[tokio::test]
+async fn an_add_that_cannot_reach_the_broker_retries_the_invitation_it_minted() {
+    let host = Arc::new(MemoryHost::default());
+    let (entered, observed) = tokio::sync::oneshot::channel();
+    let (deliver, invited) = tokio::sync::oneshot::channel();
+    *host.invitation.lock().unwrap() = Some((entered, invited));
+    let server = Supervisor::new(host.clone(), Arc::new(TokioExecutor));
+    // A port nothing listens on: every attempt is refused at the socket.
+    let invitation = invitation_for("pair_unreachable", "nats://127.0.0.1:1");
+    deliver.send(invitation).unwrap();
+
+    let started = std::time::Instant::now();
+    let running = server.clone();
+    let add = tokio::spawn(async move { running.add_device().await });
+    observed.await.unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(10), add)
+        .await
+        .expect("the retry budget must be bounded")
+        .unwrap()
+        .expect_err("no broker, no working invitation");
+    assert_eq!(
+        crate::pairing::error_code(&error),
+        Some("network"),
+        "the failure class must survive to the caller: {error:?}"
+    );
+    assert_eq!(
+        host.invites.load(Ordering::Acquire),
+        1,
+        "a retry must serve the invitation it already minted, not mint another"
+    );
+    assert_eq!(
+        server.hooks.add_attempts.load(Ordering::Acquire),
+        super::start::ADD_CONNECT_ATTEMPTS,
+        "the bridge must be retried the whole budget, not given up on after one try"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(300),
+        "the loop gave up without waiting for the next attempt"
+    );
+    server.shutdown(Duration::from_secs(1)).await.unwrap();
+}
+
+/// The decision inside that loop, asserted without a socket: only a network
+/// failure past the first attempt is worth retrying.
+#[test]
+fn only_a_network_failure_inside_the_retry_budget_is_retried() {
+    let network = crate::Error::RemoteTransport("Failed to connect to NATS: refused".into());
+    assert!(super::start::add_retryable(1, &network));
+    assert!(
+        !super::start::add_retryable(super::start::ADD_CONNECT_ATTEMPTS, &network),
+        "the last attempt must answer, not schedule another wait"
+    );
+    // A credential the broker refuses stays refused; a local fault (an
+    // unreadable NKey, a full disk) is not repaired by waiting either.
+    assert!(!super::start::add_retryable(
+        1,
+        &crate::Error::RemoteAuthorization("unauthorized".into())
+    ));
+    assert!(!super::start::add_retryable(
+        1,
+        &crate::Error::Message("Invalid desktop NKey".into())
+    ));
+}
+
 #[tokio::test]
 async fn stopping_during_an_add_device_request_cancels_the_host_invitation() {
     let host = Arc::new(MemoryHost::default());
