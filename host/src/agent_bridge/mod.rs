@@ -18,3 +18,5 @@ pub(crate) use crate::test_support::agent as test_support;
 
 pub mod persist;
 pub mod review;
+
+pub mod config_observer;

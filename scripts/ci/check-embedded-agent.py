@@ -40,6 +40,11 @@ def main():
              "gui::startup_paths_tests::process_state_initializes_without_a_window"],
         ),
         (
+            "gui-entry-providers",
+            ["-p", "futureos", "--lib",
+             "commands::providers::tests::command_wrappers_delegate_to_the_agent"],
+        ),
+        (
             "gui-entry-ready",
             ["-p", "futureos", "--lib",
              "gui::startup_paths_tests::the_ready_event_starts_the_window_work_and_serves_the_terminal"],

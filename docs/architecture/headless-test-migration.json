@@ -1537,7 +1537,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/config_observer.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "779ef8864fe5bda2f6105829692f3629c99ddca8",
+        "cases": [
+          "agent_bridge::config_observer::tests::observe_once_ping_snapshot_invalidates_and_ends"
+        ],
+        "evidence": "docs/testing/headless-host-config-observer-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/config_observer.rs:137:observe_once_tracks_revisions_and_skips_stale_and_unknown",
@@ -1548,7 +1556,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/config_observer.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "779ef8864fe5bda2f6105829692f3629c99ddca8",
+        "cases": [
+          "agent_bridge::config_observer::tests::observe_once_tracks_revisions_and_skips_stale_and_unknown"
+        ],
+        "evidence": "docs/testing/headless-host-config-observer-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/config_observer.rs:157:observe_once_surfaces_attach_failure",
@@ -1559,7 +1575,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/config_observer.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "779ef8864fe5bda2f6105829692f3629c99ddca8",
+        "cases": [
+          "agent_bridge::config_observer::tests::observe_once_surfaces_attach_failure"
+        ],
+        "evidence": "docs/testing/headless-host-config-observer-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/config_observer.rs:172:observe_once_surfaces_stream_close_error",
@@ -1570,7 +1594,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/config_observer.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "779ef8864fe5bda2f6105829692f3629c99ddca8",
+        "cases": [
+          "agent_bridge::config_observer::tests::observe_once_surfaces_stream_close_error"
+        ],
+        "evidence": "docs/testing/headless-host-config-observer-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/config_observer.rs:187:observe_once_connect_failure_propagates",
@@ -1581,7 +1613,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/config_observer.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "779ef8864fe5bda2f6105829692f3629c99ddca8",
+        "cases": [
+          "agent_bridge::config_observer::tests::observe_once_connect_failure_propagates"
+        ],
+        "evidence": "docs/testing/headless-host-config-observer-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/config_observer.rs:199:run_loop_reconnects_and_backs_off",
@@ -1592,7 +1632,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/config_observer.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "779ef8864fe5bda2f6105829692f3629c99ddca8",
+        "cases": [
+          "agent_bridge::config_observer::tests::run_loop_reconnects_and_backs_off"
+        ],
+        "evidence": "docs/testing/headless-host-config-observer-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/config_observer.rs:213:spawn_provider_config_observer_runs_once",
@@ -1603,7 +1651,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/config_observer.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "779ef8864fe5bda2f6105829692f3629c99ddca8",
+        "cases": [
+          "agent_bridge::config_observer::tests::spawn_provider_config_observer_runs_once"
+        ],
+        "evidence": "docs/testing/headless-host-config-observer-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/headless.rs:224:prepare_prompt_persisted_creates_run_and_resolves_session",
@@ -9573,7 +9629,12 @@
       "plannedOwner": "futureos",
       "target": "desktop/src-tauri/src/commands/providers.rs",
       "status": "retained",
-      "ownershipDecision": "gui-entry"
+      "ownershipDecision": "gui-entry",
+      "independentEntryValidation": {
+        "result": "PASS",
+        "target": "aarch64-apple-darwin",
+        "evidence": "docs/testing/headless-host-config-observer-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/references.rs:40:resolve_references_maps_each_target_type",

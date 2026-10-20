@@ -7,7 +7,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use super::connect_agent;
+use crate::agent_client::connect_agent;
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -34,11 +34,11 @@ async fn run() {
 async fn observe_once(
     last_revision: &mut Option<i64>,
     backoff: &mut Duration,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     let mut client = connect_agent().await?;
     let instance = client.readiness().agent_instance_id.clone();
     let mut stream = client
-        .stream_events(crate::agent_proto::StreamRequest {
+        .stream_events(future_rpc::proto::StreamRequest {
             event_types: vec!["ping".to_string(), "provider_config_changed".to_string()],
             global_events: true,
             ..Default::default()
@@ -89,7 +89,7 @@ async fn observe_once(
             object.insert("agentInstanceId".into(), serde_json::json!(instance));
         }
         let data = payload.to_string();
-        future_host::events::notify("provider-config-changed", payload.clone());
+        crate::events::notify("provider-config-changed", payload.clone());
         crate::agent_events::publish_event(
             "_global",
             "provider_config_changed",
@@ -103,7 +103,7 @@ async fn observe_once(
             -1,
         );
     }
-    Err(crate::AppError::Message(
+    Err(crate::Error::Message(
         "global config stream ended".to_string(),
     ))
 }

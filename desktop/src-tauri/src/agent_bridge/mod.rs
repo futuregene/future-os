@@ -1,7 +1,7 @@
 mod approval;
 mod client;
 pub(crate) use future_host::agent_bridge::config;
-mod config_observer;
+use future_host::agent_bridge::config_observer;
 mod delete_outbox;
 mod headless;
 mod import;

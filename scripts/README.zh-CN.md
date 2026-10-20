@@ -126,7 +126,7 @@ runner `.cmd` 脚本、把原始输出整理成旁证文件的几个分析脚本
 CI 辅助脚本（由工作流文件调用）。
 
 - `check-embedded-agent.py` — Linux、Windows、macOS 的启动入口 dry-run、CLI 查找行为、RPC/服务与共享宿主
-  生命周期，以及独立 GUI state/Ready/Exit 和真实 headless 进程门禁；零匹配测试视为失败，由 CI 归档日志和 JSON 汇总。
+  生命周期，以及独立 GUI state/Provider-RPC/Ready/Exit 和真实 headless 进程门禁；零匹配测试视为失败，由 CI 归档日志和 JSON 汇总。
 - `check-packaged-entrypoints.py` — 解包真实 deb/NSIS、portable 和 CLI 压缩包，
   使用隔离目录验证早期入口与精确 CLI 版本，并对包内 Linux 静态程序执行旧 glibc
   headless 检查；保留 JSON 和日志证据。

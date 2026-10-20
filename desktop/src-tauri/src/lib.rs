@@ -1165,6 +1165,7 @@ mod gui {
         let guard = instance::InstanceGuard::acquire()?;
         tauri::Manager::manage(app, guard);
         crate::host_environment::start_logging()?;
+        crate::runtime::set(tauri::async_runtime::handle().inner().clone());
         agent_bridge::install_channel_runtime();
         store::initialize_app_store()?;
         if let Err(error) = terminal::server::bind() {

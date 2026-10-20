@@ -921,6 +921,10 @@ impl futures::Stream for Incoming {
 
 /// Start (once per process) the mock agent and point the GUI at it.
 pub(crate) fn ensure_mock_agent() -> MockAgent {
+    // The harness owns the channel driver just as the real entry does. Shared
+    // services deliberately have no implicit runtime fallback, so an isolated
+    // IPC test must not rely on an earlier test having installed the driver.
+    crate::agent_bridge::install_channel_runtime();
     static MOCK: OnceLock<MockAgent> = OnceLock::new();
     static MOCK_ADDR: OnceLock<String> = OnceLock::new();
     let agent = MOCK

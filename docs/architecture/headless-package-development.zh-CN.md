@@ -278,7 +278,7 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 | 1 | 已建立无 GUI 普通库、任务注册、展示出口和消费者依赖；完整生命周期/配置边界未完成 |
 | 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端/托管与请求归属已迁入；完整业务桥、Remote、维护和停止协调未迁入 |
 | 3 | 尚未实现；产品入口仍是 `futureos-headless` |
-| 4 | 已迁移 613 个原测试声明并在本地 macOS 执行通过；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
+| 4 | 已迁移 620 个原测试声明并在本地 macOS 执行通过；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
 | 5 | 已加宿主 CI 分组和 affected 传播；构建、发行物、签名/安装/升级/卸载未完成 |
 | 6 | 尚未开始；无最终冻结候选、同条件性能、产物验收或确认的人工结果 |
 
@@ -369,3 +369,9 @@ CI `39363398726` 在 Linux 原生脚本中拦住 `gui-host failed: exit=0, passe
 工具/审批/文件事件的 Store 投影，以及 run 的 shadow review capture/materialize 服务迁入宿主。保留原事件白名单、真实存储、敏感路径限制及 best-effort 行为；Desktop 只导入共享语义操作，不复制后端或公开内部数据库。
 
 47 个原声明随服务迁移，原名称和断言不变。连同已有模型/技能/配置 RPC，宿主业务桥定向测试 60 项通过、0 失败、0 忽略（14.52 秒），包含真实数据库、文件与 Git 生命周期验证。宿主单包、GUI/CLI 组合及旧 headless Clippy `--all-targets`、fmt 通过，见[证据](../testing/headless-host-projection-review-2026-10-20.json)。本批晚于 CI 候选 `8bc9e614`；完整 observer/collector/stream/prompt/session、Remote 宿主和退出协调仍待迁移。
+
+### 2026-10-20 全局配置观察器与显式入口 runtime
+
+提交后配置 revision 的全局观察器迁入宿主，保留 snapshot invalidation、去重、重连/退避及 Remote/GUI 分发；7 个原真实流/RPC 用例迁入并本地通过。GUI 在取得实例锁后、启动共享服务前显式安装任务 runtime，初始化接线原用例通过。
+
+独立运行保留的 Provider GUI 入口测试时，发现旧夹具依赖更早测试安装通道 runtime；单独执行会报 `Entry must configure the Agent channel runtime`。现由 Desktop 测试入口显式安装通道驱动，生产共享服务仍无回退，原 RPC 断言未变。该 GUI 用例在普通及原生 CI debug profile 1 下均独立通过，并加入原生脚本作为第 9 组；完整新门禁仍待后续 CI。首次 no-GUI 筛选该 GUI-only 用例得到零项，没有记为通过。宿主/GUI/CLI 及旧 headless Clippy `--all-targets`、fmt 通过，详见[验证记录](../testing/headless-host-config-observer-2026-10-20.json)。本批晚于候选 `8bc9e614`，不会使用上一候选的 Windows 原生成功替代本批验收。

@@ -278,7 +278,7 @@ Current phase status:
 | 1 | Ordinary GUI-free crate, task registry, presentation outlet and consumer dependencies established; complete lifecycle/config boundary still open |
 | 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, Remote, maintenance and stop coordination remain |
 | 3 | Not implemented; the product entry is still `futureos-headless` |
-| 4 | 613 original test declarations moved and pass locally on macOS; this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
+| 4 | 620 original test declarations moved and pass locally on macOS; this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
 | 5 | Host CI group and affected propagation added; builds, release artifacts, signing/install/update/uninstall still open |
 | 6 | Not started; no frozen final candidate, matched performance, artifact acceptance or confirmed manual results |
 
@@ -369,3 +369,9 @@ Before adding the CLI headless entry, 50 existing device/control/invitation test
 Tool/approval/artifact Store projection and run shadow-review capture/materialization move into the host. Original event whitelist, real storage, sensitive-path restrictions and best-effort behavior remain. Desktop imports semantic operations without duplicating the backend or exposing database internals.
 
 Forty-seven original declarations move with their names and assertions unchanged. Together with existing model/skills/config RPC tests, targeted host bridge execution passes 60 tests, zero failed or ignored (14.52 seconds), including real database, filesystem and Git lifecycle checks. Host-only, combined GUI/CLI and original headless Clippy `--all-targets` plus formatting pass; see [evidence](../testing/headless-host-projection-review-2026-10-20.json). This batch postdates CI candidate `8bc9e614`. Complete observer/collector/stream/prompt/session business, Remote hosting and exit coordination still need migration.
+
+### 2026-10-20 Global config observer and explicit entry runtimes
+
+Committed provider revision observation moves into the host, retaining snapshot invalidation, deduplication, reconnect/backoff and Remote/GUI fan-out. Seven original real-stream/RPC cases move and pass locally. GUI explicitly installs the task runtime after acquiring its instance lock and before shared services; the original initialization wiring case passes.
+
+Running the retained Provider GUI entry case independently exposed an old fixture dependency on earlier tests installing the channel runtime. Alone, it reported `Entry must configure the Agent channel runtime`. The Desktop test entry now installs its driver explicitly. Production shared services retain no fallback and original RPC assertions remain. The GUI case passes independently with default and native CI test debug profile 1, and becomes the ninth native script suite; complete new-gate execution still needs CI. Selecting this GUI-only case under no-GUI features initially matched zero tests, which was not accepted as a pass. Host/GUI/CLI and original headless Clippy `--all-targets` plus formatting pass; see [verification](../testing/headless-host-config-observer-2026-10-20.json). This batch postdates candidate `8bc9e614`; Windows native success for that previous source does not validate this batch.
