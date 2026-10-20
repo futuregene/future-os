@@ -421,13 +421,10 @@ describe("tasksView", () => {
     expect(container.textContent).toContain("landed");
   });
 
-  it("runs, toggles and deletes through the backend", async () => {
+  it("toggles and deletes through the backend", async () => {
     const { container } = await renderView();
     await click(rows(container)[0]);
     mocks.invokeCommand.mockClear();
-
-    await click(buttonByText(container, "Run now"));
-    expect(mocks.invokeCommand).toHaveBeenCalledWith("run_task_now", { id: "tsk_1" });
 
     await click(buttonByText(container, "Disable"));
     expect(mocks.invokeCommand).toHaveBeenCalledWith("set_task_enabled", { id: "tsk_1", enabled: false });

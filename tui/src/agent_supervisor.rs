@@ -2,17 +2,18 @@
 //!
 //! A TUI validates its configured Agent before sending business requests. Only
 //! an absent default local endpoint and an available instance lock authorize
-//! the unified `future agent` sidecar (or standalone fallback).
+//! the unified `future agent` sidecar, and that sidecar is always this
+//! process' own executable re-run with `agent --grpc-addr auto`: the
+//! standalone `future-tui` binary refuses to launch one instead of guessing at
+//! sibling or `PATH` programs.
 
+use std::collections::VecDeque;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct LaunchSpec {
-    program: PathBuf,
-    args: Vec<String>,
-}
 
 fn executable_name(path: &Path) -> String {
     path.file_stem()
@@ -21,42 +22,40 @@ fn executable_name(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
-fn launch_candidates(current_exe: &Path) -> Vec<LaunchSpec> {
-    let agent_args = vec![
+/// Arguments the sidecar is spawned with: the unified binary's own `agent`
+/// subcommand, pinned to `--grpc-addr auto` so the child binds the
+/// instance-local endpoint the TUI will probe, never a caller-chosen address.
+fn sidecar_args() -> Vec<String> {
+    vec![
         "agent".to_string(),
         "--grpc-addr".to_string(),
         "auto".to_string(),
-    ];
-    let standalone_args = vec!["--grpc-addr".to_string(), "auto".to_string()];
+    ]
+}
 
-    let mut candidates = Vec::new();
-    if executable_name(current_exe) == "future" {
-        candidates.push(LaunchSpec {
-            program: current_exe.to_path_buf(),
-            args: agent_args.clone(),
-        });
+/// Whether `exe` may be re-executed as the `future agent` sidecar.
+///
+/// Only the unified `future` binary implements the `agent` subcommand. The
+/// standalone `future-tui` binary spawned with these arguments would start
+/// *another TUI* instead of an agent, and no other program interprets them
+/// either — both are refused here, before a child can be forked. The check
+/// runs only once a launch is actually needed, so attaching to an agent that
+/// is already running works from any binary.
+fn check_sidecar_program(exe: &Path) -> Result<(), String> {
+    if executable_name(exe) == "future" {
+        return Ok(());
     }
-    if let Some(parent) = current_exe.parent() {
-        let exe = if cfg!(windows) { ".exe" } else { "" };
-        candidates.push(LaunchSpec {
-            program: parent.join(format!("future{exe}")),
-            args: agent_args.clone(),
-        });
-        candidates.push(LaunchSpec {
-            program: parent.join(format!("future-agent{exe}")),
-            args: standalone_args.clone(),
-        });
-    }
-    candidates.push(LaunchSpec {
-        program: PathBuf::from("future"),
-        args: agent_args,
-    });
-    candidates.push(LaunchSpec {
-        program: PathBuf::from("future-agent"),
-        args: standalone_args,
-    });
-    candidates.dedup();
-    candidates
+    Err(
+        "the standalone future-tui binary cannot start an agent sidecar; \
+         run `future tui` (unified binary) or start an Agent first"
+            .to_string(),
+    )
+}
+
+/// The program the sidecar is spawned from: this process' own executable.
+fn resolve_sidecar_program() -> Result<PathBuf, String> {
+    std::env::current_exe()
+        .map_err(|error| format!("cannot locate the current executable: {error}"))
 }
 
 pub struct OwnedAgent {
@@ -70,11 +69,11 @@ impl Drop for OwnedAgent {
     }
 }
 
-/// How long a freshly spawned candidate's agent is given to answer the readiness
-/// probe before the launch loop kills it and reports failure.
+/// How long a freshly spawned sidecar is given to answer the readiness probe
+/// before the launch kills it and reports failure.
 ///
 /// A *product* budget: it is how long a user waits for a cold sidecar before the
-/// TUI says no agent could be started, so it is stated once, here. The loop's
+/// TUI says no agent could be started, so it is stated once, here. The launch's
 /// other fixed costs are the per-attempt connect and handshake timeouts below.
 const LAUNCH_PROBE_WINDOW: Duration = Duration::from_millis(5_000);
 
@@ -85,20 +84,25 @@ const LAUNCH_PROBE_INTERVAL: Duration = Duration::from_millis(125);
 /// TUI had to launch one. The child is terminated when the returned guard is
 /// dropped.
 pub async fn ensure_agent_running(configured: &str) -> Result<Option<OwnedAgent>, String> {
-    ensure_agent_running_within(configured, LAUNCH_PROBE_WINDOW).await
+    let program = resolve_sidecar_program()?;
+    ensure_agent_running_within(configured, &program, LAUNCH_PROBE_WINDOW).await
 }
 
-/// [`ensure_agent_running`] with the per-candidate probe window supplied by the
-/// caller.
+/// [`ensure_agent_running`] with the sidecar program and the probe window
+/// supplied by the caller.
 ///
-/// The window is the product budget above, and a caller that has to fork/exec a
-/// stand-in candidate passes its own instead of asserting how quickly the host
-/// schedules that child: measured on a loaded host, a candidate that takes longer
-/// than the default window to become observable loses the race, and the loop then
-/// reports `no Future Agent was reachable` - which is a statement about the host,
-/// not about the code under test (see `docs/testing/flaky-tui.md` §7.1).
+/// `program` is the seam the launch fixtures inject a stand-in through, and it
+/// must be named like the unified `future` binary — the guard before the spawn
+/// refuses anything else. The window is the product budget above, and a caller
+/// that has to fork/exec a stand-in passes its own instead of asserting how
+/// quickly the host schedules that child: measured on a loaded host, a sidecar
+/// that takes longer than the default window to become observable loses the
+/// race, and the launch then reports `no Future Agent was reachable` - which is
+/// a statement about the host, not about the code under test (see
+/// `docs/testing/flaky-tui.md` §7.1).
 pub async fn ensure_agent_running_within(
     configured: &str,
+    program: &Path,
     probe_window: Duration,
 ) -> Result<Option<OwnedAgent>, String> {
     let permit = match future_rpc::connection::select_agent(
@@ -119,103 +123,290 @@ pub async fn ensure_agent_running_within(
         return Err("agent sidecar startup is disabled in unit tests".to_string());
     }
 
-    let current_exe = std::env::current_exe()
-        .map_err(|error| format!("cannot locate the TUI executable: {error}"))?;
-    let mut failures = Vec::new();
-    for candidate in launch_candidates(&current_exe) {
-        let mut command = Command::new(&candidate.program);
-        command
-            .args(&candidate.args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        let mut child = match command.spawn() {
-            Ok(child) => child,
+    // Only reached once a launch is actually needed: attaching to an agent
+    // that is already running must work regardless of which binary is running.
+    check_sidecar_program(program)?;
+
+    let mut command = Command::new(program);
+    command
+        .args(sidecar_args())
+        .stdin(Stdio::null())
+        // Piped so the failure report below can quote the sidecar's own words
+        // instead of only its exit status. The drain threads keep the pipes
+        // empty while the sidecar lives, which is also what keeps a chatty
+        // child from ever blocking on a full pipe.
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            let failure = format!("{} agent: {error}", program.display());
+            return Err(sidecar_launch_failed(failure));
+        }
+    };
+    let (stdout_tail, stderr_tail, stdout_done, stderr_done) = spawn_output_drains(&mut child);
+    let attempts = (probe_window.as_millis() / LAUNCH_PROBE_INTERVAL.as_millis()).max(1) as usize;
+    // The give-up reason unless the probe loop observes something more specific
+    // first: the window ran out without the sidecar ever answering. A sidecar
+    // that spawned but was never accepted must not vanish from the report just
+    // because it outlived the window.
+    let mut failure = format!(
+        "{} agent did not become ready within {probe_window:?}",
+        program.display()
+    );
+    for _ in 0..attempts {
+        match future_rpc::connection::connect_verified(
+            configured,
+            future_rpc::connection::EXPECTED_AGENT_VERSION,
+            Duration::from_millis(400),
+            Duration::from_secs(2),
+        )
+        .await
+        {
+            Ok(_) => {
+                // The drain threads stay behind on purpose: they took the pipes
+                // with them, and when this guard is dropped it kills the child,
+                // the pipes close, and each thread reads EOF and ends — filling
+                // tail buffers nobody reads, so nothing here waits on them.
+                return Ok(Some(OwnedAgent { child }));
+            }
+            Err(
+                future_rpc::connection::ConnectionError::Transport(_)
+                | future_rpc::connection::ConnectionError::Unverified(_),
+            ) => {}
             Err(error) => {
-                failures.push(format!("{}: {error}", candidate.program.display()));
-                continue;
+                let _ = child.kill();
+                let _ = child.wait();
+                let mut failure = error.to_string();
+                attach_last_output(
+                    &mut failure,
+                    tail_after_exit(&stdout_done, &stderr_done, &stdout_tail, &stderr_tail),
+                );
+                return Err(failure);
             }
-        };
-        let attempts =
-            (probe_window.as_millis() / LAUNCH_PROBE_INTERVAL.as_millis()).max(1) as usize;
-        for _ in 0..attempts {
-            match future_rpc::connection::connect_verified(
-                configured,
-                future_rpc::connection::EXPECTED_AGENT_VERSION,
-                Duration::from_millis(400),
-                Duration::from_secs(2),
-            )
-            .await
-            {
-                Ok(_) => return Ok(Some(OwnedAgent { child })),
-                Err(
-                    future_rpc::connection::ConnectionError::Transport(_)
-                    | future_rpc::connection::ConnectionError::Unverified(_),
-                ) => {}
-                Err(error) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(error.to_string());
-                }
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                failure = format!("{} exited with {status}", program.display());
+                break;
             }
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    failures.push(format!(
-                        "{} exited with {status}",
-                        candidate.program.display()
-                    ));
-                    break;
-                }
-                Ok(None) => tokio::time::sleep(LAUNCH_PROBE_INTERVAL).await,
-                Err(error) => {
-                    failures.push(format!("{}: {error}", candidate.program.display()));
-                    break;
+            Ok(None) => tokio::time::sleep(LAUNCH_PROBE_INTERVAL).await,
+            Err(error) => {
+                failure = format!("{}: {error}", program.display());
+                break;
+            }
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    attach_last_output(
+        &mut failure,
+        tail_after_exit(&stdout_done, &stderr_done, &stdout_tail, &stderr_tail),
+    );
+    Err(sidecar_launch_failed(failure))
+}
+
+/// The launch's final word: nothing answered the probe and the one sidecar
+/// attempt failed for the stated reason.
+fn sidecar_launch_failed(failure: String) -> String {
+    format!("no Future Agent was reachable and the sidecar could not be started ({failure})")
+}
+
+/// How long the failure report waits for each drain thread to reach EOF once
+/// the sidecar is dead. EOF is normally immediate (the child is gone and
+/// reaped), so the bound only keeps a wedged thread from delaying the report —
+/// it would then keep writing into buffers nobody reads again, held alive by
+/// its own `Arc`s until the thread ends.
+const DRAIN_QUIESCE: Duration = Duration::from_millis(250);
+
+/// Bytes kept of the sidecar's output per stream. Fixed on purpose: the drain
+/// threads empty the pipes continuously so the child is never blocked by them,
+/// and a failure report must stay a report however chatty a dying sidecar is.
+const TAIL_CAPACITY: usize = 4 * 1024;
+
+/// Marker prefixed to a snapshot whose head was dropped, so the report never
+/// claims completeness it does not have.
+const TAIL_TRUNCATED_MARK: &str = "[…truncated] ";
+
+/// Read size of one drain turn; the bound the report cares about is
+/// [`TAIL_CAPACITY`], enforced by the shared buffer, not by the reader.
+const DRAIN_CHUNK: usize = 8 * 1024;
+
+/// The last [`TAIL_CAPACITY`] bytes of one output stream, kept so a failed
+/// launch can quote the sidecar's own failure reason. Once full, the oldest
+/// bytes are dropped and the loss is marked rather than hidden.
+struct TailBuffer {
+    bytes: VecDeque<u8>,
+    truncated: bool,
+}
+
+impl TailBuffer {
+    fn new() -> Self {
+        Self {
+            bytes: VecDeque::with_capacity(TAIL_CAPACITY),
+            truncated: false,
+        }
+    }
+
+    fn push_bytes(&mut self, new_bytes: &[u8]) {
+        if new_bytes.len() >= TAIL_CAPACITY {
+            // A single write larger than the whole window: everything before
+            // its own tail is gone, including whatever was buffered.
+            self.truncated = true;
+            self.bytes.clear();
+            self.bytes
+                .extend(new_bytes[new_bytes.len() - TAIL_CAPACITY..].iter().copied());
+            return;
+        }
+        let overflow = (self.bytes.len() + new_bytes.len()).saturating_sub(TAIL_CAPACITY);
+        if overflow > 0 {
+            self.truncated = true;
+            self.bytes.drain(..overflow);
+        }
+        self.bytes.extend(new_bytes.iter().copied());
+    }
+
+    fn snapshot(&self) -> String {
+        let bytes: Vec<u8> = self.bytes.iter().copied().collect();
+        // Output is nominally UTF-8 (tracing logs, anyhow chains), but a
+        // multi-byte character split at the window edge must not lose the
+        // report: replacement is better than failure here.
+        let content = String::from_utf8_lossy(&bytes);
+        if self.truncated {
+            format!("{TAIL_TRUNCATED_MARK}{content}")
+        } else {
+            content.into_owned()
+        }
+    }
+}
+
+/// The two drain threads and the failure report meet only here: one tail per
+/// stream, shared for as long as either side holds its `Arc`.
+type SharedTail = Arc<Mutex<TailBuffer>>;
+
+/// Read `pipe` to EOF into `tail`, then signal `done`. Runs on its own
+/// detached thread — the only cleanup is the signal, whose send failure just
+/// means the failure report already gave up waiting.
+fn drain_pipe<R: Read>(mut pipe: R, tail: SharedTail, done: mpsc::Sender<()>) {
+    let mut chunk = [0u8; DRAIN_CHUNK];
+    loop {
+        match pipe.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(read) => {
+                if let Ok(mut tail) = tail.lock() {
+                    tail.push_bytes(&chunk[..read]);
                 }
             }
         }
-        let _ = child.kill();
-        let _ = child.wait();
     }
-    Err(format!(
-        "no Future Agent was reachable and no sidecar could be started ({})",
-        failures.join("; ")
-    ))
+    let _ = done.send(());
+}
+
+/// Hand the sidecar's piped stdout and stderr to one drain thread each.
+///
+/// The pipes are taken out of the `Child` before the threads start: from here
+/// on they belong to the drains, so the success path can move the `Child` into
+/// an [`OwnedAgent`] without dragging file handles along. The receivers
+/// complete the handshake in [`tail_after_exit`]; on the success path they are
+/// dropped unread, and the threads end on EOF once the guard kills the child.
+fn spawn_output_drains(
+    child: &mut Child,
+) -> (
+    SharedTail,
+    SharedTail,
+    mpsc::Receiver<()>,
+    mpsc::Receiver<()>,
+) {
+    let stdout_tail: SharedTail = Arc::new(Mutex::new(TailBuffer::new()));
+    let stderr_tail: SharedTail = Arc::new(Mutex::new(TailBuffer::new()));
+    let (stdout_done, stdout_done_rx) = mpsc::channel::<()>();
+    let (stderr_done, stderr_done_rx) = mpsc::channel::<()>();
+    if let Some(pipe) = child.stdout.take() {
+        let tail = Arc::clone(&stdout_tail);
+        std::thread::spawn(move || drain_pipe(pipe, tail, stdout_done));
+    }
+    if let Some(pipe) = child.stderr.take() {
+        let tail = Arc::clone(&stderr_tail);
+        std::thread::spawn(move || drain_pipe(pipe, tail, stderr_done));
+    }
+    (stdout_tail, stderr_tail, stdout_done_rx, stderr_done_rx)
+}
+
+/// The sidecar's own words for the failure report, taken once it is dead: wait
+/// a bounded moment for each drain to reach EOF, then snapshot both tails.
+/// Empty output yields an empty string, so a silent sidecar stays unquoted.
+fn tail_after_exit(
+    stdout_done: &mpsc::Receiver<()>,
+    stderr_done: &mpsc::Receiver<()>,
+    stdout_tail: &SharedTail,
+    stderr_tail: &SharedTail,
+) -> String {
+    let _ = stdout_done.recv_timeout(DRAIN_QUIESCE);
+    let _ = stderr_done.recv_timeout(DRAIN_QUIESCE);
+    let stdout = stdout_tail
+        .lock()
+        .map(|tail| tail.snapshot())
+        .unwrap_or_default();
+    let stderr = stderr_tail
+        .lock()
+        .map(|tail| tail.snapshot())
+        .unwrap_or_default();
+    // Trailing newlines are line terminators, not content; embedded ones stay
+    // so a multi-line error from the agent is shown as the agent wrote it.
+    let stdout = stdout.trim_end();
+    let stderr = stderr.trim_end();
+    match (!stdout.is_empty(), !stderr.is_empty()) {
+        (true, true) => format!("{stdout}\n{stderr}"),
+        (true, false) => stdout.to_string(),
+        (false, true) => stderr.to_string(),
+        (false, false) => String::new(),
+    }
+}
+
+/// Append the captured output to a failure reason. One framing line, but any
+/// newlines inside the capture are kept intact — the agent's error chain is
+/// the user's best clue, not something to flatten.
+fn attach_last_output(failure: &mut String, tail: String) {
+    if !tail.is_empty() {
+        failure.push_str("; last output: ");
+        failure.push_str(&tail);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The sidecar command is pinned to the unified binary's `agent` subcommand
+    /// with endpoint auto-discovery: a caller-chosen address would launch an
+    /// agent the TUI cannot find again on the instance endpoint.
     #[test]
-    fn unified_binary_launches_agent_without_tcp_in_auto_mode() {
-        let specs = launch_candidates(Path::new("/opt/future/bin/future"));
+    fn sidecar_args_are_the_agent_subcommand_in_auto_mode() {
         assert_eq!(
-            specs[0],
-            LaunchSpec {
-                program: PathBuf::from("/opt/future/bin/future"),
-                args: vec!["agent".into(), "--grpc-addr".into(), "auto".into()],
-            }
+            sidecar_args(),
+            vec![
+                "agent".to_string(),
+                "--grpc-addr".to_string(),
+                "auto".to_string()
+            ]
         );
     }
 
+    /// Only the unified `future` binary may be re-executed as the sidecar: the
+    /// standalone `future-tui` would recurse into a second TUI instead of an
+    /// agent, and the agent's own `future-agent` binary takes no `agent`
+    /// subcommand either.
     #[test]
-    fn every_sidecar_candidate_is_pinned_to_the_local_endpoint() {
-        let specs = launch_candidates(Path::new("/opt/future/bin/future-tui"));
-        assert_eq!(specs[0].args, vec!["agent", "--grpc-addr", "auto"]);
-        assert_eq!(specs[1].args, vec!["--grpc-addr", "auto"]);
-    }
+    fn only_the_unified_future_binary_may_spawn_the_sidecar() {
+        assert!(check_sidecar_program(Path::new("/opt/future/bin/future")).is_ok());
+        assert!(check_sidecar_program(Path::new("/usr/local/bin/future-agent")).is_err());
 
-    /// An executable at the filesystem root has no sibling directory, so there
-    /// is nothing to look next to it: only the two `PATH` candidates remain.
-    /// This is the `parent()`-is-`None` branch of `launch_candidates`.
-    #[test]
-    fn a_root_executable_path_leaves_only_the_path_candidates() {
-        let specs = launch_candidates(Path::new("/"));
-        assert_eq!(specs.len(), 2, "{specs:?}");
-        assert_eq!(specs[0].program, PathBuf::from("future"));
-        assert_eq!(specs[0].args, vec!["agent", "--grpc-addr", "auto"]);
-        assert_eq!(specs[1].program, PathBuf::from("future-agent"));
-        assert_eq!(specs[1].args, vec!["--grpc-addr", "auto"]);
+        let error = check_sidecar_program(Path::new("/opt/future/bin/future-tui"))
+            .expect_err("the standalone TUI must not be respawned as its own sidecar");
+        assert!(
+            error.contains("cannot start an agent sidecar") && error.contains("future tui"),
+            "{error}"
+        );
     }
 
     /// A long-running child that exits on its own only long after the test.
@@ -300,5 +491,59 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.contains("no local fallback"), "{error}");
+    }
+
+    /// Segmented writes within the capacity are preserved verbatim: the tail
+    /// is a buffer, not a rewriter, and nothing may be marked as dropped.
+    #[test]
+    fn tail_buffer_preserves_output_within_capacity() {
+        let mut tail = TailBuffer::new();
+        tail.push_bytes(b"starting\n");
+        tail.push_bytes(b"boom: bad config\n");
+        assert_eq!(tail.snapshot(), "starting\nboom: bad config\n");
+        assert!(!tail.truncated, "nothing was dropped, so nothing is marked");
+    }
+
+    /// Output beyond the capacity drops the *head* — the oldest bytes — and
+    /// marks the snapshot, and what is kept is exactly the last window.
+    #[test]
+    fn tail_buffer_drops_its_head_beyond_capacity() {
+        let mut tail = TailBuffer::new();
+        let whole = vec![b'a'; TAIL_CAPACITY + 32];
+        tail.push_bytes(&whole);
+
+        let snapshot = tail.snapshot();
+        assert!(snapshot.starts_with(TAIL_TRUNCATED_MARK), "{snapshot:?}");
+        let content = snapshot
+            .strip_prefix(TAIL_TRUNCATED_MARK)
+            .expect("the truncation mark");
+        assert!(
+            content.len() <= TAIL_CAPACITY,
+            "the snapshot must never exceed the capacity: {} bytes",
+            content.len()
+        );
+        assert_eq!(content.len(), TAIL_CAPACITY, "the full window is kept");
+        assert!(content.bytes().all(|byte| byte == b'a'), "{snapshot:?}");
+    }
+
+    /// The capacity is a window across writes, not a per-write limit: a full
+    /// window followed by a small write keeps the small write and the big
+    /// write's own tail.
+    #[test]
+    fn tail_buffer_keeps_the_tail_across_writes() {
+        let mut tail = TailBuffer::new();
+        tail.push_bytes(&vec![b'a'; TAIL_CAPACITY]);
+        tail.push_bytes(b"final line\n");
+
+        let snapshot = tail.snapshot();
+        assert!(snapshot.starts_with(TAIL_TRUNCATED_MARK), "{snapshot:?}");
+        let content = snapshot
+            .strip_prefix(TAIL_TRUNCATED_MARK)
+            .expect("the truncation mark");
+        assert!(
+            content.ends_with("final line\n"),
+            "the newest write must survive: {snapshot:?}"
+        );
+        assert_eq!(content.len(), TAIL_CAPACITY);
     }
 }
