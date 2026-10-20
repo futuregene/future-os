@@ -631,6 +631,27 @@ device, red when none are — falling back to this machine's own host-bridge sta
 nothing is paired. A merged list that is short of a machine, or one short of
 what this phone may use, is exactly the fact the reader has to be able to see.
 
+**A generation outlives its grant only until the runtime notices (2026-10-20).** A
+socket is authorized by the JWT it was opened with. When that grant expired the relay
+closed the socket and `async-nats` reconnected with the same expired JWT — forever,
+because no reconnect budget had been set — so the desktop reported `connected: true`
+for a connection that could not authenticate and printed `authorization violation`
+every two seconds (324 lines in one day's log). Three rules now hold, and each has an
+explicit trigger rather than a guessed one:
+
+- **The grant is rotated before it is due.** A worker reads the grant the credential
+  book holds and rotates when `PeerCreds::needs_refresh` says so (the declared expiry
+  minus the shared 60 s lead); it rebuilds the connection and the new generation
+  presents the renewed grant. Nothing decides on elapsed time.
+- **The library's retries are bounded.** One reconnect attempt, then the socket closes
+  for good; the runtime's own bounded supervisor — which renews the grant first — owns
+  recovery. `max_reconnects(0)` means "no limit" in `async-nats`, so one is the least
+  that still gives up.
+- **A dead generation is retired, not remembered.** When every subscription ends the
+  runtime drops that session and starts the bounded retry, so `connected` cannot stay
+  true for a socket that cannot send; a replaced or stopped generation is closed with
+  `drain` rather than left half-open (CLOSE_WAIT).
+
 **The conversation half is still single-slot on the desktop.** This window reads one
 remote conversation at a time (see the limitations below), whereas the phone gives
 every paired desktop its own open conversation. What is aligned is the connection and
