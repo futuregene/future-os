@@ -4,15 +4,21 @@
 >
 > Status: on 2026-10-20 the user reported manual testing complete and requested cleanup and a PR. Individual platform/case evidence was not separately supplied; exploratory results are not transferred to later source candidates.
 
+## Latest status and historical build
+
+[PR #1259](https://github.com/futuregene/future-os/pull/1259) merged as `a5f91752b4e470f90fbe5f4bc303ec0ca814944d`. CI 39408277224 on candidate `dac8832f` is fully complete and successful, including the final Windows Host. See [final evidence](headless-ci-39408277224-2026-10-20.json) and [deferred release checklist](headless-release-acceptance.md). This closes the automation observation, without transferring old exploratory manual results to new source.
+
+The user subsequently requested local branch/worktree cleanup. Primary returned to `main`, the temporary test/implementation branches were removed, and the existing skills checkout was preserved. The identities and commands below are a historical handoff. Existing target/debug files do not become a new candidate when source switches; check `future version --json` before use. Deferred manual checks must use actual version-identified payloads.
+
 ## Candidate and order
 
-The primary workspace `/Volumes/ZHITAI/Workspace/future-os` uses `test/headless-primary` at `a0d4d8402064dab1b82b0ad39bbd645837446236`. macOS ARM64 debug CLI/GUI were built; CLI reports `0.0.2-a0d4d840+local.dirty`, with dirty state coming from the preserved skills submodule checkout. See the [handoff record](headless-primary-handoff-2026-10-20.json). Keep this source and its runnable artifacts unchanged while the user tests; implementation continues in its separate worktree.
+During exploratory testing, the primary workspace `/Volumes/ZHITAI/Workspace/future-os` used `test/headless-primary` at `a0d4d8402064dab1b82b0ad39bbd645837446236`. macOS ARM64 debug CLI/GUI were built; CLI reports `0.0.2-a0d4d840+local.dirty`, with dirty state coming from the preserved skills submodule checkout. See the [handoff record](headless-primary-handoff-2026-10-20.json). Keep this source and its runnable artifacts unchanged while the user tests; implementation continues in its separate worktree.
 
-Implementation may receive further fixes/upstream changes, each with its own full SHA. Primary-workspace observations do not automatically validate a later candidate. Final candidate SHA, automation run, Desktop/CLI identities, Mobile build, platforms and evidence remain unset.
+Implementation may receive further fixes/upstream changes, each with its own full SHA. Primary-workspace observations do not automatically validate a later candidate. The automated candidate SHA/run are recorded above; final release Desktop/CLI payload identities, Mobile build, platforms and per-case manual evidence remain to be filled.
 
 The user's latest sequence puts exploratory/manual functional testing before actual release packaging, signing and install/upgrade acceptance. Existing automated installer regressions must still pass. Unexecuted/unreported cases remain unconfirmed. Source changes require affected checks to be repeated against the new candidate; do not combine different candidates' results.
 
-## Available macOS build
+## Historical macOS exploratory build
 
 From the primary workspace:
 
@@ -62,4 +68,4 @@ Use isolated test homes for M02/M03/M04/M06/M13. Do not modify or terminate an e
 
 For each result record full candidate SHA, host OS/architecture, actual Desktop/CLI versions, phone OS/app build, data root, actions/expectations, observed result, evidence references and retest status. Credential values are not public evidence. Results without evidence stay unconfirmed.
 
-The user reported this manual round complete and authorized PR preparation, with no remaining failure reported. The exploratory commit is `a0d4d8402064dab1b82b0ad39bbd645837446236`. The table retains per-case feedback status so this aggregate report is not represented as independent evidence for every platform/case. Later main synchronization and CI fixture repairs are outside that tested revision. Signed payloads, real install/upgrade/uninstall, old-Linux static smoke, matched measurements and final same-candidate results remain to be consolidated. Opening or merging the PR does not establish final Goal acceptance.
+The user reported this manual round complete and authorized PR preparation, with no remaining failure reported. The exploratory commit is `a0d4d8402064dab1b82b0ad39bbd645837446236`. The table retains per-case feedback status so this aggregate report is not represented as independent evidence for every platform/case. Later main synchronization and CI fixture repairs are outside that tested revision. Subsequent unsigned payload checks and old-Linux static smoke passed; see [build results](headless-unsigned-results.md). Signed payloads, real install/upgrade/uninstall and final same-candidate manual results remain to be consolidated. The user cancelled performance comparison on 2026-10-20; it is no longer an acceptance gate. Opening or merging the PR does not establish final Goal acceptance.

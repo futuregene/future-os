@@ -1,0 +1,325 @@
+{
+  "date": "2026-10-20",
+  "candidate": "dac8832f725f7f2813cf2cc453d0f847b60f7cfa",
+  "run": 39408277224,
+  "url": "https://github.com/futuregene/future-os/actions/runs/39408277224",
+  "status": "completed",
+  "conclusion": "success",
+  "jobs": [
+    {
+      "name": "Detect affected checks",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579460704,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579460704"
+    },
+    {
+      "name": "macOS notarization recovery",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579460804,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579460804"
+    },
+    {
+      "name": "Matched Windows Rust compilation",
+      "status": "completed",
+      "conclusion": "skipped",
+      "databaseId": 118579462359,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579462359"
+    },
+    {
+      "name": "Matched Headless build and startup observation",
+      "status": "completed",
+      "conclusion": "skipped",
+      "databaseId": 118579462772,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579462772"
+    },
+    {
+      "name": "Shared host (Windows)",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579570609,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579570609"
+    },
+    {
+      "name": "Rust fmt + clippy (Linux)",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579570651,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579570651"
+    },
+    {
+      "name": "Windows update fixtures",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579570699,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579570699"
+    },
+    {
+      "name": "Rust tests (Linux) (tui, cli)",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579570712,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579570712"
+    },
+    {
+      "name": "Rust build (macOS)",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579570715,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579570715"
+    },
+    {
+      "name": "Rust tests (Linux) (agent)",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579570724,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579570724"
+    },
+    {
+      "name": "Rust build (Linux)",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579570739,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579570739"
+    },
+    {
+      "name": "Shared host (macOS)",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579570743,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579570743"
+    },
+    {
+      "name": "Rust tests (Linux) (channels, rpc, goal)",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579570747,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579570747"
+    },
+    {
+      "name": "Rust tests (Linux) (desktop gui)",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579570759,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579570759"
+    },
+    {
+      "name": "Desktop typecheck + lint + test",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579570765,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579570765"
+    },
+    {
+      "name": "Mobile typecheck + lint + test",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579570774,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579570774"
+    },
+    {
+      "name": "Rust build (Windows)",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579570806,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579570806"
+    },
+    {
+      "name": "Rust tests (Linux) (host)",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579570858,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579570858"
+    },
+    {
+      "name": "Remote packages + interoperability",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118579570913,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118579570913"
+    },
+    {
+      "name": "Rust tests (Linux) (desktop backend)",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118584572517,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118584572517"
+    },
+    {
+      "name": "Rust tests (Linux)",
+      "status": "completed",
+      "conclusion": "success",
+      "databaseId": 118589316544,
+      "url": "https://github.com/futuregene/future-os/actions/runs/39408277224/job/118589316544"
+    }
+  ],
+  "jobCounts": {
+    "success": 19,
+    "skipped": 2
+  },
+  "merge": {
+    "headRefOid": "dac8832f725f7f2813cf2cc453d0f847b60f7cfa",
+    "mergeCommit": {
+      "oid": "a5f91752b4e470f90fbe5f4bc303ec0ca814944d"
+    },
+    "mergedAt": "2026-10-20T10:45:44Z",
+    "state": "MERGED",
+    "url": "https://github.com/futuregene/future-os/pull/1259"
+  },
+  "hostSuites": {
+    "Windows": {
+      "passed": 1693,
+      "failed": 0,
+      "ignored": 10,
+      "seconds": 1033.97
+    },
+    "macOS": {
+      "passed": 1723,
+      "failed": 0,
+      "ignored": 10,
+      "seconds": 412.3
+    },
+    "Linux": {
+      "passed": 1723,
+      "failed": 0,
+      "ignored": 10,
+      "seconds": 451.34
+    }
+  },
+  "logs": {
+    "windows_host": {
+      "job": 118579570609,
+      "sha256": "aff93fd9c21a19ad8ab68804fa855976afd8f613f4f0d44dfc2e074088f3fdb3",
+      "passedCaseNames": 1693,
+      "summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1702 filtered out; finished in 10.03s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1702 filtered out; finished in 7.23s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1702 filtered out; finished in 4.44s",
+        "test result: ok. 1693 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out; finished in 1033.97s",
+        "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    "macos_host": {
+      "job": 118579570743,
+      "sha256": "a7bd56778e90b899361882872c67156113b5403e6a1cba6f56679a0791a58150",
+      "passedCaseNames": 1723,
+      "summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1732 filtered out; finished in 2.21s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1732 filtered out; finished in 7.36s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1732 filtered out; finished in 5.02s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1732 filtered out; finished in 3.23s",
+        "test result: ok. 1723 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out; finished in 412.30s",
+        "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    "linux_host": {
+      "job": 118579570858,
+      "sha256": "47a4a37d02ea55d0948b1aece325005ca1c50f861bd1f26c52f685d8ac7f29b4",
+      "passedCaseNames": 1723,
+      "summaries": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1732 filtered out; finished in 2.66s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1732 filtered out; finished in 7.36s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1732 filtered out; finished in 5.33s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1732 filtered out; finished in 3.29s",
+        "test result: ok. 1723 passed; 0 failed; 10 ignored; 0 measured; 0 filtered out; finished in 451.34s",
+        "test result: ok. 0 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    "linux_cli": {
+      "job": 118579570712,
+      "sha256": "df6e34b32dd4145624848fdf4c10705b7612742bf44701e720ac6448713586e2",
+      "passedCaseNames": 3581,
+      "summaries": [
+        "test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.69s",
+        "test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1302 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 111.16s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 10.11s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.32s",
+        "test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 28.24s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2199 filtered out; finished in 0.00s",
+        "test result: ok. 2200 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 61.74s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s",
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.31s",
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    "windows_native": {
+      "job": 118579570806,
+      "sha256": "c4b08d48c7648ca91073c0c6c21294cabe7adc23ec965ebd3a38bb46790a1e97",
+      "passedCaseNames": 73,
+      "summaries": [
+        "test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 176 filtered out; finished in 0.46s",
+        "test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.73s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 0.35s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 0.04s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 3.35s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 327 filtered out; finished in 0.01s",
+        "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s",
+        "test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 1187 filtered out; finished in 2.37s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.10s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.10s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.10s",
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.10s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.10s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.10s",
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 115.43s",
+        "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2437 filtered out; finished in 3.63s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2437 filtered out; finished in 0.95s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 2437 filtered out; finished in 0.82s"
+      ]
+    },
+    "macos_native": {
+      "job": 118579570715,
+      "sha256": "cfc5a3d9e2a59fbb2a9a2a50b4035bcbf7638bef3c394c97077eb782298cd303",
+      "passedCaseNames": 84,
+      "summaries": [
+        "test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 190 filtered out; finished in 0.15s",
+        "test result: ok. 15 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.21s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 346 filtered out; finished in 0.06s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 346 filtered out; finished in 0.05s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 346 filtered out; finished in 3.18s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 346 filtered out; finished in 0.01s",
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.41s",
+        "test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 1272 filtered out; finished in 0.55s",
+        "test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 201.33s"
+      ]
+    }
+  },
+  "limitations": [
+    "The two optional matched-performance jobs were skipped, not passed.",
+    "Original platform exclusions and ignores remain; this is not a claim that every declaration runs on every OS.",
+    "Native Windows log contains a helper subprocess AttachConsole failure after its owned child exited; the owning process case explicitly confirms child exit and passes. Top-level native suites and job pass.",
+    "Cached CI test durations are not a matched performance comparison.",
+    "No signed payload, real installation/update/uninstall or final same-candidate manual acceptance follows from ordinary CI success."
+  ],
+  "migration": {
+    "candidate": "dac8832f725f7f2813cf2cc453d0f847b60f7cfa",
+    "mergeCommit": "a5f91752b4e470f90fbe5f4bc303ec0ca814944d",
+    "run": 39408277224,
+    "status": "completed",
+    "conclusion": "success",
+    "evidence": "docs/testing/headless-ci-39408277224-2026-10-20.json",
+    "namedPassedMovedDeclarations": {
+      "future-host": 1702,
+      "future-cli": 53
+    },
+    "latestPendingDeclarationsClosed": 168,
+    "originalIgnoresPreserved": 10,
+    "retainedDeclarationsPreserved": 428,
+    "baselineIdentityFieldsUnchanged": true
+  }
+}

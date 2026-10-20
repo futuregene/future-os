@@ -1,0 +1,924 @@
+{
+  "candidate": "a5f91752b4e470f90fbe5f4bc303ec0ca814944d",
+  "version": "0.0.2-a5f9175+dev",
+  "artifactVersion": "0.0.2-a5f9175",
+  "channel": "dev",
+  "status": "passed",
+  "platformSigning": "Not performed; deferred to user",
+  "observedAt": "2026-10-20T12:51:23.219605+00:00",
+  "runs": [
+    {
+      "headSha": "a5f91752b4e470f90fbe5f4bc303ec0ca814944d",
+      "headBranch": "test/headless-unsigned-20261020",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/futuregene/future-os/actions/runs/39418462362",
+      "id": 39418462362,
+      "jobs": [
+        {
+          "name": "Build macOS (Intel, unsigned)",
+          "databaseId": 118613170774,
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-10-20T11:55:46Z",
+          "completedAt": "2026-10-20T12:44:55Z",
+          "url": "https://github.com/futuregene/future-os/actions/runs/39418462362/job/118613170774"
+        },
+        {
+          "name": "Build macOS (Apple Silicon, unsigned)",
+          "databaseId": 118613171170,
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-10-20T11:58:03Z",
+          "completedAt": "2026-10-20T12:08:51Z",
+          "url": "https://github.com/futuregene/future-os/actions/runs/39418462362/job/118613171170"
+        }
+      ]
+    },
+    {
+      "headSha": "a5f91752b4e470f90fbe5f4bc303ec0ca814944d",
+      "headBranch": "test/headless-unsigned-20261020",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/futuregene/future-os/actions/runs/39418473647",
+      "id": 39418473647,
+      "jobs": [
+        {
+          "name": "Build Windows (unsigned)",
+          "databaseId": 118613208251,
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-10-20T11:55:51Z",
+          "completedAt": "2026-10-20T12:26:49Z",
+          "url": "https://github.com/futuregene/future-os/actions/runs/39418473647/job/118613208251"
+        }
+      ]
+    },
+    {
+      "headSha": "a5f91752b4e470f90fbe5f4bc303ec0ca814944d",
+      "headBranch": "test/headless-unsigned-20261020",
+      "status": "completed",
+      "conclusion": "success",
+      "url": "https://github.com/futuregene/future-os/actions/runs/39418482527",
+      "id": 39418482527,
+      "jobs": [
+        {
+          "name": "Build Linux (aarch64)",
+          "databaseId": 118613236683,
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-10-20T11:55:57Z",
+          "completedAt": "2026-10-20T12:21:35Z",
+          "url": "https://github.com/futuregene/future-os/actions/runs/39418482527/job/118613236683"
+        },
+        {
+          "name": "Build Linux (x86_64)",
+          "databaseId": 118613237061,
+          "status": "completed",
+          "conclusion": "success",
+          "startedAt": "2026-10-20T11:55:55Z",
+          "completedAt": "2026-10-20T12:28:41Z",
+          "url": "https://github.com/futuregene/future-os/actions/runs/39418482527/job/118613237061"
+        }
+      ]
+    }
+  ],
+  "packageValidation": {
+    "windows": {
+      "platform": "windows",
+      "version": "0.0.2-a5f9175+dev",
+      "status": "passed",
+      "archives": [
+        {
+          "name": "FutureOS_0.0.2-a5f9175_x64-setup-unsigned.exe",
+          "bytes": 33689140,
+          "sha256": "db41a858ee04f24058560ad72d0a390843806bf348face86498e936ecb2d0bee"
+        },
+        {
+          "name": "FutureOS_0.0.2-a5f9175_windows_x64-portable-unsigned.zip",
+          "bytes": 48368329,
+          "sha256": "2f1a28960b14ac2468e20276efb8fee2028c365324713c18f7166cae107ad3e9"
+        }
+      ],
+      "probes": [
+        {
+          "name": "nsis-future.exe-version",
+          "binary": "future.exe",
+          "mode": "0o777",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "nsis-headless-help",
+          "binary": "future.exe",
+          "mode": "0o777",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "nsis-agent-help",
+          "binary": "future.exe",
+          "mode": "0o777",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "nsis-futureos.exe-help",
+          "binary": "futureos.exe",
+          "mode": "0o777",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "portable-future.exe-version",
+          "binary": "future.exe",
+          "mode": "0o777",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "portable-headless-help",
+          "binary": "future.exe",
+          "mode": "0o777",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "portable-agent-help",
+          "binary": "future.exe",
+          "mode": "0o777",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "portable-futureos.exe-help",
+          "binary": "FutureOS.exe",
+          "mode": "0o777",
+          "exit_code": 0,
+          "state_created": false
+        }
+      ]
+    },
+    "linux-arm64": {
+      "platform": "linux",
+      "version": "0.0.2-a5f9175+dev",
+      "status": "passed",
+      "archives": [
+        {
+          "name": "FutureOS_0.0.2-a5f9175_arm64.deb",
+          "bytes": 49228992,
+          "sha256": "1b35d505fcbf41ff399383e540eb6ba3ddf8f693939a6147dc502d75dd5d801e"
+        },
+        {
+          "name": "FutureOS_0.0.2-a5f9175_linux_aarch64-portable.tar.gz",
+          "bytes": 47453588,
+          "sha256": "4eb7ce2ea92c7cc7d8661a1328d8a546c00187f0250df644e00255cef6a668e4"
+        },
+        {
+          "name": "FutureOS_0.0.2-a5f9175_linux_aarch64-cli.tar.gz",
+          "bytes": 23191768,
+          "sha256": "5c6255ce30f0d22e1ed402f041eb5ff49989e9c13238db25c8cbb9966064bf3d"
+        }
+      ],
+      "probes": [
+        {
+          "name": "deb-cli-version",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "deb-agent-help",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "deb-headless-help",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "deb-desktop-help",
+          "binary": "futureos",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "portable-cli-version",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "portable-agent-help",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "portable-headless-help",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "portable-desktop-help",
+          "binary": "futureos",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "cli-cli-version",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "cli-agent-help",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "cli-headless-help",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        }
+      ]
+    },
+    "linux-x64": {
+      "platform": "linux",
+      "version": "0.0.2-a5f9175+dev",
+      "status": "passed",
+      "archives": [
+        {
+          "name": "FutureOS_0.0.2-a5f9175_amd64.deb",
+          "bytes": 51522128,
+          "sha256": "f42b49991cf20541f88fdf58a3b1565d53f9871f340004539c8f15030c65328a"
+        },
+        {
+          "name": "FutureOS_0.0.2-a5f9175_linux_x86_64-portable.tar.gz",
+          "bytes": 50228921,
+          "sha256": "fc2893039fb7d9d63982dc063833805a026acb7bb5b9b6886e00bdd2628717bb"
+        },
+        {
+          "name": "FutureOS_0.0.2-a5f9175_linux_x86_64-cli.tar.gz",
+          "bytes": 24900126,
+          "sha256": "2c4eef8b826ae282b0071c95a8cdc4894fce1a5bf903018cf33a99d6b2e03ea2"
+        }
+      ],
+      "probes": [
+        {
+          "name": "deb-cli-version",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "deb-agent-help",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "deb-headless-help",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "deb-desktop-help",
+          "binary": "futureos",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "portable-cli-version",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "portable-agent-help",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "portable-headless-help",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "portable-desktop-help",
+          "binary": "futureos",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "cli-cli-version",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "cli-agent-help",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        },
+        {
+          "name": "cli-headless-help",
+          "binary": "future",
+          "mode": "0o755",
+          "exit_code": 0,
+          "state_created": false
+        }
+      ]
+    }
+  },
+  "binaryValidation": {
+    "windows": [
+      {
+        "source": "nsis-headless-artifact.json",
+        "sha256": "cad6bbe21866529bbcc0e8f4f572b7b19a7340ce488ccf5c1e432d1ceb1508d2",
+        "bytes": 69084160,
+        "status": "passed",
+        "linkedDependencies": [
+          "USER32.dll",
+          "advapi32.dll",
+          "api-ms-win-core-synch-l1-2-0.dll",
+          "bcrypt.dll",
+          "bcryptprimitives.dll",
+          "combase.dll",
+          "crypt32.dll",
+          "kernel32.dll",
+          "ntdll.dll",
+          "shell32.dll",
+          "ws2_32.dll"
+        ],
+        "probes": [
+          {
+            "args": [
+              "headless",
+              "--help"
+            ],
+            "exitCode": 0
+          },
+          {
+            "args": [
+              "headless"
+            ],
+            "exitCode": 1
+          }
+        ]
+      },
+      {
+        "source": "portable-headless-artifact.json",
+        "sha256": "cad6bbe21866529bbcc0e8f4f572b7b19a7340ce488ccf5c1e432d1ceb1508d2",
+        "bytes": 69084160,
+        "status": "passed",
+        "linkedDependencies": [
+          "USER32.dll",
+          "advapi32.dll",
+          "api-ms-win-core-synch-l1-2-0.dll",
+          "bcrypt.dll",
+          "bcryptprimitives.dll",
+          "combase.dll",
+          "crypt32.dll",
+          "kernel32.dll",
+          "ntdll.dll",
+          "shell32.dll",
+          "ws2_32.dll"
+        ],
+        "probes": [
+          {
+            "args": [
+              "headless",
+              "--help"
+            ],
+            "exitCode": 0
+          },
+          {
+            "args": [
+              "headless"
+            ],
+            "exitCode": 1
+          }
+        ]
+      }
+    ],
+    "linux-arm64": [
+      {
+        "source": "cli-headless-artifact.json",
+        "sha256": "7e4527bd3def42880424c71a2a0443e2a3cd8bb3880329daa3ed43b42a3a9c3d",
+        "bytes": 55098160,
+        "status": "passed",
+        "linkedDependencies": [],
+        "probes": [
+          {
+            "args": [
+              "headless",
+              "--help"
+            ],
+            "exitCode": 0
+          },
+          {
+            "args": [
+              "headless"
+            ],
+            "exitCode": 1
+          }
+        ]
+      },
+      {
+        "source": "deb-headless-artifact.json",
+        "sha256": "7e4527bd3def42880424c71a2a0443e2a3cd8bb3880329daa3ed43b42a3a9c3d",
+        "bytes": 55098160,
+        "status": "passed",
+        "linkedDependencies": [],
+        "probes": [
+          {
+            "args": [
+              "headless",
+              "--help"
+            ],
+            "exitCode": 0
+          },
+          {
+            "args": [
+              "headless"
+            ],
+            "exitCode": 1
+          }
+        ]
+      },
+      {
+        "source": "portable-headless-artifact.json",
+        "sha256": "7e4527bd3def42880424c71a2a0443e2a3cd8bb3880329daa3ed43b42a3a9c3d",
+        "bytes": 55098160,
+        "status": "passed",
+        "linkedDependencies": [],
+        "probes": [
+          {
+            "args": [
+              "headless",
+              "--help"
+            ],
+            "exitCode": 0
+          },
+          {
+            "args": [
+              "headless"
+            ],
+            "exitCode": 1
+          }
+        ]
+      }
+    ],
+    "linux-x64": [
+      {
+        "source": "cli-headless-artifact.json",
+        "sha256": "4afb865a2788aa647bc2c0c416990a3c82b65019519dde416e34bba12c6faab1",
+        "bytes": 63425344,
+        "status": "passed",
+        "linkedDependencies": [],
+        "probes": [
+          {
+            "args": [
+              "headless",
+              "--help"
+            ],
+            "exitCode": 0
+          },
+          {
+            "args": [
+              "headless"
+            ],
+            "exitCode": 1
+          }
+        ]
+      },
+      {
+        "source": "deb-headless-artifact.json",
+        "sha256": "4afb865a2788aa647bc2c0c416990a3c82b65019519dde416e34bba12c6faab1",
+        "bytes": 63425344,
+        "status": "passed",
+        "linkedDependencies": [],
+        "probes": [
+          {
+            "args": [
+              "headless",
+              "--help"
+            ],
+            "exitCode": 0
+          },
+          {
+            "args": [
+              "headless"
+            ],
+            "exitCode": 1
+          }
+        ]
+      },
+      {
+        "source": "portable-headless-artifact.json",
+        "sha256": "4afb865a2788aa647bc2c0c416990a3c82b65019519dde416e34bba12c6faab1",
+        "bytes": 63425344,
+        "status": "passed",
+        "linkedDependencies": [],
+        "probes": [
+          {
+            "args": [
+              "headless",
+              "--help"
+            ],
+            "exitCode": 0
+          },
+          {
+            "args": [
+              "headless"
+            ],
+            "exitCode": 1
+          }
+        ]
+      }
+    ],
+    "macos-arm64": [
+      {
+        "source": "app-cli",
+        "sha256": "05f95534625e88710231882b71195a7e80c1278a8be6aec7c20aea6987875697",
+        "bytes": 54734352,
+        "status": "passed",
+        "linkedDependencies": [
+          "/System/Library/Frameworks/Security.framework/Versions/A/Security",
+          "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+          "/usr/lib/libiconv.2.dylib",
+          "/usr/lib/libSystem.B.dylib"
+        ],
+        "probes": [
+          {
+            "args": [
+              "headless",
+              "--help"
+            ],
+            "exitCode": 0
+          },
+          {
+            "args": [
+              "headless"
+            ],
+            "exitCode": 1
+          }
+        ]
+      }
+    ],
+    "macos-x64": [
+      {
+        "source": "app-cli",
+        "sha256": "5b49550fab67b6bdeb6dea934fa0fd6e0e193bf18d945b555853dd3f8e34fab8",
+        "bytes": 59171856,
+        "status": "passed",
+        "linkedDependencies": [
+          "/System/Library/Frameworks/Security.framework/Versions/A/Security",
+          "/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation",
+          "/usr/lib/libiconv.2.dylib",
+          "/usr/lib/libSystem.B.dylib"
+        ],
+        "probes": [
+          {
+            "args": [
+              "headless",
+              "--help"
+            ],
+            "exitCode": 0
+          },
+          {
+            "args": [
+              "headless"
+            ],
+            "exitCode": 1
+          }
+        ]
+      }
+    ]
+  },
+  "downloads": [
+    {
+      "url": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_aarch64-unsigned.app.tar.gz",
+      "name": "FutureOS_0.0.2-a5f9175_aarch64-unsigned.app.tar.gz",
+      "httpStatus": 200,
+      "bytes": 48883702,
+      "finalUrl": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_aarch64-unsigned.app.tar.gz",
+      "sha256": "8887d0d5173183f8ee3dfc32a2b096e7056ec8ef12e9eb27123696f89607b466",
+      "hashSource": "Full public download streamed locally",
+      "downloadedBytes": 48883702,
+      "status": "passed",
+      "seconds": 7.755
+    },
+    {
+      "url": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_aarch64-unsigned.app.tar.gz.sig",
+      "name": "FutureOS_0.0.2-a5f9175_aarch64-unsigned.app.tar.gz.sig",
+      "httpStatus": 200,
+      "bytes": 408,
+      "finalUrl": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_aarch64-unsigned.app.tar.gz.sig",
+      "sha256": "094d39214644a8b5961cd14ad774b713e97a5c8123b29df5981a7a3c7cffa6d7",
+      "hashSource": "Full public download streamed locally",
+      "downloadedBytes": 408,
+      "status": "passed",
+      "seconds": 1.322
+    },
+    {
+      "url": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_aarch64-unsigned.dmg",
+      "name": "FutureOS_0.0.2-a5f9175_aarch64-unsigned.dmg",
+      "httpStatus": 200,
+      "bytes": 52859738,
+      "finalUrl": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_aarch64-unsigned.dmg",
+      "sha256": "fc3519be124bb3395aeb1a4408a0da66679e9e5b41c887c7bed0eebcdf933508",
+      "hashSource": "Full public download streamed locally",
+      "downloadedBytes": 52859738,
+      "status": "passed",
+      "seconds": 9.937
+    },
+    {
+      "url": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_amd64.deb",
+      "name": "FutureOS_0.0.2-a5f9175_amd64.deb",
+      "httpStatus": 200,
+      "bytes": 51522128,
+      "finalUrl": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_amd64.deb",
+      "status": "passed",
+      "seconds": 0.762,
+      "sha256": "f42b49991cf20541f88fdf58a3b1565d53f9871f340004539c8f15030c65328a",
+      "ciSha256": "f42b49991cf20541f88fdf58a3b1565d53f9871f340004539c8f15030c65328a",
+      "ciHashMatch": true,
+      "hashSource": "Full public download streamed locally and matched to CI archive hash",
+      "downloadedBytes": 51522128
+    },
+    {
+      "url": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_arm64.deb",
+      "name": "FutureOS_0.0.2-a5f9175_arm64.deb",
+      "httpStatus": 200,
+      "bytes": 49228992,
+      "finalUrl": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_arm64.deb",
+      "status": "passed",
+      "seconds": 0.765,
+      "sha256": "1b35d505fcbf41ff399383e540eb6ba3ddf8f693939a6147dc502d75dd5d801e",
+      "ciSha256": "1b35d505fcbf41ff399383e540eb6ba3ddf8f693939a6147dc502d75dd5d801e",
+      "ciHashMatch": true,
+      "hashSource": "Full public download streamed locally and matched to CI archive hash",
+      "downloadedBytes": 49228992
+    },
+    {
+      "url": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_linux_aarch64-cli.tar.gz",
+      "name": "FutureOS_0.0.2-a5f9175_linux_aarch64-cli.tar.gz",
+      "httpStatus": 200,
+      "bytes": 23191768,
+      "finalUrl": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_linux_aarch64-cli.tar.gz",
+      "status": "passed",
+      "seconds": 1.139,
+      "sha256": "5c6255ce30f0d22e1ed402f041eb5ff49989e9c13238db25c8cbb9966064bf3d",
+      "ciSha256": "5c6255ce30f0d22e1ed402f041eb5ff49989e9c13238db25c8cbb9966064bf3d",
+      "ciHashMatch": true,
+      "hashSource": "Full public download streamed locally and matched to CI archive hash",
+      "downloadedBytes": 23191768
+    },
+    {
+      "url": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_linux_aarch64-portable.tar.gz",
+      "name": "FutureOS_0.0.2-a5f9175_linux_aarch64-portable.tar.gz",
+      "httpStatus": 200,
+      "bytes": 47453588,
+      "finalUrl": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_linux_aarch64-portable.tar.gz",
+      "status": "passed",
+      "seconds": 0.389,
+      "sha256": "4eb7ce2ea92c7cc7d8661a1328d8a546c00187f0250df644e00255cef6a668e4",
+      "ciSha256": "4eb7ce2ea92c7cc7d8661a1328d8a546c00187f0250df644e00255cef6a668e4",
+      "ciHashMatch": true,
+      "hashSource": "Full public download streamed locally and matched to CI archive hash",
+      "downloadedBytes": 47453588
+    },
+    {
+      "url": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_linux_x86_64-cli.tar.gz",
+      "name": "FutureOS_0.0.2-a5f9175_linux_x86_64-cli.tar.gz",
+      "httpStatus": 200,
+      "bytes": 24900126,
+      "finalUrl": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_linux_x86_64-cli.tar.gz",
+      "status": "passed",
+      "seconds": 0.448,
+      "sha256": "2c4eef8b826ae282b0071c95a8cdc4894fce1a5bf903018cf33a99d6b2e03ea2",
+      "ciSha256": "2c4eef8b826ae282b0071c95a8cdc4894fce1a5bf903018cf33a99d6b2e03ea2",
+      "ciHashMatch": true,
+      "hashSource": "Full public download streamed locally and matched to CI archive hash",
+      "downloadedBytes": 24900126
+    },
+    {
+      "url": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_linux_x86_64-portable.tar.gz",
+      "name": "FutureOS_0.0.2-a5f9175_linux_x86_64-portable.tar.gz",
+      "httpStatus": 200,
+      "bytes": 50228921,
+      "finalUrl": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_linux_x86_64-portable.tar.gz",
+      "status": "passed",
+      "seconds": 0.628,
+      "sha256": "fc2893039fb7d9d63982dc063833805a026acb7bb5b9b6886e00bdd2628717bb",
+      "ciSha256": "fc2893039fb7d9d63982dc063833805a026acb7bb5b9b6886e00bdd2628717bb",
+      "ciHashMatch": true,
+      "hashSource": "Full public download streamed locally and matched to CI archive hash",
+      "downloadedBytes": 50228921
+    },
+    {
+      "url": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_windows_x64-portable-unsigned.zip",
+      "name": "FutureOS_0.0.2-a5f9175_windows_x64-portable-unsigned.zip",
+      "httpStatus": 200,
+      "bytes": 48368329,
+      "finalUrl": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_windows_x64-portable-unsigned.zip",
+      "status": "passed",
+      "seconds": 0.328,
+      "sha256": "2f1a28960b14ac2468e20276efb8fee2028c365324713c18f7166cae107ad3e9",
+      "ciSha256": "2f1a28960b14ac2468e20276efb8fee2028c365324713c18f7166cae107ad3e9",
+      "ciHashMatch": true,
+      "hashSource": "Full public download streamed locally and matched to CI archive hash",
+      "downloadedBytes": 48368329
+    },
+    {
+      "url": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_x64-setup-unsigned.exe",
+      "name": "FutureOS_0.0.2-a5f9175_x64-setup-unsigned.exe",
+      "httpStatus": 200,
+      "bytes": 33689140,
+      "finalUrl": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_x64-setup-unsigned.exe",
+      "status": "passed",
+      "seconds": 0.74,
+      "sha256": "db41a858ee04f24058560ad72d0a390843806bf348face86498e936ecb2d0bee",
+      "ciSha256": "db41a858ee04f24058560ad72d0a390843806bf348face86498e936ecb2d0bee",
+      "ciHashMatch": true,
+      "hashSource": "Full public download streamed locally and matched to CI archive hash",
+      "downloadedBytes": 33689140
+    },
+    {
+      "url": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_x64-setup-unsigned.exe.sig",
+      "name": "FutureOS_0.0.2-a5f9175_x64-setup-unsigned.exe.sig",
+      "httpStatus": 200,
+      "bytes": 420,
+      "finalUrl": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_x64-setup-unsigned.exe.sig",
+      "sha256": "c22a9cf60c91f84d8264a939fc72d5bcf2a661d741329b2fdf1d85f0ccd64113",
+      "hashSource": "Full public download streamed locally",
+      "downloadedBytes": 420,
+      "status": "passed",
+      "seconds": 0.526
+    },
+    {
+      "url": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_x64-unsigned.app.tar.gz",
+      "name": "FutureOS_0.0.2-a5f9175_x64-unsigned.app.tar.gz",
+      "httpStatus": 200,
+      "bytes": 52044113,
+      "finalUrl": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_x64-unsigned.app.tar.gz",
+      "sha256": "8339f6213584ff9d2400c7934a82f3d6989d5dd62f7d7cf070c40b60486fc0c7",
+      "hashSource": "Full public download streamed locally",
+      "downloadedBytes": 52044113,
+      "status": "passed",
+      "seconds": 12.607
+    },
+    {
+      "url": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_x64-unsigned.app.tar.gz.sig",
+      "name": "FutureOS_0.0.2-a5f9175_x64-unsigned.app.tar.gz.sig",
+      "httpStatus": 200,
+      "bytes": 408,
+      "finalUrl": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_x64-unsigned.app.tar.gz.sig",
+      "sha256": "ff28692700c6ee4314781d6fc879aa17733a41191026314d5b14dfecf6f885b9",
+      "hashSource": "Full public download streamed locally",
+      "downloadedBytes": 408,
+      "status": "passed",
+      "seconds": 0.67
+    },
+    {
+      "url": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_x64-unsigned.dmg",
+      "name": "FutureOS_0.0.2-a5f9175_x64-unsigned.dmg",
+      "httpStatus": 200,
+      "bytes": 57385763,
+      "finalUrl": "https://dl.future-os.cn/dev/0.0.2-a5f9175/FutureOS_0.0.2-a5f9175_x64-unsigned.dmg",
+      "sha256": "89a4d52143fb296804c9ec611fc117f651847aad67a53631e5fab2e8a7fc1779",
+      "hashSource": "Full public download streamed locally",
+      "downloadedBytes": 57385763,
+      "status": "passed",
+      "seconds": 16.575
+    }
+  ],
+  "publicMacosArchiveInspection": [
+    {
+      "architecture": "arm64",
+      "archive": "FutureOS_0.0.2-a5f9175_aarch64-unsigned.app.tar.gz",
+      "archiveSha256": "8887d0d5173183f8ee3dfc32a2b096e7056ec8ef12e9eb27123696f89607b466",
+      "cliMember": "FutureOS.app/Contents/MacOS/future",
+      "cliSha256": "05f95534625e88710231882b71195a7e80c1278a8be6aec7c20aea6987875697",
+      "matchesNativeCiBinary": true,
+      "retiredBinaryAbsent": true,
+      "executableMode": "0o100755",
+      "status": "passed"
+    },
+    {
+      "architecture": "x64",
+      "archive": "FutureOS_0.0.2-a5f9175_x64-unsigned.app.tar.gz",
+      "archiveSha256": "8339f6213584ff9d2400c7934a82f3d6989d5dd62f7d7cf070c40b60486fc0c7",
+      "cliMember": "FutureOS.app/Contents/MacOS/future",
+      "cliSha256": "5b49550fab67b6bdeb6dea934fa0fd6e0e193bf18d945b555853dd3f8e34fab8",
+      "matchesNativeCiBinary": true,
+      "retiredBinaryAbsent": true,
+      "executableMode": "0o100755",
+      "status": "passed"
+    }
+  ],
+  "oldLinuxSmoke": {
+    "linux-arm64": {
+      "status": "passed",
+      "container": "rockylinux:8",
+      "network": "none",
+      "payloads": [
+        "deb",
+        "portable",
+        "cli-only"
+      ],
+      "logs": [
+        "cli-headless-old-glibc.log",
+        "deb-headless-old-glibc.log",
+        "portable-headless-old-glibc.log"
+      ]
+    },
+    "linux-x64": {
+      "status": "passed",
+      "container": "rockylinux:8",
+      "network": "none",
+      "payloads": [
+        "deb",
+        "portable",
+        "cli-only"
+      ],
+      "logs": [
+        "cli-headless-old-glibc.log",
+        "deb-headless-old-glibc.log",
+        "portable-headless-old-glibc.log"
+      ]
+    }
+  },
+  "limits": [
+    "Unsigned release rehearsal only; no Authenticode, Developer ID or notarization acceptance. Existing updater signature files were hashed, not independently cryptographically verified locally.",
+    "No real installer execution, upgrade/uninstall or final same-candidate functional manual acceptance performed by this inspection.",
+    "Linux CLI-only tarballs were produced; Windows/macOS workflows provide CLI inside Desktop/portable payloads, not standalone CLI-only archives.",
+    "Download hashing/archive inspection does not execute or install any downloaded binary.",
+    "Performance comparison cancelled by user on 2026-10-20; no controlled measurement or speedup claim. CI/build durations are not a controlled comparison.",
+    "Build candidate is frozen at a5f91752, not later startup/relay changes now in main."
+  ],
+  "evidenceArchives": {
+    "windows": {
+      "sha256": "143693a33ca306d9a8362aa2bf136b8ecab48d0f5e04cb17a7c1cdbcd03f2088"
+    },
+    "linux-arm64": {
+      "sha256": "7a0cbb217345e557f730d2b6e8fd72fc41b1597f559e31f97ba6d1e403645f62"
+    },
+    "linux-x64": {
+      "sha256": "a8f33d31cb45484462cebc52bd6d7b0f0bdd2cfbecf4ab4804f6122e51a77ee2"
+    },
+    "macos-arm64": {
+      "sha256": "4d74f8a92474937325b0c356b294a984838e1f737469054f630950e5dca9d555"
+    },
+    "macos-x64": {
+      "sha256": "d2e216a09fee9f1dc1e85f90d754fb6da82e250290c468a4fcb74c59a12f133e"
+    }
+  },
+  "downloadVerification": {
+    "publicUrlSource": "Exact URLs printed by completed platform jobs",
+    "http200": 15,
+    "fullPayloadSha256Computed": 15,
+    "windowsLinuxMatchedCiArchiveHashes": 8
+  },
+  "performanceComparison": {
+    "status": "cancelled-by-user",
+    "decisionDate": "2026-10-20",
+    "userInstruction": "性能对比不做了",
+    "measurementPerformed": false,
+    "acceptanceGate": false,
+    "performanceImprovementClaimed": false
+  }
+}
