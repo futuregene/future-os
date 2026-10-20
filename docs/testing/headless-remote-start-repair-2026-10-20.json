@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "parent": "e8e4c479dfaa7b30847474b2490cded11e65e1c3",
+  "ci": {
+    "runId": 39358154196,
+    "headSha": "df56f5f20b02c90377ed8b5b523b859fc10c0b08",
+    "jobId": 118418539092,
+    "conclusion": "failure",
+    "url": "https://github.com/futuregene/future-os/actions/runs/39358154196/job/118418539092",
+    "test": "a_reconnect_with_a_pre_v2_slot_forgets_it",
+    "passed": 10,
+    "failed": 1,
+    "executionSeconds": 94.66,
+    "assertion": "the v2 generation must be live first",
+    "logSha256": "7d7fb9ad356d2c19d1708dbdac694b33a9a88afa78ce4b1106fd602f95753892"
+  },
+  "diagnosis": "The initial credential-refresh worker can run before start_slot publishes its generation in the state map. An immediately due credential observes no active generation and returns. Readiness then reports a dead critical task and the supervisor rebuilds before the intended broker refusal.",
+  "change": "A one-shot install notification gates the real credential-refresh worker. Publication releases it; a cancelled install drops the sender and the candidate worker exits. Existing generation cancellation, cleanup ownership, expiry and protocol policy are unchanged.",
+  "testChanges": "No original test assertions, platform gates, time budgets or fixture protocol changed. The Desktop unit-test adapter explicitly uses already-installed generations.",
+  "localAuthorization": "User explicitly requested local testing after repair and before the next CI run. This authorizes the bounded real-process integration rerun; earlier zero-local-test records remain historical.",
+  "localEnvironment": {
+    "runner": "developer macOS",
+    "target": "aarch64-apple-darwin",
+    "toolchain": "1.97.0",
+    "features": "--no-default-features --features headless",
+    "cargo": "--offline --locked",
+    "RUSTC_WRAPPER": "",
+    "CARGO_TARGET_DIR": "/Volumes/ZHITAI/Workspace/future-os/target"
+  },
+  "localChecks": [
+    {
+      "command": "cargo fmt -p future-remote-server -p futureos --check",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p future-remote-server --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p futureos -p future-cli --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "python3 scripts/ci/host-boundaries.py",
+      "result": "PASS",
+      "hostPackages": 369,
+      "cliPackages": 395,
+      "forbidden": []
+    },
+    {
+      "command": "python3 scripts/docs/check-docs.py --strict-pending",
+      "result": "PASS",
+      "documents": 295,
+      "pendingBilingualPairs": 0
+    }
+  ],
+  "localTests": {
+    "sandboxAttempt": {
+      "result": "failed before product startup",
+      "reason": "sandbox refused loopback listener: EPERM"
+    },
+    "targeted": {
+      "command": "cargo test --offline --locked --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml --test remote_start_refusal a_reconnect_with_a_pre_v2_slot_forgets_it -- --exact --nocapture",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 12,
+      "executionSeconds": 7.62,
+      "testProfileBuildSeconds": 26.73
+    },
+    "suite": {
+      "status": "completed",
+      "command": "cargo test --offline --locked --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml --test remote_start_refusal -- --test-threads=1 --nocapture",
+      "passed": 13,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 0,
+      "executionSeconds": 189.97,
+      "testProfileBuildSeconds": 0.17,
+      "logSha256": "f069a15c6b724083a3e7ea008779dd2b97ce8d1f1ca070bb6dae96e766e07088"
+    }
+  },
+  "limits": [
+    "Local macOS verification does not establish Linux or Windows acceptance.",
+    "No final future headless CLI integration migration, release or manual acceptance is claimed.",
+    "These local warm-cache timings are provenance, not a matched performance comparison."
+  ]
+}

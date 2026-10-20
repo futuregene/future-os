@@ -366,11 +366,13 @@ impl Supervisor {
             heartbeat_task,
             mut candidate_tasks,
         } = transport;
+        let (installed_tx, installed_rx) = tokio::sync::oneshot::channel();
         let refresh_task = self.spawn_credential_refresh(
             pair_id.clone(),
             reply_slots,
             pairing_confirmed.clone(),
             handshake_state.clone(),
+            Some(installed_rx),
         );
         candidate_tasks.track_owned(&refresh_task);
         // The browser client is a test-environment-only validation surface. Keep
@@ -445,6 +447,11 @@ impl Supervisor {
             return Ok(());
         };
         candidate_tasks.installed();
+        // The refresh loop checks its generation in `state`. Starting it before
+        // publication lets an already-due credential race the web bind and exit
+        // as if its generation had been replaced. A cancelled install drops the
+        // sender, so its candidate cannot begin renewing a discarded generation.
+        let _ = installed_tx.send(());
         if let Some(previous) = previous {
             abort_generation(previous);
         }

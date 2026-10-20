@@ -19,5 +19,5 @@ pub(super) fn spawn_credential_refresh(
     confirmed: Arc<AtomicBool>,
     handshake: commands::HandshakeState,
 ) -> future_remote_server::supervisor::TaskHandle {
-    SUPERVISOR.spawn_credential_refresh(pair, slots, confirmed, handshake)
+    SUPERVISOR.spawn_credential_refresh(pair, slots, confirmed, handshake, None)
 }

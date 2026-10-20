@@ -24802,7 +24802,10 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "planned"
+      "status": "planned",
+      "validationEvidence": [
+        "docs/testing/headless-remote-start-repair-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1435:a_revoked_answer_is_forgotten_whichever_ask_receives_it",

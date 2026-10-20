@@ -144,6 +144,7 @@ impl Supervisor {
         reply_slots: commands::ReplySlots,
         pairing_confirmed: Arc<AtomicBool>,
         handshake_state: commands::HandshakeState,
+        installed: Option<tokio::sync::oneshot::Receiver<()>>,
     ) -> TaskHandle {
         {
             let epoch = handshake_state
@@ -151,6 +152,11 @@ impl Supervisor {
                 .unwrap_or_else(|| self.access.current());
             let server = self.clone();
             self.spawn_generation_for(epoch, async move {
+                if let Some(installed) = installed {
+                    if installed.await.is_err() {
+                        return;
+                    }
+                }
                 loop {
                     while !pairing_confirmed.load(Ordering::Acquire) {
                         tokio::time::sleep(server.executor.options().publisher.presence).await;

@@ -319,3 +319,9 @@ CI `39358154196` 的 Agent 与宿主测试分组通过，证明该候选的日�
 ### 2026-10-20 共享宿主原生 CI 覆盖
 
 宿主已有独立 Linux 测试分组。CI 现增加 macOS/Windows 原生宿主 fmt、Clippy `--all-targets` 和 `cargo test -p future-host`，不安装 npm、不构建 Desktop 包；稳定 Rust 测试 gate 纳入两个原生结果。每个原生构建目标在 Desktop 编译后显式拉取依赖，并验证联合 GUI/CLI 的依赖闭包。原生命令拆为独立步骤，避免 PowerShell 后一条成功命令掩盖前一条失败。YAML 语法检查通过；新 job 及 Windows import 修复仍待实际 CI 执行。
+
+### 2026-10-20 Remote 启动竞态修复与本地复测
+
+CI `39358154196` 的 headless 进程组失败于 `a_reconnect_with_a_pre_v2_slot_forgets_it`：初始 generation 发布前，已到刷新期的凭据任务可能先运行、查不到自己的状态并退出；监督器因此提前判为关键任务死亡。Remote Server 现在用一次性安装通知约束刷新任务，状态发布后才开始刷新，安装取消则随候选任务一起退出。没有修改原测试断言、超时、平台条件或线上协议。
+
+用户明确要求修复后、下轮 CI 前进行本地复测。原失败用例通过（1 项，7.62 秒）；同文件完整真实进程测试通过（13 项、0 失败、0 忽略，189.97 秒），见[修复证据](../testing/headless-remote-start-repair-2026-10-20.json)。首次沙箱执行在 loopback 监听时被 EPERM 拒绝，解除该限制后使用隔离 Future home 与临时端口复测。Remote、旧 headless 与 GUI/CLI 组合 Clippy `--all-targets`、fmt、依赖边界和文档检查通过。本机结果不能替代 Linux/Windows CI、最终 CLI 进程迁移或发布与人工验收；这些本地耗时也不是匹配条件下的性能对比。
