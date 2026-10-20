@@ -42,3 +42,36 @@ describe("panelToggleShortcutLabel", () => {
     expect(panelToggleShortcutLabel(true)).toBe("⌘J");
   });
 });
+
+describe("the panel shortcut is a rebindable command", () => {
+  // The binding lives in the command table now (`features/keyboard/catalog`), so
+  // these cases read it through the store the terminal itself reads.
+  it("follows a user's rebinding on the next press", async () => {
+    const { setCommandBinding, resetAllCommandBindings } = await import("../keyboard/shortcuts");
+    resetAllCommandBindings();
+    setCommandBinding("terminal.toggle", "mod+shift+j");
+    try {
+      expect(isPanelToggleShortcut(key({ ctrlKey: true, shiftKey: true }), false)).toBe(true);
+      // The default is free while the command is bound elsewhere.
+      expect(isPanelToggleShortcut(key({ ctrlKey: true }), false)).toBe(false);
+      expect(panelToggleShortcutLabel(false)).toBe("Ctrl+Shift+J");
+      expect(panelToggleShortcutLabel(true)).toBe("⇧⌘J");
+    }
+    finally {
+      resetAllCommandBindings();
+    }
+  });
+
+  it("says nothing when the user removed the binding", async () => {
+    const { setCommandBinding, resetAllCommandBindings } = await import("../keyboard/shortcuts");
+    resetAllCommandBindings();
+    setCommandBinding("terminal.toggle", null);
+    try {
+      expect(isPanelToggleShortcut(key({ ctrlKey: true }), false)).toBe(false);
+      expect(panelToggleShortcutLabel(false)).toBe("");
+    }
+    finally {
+      resetAllCommandBindings();
+    }
+  });
+});

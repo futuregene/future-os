@@ -5,6 +5,8 @@ import type { ActivityRail } from "./ActivityRail";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { hasCommandHandler } from "../../features/keyboard/commands";
+import { resetAllCommandBindings } from "../../features/keyboard/shortcuts";
 import { forgetHostCatalogue, warmHostCatalogue } from "../../features/remote-peer/remoteHostCatalog";
 import { defaultAgentModelId } from "../../integrations/agent/agentClient";
 import { AppShell } from "./AppShell";
@@ -2718,5 +2720,83 @@ describe("app shell collapsed-panel affordances", () => {
       expect(types.filter(type => type === "get_session_entries").length).toBeGreaterThan(0);
       view.unmount();
     });
+  });
+});
+
+/**
+ * The shell registers the commands that are its own (navigation, panels,
+ * settings) and installs the one dispatcher. What each command *does* is covered
+ * where it lives; this measures that the wiring exists and points at the right
+ * state — a shell that forgot to register `section.tasks` would otherwise pass
+ * every other test in this file.
+ */
+describe("app shell keyboard commands", () => {
+  function press(init: KeyboardEventInit) {
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+    });
+  }
+
+  beforeEach(() => {
+    // A rebinding test would otherwise leak its binding into the next one.
+    resetAllCommandBindings();
+  });
+
+  it("opens a new conversation on the accelerator", () => {
+    const view = mount(<AppShell />);
+    press({ ctrlKey: true, key: "n" });
+    expect(view.container.querySelector("[data-child=\"new-conversation\"]")).not.toBeNull();
+    view.unmount();
+  });
+
+  it("switches sections with the number row", () => {
+    const view = mount(<AppShell />);
+    press({ ctrlKey: true, key: "3" });
+    expect(view.container.querySelector("[data-child=\"skills-view\"]")).not.toBeNull();
+    press({ ctrlKey: true, key: "2" });
+    expect(view.container.querySelector("[data-child=\"skills-view\"]")).toBeNull();
+    expect(rail().active).toBe("workspace");
+    view.unmount();
+  });
+
+  it("toggles the sidebar and the context panel", () => {
+    const view = mount(<AppShell />);
+    expect(view.container.querySelector("[data-child=\"activity-rail\"]")).not.toBeNull();
+    press({ ctrlKey: true, key: "b" });
+    expect(view.container.querySelector("[data-child=\"activity-rail\"]")).toBeNull();
+    press({ ctrlKey: true, key: "b" });
+    expect(view.container.querySelector("[data-child=\"activity-rail\"]")).not.toBeNull();
+
+    const panelExpanded = () => (children.contextPanel as { expanded: boolean }).expanded;
+    expect(panelExpanded()).toBe(false);
+    press({ ctrlKey: true, shiftKey: true, key: "b" });
+    expect(panelExpanded()).toBe(true);
+    view.unmount();
+  });
+
+  it("opens settings on its own accelerator", () => {
+    const view = mount(<AppShell />);
+    press({ ctrlKey: true, key: "," });
+    expect((children.settingsDialog as { open: boolean }).open).toBe(true);
+    view.unmount();
+  });
+
+  it("does nothing behind the onboarding gate", () => {
+    mocks.store.hasProviders = {
+      ...(mocks.store.hasProviders as Record<string, unknown>),
+      forceOnboarding: true,
+      hasAnyProvider: false,
+      initPending: true,
+      showGate: true,
+    };
+    const view = mount(<AppShell />);
+    expect(view.container.querySelector("[data-child=\"onboarding-gate\"]")).not.toBeNull();
+    // No conversation exists to start, so the shell registers nothing: the key is
+    // unclaimed rather than answered by a handler with nowhere to put the result.
+    expect(hasCommandHandler("chat.new")).toBe(false);
+    expect(hasCommandHandler("panel.left")).toBe(false);
+    press({ ctrlKey: true, key: "n" });
+    expect(view.container.querySelector("[data-child=\"new-conversation\"]")).toBeNull();
+    view.unmount();
   });
 });

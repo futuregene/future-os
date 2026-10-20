@@ -109,6 +109,7 @@
     },
     "tabs": {
       "general": "General",
+      "shortcuts": "Keyboard shortcuts",
       "account": "Account",
       "update": "Check for updates",
       "about": "About",

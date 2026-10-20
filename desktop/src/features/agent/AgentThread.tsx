@@ -22,6 +22,7 @@ import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { useCommittedRef } from "../../lib/useCommittedRef";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
+import { useCommand } from "../keyboard/commands";
 import { installRecommendedSkill } from "../skills/installRecommendedSkill";
 import { ApprovalPrompt } from "./ApprovalPrompt";
 import {
@@ -240,6 +241,11 @@ export function AgentThread({
       break;
     }
   }
+
+  // Settings → Keyboard: the same interrupt the send button turns into while a
+  // reply streams. Registered only then, so the key is unclaimed whenever there
+  // is nothing to stop — and a press outside a stream stays the app's own.
+  useCommand("chat.stop", () => void handleAbort(), isReplyStreaming);
 
   const handleRetryMessage = useCallback(
     (_message: AgentMessage, source: AgentMessage) => {

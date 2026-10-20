@@ -13,6 +13,7 @@ import { cn } from "../../lib/cn";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { useCommittedRef } from "../../lib/useCommittedRef";
 import { useOperationLifetime } from "../../lib/useOperationLifetime";
+import { useCommand } from "../keyboard/commands";
 import { splitFileName } from "./attachments";
 import { ComposerControls } from "./composer/ComposerControls";
 import { useComposerAttachments } from "./composer/useComposerAttachments";
@@ -311,6 +312,11 @@ function ComposerImpl({
     if (!disabled)
       editorRef.current?.focus();
   }), [disabled]);
+
+  // Settings → Keyboard: "focus the composer" puts the caret back where typing
+  // goes. Registered by the composer itself for the same reason the event above
+  // is answered here — only this component knows whether it can hold a caret.
+  useCommand("composer.focus", () => editorRef.current?.focus(), !disabled);
 
   // Autofocus so the user can type immediately: on mount, when switching
   // conversations (draftKey changes), and when a send settles. The streaming

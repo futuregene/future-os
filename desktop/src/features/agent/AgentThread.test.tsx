@@ -11,6 +11,9 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { onFutureEvent } from "../../lib/futureEvents";
+import { installShortcuts } from "../../test/installShortcuts";
+import { clearCommandHandlers } from "../keyboard/commands";
+import { resetAllCommandBindings } from "../keyboard/shortcuts";
 import { AgentThread } from "./AgentThread";
 import { loadComposerDraft, saveComposerDraft } from "./composerDraft";
 
@@ -168,6 +171,9 @@ let props: Parameters<typeof AgentThread>[0];
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Command handlers outlive a mount in the module-level registry; a test that
+  // left one behind would answer the next test's keystrokes.
+  clearCommandHandlers();
   sessionStorage.clear();
   h.state.handleSend.mockResolvedValue(undefined);
   h.reco.evaluate.mockResolvedValue(null);
@@ -985,5 +991,40 @@ describe("agentThread agent-connection notice", () => {
     expect(props.onOpenModels).toHaveBeenCalledTimes(1);
 
     expect(props.onOpenAccount).not.toHaveBeenCalled();
+  });
+});
+
+describe("interrupting a run from the keyboard", () => {
+  let uninstall: () => void;
+
+  beforeEach(() => {
+    resetAllCommandBindings();
+    uninstall = installShortcuts();
+  });
+  afterEach(() => {
+    uninstall();
+  });
+
+  function press() {
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "Period", ctrlKey: true, key: "." });
+    act(() => {
+      window.dispatchEvent(event);
+    });
+    return event;
+  }
+
+  it("stops the streaming reply", () => {
+    setMessages([user("u1"), assistant("a1", { status: "streaming" })]);
+    render();
+    expect(press().defaultPrevented).toBe(true);
+    expect(h.state.handleAbort).toHaveBeenCalledTimes(1);
+  });
+
+  it("claims nothing when there is nothing to stop", () => {
+    // A finished conversation: the key stays free for the platform and for any
+    // other command the user binds there.
+    render();
+    expect(press().defaultPrevented).toBe(false);
+    expect(h.state.handleAbort).not.toHaveBeenCalled();
   });
 });
