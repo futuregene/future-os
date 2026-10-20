@@ -38,6 +38,33 @@ static FUTURE_MODELS_HTTP_CLIENT: std::sync::LazyLock<reqwest::blocking::Client>
 /// the file cache to be read back from disk.
 static FUTURE_MODELS_MEMORY_CACHE: RwLock<Option<FutureModelsCache>> = RwLock::new(None);
 
+/// Notified whenever a background refresh lands new Future models in the
+/// caches. The models module cannot see the RPC layer's `AppState`, so the
+/// service registers the wiring at startup: rebuild the shared registry and
+/// publish `provider_config_changed`. Without it, the registry built against
+/// a cold cache at startup stays empty until the next restart — the fetch
+/// itself already succeeded, nothing ever told the registry about it.
+static FUTURE_MODELS_SYNC_CALLBACK: RwLock<Option<std::sync::Arc<dyn Fn() + Send + Sync>>> =
+    RwLock::new(None);
+
+/// Install [`FUTURE_MODELS_SYNC_CALLBACK`] (see its comment). Returns the
+/// previous callback so a torn-down service can restore it.
+pub fn set_future_models_sync_callback(
+    callback: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
+) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
+    FUTURE_MODELS_SYNC_CALLBACK.write().replace(callback?)
+}
+
+/// Fire [`FUTURE_MODELS_SYNC_CALLBACK`] once the fetched models are durable in
+/// both caches. Runs on the refresh thread; panics are contained because the
+/// whole refresh body already runs under `catch_unwind`.
+fn notify_future_models_synced() {
+    let callback = FUTURE_MODELS_SYNC_CALLBACK.read().clone();
+    if let Some(callback) = callback {
+        callback();
+    }
+}
+
 /// Test-only: serialize the single-flight gate's check-and-acquire against
 /// concurrent `Registry::new()` threads, which share these process-global
 /// statics but do NOT hold `future_models_test_lock`. Without this, a refresh
@@ -111,6 +138,7 @@ fn spawn_future_models_refresh_unlocked(
                 };
                 save_future_models_cache_inner(&cache);
                 *FUTURE_MODELS_MEMORY_CACHE.write() = Some(cache);
+                notify_future_models_synced();
             }
         }));
         if let Err(e) = result {
@@ -1455,6 +1483,80 @@ mod tests {
         // …and the disk cache was written.
         let disk = load_future_models_cache().unwrap();
         assert_eq!(disk.models[0].id, "sync-model");
+    }
+
+    /// A background refresh that lands new models must fire the sync callback
+    /// (the service's wiring rebuilds the shared registry from it), and not
+    /// fire it when the fetch fails — a failing platform must not trigger
+    /// pointless rebuilds. This is the seam that keeps a cold-started
+    /// registry from staying empty until restart.
+    #[test]
+    fn background_refresh_notifies_the_sync_callback_on_success_only() {
+        let _gate = FUTURE_REFRESH_GATE
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let home = crate::test_support::TestHome::new();
+        reset_future_caches_for_tests_unlocked();
+        std::fs::create_dir_all(home.path().join(".future/agent")).unwrap();
+
+        let notified = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let previous = set_future_models_sync_callback(Some({
+            let notified = notified.clone();
+            std::sync::Arc::new(move || {
+                notified.fetch_add(1, Ordering::Relaxed);
+            })
+        }));
+        // Restore whatever a concurrently-run service test installed; tests
+        // share this process-global slot.
+        let _restore = RestoreCallback(previous);
+
+        let entry = r#"{"id":"notify-model","name":"Notify","context_length":64000}"#;
+        let base = mock_json_server(200, format!(r#"{{"data":[{entry}]}}"#));
+        let auth_path = home.auth_path();
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth_path,
+            format!(r#"{{"future": {{"type": "api_key", "key": "k", "base_url": "{base}/api"}}}}"#),
+        )
+        .unwrap();
+
+        spawn_future_models_refresh_unlocked("k", &format!("{base}/api/v1"))
+            .expect("the refresh thread spawns")
+            .join()
+            .expect("the refresh thread completes");
+        assert_eq!(
+            notified.load(Ordering::Relaxed),
+            1,
+            "a successful fetch fires the callback once"
+        );
+        assert!(load_future_models_cache()
+            .expect("the disk cache was written")
+            .models
+            .iter()
+            .any(|m| m.id == "notify-model"));
+
+        // A failing fetch (401) must not fire it again. reset unlocks the
+        // refreshed state while the gate stays held (the helper takes it).
+        let denied = mock_json_server(401, "{}".to_string());
+        reset_future_caches_for_tests_unlocked();
+        spawn_future_models_refresh_unlocked("k", &format!("{denied}/api/v1"))
+            .expect("the refresh thread spawns")
+            .join()
+            .expect("the refresh thread completes");
+        assert_eq!(
+            notified.load(Ordering::Relaxed),
+            1,
+            "a failed fetch does not fire the callback"
+        );
+    }
+
+    /// Puts the previous sync callback back when the test's override drops,
+    /// so one test's teardown cannot clear another's registration.
+    struct RestoreCallback(Option<std::sync::Arc<dyn Fn() + Send + Sync>>);
+    impl Drop for RestoreCallback {
+        fn drop(&mut self) {
+            let _ = set_future_models_sync_callback(self.0.take());
+        }
     }
 
     #[test]
