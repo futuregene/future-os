@@ -83,13 +83,18 @@ function withFallback(value: MockValue): MockValue {
 }
 
 export function RemoteProvider({ children }: PropsWithChildren) {
+  // `?single=1` leaves the phone with one pairing. It is the state where the
+  // list has no other machine to fall back to, so `?held=1&single=1` is the one
+  // that asks for the takeover page instead of the conversations.
+  const singlePairing = new URLSearchParams(window.location.search).get("single") === "1";
+  const pairedDesktops = singlePairing ? demoDesktops.slice(0, 1) : demoDesktops;
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [draft, setDraft] = useState(false);
-  const [desktopId, setDesktopId] = useState(demoDesktops[0]?.desktopId ?? "");
+  const [desktopId, setDesktopId] = useState(pairedDesktops[0]?.desktopId ?? "");
   // The phone's own labels for its desktops (name and icon): stored state here
   // so the device page and the list it sits on move together, as they do once
   // the real store answers.
-  const [desktops, setDesktops] = useState<PairedDesktop[]>(demoDesktops);
+  const [desktops, setDesktops] = useState<PairedDesktop[]>(pairedDesktops);
   const [sessionPins, setSessionPins] = useState<Record<string, boolean>>({});
   const [workspacePins, setWorkspacePins] = useState<Record<string, boolean>>({});
   const [usageOverride, setUsageOverride] = useState<RemoteSessionUsage | null>(null);

@@ -176,6 +176,9 @@ export const resources = {
          */
         controlHeldBy: "Taken over by {{name}}",
         controlHeldByUnknown: "Taken over by another device",
+        /** The whole list is replaced by the takeover while this is the only machine. */
+        standbyPageHint:
+          "This desktop is in use by another device. Take it over to see conversations and send messages.",
         takeControl: "Take over",
         takeControlHint: "Taking over disconnects {{name}}.",
         takeControlHintUnknown: "Taking over disconnects the device that has it now.",
@@ -1128,6 +1131,7 @@ export const resources = {
         reconnectAll: "重新连接全部",
         controlHeldBy: "已被 {{name}} 接管",
         controlHeldByUnknown: "已被另一台设备接管",
+        standbyPageHint: "这台桌面正被另一台设备使用，接管后才能查看会话和发送消息。",
         takeControl: "接管",
         takeControlHint: "接管会断开 {{name}}。",
         takeControlHintUnknown: "接管会断开正在使用它的设备。",
