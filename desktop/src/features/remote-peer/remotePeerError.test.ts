@@ -46,6 +46,15 @@ describe("remotePeerErrorText", () => {
   });
 
   /**
+   * A generation whose socket closed for good is recorded by the runtime as
+   * `nats_connection_exhausted` until the retry replaces it. From the user's seat
+   * it is an unreachable host, not a token on the row.
+   */
+  it("reads an exhausted connection as unreachable", () => {
+    expect(remotePeerErrorKind("nats_connection_exhausted")).toBe("unreachable");
+  });
+
+  /**
    * Pairing and identity refusals all end in a new link, whatever the host's
    * detail says — including the ones that arrive under the secure-channel
    * prefix, whose reason is in parentheses.

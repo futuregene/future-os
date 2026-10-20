@@ -111,6 +111,23 @@ fn connect_budget() -> Duration {
     NATS_CONNECT_TIMEOUT
 }
 
+/// How many times `async-nats` may retry a dropped socket before it gives up.
+///
+/// The runtime owns reconnection: every retry there is a fresh handshake, with a
+/// grant that `connect_attempt` renews first. The library's own loop has no such
+/// hook — it re-presents the JWT the socket was opened with, which the relay has
+/// already refused if that grant expired, and it never ends. The connection then
+/// looks alive forever: no reconnect ever runs, and `connected: true` keeps being
+/// reported for a socket that cannot authenticate (the desktop log's
+/// `authorization violation` every two seconds).
+///
+/// One attempt keeps an ordinary blip transparent — the library retries at once
+/// (its first backoff is 0 ms) — and if the socket really is gone the connection
+/// closes and the bounded supervisor takes over. `async-nats` maps
+/// `max_reconnects(0)` to "no limit", so one is the least that still gives up;
+/// the test suite's `nats_connect_once` uses the same encoding.
+const NATS_RECONNECT_BUDGET: usize = 1;
+
 /// Handshake legs are small and the host expires pending candidates after 30 s;
 /// 10 s matches the phone and leaves room for one retry inside that window.
 const HANDSHAKE_TIMEOUT: Duration = PHONE_REQUEST_TIMEOUT;
@@ -1065,7 +1082,10 @@ pub async fn connect(
     // the value. `request_budget`/`connect_budget` carry the values and the
     // record of the fixture tolerance that was tried and withdrawn.
     .connection_timeout(connect_budget())
-    .request_timeout(Some(request_budget()));
+    .request_timeout(Some(request_budget()))
+    // A refused credential must end this generation, not be retried by the
+    // library forever; see [`NATS_RECONNECT_BUDGET`].
+    .max_reconnects(Some(NATS_RECONNECT_BUDGET));
     // Same platform-store read as the bridge's own connection (`remote::trust`):
     // the intermittent failure is in reading the store, not in the handshake.
     let options = match environment.root_bundle.as_ref() {

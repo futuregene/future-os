@@ -1839,6 +1839,129 @@ async fn a_stream_ends_when_the_socket_closes() {
     teardown(&fx.pair_id).await;
 }
 
+/// Make the stored grant look lapsed, the way the platform's expiry leaves it.
+///
+/// Only the declared expiry moves: the JWT on disk is the one the live socket is
+/// authorized by, which is exactly the state the runtime has to detect —
+/// `needs_refresh` reads this field, and the socket keeps the grant it was
+/// opened with.
+fn lapse_stored_grant(desktop_id: &str) {
+    let mut book = creds::load().expect("read the peer book");
+    let record = book
+        .peers
+        .iter_mut()
+        .find(|peer| peer.creds.desktop_id == desktop_id)
+        .expect("the fixture is paired");
+    record.creds.jwt_expires_at = crate::remote::test_support::now_secs() - 1;
+    creds::upsert(record.creds.clone()).expect("store the lapsed grant");
+}
+
+/// A grant the relay refuses must end its generation, not be retried forever.
+///
+/// This is the shape `desktop.log` showed: the grant expires under a live socket,
+/// the relay closes it and refuses every reconnect, and because `async-nats`
+/// retried with the JWT the socket was opened with — without a bound — the client
+/// kept reporting `connected: true` while printing `authorization violation`
+/// every few seconds. Removing either half of the fix breaks this test: without
+/// the bound the attempts never stop, and without the retirement the host stays
+/// connected.
+#[tokio::test]
+async fn a_refused_grant_ends_its_generation_instead_of_looping() {
+    let (_home, fx) = start("peer-rt-refused-grant").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    let old_jwt = fx.paired.creds.user_jwt.clone();
+    let (emitter, _seen) = counting_emitter();
+    connect_with_emitter(&desktop_id, Some(emitter))
+        .await
+        .expect("connect");
+    // The first connect presented the grant once; nothing has reconnected yet.
+    assert_eq!(fx.nats.jwt_attempts(&old_jwt), 1);
+
+    // The relay ends the socket the grant authorized and refuses the grant from
+    // now on, exactly as it does when the JWT expires.
+    fx.nats.revoke_jwt(&old_jwt);
+    fx.nats.expire_jwt(&old_jwt);
+
+    // The dead generation must be reported dead, not remembered as connected.
+    wait_for("the dead generation still reported connected", || {
+        futures::executor::block_on(async {
+            !find(&list().await.expect("list"), &desktop_id).connected
+        })
+    })
+    .await;
+
+    // What is bounded is the retrying of *that* grant: one library reconnect (an
+    // unbounded library retries every few seconds forever) and at most one
+    // supervisor attempt, which a refused credential does not deserve.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let attempts = fx.nats.jwt_attempts(&old_jwt);
+    assert!(
+        attempts <= 3,
+        "a refused grant was retried {attempts} times: {old_jwt}"
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+    assert_eq!(
+        fx.nats.jwt_attempts(&old_jwt),
+        attempts,
+        "the refused grant is still being retried"
+    );
+
+    teardown(&fx.pair_id).await;
+}
+
+/// A live generation is rotated before its grant lapses.
+///
+/// The socket can only reconnect with the JWT it was opened with, so a
+/// generation that reaches its expiry is already lost. The runtime therefore
+/// wakes at the grant's own expiry (minus the shared lead), renews it and
+/// rebuilds the connection; the replacement presents the renewed grant and the
+/// old socket is closed. Without the rotation worker the renewed grant is never
+/// requested and this test never sees a second credential.
+#[tokio::test]
+async fn a_live_generation_rotates_its_grant_before_it_lapses() {
+    let (_home, fx) = start("peer-rt-grant-rotation").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    let old_jwt = fx.paired.creds.user_jwt.clone();
+    connect(&desktop_id).await.expect("connect");
+    assert_eq!(fx.nats.jwt_attempts(&old_jwt), 1);
+
+    // The platform's next grant, distinct from the one the socket holds.
+    let renewed = crate::remote::test_support::jwt(crate::remote::test_support::now_secs() + 7_200);
+    assert_ne!(renewed, old_jwt);
+    fx.platform.push(
+        "/client/v1/remote/auth/token",
+        200,
+        json!({
+            "user_jwt": renewed,
+            "nats_url": fx.nats.url(),
+            "nats_ws_url": fx.nats.url().replace("nats://", "ws://"),
+        }),
+    );
+
+    // The grant enters the refresh window: this is the quantity the runtime
+    // decides on, not elapsed time.
+    lapse_stored_grant(&desktop_id);
+
+    wait_for(
+        "no replacement generation presented the renewed grant",
+        || fx.nats.jwt_attempts(&renewed) == 1,
+    )
+    .await;
+    assert!(
+        find(&list().await.expect("list"), &desktop_id).connected,
+        "the link stays up across the rotation"
+    );
+    // The wire carried the original grant once and then its replacement: the
+    // superseded credential is never presented again.
+    assert_eq!(
+        fx.nats.presented_jwts().last().map(String::as_str),
+        Some(renewed.as_str())
+    );
+    assert_eq!(fx.nats.jwt_attempts(&old_jwt), 1);
+
+    teardown(&fx.pair_id).await;
+}
+
 /// A push that does not authenticate is dropped, not reported: a relay can
 /// inject garbage at will while the connection is perfectly healthy, and
 /// treating that as a failure would hand anyone with relay access a way to

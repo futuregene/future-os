@@ -196,6 +196,47 @@ fn reconnect_delay(attempt: usize) -> std::time::Duration {
     delay_unit().mul_f64(base * jitter)
 }
 
+/// How often a live generation re-reads its grant.
+///
+/// A wake-up cadence, never the criterion: whether to rotate is decided by
+/// [`PeerCreds::needs_refresh`] on the expiry the store holds, and the wait
+/// before each check is the grant's own deadline (see [`rotation_wait`]). The
+/// tick only bounds how long a grant the store changed by another path can go
+/// unnoticed.
+#[cfg(not(any(test, feature = "test-support")))]
+fn rotation_tick() -> std::time::Duration {
+    std::time::Duration::from_secs(15)
+}
+#[cfg(any(test, feature = "test-support"))]
+fn rotation_tick() -> std::time::Duration {
+    std::time::Duration::from_millis(25)
+}
+
+/// How long the rotation worker sleeps before looking at the grant again.
+///
+/// The wait is the credential's own deadline — its declared expiry minus
+/// [`creds::REFRESH_LEAD_SECS`] — capped by the tick, so a grant the store
+/// changed from elsewhere (a re-pair, another writer) is re-read within one
+/// cadence. A grant that is already due has a zero wait: it is rotated on the
+/// next pass rather than after a fixed delay. A credential with no declared
+/// expiry has nothing to schedule and is re-read at the tick.
+fn rotation_wait(expires_at: i64, now: i64) -> std::time::Duration {
+    let tick = rotation_tick();
+    if expires_at <= 0 {
+        return tick;
+    }
+    let due_in = expires_at - creds::REFRESH_LEAD_SECS - now;
+    std::time::Duration::from_secs(due_in.max(0) as u64).min(tick)
+}
+
+/// The per-connection traffic keys of one generation.
+///
+/// This is the generation's identity: a newer connection always has its own
+/// channel, so a pointer comparison answers "is this task still serving the host
+/// I was built for?" without inventing a second, independent generation number
+/// that could drift from the socket it describes.
+type SessionChannel = std::sync::Arc<std::sync::Mutex<future_remote_crypto::Channel>>;
+
 /// How many attempts the supervisor makes before it stops for good.
 ///
 /// The schedule's length times three: the window is what makes a failure
@@ -778,6 +819,15 @@ struct ClientInner {
     chunks: std::sync::Mutex<HashMap<ChunkKey, ChunkWaiter>>,
     tasks: std::sync::Mutex<Vec<TaskHandle>>,
     closed: std::sync::atomic::AtomicBool,
+    /// Whether the grant-rotation worker has been started. One per client: it
+    /// rotates every live host, and a second one would refresh the same grant
+    /// twice.
+    rotation_started: std::sync::atomic::AtomicBool,
+    /// The grant expiry each host was last *rotated for*, so a refresh that
+    /// hands back a grant inside the refresh window cannot make the worker
+    /// reconnect in a tight loop: the same grant is rotated once, and again only
+    /// when the store moves to a different one.
+    rotated_for: std::sync::Mutex<HashMap<String, i64>>,
     stopping: tokio::sync::watch::Sender<bool>,
     #[cfg(any(test, feature = "test-support"))]
     inject_connection_lost: std::sync::atomic::AtomicBool,
@@ -847,6 +897,8 @@ impl Client {
                 chunks: std::sync::Mutex::new(HashMap::new()),
                 tasks: std::sync::Mutex::new(Vec::new()),
                 closed: std::sync::atomic::AtomicBool::new(false),
+                rotation_started: std::sync::atomic::AtomicBool::new(false),
+                rotated_for: std::sync::Mutex::new(HashMap::new()),
                 stopping: tokio::sync::watch::channel(false).0,
                 #[cfg(any(test, feature = "test-support"))]
                 inject_connection_lost: std::sync::atomic::AtomicBool::new(false),
@@ -1417,6 +1469,7 @@ impl Client {
         desktop_id: &str,
         emitter: Option<Emitter>,
     ) -> Result<PeerSummary, crate::Error> {
+        self.start_rotation_worker();
         self.connect_attempt(desktop_id, emitter, true).await
     }
     async fn connect_attempt(
@@ -1537,14 +1590,14 @@ impl Client {
         // Subscribe before taking the runtime lock: subscription is a network
         // round-trip, and a failure there must not keep a usable connection out of
         // the map.
-        let peer_session = connected.session;
+        let peer_session = std::sync::Arc::new(connected.session);
         let stream = match watcher {
             Some(emitter) => {
                 attach_stream(&peer_session, emitter, desktop_id, visible_now.as_deref()).await
             }
             None => None,
         };
-        {
+        let previous = {
             let mut live = self.inner.state.lock().await;
             self.check_attempt(&live, desktop_id, epoch)?;
             live.errors.remove(desktop_id);
@@ -1569,8 +1622,9 @@ impl Client {
                     ),
                 );
             }
-            live.live
-                .insert(desktop_id.to_string(), std::sync::Arc::new(peer_session));
+            let previous = live
+                .live
+                .insert(desktop_id.to_string(), peer_session.clone());
             // A live connection is proof the retry loop is no longer needed; it is
             // restarted below only if this connection later drops.
             if let Some(supervisor) = live.supervisors.remove(desktop_id) {
@@ -1579,13 +1633,19 @@ impl Client {
             // Start proving this client is here, on the connection that was just
             // installed. A reconnect replaces it: the old task's session is no
             // longer the live one and exits on its next tick (`spawn_presence_beats`).
-            let beats = self.spawn_presence_beats(
-                desktop_id.to_string(),
-                std::sync::Arc::clone(&live.live[desktop_id]),
-            );
+            let beats = self
+                .spawn_presence_beats(desktop_id.to_string(), std::sync::Arc::clone(&peer_session));
             if let Some(previous) = live.beats.insert(desktop_id.to_string(), beats) {
                 previous.abort();
             }
+            previous
+        };
+        // The replacement is installed and ready, so the generation it replaced is
+        // retired now — not merely forgotten. Its socket belongs to a grant this
+        // one supersedes, and a socket nothing closes sits half-open (CLOSE_WAIT)
+        // until the process ends.
+        if let Some(previous) = previous {
+            let _ = previous.close_socket().await;
         }
         Ok(summary)
     }
@@ -1634,6 +1694,163 @@ impl Client {
                 }
             }
         })
+    }
+
+    /// Rotate a live generation's grant before the relay stops accepting it.
+    ///
+    /// A socket is authorized by the JWT it was opened with: once that grant
+    /// expires the relay closes the socket, and `async-nats` can only reconnect
+    /// with the same expired JWT. The phone client solves this the same way
+    /// (`scheduleRefresh`): wake when the grant is due, refresh it, and rebuild
+    /// the connection, so the generation that ends is the one being replaced
+    /// rather than one the relay refused.
+    ///
+    /// One worker per client, started from the outermost connect entry points —
+    /// never from `connect_attempt`, because the worker rotates *by* connecting
+    /// and a start inside that path would make the two futures contain each
+    /// other. The decision is [`PeerCreds::needs_refresh`] on the grant the store
+    /// holds; the tick only bounds how often that grant is re-read.
+    fn start_rotation_worker(&self) {
+        if self
+            .inner
+            .rotation_started
+            .swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return;
+        }
+        let client = self.clone();
+        let handle = self.spawn(async move {
+            loop {
+                tokio::time::sleep(client.next_rotation_check().await).await;
+                if client.is_stopped() {
+                    return;
+                }
+                for desktop_id in client.hosts_due_for_rotation().await {
+                    // Not fatal: the serving connection still works until its own
+                    // expiry, and the bounded reconnect is the fallback if the
+                    // grant lapses.
+                    if let Err(error) = client.connect_attempt(&desktop_id, None, false).await {
+                        eprintln!(
+                            "remote_peer: could not rotate the credential for {desktop_id}: {error}"
+                        );
+                    }
+                }
+            }
+        });
+        // Registered with the client's own tasks, so shutdown waits for it; the
+        // handle itself is not needed again.
+        let _ = handle;
+    }
+
+    /// How long until the earliest live grant is due, bounded by the tick.
+    ///
+    /// The deadline is the credential's own: its declared expiry minus
+    /// [`creds::REFRESH_LEAD_SECS`]. A due grant returns zero, so the next check
+    /// rotates it immediately.
+    async fn next_rotation_check(&self) -> Duration {
+        let live: Vec<String> = self.inner.state.lock().await.live.keys().cloned().collect();
+        // Nothing connected: nothing to rotate, and no reason to touch the
+        // credential store at all.
+        if live.is_empty() {
+            return rotation_tick();
+        }
+        let now = self.now_secs();
+        let Ok(book) = self.inner.host.load() else {
+            return rotation_tick();
+        };
+        let rotated = self
+            .inner
+            .rotated_for
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        live.iter()
+            .filter_map(|desktop_id| book.find(desktop_id).map(|record| (desktop_id, record)))
+            .fold(rotation_tick(), |wait, (desktop_id, record)| {
+                // A grant this worker already rotated for gets the tick: waking
+                // for it again immediately would reconnect on every pass.
+                if rotated.get(desktop_id) == Some(&record.creds.jwt_expires_at) {
+                    return wait;
+                }
+                wait.min(rotation_wait(record.creds.jwt_expires_at, now))
+            })
+    }
+
+    /// The live hosts whose stored grant has entered the refresh window.
+    async fn hosts_due_for_rotation(&self) -> Vec<String> {
+        let live: Vec<String> = self.inner.state.lock().await.live.keys().cloned().collect();
+        if live.is_empty() {
+            return Vec::new();
+        }
+        let now = self.now_secs();
+        let Ok(book) = self.inner.host.load() else {
+            return Vec::new();
+        };
+        let due: Vec<String> = live
+            .into_iter()
+            .filter(|desktop_id| {
+                book.find(desktop_id)
+                    .is_some_and(|record| record.creds.needs_refresh(now))
+            })
+            .collect();
+        let mut rotated = self
+            .inner
+            .rotated_for
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        due.into_iter()
+            .filter(|desktop_id| {
+                // One rotation per grant: see `next_rotation_check`.
+                let Some(record) = book.find(desktop_id) else {
+                    return false;
+                };
+                if rotated.get(desktop_id) == Some(&record.creds.jwt_expires_at) {
+                    return false;
+                }
+                rotated.insert(desktop_id.clone(), record.creds.jwt_expires_at);
+                true
+            })
+            .collect()
+    }
+
+    /// The generation that owned the host is over: its socket closed for good.
+    ///
+    /// Called by the event stream when every subscription ended, which
+    /// `async-nats` only does once its reconnect budget is spent — a refused
+    /// credential, or a socket that never came back. Until this is recorded the
+    /// runtime keeps reporting `connected: true` for a socket that can send
+    /// nothing, and no retry ever runs.
+    async fn generation_ended(&self, desktop_id: &str, channel: &SessionChannel) {
+        let (ended, stopped) = {
+            let mut live = self.inner.state.lock().await;
+            let current = live.live.get(desktop_id).is_some_and(|session| {
+                std::sync::Arc::ptr_eq(&session.channel_for_stream(), channel)
+            });
+            if !current {
+                // A newer generation owns the host, or the host was stopped: this
+                // task is being retired, and the connection is not to blame.
+                return;
+            }
+            live.errors.insert(
+                desktop_id.to_string(),
+                "nats_connection_exhausted".to_string(),
+            );
+            let ended = live.live.remove(desktop_id);
+            (ended, live.stopped.contains(desktop_id))
+        };
+        if let Some(session) = ended {
+            let _ = session.close_socket().await;
+        }
+        if stopped || self.is_stopped() {
+            return;
+        }
+        // The same bounded recovery a transport failure uses. That path renews the
+        // grant first (`connect_attempt`), which is the one thing a library-level
+        // reconnect loop can never do.
+        let mut live = self.inner.state.lock().await;
+        if !live.supervisors.contains_key(desktop_id) {
+            let supervisor = self.spawn_supervisor(desktop_id.to_string(), None);
+            live.supervisors.insert(desktop_id.to_string(), supervisor);
+        }
     }
     ///
     /// Keep one host connected: watch the socket, and reconnect when it drops.
@@ -1697,6 +1914,15 @@ impl Client {
                         eprintln!(
                             "remote_peer: reconnect attempt for {desktop_id} failed: {error}"
                         );
+                        // A refused credential is not a network fault. The same
+                        // grant cannot authenticate however often it is presented,
+                        // and retrying it is exactly the loop this supervisor was
+                        // bounded to avoid; the rotation worker (which renews) or a
+                        // user action is what can change it. The error is already
+                        // recorded by the attempt.
+                        if matches!(error, crate::Error::RemoteAuthorization(_)) {
+                            return;
+                        }
                     }
                 }
                 attempt += 1;
@@ -1711,6 +1937,7 @@ impl Client {
     }
     /// Refresh credentials when needed, then reconnect and re-subscribe.
     async fn resume(&self, desktop_id: &str, emitter: Option<Emitter>) -> Result<(), crate::Error> {
+        self.start_rotation_worker();
         self.connect_attempt(desktop_id, emitter, false)
             .await
             .map(|_| ())
@@ -1963,9 +2190,12 @@ impl Client {
                 let first = tokio::select! {
                     push = next_push(&mut events, &mut presence, &mut state, &mut transfers) => {
                         let Some(push) = push else {
-                            // Every stream ended: the socket is gone. The next status
-                            // poll and the next command both notice; this task just
-                            // stops.
+                            // Every stream ended: this socket is closed for good.
+                            // Retire the generation unless it has already been
+                            // replaced, so a dead connection cannot keep being
+                            // reported as live and the bounded supervisor
+                            // reconnects with a renewed grant.
+                            client.generation_ended(&desktop_id, &channel).await;
                             return;
                         };
                         push
@@ -2394,7 +2624,15 @@ impl Client {
         // A dead socket must not keep looking connected on the next poll.
         live.errors
             .insert(desktop_id.to_string(), error.to_string());
-        live.live.remove(desktop_id);
+        if let Some(session) = live.live.remove(desktop_id) {
+            // Close the socket this failure condemned. Dropping the last client
+            // clone usually closes it, but an in-flight command or a task that has
+            // not been polled since still holds one, and an abandoned socket sits
+            // in CLOSE_WAIT until the process ends.
+            self.spawn(async move {
+                let _ = session.close_socket().await;
+            });
+        }
         // The connection was healthy and then was not: exactly the case automatic
         // recovery is for. An explicit disconnect takes the supervisor with it, so
         // this cannot resurrect a stopped link.
@@ -2736,6 +2974,67 @@ mod tests {
     fn the_attempt_budget_is_bounded() {
         assert_eq!(reconnect_attempt_budget(), RECONNECT_DELAYS_SECS.len() * 3);
         assert!(reconnect_attempt_budget() > 0);
+    }
+    /// The rotation deadline is the grant's own expiry, not a fixed cadence.
+    ///
+    /// `now` is chosen far from any boundary so the arithmetic is the assertion:
+    /// a grant that expires in an hour is not due for 59 minutes; one that is
+    /// already inside the lead window is due *now*; and one with no declared
+    /// expiry has nothing to schedule.
+    #[test]
+    fn a_grant_is_rotated_at_its_own_deadline() {
+        let now = 1_000_000;
+        let tick = rotation_tick();
+        // 3600 s left: due after 3600 - lead, which the tick caps.
+        assert_eq!(
+            rotation_wait(now + 3_600, now),
+            tick.min(std::time::Duration::from_secs(
+                (3_600 - creds::REFRESH_LEAD_SECS) as u64
+            ))
+        );
+        // Exactly at the lead: due now.
+        assert_eq!(
+            rotation_wait(now + creds::REFRESH_LEAD_SECS, now),
+            std::time::Duration::ZERO
+        );
+        // Inside the lead, or already past it: due now (never a negative wait).
+        assert_eq!(
+            rotation_wait(now + creds::REFRESH_LEAD_SECS - 1, now),
+            std::time::Duration::ZERO
+        );
+        assert_eq!(rotation_wait(now - 10, now), std::time::Duration::ZERO);
+        // No declared expiry: only the tick re-reads it.
+        assert_eq!(rotation_wait(0, now), tick);
+    }
+    /// Both rotation sides read the *same* predicate, so a grant cannot be
+    /// rotated and then immediately treated as still needing rotation.
+    #[test]
+    fn the_refresh_window_has_one_definition() {
+        let mut creds = PeerCreds {
+            pair_id: "pair_1".into(),
+            desktop_id: "desktop_1".into(),
+            device_id: "device_1".into(),
+            nkey_seed: String::new(),
+            user_jwt: String::new(),
+            refresh_token: String::new(),
+            nats_url: String::new(),
+            nats_ws_url: String::new(),
+            jwt_expires_at: 1_000,
+            token_url: String::new(),
+            secure: None,
+        };
+        assert!(!creds.needs_refresh(1_000 - creds::REFRESH_LEAD_SECS - 1));
+        assert!(creds.needs_refresh(1_000 - creds::REFRESH_LEAD_SECS));
+        assert_eq!(
+            creds::REFRESH_LEAD_SECS,
+            60,
+            "the margin is the phone client's; moving it moves both clients"
+        );
+        creds.jwt_expires_at = 0;
+        assert!(
+            !creds.needs_refresh(i64::MAX),
+            "a grant with no declared expiry is never due"
+        );
     }
     #[test]
     fn an_event_subject_names_its_session() {
