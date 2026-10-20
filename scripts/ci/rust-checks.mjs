@@ -39,10 +39,10 @@ switch (phase) {
     if (packages.includes('future-host') && process.platform === 'linux') {
       run('python3', ['scripts/ci/host-tests.py', '--with-broker']);
       const others = packages.filter(name => name !== 'future-host');
-      if (others.length) run('cargo', ['test', '--locked', ...others.flatMap(name => ['-p', name])]);
-    } else run('cargo', ['test', '--locked', ...flags]);
+      if (others.length) run('cargo', ['test', '--locked', '--no-fail-fast', ...others.flatMap(name => ['-p', name])]);
+    } else run('cargo', ['test', '--locked', '--no-fail-fast', ...flags]);
     if (packages.includes('futureos')) {
-      run('cargo', ['test', '--locked', '-p', 'futureos', '--no-default-features', '--test', 'headless_cli']);
+      run('cargo', ['test', '--locked', '--no-fail-fast', '-p', 'futureos', '--no-default-features', '--test', 'headless_cli']);
     }
     break;
   default: throw new Error(`Unknown Rust phase: ${phase}`);

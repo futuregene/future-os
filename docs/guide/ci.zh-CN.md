@@ -22,6 +22,9 @@ build 和 tests 共享 runner 与 Cargo target 目录。直接导出源码的 TS
 bundle，Jest 只跑一次；原生 job 执行现有 JVM/Swift 测试，不签名或发布。
 iOS 的 Foundation 测试不代表 Simulator UI/E2E 覆盖。
 
+Rust 测试命令使用 `--no-fail-fast`：任一测试目标失败仍使 job 失败，但 Cargo 会继续执行
+其他选中的测试目标，让一轮 CI 收集它们的失败，避免每次只暴露第一个失败目标。
+
 ## 范围检测与依赖图
 
 [`affected.mjs`](../../scripts/ci/affected.mjs) 从 Cargo workspace metadata 和

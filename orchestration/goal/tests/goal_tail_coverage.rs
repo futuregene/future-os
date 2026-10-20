@@ -7,7 +7,7 @@
 //! and ack bookkeeping.
 
 use future_goal::agents::workspace_guard::{
-    live_workspace_conflicts, render_conflicts, todo_workspace_conflicts,
+    live_workspace_conflicts, normalize_workspace_path, render_conflicts, todo_workspace_conflicts,
 };
 use future_goal::runtime::run_history::read_index_rows;
 use future_goal::runtime::run_index::{
@@ -106,15 +106,10 @@ fn workspace_conflicts_are_ordered_deterministically() {
     // the second half wherever the temp root goes through a symlink (macOS
     // `/tmp` -> `/private/tmp`, and again for `/var/folders/...`), so the two
     // sides never match and both holders vanish from the conflict list. Creating
-    // the directory and canonicalizing it makes the declared scope byte-equal
-    // to the normalized one on every platform.
+    // the directory and applying the storage normalization (including Windows
+    // verbatim-prefix removal) makes both scopes byte-equal on every platform.
     let shared_dir = tempfile::TempDir::new().expect("shared workspace dir");
-    let shared = shared_dir
-        .path()
-        .canonicalize()
-        .expect("canonicalize shared workspace")
-        .to_string_lossy()
-        .into_owned();
+    let shared = normalize_workspace_path(&shared_dir.path().to_string_lossy());
     let mut two = Goal::new("g2", "conflicts", "/tmp");
     for (agent, ids) in [("b_holder", ["b1", "b2"]), ("a_holder", ["a1", "a2"])] {
         two.register_agent(agent, vec!["shell".to_string()]);

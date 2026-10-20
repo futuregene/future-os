@@ -24,6 +24,10 @@ builds both Android and iOS bundles on Linux; Jest runs once. Native jobs test
 existing JVM/Swift code without signing or publishing. The iOS Foundation tests
 do not claim Simulator UI/E2E coverage.
 
+Rust test invocations use `--no-fail-fast`: a failed target still fails its job,
+but Cargo continues through the other selected test targets so one run exposes
+all their failures instead of revealing them one target at a time.
+
 ## Selection and dependency graph
 
 [`affected.mjs`](../../scripts/ci/affected.mjs) reads Cargo workspace metadata

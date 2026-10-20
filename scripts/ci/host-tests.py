@@ -20,7 +20,7 @@ def main():
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true":
         parser.error("Host automated acceptance runs in CI; do not start local NATS tests")
-    command = ["cargo", "test", "--locked", "-p", "future-host"]
+    command = ["cargo", "test", "--locked", "--no-fail-fast", "-p", "future-host"]
     if not args.with_broker:
         return subprocess.call(command, cwd=ROOT)
 
