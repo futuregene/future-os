@@ -21,7 +21,7 @@
 | [Channel providers](guide/channels-providers.md) ([中文](guide/channels-providers.zh-CN.md)) | Shared-bridge channels: capability matrix, per-channel config, maturity, diagnostics, proactive send |
 | [Channel provider contract](guide/channels-provider-contract.md) ([中文](guide/channels-provider-contract.zh-CN.md)) | Adding a channel: the provider traits, the inbound/outbound boundary, config, errors, tests and coverage |
 | [Desktop Agent](guide/desktop-agent.md) ([zh](guide/desktop-agent.zh-CN.md)) | Embedded/external hosting, exit scope, CLI clients, development launchers, logs and update recovery |
-| [Headless Desktop](guide/desktop-headless.md) ([中文](guide/desktop-headless.zh-CN.md)) | Foreground `futureos-headless` startup, terminal login/pairing QR codes and links, Ctrl+C, GUI-free server builds and troubleshooting |
+| [Headless Desktop](guide/desktop-headless.md) ([中文](guide/desktop-headless.zh-CN.md)) | Foreground `future headless` startup, terminal login/pairing QR codes and links, Ctrl+C, GUI-free server builds and troubleshooting |
 | [Self-hosted relay](guide/self-hosted-relay.md) ([中文](guide/self-hosted-relay.zh-CN.md)) | `future relay`: an account-free NATS relay for remote control, its threat model, coexistence with the official relay, and operator notes |
 | [Directory layout](guide/directory-layout.md) ([中文](guide/directory-layout.zh-CN.md)) | What lives where under `~/.future/` ((agent, channels, TUI, GUI, goal)) |
 | [Session history recall](guide/session-history.md) ([中文](guide/session-history.zh-CN.md)) | Read-only history search/entry reads, byte paging, and post-compaction model guidance |
@@ -45,7 +45,9 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 | [goal/](architecture/goal/README.md) | The `future-goal` crate: [architecture](architecture/goal/ARCHITECTURE.md) (en/zh), [upstream attribution](../orchestration/goal/UPSTREAM.md), [decision-kernel snapshot](architecture/goal/snapshots.md) |
 | [Shared packages](architecture/packages.md) ([中文](architecture/packages.zh-CN.md)) | `packages/` conventions: npm/workspace packages and crate boundaries |
 | [Remote package development plan](architecture/remote-package-development.md) ([中文](architecture/remote-package-development.zh-CN.md)) | Planned Rust/TypeScript protocol, client and server extraction; independent Crypto, host adapters, migration phases and CI acceptance |
-| [Headless package development plan](architecture/headless-package-development.md) ([中文](architecture/headless-package-development.zh-CN.md)) | Planned `future headless` entry, GUI-free `future-host` library, shared backend, data compatibility, test ownership and build/release migration |
+| [Headless package development plan](architecture/headless-package-development.md) ([中文](architecture/headless-package-development.zh-CN.md)) | Implemented `future headless` entry, GUI-free `future-host` library, shared backend, data compatibility, test ownership and build/release migration |
+| [Headless release acceptance](testing/headless-release-acceptance.md) ([中文](testing/headless-release-acceptance.zh-CN.md)) | Final successful CI evidence and deferred packaging, signing, installation, performance and same-candidate acceptance |
+| [Headless unsigned downloads/results](testing/headless-unsigned-results.md) ([中文](testing/headless-unsigned-results.zh-CN.md)) | Verified dev payloads, public URLs, SHA-256, CLI/sidecar and static/old-Linux checks |
 | [Channel test coverage](architecture/channels-test-coverage.md) ([中文](architecture/channels-test-coverage.zh-CN.md)) | What the channel framework's tests promise, and the 22 lines that are deliberately not covered, with the reason for each |
 | [RPC crate](architecture/rpc.md) ([中文](architecture/rpc.zh-CN.md)) | `packages/rpc` — the protobuf wire contract (single source of truth) |
 

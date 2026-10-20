@@ -1,0 +1,69 @@
+{
+  "observedAt": "2026-10-20T11:57:00.742868+00:00",
+  "candidate": "a5f91752b4e470f90fbe5f4bc303ec0ca814944d",
+  "ref": "test/headless-unsigned-20261020",
+  "ordinaryCi": 39408277224,
+  "authorization": "User requested dev unsigned build; user will do platform signing tests later.",
+  "runs": [
+    {
+      "platform": "macOS Intel/Apple Silicon",
+      "workflow": "build-macos-signed.yml",
+      "run": 39418462362,
+      "inputs": {
+        "signed": false,
+        "strict_verification": false
+      },
+      "status": "completed",
+      "jobs": {
+        "Intel": "success",
+        "Apple Silicon": "success"
+      },
+      "conclusion": "success"
+    },
+    {
+      "platform": "Windows",
+      "workflow": "build-windows-signed.yml",
+      "run": 39418473647,
+      "inputs": {
+        "signed": false
+      },
+      "status": "completed",
+      "conclusion": "success"
+    },
+    {
+      "platform": "Linux x86_64/aarch64",
+      "workflow": "build-linux.yaml",
+      "run": 39418482527,
+      "inputs": {},
+      "status": "completed",
+      "conclusion": "success"
+    }
+  ],
+  "notDispatched": [
+    "Build Test coordinator",
+    "nightly",
+    "release.yml",
+    "Android",
+    "iOS/TestFlight"
+  ],
+  "sideEffects": "Existing standalone dev/ upload paths and updater authentication signatures remain. Platform code-signing certificates/notarization services not invoked.",
+  "pending": [
+    "User platform signing/notarization tests",
+    "Real install/upgrade/uninstall",
+    "Final same-candidate manual confirmation"
+  ],
+  "status": "completed",
+  "conclusion": "success",
+  "results": "docs/testing/headless-unsigned-results-2026-10-20.json",
+  "completedObservedAt": "2026-10-20T12:51:23.219605+00:00",
+  "downloadManifest": "docs/testing/headless-unsigned-results.zh-CN.md",
+  "sha256Manifest": "docs/testing/headless-unsigned-2026-10-20.sha256",
+  "performanceComparison": {
+    "status": "cancelled-by-user",
+    "decisionDate": "2026-10-20",
+    "userInstruction": "性能对比不做了",
+    "measurementPerformed": false,
+    "acceptanceGate": false,
+    "performanceImprovementClaimed": false
+  }
+}
