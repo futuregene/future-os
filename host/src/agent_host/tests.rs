@@ -468,8 +468,26 @@ fn host_fixture() {
                 .await
         });
         let deadline = Instant::now() + Duration::from_secs(3);
-        while host.activity().unwrap().unwrap().commands == 0 {
-            assert!(Instant::now() < deadline);
+        loop {
+            // A shell can change the work revision or hold a short session
+            // lock while it starts. The activity contract reports Unknown
+            // during that window; only a positive snapshot proves it started.
+            let active = match host.activity() {
+                Ok(Some(activity)) => activity.commands > 0,
+                Err(crate::Error::Message(message))
+                    if message == "Agent activity is temporarily unavailable" =>
+                {
+                    false
+                }
+                other => panic!("embedded shell activity cannot be inspected: {other:?}"),
+            };
+            if active {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "shell never became visibly active"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
         let started = Instant::now();

@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "2a32c1202a16e6c43a173239de460e9c387eab6b",
+  "ci": {
+    "run": 39371045462,
+    "candidate": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+    "job": 118458805856,
+    "jobName": "Shared host (macOS)",
+    "conclusion": "failure",
+    "failedCase": "agent_host::tests::a_cli_shell_is_cancelled_by_the_embedded_owner",
+    "childFailure": "host.activity().unwrap(): Message(\"Agent activity is temporarily unavailable\") while starting the real shell.",
+    "result": "933 passed, 1 failed; nested host_fixture failed at activity polling.",
+    "logSha256": "bff084b54f1d34502d4fa61172ada9193b683ad3393a71809cc0d9fb851960e9"
+  },
+  "contractEvidence": [
+    "agent/src/service/activity.rs: a short lock/revision conflict returns ActivityUnavailable, never an idle snapshot.",
+    "agent/src/service/tests.rs::activity_is_unavailable_when_work_changes_during_the_snapshot explicitly verifies this optimistic-concurrency contract."
+  ],
+  "repair": "Only the shell-start test poll retries the exact existing ActivityUnavailable message. Every other error and missing owned Agent fails immediately. It still requires a positive commands > 0 snapshot within the original three seconds, before initiating stop.",
+  "preservedAssertions": [
+    "Real RPC starts the actual shell in an isolated owned Agent.",
+    "Positive shell activity within the unchanged 3-second deadline.",
+    "Stop elapsed < 5 seconds.",
+    "Shell RPC terminates with error or unsuccessful response.",
+    "Agent instance metadata no longer exists."
+  ],
+  "productionChanges": 0,
+  "localTests": [
+    {
+      "command": "cargo test -p future-host --lib agent_host::tests::a_cli_shell_is_cancelled_by_the_embedded_owner --offline --locked -- --exact --nocapture",
+      "profile": "CARGO_PROFILE_TEST_DEBUG=1",
+      "RUST_LOG": "unset",
+      "logSha256": "6888886fa9bd01f8d5b2457471f9e2c8ffd058ac1cf698b58d9b6436609076fd",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 968 filtered out; finished in 0.16s"
+      ]
+    },
+    {
+      "command": "cargo test -p future-host --lib agent_host:: --offline --locked",
+      "profile": "CARGO_PROFILE_TEST_DEBUG=1",
+      "RUST_LOG": "unset",
+      "logSha256": "82eaa8a9b5c3fb1fe184f9962ec395efad92948ad5a1549155612ebe2dd8528a",
+      "results": [
+        "test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 947 filtered out; finished in 10.30s"
+      ]
+    }
+  ],
+  "localChecks": [
+    "Host Clippy --all-targets PASS",
+    "fmt PASS"
+  ],
+  "limits": [
+    "Native local macOS only; native CI revalidation pending.",
+    "Current complete workflow remains in progress; Linux desktop headless has completed successfully, but the macOS failure prevents an overall pass."
+  ]
+}

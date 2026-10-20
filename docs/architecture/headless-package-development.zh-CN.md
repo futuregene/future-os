@@ -401,3 +401,9 @@ CI `39366079089` 在候选 `8bc9e614` 的 Linux headless 库测试中阻塞：�
 任务 tick/唤醒/准入、执行器、完成/中断记录和递归会话删除迁入 Host，继续直接复用 `future-tasks` 内核、存储和任务格式。GUI 的 `start(app)` 仅提供通知适配；headless 仍使用同一循环和无展示通知。终端关闭使用同步展示出口，保留关闭、停止确认、递归删除、tombstone、observer 和 delete outbox 的原先顺序。
 
 35 个原声明随迁移进入 Host，其中 33 个在本地执行通过，2 个原有手工/真实模型用例保留 ignore 属性，不计为执行通过。Host 全量核心 967 通过、0 失败、2 原有忽略（79.94 秒）；GUI 的真实唤醒/执行/关闭入口用例保留在 Desktop 并独立通过（0.19 秒）。任务构造及真实 RPC setup 夹具保留单份；默认测试 cwd 使用系统临时目录，去掉原来的 POSIX-only `/tmp`。所有原断言保留，核心不依赖 Tauri/npm。宿主/GUI/CLI 和旧 headless Clippy `--all-targets`、fmt 与联合依赖边界通过，见[任务迁移证据](../testing/headless-host-tasks-2026-10-20.json)。本批晚于 CI 候选 `0f9cc395`；后续仍须原生 CI 和真实 CLI 入口验收。
+
+### 2026-10-20 真实 shell 活动轮询遵循 Unknown 契约
+
+CI `39371045462`（候选 `0f9cc395`）的 macOS Host 分组为 933 通过、1 失败：真实 shell 取消夹具在启动期间对 activity 快照直接 unwrap，遇到 API 按契约返回的短锁/revision 并发 Unknown。生产快照仍拒绝把 Unknown 当空闲。仅修正测试轮询：重试这一种既有错误；其他错误或非自有 Agent 立即失败，仍须在原 3 秒内观察到 `commands > 0`，然后保留停止少于 5 秒、shell RPC 被取消和元数据清除的全部断言。
+
+原失败用例本地通过（0.16 秒）；全部 Agent 托管真实生命周期 22 项通过（10.30 秒），Host Clippy `--all-targets` 与 fmt 通过，见[轮询修复证据](../testing/headless-activity-poll-2026-10-20.json)。同一 CI 候选的 Linux Desktop headless 分组已完整通过，其他分组仍在运行，且 macOS 失败尚待后续候选复验，不计为整轮通过。
