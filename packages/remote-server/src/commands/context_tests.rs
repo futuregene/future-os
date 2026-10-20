@@ -43,6 +43,9 @@ impl CommandRuntime for MemoryRuntime {
     fn in_control(&self, _: &str) -> bool {
         true
     }
+    fn alone_and_unowned(&self, _: &str) -> bool {
+        false
+    }
     fn held_by_another(&self, _: &str) -> bool {
         false
     }

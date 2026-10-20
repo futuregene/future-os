@@ -405,7 +405,10 @@ Presence is therefore tracked from the client's side of the wire, per pairing
 - **Leaving is said out loud.** `client_disconnect` with `reason: "disconnected"`
   is the user's own stop: the machine is given up (the pointer is released, and
   the one device that is actually present inherits it; several present devices
-  means nobody does, and their own "let this control" decides).
+  means nobody does, and their own "let this control" decides). A device that
+  then reconnects takes the machine back by itself — unowned and alone in front
+  of the computer, `Supervisor::alone_and_unowned` is the second claim path, so
+  it is not asked to take over the machine nobody else is using.
   `reason: "background"` only stops the device drawing as present — a suspended
   app is coming back, and taking its machine away every time it is backgrounded
   would be a different product decision.

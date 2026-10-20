@@ -69,6 +69,11 @@ impl CommandRuntime for Context {
             .upgrade()
             .is_some_and(|server| server.in_control(pair))
     }
+    fn alone_and_unowned(&self, pair: &str) -> bool {
+        self.server
+            .upgrade()
+            .is_some_and(|server| server.alone_and_unowned(pair))
+    }
     fn held_by_another(&self, pair: &str) -> bool {
         self.server
             .upgrade()

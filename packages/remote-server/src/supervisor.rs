@@ -554,6 +554,25 @@ impl Supervisor {
         }
     }
 
+    /// Nobody holds the machine, and `pair_id`'s client is the only one here.
+    ///
+    /// The one case a *reconnect* may take control: a device that disconnected
+    /// (and so gave the machine up, see [`Supervisor::client_left`]) is coming
+    /// back as the only client in front of the computer. Without this it would
+    /// return as a standby and need its user to ask for the machine it alone is
+    /// using — which is the same trap the first-handshake rule avoids for a
+    /// fresh pairing.
+    ///
+    /// Deliberately narrow. A pointer names somebody ⇒ not this; another client
+    /// is present ⇒ not this (choosing between them is their own decision, the
+    /// rule every other promotion path follows). Two devices reconnecting at
+    /// the same instant can both see the machine unowned; one of them wins and
+    /// the other's next handshake is a plain reconnect, so the pair cannot
+    /// evict each other in a loop.
+    pub fn alone_and_unowned(&self, pair_id: &str) -> bool {
+        self.active_pair().is_none() && self.present_devices_except(pair_id).is_empty()
+    }
+
     /// The devices whose clients are actually there right now, minus `except`.
     fn present_devices_except(&self, except: &str) -> Vec<String> {
         // `state` first, then `bridge_shared` through `client_link` — the same

@@ -4370,6 +4370,41 @@ mod slot_tests {
         );
     }
 
+    /// A device that disconnected gave the machine up; the same device coming
+    /// back is the only client here, so its *reconnect* may take it back.
+    ///
+    /// Without this rule a reconnect would come up in standby and need its user
+    /// to ask for the computer they alone are sitting at — the trap the
+    /// first-handshake claim avoids for a fresh pairing. With another client
+    /// present the answer is no: choosing between them is their own decision.
+    #[tokio::test]
+    async fn an_unowned_machine_is_taken_back_by_its_only_present_client() {
+        let _home = test_support::HomeGuard::new("remote-alone-unowned");
+        let nats = FakeNats::start().await;
+        let first = Slot::install(&nats, "pair_alone_first").await;
+        let second = test_creds("pair_alone_second", nats.url(), 3600);
+        let second = Slot::install_into(fake_state(&nats, &second.pair_id).await);
+        SUPERVISOR.restore_active(Some(first.pair_id.clone()));
+        SUPERVISOR.client_link(&first.pair_id).observe();
+
+        // Somebody holds the machine: not this rule's case.
+        assert!(!SUPERVISOR.alone_and_unowned(&first.pair_id));
+
+        SUPERVISOR.client_left(&first.pair_id);
+        assert_eq!(SUPERVISOR.active_pair(), None);
+        assert!(
+            SUPERVISOR.alone_and_unowned(&first.pair_id),
+            "nobody holds it and no other client is here"
+        );
+
+        // A second client showing up takes the case out of this rule's hands.
+        SUPERVISOR.client_link(&second.pair_id).observe();
+        assert!(!SUPERVISOR.alone_and_unowned(&first.pair_id));
+        for slot in [&first, &second] {
+            SUPERVISOR.forget_device(&slot.pair_id);
+        }
+    }
+
     /// A departed controller hands the machine to the one device that is
     /// actually there: that device was waiting behind a device that is gone.
     #[tokio::test]

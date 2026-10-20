@@ -405,7 +405,16 @@ pub async fn command_loop_with_ready(
                     // one comes up in standby, reads `control`/`holder` from its
                     // presence, and asks its user whether to displace the
                     // controller. The client decides that, not this machine.
-                    if first_handshake
+                    //
+                    // A *first* handshake is one claim path (a device was just
+                    // paired). The other is a reconnect onto a machine nobody
+                    // holds while this is the only client here — a device that
+                    // disconnected gave the machine up, and it is not asking its
+                    // user to take back a computer it alone is sitting at.
+                    let alone_and_unowned = handshake
+                        .runtime
+                        .alone_and_unowned(&handshake.creds.pair_id);
+                    if (first_handshake || alone_and_unowned)
                         && handshake.access_current()
                         && accepted
                         && !handshake.runtime.held_by_another(&handshake.creds.pair_id)
@@ -1108,6 +1117,9 @@ pub(crate) trait CommandRuntime: crate::secure::HandshakeHost {
     fn catalog_activity(&self, pair: &str) -> Arc<AtomicBool>;
     fn lean_events(&self, pair: &str) -> Arc<AtomicBool>;
     fn in_control(&self, pair: &str) -> bool;
+    /// Nobody holds the machine and `pair`'s client is the only one here — the
+    /// one case a reconnect may take control (see `Supervisor::alone_and_unowned`).
+    fn alone_and_unowned(&self, pair: &str) -> bool;
     fn held_by_another(&self, pair: &str) -> bool;
     fn claim_control_soon(&self, pair: &str, epoch: Option<u64>) -> Option<String>;
     fn light_presence(&self, pair: &str, bridge: &str) -> Value;
