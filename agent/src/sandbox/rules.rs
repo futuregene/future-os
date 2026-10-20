@@ -432,7 +432,7 @@ pub fn builtin_overrides(workspace: &Path, home: Option<&Path>) -> Vec<PathRule>
         Decision::Deny,
     )];
     // The app's own state root is `~/.future`, plus the redirect when this
-    // instance runs isolated (`FUTURE_HOME` / `future agent --home`). The
+    // instance runs isolated (`FUTURE_HOME`). The
     // default root stays denied either way: a redirected instance must not
     // become a way to rewrite the real user's rule file or credentials.
     let mut state_roots: Vec<std::path::PathBuf> =
@@ -1035,7 +1035,7 @@ mod tests {
         assert_eq!(rules.resolution_errors.len(), 2);
     }
 
-    /// A redirected FutureOS home (`FUTURE_HOME` / `future agent --home`) holds
+    /// A redirected FutureOS home (`FUTURE_HOME`) holds
     /// the app's credentials and rule file, so the layer-0 overrides have to
     /// cover it — while the default `~/.future` stays denied too, or the
     /// redirect would become a way around them.

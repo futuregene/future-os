@@ -197,12 +197,41 @@ impl AgentService<'_> {
         }
         self.startup_cleanup();
         tracing::info!("Agent startup: loading the model catalogue and credentials");
+        // Registered BEFORE the cold registry build: that build spawns the
+        // background Future-models fetch, and a fast fetch can land (and fire
+        // this callback) before `initialize()` ever constructs the AppState.
+        // The holder is filled once the state exists; until then an early
+        // fetch's notification is deferred to the registry rebuild below.
+        let synced_state: Arc<parking_lot::RwLock<Option<crate::rpc::AppState>>> =
+            Arc::new(parking_lot::RwLock::new(None));
+        {
+            let synced_state = synced_state.clone();
+            crate::models::set_future_models_sync_callback(Some(Arc::new(move || {
+                let Some(state) = synced_state.read().clone() else {
+                    return;
+                };
+                let _provider_guard = state
+                    .control_plane
+                    .provider_command_lock
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner());
+                *state.model_registry.write() = crate::models::Registry::new();
+                state.reconcile_provider_references();
+                state.control_plane.publish_provider_config_changed(
+                    "future",
+                    "models_synced",
+                    false,
+                    true,
+                );
+            })));
+        }
         let model_registry = Arc::new(parking_lot::RwLock::new(crate::ModelRegistry::new()));
         cancellation.check()?;
         Ok(PreparedAgent {
             owner: self,
             cancellation,
             model_registry,
+            synced_state,
         })
     }
 }
@@ -211,7 +240,11 @@ impl AgentService<'_> {
 pub struct PreparedAgent<'owner, 'lock> {
     owner: &'owner AgentService<'lock>,
     cancellation: StartupCancellation,
-    model_registry: Arc<parking_lot::RwLock<crate::ModelRegistry>>,
+    model_registry: Arc<parking_lot::RwLock<crate::models::Registry>>,
+    /// Late-bound AppState for the Future-models sync callback (see
+    /// [`AgentService::prepare`]); written by `initialize`, read by the
+    /// background-fetch notification path.
+    synced_state: Arc<parking_lot::RwLock<Option<crate::rpc::AppState>>>,
 }
 
 impl<'owner, 'lock> PreparedAgent<'owner, 'lock> {
@@ -223,6 +256,7 @@ impl<'owner, 'lock> PreparedAgent<'owner, 'lock> {
             self.model_registry,
             &self.cancellation,
             self.owner.work.clone(),
+            self.synced_state,
         )
         .await?;
         let ready = AgentReady {
@@ -351,6 +385,10 @@ impl RunningAgent<'_, '_> {
         })
         .await;
         guard.completed = server_completed;
+        // The registry-rebuild callback registered at startup now points at a
+        // torn-down state; drop it so a late background fetch cannot write
+        // into the stopped service. The next service instance re-registers.
+        let _ = crate::models::set_future_models_sync_callback(None);
         if let Err(error) = &result {
             guard
                 .handle

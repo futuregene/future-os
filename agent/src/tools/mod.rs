@@ -625,8 +625,8 @@ fn is_protected_rm_target(target: &str) -> bool {
     }
 
     // The FutureOS home (credentials, database, approvals, skills) is covered
-    // through the user home by default; a redirected root (`FUTURE_HOME` /
-    // `future agent --home`) sits outside it and has to be named explicitly.
+    // through the user home by default; a redirected root (`FUTURE_HOME`)
+    // sits outside it and has to be named explicitly.
     if t == "$future_home" || t.starts_with("$future_home/") || t.starts_with("${future_home}") {
         return true;
     }

@@ -24,7 +24,7 @@ not be exercised is named in §7 with the reason.
 | broker | `/opt/homebrew/bin/nats-server` **v2.15.0** |
 | broker listeners | client `127.0.0.1:64664`, monitoring `127.0.0.1:64665` (fresh ports chosen for this run) |
 | broker store | `/tmp/realnet/nats/js`, log `/tmp/realnet/logs/nats.log` |
-| Agent | `target/debug/future agent --home /tmp/realnet/agenthome/.future --grpc-addr 127.0.0.1:64732` (pid 76134) |
+| Agent | `FUTURE_HOME=/tmp/realnet/agenthome/.future target/debug/future agent --grpc-addr 127.0.0.1:64732` (pid 76134) |
 | model vendor | local OpenAI-compatible stub on `127.0.0.1:64731` (`/tmp/realnet/fake_model.py`, pid 80942): streams text and requests one `shell` call |
 | test HOME | `/tmp/realnet/home` for the cargo process; the host and client children get their own `HomeGuard` temp HOME and are removed on exit |
 | isolation | nothing under the operator's `~/.future` was read or written; the Agent above is a second instance with its own lock, DB and socket |
@@ -379,8 +379,8 @@ nats-server -a 127.0.0.1 -p 64664 -m 64665 \
   -sd /tmp/realnet/nats/js -l /tmp/realnet/logs/nats.log &
 python3 /tmp/realnet/fake_model.py 64731 &
 # models.json as in §1, then:
-HOME=/tmp/realnet/agenthome target/debug/future agent \
-  --home /tmp/realnet/agenthome/.future --grpc-addr 127.0.0.1:64732 \
+HOME=/tmp/realnet/agenthome FUTURE_HOME=/tmp/realnet/agenthome/.future target/debug/future agent \
+  --grpc-addr 127.0.0.1:64732 \
   --log-file /tmp/realnet/logs/agent.log &
 # a real run whose journal the measurement replays:
 HOME=/tmp/realnet/agenthome target/debug/future run \

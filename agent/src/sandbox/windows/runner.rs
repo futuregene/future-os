@@ -376,7 +376,7 @@ fn revoke_record(record: &CapabilityRecord) -> io::Result<()> {
 
 fn capability_state_path() -> io::Result<PathBuf> {
     // The FutureOS home, not the raw user home: an isolated instance
-    // (`FUTURE_HOME` / `future agent --home`) tracks its own granted ACEs and
+    // (`FUTURE_HOME`) tracks its own granted ACEs and
     // must not revoke another instance's.
     let future_home = crate::utils::future_home_opt()
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "user home is unavailable"))?;
