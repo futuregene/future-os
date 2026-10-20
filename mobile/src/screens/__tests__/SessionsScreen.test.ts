@@ -91,6 +91,7 @@ const mockCatalogs = {
   refresh: jest.fn(async () => {}),
   reconnect: jest.fn(async () => {}),
   commandsFor: jest.fn(() => null) as jest.Mock,
+  takeControlFor: jest.fn(async (_desktopId: string) => {}),
   readWorkspaces: jest.fn(async (_desktopId: string) => [] as { id: string; name: string; path: string }[]),
 };
 // The reader of every other machine's catalogue now comes from the provider,
@@ -330,6 +331,45 @@ test("a second paired desktop keeps the list while the open one is held", () => 
     expect(tree.root.findAllByType(SessionList)).toHaveLength(1);
   } finally {
     mockRemote.presence = presence;
+  }
+});
+
+/**
+ * A machine someone else is driving has no rows of its own, so naming it must
+ * not read as "this machine has no conversations".
+ *
+ * The rows left when control did — the host refuses this client every read and
+ * sends it no snapshot — and the only way back is the takeover, on that
+ * machine's own connection.
+ */
+test("naming a taken-over machine asks for the takeover instead of drawing an empty list", async () => {
+  const machines = mockCatalogs.machines;
+  mockCatalogs.machines = [
+    {
+      desktopId: "desktop_2",
+      label: "Office",
+      active: false,
+      status: "connected",
+      control: "standby",
+      holder: { name: "Lab iPad" },
+    },
+  ];
+  try {
+    act(() => { tree.update(createElement(SessionsScreen, { onManageDesktops })); });
+    act(() => tree.root.findByType(DesktopPicker).props.onChange({
+      kind: "desktop", desktopId: "desktop_2",
+    }));
+
+    const empty = tree.root.findByType(SessionList).props.empty as ReactElement<
+      ComponentProps<typeof StandbyScreen>
+    >;
+    expect(empty.type).toBe(StandbyScreen);
+    expect(empty.props.holder).toEqual({ name: "Lab iPad" });
+
+    await act(async () => { await empty.props.onTakeControl(); });
+    expect(mockCatalogs.takeControlFor).toHaveBeenCalledWith("desktop_2");
+  } finally {
+    mockCatalogs.machines = machines;
   }
 });
 

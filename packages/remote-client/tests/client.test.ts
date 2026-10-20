@@ -1386,6 +1386,7 @@ describe("broker status stream", () => {
       onEvent: jest.fn(),
       onEventDecodeFailure: jest.fn(),
       onPresence: jest.fn(),
+      onControl: jest.fn(),
       onSessions: jest.fn(),
       onSessionActivity: jest.fn(),
       onWorkspaces: jest.fn(),
@@ -1733,6 +1734,57 @@ describe("broker status stream", () => {
 
     expect(callbacks.onSessionActivity).toHaveBeenCalledWith([], undefined);
     expect(callbacks.onSessions).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Control moving is news, and the host says it as it happens.
+   *
+   * The heartbeat carries the same fact three seconds later. A client that only
+   * read presence would keep drawing a machine it no longer drives for a whole
+   * tick — the rows are the machine's, and after a takeover they are somebody
+   * else's.
+   */
+  test("a control frame reports the move the host just made", async () => {
+    const live = liveSocket();
+    (wsconnect as jest.Mock).mockResolvedValue(live.connection);
+    await client.open();
+
+    live.subscriptions.get("p.pair.state.>")!.push({
+      subject: "p.pair.state.control",
+      data: encoder.encode(
+        JSON.stringify({ control: "standby", pairId: "pair", bridgeInstanceId: "bridge" }),
+      ),
+    } as never);
+    await tick();
+    expect(callbacks.onControl).toHaveBeenCalledWith("standby");
+
+    // A word this client does not know is not a state to act on.
+    live.subscriptions.get("p.pair.state.>")!.push({
+      subject: "p.pair.state.control",
+      data: encoder.encode(
+        JSON.stringify({ control: "handover", pairId: "pair", bridgeInstanceId: "bridge" }),
+      ),
+    } as never);
+    await tick();
+    expect(callbacks.onControl).toHaveBeenCalledTimes(1);
+  });
+
+  test("a control frame from a bridge this client never handshook with describes nothing", async () => {
+    const live = liveSocket();
+    (wsconnect as jest.Mock).mockResolvedValue(live.connection);
+    await client.open();
+
+    // The generation this connection belongs to is the one the handshake named;
+    // a packet from another says what some *other* desktop generation decided,
+    // and acting on it would drop a catalogue the caller still drives.
+    live.subscriptions.get("p.pair.state.>")!.push({
+      subject: "p.pair.state.control",
+      data: encoder.encode(
+        JSON.stringify({ control: "standby", pairId: "pair", bridgeInstanceId: "someone-else" }),
+      ),
+    } as never);
+    await tick();
+    expect(callbacks.onControl).not.toHaveBeenCalled();
   });
 
   test("a snapshot with no payload reports an empty list, never undefined", async () => {

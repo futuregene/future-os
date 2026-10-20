@@ -53,6 +53,16 @@ export interface RemoteClientCallbacks {
   onEventDecodeFailure(sessionId: string, error: Error): void;
   onCatalogEpoch?(epoch: string | undefined): void;
   onPresence(presence: Presence): void;
+  /**
+   * The host says which device drives it, the moment that changes.
+   *
+   * Sent on `state.control` as a takeover happens, before the heartbeat that
+   * repeats the same fact: a displaced device can stop drawing a machine it no
+   * longer drives without waiting a tick, and a device handed the machine back
+   * can read it again. Optional — a client that ignores it learns the same thing
+   * from the next presence packet.
+   */
+  onControl?(control: "active" | "standby"): void;
   onSessions(sessions: PresenceSession[], version?: SnapshotVersion): void;
   /**
    * A catalog activity packet: the rows whose ordering timestamp moved, and the
@@ -1139,6 +1149,17 @@ export class RemoteClient {
       if (suffix === "events" && this.eventSubscriptions.get(connection)?.selective) {
         const event = decodeRemoteJson<StreamEvent & { sessionId: string }>(message.data);
         if (typeof event.sessionId === "string") this.callbacks.onEvent(event, event.sessionId);
+      } else if (suffix === "control") {
+        // Control moved. The same fact rides every presence heartbeat, but this
+        // packet is the host saying it as it happens; it is advisory, so a
+        // packet that does not name the generation this client handshook with
+        // is dropped rather than allowed to describe a machine it never met.
+        const data = decodeRemoteJson<{ control?: string; bridgeInstanceId?: string }>(
+          message.data,
+        );
+        if (data.bridgeInstanceId !== this.confirmedBridgeInstanceId) return;
+        if (data.control === "active" || data.control === "standby")
+          this.callbacks.onControl?.(data.control);
       } else if (suffix === "sessions") {
         const data = decodeRemoteJson<{ sessions?: PresenceSession[]; version?: SnapshotVersion }>(
           message.data,
