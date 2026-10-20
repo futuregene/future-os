@@ -1,6 +1,6 @@
 import type { RemoteSession } from "../../remote/types";
 import type { MergedSessionRow } from "../../remote/mergeSessions";
-import { isActiveSession, recentRows } from "../recentRows";
+import { isActiveSession, RECENT_PAGE_SIZE, recentRows } from "../recentRows";
 
 const minute = 60_000;
 const now = Date.UTC(2026, 9, 21, 12, 0, 0);
@@ -16,12 +16,13 @@ const row = (
   lastMessageAt,
 });
 
-const ids = (rows: ReturnType<typeof recentRows>) =>
-  rows.filter(item => item.kind === "session").map(item => (item.kind === "session" ? item.key : ""));
-const captions = (rows: ReturnType<typeof recentRows>) =>
-  rows.filter(item => item.kind === "section").map(item => (item.kind === "section" ? item.titleKey : ""));
-const countOf = (rows: ReturnType<typeof recentRows>, key: string) =>
-  rows.find(item => item.kind === "section" && item.key.endsWith(key)) as
+type Page = ReturnType<typeof recentRows>;
+const ids = (page: Page) =>
+  page.rows.filter(item => item.kind === "session").map(item => (item.kind === "session" ? item.key : ""));
+const captions = (page: Page) =>
+  page.rows.filter(item => item.kind === "section").map(item => (item.kind === "section" ? item.titleKey : ""));
+const countOf = (page: Page, key: string) =>
+  page.rows.find(item => item.kind === "section" && item.key.endsWith(key)) as
     | { kind: "section"; count: number }
     | undefined;
 
@@ -46,17 +47,17 @@ describe("what counts as active", () => {
 
 describe("the recency page", () => {
   it("puts active conversations above the rest, newest first in both", () => {
-    const rows = recentRows([
+    const page = recentRows([
       row("idle-new", {}, now - minute),
       row("active-old", { streaming: true }, now - 10 * minute),
       row("idle-old", {}, now - 60 * minute),
       row("active-new", { status: "waiting_approval" }, now - 2 * minute),
     ], "");
-    expect(captions(rows)).toEqual(["sessions.activeSection", "sessions.earlierSection"]);
-    expect(ids(rows)).toEqual(["active-new", "active-old", "idle-new", "idle-old"]);
+    expect(captions(page)).toEqual(["sessions.activeSection", "sessions.earlierSection"]);
+    expect(ids(page)).toEqual(["active-new", "active-old", "idle-new", "idle-old"]);
     // The captions carry what is under them, so a reader can see how much moves.
-    expect(countOf(rows, "activeSection")!.count).toBe(2);
-    expect(countOf(rows, "earlierSection")!.count).toBe(2);
+    expect(countOf(page, "activeSection")!.count).toBe(2);
+    expect(countOf(page, "earlierSection")!.count).toBe(2);
   });
 
   it("ignores pinning for the order, and keeps the marker on the row", () => {
@@ -87,7 +88,7 @@ describe("the recency page", () => {
     expect(captions(rows)).toEqual(["sessions.earlierSection"]);
     const active = recentRows([row("busy", { streaming: true }, now)], "");
     expect(captions(active)).toEqual(["sessions.activeSection"]);
-    expect(recentRows([], "")).toEqual([]);
+    expect(recentRows([], "").rows).toEqual([]);
   });
 
   it("flattens the page while searching, and finds by workspace name too", () => {
@@ -98,6 +99,56 @@ describe("the recency page", () => {
     // No captions in a search: a filtered list has no order for them to caption.
     expect(captions(rows)).toEqual([]);
     expect(ids(rows)).toEqual(["busy-plan"]);
+  });
+
+  it("windows the finished stretch and says how much it holds back", () => {
+    // Sixty finished conversations and one in flight: the page draws a window of
+    // the finished ones, because the point of the page is the last few things.
+    const many = Array.from({ length: 60 }, (_, index) =>
+      row(`idle-${index}`, {}, now - (index + 1) * minute));
+    const page = recentRows([row("busy", { streaming: true }, now), ...many], "");
+    const earlier = ids(page).filter(id => id !== "busy");
+    expect(earlier).toHaveLength(RECENT_PAGE_SIZE);
+    // Newest first, so the window holds the newest — not an arbitrary slice.
+    expect(earlier[0]).toBe("idle-0");
+    expect(earlier.at(-1)).toBe(`idle-${RECENT_PAGE_SIZE - 1}`);
+    expect(page.more).toBe(60 - RECENT_PAGE_SIZE);
+    // The caption keeps counting the whole stretch: it is under a window, not
+    // over a short list.
+    expect(countOf(page, "earlierSection")!.count).toBe(60);
+  });
+
+  it("never windows what is still in flight", () => {
+    const busy = Array.from({ length: 30 }, (_, index) =>
+      row(`busy-${index}`, { streaming: true }, now - index * minute));
+    const page = recentRows(busy, "", 5);
+    expect(ids(page)).toHaveLength(30);
+    expect(page.more).toBe(0);
+  });
+
+  it("opens the window on request, and draws no caption for a window at zero", () => {
+    const many = Array.from({ length: 30 }, (_, index) =>
+      row(`idle-${index}`, {}, now - (index + 1) * minute));
+    expect(ids(recentRows(many, "", 25))).toHaveLength(25);
+    expect(recentRows(many, "", 25).more).toBe(5);
+    expect(ids(recentRows(many, "", 30))).toHaveLength(30);
+    expect(recentRows(many, "", 30).more).toBe(0);
+    // A window that has not opened draws no caption over nothing, but the footer
+    // still has the whole stretch to offer.
+    expect(captions(recentRows(many, "", 0))).toEqual([]);
+    expect(recentRows(many, "", 0).more).toBe(30);
+  });
+
+  it("searches past the window, not inside it", () => {
+    // The thing being looked for is the oldest conversation of sixty — a result
+    // list that said "no matches" while holding it would be wrong.
+    const many = [
+      ...Array.from({ length: 60 }, (_, index) => row(`idle-${index}`, {}, now - (index + 1) * minute)),
+      row("needle", { title: "Needle in the haystack" }, now - 600 * minute),
+    ];
+    const page = recentRows(many, "needle", RECENT_PAGE_SIZE);
+    expect(ids(page)).toEqual(["needle"]);
+    expect(page.more).toBe(0);
   });
 
   it("draws a fork as a row of its own, at its own age", () => {

@@ -99,6 +99,23 @@ export const sessions = [
 ];
 
 /**
+ * `?recentMany=1`: a phone that has been in use for a while.
+ *
+ * Forty finished conversations spread over a fortnight, so the recency page's
+ * window has something to hold back — the page draws the newest of them and
+ * offers the rest rather than scrolling for a screen and a half.
+ */
+export const manyRecentSessions = Array.from({ length: 40 }, (_, index) => {
+  const hours = 5 + index * 9;
+  return session(
+    `sess_old_${index}`,
+    index % 2 ? "ws_dopamine" : "ws_sc",
+    `历史会话 ${index + 1}`,
+    { lastMessageAt: ago(hours * 60) },
+  );
+});
+
+/**
  * `?recent=1`: the two states the recency page exists to separate.
  *
  * A second run producing output, and a run blocked on the reader's approval —
