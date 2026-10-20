@@ -101,6 +101,27 @@ pub fn save_settings(settings: &RelaySettings) -> Result<(), crate::Error> {
 }
 
 /// The configured relay endpoint, normalized without a trailing slash.
+/// Apply the entry's parsed relay options before reading pairing state. Empty
+/// relay clears only the default for new pairings; existing slots stay intact.
+pub fn apply_launch_settings(
+    relay: Option<&str>,
+    relay_ca: Option<&str>,
+) -> Result<(), crate::Error> {
+    if relay.is_none() && relay_ca.is_none() {
+        return Ok(());
+    }
+    let mut settings = load_settings();
+    if let Some(url) = relay {
+        let url = url.trim().trim_end_matches('/');
+        settings.url = (!url.is_empty()).then(|| url.to_string());
+    }
+    if let Some(ca) = relay_ca {
+        let ca = ca.trim();
+        settings.ca = (!ca.is_empty()).then(|| ca.to_string());
+    }
+    save_settings(&settings)
+}
+
 pub fn endpoint() -> Option<String> {
     // The environment wins over the file so a test or a container can point at
     // a relay without writing into HOME; an empty value means "official".
@@ -310,6 +331,34 @@ fn grant_from(body: serde_json::Value, action: &str) -> Result<Grant, crate::Err
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn relay_flags_are_persisted_and_cleared() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("launch-relay-settings");
+        crate::store::initialize_app_store().expect("store init");
+
+        apply_launch_settings(Some("https://relay.example/"), Some("/etc/ca.pem"))
+            .expect("apply relay settings");
+        let settings = crate::remote::relay::load_settings();
+        assert_eq!(settings.url.as_deref(), Some("https://relay.example"));
+        assert_eq!(settings.ca.as_deref(), Some("/etc/ca.pem"));
+        assert_eq!(
+            crate::remote::relay::endpoint().as_deref(),
+            Some("https://relay.example")
+        );
+
+        apply_launch_settings(Some(""), None).expect("clear relay settings");
+        assert!(!crate::remote::relay::enabled());
+        // The whole file goes: a CA with no relay to verify would be a stale
+        // trust anchor waiting to be mistaken for configuration.
+        let settings = crate::remote::relay::load_settings();
+        assert_eq!(settings.url, None);
+        assert_eq!(settings.ca, None);
+
+        // A launch with neither flag changes nothing.
+        apply_launch_settings(None, None).expect("no-op");
+        assert!(!crate::remote::relay::enabled());
+    }
+
     use super::*;
 
     #[test]

@@ -115,19 +115,8 @@ pub(crate) fn apply_relay_from_argv() -> Result<(), String> {
 /// returns this machine to the Future platform for *new* pairings; existing ones
 /// are untouched either way.
 pub fn apply_relay_settings(relay: Option<&str>, relay_ca: Option<&str>) -> Result<(), String> {
-    if relay.is_none() && relay_ca.is_none() {
-        return Ok(());
-    }
-    let mut settings = crate::remote::relay::load_settings();
-    if let Some(url) = relay {
-        let url = url.trim().trim_end_matches('/');
-        settings.url = (!url.is_empty()).then(|| url.to_string());
-    }
-    if let Some(ca) = relay_ca {
-        let ca = ca.trim();
-        settings.ca = (!ca.is_empty()).then(|| ca.to_string());
-    }
-    crate::remote::relay::save_settings(&settings).map_err(|error| error.to_string())
+    future_host::remote::relay::apply_launch_settings(relay, relay_ca)
+        .map_err(|error| error.to_string())
 }
 
 /// Resolve the environment the Desktop itself will use.
@@ -219,37 +208,6 @@ mod tests {
         assert!(error.contains("--relay"), "{error}");
         assert!(error.contains("needs"), "{error}");
         assert!(parse(&["--relay-ca"]).is_err());
-    }
-
-    /// `--relay` is remembered as an installation choice, and an empty value is
-    /// how a machine goes back to the Future platform without unpairing
-    /// anything it already has.
-    #[test]
-    fn relay_flags_are_persisted_and_cleared() {
-        let _home = HomeGuard::new("launch-relay-settings");
-        crate::store::initialize_app_store().expect("store init");
-
-        apply_relay_settings(Some("https://relay.example/"), Some("/etc/ca.pem"))
-            .expect("apply relay settings");
-        let settings = crate::remote::relay::load_settings();
-        assert_eq!(settings.url.as_deref(), Some("https://relay.example"));
-        assert_eq!(settings.ca.as_deref(), Some("/etc/ca.pem"));
-        assert_eq!(
-            crate::remote::relay::endpoint().as_deref(),
-            Some("https://relay.example")
-        );
-
-        apply_relay_settings(Some(""), None).expect("clear relay settings");
-        assert!(!crate::remote::relay::enabled());
-        // The whole file goes: a CA with no relay to verify would be a stale
-        // trust anchor waiting to be mistaken for configuration.
-        let settings = crate::remote::relay::load_settings();
-        assert_eq!(settings.url, None);
-        assert_eq!(settings.ca, None);
-
-        // A launch with neither flag changes nothing.
-        apply_relay_settings(None, None).expect("no-op");
-        assert!(!crate::remote::relay::enabled());
     }
 
     /// Both launch stages hydrate the host environment, and the Desktop hydrates

@@ -4,9 +4,7 @@ static INITIALIZED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLoc
 pub(crate) fn initialize() -> Result<(), crate::AppError> {
     INITIALIZED
         .get_or_init(|| {
-            future_agent::logfile::init_embedded_tracing();
-            crate::install_rustls_provider();
-            future_agent::sandbox::hydrate_from_login_shell();
+            future_host::environment::prepare_process();
             // After hydration: a login shell may supply `FUTURE_HOME`, and the
             // relay choice is stored under the home this process will use.
             // Before the first store access, because an invitation minted by

@@ -278,7 +278,7 @@ Current phase status:
 | 1 | Ordinary GUI-free crate, task registry, presentation outlet and consumer dependencies established; complete lifecycle/config boundary still open |
 | 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, task/conversation, OAuth/account and maintenance scheduler moved; Remote host/Peer moved with local core execution; cross-platform revalidation, stop coordination state moved; shared service teardown moved; CLI maintenance bootstrap and unified startup boundary remain |
 | 3 | Not implemented; the product entry is still `futureos-headless` |
-| 4 | 1581 original test declarations moved (1568 executed locally on macOS, ten retain original ignores, two real broker cases await CI and one platform case awaits CI); this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
+| 4 | 1582 original test declarations moved (1569 executed locally on macOS, ten retain original ignores, two real broker cases await CI and one platform case awaits CI); this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
 | 5 | Host CI group and affected propagation added; builds, release artifacts, signing/install/update/uninstall still open |
 | 6 | Not started; no frozen final candidate, matched performance, artifact acceptance or confirmed manual results |
 
@@ -483,3 +483,9 @@ The local Host deadline case passed once; all 34 entry stop/GUI drain cases pass
 Host ServiceStop now owns admission closure, task freezing, Agent stop request, caller drain, graceful Remote stop/deadline fallback and task wait, Peer cleanup, exact owned-run cancellation on external Agents, owned Agent scope stop, background task cancellation and final caller verification. Entries freeze/close GUI terminals and build/drive/drop the cleanup runtime at the original positions. Stage order, total/per-stage budgets, data paths and Agent ownership remain unchanged.
 
 Nine original shared tests move to Host. The original GUI stopping-status poll and empty shutdown snapshot case stays at the entry. The pure admission guard now holds the existing HomeGuard against concurrent shared-state resets; all assertions remain. Local Host stop tests passed 10, entry wiring passed 28 and the two real legacy process files passed 26 total. Clippy --all-targets, fmt and strict Rustdoc passed. A rustc 1.97 incremental-cache ICE required disabling incremental compilation for these local test invocations; no product workaround or shared-cache cleanup was used. See the [evidence](../testing/headless-host-shutdown-services-2026-10-20.json). This batch still needs its own CI; CLI entry, maintenance bootstrap, release and full acceptance remain open.
+
+### 2026-10-20 Common process preparation and relay selection
+
+Host prepare_process now installs tracing/TLS and hydrates the login-shell environment once, before entries select Future home, acquire the instance lock or create a runtime. Entries retain argument parsing and maintenance CLI discovery. Relay launch-option persistence also belongs to Host, preserving paths, normalization, empty-value clearing and existing pairing slots. The original real persistence test executes once in Host; GUI argument/initialization wiring remains at the entry.
+
+Local Host persistence passed one case, entry wiring passed seven and the real process file passed 13. Clippy --all-targets passed for both entry configurations; see the [evidence](../testing/headless-host-startup-preparation-2026-10-20.json). New CLI integration and release acceptance remain open.

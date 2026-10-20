@@ -1,4 +1,17 @@
-//! Shared host log path and diagnostics, independent of CLI discovery or GUI.
+//! Shared process preparation and diagnostics, independent of CLI discovery or GUI.
+
+/// Hydrate the process before choosing Future home, taking its lock or starting
+/// a runtime. Each entry applies its parsed relay options and CLI maintenance
+/// discovery after this common preparation.
+pub fn prepare_process() {
+    static PREPARED: std::sync::Once = std::sync::Once::new();
+    PREPARED.call_once(|| {
+        future_agent::logfile::init_embedded_tracing();
+        crate::install_rustls_provider();
+        future_agent::sandbox::hydrate_from_login_shell();
+    });
+}
+
 pub fn start_logging() -> Result<(), crate::Error> {
     future_agent::logfile::init(&log_file_path(), future_agent::logfile::DEFAULT_MAX_LINES)?;
     report(&format!(

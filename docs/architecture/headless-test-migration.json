@@ -18788,9 +18788,10 @@
       "name": "relay_flags_are_persisted_and_cleared",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "futureos",
-      "target": "desktop/src-tauri/src/launch.rs",
-      "status": "retained"
+      "plannedOwner": "future-host",
+      "target": "host/src/remote/relay.rs",
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-startup-preparation-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/launch.rs:259:prepare_host_environment_is_idempotent",

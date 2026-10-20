@@ -75,6 +75,7 @@ use error::AppError;
 #[cfg(test)]
 pub(crate) use future_host::TEST_HOME_LOCK;
 
+#[cfg(all(test, feature = "gui"))]
 fn install_rustls_provider() {
     future_host::install_rustls_provider();
 }
