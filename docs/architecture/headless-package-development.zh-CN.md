@@ -231,3 +231,9 @@ CI 分别报告共享库、CLI 入口、Desktop GUI 和产物检查。共同 fix
 CLI 和 Desktop 已依赖新库，但 `future headless` 尚未接线。`scripts/ci/host-boundaries.py` 检查包含 Desktop GUI 的实际 Cargo 联合 feature 解析，禁止宿主与 CLI 引入 Desktop/GUI 框架，禁止宿主反向依赖 CLI 或生成产品二进制/FFI 产物。当前 macOS 目标验证通过；其他平台须由 CI 分别验证。
 
 [静态验证记录](../testing/headless-host-phase1-2026-10-20.json)包含 Host 默认/测试辅助配置、CLI+GUI 和原 headless 的 Clippy `--all-targets`、fmt 及依赖边界。测试目标只编译，执行数为 0。阶段 1 的生命周期/事件接口、阶段 2 大部分业务后端、阶段 3 命令及后续测试/发布验收仍未完成；薄转发将在迁移收尾移除。
+
+### 2026-10-20 继续实施与后端叶子模块
+
+新的实施工作树 `.worktrees/headless-unified` 与分支 `refactor/headless-unified` 继承已提交基线和首批迁移，不修改原工作树。显式合入原计划分支（包含 `e2251323` 祖先），并独立合入当前 `origin/main`，不合入本地 main。
+
+审批规则原子持久化、git diff 解析、run 错误分类和平台子进程标志现归 `future-host`，Desktop 保留导入适配。原测试随实现迁移，清单记录新归属。macOS 上宿主/CLI/GUI 联合 Clippy `--all-targets`、格式与依赖边界通过，见[验证记录](../testing/headless-host-leaves-2026-10-20.json)。文档检查报告已有 Agent 数据库夹具 README 未在白名单。本地未执行单元/NATS 测试；全部阶段仍需最终 CI、产物及人工验收。

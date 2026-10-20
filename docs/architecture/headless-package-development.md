@@ -231,3 +231,9 @@ Created ordinary `future-host` in `host/`, without bin/FFI targets or GUI featur
 CLI and Desktop depend on the library, but `future headless` is not wired yet. `scripts/ci/host-boundaries.py` checks actual combined Cargo feature resolution with Desktop GUI enabled, rejecting Desktop/GUI dependencies in host/CLI, a host dependency back on CLI and host product-binary/FFI artifacts. Native macOS validation passes; CI must validate other targets separately.
 
 The [static check record](../testing/headless-host-phase1-2026-10-20.json) covers default/test-support Host, CLI+GUI and original headless Clippy `--all-targets`, fmt and dependency boundaries. Test targets were compiled, with zero executions. Phase 1 lifecycle/event interfaces, most phase 2 backend work, phase 3 command wiring and subsequent test/release acceptance remain incomplete. Transitional facades will be removed at migration cleanup.
+
+### 2026-10-20 Implementation continuation and backend leaves
+
+A new worktree `.worktrees/headless-unified` on `refactor/headless-unified` inherits the committed baseline and initial extraction without modifying the earlier worktree. The original plan branch is explicitly merged (including `e2251323` ancestry); current `origin/main` is merged independently of local `main`.
+
+Approval-rule atomic persistence, git diff parsing, run-error classification and platform child-process flags now live in `future-host`, with Desktop import facades. Original tests moved with their implementation; the inventory records their new ownership. Combined host/CLI/GUI Clippy `--all-targets`, formatting and dependency boundaries pass on native macOS. See [the check record](../testing/headless-host-leaves-2026-10-20.json). The documentation gate reports a pre-existing unwhitelisted Agent database fixture README. No unit/NATS tests run locally. All phases remain subject to the final CI, artifact and manual gates.

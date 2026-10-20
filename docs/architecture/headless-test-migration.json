@@ -6327,7 +6327,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/approval_rules.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/approval_rules.rs:115:appends_and_dedupes",
@@ -6338,7 +6338,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/approval_rules.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/approval_rules.rs:126:appends_multi_target_batch_atomically",
@@ -6349,7 +6349,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/approval_rules.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/approval_rules.rs:141:invalid_multi_target_batch_writes_nothing",
@@ -6360,7 +6360,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/approval_rules.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/approval_rules.rs:155:preserves_existing_rules_and_unknown_fields",
@@ -6371,7 +6371,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/approval_rules.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/approval_rules.rs:171:rejects_invalid_access_scope",
@@ -6382,7 +6382,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/approval_rules.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/approval_rules.rs:181:rejects_an_empty_or_oversized_batch",
@@ -6393,7 +6393,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/approval_rules.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/approval_rules.rs:198:rejects_an_empty_rule_path",
@@ -6404,7 +6404,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/approval_rules.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/approval_rules.rs:210:non_array_rules_field_is_rebuilt",
@@ -6415,7 +6415,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/approval_rules.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/auth_store.rs:224:home_guard_removes_its_directory_even_with_a_live_pooled_connection",
@@ -11158,7 +11158,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/git_diff_parse.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/git_diff_parse.rs:136:numstat_skips_malformed_lines",
@@ -11169,7 +11169,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/git_diff_parse.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/git_diff_parse.rs:143:normalize_numstat_path_keeps_plain_paths",
@@ -11180,7 +11180,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/git_diff_parse.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/git_diff_parse.rs:148:normalize_numstat_path_handles_simple_rename",
@@ -11191,7 +11191,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/git_diff_parse.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/git_diff_parse.rs:153:normalize_numstat_path_handles_brace_rename",
@@ -11202,7 +11202,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/git_diff_parse.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/git_diff_parse.rs:161:normalize_numstat_path_brace_without_arrow_falls_back",
@@ -11213,7 +11213,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/git_diff_parse.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/git_diff_parse.rs:170:split_maps_by_new_path",
@@ -11224,7 +11224,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/git_diff_parse.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/git_diff_parse.rs:190:hunk_content_cannot_override_file_path",
@@ -11235,7 +11235,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/git_diff_parse.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/git_diff_parse.rs:200:diff_git_header_new_path",
@@ -11246,7 +11246,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/git_diff_parse.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/git_review.rs:623:status_paths_extracts_plain_and_renamed_paths",
@@ -18220,7 +18220,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/run_error.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/run_error.rs:113:test_classify_abort_requested",
@@ -18231,7 +18231,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/run_error.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/run_error.rs:126:test_classify_timeout",
@@ -18242,7 +18242,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/run_error.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/run_error.rs:136:test_classify_stream_disconnected",
@@ -18253,7 +18253,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/run_error.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/run_error.rs:156:test_classify_model_failed",
@@ -18264,7 +18264,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/run_error.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/run_error.rs:172:test_classify_command_failed",
@@ -18275,7 +18275,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/run_error.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/run_error.rs:185:test_classify_unknown",
@@ -18286,7 +18286,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/run_error.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/run_error.rs:194:test_classify_abort_beats_timeout",
@@ -18297,7 +18297,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/run_error.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/runtime.rs:204:unpolled_task_drop_still_reports_completion",
