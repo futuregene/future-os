@@ -40,8 +40,9 @@ for this test cutover.
 
 `future relay` (this repository) is the same relay without the platform: it
 mints the same pair-scoped NATS user JWTs, from the same claim/token endpoints,
-for rooms instead of accounts. A desktop selects it per installation with
-`futureos --relay URL` (or `futureos-headless --relay URL`), and the choice is
+for rooms instead of accounts. A desktop selects it per launch with
+`futureos --relay URL` (or `futureos-headless --relay URL`); nothing is
+persisted, so a launch without the flag uses the Future platform. The choice is
 recorded per pairing, so official and self-hosted pairings coexist on one
 machine. Runbook, threat model and verification:
 [../guide/self-hosted-relay.md](../guide/self-hosted-relay.md).

@@ -126,7 +126,7 @@ event the phone does not read.
 
 | Option | Behavior |
 |---|---|
-| `--relay URL` | Point new invitations at a self-hosted relay instead of the Future platform |
+| `--relay URL` | Point new invitations at a self-hosted relay instead of the Future platform, for this launch only |
 | `--relay-ca` | PEM file with that relay's CA, when it is not issued by a public CA |
 | `--help` | Show help without starting Desktop or Agent |
 

@@ -313,10 +313,10 @@ Desktop starts.
 Self-hosted relays work the same way, and a machine may hold an official device
 and a self-hosted one at the same time: `list` names each device's endpoint, and
 `remove` sends it to the issuer that knows it — the platform API, or the relay's
-own room. A relay with a private CA needs no extra flag here: the CA this
-installation already uses (FUTURE_RELAY_CA, or the `ca` in ~/.future/relay.json)
-is applied to that relay's requests, and one persisted for a *different* relay is
-not.
+own room. A relay with a private CA needs no extra flag here: name it with
+FUTURE_RELAY_CA and it is applied to that relay's requests. Nothing is
+remembered between runs — a self-hosted relay is chosen per launch with
+`--relay`, and a launch without it uses the Future platform.
 
 remove revokes the device where it was minted before dropping it locally. A
 platform revoke that cannot be delivered now is queued and retried by the next

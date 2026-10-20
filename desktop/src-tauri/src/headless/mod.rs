@@ -85,7 +85,7 @@ pub fn run(options: Options) -> Result<(), String> {
     let _guard = crate::instance::InstanceGuard::acquire().map_err(|e| e.to_string())?;
     // Applied before anything reads the pairing store: a `--relay` on this
     // launch decides which relay the invitation it prints will point at.
-    crate::launch::apply_relay_settings(options.relay.as_deref(), options.relay_ca.as_deref())?;
+    crate::launch::apply_relay_settings(options.relay.as_deref(), options.relay_ca.as_deref());
     crate::host_environment::start_logging().map_err(|e| e.to_string())?;
     // Say where diagnostics land before any Agent work starts — after the data
     // root is final, because hydration above can still change it. The Agent logs

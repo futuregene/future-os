@@ -7,11 +7,12 @@ pub(crate) fn initialize() -> Result<(), crate::AppError> {
             future_agent::logfile::init_embedded_tracing();
             crate::install_rustls_provider();
             future_agent::sandbox::hydrate_from_login_shell();
-            // After hydration: a login shell may supply `FUTURE_HOME`, and the
-            // relay choice is stored under the home this process will use.
-            // Before the first store access, because an invitation minted by
-            // this launch has to know which relay it points at.
-            crate::launch::apply_relay_from_argv()?;
+            // After hydration: a login shell may supply `FUTURE_HOME`, and any
+            // data root this process touches should be the hydrated one. Before
+            // the first store access, because an invitation minted by this
+            // launch has to know which relay it points at — and that choice dies
+            // with the process, so nothing is read back from disk here.
+            crate::launch::apply_relay_from_argv();
             crate::cli_tool::prepare_path().map_err(|e| e.to_string())
         })
         .clone()

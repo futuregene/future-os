@@ -26,14 +26,10 @@ use std::path::PathBuf;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use nkeys::KeyPair;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use future_remote_server::PairingCreds;
-
-/// Where the relay endpoint is remembered.
-const SETTINGS_FILE: &str = "relay.json";
 
 /// How long an invitation stays usable. Short on purpose: the QR is a bearer
 /// credential, and the relay keeps only its hash.
@@ -59,65 +55,68 @@ pub(crate) fn canonical_request(method: &str, path: &str, timestamp: i64, body: 
     )
 }
 
-/// The relay this installation should use, as persisted.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct RelaySettings {
+/// The relay *this launch* points at, as `--relay` / `--relay-ca` gave it.
+///
+/// Deliberately not persisted. The flag answers "where do the invitations this
+/// process mints go", and a Desktop that writes that answer down turns one
+/// debugging launch into a machine that silently stops using the official relay
+/// — including every launch the user never typed a flag into. So a launch with
+/// no flag means the official relay, always, and leaving a self-hosted relay
+/// behind is just not passing the flag again. Existing pairings are unaffected
+/// either way: each records the relay that issued it in `controlUrl`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct RelayLaunch {
     /// `Some` means new invitations are minted against a self-hosted relay.
     pub url: Option<String>,
     /// Extra TLS root (PEM) for a relay with a private CA.
     pub ca: Option<String>,
 }
 
-fn settings_path() -> Result<PathBuf, crate::AppError> {
-    Ok(crate::store::future_dir()?.join(SETTINGS_FILE))
+/// `None` until a launch applies its flags. A `Mutex` rather than a `OnceLock`
+/// because both entry points apply the same parsed flags (the GUI from
+/// `host_environment`, headless from its own parser): identical values must be
+/// harmless rather than a "already set" error.
+static LAUNCH: std::sync::Mutex<Option<RelayLaunch>> = std::sync::Mutex::new(None);
+
+/// Record this launch's relay flags. Absent flags leave the official relay in
+/// place — the same thing an empty `--relay` means.
+pub(crate) fn set_launch(url: Option<&str>, ca: Option<&str>) {
+    let normalized = |value: Option<&str>| {
+        value
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let launch = RelayLaunch {
+        url: normalized(url),
+        ca: normalized(ca),
+    };
+    *LAUNCH.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(launch);
 }
 
-pub(crate) fn load_settings() -> RelaySettings {
-    settings_path()
-        .ok()
-        .and_then(|path| match crate::config_io::read_json_object(&path) {
-            Ok(value) => serde_json::from_value(value).ok(),
-            Err(_) => None,
-        })
+fn launch() -> RelayLaunch {
+    LAUNCH
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone()
         .unwrap_or_default()
 }
 
-/// Persist the relay choice. An empty `url` clears it, which is how a machine
-/// goes back to the official relay without touching the pairs it already has.
-pub(crate) fn save_settings(settings: &RelaySettings) -> Result<(), crate::AppError> {
-    let path = settings_path()?;
-    if settings.url.as_deref().is_none_or(|url| url.is_empty()) {
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|error| {
-                crate::AppError::Message(format!("remove relay settings: {error}"))
-            })?;
-        }
-        return Ok(());
-    }
-    let value = serde_json::to_value(settings)
-        .map_err(|error| crate::AppError::Message(format!("encode relay settings: {error}")))?;
-    crate::config_io::write_json_atomic(&path, &value, true)
-}
-
-/// The configured relay endpoint, normalized without a trailing slash.
+/// The relay endpoint this launch points at, normalized without a trailing
+/// slash.
 pub(crate) fn endpoint() -> Option<String> {
-    // The environment wins over the file so a test or a container can point at
-    // a relay without writing into HOME; an empty value means "official".
+    // The environment wins over the flags so a test or a container can point at
+    // a relay without going through argv; an empty value means "official".
     if let Ok(value) = std::env::var("FUTURE_RELAY_URL") {
         let value = value.trim().trim_end_matches('/').to_string();
         return (!value.is_empty()).then_some(value);
     }
-    load_settings()
-        .url
-        .map(|url| url.trim().trim_end_matches('/').to_string())
-        .filter(|url| !url.is_empty())
+    launch().url
 }
 
-/// The extra CA bundle for the relay's TLS, when one is configured.
+/// The extra CA bundle for the relay's TLS, when this launch named one.
 pub(crate) fn ca_path() -> Option<PathBuf> {
     let from_env = std::env::var("FUTURE_RELAY_CA").ok();
-    let value = from_env.or_else(|| load_settings().ca)?;
+    let value = from_env.or(launch().ca)?;
     let value = value.trim().to_string();
     (!value.is_empty()).then(|| PathBuf::from(value))
 }
@@ -349,17 +348,13 @@ mod tests {
     }
 
     #[test]
-    fn cleared_settings_remove_the_file() {
+    fn the_launch_flags_are_the_whole_choice() {
         let _home = crate::remote::test_support::HomeGuard::new("relay-settings");
-        crate::store::initialize_app_store().unwrap();
-        save_settings(&RelaySettings {
-            url: Some("http://127.0.0.1:8099".into()),
-            ca: None,
-        })
-        .unwrap();
+        set_launch(Some("http://127.0.0.1:8099/"), None);
         assert_eq!(endpoint().as_deref(), Some("http://127.0.0.1:8099"));
         assert!(enabled());
-        save_settings(&RelaySettings::default()).unwrap();
+        // An empty `--relay` is "the official relay for this launch".
+        set_launch(Some(""), None);
         assert!(!enabled());
     }
 

@@ -6,10 +6,10 @@
 //! devices`), which asks a *running* Desktop for an invitation — so there is no
 //! launch flag for it here.
 //!
-//! What remains is small on purpose: `--relay`/`--relay-ca` (which relay new
-//! invitations point at, applied before anything reads the pairing store), the
-//! refusal of the other binary's `--headless`, Finder's process serial number, and
-//! `--help`.
+//! What remains is small on purpose: `--relay`/`--relay-ca` (which relay *this
+//! launch* points new invitations at, applied before anything reads the pairing
+//! store), the refusal of the other binary's `--headless`, Finder's process
+//! serial number, and `--help`.
 
 use std::io::IsTerminal;
 
@@ -18,8 +18,8 @@ pub const HELP: &str = "Usage: futureos [--relay URL [--relay-ca PEM]] [--help]
 Start the graphical Desktop.
 
   --relay URL Print an invitation that points at a self-hosted relay
-              (future-relay) instead of the Future platform. The address is
-              remembered for later launches; pass an empty value to go back.
+              (future-relay) instead of the Future platform. It applies to this
+              launch only: run again without it to use the Future platform.
   --relay-ca  PEM file with the relay's CA, when its certificate is not issued
               by a public CA.
   --help      Show this help without starting Desktop.
@@ -85,7 +85,7 @@ impl Launch {
 /// this launch has to know which relay it points at. `futureos-headless` reads
 /// the same flags from its own parser; applying them twice is harmless because
 /// the values are identical.
-pub(crate) fn apply_relay_from_argv() -> Result<(), String> {
+pub(crate) fn apply_relay_from_argv() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut relay = None;
     let mut relay_ca = None;
@@ -107,27 +107,19 @@ pub(crate) fn apply_relay_from_argv() -> Result<(), String> {
     apply_relay_settings(relay.as_deref(), relay_ca.as_deref())
 }
 
-/// Persist the relay flags, if any were given.
+/// Apply the relay flags to this process, if any were given.
 ///
-/// Both entry points call this before the remote runtime starts, so the
-/// setting means the same thing whether it arrived through the GUI's command
-/// line or through `futureos-headless`. An empty `--relay` clears the choice and
-/// returns this machine to the Future platform for *new* pairings; existing ones
-/// are untouched either way.
-pub fn apply_relay_settings(relay: Option<&str>, relay_ca: Option<&str>) -> Result<(), String> {
+/// Both entry points call this before the remote runtime starts, so the choice
+/// means the same thing whether it arrived through the GUI's command line or
+/// through `futureos-headless`. Nothing is written down: these flags decide
+/// where *this launch* mints its invitations, and a launch that names no relay
+/// uses the Future platform for new pairings. Existing pairings keep the relay
+/// that issued them either way.
+pub fn apply_relay_settings(relay: Option<&str>, relay_ca: Option<&str>) {
     if relay.is_none() && relay_ca.is_none() {
-        return Ok(());
+        return;
     }
-    let mut settings = crate::remote::relay::load_settings();
-    if let Some(url) = relay {
-        let url = url.trim().trim_end_matches('/');
-        settings.url = (!url.is_empty()).then(|| url.to_string());
-    }
-    if let Some(ca) = relay_ca {
-        let ca = ca.trim();
-        settings.ca = (!ca.is_empty()).then(|| ca.to_string());
-    }
-    crate::remote::relay::save_settings(&settings).map_err(|error| error.to_string())
+    crate::remote::relay::set_launch(relay, relay_ca);
 }
 
 /// Resolve the environment the Desktop itself will use.
@@ -221,35 +213,59 @@ mod tests {
         assert!(parse(&["--relay-ca"]).is_err());
     }
 
-    /// `--relay` is remembered as an installation choice, and an empty value is
-    /// how a machine goes back to the Future platform without unpairing
-    /// anything it already has.
+    /// `--relay` decides where *this process* mints invitations and is not
+    /// written down, so the next launch — one that names no relay — is back on
+    /// the Future platform without anyone remembering to undo anything.
     #[test]
-    fn relay_flags_are_persisted_and_cleared() {
+    fn relay_flags_apply_to_this_launch_only() {
         let _home = HomeGuard::new("launch-relay-settings");
-        crate::store::initialize_app_store().expect("store init");
 
-        apply_relay_settings(Some("https://relay.example/"), Some("/etc/ca.pem"))
-            .expect("apply relay settings");
-        let settings = crate::remote::relay::load_settings();
-        assert_eq!(settings.url.as_deref(), Some("https://relay.example"));
-        assert_eq!(settings.ca.as_deref(), Some("/etc/ca.pem"));
+        apply_relay_settings(Some("https://relay.example/"), Some("/etc/ca.pem"));
         assert_eq!(
             crate::remote::relay::endpoint().as_deref(),
             Some("https://relay.example")
         );
+        assert_eq!(
+            crate::remote::relay::ca_path().as_deref(),
+            Some(std::path::Path::new("/etc/ca.pem"))
+        );
+        // Nothing was written: the file the old build left behind is not read
+        // either, and a fresh home has no such file at all.
+        let relay_file = crate::store::future_dir()
+            .expect("future dir")
+            .join("relay.json");
+        assert!(!relay_file.exists(), "{} was written", relay_file.display());
 
-        apply_relay_settings(Some(""), None).expect("clear relay settings");
+        // An empty `--relay` is this launch saying "the Future platform", which
+        // is the same answer as not passing the flag.
+        apply_relay_settings(Some(""), None);
         assert!(!crate::remote::relay::enabled());
-        // The whole file goes: a CA with no relay to verify would be a stale
-        // trust anchor waiting to be mistaken for configuration.
-        let settings = crate::remote::relay::load_settings();
-        assert_eq!(settings.url, None);
-        assert_eq!(settings.ca, None);
+        assert_eq!(crate::remote::relay::ca_path(), None);
 
-        // A launch with neither flag changes nothing.
-        apply_relay_settings(None, None).expect("no-op");
+        // A launch with neither flag leaves the official relay in place.
+        apply_relay_settings(None, None);
         assert!(!crate::remote::relay::enabled());
+    }
+
+    /// A launch that never names a relay speaks for the Future platform, even
+    /// when an older build left `relay.json` in the data root: that file is the
+    /// trap this rule exists to remove, so it must not come back to life.
+    #[test]
+    fn a_leftover_relay_file_does_not_choose_the_relay() {
+        let _home = HomeGuard::new("launch-relay-file-ignored");
+        crate::store::initialize_app_store().expect("store init");
+        let path = crate::store::future_dir()
+            .expect("future dir")
+            .join("relay.json");
+        std::fs::write(
+            &path,
+            r#"{"url":"http://192.168.1.2:8099","ca":"/etc/private-ca.pem"}"#,
+        )
+        .expect("write legacy file");
+
+        apply_relay_settings(None, None);
+        assert!(!crate::remote::relay::enabled());
+        assert_eq!(crate::remote::relay::ca_path(), None);
     }
 
     /// Both launch stages hydrate the host environment, and the Desktop hydrates
