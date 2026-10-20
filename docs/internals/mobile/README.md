@@ -37,6 +37,16 @@ development and distribution maintenance.
   workspaces can be deleted wholesale (including their sessions; files inside
   the desktop's workspace directory are not deleted), and workspace
   collapse state survives restarts.
+- The session list has three pages: workspaces (its conversations filed under
+  their workspace), conversations (the ones in no workspace), and recent (every
+  conversation, workspaces included, newest reply first). The recent page splits
+  into "active" — running, queued, or waiting on the reader's approval, which is
+  *not* streaming and would otherwise be filed under "earlier" — above
+  "earlier", each ordered by the last reply; a pin keeps its marker but not its
+  place, and a fork is a row of its own (the page draws no tree). A row's second
+  line names its workspace (or says "chat"), with the age on the right (just now
+  / minutes / hours / yesterday / days / a date). A search flattens the page and
+  drops its captions.
 - The session list's header is two rows: a desktop picker (a chosen machine shows
   its own glyph and name, the name on up to two lines, and the row takes a line
   of its own at the reader's largest text size), the list-actions menu `⋯`

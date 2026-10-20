@@ -38,9 +38,12 @@ import { effectiveRunStatus } from "../remote/sessionStatus";
 import type { RemoteSession } from "../remote/types";
 import { layout, radius, spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
+import { formatRelativeTime } from "./relativeTime";
+import { recentRows } from "./recentRows";
+import type { MergedSessionRow } from "../remote/mergeSessions";
 import { catalogRows, mergedRows as sessionTreeMergedRows, type CatalogRow } from "./sessionTree";
 import { listTargets, selectableTargets, type SessionTarget } from "./sessionSelection";
-import { adjacentTab, TABS, type Tab } from "./sessionTabs";
+import { swipeTarget, TAB_LABEL, TABS, type Tab } from "./sessionTabs";
 import { useCollapsedWorkspaces } from "./useCollapsedWorkspaces";
 import { useSessionListScroll } from "./useSessionListScroll";
 import { useTabSwipe } from "./useTabSwipe";
@@ -162,7 +165,7 @@ export function SessionList({
   const { colors } = useTheme();
   const remote = useRemote();
   const Alert = useAppDialog(active);
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [query, setQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const listKey = `${remote.credentials?.pairId ?? ""}:${tab}`;
@@ -187,6 +190,23 @@ export function SessionList({
   }, [expanded]);
   const [selecting, setSelecting] = useState(false);
   /**
+   * What the recency page reads its ages against.
+   *
+   * A stamp is not what a reader wants from this page — "3 min ago" is — and an
+   * age rendered once would still say "3 min ago" an hour later. The page asks
+   * again once a minute while it is the page on screen; a conversation that
+   * moves in the meantime is already redrawn, since its stamp changed.
+   */
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!active || tab !== "recent") return;
+    // The age the page opens with is this list's mounting time, and the list is
+    // remounted per page (the screen keys it by tab), so entering the page is
+    // what stamps the clock; the timer only keeps it moving while it is read.
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, [active, tab]);
+  /**
    * The rows a batch holds, by row key.
    *
    * A key and not a session id: the merged list shows two machines at once, and
@@ -203,13 +223,46 @@ export function SessionList({
    * its own, and the row's own source for a row merged in from elsewhere.
    */
   const rowCommands = (row: CatalogRow): DesktopCommands | null =>
-    commandsFor(row.desktopId ?? null);
-  const rows = useMemo(
-    () => (merged !== undefined
+    commandsFor("desktopId" in row ? row.desktopId ?? null : null);
+  /**
+   * The recency page's input: the same conversations either list holds, in the
+   * one shape that page sorts by.
+   *
+   * The merged list already carries each row's machine and stamp. The ordinary
+   * single-machine list carries the stamp on the session itself, and its rows
+   * all belong to the machine the phone is talking to — the source is filled in
+   * so one ordering rule serves both shapes.
+   */
+  const recentSource = useMemo<MergedSessionRow[]>(() => {
+    if (merged !== undefined) return [...merged];
+    return remote.sessions.map(session => {
+      const lastMessageAt = typeof session.lastMessageAt === "number"
+        ? session.lastMessageAt
+        : null;
+      return {
+        key: session.sessionId,
+        desktopId: activeDesktopId ?? "",
+        session,
+        lastMessageAt,
+      };
+    });
+  }, [merged, remote.sessions, activeDesktopId]);
+  const rows = useMemo(() => {
+    if (tab === "recent") return recentRows(recentSource, query);
+    return merged !== undefined
       ? sessionTreeMergedRows(merged, query, activeDesktopId, tab, collapsed, expanded)
-      : catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query)),
-    [remote.sessions, remote.workspaces, merged, tab, collapsed, expanded, query, activeDesktopId],
-  );
+      : catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query);
+  }, [
+    remote.sessions,
+    remote.workspaces,
+    merged,
+    tab,
+    collapsed,
+    expanded,
+    query,
+    activeDesktopId,
+    recentSource,
+  ]);
   /**
    * Whether a row's own machine has to be named on it.
    *
@@ -229,7 +282,7 @@ export function SessionList({
    */
   const showSource = useMemo(() => {
     const sources = new Set(
-      rows.flatMap(row => (row.desktopId ? [row.desktopId] : [])),
+      rows.flatMap(row => ("desktopId" in row && row.desktopId ? [row.desktopId] : [])),
     );
     return sources.size > 1;
   }, [rows]);
@@ -337,9 +390,9 @@ export function SessionList({
   // tab bar is hidden then, so the swipe would change mode unseen.
   const swipe = useTabSwipe({
     enabled: !searching && !selecting,
-    hasPage: direction => adjacentTab(tab, direction) !== null,
+    hasPage: direction => swipeTarget(tab, direction) !== null,
     onSwitch: direction => {
-      const next = adjacentTab(tab, direction);
+      const next = swipeTarget(tab, direction);
       if (next) onTabChange(next);
     },
   });
@@ -573,6 +626,20 @@ export function SessionList({
      * A merged row carries its source; the ordinary list's rows do not (every
      * row there is the active desktop's).
      */
+    if (item.kind === "section") {
+      // A caption, not a control: it says how the page is split and how much is
+      // under the split, and takes no touch target of its own.
+      return (
+        <View
+          style={styles.section}
+          accessibilityRole="header"
+          testID={`recent-section:${item.titleKey}`}
+        >
+          <Text style={styles.sectionTitle}>{t(item.titleKey)}</Text>
+          <Text style={styles.sectionCount}>{item.count}</Text>
+        </View>
+      );
+    }
     const foreign = !!item.desktopId && item.desktopId !== activeDesktopId;
     const commands = rowCommands(item);
     if (item.kind === "workspace") {
@@ -633,6 +700,19 @@ export function SessionList({
     const status = effectiveRunStatus(session.status, session.streaming);
     const running = status === "running" || status === "queued";
     const unread = remote.unreadSessions.has(session.sessionId);
+    /** The row's run indicator: spinning, waiting on the reader, or unread. */
+    const statusIndicator = running ? (
+      <ActivityIndicator size={14} color={colors.accent} />
+    ) : status === "waiting_approval" ? (
+      <CircleAlert size={16} color={colors.warning} />
+    ) : unread && (status === "completed" || status === "failed") ? (
+      <View
+        style={[
+          styles.dot,
+          { backgroundColor: status === "failed" ? colors.danger : colors.success },
+        ]}
+      />
+    ) : null;
     return (
       <View style={[styles.row, { paddingLeft: depthInset(item.depth) }, pressedSessionId === session.sessionId && styles.rowPressed]}>
         {selecting
@@ -714,8 +794,42 @@ export function SessionList({
           onPressOut={() =>
             setPressedSessionId(current => (current === session.sessionId ? null : current))
           }
-          style={styles.sessionBody}
+          style={[styles.sessionBody, tab === "recent" && styles.recentBody]}
         >
+          {tab === "recent" ? (
+            <>
+              {/* Two lines, because this page's row has more to say than a
+                  title: when the conversation last moved, and where it lives.
+                  The age sits on the title's line so a column of them reads as
+                  one ranking; the workspace goes under it, where it is the
+                  quieter fact. */}
+              <View style={styles.recentTop}>
+                <Text numberOfLines={1} ellipsizeMode="tail" style={[styles.title, unread && styles.unreadTitle]}>
+                  {session.title || t("sessions.unnamed")}
+                </Text>
+                {statusIndicator}
+                <Text style={styles.recentTime}>
+                  {typeof session.lastMessageAt === "number"
+                    ? formatRelativeTime(session.lastMessageAt, now, i18n.language, t)
+                    : ""}
+                </Text>
+              </View>
+              <View style={styles.recentBottom}>
+                <Text numberOfLines={1} style={styles.recentWhere}>
+                  {session.mode === "workspace"
+                    ? session.workspaceName || t("sessions.workspace")
+                    : t("sessions.chatLabel")}
+                </Text>
+                {showSource && item.desktopId && icons?.get(item.desktopId) ? (
+                  <Text accessibilityLabel={item.desktopId} style={styles.sourceIcon}>
+                    {icons.get(item.desktopId)}
+                  </Text>
+                ) : null}
+                {session.pinned && <Pin size={13} color={colors.accent} />}
+              </View>
+            </>
+          ) : (
+            <>
           <Text numberOfLines={1} ellipsizeMode="tail" style={[styles.title, unread && styles.unreadTitle]}>
             {session.title || t("sessions.unnamed")}
           </Text>
@@ -731,18 +845,9 @@ export function SessionList({
             </Text>
           ) : null}
           {session.pinned && <Pin size={13} color={colors.accent} />}
-          {running ? (
-            <ActivityIndicator size={14} color={colors.accent} />
-          ) : status === "waiting_approval" ? (
-            <CircleAlert size={16} color={colors.warning} />
-          ) : unread && (status === "completed" || status === "failed") ? (
-            <View
-              style={[
-                styles.dot,
-                { backgroundColor: status === "failed" ? colors.danger : colors.success },
-              ]}
-            />
-          ) : null}
+          {statusIndicator}
+            </>
+          )}
         </Pressable>
         {!selecting && (
           <Pressable
@@ -948,7 +1053,7 @@ export function SessionList({
               <Pressable
                 key={value}
                 accessibilityRole="tab"
-                accessibilityLabel={t(value === "workspace" ? "sessions.workspace" : "sessions.conversations")}
+                accessibilityLabel={t(TAB_LABEL[value])}
                 accessibilityState={{ selected: tab === value }}
                 onPress={() => onTabChange(value)}
                 style={[styles.tab, tab === value && styles.tabActive]}
@@ -959,7 +1064,7 @@ export function SessionList({
                   numberOfLines={1}
                   style={[styles.tabText, tab === value && styles.tabTextActive]}
                 >
-                  {t(value === "workspace" ? "sessions.workspace" : "sessions.conversations")}
+                  {t(TAB_LABEL[value])}
                 </Text>
               </Pressable>
             ))}
@@ -1065,6 +1170,30 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     paddingBottom: 96,
   },
   noResults: { color: theme.colors.inkMuted, fontSize: theme.font(14) },
+  // A caption inside the list: the page's two stretches, named once and never
+  // sticky (two short captions do not justify a second scrolling structure).
+  section: {
+    minHeight: 32,
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: spacing.sm,
+    marginTop: spacing.sm,
+    paddingHorizontal: spacing.xs,
+    paddingBottom: spacing.xs,
+  },
+  sectionTitle: {
+    flexShrink: 1,
+    color: theme.colors.inkSoft,
+    fontSize: theme.font(12),
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  sectionCount: {
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(12),
+    fontVariant: ["tabular-nums"],
+  },
   workspace: {
     minHeight: 44,
     flexDirection: "row",
@@ -1113,6 +1242,16 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     borderRadius: radius.md,
   },
   title: { flex: 1, color: theme.colors.ink, fontSize: theme.font(15), lineHeight: theme.leading(22) },
+  // The recency row: title and age on one line, where it lives under them.
+  recentBody: { flexDirection: "column", alignItems: "stretch", gap: 2 },
+  recentTop: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  recentTime: {
+    color: theme.colors.inkMuted,
+    fontSize: theme.font(12),
+    fontVariant: ["tabular-nums"],
+  },
+  recentBottom: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  recentWhere: { flexShrink: 1, color: theme.colors.inkMuted, fontSize: theme.font(12) },
   unreadTitle: { fontWeight: "600" },
   pressed: { backgroundColor: theme.colors.surfaceSubtle },
   selected: { backgroundColor: theme.colors.accentSoft },

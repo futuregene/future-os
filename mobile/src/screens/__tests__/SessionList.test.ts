@@ -111,6 +111,8 @@ jest.mock("react-i18next", () => ({
           : options?.name
             ? `${key}:${options.name}`
             : key,
+    // The recency page prints ages, which are worded per language.
+    i18n: { language: "en" },
   }),
 }));
 
@@ -176,7 +178,7 @@ const finishedAnimation = {
  * derives it from touch history), so the pan config is captured from
  * PanResponder.create — exactly how the zoom controller's test drives its pinch.
  */
-function swipeHarness(tab: "workspace" | "chat") {
+function swipeHarness(tab: "workspace" | "chat" | "recent") {
   const pan = jest.spyOn(PanResponder, "create");
   jest.spyOn(Animated, "timing").mockImplementation(() => finishedAnimation);
   const tabChange = jest.fn();
@@ -392,10 +394,98 @@ test("a batch cannot be entered when nothing may join it", () => {
   })));
   enterSelection();
   expect(button("sessions.selectVisible")).toBeUndefined();
-  expect(pageTabs()).toHaveLength(2);
+  expect(pageTabs()).toHaveLength(3);
 
   // This test replaced the catalogue every other test in this file starts from.
   mockRemote.sessions = mockRemote.sessions.map(session => ({ ...session, pinned: false }));
+  renderChatTab();
+});
+
+/**
+ * The recency page: one list of every conversation, split by whether its run is
+ * still in flight.
+ *
+ * Read off the drawn rows rather than off the screen text, so the assertions say
+ * where a row is *in the page*, not merely that it is somewhere on it.
+ */
+const recentPage = () => {
+  const data = tree.root.findByType(FlatList).props.data as {
+    kind: "section" | "workspace" | "session";
+    key: string;
+    titleKey?: string;
+    count?: number;
+  }[];
+  return data.map(item => (item.kind === "section" ? `#${item.titleKey}` : item.key));
+};
+test("the recency page puts a run in flight above the rest, newest first", () => {
+  const now = Date.now();
+  const minute = 60_000;
+  // Ages sit half a minute off the whole minute they read as: the list stamps
+  // its clock when it mounts, a moment before this test does, and a boundary
+  // value would make the expectation depend on that gap.
+  const aged = (minutes: number) => now - minutes * minute - 30_000;
+  mockRemote.sessions = [
+    { sessionId: "idle-new", threadId: "t1", title: "Idle new", streaming: false, lastMessageAt: aged(5) },
+    // Waiting on the reader: not streaming, and still the first thing they
+    // should see — this is why "active" is not just `streaming`.
+    {
+      sessionId: "waiting",
+      threadId: "t2",
+      title: "Waiting",
+      streaming: false,
+      status: "waiting_approval",
+      lastMessageAt: aged(12),
+    },
+    { sessionId: "busy", threadId: "t3", title: "Busy", streaming: true, lastMessageAt: aged(2) },
+    { sessionId: "idle-old", threadId: "t4", title: "Idle old", streaming: false, lastMessageAt: aged(90) },
+  ];
+  act(() => tree.update(createElement(SessionList, {
+    tab: "recent",
+    empty: null,
+    onMenu,
+    onTabChange,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+  })));
+  expect(recentPage()).toEqual([
+    "#sessions.activeSection",
+    "busy",
+    "waiting",
+    "#sessions.earlierSection",
+    "idle-new",
+    "idle-old",
+  ]);
+  // Each caption counts what is under it, and the ages are the rows' own.
+  // Host nodes only: a composite and the view it draws both carry the role.
+  const sections = tree.root.findAll(
+    node => node.props.accessibilityRole === "header" && typeof node.type === "string",
+  );
+  expect(sections.map(node => node.findAllByType(Text).map(text => text.props.children)))
+    .toEqual([
+      ["sessions.activeSection", 2],
+      ["sessions.earlierSection", 2],
+    ]);
+  /** Every string the row drew, so a test can say what its second line carries. */
+  const textsOf = (title: string) => sessionBody(title)
+    .findAllByType(Text)
+    .map(node => node.props.children);
+  // The ages are the rows' own stamps, worded by `relativeTime` (whose wording
+  // is tested on its own): two and a half minutes old reads as "2 min ago".
+  expect(textsOf("Busy")).toContain("sessions.relativeMinutes:2");
+  // An older row carries an age from the same vocabulary — which one depends on
+  // the hour this test happens to run at, and that is `relativeTime`'s business.
+  expect(textsOf("Idle old").some(
+    value => typeof value === "string" && value.startsWith("sessions.relative"),
+  )).toBe(true);
+  // The recency row also says where the conversation lives.
+  expect(textsOf("Busy")).toContain("sessions.chatLabel");
+
+  // Back to the fixture every other test starts from.
+  mockRemote.sessions = [
+    { sessionId: "s1", threadId: "t1", title: "First", streaming: false },
+    { sessionId: "s2", threadId: "t2", title: "Second", streaming: false },
+    { sessionId: "child", threadId: "tc", title: "Child", parentSessionId: "s1", streaming: false },
+  ];
   renderChatTab();
 });
 
@@ -412,7 +502,7 @@ test("the tab row is the list's whole width, with the page tools in the header",
   expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
   const toolbar = tree.root.findByProps({ testID: "session-toolbar" });
   const tabs = toolbar.findAll(node => node.props.accessibilityRole === "tab" && node.props.onPress);
-  expect(tabs).toHaveLength(2);
+  expect(tabs).toHaveLength(3);
   for (const tab of tabs) {
     expect(StyleSheet.flatten(tab.props.style)).toMatchObject({ flex: 1, minHeight: 44, minWidth: 0 });
     const label = tab.findByType(Text);
@@ -431,21 +521,33 @@ test("the tab row is the list's whole width, with the page tools in the header",
   expect(onTabChange).toHaveBeenCalledWith("workspace");
 });
 
-test("a horizontal swipe pages the list between workspaces and conversations", () => {
+test("a horizontal swipe pages the list, and closes the row into a loop", () => {
   const fromConversations = swipeHarness("chat");
-  // Conversations is the right-hand page: dragging right leaves it ...
+  // Conversations is the middle page: dragging right leaves it ...
   expect(fromConversations.drag(120, 4)).toBe(true);
   expect(fromConversations.tabChange).toHaveBeenCalledWith("workspace");
+  fromConversations.tabChange.mockClear();
+  // ... and dragging left opens the recency page beside it.
+  expect(fromConversations.drag(-120, 4)).toBe(true);
+  expect(fromConversations.tabChange).toHaveBeenCalledWith("recent");
   act(() => fromConversations.rendered.unmount());
 
+  const fromRecent = swipeHarness("recent");
+  // The recency page is the last one, so a drag left has nothing behind it.
+  expect(fromRecent.drag(-120, 4)).toBe(true);
+  expect(fromRecent.tabChange).not.toHaveBeenCalled();
+  act(() => fromRecent.rendered.unmount());
+
   const fromWorkspaces = swipeHarness("workspace");
-  // ... dragging left opens it from the workspaces page ...
+  // The leftmost page opens conversations with a drag left ...
   expect(fromWorkspaces.drag(-120, 4)).toBe(true);
   expect(fromWorkspaces.tabChange).toHaveBeenCalledWith("chat");
   fromWorkspaces.tabChange.mockClear();
-  // ... and dragging right has no page behind the workspaces page.
+  // ... and dragging right off the end of the row lands on the recency page:
+  // the row closes into a loop, because "what did I last touch" is the question
+  // a reader asks from this page and the drag had nothing behind it before.
   expect(fromWorkspaces.drag(120, 4)).toBe(true);
-  expect(fromWorkspaces.tabChange).not.toHaveBeenCalled();
+  expect(fromWorkspaces.tabChange).toHaveBeenCalledWith("recent");
   act(() => fromWorkspaces.rendered.unmount());
 });
 
@@ -529,7 +631,7 @@ test("a successful batch exits selection and duplicate confirmation cannot delet
   expect(activeCommands.deleteSession).not.toHaveBeenCalled();
   await act(async () => { modal.props.onDismiss(); modal.props.onDismiss(); });
   expect(activeCommands.deleteSession).toHaveBeenCalledTimes(1);
-  expect(pageTabs()).toHaveLength(2);
+  expect(pageTabs()).toHaveLength(3);
 });
 
 test("batch deletion confirms exact visible selection, preserves hidden children, and retains failures for retry", async () => {
@@ -1084,7 +1186,7 @@ test("system back leaves batch selection before it leaves the list", () => {
   const back = subscribe.mock.calls.at(-1)![1];
   act(() => { expect(back({} as never)).toBe(true); });
   // The pages are back and the batch is empty, so a stray back cannot delete.
-  expect(pageTabs()).toHaveLength(2);
+  expect(pageTabs()).toHaveLength(3);
   expect(button("First")).toBeUndefined();
 });
 
@@ -1163,7 +1265,7 @@ test("a workspace select-all with nothing to select is inert", () => {
   // The shortcut must not open an empty batch: the toolbar would then offer a
   // delete with nothing selected.
   expect(button("sessions.deleteSelected")).toBeUndefined();
-  expect(pageTabs()).toHaveLength(2);
+  expect(pageTabs()).toHaveLength(3);
 });
 
 test("a workspace menu does not open while the desktop is unreachable", () => {

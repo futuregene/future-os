@@ -4571,6 +4571,35 @@
             "shot": "m-take-control-chat.png"
           }
         ]
+      },
+      "recent": {
+        "url": "http://localhost:8099/?recent=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "最近"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "var titles=['再跑一遍 marker 富集','跑通 Longformer 的 baseline','把清洗脚本写到 ~/clean.py','整理两篇文献的结论对比表','把这份问卷数据清洗一下','只看风险偏好那一段','把结论改成中文表格','找一下这批细胞的 marker 基因','基金申报书的创新点怎么写','解释一下 p 值的常见误用'];var heads=['活跃','更早'];var leaves=[...document.querySelectorAll('div')].filter(d=>d.children.length===0&&d.textContent.trim());var seen=leaves.map(d=>d.textContent.trim()).filter(s=>titles.indexOf(s)>=0||heads.indexOf(s)>=0).filter((s,i,a)=>a.indexOf(s)===i);var expected=['活跃','再跑一遍 marker 富集','跑通 Longformer 的 baseline','把清洗脚本写到 ~/clean.py','更早','整理两篇文献的结论对比表','把这份问卷数据清洗一下','只看风险偏好那一段','把结论改成中文表格','找一下这批细胞的 marker 基因','基金申报书的创新点怎么写','解释一下 p 值的常见误用'];if(JSON.stringify(seen)!==JSON.stringify(expected)) throw new Error('recency order wrong: '+JSON.stringify(seen));'a11y: order ok'"
+          },
+          {
+            "eval": "var active=document.querySelector('[data-testid=\"recent-section:sessions.activeSection\"]');var earlier=document.querySelector('[data-testid=\"recent-section:sessions.earlierSection\"]');if(!active||!earlier) throw new Error('section captions missing');var txt=e=>[...e.querySelectorAll('div')].filter(d=>d.children.length===0).map(d=>d.textContent.trim()).filter(Boolean);var a=txt(active), e=txt(earlier);if(a[0]!=='活跃'||a[1]!=='3') throw new Error('active caption: '+JSON.stringify(a));if(e[0]!=='更早'||e[1]!=='7') throw new Error('earlier caption: '+JSON.stringify(e));'a11y: counts ok'"
+          },
+          {
+            "shot": "m-recent.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label=\"稍后再说\"]') || document.body.innerText.includes('工作区')",

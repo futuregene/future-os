@@ -50,6 +50,15 @@ import { promptUpgrade } from "../update/prompt";
 import { checkForUpdate } from "../update/update";
 import { SettingsScreen, type SettingsScreenHandle } from "../features/settings/SettingsScreen";
 
+/**
+ * What the new-conversation dialog can create.
+ *
+ * A page of the list and a conversation's mode are different questions: the
+ * recency page creates chats, but "recent" is not something a conversation can
+ * be.
+ */
+type NewConversationMode = "workspace" | "chat";
+
 /** A conversation row, with the machine that owns it. */
 interface SessionRow {
   session: RemoteSession;
@@ -224,7 +233,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     setTabState(next);
   };
   const [newOpen, setNewOpen] = useState(false);
-  const [newMode, setNewMode] = useState<Tab>("chat");
+  const [newMode, setNewMode] = useState<NewConversationMode>("chat");
   const [workspaceId, setWorkspaceId] = useState("");
   /**
    * Which view of the creation dialog is up: the machine picker, or what to
@@ -333,8 +342,10 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     if (busyDevice) return;
     const epoch = newDialogEpochRef.current;
     setNewDeviceId(desktopId);
-    if (tab === "chat") {
-      // Nothing else to pick for a chat, so the machine is the whole choice.
+    if (tab !== "workspace") {
+      // Nothing else to pick for a chat, so the machine is the whole choice. The
+      // recency page is not a workspace page either: "new" there means a chat,
+      // which is the thing that has no workspace to choose.
       startConversationOn(desktopId, "chat", "");
       return;
     }
@@ -691,10 +702,11 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     setBusyDevice(null);
     setNewWorkspaceOpen(false);
     setNewWorkspaceError(null);
-    if (tab === "chat") {
-      // The conversations tab has nothing left to pick, so a chat is created
-      // straight away — on the machine the list is showing when it names one,
-      // and otherwise without a dialog at all unless the machine is that choice.
+    if (tab !== "workspace") {
+      // The conversations and recency pages have nothing left to pick, so a chat
+      // is created straight away — on the machine the list is showing when it
+      // names one, and otherwise without a dialog at all unless the machine is
+      // that choice.
       setNewMode("chat");
       setWorkspaceId("");
       if (named !== null) {
@@ -1161,7 +1173,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                     </Pressable>
                   </View>
                   <View style={styles.modeOptions}>
-                    {(["workspace", "chat"] as Tab[]).map((mode) => (
+                    {(["workspace", "chat"] as NewConversationMode[]).map((mode) => (
                       <Pressable
                         key={mode}
                         accessibilityRole="radio"
