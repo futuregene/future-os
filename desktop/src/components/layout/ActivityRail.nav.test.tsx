@@ -4,6 +4,8 @@ import type { StoredThread, StoredWorkspace } from "../../integrations/storage/t
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetAllCommandBindings } from "../../features/keyboard/shortcuts";
+import { installShortcuts } from "../../test/installShortcuts";
 import { flushAsync } from "../../test/renderHook";
 import { ActivityRail } from "./ActivityRail";
 
@@ -30,6 +32,16 @@ function thread(id: string, overrides: Partial<StoredThread> = {}): StoredThread
     ...overrides,
   };
 }
+
+const beta: StoredWorkspace = {
+  cleanupStatus: "active",
+  createdAt: 0,
+  id: "ws-b",
+  kind: "user",
+  name: "Beta",
+  path: "/tmp/beta",
+  updatedAt: 0,
+};
 
 const alpha: StoredWorkspace = {
   cleanupStatus: "active",
@@ -311,6 +323,305 @@ describe("activity rail skill attention", () => {
       await vi.advanceTimersByTimeAsync(4000);
     });
     expect(skillsClass()).toBe(before);
+    view.unmount();
+  });
+});
+
+/**
+ * The list's own keyboard commands: walking the rows the rail draws, and jumping
+ * to the filter box. Both are registered here because the order they act on is
+ * this list's, and a copy of that order in the shell would be a copy that drifts.
+ */
+describe("activity rail keyboard commands", () => {
+  let uninstallShortcuts: () => void;
+
+  beforeEach(() => {
+    resetAllCommandBindings();
+    uninstallShortcuts = installShortcuts();
+  });
+  afterEach(() => {
+    uninstallShortcuts();
+  });
+
+  function press(init: KeyboardEventInit) {
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+    });
+  }
+
+  it("walks to the next and previous conversation in the drawn order", () => {
+    const p = props([thread("root"), thread("second")]);
+    const view = mount(<ActivityRail {...p} />);
+
+    press({ code: "BracketRight", ctrlKey: true, key: "]", shiftKey: true });
+    expect(p.onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "second" }));
+
+    // The shell owns "current": the rail only reports the row the user landed on,
+    // so the next step is driven by the selection it hands back down.
+    view.rerender(<ActivityRail {...p} activeThreadId="second" />);
+    press({ code: "BracketLeft", ctrlKey: true, key: "[", shiftKey: true });
+    expect(p.onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "root" }));
+    view.unmount();
+  });
+
+  it("opens the first conversation when nothing is selected", () => {
+    const p = props([thread("root"), thread("second")], { activeThreadId: null });
+    const view = mount(<ActivityRail {...p} />);
+    press({ code: "ArrowDown", ctrlKey: true, altKey: true, key: "ArrowDown" });
+    expect(p.onSelectThread).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it("stops at the end of the list instead of wrapping", () => {
+    const p = props([thread("root")]);
+    const view = mount(<ActivityRail {...p} />);
+    press({ code: "BracketRight", ctrlKey: true, key: "]", shiftKey: true });
+    expect(p.onSelectThread).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("leaves the keys unclaimed on a section with no list", () => {
+    const p = props([thread("root"), thread("second")], { active: "skill" });
+    const view = mount(<ActivityRail {...p} />);
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "BracketRight", ctrlKey: true, key: "]", shiftKey: true });
+    act(() => window.dispatchEvent(event));
+    expect(p.onSelectThread).not.toHaveBeenCalled();
+    // Not ours, so it is not consumed either.
+    expect(event.defaultPrevented).toBe(false);
+    view.unmount();
+  });
+
+  it("jumps to the filter box", () => {
+    const p = props([thread("root"), thread("second")]);
+    const view = mount(<ActivityRail {...p} />);
+    expect(view.container.querySelector("input[aria-label=\"Search conversations\"]")).toBeNull();
+
+    press({ code: "KeyF", ctrlKey: true, key: "f", shiftKey: true });
+    expect(view.container.querySelector("input[aria-label=\"Search conversations\"]")).not.toBeNull();
+    view.unmount();
+  });
+});
+
+/**
+ * The two navigation levels, and the reason they are two.
+ *
+ * The rail lists two kinds of thing — workspaces (which hold conversations) and
+ * conversations — in two sections. The coarse move (`group.*`) steps between
+ * those*, crossing the section boundary because a chat and a workspace are
+ * siblings in the user's model; the fine move (`thread.*`) walks the drawn
+ * conversation rows, which is "within a workspace" or "within a conversation's
+ * forks". Both were asked for together, so they are measured together.
+ */
+describe("activity rail two-level navigation", () => {
+  let uninstallShortcuts: () => void;
+
+  beforeEach(() => {
+    resetAllCommandBindings();
+    uninstallShortcuts = installShortcuts();
+  });
+  afterEach(() => {
+    uninstallShortcuts();
+  });
+
+  function press(init: KeyboardEventInit) {
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+    });
+  }
+
+  const coarseNext = () => press({ code: "BracketRight", ctrlKey: true, key: "]", shiftKey: true });
+  const coarsePrevious = () => press({ code: "BracketLeft", ctrlKey: true, key: "[", shiftKey: true });
+  const fineNext = () => press({ code: "ArrowDown", ctrlKey: true, altKey: true, key: "ArrowDown" });
+  const finePrevious = () => press({ code: "ArrowUp", ctrlKey: true, altKey: true, key: "ArrowUp" });
+
+  /** A chat conversation, two in one workspace, and a second workspace. */
+  function fixture() {
+    return [
+      thread("chat-a"),
+      thread("alpha-1", { mode: "workspace", workspaceId: "ws-a" }),
+      thread("alpha-2", { mode: "workspace", workspaceId: "ws-a" }),
+      thread("beta-1", { mode: "workspace", workspaceId: "ws-b" }),
+    ];
+  }
+
+  it("steps between workspaces and conversations, skipping the rows inside", () => {
+    const p = props(fixture(), { active: "workspace", activeThreadId: "alpha-1", workspaces: [alpha, beta] });
+    const view = mount(<ActivityRail {...p} />);
+
+    // The drawn order is pinned, then the workspaces, then the chats — so from a
+    // workspace the coarse move reaches the next workspace, not its second
+    // conversation.
+    coarseNext();
+    expect(p.onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "beta-1" }));
+
+    // … and then the chat section, which the coarse move crosses on purpose:
+    // opening a conversation is what switches the section.
+    view.rerender(<ActivityRail {...p} activeThreadId="beta-1" />);
+    coarseNext();
+    expect(p.onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "chat-a" }));
+
+    // Backwards, the same stops in reverse.
+    view.rerender(<ActivityRail {...p} activeThreadId="chat-a" />);
+    coarsePrevious();
+    expect(p.onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "beta-1" }));
+
+    // A conversation nested inside a workspace is *on* that workspace's stop, so
+    // "previous" from it is the stop before the workspace, not the workspace
+    // itself.
+    view.rerender(<ActivityRail {...p} activeThreadId="beta-1" />);
+    coarsePrevious();
+    expect(p.onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "alpha-1" }));
+    view.rerender(<ActivityRail {...p} activeThreadId="alpha-2" />);
+    coarsePrevious();
+    // alpha is the first stop: nowhere further back.
+    expect(p.onSelectThread).toHaveBeenCalledTimes(4);
+    view.unmount();
+  });
+
+  it("walks the conversations inside the current list", () => {
+    const p = props(fixture(), { active: "workspace", activeThreadId: "alpha-1", workspaces: [alpha, beta] });
+    const view = mount(<ActivityRail {...p} />);
+
+    fineNext();
+    expect(p.onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "alpha-2" }));
+
+    view.rerender(<ActivityRail {...p} activeThreadId="alpha-2" />);
+    fineNext();
+    expect(p.onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "beta-1" }));
+
+    view.rerender(<ActivityRail {...p} activeThreadId="beta-1" />);
+    finePrevious();
+    expect(p.onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "alpha-2" }));
+    view.unmount();
+  });
+
+  it("stops at both ends of the coarse walk", () => {
+    const p = props(fixture(), { active: "workspace", activeThreadId: "alpha-1", workspaces: [alpha, beta] });
+    const view = mount(<ActivityRail {...p} />);
+    // alpha is the first stop (no pinned conversations here);
+    coarsePrevious();
+    expect(p.onSelectThread).not.toHaveBeenCalled();
+
+    view.rerender(<ActivityRail {...p} activeThreadId="chat-a" />);
+    coarseNext();
+    expect(p.onSelectThread).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("leaves the coarse keys unclaimed when there is only one stop", () => {
+    const p = props([thread("only")], { workspaces: [] });
+    const view = mount(<ActivityRail {...p} />);
+    // One conversation and nothing else: nowhere to step, so the key is not
+    // consumed and stays free for the platform.
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "BracketRight", ctrlKey: true, key: "]", shiftKey: true });
+    act(() => window.dispatchEvent(event));
+    expect(p.onSelectThread).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+    view.unmount();
+  });
+
+  it("lands on a workspace's first conversation, and opens an empty one", () => {
+    const empty: StoredWorkspace = { ...beta, id: "ws-empty", name: "Empty", path: "/tmp/empty" };
+    const p = props(fixture(), { active: "workspace", activeThreadId: "alpha-1", workspaces: [alpha, empty] });
+    const view = mount(<ActivityRail {...p} />);
+
+    // A workspace with no conversations is still a stop: it is selected as a
+    // workspace rather than skipped, which is how the rail lists it.
+    coarseNext();
+    expect(p.onSelectWorkspace).toHaveBeenCalledWith(expect.objectContaining({ id: "ws-empty" }), []);
+    expect(p.onSelectThread).not.toHaveBeenCalled();
+    view.unmount();
+  });
+});
+
+/**
+ * The same two levels with a machine paired, where the list is the merged one.
+ *
+ * This is not a variation for its own sake: the merged list is the one a user
+ * with a second computer actually navigates, and its rows are not the local
+ * list's — they are keyed `local::<id>` / `<desktopId>::<sessionId>` and grouped
+ * by `groupMergedRows`. The coarse walk first shipped against the local shapes
+ * only, and in a paired window it stalled on the conversation it started from.
+ */
+describe("two-level navigation in the merged list", () => {
+  let uninstallShortcuts: () => void;
+
+  beforeEach(() => {
+    resetAllCommandBindings();
+    uninstallShortcuts = installShortcuts();
+  });
+  afterEach(() => {
+    uninstallShortcuts();
+  });
+
+  function press(init: KeyboardEventInit) {
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+    });
+  }
+
+  const coarseNext = () => press({ code: "BracketRight", ctrlKey: true, key: "]", shiftKey: true });
+
+  async function mountMerged(overrides: Parameters<typeof props>[1] = {}) {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const all: Required<Parameters<typeof props>[1]> = {
+      ...props(
+        [
+          thread("alpha-1", { mode: "workspace", workspaceId: "ws-a" }),
+          thread("alpha-2", { mode: "workspace", workspaceId: "ws-a" }),
+          thread("chat-a"),
+        ],
+        { active: "workspace", activeThreadId: "alpha-1", onOpenRemoteConversation: vi.fn(), workspaces: [alpha], ...overrides },
+      ),
+      // A paired host is what puts the rail into merged mode.
+      remotePeers: [{
+        agentAvailable: true,
+        bridgeInstanceId: "bridge_1",
+        connected: true,
+        desktopId: "desktop_a",
+        error: null,
+        features: [],
+        icon: "laptop",
+        name: "Studio iMac",
+        pairId: "pair_1",
+        stopped: false,
+      }],
+      remoteCatalogs: [{
+        desktopId: "desktop_a",
+        sessions: [
+          { lastMessageAt: 9_000, sessionId: "remote-1", threadId: "remote-1_thread", title: "Remote one" },
+          { lastMessageAt: 1_000, sessionId: "remote-2", threadId: "remote-2_thread", title: "Remote two" },
+        ],
+      }],
+    } as unknown as Required<Parameters<typeof props>[1]>;
+    act(() => root.render(<ActivityRail {...(all as unknown as ComponentProps<typeof ActivityRail>)} />));
+    await flushAsync();
+    return {
+      // Re-render with a new selection, as the shell would after a step.
+      rerender: (next: Parameters<typeof props>[1]) => act(() => root.render(<ActivityRail {...(all as unknown as ComponentProps<typeof ActivityRail>)} {...next} />)),
+      selected: () => ({
+        thread: (all!.onSelectThread as unknown as ReturnType<typeof vi.fn>).mock.calls.slice(-1)[0]?.[0] as { id?: string } | undefined,
+        remote: (all!.onOpenRemoteConversation as unknown as ReturnType<typeof vi.fn>).mock.calls.slice(-1)[0]?.[0] as { id?: string } | undefined,
+      }),
+      all,
+      unmount: () => {
+        act(() => root.unmount());
+        container.remove();
+      },
+    };
+  }
+
+  it("steps to the next workspace rather than stalling on the current row", async () => {
+    const view = await mountMerged();
+    coarseNext();
+    await flushAsync();
+    // A stall on the conversation it started from is the bug this covers; landing
+    // on *some* other row is the contract, whichever machine holds it.
+    const landed = view.selected();
+    expect(landed.thread?.id ?? landed.remote?.id).toBeTruthy();
+    expect(landed.thread?.id ?? landed.remote?.id).not.toBe("alpha-1");
     view.unmount();
   });
 });

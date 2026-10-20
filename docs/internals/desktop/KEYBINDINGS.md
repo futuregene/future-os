@@ -1,0 +1,250 @@
+# Keyboard shortcuts
+
+Status: **implemented (P0 + P1)**. One command table, one dispatcher, one settings
+page, user-editable bindings stored per machine. Not yet: the command palette and
+the `⌘/` cheat sheet (P2), the macOS menu items and a per-command "also inside the
+terminal" switch (P3).
+
+This document is the reasoning; the code is small enough to read next to it.
+
+## Why one table
+
+Before this, the app answered keys from five unrelated places: the terminal's
+toggle in `features/terminal/shortcut.ts`, find-in-conversation inside
+`ThreadSearch` (a capturing `window` listener that stopped propagation), Escape
+through `components/ui/overlayStack`, the approval prompt's own pair, and
+`Enter`/`Shift+Enter` inside `MentionEditor`. Each was correct on its own terms
+and none of them knew about the others — so a new shortcut could collide with an
+existing one silently, no shortcut could be discovered, and nothing could be
+rebound.
+
+A command table fixes all three at once: the dispatcher, the settings page and
+(eventually) tooltips read the same list, so "documented", "assignable" and
+"works" cannot drift apart.
+
+## Layout
+
+```
+desktop/src/lib/keybinding.ts            parse / serialize / match / label / judge (no DOM, no i18n)
+desktop/src/features/keyboard/
+  catalog.ts                             the command table: id, category, default, terminal policy
+  shortcuts.ts                           the user's overrides (localStorage) + resolution; the only file to change
+                                         when bindings move to app_settings
+  commands.ts                            who owns which command right now (registry + useCommand)
+  dispatch.ts                            the rules: is this event ours, and which command is it
+  useDispatcher.ts                       the one window listener (capture phase)
+  ShortcutHost.tsx                       the listener as a component, so a view's test can install it
+desktop/src/features/settings/
+  ShortcutsPage.tsx                      the settings page
+  ShortcutRecorder.tsx                   the "press a new combination" control
+  shortcutRecorderRules.ts               what the recorder accepts and how it refuses
+```
+
+`lib/` stays free of React and i18n (`keybinding.ts` is pure); `features/keyboard`
+is the app-level infrastructure; the settings page is a client of both.
+
+## The model
+
+A `KeyBinding` is a set of modifiers plus an `event.code`:
+
+* `mod` — the platform accelerator: `⌘` on macOS, `Ctrl` on Windows and Linux. One
+  default (`mod+n`) is therefore valid on all three platforms, and a user's
+  rebinding stays "the platform's accelerator" wherever the settings are read.
+* `ctrl`, `alt`, `shift` — explicit, because a macOS user also wants a literal
+  `⌃` (and `⌥`), and because `Ctrl+Alt` on a Windows layout is often `AltGr`.
+* the key is the **physical** key (`KeyN`, `Comma`, `BracketLeft`), not the
+  character. `event.key` is what the layout types: on AZERTY `Shift+,` is `?`, on
+  a German layout `z` and `y` trade places, and a Dvorak user's `Ctrl+Z` would sit
+  on a different physical key. `key` is only a fallback for engines that send no
+  `code` (some WebKitGTK builds, synthesised events).
+
+Stored text is canonical (`mod+shift+bracketright`): modifiers in a fixed order,
+then the code. Anything the parser does not understand is dropped on read, never
+guessed at.
+
+## The dispatch rules
+
+`dispatch.ts` answers one question — *should this event run a command, and
+which one?* — and never executes anything. In order:
+
+1. **An event an earlier handler consumed** is not ours (`defaultPrevented`).
+2. **An IME owns the keyboard while it composes**: `isComposing`, Chromium's
+   `keyCode 229`, and WebKitGTK's `key: "Unidentified"`. Acting on a composing
+   key fires commands while the user types Chinese. (The terminal's own IME
+   history — the composed text sent twice — is in `embedded-terminal.md`.)
+3. **AltGr is typing**: Windows and Linux report it as `Ctrl+Alt`, so a binding on
+   that pair would fire on `{`, `[` or `@`.
+4. **A binding with no handler is not handled.** No conversation open means no
+   `ThreadSearch`, so `mod+f` stays the platform's own instead of being swallowed
+   for nothing.
+5. **A modal or a floating menu holds the keyboard** (`overlayStack`,
+   `keyboardOwners`). Both are by *presence*, not focus — WebKit does not focus a
+   button on click, so a focus test would answer "nobody owns the keyboard" while
+   a menu is plainly on screen.
+6. **Holding a key repeats only what says it may** (`repeat`): walking a list
+   wants the repeat, toggling a panel does not.
+7. **Inside the terminal, only commands marked `inTerminal` fire.** `Ctrl` is the
+   accelerator on Windows and Linux, and the terminal is a shell: `Ctrl+B` is
+   "back one character", `Ctrl+F` "forward one", `Ctrl+A` "line start", `Ctrl+K`
+   "kill to end". Taking any of them over would break line editing in the one
+   place the user is typing a command line.
+
+The listener is installed in the **capture** phase so xterm — which attaches its
+handler to its own textarea and cancels what it handles — cannot swallow a
+command before the dispatcher sees it. A key it handles is stopped there:
+`preventDefault` keeps the browser's meaning away, `stopPropagation` keeps the
+focused view from acting on it again.
+
+## Navigation has two levels, because the list does
+
+The rail lists two kinds of thing — **workspaces** (each holding conversations)
+and **conversations** — plus the forks that hang under the conversation they came
+from. One key cannot serve all of that: a flat "next conversation" makes a
+workspace with 20 conversations 20 presses to cross, and a "next workspace" alone
+cannot reach a conversation at all.
+
+So the walk is layered, and each layer answers its own question:
+
+| Layer | Keys | Question it answers |
+| --- | --- | --- |
+| coarse | `mod+shift+[` / `mod+shift+]` | *which workspace, or which conversation?* |
+| fine | `mod+alt+↑` / `mod+alt+↓` | *which conversation, wherever it sits?* |
+| inside a conversation | `Page Up` / `Page Down` | *which question in this transcript?* |
+
+Details that matter:
+
+* **The coarse move crosses the two sections.** A chat conversation and a
+  workspace are siblings in the user's model even though the rail draws them one
+  above the other, so the coarse walk goes pinned → workspaces → chats and back.
+  Opening a conversation is what switches the section: the shell derives it from
+  the conversation's own mode, so nothing else has to know.
+* **A conversation inside a workspace belongs to that workspace's stop**, so
+  "previous" from a nested conversation goes to the stop *before* the workspace,
+  not to the workspace it is already in.
+* **A stop with no conversations is still a stop** (an empty workspace is listed,
+  so it is selectable); a stop that holds a fork lands on its root.
+* **The fine move works across stops too** — the last conversation of a workspace
+  then the next workspace's first — because it follows the drawn order, which is
+  what the eye follows.
+* **Neither move wraps.** Running off either end does nothing, and the key is not
+  consumed; the list is a list, not a ring.
+* **Both are unclaimed when there is nowhere to go** (one stop, or a section with
+  no list), so the keys are never swallowed for a no-op.
+
+## Where each command is registered
+
+The shell registers the commands that are its own (navigation, panels, settings).
+Everything that belongs to a view is registered by that view while it is mounted
+(`useCommand`):
+
+| Command | Registered by | Why there |
+| --- | --- | --- |
+| `chat.new`, `panel.*`, `section.*`, `settings.open` | `AppShell` | shell state |
+| `thread.find` | `features/agent/search/ThreadSearch` | only exists with a conversation open |
+| `chat.stop` | `features/agent/AgentThread` | the abort lives in `useAgentThreadState`, and only while a reply streams |
+| `composer.focus` | `features/agent/Composer` | only the composer knows whether it can hold a caret |
+| `group.previous` / `group.next` / `thread.previous` / `thread.next` / `rail.search` | `components/layout/ActivityRail` | the drawn order is the rail's own |
+| `terminal.toggle` | `features/terminal/useTerminalPanel` | needs the panel's open state; also the one command the terminal lets through |
+
+Registration *is* availability: nothing registered, nothing claimed. That is why
+`chat.stop` does nothing — and consumes nothing — when no reply is streaming.
+
+## Storage
+
+Bindings live in `localStorage` under `future.shortcuts.v1`, as **differences
+only**: `{"version":1,"overrides":{"chat.new":"mod+shift+KeyK"}}`, with `null`
+meaning "the user removed this binding". A command with no entry keeps following
+its default, so improving a default in a later release reaches everyone who did
+not override it.
+
+Why localStorage rather than `~/.future/app/app.db`:
+
+* bindings are per machine *and per platform* — a rebinding made on Windows must
+  not follow the account to a Mac, and means nothing to a phone;
+* they are read on a keystroke, not on a data path;
+* every other preference of that shape in this app (theme, font size, panel
+  geometry, terminal panel height) is already there, for the same reasons.
+
+`features/keyboard/shortcuts.ts` is the only file that reads or writes that key.
+Moving the document to the backend's `app_settings` later means changing
+`read()`/`write()` there and nothing else.
+
+## Defaults (v1)
+
+`mod` is `⌘` on macOS and `Ctrl` on Windows/Linux.
+
+| Command | Default | |
+| --- | --- | --- |
+| New conversation | `mod+n` | |
+| Stop generating | `mod+.` | registered only while a reply streams |
+| Focus the composer | `mod+l` | |
+| Find in this conversation | `mod+f` | was a private listener in `ThreadSearch` |
+| Previous / next workspace or conversation | `mod+shift+[` / `mod+shift+]` | the coarse move; repeats |
+| Previous / next conversation | `mod+alt+↑` / `mod+alt+↓` | the fine move: every drawn conversation row; repeats |
+| Filter the conversation list | `mod+shift+f` | jumps to the field, does not navigate |
+| Go to Chats / Workspaces / Skills / Scheduled tasks / Remote | `mod+1` … `mod+5` | |
+| Show or hide the sidebar | `mod+b` | |
+| Show or hide the context panel | `mod+shift+b` | |
+| Show or hide the terminal | `mod+j` | was hard-coded in `features/terminal/shortcut.ts` |
+| Open settings | `mod+,` | |
+
+Fixed keys (listed in Settings, not assignable): `Enter` send, `Shift+Enter`
+newline, `Esc` close/reject, `⌘/Ctrl+Enter` approve, `Page Up`/`Page Down`
+transcript (the third navigation level), arrows + `Enter` in an open menu.
+
+## What the recorder refuses
+
+* **No modifier** — a bare key is ordinary typing, and `Shift` alone is how
+  everyone types a capital letter.
+* **Reserved combinations** — the platform's text editing and window chords
+  (`⌘C/V/X/A/Z`, `⌘Q/H/M/W`, `⌥⌘Esc`, `Alt+F4`, `⌘Space`, `⌘⇧3/4/5`) and the
+  webview's reload and developer tools (`⌘R`, `⌥⌘I`). A binding the platform eats
+  looks assigned and does nothing.
+* **A combination another command already has** — the refusal names that command.
+* **AltGr** — see the dispatch rules.
+
+`Backspace`/`Delete` while recording removes the binding, `Esc` cancels.
+
+## Platform notes
+
+| | macOS | Windows | Linux |
+| --- | --- | --- | --- |
+| Accelerator | `⌘` | `Ctrl` | `Ctrl` |
+| Label | `⌃⌥⇧⌘K` | `Ctrl+Shift+K` | `Ctrl+Shift+K` |
+| Engine | WKWebView | WebView2 (Chromium) | WebKitGTK |
+| Specifics | `⌘` combinations do not produce control characters, so the terminal *could* receive more of them later (P3) — v1 still lets only `terminal.toggle` through | `AltGr` arrives as `Ctrl+Alt` and must not fire commands | WebKitGTK reports an IME-consumed key as `Unidentified`; a modified key during composition cancels the preedit (needs a second press, documented in `embedded-terminal.md`) |
+
+Global OS-level hotkeys (a shortcut that works while another app is focused) are
+deliberately **not** part of this: `tauri-plugin-global-shortcut` takes keys from
+every other application on the machine, which is a different feature and a
+different risk.
+
+## Tests
+
+| File | What it pins |
+| --- | --- |
+| `lib/keybinding.test.ts` | parsing, canonical text, `mod` on both platforms, physical codes vs layout characters, labels, reserved list |
+| `features/keyboard/catalog.test.ts` | unique ids, legal and distinct defaults, the terminal whitelist, `en`/`zh` strings for every command and category |
+| `features/keyboard/dispatch.test.ts` | the rule order (IME, AltGr, repeat, overlay, terminal, no handler), with no DOM |
+| `features/keyboard/shortcuts.test.ts` | differences-only storage, reset, portable `mod`, unreadable stored values |
+| `features/keyboard/useDispatcher.test.tsx` | the real window listener: handled keys consumed, rebinding effective on the next press, the shell's keys untouched inside the terminal |
+| `features/settings/ShortcutsPage.test.tsx` | recording, refusal (modifier / reserved / conflict), cancel, unbind, restore, search |
+| `ThreadSearch*`, `Composer.focus`, `AgentThread`, `ActivityRail.nav`, `AppShell` | each view's own command, through the dispatcher |
+
+Verified by hand as well as by tests: on Linux with a Chinese IME, a modified key
+pressed mid-composition does not fire a command; inside the terminal, `Ctrl+B`,
+`Ctrl+F`, `Ctrl+A` and `Ctrl+K` still reach the shell.
+
+## Going further (P2 / P3, not implemented)
+
+* Command palette on `mod+k`: commands + conversations + workspaces in one entry.
+  `mod+shift+f` stays what it is — a filter for the list — so the two do not
+  compete.
+* `mod+/`: a cheat sheet listing the *live* bindings, including overrides.
+* macOS menu items for Settings and New Conversation. They must emit events and
+  carry **no** accelerators: an accelerator in the menu would keep printing the
+  old key after a rebinding.
+* A per-command "also works inside the terminal" switch, default off, for users
+  who want `⌘N` while the terminal has focus on macOS.
+* A `leader`-key model (opencode style). The data model leaves room; v1 has no
+  timeout, no HUD and no chords.

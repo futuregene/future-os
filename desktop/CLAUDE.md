@@ -15,6 +15,7 @@ FutureOS desktop app: Tauri + React + TypeScript, frontend `src/`, Tauri backend
 | `docs/internals/desktop/SANDBOX/MACOS.md` / `LINUX.md` / `WINDOWS.md` | Platform implementation, differences, diagnostics, progress, validation procedures and evidence | **Read** the relevant platform; historical PASS is not validation of a new candidate; preserve the accepted Windows unelevated and Linux snapshot boundaries |
 | `docs/internals/desktop/CONTEXT_COMPACTION.md` / `docs/internals/desktop/CONNECTION.md` | Compaction plans / remote product rationale, architecture, connection contract and implementation plan | **Read** for the corresponding feature; verify plan-vs-current against code |
 | `docs/internals/desktop/embedded-terminal.md` | Embedded terminal: architecture, wire protocol, security model, lifecycle, platform status | **Read** before touching `src-tauri/src/terminal/` or `src/features/terminal/`; **modify** when the protocol or its boundaries change |
+| `docs/internals/desktop/KEYBINDINGS.md` | Keyboard shortcuts: the command table, dispatch rules, where each command is registered, storage, defaults, what the recorder refuses | **Read** before adding or changing a shortcut, or touching `lib/keybinding.ts` / `src/features/keyboard/` |
 
 > `docs/internals/desktop/PRODUCT.md` / `docs/internals/desktop/ER.md` are large: use `Read` with `offset/limit` to read **specific sections** from the chapter index below — don't load the whole file.
 

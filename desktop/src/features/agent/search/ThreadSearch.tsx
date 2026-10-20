@@ -3,6 +3,7 @@ import { ArrowDown, ArrowUp, Search, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconButton } from "../../../components/ui/IconButton";
+import { useCommand } from "../../keyboard/commands";
 import { isThreadSearchQuery } from "../threadSearchQuery";
 import { findThreadTextRanges } from "../threadSearchRanges";
 
@@ -185,18 +186,21 @@ export function ThreadSearch({ contentKey, onPrepareSearch, onRevealMatch, rootR
       pendingRevealRef.current = false;
   }, [clearHighlights, eligible, preparedQuery, query, rootRef, searching, showMatch]);
 
+  // The find bar's key is an ordinary command (Settings → Keyboard shortcuts),
+  // not this component's private listener: one dispatcher owns every global
+  // shortcut, so a user can rebind this one like any other. Registration also
+  // says when it is available — no conversation open, no `ThreadSearch` mounted,
+  // so `⌘F` stays the platform's own.
+  useCommand("thread.find", useCallback(() => {
+    setOpen(true);
+    window.requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+  }, []));
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLocaleLowerCase() === "f") {
-        event.preventDefault();
-        event.stopPropagation();
-        setOpen(true);
-        window.requestAnimationFrame(() => {
-          inputRef.current?.focus();
-          inputRef.current?.select();
-        });
-        return;
-      }
       if (!open)
         return;
       if (event.key === "Escape") {

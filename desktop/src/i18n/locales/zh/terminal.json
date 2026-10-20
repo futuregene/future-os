@@ -2,6 +2,8 @@
   "title": "终端",
   "expand": "展开终端（{{shortcut}}）",
   "collapse": "收起终端（{{shortcut}}）",
+  "expandNoShortcut": "展开终端",
+  "collapseNoShortcut": "收起终端",
   "resize": "拖动调整终端面板高度",
   "newTab": "新建终端",
   "closeTab": "关闭 {{title}}",

@@ -1,0 +1,78 @@
+{
+  "categories": {
+    "chat": "对话",
+    "navigation": "导航",
+    "panels": "面板",
+    "terminal": "终端",
+    "settings": "设置"
+  },
+  "commands": {
+    "chat": {
+      "new": "新建对话",
+      "stop": "停止生成"
+    },
+    "composer": {
+      "focus": "回到输入框"
+    },
+    "thread": {
+      "find": "在当前对话中查找",
+      "previous": "上一个对话",
+      "next": "下一个对话"
+    },
+    "rail": {
+      "search": "筛选对话列表"
+    },
+    "section": {
+      "chat": "切换到对话",
+      "workspace": "切换到工作区",
+      "skill": "切换到技能",
+      "tasks": "切换到定时任务",
+      "remote": "切换到远程桌面"
+    },
+    "panel": {
+      "left": "显示或隐藏左侧栏",
+      "right": "显示或隐藏右侧面板"
+    },
+    "terminal": {
+      "toggle": "显示或隐藏终端"
+    },
+    "settings": {
+      "open": "打开设置"
+    },
+    "group": {
+      "previous": "上一个工作区或对话",
+      "next": "下一个工作区或对话"
+    }
+  },
+  "page": {
+    "hint": "快捷键在应用内全局生效。",
+    "search": "搜索命令",
+    "noMatches": "没有匹配「{{query}}」的命令",
+    "reset": "恢复默认",
+    "resetAll": "全部恢复默认",
+    "unbound": "未设置",
+    "terminalBlocked": "终端获得焦点时不生效：这个组合属于 shell",
+    "levels": "{{coarse}} 在不同工作区与对话之间切换；{{fine}} 逐个对话移动；对话内部 {{questions}} 在提问之间跳转。修改后立即生效。"
+  },
+  "recorder": {
+    "prompt": "按下新的组合键…",
+    "cancel": "取消",
+    "clear": "移除绑定",
+    "needsModifierMac": "需要包含 ⌘、⌃ 或 ⌥",
+    "needsModifierOther": "需要包含 Ctrl 或 Alt",
+    "reserved": "系统保留的组合",
+    "conflict": "已被「{{command}}」占用",
+    "unsupported": "这个按键不能用作快捷键",
+    "hint": "Esc 取消，Backspace 移除绑定"
+  },
+  "fixed": {
+    "title": "固定按键",
+    "description": "这些按键在任何地方都保持原有含义，不可修改。",
+    "send": "发送消息",
+    "newline": "换行",
+    "escape": "关闭弹层，或拒绝请求",
+    "approve": "批准请求",
+    "transcript": "跳到上一条 / 下一条提问",
+    "menu": "在打开的菜单中移动"
+  }
+}

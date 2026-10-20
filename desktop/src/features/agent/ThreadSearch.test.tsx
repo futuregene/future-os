@@ -2,12 +2,21 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { installShortcuts } from "../../test/installShortcuts";
 import { ThreadSearch } from "./ThreadSearch";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-beforeEach(() => vi.useFakeTimers());
-afterEach(() => vi.useRealTimers());
+let uninstallShortcuts: () => void;
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  uninstallShortcuts = installShortcuts();
+});
+afterEach(() => {
+  uninstallShortcuts();
+  vi.useRealTimers();
+});
 
 describe("thread search", () => {
   it.each([true, false])("prepares full history before locating results, or reports failure (%s)", async (progressed) => {
@@ -192,10 +201,11 @@ describe("thread search", () => {
     vi.unstubAllGlobals();
   });
 
-  it.each([
-    { ctrlKey: true, metaKey: false },
-    { ctrlKey: false, metaKey: true },
-  ])("opens the current thread search for the platform find shortcut", (modifiers) => {
+  // The binding is `mod+f`: Ctrl on Windows and Linux, ⌘ on macOS, one default for
+  // all three (see `lib/keybinding`). jsdom is neither, so this environment is the
+  // Windows/Linux case — and the ⌘ half is covered by the dispatcher's own test,
+  // which injects the platform.
+  it("opens the current thread search for the platform find shortcut", () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
     const root = createRoot(container);
@@ -212,9 +222,9 @@ describe("thread search", () => {
     });
 
     const event = new KeyboardEvent("keydown", {
-      ...modifiers,
       bubbles: true,
       cancelable: true,
+      ctrlKey: true,
       key: "f",
     });
     act(() => document.body.dispatchEvent(event));

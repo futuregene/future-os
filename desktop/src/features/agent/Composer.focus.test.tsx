@@ -7,8 +7,10 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import { emitFutureEvent } from "../../lib/futureEvents";
+import { installShortcuts } from "../../test/installShortcuts";
+import { resetAllCommandBindings } from "../keyboard/shortcuts";
 import { Composer } from "./Composer";
 
 vi.mock("@tauri-apps/api/webview", () => ({
@@ -18,6 +20,10 @@ vi.mock("../../integrations/tauri/invoke", () => ({
   invokeCommand: vi.fn(async (command: string) => command === "list_agent_providers" ? { builtin: [], custom: [] } : []),
 }));
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+
+beforeEach(() => {
+  resetAllCommandBindings();
+});
 
 function render(onSend: () => void, disabled: boolean) {
   const container = document.createElement("div");
@@ -74,5 +80,27 @@ it("declines while the composer cannot hold a caret", async () => {
   }
   finally {
     harness.unmount();
+  }
+});
+
+it("puts the caret back on the app's focus-composer command", async () => {
+  // Settings → Keyboard binds ⌘L / Ctrl+L to the same request the terminal's
+  // collapse makes, so both go through the same "may I hold a caret" answer.
+  const uninstall = installShortcuts();
+  const harness = render(vi.fn(), false);
+  try {
+    await harness.render();
+    const editor = editorOf(harness.container);
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).not.toBe(editor);
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "KeyL", ctrlKey: true, key: "l" }));
+    });
+    expect(document.activeElement).toBe(editor);
+  }
+  finally {
+    harness.unmount();
+    uninstall();
   }
 });

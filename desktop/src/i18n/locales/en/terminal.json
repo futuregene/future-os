@@ -2,6 +2,8 @@
   "title": "Terminal",
   "expand": "Show terminal ({{shortcut}})",
   "collapse": "Hide terminal ({{shortcut}})",
+  "expandNoShortcut": "Show terminal",
+  "collapseNoShortcut": "Hide terminal",
   "resize": "Resize terminal panel",
   "newTab": "New terminal",
   "closeTab": "Close {{title}}",
