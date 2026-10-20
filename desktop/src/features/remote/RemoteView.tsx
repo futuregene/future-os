@@ -1,5 +1,4 @@
 import type { RemoteStatus } from "./remoteClient";
-import { ChevronRight } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -15,6 +14,7 @@ import {
   remoteConnectionPresentation,
   startRemote,
   stopRemote,
+  takeoverRemote,
   unpairRemoteDevice,
 } from "./remoteClient";
 import {
@@ -38,13 +38,15 @@ import {
  * on and empty. So the two are siblings: the switch decides whether this
  * machine serves its connections at all, and the list is what it serves.
  *
- * While it is on, the section is a **list plus one action**: each row is a door
- * to that connection's own page, the device that is driving this machine can be
- * unpaired from its row (it is the one the machine is serving), and "add a
- * device" sits below the list. Adding opens a floating window that carries the
- * QR code *and* the pairing code, so the invitation is visible without
- * navigating away — and closing it throws the invitation away rather than
- * leaving a half-made connection behind.
+ * While it is on, the section is a **list plus the actions that change a row**.
+ * A row carries everything there is to know about that connection (who it is,
+ * what state it is in) and the two things one can do to it — hand it control,
+ * unpair it — so no row opens a page of its own: such a page only repeated the
+ * row and hid the same two buttons behind one more click. "Add a device" sits
+ * below the list. Adding opens a floating window that carries the QR code *and*
+ * the pairing code, so the invitation is visible without navigating away — and
+ * closing it throws the invitation away rather than leaving a half-made
+ * connection behind.
  */
 export interface RemoteHostSectionProps {
   /**
@@ -54,14 +56,11 @@ export interface RemoteHostSectionProps {
   remoteStatus: RemoteStatus | null;
   /** Refresh the shared status immediately after a user action. */
   onRefreshRemote: () => Promise<void>;
-  /** Open one paired client's page. */
-  onOpenDevice: (pairId: string) => void;
   /** Open this direction's settings (the auto-connect preference). */
   onOpenSettings: () => void;
 }
 
 export function RemoteHostSection({
-  onOpenDevice,
   onOpenSettings,
   onRefreshRemote,
   remoteStatus,
@@ -290,6 +289,22 @@ export function RemoteHostSection({
     void closeAdd();
   }, [addOpen, closeAdd, pairingCode, pendingDevice?.pairingCodeExpiresAt, t]);
 
+  async function handleTakeover(pairId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await takeoverRemote(pairId);
+    }
+    catch (err) {
+      console.error("remote takeover failed:", err);
+      setError(t("error.generic"));
+    }
+    finally {
+      setBusy(false);
+      await onRefreshRemote();
+    }
+  }
+
   async function handleUnpairDevice(pairId: string) {
     setBusy(true);
     setError(null);
@@ -397,40 +412,44 @@ export function RemoteHostSection({
                             const state = deviceState(device, t);
                             return (
                               <li
-                                className="flex items-center gap-2 pr-2"
+                                className="flex flex-wrap items-center gap-2 px-4 py-2"
                                 key={device.pairId}
                               >
-                                {/* A row is a door, not a control panel: the list
-                                    says which connections exist and what state
-                                    they are in; disconnect/delete live on that
-                                    client's own page. The one action that rides
-                                    in the row is "unpair" for the device that is
-                                    driving this machine — that is the connection
-                                    this machine is actually serving. */}
-                                <button
-                                  className="flex min-w-0 flex-1 items-center gap-2 px-4 py-2 text-left hover:bg-surface"
-                                  onClick={() => onOpenDevice(device.pairId)}
-                                  type="button"
-                                >
-                                  <span className="min-w-0 flex-1 truncate text-sm text-ink">
-                                    {deviceLabel(device, t)}
-                                  </span>
-                                  <span className="shrink-0 text-xs text-ink-muted">{formatPairId(device.pairId)}</span>
-                                  <Badge tone={state.tone}>{state.label}</Badge>
-                                  <ChevronRight className="size-4 shrink-0 text-ink-muted" />
-                                </button>
-                                {device.control === "active"
+                                {/* A row is the whole record of one connection:
+                                    who it is, what state it is in, and the two
+                                    actions that change that. Nothing here opens
+                                    a page — the page would only repeat the row.
+                                    "Unpair" is on every row, because that is the
+                                    only way back out of a paired connection
+                                    (standby and offline devices included).
+                                    "Take control" is offered to a live standby
+                                    device; the device that already drives this
+                                    machine has nothing to hand over. */}
+                                <span className="min-w-0 flex-1 truncate text-sm text-ink">
+                                  {deviceLabel(device, t)}
+                                </span>
+                                <span className="shrink-0 text-xs text-ink-muted">{formatPairId(device.pairId)}</span>
+                                <Badge tone={state.tone}>{state.label}</Badge>
+                                {device.control === "standby" && device.connected
                                   ? (
                                       <Button
                                         disabled={busy}
-                                        onClick={() => setConfirmUnpair(device.pairId)}
+                                        onClick={() => void handleTakeover(device.pairId)}
                                         size="sm"
                                         variant="secondary"
                                       >
-                                        {t("unpair")}
+                                        {t("takeover")}
                                       </Button>
                                     )
                                   : null}
+                                <Button
+                                  disabled={busy}
+                                  onClick={() => setConfirmUnpair(device.pairId)}
+                                  size="sm"
+                                  variant="secondary"
+                                >
+                                  {t("unpair")}
+                                </Button>
                               </li>
                             );
                           })}
@@ -521,9 +540,9 @@ export function RemoteHostSection({
         </div>
       </Dialog>
 
-      {/* Unpairing the device that drives this machine, from its row. The
-          confirm lives here rather than on the row so an accidental click in a
-          list cannot cut off the phone the user is holding. */}
+      {/* Unpairing any device from its row. The confirm lives here rather than
+          on the row so an accidental click in a list cannot cut off the phone
+          the user is holding. */}
       <ConfirmDeleteDialog
         description={t("unpairDeviceConfirmDesc", {
           name: confirmUnpairDevice ? deviceLabel(confirmUnpairDevice, t) : "",
