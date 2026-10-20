@@ -1359,6 +1359,12 @@ fn a_reconnect_for_a_device_the_book_no_longer_holds_stops_that_runtime() {
 /// cannot be upgraded in place, so the reconnect forgets the device (`start.rs:534-535`)
 /// and stops its runtime. The book file being *removed* is the arm's own effect: a
 /// "legacy" slot that were merely skipped would stay on disk and be retried forever.
+///
+/// Readiness is the bridge's own fact here, not a status line — see the note in test 3:
+/// this fixture's credential is expired, so its renewal is due at once and can pre-empt
+/// the interval-paced `Remote: Ready` printout on a loaded runner. What the test needs
+/// before it rewrites the book is that the v2 generation has connected and the child has
+/// saved that book, which the broker's connect counter and the file itself can say.
 #[test]
 fn a_reconnect_with_a_pre_v2_slot_forgets_it() {
     let broker = Broker::start(BrokerMode::Live {
@@ -1379,9 +1385,21 @@ fn a_reconnect_with_a_pre_v2_slot_forgets_it() {
     write_pairing(&home, &broker.url, true);
 
     let mut child = ChildRun::spawn(home.clone());
+    let deadline = Instant::now() + READY_BUDGET;
+    while Instant::now() < deadline
+        && (broker.connects.load(Ordering::Acquire) == 0
+            || !home.join(".future/remote_pairings.json").exists())
+    {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert!(
-        child.wait_for("Remote: Ready", READY_BUDGET),
+        broker.connects.load(Ordering::Acquire) >= 1,
         "the v2 generation must be live first; transcript:\n{}",
+        child.text()
+    );
+    assert!(
+        home.join(".future/remote_pairings.json").exists(),
+        "the child must have saved the book before it is rewritten; transcript:\n{}",
         child.text()
     );
     let mut legacy = pairing_slot("pair_fixture", "desktop_fixture", &broker.url, false);
