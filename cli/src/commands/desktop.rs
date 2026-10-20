@@ -140,6 +140,26 @@ fn get(args: &[String], out: &Output) -> Result<(), String> {
     Ok(())
 }
 
+/// Write one setting and return its new value with the path it went to.
+///
+/// Shared with `future remote enable|disable`, which flips the *same*
+/// `autoConnectRemote` the window's Remote page stores: one preference, one
+/// writer, so the two commands cannot describe different machines.
+///
+/// The value is validated before the database is opened, so a bad key or value
+/// leaves the file exactly as it was.
+pub(crate) fn store(key: &str, raw: &str) -> Result<(Value, std::path::PathBuf), String> {
+    let input =
+        future_app_settings::update_from_text(key, raw).map_err(|error| error.to_string())?;
+    let path = db_path()?;
+    let mut conn = future_app_settings::connect().map_err(|error| error.to_string())?;
+    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let settings =
+        future_app_settings::apply(&tx, &input, now_millis()).map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok((settings.value(key).unwrap_or(Value::Null), path))
+}
+
 /// `future desktop settings set <key> <value> [--json]`
 fn set(args: &[String], out: &Output) -> Result<(), String> {
     let mut json_out = false;
@@ -160,16 +180,8 @@ fn set(args: &[String], out: &Output) -> Result<(), String> {
         return Err("too many arguments: expected <key> <value>".into());
     }
     // Parsing (and therefore validation) happens before the database is opened,
-    // so a bad key or value leaves the file exactly as it was.
-    let input =
-        future_app_settings::update_from_text(key, raw).map_err(|error| error.to_string())?;
-    let path = db_path()?;
-    let mut conn = future_app_settings::connect().map_err(|error| error.to_string())?;
-    let tx = conn.transaction().map_err(|error| error.to_string())?;
-    let settings =
-        future_app_settings::apply(&tx, &input, now_millis()).map_err(|error| error.to_string())?;
-    tx.commit().map_err(|error| error.to_string())?;
-    let value = settings.value(key).unwrap_or(Value::Null);
+    // so a bad key or value leaves the file exactly as it was (`store`).
+    let (value, path) = store(key, raw)?;
     if json_out {
         out.log(
             &serde_json::to_string_pretty(&json!({
