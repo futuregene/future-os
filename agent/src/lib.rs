@@ -51,6 +51,45 @@ pub(crate) static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(()
 /// Shared test scaffolding (unit tests only).
 #[cfg(test)]
 pub(crate) mod test_support {
+    /// Native subprocess probe for a PowerShell parent's console. Reuses the
+    /// already-built test executable instead of compiling C# through Add-Type.
+    #[cfg(windows)]
+    pub(crate) fn console_probe_command() -> String {
+        let executable = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .replace('\'', "''");
+        format!("$env:FUTURE_AGENT_CONSOLE_PROBE='1'; & '{executable}' --exact test_support::console_probe_child --nocapture")
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn console_probe_child() {
+        if std::env::var_os("FUTURE_AGENT_CONSOLE_PROBE").is_none() {
+            return; // Entry point used only by the two shell subprocess fixtures.
+        }
+        use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
+        use windows_sys::Win32::System::Console::{
+            AttachConsole, FreeConsole, GetConsoleWindow, ATTACH_PARENT_PROCESS,
+        };
+        // Inspect the shell's console, regardless of how it launched this child.
+        // FreeConsole affects only this isolated subprocess, never libtest's parent.
+        unsafe { FreeConsole() };
+        let attached = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+        let window = if attached != 0 {
+            (unsafe { GetConsoleWindow() }) as usize
+        } else {
+            let error = std::io::Error::last_os_error();
+            assert_eq!(
+                error.raw_os_error(),
+                Some(ERROR_INVALID_HANDLE as i32),
+                "{error}"
+            );
+            0
+        };
+        println!("FUTUREOS_PARENT_CONSOLE={window}");
+    }
+
     /// Take the process-global HOME lock (poison-tolerant).
     pub(crate) fn home_env_lock() -> std::sync::MutexGuard<'static, ()> {
         crate::HOME_ENV_LOCK

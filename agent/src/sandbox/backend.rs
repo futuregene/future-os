@@ -168,8 +168,8 @@ mod tests {
     async fn plain_windows_shell_runs_without_a_console() {
         // Inspect the actual child rather than command-builder flags: even
         // when CI itself has a console, this shell must not inherit/create one.
-        let script = r#"Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class FutureOSConsoleProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }'; [FutureOSConsoleProbe]::GetConsoleWindow().ToInt64()"#;
-        let output = PreparedShell::plain(script)
+        let script = crate::test_support::console_probe_command();
+        let output = PreparedShell::plain(&script)
             .into_command()
             .expect("prepare plain shell")
             .output()
@@ -180,7 +180,12 @@ mod tests {
             "console probe failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "0");
+        assert!(
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .any(|line| line.ends_with("FUTUREOS_PARENT_CONSOLE=0")),
+            "{output:?}"
+        );
     }
 
     #[cfg(target_os = "linux")]
