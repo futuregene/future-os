@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+  "change": "Task executor/tick/admission and recursive conversation deletion now live once in Host, reusing unchanged future-tasks kernel/store. GUI supplies only notification adapter and one real loop-entry test. Preserve stop-confirmation, terminal closure, recursive deletion, tombstones/outbox and interrupted run finalization.",
+  "testOwnership": {
+    "newOriginalDeclarations": 35,
+    "newExecutedOriginals": 33,
+    "newBaselineIgnored": 2,
+    "totalMovedOriginalDeclarations": 966,
+    "totalExecutedOriginalDeclarations": 964,
+    "retainedGui": "tasks::tests::the_gui_loop_runs_a_queued_request_it_is_woken_for",
+    "assertionMacros": {
+      "tasksOriginal": 107,
+      "tasksCore": 105,
+      "tasksGui": 2,
+      "conversationsOriginal": 13,
+      "conversationsCore": 13
+    },
+    "ignoredCases": [
+      "tasks::tests::a_queued_run_against_a_real_agent_ends_with_a_usable_answer",
+      "tasks::tests::serve_pending_runs_until_idle"
+    ],
+    "sharedFixture": "One test-support Task seed and real RPC setup used by Host core and Desktop entry. Seed cwd uses the platform temp directory, replacing the old POSIX-only /tmp fixture; all assertions preserved."
+  },
+  "localTests": [
+    {
+      "command": "cargo test -p future-host --lib --offline --locked",
+      "passed": 967,
+      "failed": 0,
+      "ignored": 2,
+      "executionSeconds": 79.94,
+      "logSha256": "2a5df97cb2a52ec959974a0775efb1c5087689524232c603745defb11a79e9c1"
+    },
+    {
+      "command": "cargo test -p futureos --lib tasks::tests::the_gui_loop_runs_a_queued_request_it_is_woken_for --offline --locked -- --exact",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "executionSeconds": 0.19,
+      "logSha256": "d389c120b917a87d85744820accdf0429d7505c84957e2148fdaee81640656fb"
+    }
+  ],
+  "localProfile": {
+    "target": "aarch64-apple-darwin",
+    "rust": "1.97.0",
+    "CARGO_PROFILE_TEST_DEBUG": "1",
+    "RUST_LOG": "unset",
+    "cache": "Existing shared root target; offline/locked. Not a matched performance baseline."
+  },
+  "dependencyGraph": {
+    "desktopGuiFeatures": [
+      "default",
+      "gui"
+    ],
+    "future-host": {
+      "packages": 370,
+      "forbidden": []
+    },
+    "future-cli": {
+      "packages": 395,
+      "forbidden": []
+    }
+  },
+  "lockfile": "Only future-host -> existing future-tasks dependency added; no version/schema/path change.",
+  "limits": [
+    "Local macOS execution only. Windows remains for native CI.",
+    "Current CI 39371045462 at 0f9cc395 predates this migration.",
+    "Login, maintenance scheduler, Remote, complete stop coordination, future headless and release/manual acceptance remain open."
+  ],
+  "localChecks": [
+    "Host/GUI/CLI Clippy --all-targets PASS",
+    "Original headless Clippy --all-targets PASS",
+    "fmt PASS"
+  ]
+}

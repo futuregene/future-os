@@ -346,6 +346,7 @@ fn cleanup_host() {
     crate::runtime::cancel_test_tasks();
     crate::agent_bridge::cancel_all_observers();
     crate::request_scope::reset_for_test();
+    crate::tasks::reset_for_test();
 }
 
 fn ensure_mock_server() {

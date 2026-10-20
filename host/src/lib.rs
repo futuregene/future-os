@@ -58,3 +58,6 @@ pub mod environment;
 
 pub mod agent_bridge;
 pub mod agent_providers;
+
+pub mod conversations;
+pub mod tasks;

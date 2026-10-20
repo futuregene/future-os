@@ -7,7 +7,8 @@
     "Resolve split-review entries individually before moving/removing originals.",
     "Planned targets are ownership intent, not proof of implementation or execution.",
     "Mixed-module ownership decisions are per test and reference ownershipRules; planned targets are not implementation or runtime evidence.",
-    "migrated-local-pass records only local aarch64-apple-darwin execution; other platforms, CI and final candidate acceptance remain separate."
+    "migrated-local-pass records only local aarch64-apple-darwin execution; other platforms, CI and final candidate acceptance remain separate.",
+    "migrated-existing-ignore retains the immutable baseline ignore attribute/reason; it is compiled but never counted as a passing execution."
   ],
   "sources": [
     {
@@ -15743,7 +15744,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/conversations.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "conversations::tests::missing_sessions_delete_local_threads_and_runs_without_a_second_probe"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/conversations.rs:147:a_session_disappearing_during_abort_still_allows_local_deletion",
@@ -15754,7 +15767,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/conversations.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "conversations::tests::a_session_disappearing_during_abort_still_allows_local_deletion"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/conversations.rs:172:storage_failure_or_an_unconfirmed_abort_preserves_the_conversation",
@@ -15765,7 +15790,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/conversations.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "conversations::tests::storage_failure_or_an_unconfirmed_abort_preserves_the_conversation"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown/coordinator.rs:258:concurrent_callers_share_one_worker_reason_and_terminal_result",
@@ -31239,7 +31276,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::claim_for_a_schedule_advances_next_due_and_clears_pending"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:695:claim_for_a_pending_request_clears_pending_and_keeps_the_schedule",
@@ -31250,7 +31299,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::claim_for_a_pending_request_clears_pending_and_keeps_the_schedule"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:741:a_run_opens_a_conversation_prompts_and_records_the_answer",
@@ -31261,7 +31322,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_run_opens_a_conversation_prompts_and_records_the_answer"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:842:a_run_whose_task_deletes_its_conversation_keeps_the_answer",
@@ -31272,7 +31345,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_run_whose_task_deletes_its_conversation_keeps_the_answer"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:917:a_run_that_never_prompted_has_nothing_to_delete",
@@ -31283,7 +31368,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_run_that_never_prompted_has_nothing_to_delete"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:955:a_reused_conversation_is_never_deleted_after_a_run",
@@ -31294,7 +31391,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_reused_conversation_is_never_deleted_after_a_run"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1004:a_chat_task_without_a_directory_keeps_the_conversations_workspace",
@@ -31305,7 +31414,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_chat_task_without_a_directory_keeps_the_conversations_workspace"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1075:a_workspace_task_without_a_directory_fails_in_words",
@@ -31316,7 +31437,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_workspace_task_without_a_directory_fails_in_words"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1107:a_run_without_an_agent_fails_with_the_reason",
@@ -31327,7 +31460,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_run_without_an_agent_fails_with_the_reason"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1147:a_chat_task_with_a_directory_works_there",
@@ -31338,7 +31483,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_chat_task_with_a_directory_works_there"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1211:a_refused_workspace_move_fails_the_run_with_the_agents_reason",
@@ -31349,7 +31506,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_refused_workspace_move_fails_the_run_with_the_agents_reason"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1252:an_existing_policy_task_without_a_binding_opens_one_and_binds_it",
@@ -31360,7 +31529,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::an_existing_policy_task_without_a_binding_opens_one_and_binds_it"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1300:an_existing_policy_task_without_a_usable_directory_fails_before_the_agent",
@@ -31371,7 +31552,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::an_existing_policy_task_without_a_usable_directory_fails_before_the_agent"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1340:a_refused_prompt_fails_the_run_with_the_agents_reason",
@@ -31382,7 +31575,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_refused_prompt_fails_the_run_with_the_agents_reason"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1380:a_run_whose_final_read_is_refused_fails_with_the_reason",
@@ -31393,7 +31598,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_run_whose_final_read_is_refused_fails_with_the_reason"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1447:a_run_bound_to_a_missing_conversation_fails_in_words",
@@ -31404,7 +31621,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_run_bound_to_a_missing_conversation_fails_in_words"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1483:a_stopped_tick_claims_nothing_further",
@@ -31415,7 +31644,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_stopped_tick_claims_nothing_further"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1519:a_reused_conversation_is_prompted_in_place_without_compacting",
@@ -31426,7 +31667,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_reused_conversation_is_prompted_in_place_without_compacting"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1571:a_running_run_blocks_another_claim",
@@ -31437,7 +31690,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_running_run_blocks_another_claim"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1620:a_queued_run_against_a_real_agent_ends_with_a_usable_answer",
@@ -31448,7 +31713,19 @@
       "ignored": true,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-existing-ignore",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_queued_run_against_a_real_agent_ends_with_a_usable_answer"
+        ],
+        "outcome": "compiled-ignored-per-baseline",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1670:serve_pending_runs_until_idle",
@@ -31459,7 +31736,19 @@
       "ignored": true,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-existing-ignore",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::serve_pending_runs_until_idle"
+        ],
+        "outcome": "compiled-ignored-per-baseline",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1737:candidates_selects_the_due_tasks_and_names_the_reason",
@@ -31470,7 +31759,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::candidates_selects_the_due_tasks_and_names_the_reason"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1774:a_tick_skips_a_task_whose_run_is_still_live",
@@ -31481,7 +31782,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_tick_skips_a_task_whose_run_is_still_live"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1833:the_gui_loop_runs_a_queued_request_it_is_woken_for",
@@ -31490,9 +31803,9 @@
       "name": "the_gui_loop_runs_a_queued_request_it_is_woken_for",
       "attribute": "    #[tokio::test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/tasks.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/tasks.rs",
+      "status": "retained"
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1897:the_headless_loop_runs_a_queued_request_it_is_woken_for",
@@ -31503,7 +31816,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::the_headless_loop_runs_a_queued_request_it_is_woken_for"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1953:the_loop_survives_a_tick_that_cannot_reach_its_store",
@@ -31514,7 +31839,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::the_loop_survives_a_tick_that_cannot_reach_its_store"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:1986:a_loop_that_starts_while_stopping_claims_nothing",
@@ -31525,7 +31862,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_loop_that_starts_while_stopping_claims_nothing"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:2031:a_reconciliation_the_store_refuses_is_reported_and_the_loop_carries_on",
@@ -31536,7 +31885,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_reconciliation_the_store_refuses_is_reported_and_the_loop_carries_on"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:2097:dropping_an_executor_settles_its_claimed_run_as_failed",
@@ -31547,7 +31908,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::dropping_an_executor_settles_its_claimed_run_as_failed"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:2139:a_drop_that_cannot_reach_the_store_does_not_panic",
@@ -31558,7 +31931,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::a_drop_that_cannot_reach_the_store_does_not_panic"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:2164:run_inner_reports_a_task_row_it_cannot_bind_the_conversation_to",
@@ -31569,7 +31954,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::run_inner_reports_a_task_row_it_cannot_bind_the_conversation_to"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:2185:run_inner_reports_a_run_row_it_cannot_update",
@@ -31580,7 +31977,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::run_inner_reports_a_run_row_it_cannot_update"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/tasks.rs:2205:run_inner_reports_a_prompt_it_cannot_prepare",
@@ -31591,7 +32000,19 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/tasks.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "validationEvidence": [
+        "docs/testing/headless-host-tasks-2026-10-20.json"
+      ],
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+        "cases": [
+          "tasks::tests::run_inner_reports_a_prompt_it_cannot_prepare"
+        ],
+        "outcome": "passed",
+        "evidence": "docs/testing/headless-host-tasks-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/terminal/cwd.rs:221:missing_directory_is_rejected_not_substituted",

@@ -28,6 +28,7 @@ tokio.workspace = true
 futures = "0.3"
 
 future-agent = { path = "../agent" }
+future-tasks = { path = "../orchestration/tasks" }
 future-rpc = { path = "../packages/rpc" }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }

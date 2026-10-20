@@ -1991,6 +1991,7 @@ dependencies = [
  "future-remote-client",
  "future-remote-server",
  "future-rpc",
+ "future-tasks",
  "futures",
  "fuzzy-matcher",
  "ignore",

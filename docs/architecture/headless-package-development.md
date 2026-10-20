@@ -276,9 +276,9 @@ Current phase status:
 |---|---|
 | 0 | Source/dependency baseline and named inventory captured; mixed-module ownership reviewed per test; matched build/runtime measurements open |
 | 1 | Ordinary GUI-free crate, task registry, presentation outlet and consumer dependencies established; complete lifecycle/config boundary still open |
-| 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge moved; Remote, maintenance and stop coordination remain |
+| 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, task execution and conversation deletion moved; Remote, maintenance and stop coordination remain |
 | 3 | Not implemented; the product entry is still `futureos-headless` |
-| 4 | 931 original test declarations moved and pass locally on macOS; this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
+| 4 | 966 original test declarations moved (964 executed locally on macOS, two retain their original ignores); this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
 | 5 | Host CI group and affected propagation added; builds, release artifacts, signing/install/update/uninstall still open |
 | 6 | Not started; no frozen final candidate, matched performance, artifact acceptance or confirmed manual results |
 
@@ -395,3 +395,9 @@ Investigation found a separate definite cleanup defect: dropping a headless pipe
 Main `5cf84dbc` is merged as `961816cd`. Its two CLI and one headless invitation-countdown declarations are tracked separately as upstream tests. Desktop ESLint/type-check and affected Rust Clippy `--all-targets`/fmt pass. The complete Desktop CI test step gains a 30-minute timeout to fail and archive a stalled run; commands, features, assertions and coverage are unchanged. No local NATS tests run; Windows stays on native CI. Only a subsequent complete run can confirm the CI stall is resolved.
 
 On the same post-merge source, 55 CLI device-management cases pass and both actual legacy entry process groups pass 13 each (4.38 and 68.54 seconds), with no new ignores. Remote process fixtures use their existing controlled loopback HTTP/WebSocket broker; no real NATS-server suite is started locally. The combined-GUI dependency boundary passes again; this does not accept the final CLI entry or cross-platform release artifacts.
+
+### 2026-10-20 Task execution and conversation deletion
+
+Task tick/wake/admission, execution, completion/interruption records and recursive conversation deletion move into Host, directly reusing the existing future-tasks kernel, store and task format. GUI `start(app)` supplies only its notification adapter; headless keeps the same loop with no presentation notifications. Synchronous terminal presentation preserves the original closure, stop confirmation, recursive deletion, tombstone, observer and delete-outbox ordering.
+
+Thirty-five original declarations move: 33 execute locally, while two pre-existing manual/real-model harnesses retain their ignore attributes and are never counted as passes. Full Host core execution passes 967 tests, zero failures and two original ignores (79.94 seconds). The real GUI wake/execute/close entry case remains in Desktop and passes independently (0.19 seconds). Task construction and real RPC setup share one fixture; default fixture cwd uses the platform temp directory instead of the old POSIX-only /tmp. All assertions remain; core needs no Tauri/npm. Host/GUI/CLI and original headless Clippy --all-targets, fmt and the combined dependency boundary pass; see [task migration evidence](../testing/headless-host-tasks-2026-10-20.json). This batch postdates CI candidate 0f9cc395; native CI and the real final CLI entry remain to be accepted.

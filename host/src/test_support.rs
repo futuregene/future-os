@@ -38,3 +38,5 @@ impl Drop for EnvGuard {
 pub mod agent;
 
 pub mod provider_responses;
+
+pub mod tasks;

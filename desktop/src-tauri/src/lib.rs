@@ -16,6 +16,7 @@ mod build_info;
 mod cli_tool;
 mod commands;
 mod config_io;
+#[cfg(feature = "gui")]
 mod conversations;
 mod desktop_shutdown;
 mod device_identity;
