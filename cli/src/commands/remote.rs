@@ -17,16 +17,18 @@
 //! it the honest thing for this command to read and edit, and it means those
 //! actions need nothing running.
 //!
-//! `add` and `remove` cannot work that way while a Desktop is running. An
-//! invitation is only usable while the bridge for its pairing is connected, so it
-//! has to be minted by the process that serves the machine — the window, or
+//! `add`, `remove` and `use` cannot work that way while a Desktop is running.
+//! An invitation is only usable while the bridge for its pairing is connected, so
+//! it has to be minted by the process that serves the machine — the window, or
 //! `future headless`. A removal is the mirror image: the bridge is what a device
 //! talks to, and only that process can stop it. A credential is a bearer JWT, valid
 //! until it lapses, so a book edited behind a running Desktop leaves the device
-//! served for minutes after the user was told it was unpaired. Both requests go to
-//! the Desktop as a file and come back as one (see [`request_desktop`]); with no
-//! Desktop running, `remove` edits the book itself, which is what the next start
-//! reads.
+//! served for minutes after the user was told it was unpaired. Choosing a
+//! controller is the same point in a third place: the running process holds the
+//! live pointer every command is checked against, so the book alone decides it
+//! only at the next start. All three requests go to the Desktop as a file and come
+//! back as one (see [`request_desktop`]); with no Desktop running, `remove` and
+//! `use` edit the book itself, which is what the next start reads.
 //!
 //! The document is parsed and rewritten as a [`serde_json::Value`] rather than a
 //! mirrored struct: the fields this command does not understand (the NKey seed,
@@ -42,9 +44,14 @@
 //!   device keeps being served until its credential comes up for renewal, because
 //!   the phone's JWT outlives the edit. Either way the revoke is ordered before the
 //!   local slot is dropped, so a lost write cannot resurrect the device.
-//! - **Use** is persisted for the next start. Control is an in-memory pointer in
-//!   the running process (a device taking over must move it too), so a running
-//!   Desktop keeps its current controller until it restarts.
+//! - **Use** is written to the book *and* asked of the Desktop, which is what
+//!   makes it immediate. Control is an in-memory pointer in the running process
+//!   (a device taking over moves it too), so the book alone would only be read at
+//!   the next start; the takeover the Desktop performs publishes the new
+//!   controller, stands the previous one down, and persists the same pointer. A
+//!   device that is not connected, a switch that is off (nothing is being served
+//!   to hand the machine to) or a Desktop too old to know the request leaves the
+//!   recorded choice applying at its next start, and says so.
 //! - **Add** is the Desktop's own action: it mints the invitation and starts the
 //!   bridge for it before answering, so the code works the moment it is printed.
 //!   Existing devices stay paired. When the book is empty (a `remove --all` just
@@ -129,7 +136,7 @@ async fn devices(args: &[String], out: &Output) -> Result<(), String> {
         "list" => list(rest, out),
         "add" => add(rest, out).await,
         "remove" => remove(rest, out).await,
-        _ => take_control(rest, out),
+        _ => take_control(rest, out).await,
     }
 }
 
@@ -1255,6 +1262,24 @@ const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(test)]
 const STATUS_TIMEOUT: Duration = Duration::from_millis(150);
 
+/// How long `use` waits for the running Desktop to hand the machine over.
+///
+/// The pointer moves in memory, so a Desktop that is there answers at once; this
+/// covers one busy with another request. It is shorter than the minute an `add`
+/// may take because nothing waits on it: the book is written either way, so a
+/// terminal that waited a minute to be told "not handed over" would be the same
+/// answer, from further away.
+#[cfg(not(test))]
+const TAKEOVER_TIMEOUT: Duration = Duration::from_secs(10);
+/// A fake answers in the same millisecond; this only has to outlast a poll or two
+/// so the "silent Desktop" case stays reachable without a real wait.
+#[cfg(test)]
+const TAKEOVER_TIMEOUT: Duration = Duration::from_millis(150);
+
+/// The Desktop's own name for "hand the machine to this device" (`takeover` in
+/// `host/src/remote/control.rs`). The same move a phone asks for.
+const OP_TAKEOVER: &str = "takeover";
+
 /// The directory the running Desktop watches (`~/.future/run/remote-control`).
 ///
 /// Under `run/` on purpose: this is transient runtime state, like the agent's own
@@ -2087,7 +2112,17 @@ fn relay_ca_for(device: &Device) -> Option<PathBuf> {
 
 // ── use ─────────────────────────────────────────────────────────────────────
 
-fn take_control(args: &[String], out: &Output) -> Result<(), String> {
+/// `future remote devices use` — choose the device that drives this machine.
+///
+/// Two places hold that decision and they are not the same place. The pairing
+/// book holds it for the next start (and for a machine with no Desktop running),
+/// while a running Desktop keeps the live pointer in memory and checks every
+/// command against it. So the book is written here, and a Desktop that has
+/// something to serve is asked to hand the machine over now — the same takeover a
+/// phone asks for, which publishes `standby` to the previous controller and
+/// `active` to this one. Without that ask the choice would only be read at the
+/// next start, which is exactly the delay this command used to apologise for.
+async fn take_control(args: &[String], out: &Output) -> Result<(), String> {
     let values = positional(args, &["--json"], help::REMOTE_USAGE)?;
     let json_flag = args.iter().any(|argument| argument == "--json");
     let selector = one_device(values, help::REMOTE_USAGE)?;
@@ -2098,23 +2133,41 @@ fn take_control(args: &[String], out: &Output) -> Result<(), String> {
     let index = book.position(&selector)?;
     let pair_id = book.devices[index].pair_id.clone();
     let running = desktop_running();
-    if book.active.as_deref() == Some(pair_id.as_str()) {
-        if json_flag {
-            out.log(
-                serde_json::to_string_pretty(&document(&book, running))
-                    .map_err(|error| error.to_string())?
-                    .as_str(),
-            );
-        } else {
-            out.log(&format!(
-                "{} already drives this machine.",
-                display_pair_id(&pair_id)
-            ));
-        }
-        return Ok(());
+    // With the switch off nothing is being served, so the book is the whole
+    // truth: there is no pointer to move, and a takeover would be refused for a
+    // cause the advice below already names.
+    let serving = running && switch_is_on()?;
+    let recorded = book.active.as_deref() == Some(pair_id.as_str());
+    if !recorded {
+        book.set_controller(&pair_id);
+        book.save()?;
     }
-    book.set_controller(&pair_id);
-    book.save()?;
+    // Asked *after* the write: the book is what a start reads and what a Desktop
+    // that cannot answer leaves behind, so the choice is never lost to a refused
+    // or unanswered request.
+    let refused = if serving {
+        match ask_desktop_to_take_over(&pair_id).await {
+            Ok(()) => {
+                // It wrote the pointer itself, in the same file: this copy is
+                // stale.
+                book = Book::load()?;
+                None
+            }
+            Err(reason) => Some(reason),
+        }
+    } else {
+        None
+    };
+    // A Desktop that could not perform it is not a failure of the command: the
+    // book is what the next start reads, so the choice is made either way. Said
+    // on stderr — in `--json` mode too, because a document that only shows the
+    // recorded pointer cannot tell that the running Desktop kept its controller.
+    if let Some(reason) = &refused {
+        out.log_err(&format!(
+            "note: the running Desktop did not hand the machine over ({reason}); it stays with \
+             the device in control until this Desktop next starts serving."
+        ));
+    }
     if json_flag {
         out.log(
             serde_json::to_string_pretty(&document(&book, running))
@@ -2123,15 +2176,19 @@ fn take_control(args: &[String], out: &Output) -> Result<(), String> {
         );
         return Ok(());
     }
-    out.log(&format!(
-        "{} now drives this machine.",
-        display_pair_id(&pair_id)
-    ));
-    if running {
-        out.log(
-            "A Desktop is running: it keeps its current controller until it restarts, then this \
-             takes effect.",
-        );
+    let shown = display_pair_id(&pair_id);
+    match &refused {
+        // The machine changed hands now — the sentence this command used to print
+        // with an apology after it.
+        None if serving => out.log(&format!("{shown} now drives this machine.")),
+        Some(_) => out.log(&format!(
+            "{shown} {} the controller on record.",
+            if recorded { "is already" } else { "is now" }
+        )),
+        // No Desktop to move (none running, or the switch off): the book is the
+        // machine's answer, and it is the one a start reads.
+        None if recorded => out.log(&format!("{shown} already drives this machine.")),
+        None => out.log(&format!("{shown} now drives this machine.")),
     }
     // Choosing a controller is real either way, but with the switch off nobody is
     // being served to command: say so, or the next "why can't I connect" starts
@@ -2141,6 +2198,38 @@ fn take_control(args: &[String], out: &Output) -> Result<(), String> {
         out.log(switch_advice(running));
     }
     Ok(())
+}
+
+/// Ask the running Desktop to hand this machine to `pair_id` now.
+///
+/// `Ok(())` means the pointer moved: the Desktop published the new controller,
+/// told the previous one to stand by, and persisted the same choice. `Err` is the
+/// reason it did not happen — a device with no bridge here (nothing to send it
+/// commands), the switch off, a Desktop too old to know the request, or a Desktop
+/// that did not answer in time. In every one of those the caller has already
+/// written the book, so the choice survives.
+async fn ask_desktop_to_take_over(pair_id: &str) -> Result<(), String> {
+    let reply = request_desktop_within(
+        OP_TAKEOVER,
+        Some(pair_id),
+        "the controller was recorded but not handed over",
+        TAKEOVER_TIMEOUT,
+    )
+    .await?;
+    if let Some(error) = reply.get("error").and_then(Value::as_str) {
+        return Err(error.to_string());
+    }
+    // The answer carries the Desktop's own snapshot, so "did it move?" is read,
+    // not assumed: a reply that does not name this device as the one in control
+    // is not a machine that changed hands.
+    let active = reply
+        .get("status")
+        .and_then(|status| status.get("active"))
+        .and_then(Value::as_str);
+    match active {
+        Some(active) if active == pair_id => Ok(()),
+        _ => Err("the Desktop answered without handing it the machine".to_string()),
+    }
 }
 
 // ── Little argument and environment helpers ─────────────────────────────────
@@ -2492,6 +2581,104 @@ mod tests {
         assert_eq!(code, 0);
         assert!(stdout.contains("already drives this machine"), "{stdout}");
         assert_eq!(home.read(BOOK_FILE), before);
+    }
+
+    /// A running Desktop holds the controller in memory, so the book alone would
+    /// only be read at the next start. The command asks it to hand the machine
+    /// over, and says so without the "until it restarts" apology this used to
+    /// carry.
+    #[tokio::test]
+    async fn use_asks_the_running_desktop_to_hand_the_machine_over() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+        let seen = answer_takeovers(&home);
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "use", "AAAA"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("AAAA now drives this machine."), "{stdout}");
+        assert!(
+            !stdout.contains("until it restarts"),
+            "the change is immediate, and the answer must not say otherwise: {stdout}"
+        );
+        assert!(stderr.is_empty(), "{stderr}");
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "one request, one answer");
+        assert_eq!(seen[0]["op"], "takeover");
+        assert_eq!(seen[0]["pairId"], "pair_AAAA");
+        // The Desktop persists the pointer itself; the terminal writes it too, so
+        // whichever answers, the next start reads the same device.
+        let value: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+        assert_eq!(value["active"], "pair_AAAA");
+    }
+
+    /// A device with no bridge here cannot be handed the machine — the Desktop
+    /// says so, and the terminal reports what actually happened instead of
+    /// claiming control it does not have.
+    #[tokio::test]
+    async fn a_desktop_that_cannot_hand_over_leaves_the_choice_on_record() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+        let seen = answer_requests(
+            &home,
+            json!({
+                "error": "pair_AAAA is not connected to this Desktop, so there is no channel to \
+                          hand it the machine"
+            }),
+        );
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "use", "AAAA"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("AAAA is now the controller on record."),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("now drives this machine"),
+            "the pointer did not move, and the answer must not say it did: {stdout}"
+        );
+        assert!(
+            stderr.contains("did not hand the machine over"),
+            "the reason it did not is the Desktop's own: {stderr}"
+        );
+        assert!(stderr.contains("not connected"), "{stderr}");
+        assert_eq!(seen.lock().unwrap()[0]["op"], "takeover");
+        let value: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+        assert_eq!(
+            value["active"], "pair_AAAA",
+            "the choice is recorded for the next start"
+        );
+    }
+
+    /// With the switch off nothing is being served, so there is no pointer to
+    /// move and no request worth writing: the book is the answer, and the advice
+    /// names the command that starts serving.
+    #[tokio::test]
+    async fn use_does_not_ask_a_desktop_that_is_serving_nothing() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+        crate::commands::desktop::store("autoConnectRemote", "false").unwrap();
+        let seen = answer_requests(&home, json!({ "error": "nothing should ask this Desktop" }));
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "use", "AAAA"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("now drives this machine"), "{stdout}");
+        assert!(stdout.contains("future remote enable"), "{stdout}");
+        // The ask is what would race the fake, so give it a moment to be written
+        // before judging that nothing was.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a Desktop serving nobody has nothing to hand over"
+        );
+        let value: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+        assert_eq!(value["active"], "pair_AAAA");
     }
 
     #[tokio::test]
@@ -2908,6 +3095,56 @@ mod tests {
                 recorded.lock().unwrap().push(request);
                 let _ = std::fs::remove_file(entry.path());
                 answered += 1;
+            }
+        });
+        seen
+    }
+
+    /// Answer the next `takeover` the way the running Desktop does: point the book
+    /// at the device, then answer with the snapshot that names it in control.
+    ///
+    /// The order matters to the command under test — it reloads the book after a
+    /// successful answer, so a fake that only wrote a reply would test a Desktop
+    /// that says it moved the pointer without doing it.
+    fn answer_takeovers(home: &Home) -> std::sync::Arc<std::sync::Mutex<Vec<Value>>> {
+        let directory = home.future().join("run").join(CONTROL_DIRECTORY);
+        std::fs::create_dir_all(&directory).unwrap();
+        let book = home.future().join(BOOK_FILE);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let mut entries: Vec<_> = std::fs::read_dir(&directory)
+                    .map(|entries| entries.filter_map(Result::ok).collect())
+                    .unwrap_or_default();
+                entries.sort_by_key(|entry| entry.file_name());
+                let Some(entry) = entries.into_iter().find(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with(REQUEST_SUFFIX)
+                }) else {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    continue;
+                };
+                let request: Value =
+                    serde_json::from_str(&std::fs::read_to_string(entry.path()).unwrap()).unwrap();
+                let pair_id = request["pairId"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("a takeover names its device: {request}"))
+                    .to_string();
+                let mut value: Value =
+                    serde_json::from_str(&std::fs::read_to_string(&book).unwrap()).unwrap();
+                value["active"] = json!(pair_id.clone());
+                std::fs::write(&book, value.to_string()).unwrap();
+                std::fs::write(
+                    request["reply"].as_str().expect("a reply path"),
+                    json!({ "status": { "phase": "ready", "active": pair_id } }).to_string(),
+                )
+                .unwrap();
+                recorded.lock().unwrap().push(request);
+                let _ = std::fs::remove_file(entry.path());
+                return;
             }
         });
         seen

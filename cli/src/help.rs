@@ -313,18 +313,20 @@ Every action takes --json and prints the same document `future remote devices
 expiresAt).
 
 A device is a phone or another computer that paired with this machine's remote
-desktop — the Remote page in the window, or future headless. The list and use
-read and write the pairing book the Desktop itself reads
-(~/.future/remote_pairings.json), so they need no running Desktop; a self-hosted
-relay needs no account either.
+desktop — the Remote page in the window, or future headless. The list reads the
+pairing book the Desktop itself reads (~/.future/remote_pairings.json), and use
+writes it, so neither needs a running Desktop; a self-hosted relay needs no
+account either.
 
-add and remove are the exceptions, because the Desktop is what actually serves a
-device. An invitation is only usable while the bridge for that pairing is
-connected, and a removal only takes effect *now* if that bridge is stopped — so
-both ask the running Desktop (the window, or future headless) and carry its
-answer back. With no Desktop running, remove edits the book itself, which is what
-the next start reads. A machine with no device at all prints an invitation as the
-Desktop starts.
+add, remove and use are the exceptions to "the book is enough", because the
+Desktop is what actually serves a device. An invitation is only usable while the
+bridge for that pairing is connected, and a removal only takes effect *now* if
+that bridge is stopped — so both ask the running Desktop (the window, or future
+headless) and carry its answer back. use asks it too: control is an in-memory
+pointer in that process, so handing the machine over is what makes the choice
+take effect before the next restart. With no Desktop running, remove and use edit
+the book itself, which is what the next start reads. A machine with no device at
+all prints an invitation as the Desktop starts.
 
 Self-hosted relays work the same way, and a machine may hold an official device
 and a self-hosted one at the same time: `list` names each device's endpoint, and
@@ -339,9 +341,13 @@ platform revoke that cannot be delivered now is queued and retried by the next
 Desktop that runs; a relay has no account to queue against, so an undeliverable
 room deletion is reported and the room expires on its own.
 
-use writes the same pointer the window's "Let this control" writes. A running
-Desktop keeps its current controller until it restarts: control is an in-memory
-decision there, and a device asking to take over moves it too.
+use writes the same pointer the window's "Let this control" writes, and with a
+Desktop running it moves the controller at once: the Desktop is asked to hand the
+machine over, which publishes the new controller, stands the previous one down
+and persists the same choice. A device that is not connected cannot be handed the
+machine (there is no bridge to send it commands), and with the switch off nobody
+is being served — in both cases the pointer is recorded and applies when the
+Desktop next starts serving.
 
 Run `future remote devices --help` for the ids remove and use accept."#;
 
@@ -563,9 +569,13 @@ window's "Let this control" writes and the runtime restores at start. Control
 moves the way an explicit takeover moves it, so the previous controller is no
 longer allowed to command this machine.
 
-A running Desktop keeps its current controller until it restarts — control is an
-in-memory decision there, and a device asking to take over moves it too. The
-written value is what the next start uses.
+With a Desktop running (the window, or future headless) it also asks that Desktop
+to hand the machine over now, which is what makes the change immediate: control is
+an in-memory pointer there, and only a takeover — the same one a phone performs —
+moves it. Publishing the new controller and standing the previous one down is the
+Desktop's own work, so a device that is not connected cannot be handed the
+machine; the choice is still recorded, and the command says it applies when the
+Desktop next starts serving. Nothing needs a restart otherwise.
 
 --json prints the resulting device document, like `future remote devices --json`."#;
 

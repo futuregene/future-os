@@ -44,16 +44,17 @@
 
 `futureos-headless` 复用同一 Rust 后端，前台占用终端，不启动 Tauri Builder、窗口、WebView 或 GUI 插件。未登录时通过设备授权流程打印浏览器登录二维码、网址和用户码；不在服务器打开浏览器。授权结果由 Agent 通过原有配置写入路径保存。手机配对是第二阶段：入口与 Agent 就绪后，打印由同一邀请生成的终端二维码及完整 `futureos://remote/pair` 链接，供 App 扫描或粘贴，不是数字短码。图形入口 `futureos` 不再接受 `--headless`；独立二进制在构建时排除 GUI 依赖。
 
-**配对由终端经运行中的 Desktop 管理。** 两个入口都不再有配对旗标。`future remote devices`（`future` CLI）是「远程」页面的终端半边：`list`、`use`、`remove` 直接读写配对簿——它们只改这份文件，必须在没有进程运行时也可用；`add` 不行，因为邀请只有在为该配对服务的桥已连接时才有意义，必须由持有数据目录的进程签发。
+**配对由终端经运行中的 Desktop 管理。** 两个入口都不再有配对旗标。`future remote devices`（`future` CLI）是「远程」页面的终端半边：`list` 读配对簿，`use` 写配对簿——这是「谁在控」的记录，必须在没有进程运行时也可用；`add`、`remove` 以及 `use` 的「立刻生效」那一半不行，因为邀请只有在为该配对服务的桥已连接时才有意义、移除只有在桥停下时才立即生效，而在控指针是只在 takeover 中移动的内存状态，三者都必须由持有数据目录的进程完成。
 
-这条请求以文件传递：`future remote devices add|remove` 把
-`{"op":"add-device","reply":"<路径>"}` 或 `{"op":"remove-device","pairId":"<设备>","reply":"<路径>"}`
+这条请求以文件传递：`future remote devices add|remove|use` 把
+`{"op":"add-device","reply":"<路径>"}`、`{"op":"remove-device","pairId":"<设备>","reply":"<路径>"}`
+或 `{"op":"takeover","pairId":"<设备>","reply":"<路径>"}`
 写进 `~/.future/run/remote-control/`，然后轮询回复路径；运行中的 Desktop（图形或无头，
 二者都会启动 `remote::control::spawn_host`）通过改名认领请求、执行操作，并把
-`{pairId, link, expiresAt}`、`{pairId, removed}` 或 `{error}` 写回。移除只有在
+`{pairId, link, expiresAt}`、`{pairId, removed}`、`{status}` 快照或 `{error}` 写回。移除只有在
 `unpair_slot` 已撤销凭据、忘掉槽位、停掉那座桥并通知设备之后才会回答；没有 Desktop
 运行（或对方版本不认识这个操作）时由终端自己改配对簿，那时它会明说是慢路径——
-设备会一直服务到下次凭据刷新。回复路径是发起进程自己创建的临时文件，因此两个终端同时请求也不会读到对方的邀请；超过两分钟的请求会被删除而不是执行——它的发起者已经放弃。远程开关关闭（`RemotePhase::Stopped`）或请求了本 Desktop 不认识的操作时，回答是一句原因，而不是沉默。
+设备会一直服务到下次凭据刷新。takeover 只有在指针已移动、原控制器被宣告 `standby`、新控制器被宣告 `active` 之后才会回答——这与手机自己请求接管是同一次移动——因此 `use` 立刻生效，而不是等下次启动；本机没有为该设备建立桥时无法把机器交给它（没有通道给它发命令），终端会如实说明记录已写入、将于下次启动生效，这正是过去只改配对簿的效果。回复路径是发起进程自己创建的临时文件，因此两个终端同时请求也不会读到对方的邀请；超过两分钟的请求会被删除而不是执行——它的发起者已经放弃。远程开关关闭（`RemotePhase::Stopped`）或请求了本 Desktop 不认识的操作时，回答是一句原因，而不是沉默。
 
 两个细节让反问在实际中可用：回答就是邀请本身，只按「还能不能扫」判断，因此随桥启动的 Agent 可用性探测不会把有效邀请变成「没有签发邀请」；又因为平台会给已认识的桌面返回**同一个** `pair_id`，邀请成功会作废该 pair id 上排队的撤销（否则补偿循环会取消用户刚拿到的码），而在配对簿刚被 `remove --all` 清空的机器上签发时，会先停掉那些先于凭据失效的旧桥。
 
