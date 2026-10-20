@@ -1,0 +1,46 @@
+{
+  "status": "primary-workspace-handoff-for-user-exploratory-testing",
+  "userRequest": "Put the implementation in the primary workspace for the user to test; defer release packaging/signing/install-upgrade acceptance.",
+  "primaryWorkspace": "/Volumes/ZHITAI/Workspace/future-os",
+  "primaryBranch": "test/headless-primary",
+  "candidate": "a0d4d8402064dab1b82b0ad39bbd645837446236",
+  "implementationParent": "c04c3ecb065dbdd10328d6b14d04c1b4c3ba8bc9",
+  "mainUnchanged": "904eab2b1ebc8b7c963ddfb15dd9468c420e3f35",
+  "preservedUserState": {
+    "path": "skills",
+    "originalIndexGitlink": "26c0df56bc788dc2a8fb5761211ec0f7680b5071",
+    "userCheckout": "1ece3554ee8bf6f754970f820a68f32e98115730",
+    "statusAfterHandoff": "M skills only"
+  },
+  "build": {
+    "command": "cargo build -p future-cli -p futureos --bin future --bin futureos --offline --locked",
+    "result": "passed",
+    "profile": "debug",
+    "target": "aarch64-apple-darwin",
+    "seconds": 41.3,
+    "version": "0.0.2-a0d4d840+local.dirty",
+    "identityVerified": true,
+    "dirtyReason": "Preserved pre-existing skills submodule checkout; no implementation changes in primary index/worktree."
+  },
+  "earlyProbes": [
+    {
+      "command": "target/debug/future version --json",
+      "exitCode": 0,
+      "gitCommit": "a0d4d8402064dab1b82b0ad39bbd645837446236"
+    },
+    {
+      "command": "target/debug/future headless --help",
+      "exitCode": 0
+    }
+  ],
+  "notPerformed": [
+    "Application launch",
+    "Release packaging",
+    "Signing",
+    "Installation/upgrade",
+    "Unit/NATS tests",
+    "User manual acceptance"
+  ],
+  "ciLimitation": "CI 39385601564 validates older fac28351, has known failures, and is not accepted as passing. Current Windows repairs await CI.",
+  "handoffRule": "Keep primary source and runnable artifacts stable while the user tests. Continue implementation in its isolated worktree and do not silently update the primary test branch or overwrite its binaries."
+}

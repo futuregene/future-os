@@ -11568,7 +11568,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_sandbox_helper_request_is_dispatched_before_any_startup",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/build_info.rs:54:release_channel_derives_from_version_prefix",
@@ -11949,7 +11957,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/test_support/command_agent.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-fixture"
+      "ownershipDecision": "host-fixture",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "test_support::command_agent::tests::mock_answers_the_scripted_commands",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/agent_mock.rs:148:mock_down_mode_is_indistinguishable_from_a_dead_agent",
@@ -11961,7 +11977,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/test_support/command_agent.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-fixture"
+      "ownershipDecision": "host-fixture",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "test_support::command_agent::tests::mock_down_mode_is_indistinguishable_from_a_dead_agent",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/agent_mock.rs:178:failed_enumeration_surfaces_as_a_rejection",
@@ -11973,7 +11997,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/test_support/command_agent.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-fixture"
+      "ownershipDecision": "host-fixture",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "test_support::command_agent::tests::failed_enumeration_surfaces_as_a_rejection",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/app.rs:34:build_info_mirrors_the_crate_constant",
@@ -12021,7 +12053,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/approvals.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-approval"
+      "ownershipDecision": "host-approval",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::approvals::tests::list_approval_assessments_command_projects_the_recorded_rows",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/approvals.rs:211:list_approval_requests_returns_the_threads_pending_approval",
@@ -12033,7 +12073,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/approvals.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-approval"
+      "ownershipDecision": "host-approval",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::approvals::tests::list_approval_requests_returns_the_threads_pending_approval",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/approvals.rs:223:pending_approvals_span_threads",
@@ -12045,7 +12093,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/approvals.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-approval"
+      "ownershipDecision": "host-approval",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::approvals::tests::pending_approvals_span_threads",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/approvals.rs:231:decide_approval_notifies_the_agent_and_persists",
@@ -12069,7 +12125,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/approvals.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-approval"
+      "ownershipDecision": "host-approval",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::approvals::tests::decide_approval_cancels_when_the_agent_says_stale",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/approvals.rs:282:save_approval_rule_writes_and_injects",
@@ -12081,7 +12145,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/approvals.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-approval"
+      "ownershipDecision": "host-approval",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::approvals::tests::save_approval_rule_writes_and_injects",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/approvals.rs:304:save_approval_rules_writes_and_injects_all",
@@ -12093,7 +12165,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/approvals.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-approval"
+      "ownershipDecision": "host-approval",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::approvals::tests::save_approval_rules_writes_and_injects_all",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/approvals.rs:334:save_approval_rule_errors_for_unknown_thread",
@@ -12105,7 +12185,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/approvals.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-approval"
+      "ownershipDecision": "host-approval",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::approvals::tests::save_approval_rule_errors_for_unknown_thread",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/approvals.rs:347:save_approval_rule_rejects_an_invalid_access_scope",
@@ -12117,7 +12205,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/approvals.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-approval"
+      "ownershipDecision": "host-approval",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::approvals::tests::save_approval_rule_rejects_an_invalid_access_scope",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/artifacts.rs:75:create_list_and_delete_round_trip",
@@ -13418,7 +13514,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/review.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-review"
+      "ownershipDecision": "host-review",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::review::tests::get_workspace_review_capabilities_errors_for_unknown_workspace",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/review.rs:159:get_workspace_review_capabilities_reports_a_non_git_workspace",
@@ -13430,7 +13534,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/review.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-review"
+      "ownershipDecision": "host-review",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::review::tests::get_workspace_review_capabilities_reports_a_non_git_workspace",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/review.rs:170:get_workspace_review_capabilities_marks_oversized_non_git_workspaces",
@@ -13442,7 +13554,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/review.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-review"
+      "ownershipDecision": "host-review",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::review::tests::get_workspace_review_capabilities_marks_oversized_non_git_workspaces",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/review.rs:183:get_workspace_review_capabilities_reports_a_git_workspace",
@@ -13454,7 +13574,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/review.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-review"
+      "ownershipDecision": "host-review",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::review::tests::get_workspace_review_capabilities_reports_a_git_workspace",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/review.rs:203:get_last_run_review_is_none_without_a_changeset",
@@ -13466,7 +13594,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/review.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-review"
+      "ownershipDecision": "host-review",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::review::tests::get_last_run_review_is_none_without_a_changeset",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/review.rs:212:get_last_run_review_returns_the_changeset_after_a_capture",
@@ -13490,7 +13626,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/review.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-review"
+      "ownershipDecision": "host-review",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::review::tests::retry_run_review_errors_for_an_unknown_run",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/review.rs:240:retry_run_review_returns_the_changeset_after_a_capture",
@@ -13502,7 +13646,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/review.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-review"
+      "ownershipDecision": "host-review",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::review::tests::retry_run_review_returns_the_changeset_after_a_capture",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/review.rs:262:get_git_review_errors_for_unknown_workspace",
@@ -13514,7 +13666,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/review.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-review"
+      "ownershipDecision": "host-review",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::review::tests::get_git_review_errors_for_unknown_workspace",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/review.rs:268:get_git_review_reports_a_non_git_workspace",
@@ -13526,7 +13686,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/review.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-review"
+      "ownershipDecision": "host-review",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::review::tests::get_git_review_reports_a_non_git_workspace",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/review.rs:278:get_git_review_reports_a_git_workspace",
@@ -13538,7 +13706,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/review.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-review"
+      "ownershipDecision": "host-review",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::review::tests::get_git_review_reports_a_git_workspace",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/review.rs:295:get_last_run_review_errors_when_changeset_lookup_fails",
@@ -13550,7 +13726,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/review.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-review"
+      "ownershipDecision": "host-review",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::review::tests::get_last_run_review_errors_when_changeset_lookup_fails",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/review.rs:307:get_last_run_review_errors_when_file_changes_lookup_fails",
@@ -13562,7 +13746,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/review.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-review"
+      "ownershipDecision": "host-review",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::review::tests::get_last_run_review_errors_when_file_changes_lookup_fails",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:321:async_command_wrappers_reject_malformed_bodies",
@@ -13598,7 +13790,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::update_run_status_returns_the_row_truth",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:396:update_run_status_errors_on_a_ghost_run",
@@ -13610,7 +13810,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::update_run_status_errors_on_a_ghost_run",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:408:list_run_events_reads_the_agent_journal",
@@ -13622,7 +13830,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::list_run_events_reads_the_agent_journal",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:429:list_run_events_maps_agent_journal_rows_into_records",
@@ -13634,7 +13850,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::list_run_events_maps_agent_journal_rows_into_records",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:485:list_run_events_reads_a_retired_runs_projection_snapshot",
@@ -13646,7 +13870,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::list_run_events_reads_a_retired_runs_projection_snapshot",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:516:list_run_events_since_trims_a_projection_snapshot_to_the_cursor",
@@ -13658,7 +13890,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::list_run_events_since_trims_a_projection_snapshot_to_the_cursor",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:580:list_run_events_reports_agent_unavailable",
@@ -13670,7 +13910,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::list_run_events_reports_agent_unavailable",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:594:list_run_events_since_negative_delegates",
@@ -13682,7 +13930,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::list_run_events_since_negative_delegates",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:608:list_run_events_since_reads_the_agent_when_up",
@@ -13694,7 +13950,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::list_run_events_since_reads_the_agent_when_up",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:631:list_run_events_since_propagates_rejection",
@@ -13706,7 +13970,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::list_run_events_since_propagates_rejection",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:651:list_run_events_since_incremental_reports_unavailable",
@@ -13718,7 +13990,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::list_run_events_since_incremental_reports_unavailable",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:665:agent_events_treats_a_non_array_events_field_as_empty",
@@ -13730,7 +14010,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::agent_events_treats_a_non_array_events_field_as_empty",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:686:list_run_events_bulk_keeps_non_empty_runs",
@@ -13742,7 +14030,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::list_run_events_bulk_keeps_non_empty_runs",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:710:tool_events_since_reads_the_agent_when_up",
@@ -13754,7 +14050,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::tool_events_since_reads_the_agent_when_up",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:736:tool_rows_are_mapped_onto_records",
@@ -13766,7 +14070,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::tool_rows_are_mapped_onto_records",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:802:a_tool_page_that_does_not_advance_the_cursor_is_refused",
@@ -13778,7 +14090,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::a_tool_page_that_does_not_advance_the_cursor_is_refused",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:835:an_advancing_tool_page_is_followed_and_a_repeat_is_refused",
@@ -13790,7 +14110,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::an_advancing_tool_page_is_followed_and_a_repeat_is_refused",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:884:an_incomplete_tool_row_is_reported",
@@ -13802,7 +14130,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::an_incomplete_tool_row_is_reported",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:929:tool_outputs_are_mapped_including_the_error_shape",
@@ -13814,7 +14150,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::tool_outputs_are_mapped_including_the_error_shape",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:989:tool_bulk_readers_return_one_entry_per_run",
@@ -13826,7 +14170,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::tool_bulk_readers_return_one_entry_per_run",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:1017:list_run_events_bulk_skips_empty_runs",
@@ -13838,7 +14190,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::list_run_events_bulk_skips_empty_runs",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:1032:tool_readers_report_agent_unavailable",
@@ -13850,7 +14210,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::tool_readers_report_agent_unavailable",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:1056:list_tool_calls_errors_on_an_unknown_run",
@@ -13862,7 +14230,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::list_tool_calls_errors_on_an_unknown_run",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:1068:abort_run_cancels_locally_when_the_agent_is_down",
@@ -13874,7 +14250,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::abort_run_cancels_locally_when_the_agent_is_down",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/runs.rs:1082:abort_run_errors_for_a_missing_thread",
@@ -13886,7 +14270,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/runs.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-run-query"
+      "ownershipDecision": "host-run-query",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::runs::tests::abort_run_errors_for_a_missing_thread",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/settings.rs:28:settings_round_trip",
@@ -13946,7 +14338,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/skills.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-skills"
+      "ownershipDecision": "host-skills",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::skills::tests::refresh_and_the_daily_recommendation_budget_round_trip",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/skills.rs:212:a_skill_suggestion_is_forwarded_and_a_refusal_maps_to_none",
@@ -13958,7 +14358,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/skills.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-skills"
+      "ownershipDecision": "host-skills",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::skills::tests::a_skill_suggestion_is_forwarded_and_a_refusal_maps_to_none",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/skills.rs:249:skill_guide_still_uses_the_platform_endpoint",
@@ -14252,7 +14660,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::batch_delete_reports_a_failed_selection_and_keeps_going",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:717:a_selection_whose_session_will_not_stop_is_reported",
@@ -14264,7 +14680,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::a_selection_whose_session_will_not_stop_is_reported",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:756:create_thread_command_creates_a_chat_thread",
@@ -14276,7 +14700,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::create_thread_command_creates_a_chat_thread",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:771:fork_thread_errors_for_an_unknown_thread",
@@ -14288,7 +14720,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::fork_thread_errors_for_an_unknown_thread",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:781:attach_remote_stream_errors_for_an_unknown_thread",
@@ -14300,7 +14740,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::attach_remote_stream_errors_for_an_unknown_thread",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:787:list_streaming_thread_ids_is_empty_when_the_agent_call_errors",
@@ -14312,7 +14760,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::list_streaming_thread_ids_is_empty_when_the_agent_call_errors",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:799:sync_title_best_effort_logs_through_a_store_failure",
@@ -14324,7 +14780,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::sync_title_best_effort_logs_through_a_store_failure",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:813:thread_read_and_pin_commands_round_trip",
@@ -14348,7 +14812,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::get_thread_cleanup_summary_delegates",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:853:observe_session_requires_both_ids",
@@ -14360,7 +14832,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::observe_session_requires_both_ids",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:860:reconcile_thread_workspace_handles_missing_and_empty_cwd",
@@ -14372,7 +14852,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::reconcile_thread_workspace_handles_missing_and_empty_cwd",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:870:list_streaming_thread_ids_is_empty_when_agent_down",
@@ -14384,7 +14872,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::list_streaming_thread_ids_is_empty_when_agent_down",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:887:list_streaming_thread_ids_maps_streaming_sessions_to_threads",
@@ -14396,7 +14892,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::list_streaming_thread_ids_maps_streaming_sessions_to_threads",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:912:get_thread_agent_state_without_session_returns_null_payload",
@@ -14408,7 +14912,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::get_thread_agent_state_without_session_returns_null_payload",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:924:get_thread_agent_state_errors_for_unknown_thread",
@@ -14420,7 +14932,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::get_thread_agent_state_errors_for_unknown_thread",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:930:compact_thread_context_targets_the_thread_session",
@@ -14432,7 +14952,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::compact_thread_context_targets_the_thread_session",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:950:compact_thread_context_requires_an_existing_session",
@@ -14444,7 +14972,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::compact_thread_context_requires_an_existing_session",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:958:compact_thread_context_rejects_empty_agent_data",
@@ -14456,7 +14992,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::compact_thread_context_rejects_empty_agent_data",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:973:mark_thread_opened_delegates_to_the_store",
@@ -14468,7 +15012,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::mark_thread_opened_delegates_to_the_store",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:985:get_session_entries_without_session_returns_empty",
@@ -14480,7 +15032,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::get_session_entries_without_session_returns_empty",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:995:archived_gui_history_is_visible_when_the_original_agent_database_is_missing",
@@ -14492,7 +15052,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::archived_gui_history_is_visible_when_the_original_agent_database_is_missing",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1054:rename_thread_maps_transport_errors",
@@ -14504,7 +15072,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::rename_thread_maps_transport_errors",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1074:delete_thread_drops_observer_when_the_tombstone_survives",
@@ -14516,7 +15092,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::delete_thread_drops_observer_when_the_tombstone_survives",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1096:list_streaming_thread_ids_is_empty_on_transport_error",
@@ -14528,7 +15112,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::list_streaming_thread_ids_is_empty_on_transport_error",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1114:generate_thread_title_returns_a_draft_without_renaming",
@@ -14540,7 +15132,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::generate_thread_title_returns_a_draft_without_renaming",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1149:rename_thread_propagates_to_the_agent_first",
@@ -14552,7 +15152,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::rename_thread_propagates_to_the_agent_first",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1169:rename_thread_rejects_an_empty_title_before_the_agent",
@@ -14564,7 +15172,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::rename_thread_rejects_an_empty_title_before_the_agent",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1182:rename_thread_surfaces_agent_rejection",
@@ -14576,7 +15192,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::rename_thread_surfaces_agent_rejection",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1201:update_thread_model_without_model_skips_the_agent",
@@ -14588,7 +15212,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::update_thread_model_without_model_skips_the_agent",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1216:update_thread_thinking_level_without_level_skips_the_agent",
@@ -14600,7 +15232,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::update_thread_thinking_level_without_level_skips_the_agent",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1230:archive_finished_runs_without_terminal_runs_returns_zero",
@@ -14612,7 +15252,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::archive_finished_runs_without_terminal_runs_returns_zero",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1238:rename_thread_tolerates_a_session_not_found_rejection",
@@ -14624,7 +15272,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::rename_thread_tolerates_a_session_not_found_rejection",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1261:update_thread_model_propagates_to_the_agent",
@@ -14636,7 +15292,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::update_thread_model_propagates_to_the_agent",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1278:update_thread_thinking_level_propagates_to_the_agent",
@@ -14648,7 +15312,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::update_thread_thinking_level_propagates_to_the_agent",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1294:delete_thread_tombstones_and_reconciles",
@@ -14660,7 +15332,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::delete_thread_tombstones_and_reconciles",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1313:delete_thread_stops_an_active_agent_session_first",
@@ -14672,7 +15352,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::delete_thread_stops_an_active_agent_session_first",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1373:delete_thread_succeeds_when_the_agent_never_had_the_session",
@@ -14684,7 +15372,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::delete_thread_succeeds_when_the_agent_never_had_the_session",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1423:batch_delete_removes_running_threads_whose_sessions_are_missing",
@@ -14696,7 +15392,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::batch_delete_removes_running_threads_whose_sessions_are_missing",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1457:batch_delete_threads_delegates",
@@ -14708,7 +15412,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::batch_delete_threads_delegates",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1474:delete_thread_takes_its_descendants_with_it",
@@ -14720,7 +15432,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::delete_thread_takes_its_descendants_with_it",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1498:batch_delete_does_not_report_a_cascaded_child_as_a_failure",
@@ -14732,7 +15452,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::batch_delete_does_not_report_a_cascaded_child_as_a_failure",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1525:get_thread_agent_state_reads_and_syncs_the_agent_title",
@@ -14744,7 +15472,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::get_thread_agent_state_reads_and_syncs_the_agent_title",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1547:get_session_entries_reads_the_agent_history",
@@ -14756,7 +15492,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::get_session_entries_reads_the_agent_history",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1567:get_session_entries_page_returns_one_page_and_cursor",
@@ -14768,7 +15512,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::get_session_entries_page_returns_one_page_and_cursor",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1599:get_session_entries_reads_typed_only_agent_history",
@@ -14780,7 +15532,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::get_session_entries_reads_typed_only_agent_history",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1625:archive_finished_runs_keeps_terminal_run_for_transcript_inspection",
@@ -14792,7 +15552,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::archive_finished_runs_keeps_terminal_run_for_transcript_inspection",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1653:update_thread_model_with_blank_model_skips_the_agent",
@@ -14804,7 +15572,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::update_thread_model_with_blank_model_skips_the_agent",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1677:get_session_entries_page_is_empty_for_a_thread_without_a_session",
@@ -14816,7 +15592,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::get_session_entries_page_is_empty_for_a_thread_without_a_session",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1695:update_thread_thinking_level_with_blank_level_skips_the_agent",
@@ -14828,7 +15612,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::update_thread_thinking_level_with_blank_level_skips_the_agent",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1712:list_streaming_thread_ids_is_empty_when_sessions_rejected",
@@ -14840,7 +15632,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::list_streaming_thread_ids_is_empty_when_sessions_rejected",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1728:get_thread_agent_state_errors_when_get_state_rejected",
@@ -14852,7 +15652,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::get_thread_agent_state_errors_when_get_state_rejected",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1743:get_thread_agent_state_errors_when_the_typed_payload_is_null",
@@ -14864,7 +15672,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::get_thread_agent_state_errors_when_the_typed_payload_is_null",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1769:get_session_entries_page_reports_a_missing_history_source",
@@ -14876,7 +15692,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::get_session_entries_page_reports_a_missing_history_source",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1805:get_thread_agent_state_skips_title_sync_without_session_name",
@@ -14888,7 +15712,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::get_thread_agent_state_skips_title_sync_without_session_name",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1822:get_session_entries_errors_when_agent_rejects",
@@ -14900,7 +15732,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::get_session_entries_errors_when_agent_rejects",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1837:get_thread_agent_state_returns_null_when_session_not_found",
@@ -14912,7 +15752,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::get_thread_agent_state_returns_null_when_session_not_found",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1861:get_session_entries_reports_missing_history",
@@ -14924,7 +15772,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::get_session_entries_reports_missing_history",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1888:deleting_a_thread_is_cancelled_when_the_agent_will_not_confirm_the_stop",
@@ -14936,7 +15792,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::deleting_a_thread_is_cancelled_when_the_agent_will_not_confirm_the_stop",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1930:attach_remote_stream_returns_the_active_run_id",
@@ -14948,7 +15812,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::attach_remote_stream_returns_the_active_run_id",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/threads.rs:1953:observe_session_ensures_an_observer_for_valid_ids",
@@ -14960,7 +15832,15 @@
       "plannedOwner": "future-host",
       "target": "host/src/application/threads.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "host-conversation"
+      "ownershipDecision": "host-conversation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "application::threads::tests::observe_session_ensures_an_observer_for_valid_ids",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/update.rs:466:app_maintenance_status_reports_the_cli_it_discovered",
@@ -15937,7 +16817,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/shutdown/service_entry_tests.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "shutdown::services::entry_tests::tests::concurrent_callers_share_one_worker_reason_and_terminal_result",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown/coordinator.rs:283:stalled_worker_reports_failure_and_late_completion_never_reopens_the_gate",
@@ -15948,7 +16836,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/shutdown/service_entry_tests.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "shutdown::services::entry_tests::tests::stalled_worker_reports_failure_and_late_completion_never_reopens_the_gate",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown/coordinator.rs:316:destructive_actions_are_exclusive_and_release_after_failure",
@@ -15971,7 +16867,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/shutdown/service_entry_tests.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "shutdown::services::entry_tests::tests::an_expired_budget_can_never_publish_cleanup_success",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown/coordinator.rs:378:a_budget_below_the_disconnect_notice_cap_expires_the_remote_publish",
@@ -15982,7 +16886,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/shutdown/service_entry_tests.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "shutdown::services::entry_tests::tests::a_budget_below_the_disconnect_notice_cap_expires_the_remote_publish",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown/coordinator.rs:428:a_stop_with_a_budget_reaches_the_runtime_builder_and_finishes",
@@ -15993,7 +16905,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/shutdown/service_entry_tests.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "shutdown::services::entry_tests::tests::a_stop_with_a_budget_reaches_the_runtime_builder_and_finishes",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown/coordinator.rs:457:a_quit_cannot_start_a_second_stop",
@@ -16028,7 +16948,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/shutdown/service_entry_tests.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643531,
+        "case": "shutdown::services::entry_tests::tests::worker_panic_is_shared_terminal_failure",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown.rs:376:ownership_requires_positive_terminal_evidence_and_preserves_active_or_queued_work",
@@ -18311,7 +19239,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/agent.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::agent::tests::shutdown_without_an_owned_service_is_a_noop",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/agent.rs:64:a_failed_host_is_reported_with_its_own_error",
@@ -18322,7 +19258,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/agent.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::agent::block_fixtures::a_failed_host_is_reported_with_its_own_error",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/agent.rs:118:host_fixture",
@@ -18333,7 +19277,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/agent.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::agent::block_fixtures::host_fixture",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:673:standalone_launch_takes_only_the_relay_flags",
@@ -18345,7 +19297,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::standalone_launch_takes_only_the_relay_flags",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:708:interrupt_drops_pending_startup_before_it_can_complete",
@@ -18357,7 +19317,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::interrupt_drops_pending_startup_before_it_can_complete",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:720:startup_errors_are_not_hidden_as_success",
@@ -18369,7 +19337,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::startup_errors_are_not_hidden_as_success",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:730:a_long_agent_start_is_explained_and_still_completes",
@@ -18381,7 +19357,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::a_long_agent_start_is_explained_and_still_completes",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:746:a_fast_agent_start_is_not_delayed_by_the_notice",
@@ -18393,7 +19377,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::a_fast_agent_start_is_not_delayed_by_the_notice",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:760:the_slow_startup_notice_points_at_the_log_and_a_host_kill",
@@ -18405,7 +19397,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::the_slow_startup_notice_points_at_the_log_and_a_host_kill",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:774:the_exit_hint_names_an_existing_log_only",
@@ -18417,7 +19417,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::the_exit_hint_names_an_existing_log_only",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:786:login_wait_honors_pending_slow_down_and_authorization",
@@ -18429,7 +19437,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::login_wait_honors_pending_slow_down_and_authorization",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:805:login_wait_retries_transient_failures_with_backoff",
@@ -18441,7 +19457,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::login_wait_retries_transient_failures_with_backoff",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:824:login_denial_expiry_and_http_failure_do_not_authorize",
@@ -18453,7 +19477,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::login_denial_expiry_and_http_failure_do_not_authorize",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:871:interrupt_cancels_an_already_waiting_authorization_request",
@@ -18465,7 +19497,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::interrupt_cancels_an_already_waiting_authorization_request",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:907:qr_and_link_share_the_same_invitation_with_narrow_terminal_fallback",
@@ -18477,7 +19517,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::qr_and_link_share_the_same_invitation_with_narrow_terminal_fallback",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:922:invitation_contains_all_mobile_identity_fields_and_is_ready_only",
@@ -18489,7 +19537,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::invitation_contains_all_mobile_identity_fields_and_is_ready_only",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:1031:the_builtin_skill_bootstrap_runs_the_cli",
@@ -18501,7 +19557,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::the_builtin_skill_bootstrap_runs_the_cli",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:1065:a_failing_builtin_skill_bootstrap_is_ignored",
@@ -18513,7 +19577,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::a_failing_builtin_skill_bootstrap_is_ignored",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:1093:a_cli_whose_interpreter_vanished_after_discovery_is_reported_and_skipped",
@@ -18525,7 +19597,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::a_cli_whose_interpreter_vanished_after_discovery_is_reported_and_skipped",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:1163:a_missing_cli_skips_the_builtin_skill_bootstrap",
@@ -18537,7 +19617,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::a_missing_cli_skips_the_builtin_skill_bootstrap",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:1178:an_accepted_platform_key_needs_no_terminal",
@@ -18549,7 +19637,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::an_accepted_platform_key_needs_no_terminal",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:1195:a_rejected_platform_key_is_reported_as_expired_authorization",
@@ -18561,7 +19657,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::a_rejected_platform_key_is_reported_as_expired_authorization",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:1216:a_network_failure_while_checking_the_platform_login_is_not_a_logout",
@@ -18573,7 +19677,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::a_network_failure_while_checking_the_platform_login_is_not_a_logout",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:1279:login_wait_gives_up_after_persistent_malformed_replies",
@@ -18585,7 +19697,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::login_wait_gives_up_after_persistent_malformed_replies",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:1295:login_wait_backs_off_after_a_malformed_reply",
@@ -18597,7 +19717,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::login_wait_backs_off_after_a_malformed_reply",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:1317:an_unencodable_invitation_falls_back_to_the_link",
@@ -18609,7 +19737,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::an_unencodable_invitation_falls_back_to_the_link",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:1327:pairing_link_rejects_codes_that_are_not_v2_invitations",
@@ -18621,7 +19757,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::pairing_link_rejects_codes_that_are_not_v2_invitations",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/headless/mod.rs:1376:print_invitation_writes_the_link_and_the_qr",
@@ -18633,7 +19777,15 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "migrated-pending-unified-validation",
-      "ownershipDecision": "cli-entry"
+      "ownershipDecision": "cli-entry",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "headless::tests::print_invitation_writes_the_link_and_the_qr",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/src/host_environment.rs:61:a_host_without_a_resolvable_cli_still_starts_logging",
@@ -34916,7 +36068,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "standalone_help_and_invalid_arguments_have_no_startup_side_effects",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:91:relay_flags_are_accepted_in_both_spellings",
@@ -34927,7 +36087,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "relay_flags_are_accepted_in_both_spellings",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:121:a_plain_launch_needs_no_headless_flag",
@@ -34938,7 +36106,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_plain_launch_needs_no_headless_flag",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:134:first_setup_refuses_redirected_logs_without_printing_authorization_material",
@@ -34949,7 +36125,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "first_setup_refuses_redirected_logs_without_printing_authorization_material",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:147:occupied_data_directory_exits_cleanly_without_startup_side_effects",
@@ -34960,7 +36144,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "occupied_data_directory_exits_cleanly_without_startup_side_effects",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:179:corrupt_credentials_are_not_overwritten_or_treated_as_signed_out",
@@ -34971,7 +36163,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "corrupt_credentials_are_not_overwritten_or_treated_as_signed_out",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:194:gui_free_build_points_to_standalone_entrypoint",
@@ -34993,7 +36193,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "terminal_signals_cancel_startup_and_leave_the_external_endpoint_alone",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:647:a_deferred_remote_start_keeps_serving_and_stops_on_a_signal",
@@ -35004,7 +36212,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_deferred_remote_start_keeps_serving_and_stops_on_a_signal",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:721:a_login_change_while_supervising_stops_the_run_with_that_reason",
@@ -35015,7 +36231,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_login_change_while_supervising_stops_the_run_with_that_reason",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:808:a_revoked_pairing_stops_the_run_with_the_reason_and_drops_the_credential",
@@ -35026,7 +36250,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_revoked_pairing_stops_the_run_with_the_reason_and_drops_the_credential",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/headless_cli.rs:865:a_non_auto_agent_mode_never_starts_an_embedded_agent",
@@ -35037,7 +36269,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/headless_cli.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_non_auto_agent_mode_never_starts_an_embedded_agent",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:779:a_broker_that_refuses_the_credential_is_reported",
@@ -35048,7 +36288,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_broker_that_refuses_the_credential_is_reported",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:841:an_unreadable_revoke_queue_is_reported_and_the_refusal_still_stands",
@@ -35059,7 +36307,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "an_unreadable_revoke_queue_is_reported_and_the_refusal_still_stands",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:879:a_device_request_is_answered_by_the_running_headless_desktop",
@@ -35070,7 +36326,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_device_request_is_answered_by_the_running_headless_desktop",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:978:a_live_broker_drives_the_generation_watch_and_reconnect",
@@ -35081,7 +36345,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_live_broker_drives_the_generation_watch_and_reconnect",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1063:a_healthy_generation_resets_the_budget_and_a_retryable_reconnect_arms_the_retry",
@@ -35092,7 +36364,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_healthy_generation_resets_the_budget_and_a_retryable_reconnect_arms_the_retry",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1172:a_retry_that_cannot_be_classified_ends_the_worker_and_rearms_it",
@@ -35103,7 +36383,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_retry_that_cannot_be_classified_ends_the_worker_and_rearms_it",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1227:a_freshly_refreshed_credential_rejected_on_a_live_link_is_terminal",
@@ -35114,7 +36402,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_freshly_refreshed_credential_rejected_on_a_live_link_is_terminal",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1279:a_reconnect_for_a_device_the_book_no_longer_holds_stops_that_runtime",
@@ -35125,7 +36421,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_reconnect_for_a_device_the_book_no_longer_holds_stops_that_runtime",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1362:a_reconnect_with_a_pre_v2_slot_forgets_it",
@@ -35139,7 +36443,15 @@
       "status": "migrated-pending-unified-validation",
       "validationEvidence": [
         "docs/testing/headless-remote-start-repair-2026-10-20.json"
-      ]
+      ],
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_reconnect_with_a_pre_v2_slot_forgets_it",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1435:a_revoked_answer_is_forgotten_whichever_ask_receives_it",
@@ -35150,7 +36462,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_revoked_answer_is_forgotten_whichever_ask_receives_it",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1524:a_reconnect_refreshes_the_credential_and_rebuilds_the_slot",
@@ -35161,7 +36481,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_reconnect_refreshes_the_credential_and_rebuilds_the_slot",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1606:the_reconnect_budget_exhausts_into_a_terminal_watch",
@@ -35172,7 +36500,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "the_reconnect_budget_exhausts_into_a_terminal_watch",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/remote_start_refusal.rs:1683:a_reconnect_whose_rebuild_cannot_connect_is_retryable",
@@ -35183,7 +36519,15 @@
       "ignored": false,
       "plannedOwner": "future-cli",
       "target": "cli/tests/remote_start_refusal.rs",
-      "status": "migrated-pending-unified-validation"
+      "status": "migrated-pending-unified-validation",
+      "priorCandidateCi": {
+        "runId": 39385601564,
+        "commit": "fac2835159de7faa4814a40dd4752dd9f55b26fd",
+        "jobId": 118504643570,
+        "case": "a_reconnect_whose_rebuild_cannot_connect_is_retryable",
+        "result": "passed",
+        "scope": "Earlier candidate passed this owner suite; overall run failed and current candidate revalidation remains required."
+      }
     },
     {
       "key": "desktop/src-tauri/tests/windows_stack.rs:16:the_desktop_binary_uses_the_windows_gui_subsystem",
