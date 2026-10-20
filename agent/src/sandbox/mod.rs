@@ -516,13 +516,11 @@ pub fn shell_invocation(command: &str) -> (&'static str, Vec<String>) {
 ///   failure cannot turn a successful user command into `exit 1`.
 ///
 ///   Constrained Language Mode also rejects the `[Console]::OutputEncoding`
-///   setter outright, so a restricted PowerShell 5.1 keeps emitting in its
-///   console output code page no matter what this script does. With stdout
-///   redirected to a pipe there is no console, so `[Console]::OutputEncoding`
-///   resolves to the OEM code page (`GetOEMCP`), not the ANSI code page
-///   (`GetACP`); the reader decodes it back with
-///   [`decode_restricted_shell_output`] (OEM for 5.1, UTF-8 for pwsh 7).
-///   pwsh 7 always emits UTF-8 and is unaffected by either restriction.
+///   setter outright. Without a console, the initial output code page can be
+///   OEM and lose characters before capture. The native restricted runner sets
+///   its hidden private console to UTF-8 before starting PowerShell, so the
+///   cached output writer has the correct encoding from its first use. The
+///   capture reader retains OEM fallback for legacy native tools.
 /// - `$ProgressPreference = 'SilentlyContinue'` suppresses progress records
 ///   (e.g. "Preparing modules for first use"). When powershell.exe's stderr is
 ///   a redirected pipe, PS 5.1 serializes such records as CLIXML (`#< CLIXML …`)
@@ -559,16 +557,10 @@ fn encode_powershell_command(script: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(utf16)
 }
 
-/// Decode captured shell output using the system legacy OEM code page
-/// (`GetOEMCP`). Windows PowerShell 5.1 running under a WRITE_RESTRICTED token
-/// enters Constrained Language Mode, where it cannot assign
-/// `[Console]::OutputEncoding`; with stdout redirected to a pipe there is no
-/// console, so that property resolves to the OEM code page rather than the ANSI
-/// code page. On CJK locales the two coincide (e.g. both 936/GBK), which hides
-/// the distinction, but on Western/Russian/Greek locales they differ (ANSI
-/// 1252 vs OEM 437/850, 1251 vs 866, 1253 vs 737), so decoding with `CP_ACP`
-/// would corrupt non-ASCII output there. pwsh 7 hard-codes UTF-8 and is
-/// unaffected; callers only use this for the 5.1 restricted path.
+/// Decode legacy native-tool output using the system OEM code page.
+/// The Windows shell is configured for UTF-8, but a native executable may
+/// still choose OEM bytes. Use CP_OEMCP rather than CP_ACP: on Western,
+/// Russian and Greek locales the ANSI and OEM code pages differ.
 #[cfg(target_os = "windows")]
 pub(crate) fn decode_oem_lossy(bytes: &[u8]) -> String {
     use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_OEMCP};
@@ -608,16 +600,13 @@ pub(crate) fn decode_oem_lossy(bytes: &[u8]) -> String {
     String::from_utf16_lossy(&wide)
 }
 
-/// Decode output captured from a restricted Windows shell. Windows PowerShell
-/// 5.1 cannot set UTF-8 under Constrained Language Mode and therefore emits in
-/// its console output code page, which is the OEM code page when stdout is a
-/// pipe; pwsh 7 always emits UTF-8. Everything else is UTF-8.
+/// The restricted runner starts PowerShell with a UTF-8 private console.
+/// Preserve a fallback for native tools that still emit legacy OEM bytes.
 #[cfg(target_os = "windows")]
 pub(crate) fn decode_restricted_shell_output(bytes: &[u8]) -> String {
-    if windows_shell().program == "powershell" {
-        decode_oem_lossy(bytes)
-    } else {
-        String::from_utf8_lossy(bytes).into_owned()
+    match std::str::from_utf8(bytes) {
+        Ok(text) => text.to_owned(),
+        Err(_) => decode_oem_lossy(bytes),
     }
 }
 

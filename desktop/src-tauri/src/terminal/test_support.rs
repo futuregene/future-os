@@ -129,11 +129,12 @@ pub fn cursor_query_command() -> (PathBuf, Vec<String>) {
 /// A child that exits only after consuming the exact cursor-position reply.
 /// Raw input avoids waiting for a newline; the handshake keeps a loaded host
 /// from replying after the child has already closed its PTY.
+/// Absolute utilities also survive sibling fixtures temporarily replacing PATH.
 #[cfg(unix)]
 pub fn query_then_marker_command() -> (PathBuf, Vec<String>) {
     script_command(
-        "stty -echo -icanon min 1 time 0; printf '\\033[6n'; \
-         reply=$(dd bs=1 count=6 2>/dev/null); \
+        "/bin/stty -echo -icanon min 1 time 0 || exit; printf '\\033[6n'; \
+         reply=$(/bin/dd bs=1 count=6 2>/dev/null); \
          test \"$reply\" = \"$(printf '\\033[1;1R')\" && printf 'answered'",
     )
 }

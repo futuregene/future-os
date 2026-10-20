@@ -1111,7 +1111,7 @@ mod tests {
                 .into_bytes(),
             )
         } else {
-            "not-an-update-url".to_string()
+            "http://127.0.0.1:1/not-fetched".to_string()
         };
         let app = tauri::test::mock_app();
         let status = check_app_update_impl(
@@ -1143,7 +1143,7 @@ mod tests {
                 manifest_json("1.2.0", "http://127.0.0.1:1/not-fetched"),
             )
         } else {
-            "not-an-update-url".to_string()
+            "http://127.0.0.1:1/not-fetched".to_string()
         };
         let app = mock_app_with_updater(&[&manifest_url]);
         let status = check_app_update_impl(

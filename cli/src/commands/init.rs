@@ -298,44 +298,64 @@ mod tests {
         (code, stdout, stderr)
     }
 
-    /// The POSIX link flow also runs on Windows when the platform is
-    /// overridden: only *creating the symlink* needs a privilege this host
-    /// does not have (no administrator/developer mode — probed). Everything
-    /// before it must therefore execute here — the home directory, the
-    /// `realpath` of the executable, the basename check, the sibling-agent
-    /// probe and the `~/.future/bin` creation — and the failure must be the
-    /// link step, not one of the earlier refusals.
+    #[cfg(windows)]
+    async fn symlinks_available(source: &Path, root: &Path) -> bool {
+        let probe = root.join("symlink-probe");
+        match create_symlink(source, &probe).await {
+            Ok(()) => {
+                tokio::fs::remove_file(probe).await.unwrap();
+                true
+            }
+            Err(error) if error.raw_os_error() == Some(1314) => false,
+            Err(error) => panic!("probe Windows symlink privilege: {error}"),
+        }
+    }
+
+    /// The simulated POSIX install reaches the actual Windows link operation.
+    /// Hosted runners may have symlink privilege; verify the measured outcome
+    /// and the link target rather than assuming that privilege is absent.
     #[cfg(windows)]
     #[tokio::test]
     async fn posix_link_flow_reaches_symlink_creation() {
         let _guard = crate::test_env::lock_env().await;
         let root = tempfile::tempdir().unwrap();
         let (executable_path, home_dir) = create_unix_fixture(root.path()).await;
+        let can_link = symlinks_available(&executable_path, root.path()).await;
         let install_count = Arc::new(std::sync::atomic::AtomicI32::new(0));
         let (code, stdout, stderr) =
             run_init(&executable_path, &home_dir, install_count.clone(), "darwin").await;
-
-        // The install hook ran, so the flow is past the platform gate …
         assert_eq!(install_count.load(std::sync::atomic::Ordering::Relaxed), 1);
-        // … the bin directory was created before the link step …
         let bin_dir = home_dir.join(".future").join("bin");
         assert!(bin_dir.is_dir(), "the bin dir is created before linking");
-        // … and the command failed at the symlink step rather than earlier:
-        // each earlier refusal has its own message and none of them appeared.
-        assert_eq!(code, 1, "stdout: {stdout}");
-        assert!(
-            !stderr.contains("Cannot initialize command links from"),
-            "the executable was accepted: {stderr}"
-        );
-        assert!(
-            !stderr.contains("already exists and is not a symbolic link"),
-            "the destination was free: {stderr}"
-        );
-        assert!(!stderr.is_empty(), "the link failure is reported");
-        assert!(
-            !stdout.contains("Linked future"),
-            "nothing claims the link was made: {stdout}"
-        );
+        if can_link {
+            assert_eq!(code, 0, "stderr: {stderr}");
+            assert!(
+                stdout.contains("Linked future and future-agent into"),
+                "{stdout}"
+            );
+            for name in ["future", "future-agent"] {
+                let target = tokio::fs::read_link(bin_dir.join(name)).await.unwrap();
+                assert_eq!(
+                    target.canonicalize().unwrap(),
+                    root.path().join("app").join(name).canonicalize().unwrap()
+                );
+            }
+        } else {
+            assert_eq!(code, 1, "stdout: {stdout}");
+            assert!(
+                !stderr.contains("Cannot initialize command links from"),
+                "{stderr}"
+            );
+            assert!(
+                !stderr.contains("already exists and is not a symbolic link"),
+                "{stderr}"
+            );
+            assert!(
+                stderr.contains("1314"),
+                "the link privilege failure is reported: {stderr}"
+            );
+            assert!(!stdout.contains("Linked future"), "{stdout}");
+        }
     }
 
     /// A missing sibling `future-agent` is "no agent to link", not an error:
@@ -364,13 +384,21 @@ mod tests {
             !stderr.contains("future-agent"),
             "the absent sibling never becomes its own error: {stderr}"
         );
-        if cfg!(windows) {
-            // The `future` link is the step Windows cannot do without the
-            // symlink privilege — the flow got all the way there.
-            assert_eq!(code, 1, "stdout: {stdout}");
-        } else {
+        #[cfg(windows)]
+        let can_link = symlinks_available(&executable_path, root.path()).await;
+        #[cfg(not(windows))]
+        let can_link = true;
+        if can_link {
             assert_eq!(code, 0, "stderr: {stderr}");
             assert!(stdout.contains("Linked future into"), "{stdout}");
+            let target = tokio::fs::read_link(bin_dir.join("future")).await.unwrap();
+            assert_eq!(
+                target.canonicalize().unwrap(),
+                executable_path.canonicalize().unwrap()
+            );
+        } else {
+            assert_eq!(code, 1, "stdout: {stdout}");
+            assert!(stderr.contains("1314"), "{stderr}");
         }
     }
 

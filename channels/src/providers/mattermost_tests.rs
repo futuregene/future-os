@@ -662,23 +662,29 @@ async fn a_reset_socket_fails_the_pong_reply() {
     // A ping arrives while the socket is already dead: answering it must
     // fail, and the session must surface that as an unwritable socket.
     //
-    // The order matters and is the only thing that makes this test about the
-    // *pong*: the first action waits until the mock has received the auth
-    // challenge, so the challenge write demonstrably succeeded and the only
-    // write left to fail is the pong. Without that wait the reset can land
-    // first and the test passes on the challenge bail, which reports the same
-    // message (see `a_reset_socket_fails_the_auth_challenge_send`).
+    // Fail precisely the pong send. An OS reset races with reading the ping:
+    // Winsock may report the reset on read before the pong branch is reached.
+    // The real socket still carries the auth challenge and incoming ping.
     let (url, received) = spawn_ws(vec![
         WsAction::WaitForReceived {
             count: 1,
             timeout: std::time::Duration::from_secs(5),
         },
         WsAction::SendPing(b"keepalive".to_vec()),
-        WsAction::ResetTcp,
+        WsAction::Delay(std::time::Duration::from_secs(5)),
     ])
     .await;
     let ctx = crate::bridge::ProviderCtx::offline(&DEFINITION);
     let socket = ws::connect(&url, &[]).await.unwrap();
+    let socket = socket.with(|message| {
+        std::future::ready(if matches!(message, WsMessage::Pong(_)) {
+            Err(tokio_tungstenite::tungstenite::Error::Io(
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "pong write failed"),
+            ))
+        } else {
+            Ok(message)
+        })
+    });
     let sender: Arc<dyn ChannelSender> = Arc::new(NullSender);
     let allowlist = HashSet::new();
     let result = websocket_session(&ctx, sender, "token-1", "bot-id", &allowlist, socket).await;
