@@ -264,15 +264,35 @@ pub const SELECTIVE_EVENTS_FEATURE: &str = "selective_events_v1";
 ///   `sessions_activity`). The packet is then the only writer of a remote row's
 ///   ordering timestamp on this side: a live event moves no row, because a
 ///   client clock in that value is a row the next packet moves back.
-pub const DECLARED_FEATURES: [&str; 5] = [
+pub const DECLARED_FEATURES: [&str; 6] = [
     "event_coalescing_v1",
     "reply_gzip_v1",
     SELECTIVE_EVENTS_FEATURE,
     future_remote_protocol::LEAN_EVENTS_FEATURE,
     CATALOG_ACTIVITY_FEATURE,
+    // The promise that goes with this declaration: beats while this client is
+    // here, a goodbye when it leaves. A host that knows it presumes this client
+    // gone when the beats lapse, which is what keeps the Remote page from saying
+    // "in control" about a machine whose client was closed.
+    future_remote_protocol::CLIENT_PRESENCE_FEATURE,
 ];
 
-/// The session token a narrow `evt.` subscription may be built from.
+/// How often a connected client tells its host it is still there.
+///
+/// The host's lease is four beats (`CLIENT_PRESENCE_LEASE` in
+/// `future-remote-server`), so one lost beat is not a departure while a client
+/// that is really gone drops out of the page within a poll of a minute. The
+/// mobile client sends at the same interval (`packages/remote-client/src/client.ts`).
+pub const CLIENT_PRESENCE_BEAT: Duration = Duration::from_secs(15);
+/// How long one beat may wait for the socket before it is given up.
+const PRESENCE_BEAT_BUDGET: Duration = Duration::from_secs(5);
+/// A goodbye gets far less: the caller is closing the connection under it.
+const PRESENCE_GOODBYE_BUDGET: Duration = Duration::from_millis(750);
+/// How long the socket may take to drain the goodbye before it is dropped.
+pub(crate) const PRESENCE_CLOSE_BUDGET: Duration = Duration::from_millis(750);
+
+/// The session token a narrow `evt.` subscription may be built from is guarded
+/// against interpolation into a subject elsewhere; see [`SubscriptionToken`].
 ///
 /// The id is interpolated into a NATS subject, so a token that is not a plain
 /// identifier would not narrow anything: `*` or `>` would *widen* the
@@ -616,6 +636,78 @@ impl PeerSession {
     /// token, and `list` / `new` are its two non-session lanes.
     pub fn command_subject(&self, session_key: &str) -> String {
         command_subject(&self.pair_id, session_key)
+    }
+
+    /// Send one sealed command without waiting for a reply.
+    ///
+    /// Presence beats and the departure notice use this: they are proof and
+    /// courtesy rather than requests, and a client that had to wait for the host
+    /// to answer its goodbye would be closed before it could say it. Bounded by
+    /// the caller's own budget, never retried — the host's lease is what covers
+    /// a beat that never arrived.
+    pub async fn notify(
+        &self,
+        subject: &str,
+        payload: Value,
+        timeout: Duration,
+    ) -> Result<(), crate::Error> {
+        let plaintext = command_plaintext(payload, &self.bridge_instance_id)?;
+        let wire = self
+            .channel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .seal(subject, &plaintext)
+            .map_err(|_| crate::Error::Message("remote_secure_channel_invalid".into()))?;
+        // Publish *and flush*: a publish only queues the frame, and the socket is
+        // about to be closed under this one (`disconnect`, app exit). Waiting for
+        // the client's own periodic flush would lose the goodbye exactly when it
+        // matters — the last message a client ever sends is the one nobody can
+        // retry.
+        tokio::time::timeout(timeout, async {
+            self.client
+                .publish(subject.to_string(), wire.into())
+                .await
+                .map_err(|error| {
+                    crate::Error::RemoteTransport(format!("Remote publish failed: {error}"))
+                })?;
+            self.client.flush().await.map_err(|error| {
+                crate::Error::RemoteTransport(format!("Remote flush failed: {error}"))
+            })
+        })
+        .await
+        .map_err(|_| crate::Error::RemoteTransport("Remote publish timed out".into()))?
+    }
+
+    /// "I am still here."
+    ///
+    /// Sent on a timer for the life of this connection (`runtime::spawn_presence_beats`),
+    /// because an idle client says nothing else: without it, a host that knows
+    /// [`future_remote_protocol::CLIENT_PRESENCE_FEATURE`] would have to read
+    /// silence as absence, and every quiet minute would look like a departure.
+    pub async fn beat_presence(&self) -> Result<(), crate::Error> {
+        let subject = self.command_subject("client_presence");
+        self.notify(
+            &subject,
+            json!({ "type": "client_presence" }),
+            PRESENCE_BEAT_BUDGET,
+        )
+        .await
+    }
+
+    /// "I am leaving."
+    ///
+    /// `reason` is the difference between the two halves of leaving: `"disconnected"`
+    /// is the user's own stop and gives up the machine this device was driving,
+    /// while `"background"` only stops the host drawing it as present (a suspended
+    /// app comes back, and takes its machine with it).
+    pub async fn leave(&self, reason: &str) -> Result<(), crate::Error> {
+        let subject = self.command_subject("client_disconnect");
+        self.notify(
+            &subject,
+            json!({ "type": "client_disconnect", "reason": reason }),
+            PRESENCE_GOODBYE_BUDGET,
+        )
+        .await
     }
 
     /// Send one encrypted command and decode its reply.
@@ -1354,6 +1446,12 @@ mod tests {
     /// truthful while `useRemotePeers` applies the packet that replaces it —
     /// which is the *only* thing that moves a row on this side. Drop that applier
     /// without dropping this entry and the merged list stops re-ordering.
+    ///
+    /// `client_presence_v1` is a promise rather than a lane: the host reads a
+    /// lapsed beat as a departure, so it must only be declared while
+    /// `spawn_presence_beats` is actually beating on this connection. A client
+    /// that declared it and then went quiet would be reported gone while it was
+    /// sitting there.
     #[test]
     fn the_client_declares_the_lanes_its_decoders_expect() {
         for expected in [
@@ -1362,6 +1460,7 @@ mod tests {
             SELECTIVE_EVENTS_FEATURE,
             future_remote_protocol::LEAN_EVENTS_FEATURE,
             CATALOG_ACTIVITY_FEATURE,
+            future_remote_protocol::CLIENT_PRESENCE_FEATURE,
         ] {
             assert!(
                 DECLARED_FEATURES.contains(&expected),
@@ -1375,7 +1474,8 @@ mod tests {
                 "reply_gzip_v1",
                 "selective_events_v1",
                 "lean_events_v1",
-                "catalog_activity_v1"
+                "catalog_activity_v1",
+                "client_presence_v1"
             ])
         );
     }

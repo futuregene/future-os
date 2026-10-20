@@ -134,6 +134,14 @@ pub struct RemoteDevice {
     pub control: DeviceControl,
     /// Transport ready: the bridge is connected and serving this pairing.
     pub connected: bool,
+    /// Whether the device's client is at the other end.
+    ///
+    /// The other half of [`RemoteDevice::connected`], and deliberately kept
+    /// apart from it: a bridge can be serving a pairing whose client was
+    /// disconnected or force-quit, and reporting only the bridge is what let
+    /// the page say "in control" about a device that had left. `false` for an
+    /// unclaimed invitation — nobody is behind it yet.
+    pub present: bool,
     pub client: Option<ClientIdentity>,
     /// An invitation not yet claimed, for this device's slot.
     pub pairing_code: Option<String>,
@@ -149,6 +157,7 @@ impl std::fmt::Debug for RemoteDevice {
             .field("phase", &self.phase)
             .field("control", &self.control)
             .field("connected", &self.connected)
+            .field("present", &self.present)
             .field("client", &self.client)
             .field("has_pairing_code", &self.pairing_code.is_some())
             .finish_non_exhaustive()
@@ -223,6 +232,7 @@ mod tests {
             phase: RemotePhase::Ready,
             control: DeviceControl::Active,
             connected: true,
+            present: true,
             client: None,
             pairing_code: Some("private_device_invitation_fixture".into()),
             pairing_code_expires_at: Some(42),

@@ -5,7 +5,9 @@ pub struct StatusProjection {
     pub status: RemoteStatus,
     pub retry_web: Option<String>,
 }
-fn connected(state: &RemoteState) -> bool {
+/// Whether the bridge is up and serving: the transport half of a device's
+/// row. The client half is [`ClientLink`].
+pub(super) fn connected(state: &RemoteState) -> bool {
     state.client.connection_state() == async_nats::connection::State::Connected
         && !state.nats_health.is_terminal()
         && !state.cmd_task.is_finished()
@@ -113,6 +115,10 @@ impl Supervisor {
             .client_identity(pair_id)
             .and_then(|slot| slot.lock().unwrap().clone());
         let (pairing_code, pairing_code_expires_at) = pending_invitation(state, pair_id);
+        // Is the device's client at the other end? Read per pairing and without
+        // the bridge in the way: a client whose bridge is rebuilding is still
+        // sitting there, and the two facts are reported separately.
+        let present = self.client_link(pair_id).present();
         RemoteDevice {
             pair_id: pair_id.to_string(),
             phase,
@@ -121,6 +127,9 @@ impl Supervisor {
             // invitation on screen. Reporting otherwise would tell the user a
             // device is in the room.
             connected: is_connected && pairing_code.is_none(),
+            // An invitation has nobody behind it yet: the row is a code, and
+            // "present" would say somebody answered it.
+            present: present && pairing_code.is_none(),
             client,
             pairing_code,
             pairing_code_expires_at,

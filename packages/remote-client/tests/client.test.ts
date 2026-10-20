@@ -92,6 +92,9 @@ function socket() {
       pairId: "pair", bridgeInstanceId: "bridge", online: true, lastHeartbeatTs: Date.now() / 1000,
     } })) })),
     flush: jest.fn(async () => {}),
+    // Presence beats and the departure notice leave on this lane; recorded so a
+    // test can say which one left, and on which subject.
+    publish: jest.fn(async (...args: [string, Uint8Array]) => { void args; }),
     isClosed: () => connection.close.mock.calls.length > 0,
     close: jest.fn(async () => {
       for (const messages of subscriptions.values()) messages.end();
@@ -102,6 +105,7 @@ function socket() {
     connection: connection as unknown as NatsConnection,
     close: connection.close,
     flush: connection.flush,
+    publish: connection.publish,
     subscriptions,
   };
 }
@@ -152,7 +156,7 @@ describe("RemoteClient connection handoff", () => {
     // This suite mocks the handshake, so mock its installed record layer too.
     // secureClient.test.ts exercises the actual cryptographic boundary.
     const boundary = client as unknown as { secureChannels: WeakMap<object, unknown>; secureRequest: (connection: NatsConnection, subject: string, bytes: Uint8Array, timeout: number) => Promise<Msg> };
-    jest.spyOn(boundary.secureChannels, "get").mockReturnValue({ open: (_: string, bytes: Uint8Array) => bytes, destroy: () => {} });
+    jest.spyOn(boundary.secureChannels, "get").mockReturnValue({ open: (_: string, bytes: Uint8Array) => bytes, seal: (_: string, bytes: Uint8Array) => bytes, destroy: () => {} });
     boundary.secureRequest = (connection, subject, bytes, timeout) => connection.request(subject, bytes, { timeout });
   });
 
@@ -160,6 +164,43 @@ describe("RemoteClient connection handoff", () => {
     await client.close();
     jest.useRealTimers();
     jest.restoreAllMocks();
+  });
+
+  // The desktop reads a lapsed beat as a departure (`client_presence_v1`), so a
+  // client that stops beating while it is still connected is reported gone. The
+  // timer is the promise; this is the half that has to actually keep it.
+  test("a connected client keeps beating so the desktop does not read it as gone", async () => {
+    const live = socket();
+    (wsconnect as jest.Mock).mockResolvedValue(live.connection);
+    await client.open();
+    // The suite stubs `activateSecureChannel`, so the beats are started by hand:
+    // that method is what declares the capability and starts this timer.
+    (client as unknown as { startPresenceBeats: () => void }).startPresenceBeats();
+    await jest.advanceTimersByTimeAsync(15_000);
+    const beats = live.publish.mock.calls.filter(([subject]) =>
+      String(subject) === `p.${credentials.pairId}.cmd.client_presence`);
+    expect(beats.length).toBeGreaterThanOrEqual(2);
+  });
+
+  // Disconnecting is the user's own stop, and the desktop has to hear it at that
+  // moment: without a goodbye the row keeps saying "in control" until the lease
+  // lapses. It is also the last message this client ever sends, so it is flushed
+  // before the socket goes rather than left in the write buffer.
+  test("a user's disconnect says goodbye before the socket closes", async () => {
+    const live = socket();
+    (wsconnect as jest.Mock).mockResolvedValue(live.connection);
+    await client.open();
+
+    await client.close();
+
+    const goodbye = live.publish.mock.calls.find(([subject]) =>
+      String(subject) === `p.${credentials.pairId}.cmd.client_disconnect`);
+    expect(goodbye).toBeDefined();
+    expect(JSON.parse(new TextDecoder().decode(goodbye![1] as Uint8Array))).toEqual({
+      type: "client_disconnect",
+      reason: "disconnected",
+    });
+    expect(live.flush).toHaveBeenCalled();
   });
 
   test.each(["suspended", "running"])("long background does not consume recovery budget (%s timers)", async mode => {
@@ -570,6 +611,10 @@ describe("RemoteClient connection handoff", () => {
         "reply_gzip_v1",
         "lean_events_v1",
         "catalog_activity_v1",
+        // A promise, not a lane: the desktop reads a lapsed beat as a
+        // departure, so it is only truthful while `startPresenceBeats` is
+        // beating on this connection (see the presence tests below).
+        "client_presence_v1",
       ],
       deviceName: "Pixel 8",
       deviceKind: "mobile",

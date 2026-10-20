@@ -4417,4 +4417,133 @@ mod slot_tests {
         );
         task.abort();
     }
+
+    /// Whether the device's *client* is there is not a question the bridge can
+    /// answer, and the row reports the two separately.
+    ///
+    /// This is the stale row the Remote page used to draw: a pairing the machine
+    /// keeps serving looks `connected` forever, so the page said "in control"
+    /// about a device whose user had just disconnected. Only a message from that
+    /// client makes it present, and leaving takes it away again.
+    #[tokio::test]
+    async fn a_device_reads_as_present_only_after_its_client_speaks() {
+        let _home = test_support::HomeGuard::new("remote-client-presence");
+        let nats = FakeNats::start().await;
+        let slot = Slot::install(&nats, "pair_client_presence").await;
+        SUPERVISOR.restore_active(Some(slot.pair_id.clone()));
+
+        let device = |pair: &str| {
+            status()
+                .devices
+                .into_iter()
+                .find(|device| device.pair_id == pair)
+                .expect("the device is listed")
+        };
+        let row = device(&slot.pair_id);
+        assert!(row.connected, "the bridge is serving this pairing");
+        assert!(!row.present, "nobody has spoken on it yet");
+
+        SUPERVISOR.client_link(&slot.pair_id).observe();
+        assert!(device(&slot.pair_id).present, "a client that spoke is here");
+
+        SUPERVISOR.client_left(&slot.pair_id);
+        assert!(
+            !device(&slot.pair_id).present,
+            "and the row stops claiming a client that left"
+        );
+    }
+
+    /// A device that disconnected gave the machine up; the same device coming
+    /// back is the only client here, so its *reconnect* may take it back.
+    ///
+    /// Without this rule a reconnect would come up in standby and need its user
+    /// to ask for the computer they alone are sitting at — the trap the
+    /// first-handshake claim avoids for a fresh pairing. With another client
+    /// present the answer is no: choosing between them is their own decision.
+    #[tokio::test]
+    async fn an_unowned_machine_is_taken_back_by_its_only_present_client() {
+        let _home = test_support::HomeGuard::new("remote-alone-unowned");
+        let nats = FakeNats::start().await;
+        let first = Slot::install(&nats, "pair_alone_first").await;
+        let second = test_creds("pair_alone_second", nats.url(), 3600);
+        let second = Slot::install_into(fake_state(&nats, &second.pair_id).await);
+        SUPERVISOR.restore_active(Some(first.pair_id.clone()));
+        SUPERVISOR.client_link(&first.pair_id).observe();
+
+        // Somebody holds the machine: not this rule's case.
+        assert!(!SUPERVISOR.alone_and_unowned(&first.pair_id));
+
+        SUPERVISOR.client_left(&first.pair_id);
+        assert_eq!(SUPERVISOR.active_pair(), None);
+        assert!(
+            SUPERVISOR.alone_and_unowned(&first.pair_id),
+            "nobody holds it and no other client is here"
+        );
+
+        // A second client showing up takes the case out of this rule's hands.
+        SUPERVISOR.client_link(&second.pair_id).observe();
+        assert!(!SUPERVISOR.alone_and_unowned(&first.pair_id));
+        for slot in [&first, &second] {
+            SUPERVISOR.forget_device(&slot.pair_id);
+        }
+    }
+
+    /// A departed controller hands the machine to the one device that is
+    /// actually there: that device was waiting behind a device that is gone.
+    #[tokio::test]
+    async fn leaving_hands_the_machine_to_the_only_device_still_there() {
+        let _home = test_support::HomeGuard::new("remote-leave-handoff");
+        let nats = FakeNats::start().await;
+        let controller = Slot::install(&nats, "pair_leave_first").await;
+        let standby = test_creds("pair_leave_second", nats.url(), 3600);
+        let standby = Slot::install_into(fake_state(&nats, &standby.pair_id).await);
+        SUPERVISOR.restore_active(Some(controller.pair_id.clone()));
+        // Both clients proved they are there: the standby is genuinely waiting.
+        for slot in [&controller, &standby] {
+            SUPERVISOR.remember_device(&slot.pair_id);
+            SUPERVISOR.client_link(&slot.pair_id).observe();
+        }
+
+        SUPERVISOR.client_left(&controller.pair_id);
+
+        assert_eq!(
+            SUPERVISOR.active_pair().as_deref(),
+            Some(standby.pair_id.as_str()),
+            "the machine goes to the device that is still connected"
+        );
+        for slot in [&controller, &standby] {
+            SUPERVISOR.forget_device(&slot.pair_id);
+        }
+    }
+
+    /// Several devices still there means no promotion: choosing one of them for
+    /// the user is the decision `remote_takeover` exists to leave to them.
+    #[tokio::test]
+    async fn a_departure_between_several_devices_picks_nobody() {
+        let _home = test_support::HomeGuard::new("remote-leave-no-promotion");
+        let nats = FakeNats::start().await;
+        let controller = Slot::install(&nats, "pair_leave_one").await;
+        let two = test_creds("pair_leave_two", nats.url(), 3600);
+        let two = Slot::install_into(fake_state(&nats, &two.pair_id).await);
+        let three = test_creds("pair_leave_three", nats.url(), 3600);
+        let three = Slot::install_into(fake_state(&nats, &three.pair_id).await);
+        SUPERVISOR.restore_active(Some(controller.pair_id.clone()));
+        for slot in [&controller, &two, &three] {
+            SUPERVISOR.remember_device(&slot.pair_id);
+            SUPERVISOR.client_link(&slot.pair_id).observe();
+        }
+
+        SUPERVISOR.client_left(&controller.pair_id);
+
+        assert_eq!(
+            SUPERVISOR.active_pair(),
+            None,
+            "nobody drives the machine until one of them asks for it"
+        );
+        assert!(!SUPERVISOR.in_control(&two.pair_id));
+        assert!(!SUPERVISOR.in_control(&three.pair_id));
+        for slot in [&controller, &two, &three] {
+            SUPERVISOR.forget_device(&slot.pair_id);
+        }
+    }
 }

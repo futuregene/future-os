@@ -61,7 +61,7 @@
   "devicePaired": "A paired device",
   "takeover": "Let this control",
   "addDevice": "Add a device",
-  "addDeviceHint": "Pair another phone or computer. Only one drives this machine at a time; the one that connects takes over.",
+  "addDeviceHint": "Pair another phone or computer. One device drives this machine at a time; when it disconnects, the machine passes to a device that is still connected.",
   "unpairDeviceConfirmTitle": "Unpair this device?",
   "unpairDeviceConfirmDesc": "{{name}} will no longer connect to this computer. The other devices stay paired.",
   "back": "Back",
