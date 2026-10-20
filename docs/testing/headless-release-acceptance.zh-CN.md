@@ -2,7 +2,7 @@
 
 > [English](headless-release-acceptance.md)
 >
-> 2026-10-20：实现已随 [PR #1259](https://github.com/futuregene/future-os/pull/1259) 合入，普通 CI 全部完成且成功。本清单仅整理剩余工作，未触发发行、签名、上传或真实安装。
+> 2026-10-20：实现已随 [PR #1259](https://github.com/futuregene/future-os/pull/1259) 合入，普通 CI 全部完成且成功。用户随后授权的 dev unsigned 构建已启动，见下文；平台签名测试由用户稍后执行，真实安装尚未执行。
 
 ## 已确认与候选身份
 
@@ -13,6 +13,21 @@
 - 用户报告人工体验完成，关联旧体验提交 `a0d4d840`；不是后续候选的逐项/全平台签名验收。详见[人工记录](headless-manual-acceptance.zh-CN.md)与[最终 CI 证据](headless-ci-39408277224-2026-10-20.json)。
 
 后置构建以已验证合并提交为起点；如采用更新源码，先固定新的完整 SHA 并完成受影响自动化，再以同一候选重新核对人工和产物。不得用当前移动的 main、旧 debug 二进制及不同 run 的产物拼接验收。
+
+
+## 本轮 dev unsigned 构建（2026-10-20）
+
+用户授权先做 unsigned，系统签名/公证测试稍后由用户执行。为避开总协调流程的 iOS 签名和 TestFlight 上传，本轮直接运行三个现有平台 workflow，固定远程引用 `test/headless-unsigned-20261020` 到已通过普通 CI 的 `a5f91752b4e470f90fbe5f4bc303ec0ca814944d`，不跟随移动 main。
+
+| 平台 | 运行 | 显式参数 | 首次核对状态 |
+|---|---|---|---|
+| macOS Intel / Apple Silicon | [39418462362](https://github.com/futuregene/future-os/actions/runs/39418462362) | `signed=false`、`strict_verification=false` | Intel 运行中，Apple Silicon 排队 |
+| Windows | [39418473647](https://github.com/futuregene/future-os/actions/runs/39418473647) | `signed=false` | 运行中 |
+| Linux x86_64 / aarch64 | [39418482527](https://github.com/futuregene/future-os/actions/runs/39418482527) | 现有 dev 默认参数 | 两架构运行中 |
+
+这些运行沿用既有 `dev/` 产物上传路径；没有启动 Build Test 总协调、nightly、正式 Release、Android 或 iOS。平台 unsigned 模式仍保留现有 Tauri updater 校验签名，不调用 Authenticode/Developer ID/公证服务。构建完成后还需记录实际版本、下载地址、摘要、包入口/二进制依赖检查和旧 Linux smoke；排队/运行中均不是通过。失败需按具体日志修复、重新标记候选并复验，不把不同源码的包拼成一轮。签名证书、时间戳、公证/Gatekeeper 验证不因 unsigned 成功而关闭。
+
+初始执行记录见 [unsigned 构建清单](headless-unsigned-build-2026-10-20.json)。
 
 ## 剩余工作与完成证据
 

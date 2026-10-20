@@ -25,7 +25,7 @@
 | 5 构建发布 | Cargo/make/sidecar/发布脚本接线与安装器回归已完成；实际包、签名、安装升级卸载仍待验 |
 | 6 最终验收 | 实现及普通自动化通过、PR 已合并；用户报告旧体验版人工完成，最终同候选人工、产物及性能仍待闭合 |
 
-后置工作统一见[发布验收清单](../testing/headless-release-acceptance.zh-CN.md)，人工身份和结果见[人工记录](../testing/headless-manual-acceptance.zh-CN.md)。本轮只整理证据与待办，未启动打包、签名、安装或发布。整体 Goal 继续未完成。
+后置工作统一见[发布验收清单](../testing/headless-release-acceptance.zh-CN.md)，人工身份和结果见[人工记录](../testing/headless-manual-acceptance.zh-CN.md)。归档最终 CI 时仅整理证据；用户随后授权的 dev unsigned 构建现已启动，运行与候选见发布清单。平台签名测试由用户稍后执行，真实安装与最终验收仍待完成。整体 Goal 继续未完成。
 
 ## 1 目标与范围
 

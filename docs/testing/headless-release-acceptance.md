@@ -2,7 +2,7 @@
 
 > [中文](headless-release-acceptance.zh-CN.md)
 >
-> 2026-10-20: implementation merged through [PR #1259](https://github.com/futuregene/future-os/pull/1259); ordinary CI is complete and successful. This checklist records remaining work. No release, signing, upload or real installation was triggered.
+> 2026-10-20: implementation merged through [PR #1259](https://github.com/futuregene/future-os/pull/1259); ordinary CI is complete and successful. User-authorized dev unsigned builds have now started as recorded below. Platform signing tests are deferred to the user; real installation has not run.
 
 ## Confirmed state and candidate identity
 
@@ -13,6 +13,21 @@
 - The user reported exploratory manual testing complete on older `a0d4d840`; this is not per-case, all-platform signed acceptance of later candidates. See [manual record](headless-manual-acceptance.md) and [final CI evidence](headless-ci-39408277224-2026-10-20.json).
 
 Start deferred builds from the verified merge. If newer source is selected, freeze a new full SHA, perform affected automation and reconcile manual/artifact results on that same candidate. Do not combine moving main, old debug binaries and artifacts from unrelated runs.
+
+
+## Current dev unsigned build (2026-10-20)
+
+The user authorized unsigned builds first and will perform platform signing/notarization tests later. To avoid the coordinator's iOS signing/TestFlight upload, this round dispatches the three existing platform workflows directly. Remote ref `test/headless-unsigned-20261020` is pinned to ordinary-CI-verified `a5f91752b4e470f90fbe5f4bc303ec0ca814944d`, independent of moving main.
+
+| Platform | Run | Explicit inputs | First observed state |
+|---|---|---|---|
+| macOS Intel / Apple Silicon | [39418462362](https://github.com/futuregene/future-os/actions/runs/39418462362) | `signed=false`, `strict_verification=false` | Intel running, Apple Silicon queued |
+| Windows | [39418473647](https://github.com/futuregene/future-os/actions/runs/39418473647) | `signed=false` | Running |
+| Linux x86_64 / aarch64 | [39418482527](https://github.com/futuregene/future-os/actions/runs/39418482527) | Existing dev defaults | Both running |
+
+These retain existing dev/ artifact upload behavior. No Build Test coordinator, nightly, formal Release, Android or iOS run was dispatched. Platform-unsigned mode retains existing Tauri updater authentication signatures, without Authenticode/Developer ID/notarization services. Completion must still record actual versions, downloads/hashes, packaged-entry/binary-dependency checks and old-Linux smoke. Queued/running are not passes. Diagnose failures and re-identify/revalidate any changed candidate; do not assemble one round from differing source. Unsigned success does not close certificate, timestamp, notarization or Gatekeeper acceptance.
+
+See the initial [unsigned build manifest](headless-unsigned-build-2026-10-20.json).
 
 ## Remaining work and required evidence
 
