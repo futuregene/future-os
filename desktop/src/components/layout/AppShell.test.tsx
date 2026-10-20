@@ -366,6 +366,8 @@ vi.mock("./hooks/useRemotePeers", () => ({
   // hosts after a write must not depend on which fields a test happened to set.
   useRemotePeers: () => ({
     catalogs: mocks.remotePeers?.catalogs ?? [],
+    error: null,
+    loading: false,
     peers: mocks.remotePeers?.peers ?? [],
     refresh: mocks.hooks.refreshRemotePeers,
   }),
