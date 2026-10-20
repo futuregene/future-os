@@ -937,6 +937,7 @@ mod tests {
             web_url: None,
             web_lan_url: None,
             warning_code: None,
+            cleared_invitations: Vec::new(),
         };
         let link = pairing_link(&status).unwrap();
         let url = reqwest::Url::parse(&link).unwrap();
@@ -1342,6 +1343,7 @@ mod tests {
             web_url: None,
             web_lan_url: None,
             warning_code: None,
+            cleared_invitations: Vec::new(),
         };
         assert!(pairing_link(&status).is_none(), "v1 is not offered");
         status.pairing_code = Some("futureos://elsewhere/pair?v=2".into());

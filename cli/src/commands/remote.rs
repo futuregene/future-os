@@ -641,12 +641,22 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
         .ok_or_else(|| "The Desktop answered without an invitation.".to_string())?;
     let pair_id = reply.get("pairId").and_then(Value::as_str).unwrap_or("");
     let expires_at = reply.get("expiresAt").and_then(Value::as_i64);
+    // Invitations the Desktop had to forget so this one could be minted. Said
+    // out loud: the platform's per-desktop cap was full, and four codes the user
+    // may still remember asking for are gone. Silence here would be the same
+    // "nothing happened" this whole path exists to end.
+    let cleared: Vec<&str> = reply
+        .get("cleared")
+        .and_then(Value::as_array)
+        .map(|cleared| cleared.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
     if json_flag {
         out.log(
             serde_json::to_string_pretty(&json!({
                 "pairId": pair_id,
                 "link": link,
                 "expiresAt": expires_at,
+                "cleared": cleared,
             }))
             .map_err(|error| error.to_string())?
             .as_str(),
@@ -681,6 +691,15 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
         None => out.log(
             "Single-use. The Desktop keeps serving the new device as soon as a phone scans it.",
         ),
+    }
+    if !cleared.is_empty() {
+        out.log(&format!(
+            "\nThis desktop had no free device slot, so it cleared {} invitation{} no phone ever \
+             claimed: {}.",
+            cleared.len(),
+            if cleared.len() == 1 { "" } else { "s" },
+            cleared.join(", ")
+        ));
     }
     Ok(())
 }
@@ -2021,6 +2040,51 @@ mod tests {
         assert_eq!(value["pairId"], "pair_NEW");
         assert_eq!(value["link"], LINK);
         assert_eq!(value["expiresAt"], 1_800_000_000i64);
+    }
+
+    /// A mint that had to clear room says so. The slots it freed belong to
+    /// invitations the user asked for earlier, so a silent success would leave
+    /// them wondering why a code that used to work no longer does.
+    #[tokio::test]
+    async fn add_reports_the_invitations_it_cleared_to_make_room() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+        answer_requests(
+            &home,
+            json!({
+                "pairId": "pair_NEW",
+                "link": LINK,
+                "expiresAt": 1_800_000_000i64,
+                "cleared": ["pair_OLD_A", "pair_OLD_B"],
+            }),
+        );
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "add"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("cleared 2 invitations"), "{stdout}");
+        assert!(stdout.contains("pair_OLD_A, pair_OLD_B"), "{stdout}");
+    }
+
+    #[tokio::test]
+    async fn add_json_carries_the_cleared_invitations() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+        answer_requests(
+            &home,
+            json!({
+                "pairId": "pair_NEW",
+                "link": LINK,
+                "expiresAt": 1_800_000_000i64,
+                "cleared": ["pair_OLD_A"],
+            }),
+        );
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "add", "--json"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        let value: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(value["cleared"], json!(["pair_OLD_A"]));
     }
 
     /// A refusal is the Desktop's answer, printed as such — not a timeout, and not

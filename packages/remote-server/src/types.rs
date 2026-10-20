@@ -65,6 +65,15 @@ pub struct RemoteStatus {
     /// Non-critical local web listener failure. It never changes the main
     /// Remote phase or readiness.
     pub warning_code: Option<String>,
+    /// Invitations this desktop forgot on the platform to make room for
+    /// [`RemoteStatus::pairing_code`], by pair id.
+    ///
+    /// Answered once, by the add-a-device call that had to clear them: the
+    /// platform counts an invitation nobody scanned against the per-desktop cap
+    /// for minutes, so an `add` may first have to forget its own orphans. Empty
+    /// on every other status, including later polls of the same process — it
+    /// describes that one request, like the code it made room for.
+    pub cleared_invitations: Vec<String>,
     /// Who is on the other end, as that client described itself on
     /// `secure_ready`.
     ///
@@ -194,6 +203,7 @@ pub fn empty(agent_available: bool) -> RemoteStatus {
         web_lan_url: None,
         agent_available,
         warning_code: None,
+        cleared_invitations: Vec::new(),
     }
 }
 

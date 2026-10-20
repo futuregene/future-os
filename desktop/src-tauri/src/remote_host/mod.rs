@@ -88,9 +88,13 @@ impl PairingHost for DesktopHost {
     fn invite(
         &self,
         keep_existing: bool,
+        shown: &[String],
     ) -> BoxFuture<'_, Result<Invitation, future_remote_server::Error>> {
+        // Copied because the future outlives a borrow of the caller's slice,
+        // which the trait's single elided lifetime cannot tie to `self`.
+        let shown = shown.to_vec();
         Box::pin(async move {
-            pairing::create_pairing(keep_existing)
+            pairing::create_pairing(keep_existing, &shown)
                 .await
                 .map_err(Into::into)
         })
