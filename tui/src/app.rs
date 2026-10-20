@@ -171,7 +171,10 @@ mod terminal_io_delegation_tests {
             crate::terminal::with_pty_stdin(|pty| {
                 let mut terminal = crate::terminal::Terminal::new()
                     .expect("POSIX terminal construction is infallible");
-                probe(&mut terminal, Some((pty, "é")));
+                probe(&mut terminal, Some("é"), || {
+                    pty.write("é");
+                    pty.resize(90, 30);
+                });
             });
             // The same delegations with nothing typed — the `type_keys`-absent
             // arm the Windows probe takes. Exercised here too, so the shape of
@@ -179,7 +182,7 @@ mod terminal_io_delegation_tests {
             crate::terminal::with_pty_stdin(|_pty| {
                 let mut terminal = crate::terminal::Terminal::new()
                     .expect("POSIX terminal construction is infallible");
-                probe(&mut terminal, None);
+                probe(&mut terminal, None, || {});
             });
         }
         #[cfg(windows)]
@@ -187,14 +190,14 @@ mod terminal_io_delegation_tests {
             let Some(mut terminal) = crate::terminal::terminal_or_skip() else {
                 return;
             };
-            probe(&mut terminal, None);
+            probe(&mut terminal, None, || {});
         }
     }
 
     /// Every `TerminalIo` method, exercised against a live terminal. When
     /// `type_keys` is given, that text is typed through the terminal under test
     /// and must reach the app's own input callback whole.
-    fn probe(io: &mut dyn TerminalIo, type_keys: Option<(&crate::terminal::TestPty, &str)>) {
+    fn probe(io: &mut dyn TerminalIo, type_keys: Option<&str>, type_input: impl FnOnce()) {
         io.hide_cursor();
         io.show_cursor();
         let (cols, rows) = (io.columns(), io.rows());
@@ -219,11 +222,8 @@ mod terminal_io_delegation_tests {
             }),
         )
         .expect("a live terminal starts the reader");
-        if let Some((pty, keys)) = type_keys {
-            pty.write(keys);
-            // …and a terminal emulator resizing the window: the reader reports
-            // it (SIGWINCH through the self-pipe) to the app's resize callback.
-            pty.resize(90, 30);
+        if type_keys.is_some() {
+            type_input();
         }
         // Let the reader reach its wait/timer path (the kitty query fallback
         // fires at 150 ms), then stop: the terminal is restored and the reader
@@ -260,7 +260,7 @@ mod terminal_io_delegation_tests {
                  multi-byte character across reads: {text:?}"
             );
         }
-        if let Some((_, keys)) = type_keys {
+        if let Some(keys) = type_keys {
             assert!(
                 resizes.load(std::sync::atomic::Ordering::SeqCst) >= 1,
                 "a resized terminal must reach the app's resize callback"

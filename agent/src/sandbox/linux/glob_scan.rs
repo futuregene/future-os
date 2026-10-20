@@ -128,13 +128,19 @@ impl Pattern {
             return true;
         }
         let prefix: PathBuf = relative.iter().take(checked).collect();
-        self.prefixes[checked - 1].is_match(&prefix.to_string_lossy())
+        let prefix = prefix.to_string_lossy();
+        #[cfg(windows)]
+        let prefix = prefix.replace('\\', "/");
+        self.prefixes[checked - 1].is_match(&prefix)
     }
 }
 
 /// Preserve the Linux matcher's existing grammar, including **/ consuming zero
-/// characters. Brackets/braces/backslashes remain literals, not globset syntax.
+/// characters. Brackets/braces remain literals, not globset syntax; backslashes
+/// are literal on Unix and path separators on Windows.
 pub(super) fn compile_matcher(pattern: &str) -> Result<Regex, regex::Error> {
+    #[cfg(windows)]
+    let pattern = pattern.replace('\\', "/");
     let mut expression = String::from("\\A");
     let mut chars = pattern.chars().peekable();
     while let Some(ch) = chars.next() {
@@ -256,7 +262,10 @@ fn scan_with_budget(
                 if !pattern.recursive && entry.depth() != pattern.depth {
                     continue;
                 }
-                if !pattern.matcher.is_match(&entry.path().to_string_lossy()) {
+                let entry_path = entry.path().to_string_lossy().into_owned();
+                #[cfg(windows)]
+                let entry_path = entry_path.replace('\\', "/");
+                if !pattern.matcher.is_match(&entry_path) {
                     continue;
                 }
                 let mut paths = vec![entry.path().to_path_buf()];

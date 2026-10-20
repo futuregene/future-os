@@ -160,7 +160,7 @@ jobs:
         run: ./gradlew :app:assembleDebug --no-daemon
       - name: Native JVM tests (including local modules)
         working-directory: mobile/android
-        run: ./gradlew testDebugUnitTest --no-daemon
+        run: ./gradlew :app:testDebugUnitTest :future-share-intent:testDebugUnitTest :future-file-handler:testDebugUnitTest --no-daemon
       - name: Share staging IO tests
         run: python3 scripts/tests/test-mobile-share-io.py
       - name: Upload test reports

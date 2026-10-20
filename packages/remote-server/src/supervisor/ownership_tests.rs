@@ -297,8 +297,18 @@ async fn an_add_that_cannot_reach_the_broker_retries_the_invitation_it_minted() 
     let (deliver, invited) = tokio::sync::oneshot::channel();
     *host.invitation.lock().unwrap() = Some((entered, invited));
     let server = Supervisor::new(host.clone(), Arc::new(TokioExecutor));
-    // A port nothing listens on: every attempt is refused at the socket.
-    let invitation = invitation_for("pair_unreachable", "nats://127.0.0.1:1");
+    // Accept and close before a NATS greeting. Windows can spend seconds on
+    // each refused TCP connect; a real local peer gives the same transport
+    // failure deterministically without consuming the retry deadline in Winsock.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("nats://{}", listener.local_addr().unwrap());
+    let broker = tokio::spawn(async move {
+        for _ in 0..super::start::ADD_CONNECT_ATTEMPTS {
+            let (connection, _) = listener.accept().await.unwrap();
+            drop(connection);
+        }
+    });
+    let invitation = invitation_for("pair_unreachable", &endpoint);
     deliver.send(invitation).unwrap();
 
     let started = std::time::Instant::now();
@@ -310,6 +320,7 @@ async fn an_add_that_cannot_reach_the_broker_retries_the_invitation_it_minted() 
         .expect("the retry budget must be bounded")
         .unwrap()
         .expect_err("no broker, no working invitation");
+    broker.await.unwrap();
     assert_eq!(
         crate::pairing::error_code(&error),
         Some("network"),

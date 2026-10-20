@@ -88,7 +88,8 @@ async fn cli_prompt_and_follow_up_use_real_run_finalization_without_dequeuing_on
         }
     }
     assert_eq!(handle.activity_snapshot().unwrap().queued, 1);
-    let report = handle.shutdown(Duration::from_secs(3)).await;
+    // The lifecycle invariant is ownership release, not filesystem flush speed.
+    let report = handle.shutdown(Duration::from_secs(10)).await;
     assert_eq!(
         report.status,
         ShutdownStatus::Stopped,

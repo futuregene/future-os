@@ -93,7 +93,10 @@ mod tests {
     #[tokio::test]
     async fn the_bootstrap_spawns_the_cli_runner_and_tolerates_a_missing_cli() {
         let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-bootstrap");
-        let app = tauri::test::mock_app();
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_shell::init())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app with shell support");
         bootstrap_builtin_skills(app.handle().clone()).await;
         spawn_builtin_skills(app.handle().clone());
         // Let the native thread reach the CLI probe before the fixture drops.

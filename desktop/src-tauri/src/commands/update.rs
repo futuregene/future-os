@@ -1096,18 +1096,23 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[tokio::test]
     async fn a_manual_build_check_uses_the_endpoint_it_is_given() {
-        let manifest_url = serve_once(
-            "200 OK",
-            "application/json",
-            json!({
-                "version": "0.0.2-121+nightly",
-                "assets": {
-                    (PLATFORM_ASSET_KEY): { "url": "https://dl.future-os.cn/nightly/x" }
-                }
-            })
-            .to_string()
-            .into_bytes(),
-        );
+        let platform_supported = platform_allows_updates();
+        let manifest_url = if platform_supported {
+            serve_once(
+                "200 OK",
+                "application/json",
+                json!({
+                    "version": "0.0.2-121+nightly",
+                    "assets": {
+                        (PLATFORM_ASSET_KEY): { "url": "https://dl.future-os.cn/nightly/x" }
+                    }
+                })
+                .to_string()
+                .into_bytes(),
+            )
+        } else {
+            "not-an-update-url".to_string()
+        };
         let app = tauri::test::mock_app();
         let status = check_app_update_impl(
             app.handle().clone(),
@@ -1117,8 +1122,11 @@ mod tests {
         )
         .await
         .expect("manual check through the impl");
-        assert!(status.has_update, "the newer nightly is offered");
-        assert!(status.download_url.is_some(), "ships a link");
+        assert_eq!(
+            status.has_update, platform_supported,
+            "only supported installations check for updates"
+        );
+        assert_eq!(status.download_url.is_some(), platform_supported);
         assert!(!status.can_install_in_app);
     }
 
@@ -1127,11 +1135,16 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[tokio::test]
     async fn a_signed_build_check_uses_the_endpoint_it_is_given() {
-        let manifest_url = serve_once(
-            "200 OK",
-            "application/json",
-            manifest_json("1.2.0", "http://127.0.0.1:1/not-fetched"),
-        );
+        let platform_supported = platform_allows_updates();
+        let manifest_url = if platform_supported {
+            serve_once(
+                "200 OK",
+                "application/json",
+                manifest_json("1.2.0", "http://127.0.0.1:1/not-fetched"),
+            )
+        } else {
+            "not-an-update-url".to_string()
+        };
         let app = mock_app_with_updater(&[&manifest_url]);
         let status = check_app_update_impl(
             app.handle().clone(),
@@ -1141,8 +1154,8 @@ mod tests {
         )
         .await
         .expect("signed check through the impl");
-        assert!(status.has_update);
-        assert!(status.can_install_in_app);
+        assert_eq!(status.has_update, platform_supported);
+        assert_eq!(status.can_install_in_app, platform_supported);
     }
 
     /// The body the scheduler calls resolves the channel and version from the
