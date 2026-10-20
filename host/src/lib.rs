@@ -41,3 +41,6 @@ pub mod instance;
 pub mod shadow_review;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+
+pub mod agent_commands;
+pub mod request_scope;

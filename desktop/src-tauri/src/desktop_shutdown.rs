@@ -1,24 +1,10 @@
 //! Stop Desktop producers before draining the Agent. External ownership is
 //! preserved; only prompts submitted by this Desktop receive exact-run aborts.
-use future_rpc::connection::VerifiedAgentClient;
 use std::{
-    collections::HashMap,
-    sync::{Condvar, LazyLock, Mutex},
+    sync::Mutex,
     time::{Duration, Instant},
 };
 
-type OwnedRun = (String, String);
-struct Admission {
-    closed: bool,
-    active: usize,
-}
-static ADMISSION: Mutex<Admission> = Mutex::new(Admission {
-    closed: false,
-    active: 0,
-});
-static CHANGED: Condvar = Condvar::new();
-static OWNED: LazyLock<Mutex<HashMap<OwnedRun, VerifiedAgentClient>>> =
-    LazyLock::new(Default::default);
 mod coordinator;
 pub(crate) use coordinator::begin;
 #[cfg(feature = "gui")]
@@ -27,169 +13,15 @@ pub(crate) use coordinator::{begin_quit, claim_action};
 pub(crate) use coordinator::{snapshot, StopSnapshot};
 static STOP_FAILURE: Mutex<Option<String>> = Mutex::new(None);
 
-pub(crate) struct CommandGuard;
-impl Drop for CommandGuard {
-    fn drop(&mut self) {
-        ADMISSION.lock().unwrap().active -= 1;
-        CHANGED.notify_all();
-    }
-}
-#[allow(clippy::result_large_err)] // Tonic callers preserve native Status errors.
-pub(crate) fn admit() -> Result<CommandGuard, tonic::Status> {
-    let mut admission = ADMISSION.lock().unwrap();
-    if admission.closed {
-        return Err(tonic::Status::unavailable("Desktop is stopping"));
-    }
-    admission.active += 1;
-    Ok(CommandGuard)
-}
-pub(crate) fn is_stopping() -> bool {
-    ADMISSION.lock().unwrap().closed
-}
-pub(crate) fn own_run(session: String, run: String, client: VerifiedAgentClient) {
-    if !session.is_empty() && !run.is_empty() {
-        OWNED.lock().unwrap().insert((session, run), client);
-    }
-}
-pub(crate) fn release_run(session: &str, run: &str) {
-    OWNED.lock().unwrap().remove(&(session.into(), run.into()));
-}
-pub(crate) fn owned_count() -> usize {
-    OWNED.lock().unwrap().len()
-}
+use future_host::request_scope::{
+    active_callers, clear_owned_runs, close_admission, stop_owned_runs,
+};
+pub(crate) use future_host::request_scope::{
+    admit, is_stopping, own_run, reconcile_owned_runs, release_run,
+};
 
-/// A collector can fail or hand queued work to an observer. Reconcile even
-/// locally terminal rows, but never confuse a lost connection with a terminal.
-pub(crate) async fn reconcile_owned_runs() {
-    let runs: Vec<_> = OWNED
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|(key, client)| (key.clone(), client.clone()))
-        .collect();
-    let _ = tokio::time::timeout(Duration::from_secs(5), async {
-        for ((session, run), mut client) in runs {
-            let command = crate::agent_bridge::get_run_state_command(session.clone(), run.clone());
-            let Ok(Ok(response)) =
-                tokio::time::timeout(Duration::from_secs(1), client.execute_command(command)).await
-            else {
-                continue;
-            };
-            let response = response.into_inner();
-            if response.success
-                && owned_run_is_terminal(&future_rpc::decode::response_data(&response), &run)
-            {
-                release_run(&session, &run);
-            }
-        }
-    })
-    .await;
-}
-
-fn owned_run_is_terminal(state: &serde_json::Value, run: &str) -> bool {
-    // Active/queued evidence takes precedence over terminal snapshots.
-    if state
-        .pointer("/activeRun/runId")
-        .and_then(serde_json::Value::as_str)
-        == Some(run)
-        || state
-            .get("queuedRuns")
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|runs| {
-                runs.iter().any(|entry| {
-                    entry.get("runId").and_then(serde_json::Value::as_str) == Some(run)
-                })
-            })
-    {
-        return false;
-    }
-    state
-        .pointer("/interruptedRun/runId")
-        .and_then(serde_json::Value::as_str)
-        == Some(run)
-        || (state
-            .pointer("/requestedRun/runId")
-            .and_then(serde_json::Value::as_str)
-            == Some(run)
-            && matches!(
-                state
-                    .pointer("/requestedRun/status")
-                    .and_then(serde_json::Value::as_str),
-                Some("completed" | "cancelled" | "error" | "failed")
-            ))
-}
-
-/// Cancellation acknowledgments are not proof of completion. Retain unknown
-/// runs and return their exact identities to the final installation barrier.
-async fn stop_owned_runs(budget: Duration) -> Vec<String> {
-    use futures::{stream, StreamExt};
-    let runs: Vec<_> = OWNED
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|(key, client)| (key.clone(), client.clone()))
-        .collect();
-    let deadline = tokio::time::Instant::now() + budget;
-    stream::iter(runs)
-        .map(|((session, run), mut client)| async move {
-            let mut last_error = "no verified terminal state".to_owned();
-            let stopped = tokio::time::timeout_at(deadline, async {
-                loop {
-                    // Both commands are exact-run fenced. A run_not_queued reply
-                    // is normal if the queued run became active or already ended.
-                    for kind in ["cancel_queued_run", "abort", "get_state"] {
-                        let command = future_rpc::proto::RpcCommand {
-                            r#type: kind.into(),
-                            session_id: session.clone(),
-                            run_id: run.clone(),
-                            ..Default::default()
-                        };
-                        match tokio::time::timeout(
-                            Duration::from_millis(500),
-                            client.execute_command(command),
-                        )
-                        .await
-                        {
-                            Ok(Ok(response)) => {
-                                let response = response.into_inner();
-                                if kind == "get_state"
-                                    && response.success
-                                    && owned_run_is_terminal(
-                                        &future_rpc::decode::response_data(&response),
-                                        &run,
-                                    )
-                                {
-                                    return;
-                                }
-                                if !response.success {
-                                    last_error = response.error;
-                                } else if kind == "get_state" {
-                                    last_error =
-                                        "get_state did not confirm the exact run terminal".into();
-                                }
-                            }
-                            Ok(Err(error)) => last_error = error.to_string(),
-                            Err(_) => last_error = format!("{kind} timed out"),
-                        }
-                    }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-            })
-            .await;
-            if stopped.is_ok() {
-                release_run(&session, &run);
-                None
-            } else {
-                Some(format!(
-                    "Desktop run {session}/{run} could not be confirmed stopped: {last_error}"
-                ))
-            }
-        })
-        .buffer_unordered(8)
-        .filter_map(async |error| error)
-        .collect()
-        .await
-}
+#[cfg(any(feature = "gui", test))]
+pub(crate) use future_host::request_scope::owned_count;
 
 pub(crate) fn stop(reason: &'static str) -> Result<(), crate::AppError> {
     begin(reason).wait().map_err(Into::into)
@@ -214,7 +46,7 @@ fn perform_stop(
     // Cancel the Agent immediately and bound the Desktop caller drain separately.
     let deadline = Instant::now() + operation.remaining(Duration::from_secs(3));
     let mut errors = Vec::new();
-    ADMISSION.lock().unwrap().closed = true;
+    close_admission();
     crate::tasks::stop_admission();
     crate::remote_peer::runtime::stop_admission();
     crate::runtime::freeze_tasks();
@@ -226,17 +58,7 @@ fn perform_stop(
     // a blocked shell or approval must not prevent global cancellation.
     crate::agent_host::host().request_stop();
     operation.stage("callers");
-    {
-        let mut admission = ADMISSION.lock().unwrap();
-        admission.closed = true;
-        while admission.active != 0 {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            admission = CHANGED.wait_timeout(admission, remaining).unwrap().0;
-        }
-    }
+    future_host::request_scope::wait_for_callers(deadline);
     let cleanup_runtime = match build() {
         Ok(runtime) => Some(runtime),
         Err(error) => {
@@ -301,7 +123,7 @@ fn perform_stop(
     // A command may finish while the Agent and tracked tasks are drained.
     // Require zero callers at the final barrier, not at the earlier wait budget.
     operation.stage("verification");
-    let active = ADMISSION.lock().unwrap().active;
+    let active = active_callers();
     if active != 0 {
         errors.push(format!(
             "Desktop commands did not finish before shutdown ({active} still active)"
@@ -311,7 +133,7 @@ fn perform_stop(
         errors.push("Desktop cleanup exceeded its shared deadline".into());
     }
     if errors.is_empty() {
-        OWNED.lock().unwrap().clear();
+        clear_owned_runs();
         Ok(())
     } else {
         let error = errors.join("; ");
@@ -328,74 +150,18 @@ pub(crate) fn fail_for_test(error: &str) {
 #[cfg(test)]
 pub(crate) fn reset_for_test() {
     coordinator::reset_for_test();
-    let mut admission = ADMISSION.lock().unwrap();
-    // Some read-only mock RPC tests intentionally share no HOME fixture.
-    // Preserve their live guards rather than resetting the counter.
-    admission.closed = false;
+    future_host::request_scope::reset_for_test();
     *STOP_FAILURE.lock().unwrap() = None;
-    OWNED.lock().unwrap().clear();
     crate::tasks::reset_for_test();
     crate::remote_peer::runtime::reset_after_shutdown_for_test();
     crate::remote::reset_after_shutdown_for_test();
 }
 
-/// Test-only RAII guard that closes admission for as long as it lives and hands the
-/// flag back on drop.
-///
-/// A bare setter would leave a fixture responsible for restoring process-global
-/// state on every path, including a panicking assertion. `reset_for_test` would
-/// also restore it, but it additionally stops tasks and clears the publishable
-/// stop, which is not what a fixture that merely borrowed the flag should do to
-/// the tests running beside it. This guard touches exactly the bit it changed,
-/// and only when it changed it: a process that was already stopping stays
-/// stopping.
 #[cfg(test)]
-pub(crate) struct AdmissionClosedForTest {
-    was_closed: bool,
-}
-
-#[cfg(test)]
-impl Drop for AdmissionClosedForTest {
-    fn drop(&mut self) {
-        if !self.was_closed {
-            ADMISSION.lock().unwrap().closed = false;
-        }
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn close_admission_guard_for_test() -> AdmissionClosedForTest {
-    let mut admission = ADMISSION.lock().unwrap();
-    let was_closed = admission.closed;
-    admission.closed = true;
-    AdmissionClosedForTest { was_closed }
-}
+pub(crate) use future_host::request_scope::close_admission_guard_for_test;
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn ownership_requires_positive_terminal_evidence_and_preserves_active_or_queued_work() {
-        use serde_json::json;
-        assert!(!super::owned_run_is_terminal(&json!({}), "run"));
-        let terminal = json!({"requestedRun":{"runId":"run","status":"completed"}});
-        assert!(super::owned_run_is_terminal(&terminal, "run"));
-        assert!(!super::owned_run_is_terminal(
-            &json!({"activeRun":{"runId":"run"},"requestedRun":{"runId":"run","status":"completed"}}),
-            "run"
-        ));
-        assert!(!super::owned_run_is_terminal(
-            &json!({"queuedRuns":[{"runId":"run"}],"requestedRun":{"runId":"run","status":"completed"}}),
-            "run"
-        ));
-        assert!(!super::owned_run_is_terminal(
-            &json!({"requestedRun":{"runId":"run","status":"unknown"}}),
-            "run"
-        ));
-        assert!(super::owned_run_is_terminal(
-            &json!({"interruptedRun":{"runId":"run"}}),
-            "run"
-        ));
-    }
 
     #[test]
     fn command_finishing_during_later_cleanup_does_not_create_a_sticky_failure() {
@@ -593,7 +359,7 @@ mod tests {
         let _mock = crate::agent_bridge::test_support::mock_agent();
         super::reset_for_test();
         let command = super::admit().unwrap();
-        super::ADMISSION.lock().unwrap().closed = true;
+        super::close_admission();
         assert!(super::admit().is_err());
         drop(command);
         assert!(super::is_stopping());

@@ -146,7 +146,7 @@ fn begin_with_budget(
         changed: Condvar::new(),
     });
     // Linearize producer admission before returning the shared operation.
-    super::ADMISSION.lock().unwrap().closed = true;
+    super::close_admission();
     *current = Some(operation.clone());
     drop(current);
     let watcher = operation.clone();

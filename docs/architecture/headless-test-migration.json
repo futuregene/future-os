@@ -1156,8 +1156,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_commands.rs",
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/client.rs:780:is_session_not_found_matches_the_code_then_the_legacy_wording",
@@ -1167,8 +1167,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_commands.rs",
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/client.rs:821:command_builders_set_type_session_and_ids",
@@ -1178,8 +1178,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_commands.rs",
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/client.rs:874:new_session_command_carries_provenance_and_model",
@@ -1189,8 +1189,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_commands.rs",
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/client.rs:906:setter_commands_carry_their_payloads",
@@ -1200,8 +1200,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_commands.rs",
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/client.rs:980:prompt_command_maps_attachments_and_run_identity",
@@ -1211,8 +1211,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_commands.rs",
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/client.rs:1030:list_builtin_providers_command_sets_the_flag",
@@ -1222,8 +1222,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_commands.rs",
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/client.rs:1037:run_control_command_carries_optional_run_id",
@@ -1233,8 +1233,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_commands.rs",
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/client.rs:1048:command_ids_are_unique_within_a_millisecond",
@@ -1244,8 +1244,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_commands.rs",
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/client.rs:1061:a_cached_connection_that_reports_a_changed_instance_is_dropped",
@@ -10273,8 +10273,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown.rs",
-      "status": "planned"
+      "target": "host/src/request_scope.rs",
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown.rs:400:command_finishing_during_later_cleanup_does_not_create_a_sticky_failure",

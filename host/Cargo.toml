@@ -39,6 +39,7 @@ rand = "0.8"
 
 fs2 = "0.4"
 nkeys = "0.4"
+tonic.workspace = true
 
 [dev-dependencies]
 libc = "0.2"

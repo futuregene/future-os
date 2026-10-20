@@ -281,3 +281,9 @@ Current phase status:
 | 4 | 427 declarations moved; interim CI pending; real CLI process test migration and remaining core coverage open |
 | 5 | Host CI group and affected propagation added; builds, release artifacts, signing/install/update/uninstall still open |
 | 6 | Not started; no frozen final candidate, matched performance, artifact acceptance or confirmed manual results |
+
+### 2026-10-20 Command admission and exact-run ownership
+
+`host/src/request_scope.rs` now owns the single command-admission counter and submitted-run ledger, including bounded caller drain, exact-run cancellation/reconciliation, positive terminal evidence and the existing admission RAII fixture. Desktop stop coordination calls these operations without access to internal mutex/state fields; reset still preserves active guards. No external Agent or unrelated run is added to cancellation.
+
+Original RPC constructors and response classification move once to `host/src/agent_commands.rs`, still using `future-rpc` wire types and preserving the `desktop_` request ID prefix and all payload fields. Ten original pure tests move with this code. Existing actual RPC, acknowledgment/observer races and full-stop tests remain intact in Desktop pending bridge migration. [Static evidence](../testing/headless-host-request-scope-2026-10-20.json) records passing native host, combined consumers, legacy headless and boundary checks; no local tests run. Intermediate CI `39356975686` has a successful host group and a failed Agent group; failure diagnosis is open and the run is not accepted.

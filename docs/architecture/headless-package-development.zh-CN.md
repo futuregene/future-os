@@ -281,3 +281,9 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 | 4 | 已迁移 427 个声明；中间 CI 待完成，真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
 | 5 | 已加宿主 CI 分组和 affected 传播；构建、发行物、签名/安装/升级/卸载未完成 |
 | 6 | 尚未开始；无最终冻结候选、同条件性能、产物验收或确认的人工结果 |
+
+### 2026-10-20 命令接入与精确 run 归属
+
+`host/src/request_scope.rs` 现拥有唯一的命令接入计数和已提交 run 归属表，包含有界调用者等待、精确 run 取消/对账、正向终态证据及原有接入 RAII 夹具。Desktop 停止协调只调用这些操作，不访问内部 mutex/状态字段；重置仍保留活跃 guard 计数，不把外部 Agent 或无关 run 加入取消范围。
+
+原 RPC 构造和响应分类只保留于 `host/src/agent_commands.rs`，继续使用 `future-rpc` wire 类型，保留 `desktop_` 请求 ID 前缀和全部 payload 字段。10 个原纯逻辑测试随代码迁入。真实 RPC、确认/观察器竞态及完整停止测试仍完整留于 Desktop，待业务桥一起迁移。[静态证据](../testing/headless-host-request-scope-2026-10-20.json)记录宿主、联合消费者、旧 headless 和边界检查通过，本地未执行测试。中间 CI `39356975686` 的宿主分组通过，但 Agent 分组失败；正在诊断，不接受为自动化通过。
