@@ -203,9 +203,8 @@ test("opens a task on its runs, with the form a level down", async () => {
 test("runs, enables and edits through the desktop", async () => {
   await act(async () => firstTask().props.onPress());
 
-  await act(async () => button("tasks.runNow").props.onPress());
-  expect(mockRemote.runTask).toHaveBeenCalledWith("tsk_1");
-
+  // The desktop dropped the run-now button: a task runs when its trigger
+  // fires, so the phone carries the same actions only.
   await act(async () => button("tasks.disable").props.onPress());
   expect(mockRemote.setTaskEnabled).toHaveBeenCalledWith("tsk_1", false);
 

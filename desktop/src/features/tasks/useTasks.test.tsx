@@ -161,13 +161,6 @@ describe("useTasks", () => {
       id: "tsk_1",
       enabled: false,
     });
-
-    mocks.invokeCommand.mockClear();
-    mocks.invokeCommand.mockResolvedValue(task());
-    await act(async () => {
-      await hook.api().runNow("tsk_1");
-    });
-    expect(mocks.invokeCommand).toHaveBeenNthCalledWith(1, "run_task_now", { id: "tsk_1" });
     hook.unmount();
   });
 
