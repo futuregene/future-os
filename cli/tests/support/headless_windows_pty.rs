@@ -5,7 +5,7 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 
 pub(super) struct PtyRun {
     child: Box<dyn portable_pty::Child + Send + Sync>,
-    writer: Box<dyn Write + Send>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     _master: Box<dyn MasterPty + Send>,
     transcript: Arc<Mutex<String>>,
     home: PathBuf,
@@ -48,18 +48,43 @@ impl PtyRun {
             .expect("spawn future headless on ConPTY");
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader().expect("ConPTY reader");
-        let writer = pair.master.take_writer().expect("ConPTY writer");
+        let writer = Arc::new(Mutex::new(
+            pair.master.take_writer().expect("ConPTY writer"),
+        ));
+        let terminal_input = writer.clone();
         let transcript = Arc::new(Mutex::new(String::new()));
         let sink = transcript.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
+            let mut cursor_query_bytes = 0;
+            const CURSOR_QUERY: &[u8] = b"\x1b[6n";
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => return,
-                    Ok(n) => sink
-                        .lock()
-                        .unwrap()
-                        .push_str(&String::from_utf8_lossy(&buf[..n])),
+                    Ok(n) => {
+                        sink.lock()
+                            .unwrap()
+                            .push_str(&String::from_utf8_lossy(&buf[..n]));
+                        // ConPTY can ask the terminal emulator for its initial
+                        // cursor position before starting the real child. A
+                        // raw pipe reader is not an emulator: answer the query,
+                        // including when its bytes arrive in separate reads.
+                        for &byte in &buf[..n] {
+                            if byte == CURSOR_QUERY[cursor_query_bytes] {
+                                cursor_query_bytes += 1;
+                            } else {
+                                cursor_query_bytes = usize::from(byte == CURSOR_QUERY[0]);
+                            }
+                            if cursor_query_bytes == CURSOR_QUERY.len() {
+                                let mut input = terminal_input.lock().unwrap();
+                                input
+                                    .write_all(b"\x1b[1;1R")
+                                    .expect("answer ConPTY cursor query");
+                                input.flush().expect("flush ConPTY cursor position");
+                                cursor_query_bytes = 0;
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -88,8 +113,11 @@ impl PtyRun {
     }
 
     pub(super) fn interrupt(&mut self) {
-        self.writer.write_all(&[3]).expect("send ConPTY Ctrl+C");
-        self.writer.flush().expect("flush ConPTY Ctrl+C");
+        {
+            let mut input = self.writer.lock().unwrap();
+            input.write_all(&[3]).expect("send ConPTY Ctrl+C");
+            input.flush().expect("flush ConPTY Ctrl+C");
+        }
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
             if matches!(self.child.try_wait(), Ok(Some(_))) {
