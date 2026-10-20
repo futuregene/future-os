@@ -1,0 +1,272 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "961816cdaaf86ffd95c6be6fbfe39edb4e97fb6e",
+  "bridgeImplementationCommit": "066cefda",
+  "upstreamMain": "5cf84dbc778a5881a4765553985139848f4f5aeb",
+  "productionSourceSha256": {
+    "host/src/agent_bridge/headless.rs": "96c2e6654ec5494ff5c868e2c3c2b4d548502ba79ccc32930c94849bd093d9aa"
+  },
+  "ci": {
+    "run": 39366079089,
+    "url": "https://github.com/futuregene/future-os/actions/runs/39366079089",
+    "finalSummary": {
+      "conclusion": "cancelled",
+      "headSha": "8bc9e6140ce6171f5caf3dcf22d6662e49a12f20",
+      "jobs": [
+        {
+          "conclusion": "success",
+          "databaseId": 118443127897,
+          "name": "macOS notarization recovery",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 118443128236,
+          "name": "Detect affected checks",
+          "status": "completed"
+        },
+        {
+          "conclusion": "skipped",
+          "databaseId": 118443129067,
+          "name": "Matched Windows Rust compilation",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 118443174725,
+          "name": "Remote packages + interoperability",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 118443174777,
+          "name": "Rust fmt + clippy (Linux)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 118443174809,
+          "name": "Windows update fixtures",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 118443174814,
+          "name": "Rust tests (Linux) (desktop gui)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 118443174816,
+          "name": "Desktop typecheck + lint + test",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 118443174820,
+          "name": "Shared host (macOS)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "cancelled",
+          "databaseId": 118443174835,
+          "name": "Rust tests (Linux) (desktop headless)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 118443174851,
+          "name": "Rust build (macOS)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 118443174859,
+          "name": "Rust tests (Linux) (tui, cli)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 118443174868,
+          "name": "Rust tests (Linux) (channels, rpc, goal)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 118443174882,
+          "name": "Rust build (Linux)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 118443174883,
+          "name": "Rust build (Windows)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 118443174902,
+          "name": "Shared host (Windows)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 118443174908,
+          "name": "Mobile typecheck + lint + test",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 118443174965,
+          "name": "Rust tests (Linux) (agent)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "success",
+          "databaseId": 118443174996,
+          "name": "Rust tests (Linux) (host)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "databaseId": 118456237907,
+          "name": "Rust tests (Linux)",
+          "status": "completed"
+        },
+        {
+          "conclusion": "failure",
+          "databaseId": 118456237988,
+          "name": "Rust tests (Linux) (desktop backend)",
+          "status": "completed"
+        }
+      ],
+      "status": "completed"
+    },
+    "headlessLogSha256": "3ab348a631818abe2f5f7aeabf8d1b581dfea26534690ef4411c85025d324800",
+    "observation": "Headless library never completed. Four task cases reported over 60 seconds from 03:58 UTC, first final-answer-read refusal; background NATS reconnect logs continued. Cancelled to archive logs; aggregate gates then failed. Not a passing run, nor an established NATS root cause.",
+    "blockedCases": [
+      "tasks::tests::a_run_whose_final_read_is_refused_fails_with_the_reason",
+      "tasks::tests::a_run_whose_task_deletes_its_conversation_keeps_the_answer",
+      "tasks::tests::a_run_without_an_agent_fails_with_the_reason",
+      "tasks::tests::a_stopped_tick_claims_nothing_further"
+    ]
+  },
+  "repair": {
+    "problem": "Headless pipeline spawned its collector with tokio::spawn. Dropping the outer host task detached the child, so cleanup returned with its real run lease still active.",
+    "implementation": "Poll prompt and early-acceptance receipt concurrently inside the same owned future. Parent cancellation drops collector/lease synchronously; catch_unwind preserves the previous panic boundary. Preserve committed receipt timing, retry after completion and original Agent errors. No additional abort RPC or external run cancellation.",
+    "test": "cancelling_the_host_task_drops_its_prompt_collector_before_cleanup_returns",
+    "initialFixtureAttempt": "Rejected as regression evidence: missing session state, failed before acceptance. Fixture was corrected before the real old-code failure.",
+    "confirmedOldResult": "0 passed, 1 failed at final lease equality: actual Some(run id), expected None.",
+    "fixedResult": "8 headless pipeline cases passed, zero failed/ignored in 0.97 seconds.",
+    "relationshipToCiStall": "CI stall not reproduced locally: original task case passed 1/0/0 in 0.18 seconds, task-related group 49 passed with two unchanged pre-existing ignored manual/real-model harnesses in 1.76 seconds before repair. Do not claim the CI stall fixed until subsequent full Linux CI completes."
+  },
+  "localProfile": {
+    "platform": "macOS 27.0.1 aarch64-apple-darwin",
+    "rust": "1.97.0",
+    "RUST_LOG": "unset for tests to match CI default logging",
+    "RUSTC_WRAPPER": "empty",
+    "CARGO_PROFILE_TEST_DEBUG": "1 for post-merge validation",
+    "cache": "Existing shared root target; offline/locked. Not matched baseline performance."
+  },
+  "localLogs": {
+    "headless-local-collector-red-2026-10-20.log": {
+      "sha256": "9b9a245770e0b5c0bb907c92c13e5a0110ff2cb95d0d9ae945e85845d022a341",
+      "results": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 933 filtered out; finished in 0.10s"
+      ]
+    },
+    "headless-local-collector-red-confirmed-2026-10-20.log": {
+      "sha256": "589621a005fbc30a01ac85181a28cfd3e758294d223cd21f97391e7f1819eaca",
+      "results": [
+        "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 933 filtered out; finished in 0.17s"
+      ]
+    },
+    "headless-local-collector-green-2026-10-20.log": {
+      "sha256": "fe7686968826a884f5261fe31f344b5aee0df9bea408ad9cb04d438e6bac00a5",
+      "results": [
+        "test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 926 filtered out; finished in 0.97s"
+      ]
+    },
+    "headless-local-task-refusal-2026-10-20.log": {
+      "sha256": "e909934d4169730739033f4c826e467750b513043fb3754db7489b8da7dd1b0b",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 707 filtered out; finished in 0.18s"
+      ]
+    },
+    "headless-local-task-group-2026-10-20.log": {
+      "sha256": "289a88ba99577850492290812f77bee640a2a3dd34c68660f73b83bee233eca5",
+      "results": [
+        "test result: ok. 49 passed; 0 failed; 2 ignored; 0 measured; 657 filtered out; finished in 1.76s"
+      ]
+    },
+    "headless-bridge-merged-ts.log": {
+      "sha256": "1f7937ca20acac5d5cd62e8468b764777cc0e627290a61c52dec5ce5e5e6dc40",
+      "results": []
+    },
+    "headless-local-cancel-host-2026-10-20.log": {
+      "sha256": "9e76fdf1d5016ffe35e45fe9299b094f179bcff60700c14c6b87243bf495cae4",
+      "results": [
+        "test result: ok. 934 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 77.35s"
+      ]
+    },
+    "headless-local-cancel-tasks-2026-10-20.log": {
+      "sha256": "68fb83b255f8f09b4f3918606cec4879fb052b8a834e274e942c593fccbef6b6",
+      "results": [
+        "test result: ok. 49 passed; 0 failed; 2 ignored; 0 measured; 657 filtered out; finished in 1.50s"
+      ]
+    },
+    "headless-local-merged-headless-unit-2026-10-20.log": {
+      "sha256": "4d3f22cd46d7bbee0b141c7e8612c83015c564cc38ef15e2cdd62d5a9ea8f31b",
+      "results": [
+        "test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 679 filtered out; finished in 1.33s"
+      ]
+    },
+    "headless-local-merged-cli-remote-2026-10-20.log": {
+      "sha256": "000660cea1c63df27913f63214aa7fab8c1b494fd40a3733e0633aecf7c1c3a1",
+      "results": [
+        "test result: ok. 55 passed; 0 failed; 0 ignored; 0 measured; 1214 filtered out; finished in 0.82s"
+      ]
+    },
+    "headless-local-cancel-process-2026-10-20.log": {
+      "sha256": "b20230dd3cdd8dec026f19a242fe7996ccc90c727c89e8cd3e7d43476a6dfd73",
+      "results": [
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.38s",
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 68.54s"
+      ]
+    }
+  },
+  "upstreamChecks": [
+    "Merged origin/main at 5cf84dbc, including invitation countdown and GUI row actions.",
+    "Desktop npm lint including tsc --noEmit PASS using existing dependencies with identical package-lock; temporary worktree links removed.",
+    "Upstream new declarations inventoried separately: two CLI, one headless. Not added to immutable original baseline."
+  ],
+  "ciGuard": "Desktop full cargo test step now has a 30-minute timeout so a stall archives a failed result/logs. Commands, features, assertions, ignored policy and coverage unchanged. Workflow YAML parsed successfully.",
+  "limits": [
+    "Windows remains native CI only as requested.",
+    "No local suite requiring a real NATS server; actual legacy headless process cases use their existing controlled loopback HTTP/WebSocket brokers.",
+    "No final future headless entry/release/manual acceptance; goal remains active."
+  ],
+  "localChecks": [
+    "Host/GUI/CLI Clippy --all-targets PASS",
+    "Original headless Clippy --all-targets PASS",
+    "fmt PASS",
+    "Workflow YAML parse PASS",
+    "Desktop ESLint + tsc --noEmit PASS"
+  ],
+  "dependencyGraph": {
+    "target": "aarch64-apple-darwin",
+    "desktopGuiFeatures": [
+      "default",
+      "gui"
+    ],
+    "future-host": {
+      "packages": 369,
+      "forbidden": []
+    },
+    "future-cli": {
+      "packages": 395,
+      "forbidden": []
+    }
+  }
+}

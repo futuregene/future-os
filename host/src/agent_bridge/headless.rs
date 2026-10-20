@@ -8,6 +8,7 @@
 
 use super::AttachmentInput;
 use crate::store;
+use futures::FutureExt;
 
 /// A prompt whose user message + run row are already persisted. Created by
 /// [`prepare_prompt_persisted_with_trigger`]. Remote callers acknowledge these
@@ -125,16 +126,16 @@ async fn run_prepared_prompt_inner(
         thinking_level,
     };
     let (agent_accepted_tx, agent_accepted_rx) = tokio::sync::oneshot::channel();
-    // Poll the long-running prompt concurrently with its early acceptance
-    // signal. Awaiting the signal while leaving the prompt future unpolled
-    // would deadlock before the command could ever reach the Agent.
-    let prompt = tokio::spawn(super::agent_prompt_with_acceptance(
+    // Poll acceptance alongside the prompt in this task. A spawned JoinHandle
+    // detaches on drop: cancelling a host task would then leave its collector
+    // and run lease alive after the host cleanup barrier had returned.
+    let prompt = std::panic::AssertUnwindSafe(super::agent_prompt_with_acceptance(
         request,
         Some(agent_accepted_tx),
-    ));
-    let acceptance = agent_accepted_rx.await;
-    let result = match acceptance {
-        Ok(()) => {
+    ))
+    .catch_unwind();
+    let acceptance = async {
+        if agent_accepted_rx.await.is_ok() {
             let mut retry_receipt_commit = false;
             if let Some(receipt) = receipt {
                 let accepted = match remote_command_id.as_deref() {
@@ -145,31 +146,35 @@ async fn run_prepared_prompt_inner(
                 retry_receipt_commit = accepted.is_err() && remote_command_id.is_some();
                 let _ = receipt.send(accepted);
             }
-            let result = prompt.await.map_err(|error| {
-                crate::Error::Message(format!("Agent prompt task failed: {error}"))
-            })?;
-            if retry_receipt_commit {
-                if let Some(command_id) = remote_command_id.as_deref() {
-                    let _ = store::mark_remote_prompt_accepted(&run_id, command_id);
-                }
-            }
-            result
-        }
-        Err(_) => {
-            let result = prompt.await.map_err(|error| {
-                crate::Error::Message(format!("Agent prompt task failed: {error}"))
-            })?;
-            if let Some(receipt) = receipt {
-                let error = result
-                    .as_ref()
-                    .err()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| "Future Agent did not acknowledge the prompt.".to_string());
-                let _ = receipt.send(Err(error));
-            }
-            result
+            (retry_receipt_commit, None)
+        } else {
+            (false, receipt)
         }
     };
+    let (result, (retry_receipt_commit, receipt)) = tokio::join!(prompt, acceptance);
+    // Preserve the previous spawned-task panic boundary without giving the
+    // child an independent lifetime. Ordinary Agent errors pass through.
+    let result = result.map_err(|panic| {
+        let reason = panic
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| panic.downcast_ref::<&str>().copied())
+            .unwrap_or("task panicked");
+        crate::Error::Message(format!("Agent prompt task failed: {reason}"))
+    })?;
+    if retry_receipt_commit {
+        if let Some(command_id) = remote_command_id.as_deref() {
+            let _ = store::mark_remote_prompt_accepted(&run_id, command_id);
+        }
+    }
+    if let Some(receipt) = receipt {
+        let error = result
+            .as_ref()
+            .err()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "Future Agent did not acknowledge the prompt.".to_string());
+        let _ = receipt.send(Err(error));
+    }
 
     match result {
         // Stream closed before `agent_end`: the text is a truncated prefix, not
@@ -255,6 +260,56 @@ mod tests {
         let prepared = prepare_prompt_persisted(&thread, "hi".to_string(), None, None, vec![])
             .expect("prepare");
         assert_eq!(prepared.session_id, thread.id);
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_host_task_drops_its_prompt_collector_before_cleanup_returns() {
+        let home = TestHome::new("headless-cancel-owned-collector");
+        let mock = mock_agent();
+        mock.default_data(
+            "get_state",
+            super::super::test_support::get_state_payload("session-cancel", false),
+        );
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("session-cancel"));
+        let prepared = prepare_prompt_persisted_with_trigger(
+            &thread,
+            "keep streaming".into(),
+            None,
+            None,
+            vec![],
+            Some("command-cancel".into()),
+        )
+        .unwrap();
+        let run_id = prepared.run_id.clone();
+        let (receipt, accepted) = tokio::sync::oneshot::channel();
+        let task = crate::runtime::spawn(async move {
+            let _ = run_prepared_prompt_with_acceptance(prepared, receipt).await;
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(3), accepted)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        // Real RPC acceptance and a live stream must have acquired the lease;
+        // cancellation must drop that same collector, not just its parent.
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while super::super::AGENT_REPLICAS
+                .canonical_for_local(&run_id)
+                .is_none()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        task.abort();
+        crate::runtime::cancel_all_tasks(std::time::Duration::from_secs(3)).unwrap();
+        assert_eq!(
+            super::super::AGENT_REPLICAS.canonical_for_local(&run_id),
+            None,
+            "cleanup cannot return while a detached prompt collector still owns this run"
+        );
     }
 
     #[tokio::test]

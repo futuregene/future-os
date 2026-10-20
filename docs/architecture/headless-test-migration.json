@@ -34097,6 +34097,13 @@
       "owner": "future-agent",
       "status": "compiled-awaiting-ci",
       "reason": "CI failure repair; original assertions retained"
+    },
+    {
+      "name": "cancelling_the_host_task_drops_its_prompt_collector_before_cleanup_returns",
+      "target": "host/src/agent_bridge/headless.rs",
+      "owner": "future-host",
+      "status": "local-red-green-pass",
+      "reason": "Real RPC + SQLite accepted streaming prompt: parent-task cleanup must drop its collector run lease; old implementation fails the lease assertion, fixed implementation passes. CI acceptance pending."
     }
   ],
   "ownershipRules": {
@@ -34180,6 +34187,36 @@
       "observedMain": "c3a7ea10362d2ce557bbdc15d3f477274b72facd",
       "plannedOwner": "future-host",
       "target": "host/src/remote_host/pairing.rs",
+      "status": "planned"
+    },
+    {
+      "source": "cli/src/commands/remote.rs",
+      "line": 2029,
+      "name": "the_time_left_is_readable_and_never_counts_down_to_zero",
+      "introducedBy": "63fab9ff",
+      "observedMain": "5cf84dbc778a5881a4765553985139848f4f5aeb",
+      "plannedOwner": "future-cli",
+      "target": "cli/src/commands/remote.rs",
+      "status": "retained"
+    },
+    {
+      "source": "cli/src/commands/remote.rs",
+      "line": 2099,
+      "name": "add_counts_down_the_time_left_to_scan",
+      "introducedBy": "63fab9ff",
+      "observedMain": "5cf84dbc778a5881a4765553985139848f4f5aeb",
+      "plannedOwner": "future-cli",
+      "target": "cli/src/commands/remote.rs",
+      "status": "retained"
+    },
+    {
+      "source": "desktop/src-tauri/src/headless/mod.rs",
+      "line": 1454,
+      "name": "the_single_use_notice_prints_a_clock_and_the_time_left",
+      "introducedBy": "63fab9ff",
+      "observedMain": "5cf84dbc778a5881a4765553985139848f4f5aeb",
+      "plannedOwner": "future-cli",
+      "target": "cli/src/headless/mod.rs",
       "status": "planned"
     }
   ]

@@ -687,6 +687,8 @@ jobs:
       # suite to the headless CLI integration test, exactly as before the split;
       # the gui flavor then has nothing to run.
       - name: cargo test (desktop ${{ matrix.flavor }})
+        # Fail a stalled full suite with archived logs instead of retrying for six hours.
+        timeout-minutes: 30
         if: steps.affected.outputs.run == 'true'
         env:
           CARGO_PROFILE_TEST_DEBUG: 1

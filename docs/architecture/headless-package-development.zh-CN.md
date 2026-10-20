@@ -385,3 +385,13 @@ CI `39363398726` 在 Linux 原生脚本中拦住 `gui-host failed: exit=0, passe
 Host/GUI/CLI 及旧 headless Clippy `--all-targets`、fmt、严格文档检查、GUI 联合 feature 实际依赖图通过。这是本地 macOS 结果，Windows 原生仍由后续 CI 执行；`8bc9e614` 的 CI 尚在 Linux headless 分组输出 NATS 重连，不能记为通过。Remote 宿主、调度/维护、完整退出协调、新 CLI 入口、发行和人工验收仍未完成。
 
 完整九组原生脚本也在本地 macOS 通过：connection 20、service 15、CLI tools 15、共享 Agent host 22、GUI state/Provider/Ready/Exit 各 1、实际 headless 入口 13。保留零项拒绝检查；记录实际 debug profile 1、命令、时间和日志摘要于同一证据。
+
+### 2026-10-20 取消 collector 的实际生命周期回归
+
+CI `39366079089` 在候选 `8bc9e614` 的 Linux headless 库测试中阻塞：任务最终答案读取拒绝及另三个任务用例长时间未结束，后台同时输出 NATS 重连。停止运行后取得完整日志；最终为 cancelled，依赖汇总 gate 失败，不记为通过。该任务用例单独及任务相关组本地通过，尚未证明 CI 阻塞根因。
+
+排查发现另一项确定的退出缺陷：headless pipeline 的 `tokio::spawn` JoinHandle 被丢弃时会使 collector 脱离父任务。真实 RPC/SQLite 回归在旧代码的最终租约断言失败：清理已经返回，run 租约仍存在。修复为在同一父 future 中并行 poll prompt 与早期接受回执，取消时同步丢弃 collector；保留 panic 边界、持久回执、失败重试和原 Agent 错误，不增加 abort RPC 或外部 run 取消范围。8 个 pipeline 用例通过；随后 Host 核心 934 项通过，任务组 49 项通过、2 个原有手工/真实模型声明仍忽略，headless 参数/交互 29 项通过。见[取消回归与 CI 记录](../testing/headless-collector-cancellation-2026-10-20.json)。
+
+上游 `5cf84dbc` 已合入（合并提交 `961816cd`），邀请倒计时的 2 个 CLI / 1 个 headless 新声明单独计入 upstream 清单；Desktop ESLint、type-check 和受影响 Rust Clippy `--all-targets`/fmt 通过。CI 完整 Desktop 测试步骤增加 30 分钟超时，阻塞时留存日志并失败；命令、features、断言及覆盖范围未缩小。本地不运行 NATS，Windows 保留原生 CI 验证，CI 阻塞修复仍须完整后续运行确认。
+
+同一合并后源码的 CLI 设备管理组 55 项通过；实际旧入口进程测试两组各 13 项通过（4.38 秒、68.54 秒），无新增忽略。Remote 进程夹具使用既有受控 loopback HTTP/WebSocket broker，未启动真实 NATS 服务套件。GUI 联合依赖边界再次通过，不能据此接受最终 CLI 入口或跨平台发布产物。
