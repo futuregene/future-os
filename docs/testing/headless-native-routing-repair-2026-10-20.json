@@ -387,5 +387,33 @@
         "jobId": 118438915463
       }
     ]
+  },
+  "postMainSync": {
+    "sourceCommit": "a59dcf30cb61f78dbe480698f057369964337d46",
+    "originMain": "c3a7ea10362d2ce557bbdc15d3f477274b72facd",
+    "change": "Upstream pairing invitation API/control reply updates merged before push; no conflicts.",
+    "staticChecks": [
+      "fmt Host/CLI/Desktop/Remote Server PASS",
+      "Clippy --all-targets Host/CLI/Desktop/Remote Server PASS",
+      "Clippy --all-targets legacy headless PASS",
+      "Clippy --all-targets standalone remote-interop PASS"
+    ],
+    "localEntryTests": {
+      "headlessCli": {
+        "passed": 13,
+        "failed": 0,
+        "ignored": 0,
+        "executionSeconds": 7.34
+      },
+      "remoteStartRefusal": {
+        "passed": 13,
+        "failed": 0,
+        "ignored": 0,
+        "executionSeconds": 186.48
+      },
+      "command": "cargo test --offline --locked --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml --test headless_cli --test remote_start_refusal -- --test-threads=1",
+      "RUST_LOG": "unset",
+      "logSha256": "cb8adac2b8060834a1fd1b96055c2bc2d3429e7562c6635fccaecc0b36139331"
+    }
   }
 }
