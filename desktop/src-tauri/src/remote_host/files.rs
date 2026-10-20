@@ -398,8 +398,11 @@ pub fn claim_uploads(
     for ((_, item), target) in claimed.iter().zip(targets.iter()) {
         let target_string = target.display().to_string();
         let thumbnail = if item.kind == "image" {
-            crate::commands::generate_image_thumbnail(thread_id.to_string(), target_string.clone())
-                .ok()
+            future_host::files::generate_image_thumbnail(
+                thread_id.to_string(),
+                target_string.clone(),
+            )
+            .ok()
         } else {
             None
         };
@@ -565,7 +568,7 @@ pub(crate) async fn prepare_download_variant(
     // Markdown links are agent-produced input. Keep the remote-download path
     // behind the same credential-file boundary as desktop preview/open, even
     // for canonical paths reached through `..` or a symlink.
-    crate::commands::ensure_path_allowed(&source)?;
+    future_host::files::ensure_path_allowed(&source)?;
     if !source.is_file() {
         return Err("The attachment is no longer available.".to_string().into());
     }

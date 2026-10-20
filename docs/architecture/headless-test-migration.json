@@ -13943,9 +13943,14 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/tasks.rs",
-      "status": "planned",
-      "ownershipDecision": "host-task"
+      "target": "host/src/tasks/service.rs",
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-task",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/tasks.rs:538:the_task_store_home_follows_a_future_home_override",
@@ -13955,9 +13960,14 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/tasks.rs",
-      "status": "planned",
-      "ownershipDecision": "host-task"
+      "target": "host/src/tasks/service.rs",
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-task",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/tasks.rs:550:updating_a_task_carries_an_explicit_enabled_flag",
@@ -13967,9 +13977,14 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/tasks.rs",
-      "status": "planned",
-      "ownershipDecision": "host-task"
+      "target": "host/src/tasks/service.rs",
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-task",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/tasks.rs:582:async_command_wrappers_reject_malformed_bodies",
@@ -13990,10 +14005,16 @@
       "name": "a_task_round_trips_through_the_command_surface",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "futureos",
-      "target": "desktop/src-tauri/src/commands/tasks.rs",
-      "status": "retained",
-      "ownershipDecision": "gui-entry"
+      "plannedOwner": "future-host",
+      "target": "host/src/tasks/service.rs",
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-task",
+      "ownershipReview": "Direct synchronous application service and real SQLite round trip; no IPC/framework exercised. Keep malformed-body Tauri integration in Desktop and run this shared business test once in Host.",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/tasks.rs:669:an_unchanged_prompt_does_not_add_a_revision",
@@ -14003,9 +14024,14 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/tasks.rs",
-      "status": "planned",
-      "ownershipDecision": "host-task"
+      "target": "host/src/tasks/service.rs",
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-task",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/tasks.rs:680:apply_revision_promotes_a_stored_prompt",
@@ -14015,9 +14041,14 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/tasks.rs",
-      "status": "planned",
-      "ownershipDecision": "host-task"
+      "target": "host/src/tasks/service.rs",
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-task",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/tasks.rs:717:applying_a_stored_version_keeps_the_one_it_replaced",
@@ -14027,9 +14058,14 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/tasks.rs",
-      "status": "planned",
-      "ownershipDecision": "host-task"
+      "target": "host/src/tasks/service.rs",
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-task",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/tasks.rs:764:unknown_ids_are_reported_rather_than_ignored",
@@ -14039,9 +14075,14 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/tasks.rs",
-      "status": "planned",
-      "ownershipDecision": "host-task"
+      "target": "host/src/tasks/service.rs",
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-task",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/tasks.rs:783:enabling_a_paused_schedule_lands_on_a_real_slot",
@@ -14051,9 +14092,14 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/tasks.rs",
-      "status": "planned",
-      "ownershipDecision": "host-task"
+      "target": "host/src/tasks/service.rs",
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-task",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/tasks.rs:802:a_manual_task_has_no_schedule_to_recompute",
@@ -14063,9 +14109,14 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/tasks.rs",
-      "status": "planned",
-      "ownershipDecision": "host-task"
+      "target": "host/src/tasks/service.rs",
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-task",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/tasks.rs:815:a_run_request_is_queued_for_the_tick_loop",
@@ -14075,9 +14126,14 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/tasks.rs",
-      "status": "planned",
-      "ownershipDecision": "host-task"
+      "target": "host/src/tasks/service.rs",
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-task",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/tasks.rs:860:the_dependency_commands_are_transitional",
@@ -14087,9 +14143,14 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/tasks.rs",
-      "status": "planned",
-      "ownershipDecision": "host-task"
+      "target": "host/src/tasks/service.rs",
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-task",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/tasks.rs:878:run_views_report_the_ledger",
@@ -14099,9 +14160,14 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/tasks.rs",
-      "status": "planned",
-      "ownershipDecision": "host-task"
+      "target": "host/src/tasks/service.rs",
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-task",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/terminal.rs:38:terminal_server_info_reports_not_ready_before_bind",
@@ -15514,10 +15580,16 @@
       "name": "workspace_commands_round_trip",
       "attribute": "    #[tokio::test]",
       "ignored": false,
-      "plannedOwner": "futureos",
-      "target": "desktop/src-tauri/src/commands/workspaces.rs",
-      "status": "retained",
-      "ownershipDecision": "gui-entry"
+      "plannedOwner": "future-host",
+      "target": "host/src/workspaces.rs",
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-workspace",
+      "ownershipReview": "Direct synchronous application service and real SQLite round trip; no IPC/framework exercised. Keep malformed-body Tauri integration in Desktop and run this shared business test once in Host.",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/workspaces.rs:149:ensure_workspace_git_is_false_for_a_non_git_path",
@@ -15528,8 +15600,13 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/workspaces.rs",
-      "status": "planned",
-      "ownershipDecision": "host-workspace"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-workspace",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/workspaces.rs:157:ensure_workspace_git_skips_non_user_workspaces",
@@ -15540,8 +15617,13 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/workspaces.rs",
-      "status": "planned",
-      "ownershipDecision": "host-workspace"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-workspace",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/commands/workspaces.rs:167:get_or_create_chat_workspace_is_idempotent",
@@ -15552,8 +15634,13 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/workspaces.rs",
-      "status": "planned",
-      "ownershipDecision": "host-workspace"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-workspace",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "command": "cargo test -p future-host --lib --offline --locked",
+        "evidence": "docs/testing/headless-host-application-services-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/config_io.rs:227:missing_file_reads_as_empty_object",

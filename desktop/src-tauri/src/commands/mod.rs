@@ -1,5 +1,5 @@
-//! Desktop command surface. The server build retains the file/workspace
-//! business helpers used by Remote, without compiling Tauri IPC wrappers.
+//! Desktop command surface. Remote calls shared Host services directly.
+//! Entry adapters and their original platform tests remain here.
 
 #[cfg(feature = "gui")]
 mod agent;
@@ -54,6 +54,7 @@ pub use self::approvals::*;
 pub use self::artifacts::*;
 #[cfg(feature = "gui")]
 pub use self::debug::*;
+#[cfg(feature = "gui")]
 pub use self::files::*;
 #[cfg(feature = "gui")]
 pub use self::login::*;
@@ -81,4 +82,5 @@ pub use self::terminal::*;
 pub use self::threads::*;
 #[cfg(feature = "gui")]
 pub use self::update::*;
+#[cfg(feature = "gui")]
 pub use self::workspaces::*;

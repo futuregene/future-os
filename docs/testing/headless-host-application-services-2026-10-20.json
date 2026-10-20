@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "70f3d7866437c31af8bbb8cfedd7faf7e08e3fe9",
+  "change": "Move task management form/revision/run-request services and workspace application services into Host. Keep Tauri IPC adapters; Remote calls Host workspace/path/thumbnail services directly. Existing task kernel and persistence stay in future-tasks and shared Store.",
+  "testOwnership": {
+    "movedOriginalDeclarations": 17,
+    "taskServices": 13,
+    "workspaceServices": 4,
+    "cumulativeMovedOriginalDeclarations": 1046,
+    "cumulativeExecutedOriginalDeclarations": 1044,
+    "baselineIgnored": 2,
+    "bodyAudit": "All 17 moved original test bodies match their pre-move bodies exactly. The two direct SQLite round trips have no IPC dependency and move with the core; both malformed-body Tauri tests remain in Desktop."
+  },
+  "preservedBehavior": [
+    "IPC command names, argument shape, task view camelCase fields, prompt revision bookkeeping and task run origin",
+    "Workspace database deletion precedes terminal closure, Agent delete-outbox reconciliation, then orphan app-directory cleanup",
+    "GUI terminal closure uses the existing synchronous optional presentation outlet; headless has no GUI sink",
+    "User workspace directory contents are never deleted by workspace service cleanup",
+    "Remote downloads/listings retain the same canonical credential-file boundaries and image thumbnail service"
+  ],
+  "localTests": [
+    {
+      "command": "cargo test -p future-host --lib --offline --locked",
+      "results": [
+        "test result: ok. 1047 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 79.84s"
+      ],
+      "logSha256": "f6356de2a90e8ebcb365375cbdbefd3aab7c52d3b73a77d13df96e7cdaf1f2d7"
+    },
+    {
+      "command": "cargo test -p futureos --lib commands::tasks::tests:: --offline --locked",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1038 filtered out; finished in 0.00s"
+      ],
+      "logSha256": "89c2fed99ef6371fb4ba132638df5f822fc25b9ce8c69f6ead7924654ef8bb8d"
+    },
+    {
+      "command": "cargo test -p futureos --lib commands::workspaces::tests:: --offline --locked",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1038 filtered out; finished in 0.00s"
+      ],
+      "logSha256": "63dbadf98e54a514ec4dd7154fa961ece4385894ecb073e06d3f7e09e3b64df5"
+    },
+    {
+      "command": "cargo test -p futureos --lib remote_host:: --offline --locked",
+      "results": [
+        "test result: ok. 162 passed; 0 failed; 1 ignored; 0 measured; 876 filtered out; finished in 1.11s"
+      ],
+      "logSha256": "2f5cd266e408b74ccabf83be7ed0740e72a9f97781b6f53da14f762ebf437be2"
+    }
+  ],
+  "localChecks": {
+    "Host/GUI/CLI Clippy --all-targets": {
+      "status": "pass",
+      "logSha256": "09b6bc8d8a27a4996060d370fa143d433d0300d88860f6d0d9c94f4890e740fe"
+    },
+    "Legacy headless Clippy --all-targets": {
+      "status": "pass",
+      "logSha256": "417993510ade5373a57c080ea9445cfbd49bfa0e1e94c0564c6152e0b36d18ab"
+    },
+    "Host public Rustdoc -D warnings": {
+      "status": "pass",
+      "logSha256": "4ee702ca58b4e583ed428d6a17e0d625dbe4c2dd69bd95985adc539597f0d114"
+    }
+  },
+  "profile": "aarch64-apple-darwin / Rust 1.97.0 / CARGO_PROFILE_TEST_DEBUG=1 / RUST_LOG unset / RUSTC_WRAPPER empty / offline locked / existing root target. Not matched performance.",
+  "dependencyGraph": {
+    "desktopGuiFeatures": [
+      "default",
+      "gui"
+    ],
+    "future-host": {
+      "packages": 370,
+      "forbidden": []
+    },
+    "future-cli": {
+      "packages": 395,
+      "forbidden": []
+    }
+  },
+  "limits": [
+    "CI 39374836837 is running on 70f3d786 and does not include this batch; no CI pass claim for these sources.",
+    "Remote implementation, CLI maintenance bootstrap, complete shutdown, future headless and release/manual acceptance remain open.",
+    "Retained Remote-host ignored measurement case is compiled but not counted as passing."
+  ],
+  "sourceSha256": {
+    "host/src/tasks/service.rs": "adbc1a475d5b9e7997978c091df83e8e568ccdcf6b4b217fe4921317495ee2c4",
+    "host/src/workspaces.rs": "0e50ac6970f2de1e013f81e82bc46be8f42eebc1a5086b6aa3b34e3f60aa91fd"
+  }
+}

@@ -2109,3 +2109,6 @@ mod tests {
         );
     }
 }
+
+/// Application task management shared by the entry adapters.
+pub mod service;

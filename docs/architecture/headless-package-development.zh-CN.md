@@ -278,7 +278,7 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 | 1 | 已建立无 GUI 普通库、任务注册、展示出口和消费者依赖；完整生命周期/配置边界未完成 |
 | 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端/托管与请求归属已迁入；完整业务桥、任务/会话、登录账户与维护调度已迁入；Remote、CLI 维护引导和停止协调未迁入 |
 | 3 | 尚未实现；产品入口仍是 `futureos-headless` |
-| 4 | 已迁移 1029 个原测试声明（1027 个本地 macOS 执行通过，2 个保留原忽略声明）；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
+| 4 | 已迁移 1046 个原测试声明（1044 个本地 macOS 执行通过，2 个保留原忽略声明）；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
 | 5 | 已加宿主 CI 分组和 affected 传播；构建、发行物、签名/安装/升级/卸载未完成 |
 | 6 | 尚未开始；无最终冻结候选、同条件性能、产物验收或确认的人工结果 |
 
@@ -435,3 +435,9 @@ CI `39371045462`（候选 `0f9cc395`）的 macOS Host 分组为 933 通过、1 �
 CI `39371045462` 已完成，整体为 failure。Windows 独立 Host 分组、构建/联合依赖检查及 13 组非零原生门禁均通过，实际 artifact summary 的 commit 已核对为同一候选；首次下载 EOF 后重试成功，不以读取异常计为通过。Linux headless 全组也通过。实际失败为 macOS shell activity 轮询与 Linux GUI readiness 入口，已分别提交本地复验修复，仍待新候选 CI。完整分组、Windows 平台/命令/耗时与日志摘要见[本轮 CI 证据](../testing/headless-ci-39371045462-2026-10-20.json)。性能比较 job 为 skipped，不记为通过；后续任务/登录/调度迁移不能借用本轮旧候选结果验收。
 
 推送前已合入远程主干 `a9011bab`（合并提交 `bebaa39e`），仅上游 Rust 缓存恢复/保存策略及 flaky CLI 说明变化，没有 Rust/TS 产品源码变化。保留主干缓存预热与 PR 只读规则；合并后 YAML、文档、fmt、Host/GUI/CLI 与旧 headless Clippy `--all-targets`、严格 Host Rustdoc 再次通过。源树摘要与验证日志摘要追加于同一 CI 证据，新候选仍需完整 CI 复验。
+
+### 2026-10-20 任务管理与工作区业务归属
+
+`host/src/tasks/service.rs` 承接任务表单归一化、列表、启停、立即运行与修订应用；继续复用 `future-tasks` 的存储与内核。`host/src/workspaces.rs` 承接工作区业务，保持删除数据库记录、同步关闭入口终端、协调 Agent 删除 outbox、清理孤立应用目录的顺序。Desktop 只保留 IPC 包装，Remote 的工作区、路径边界和缩略图调用直接指向 Host。数据格式、任务来源与用户工作区文件策略保持。
+
+本批迁入 17 个原测试（任务 13、工作区 4），测试主体逐项比对保持原样；两个直接操作真实 SQLite 的往返用例从入口归属改判为共享业务，GUI 仍保留两个 malformed-body IPC 用例。Host 全量本地 1047 通过、2 个原有忽略；GUI 两组各 1 通过；Remote 宿主 162 通过、1 个原有忽略。联合 Clippy `--all-targets`、旧 headless Clippy、fmt、严格 Rustdoc 和联合依赖边界通过。[验证证据](../testing/headless-host-application-services-2026-10-20.json)记录环境与摘要。运行中的 CI [39374836837](https://github.com/futuregene/future-os/actions/runs/39374836837)固定在 `70f3d786`，不包含本批；Remote 本体、完整生命周期和 CLI 接入仍未完成。

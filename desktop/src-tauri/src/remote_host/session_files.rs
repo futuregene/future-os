@@ -58,7 +58,7 @@ fn list_under_root(root: &Path, requested: &str) -> Result<Listing, crate::AppEr
             .to_string()
             .into());
     }
-    crate::commands::ensure_path_allowed(&path)?;
+    future_host::files::ensure_path_allowed(&path)?;
     let mut entries = Vec::new();
     for entry in std::fs::read_dir(&path)? {
         let Ok(entry) = entry else { continue };
@@ -67,7 +67,7 @@ fn list_under_root(root: &Path, requested: &str) -> Result<Listing, crate::AppEr
         let Ok(target) = entry.path().canonicalize() else {
             continue;
         };
-        if !target.starts_with(&root) || crate::commands::ensure_path_allowed(&target).is_err() {
+        if !target.starts_with(&root) || future_host::files::ensure_path_allowed(&target).is_err() {
             continue;
         }
         let Ok(meta) = target.metadata() else {

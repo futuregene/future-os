@@ -176,7 +176,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 description: None,
                 create_directory: Some(false),
             };
-            match crate::commands::create_workspace(input) {
+            match future_host::workspaces::create_workspace(input) {
                 Ok(workspace) => {
                     crate::emit_threads_updated();
                     // Answer from the fresh catalogue so the phone's own version
@@ -237,7 +237,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 workspace_id: cmd.workspace_id.clone(),
                 name: cmd.name.clone(),
             };
-            match crate::commands::rename_workspace(input) {
+            match future_host::workspaces::rename_workspace(input) {
                 Ok(_) => {
                     // The host's own list draws the same name, so it is told to
                     // re-list — this write came from another machine, and nothing
@@ -257,7 +257,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
             if cmd.workspace_id.is_empty() {
                 reply(sink, false, Value::Null, Some("missing workspace_id")).await;
             } else {
-                match crate::commands::delete_workspace(cmd.workspace_id.clone()).await {
+                match future_host::workspaces::delete_workspace(cmd.workspace_id.clone()).await {
                     Ok(_) => {
                         crate::emit_threads_updated();
                         reply(sink, true, json!({}), None).await

@@ -65,3 +65,5 @@ pub mod tasks;
 pub mod future_login;
 
 pub mod scheduler;
+
+pub mod workspaces;
