@@ -1276,7 +1276,8 @@ The phone uses a full-screen, scrollable Settings page with separate Model
 visibility, Provider, and Skill management subpages. The Current desktop
 section exposes `autoUpgradeSkills`, `autoTitleFirstTurn`, and
 `autoConnectRemote` (explicitly labelled **Keep the remote desktop on after a
-restart** — the same switch state the Desktop's Remote page shows). Model visibility edits the same Desktop `hiddenModels` list, using
+restart** — the same switch state the Desktop's Remote page shows). Model
+visibility edits the same Desktop `hiddenModels` list, using
 provider-qualified identifiers; the management catalogue includes hidden
 entries so they can be enabled again. The phone's language, update check and
 pairing management remain in a separate This phone section.
