@@ -4518,6 +4518,27 @@
           }
         ]
       },
+      "standby-takeover-page": {
+        "_comment": "One pairing, held by another device: with nowhere else to read, the list is replaced by the takeover page. A list this phone cannot command — every row refuses and sending is blocked — would be a page of dead conversations, so the action is the page.",
+        "url": "http://localhost:8099/?held=1&single=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => {\n  const text = document.body.innerText || '';\n  for (const wanted of ['已被 实验室的 MacBook Air 接管', '这台桌面正被另一台设备使用', '接管会断开 实验室的 MacBook Air'])\n    if (!text.includes(wanted)) throw new Error('the takeover page is missing ' + wanted + ': ' + text.slice(0, 400));\n  const labels = [...document.querySelectorAll('[role=button]')].map(el => el.getAttribute('aria-label'));\n  if (!labels.includes('接管')) throw new Error('no takeover action on the page: ' + labels.join(' / '));\n  if (document.querySelectorAll('[role=tab]').length > 0) throw new Error('the session list is still on screen under a taken-over machine');\n  if (labels.includes('新对话')) throw new Error('the list’s new-conversation button survived the takeover page');\n  return 'takeover page';\n})()"
+          },
+          {
+            "shot": "m-standby-takeover.png"
+          }
+        ]
+      },
       "take-control-chat": {
         "_comment": "Inside a conversation while another device holds the desktop: one line above the composer says who took it over and that nothing will send, with the takeover beside it. The dot in the header would say the same, but only to someone who taps it — here the user is looking at the composer.",
         "url": "http://localhost:8099/?held=1",

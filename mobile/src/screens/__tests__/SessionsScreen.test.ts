@@ -21,6 +21,7 @@ import { ActionMenu } from "../../components/ActionMenu";
 import type { MachineSummary } from "../../remote/desktopStatus";
 import { RenameModal } from "../../features/chat/components/RenameModal";
 import { DisconnectedScreen } from "../DisconnectedScreen";
+import { StandbyScreen } from "../StandbyScreen";
 import { SettingsLink } from "../../features/settings/SettingsPrimitives";
 import { checkForUpdate } from "../../update/update";
 import { promptUpgrade } from "../../update/prompt";
@@ -47,6 +48,7 @@ const mockRemote = {
   newConversation: jest.fn(),
   newConversationOn: jest.fn(async (_desktopId: string, _mode?: string, _workspaceId?: string) => {}),
   reconnect: jest.fn(),
+  takeControl: jest.fn(async () => {}),
   setSessionPinned: jest.fn(async () => {}),
   unpair: jest.fn(async () => {}),
   rename: jest.fn(async () => {}),
@@ -63,7 +65,11 @@ const mockRemote = {
   phase: "connected" as string,
   hasConnectedContent: true,
   error: null as string | null,
-  presence: null as { reason?: string } | null,
+  presence: null as {
+    reason?: string;
+    control?: "active" | "standby";
+    holder?: { name?: string } | null;
+  } | null,
   catalogs: null as unknown,
 };
 jest.mock("react-native", () => {
@@ -95,7 +101,7 @@ jest.mock("../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }
 jest.mock("../../update/prompt", () => ({ promptUpgrade: jest.fn() }));
 jest.mock("../../update/update", () => ({ checkForUpdate: jest.fn() }));
 jest.mock("lucide-react-native", () => Object.fromEntries(
-  ["ArrowLeft", "ChevronLeft", "ChevronRight", "ChevronDown", "Check", "Folder", "Layers", "LogOut", "MessageCircle", "Monitor", "Plus", "Pin", "Pencil", "Trash2", "Settings", "Unplug", "X"].map(name => [name, name]),
+  ["ArrowLeft", "ChevronLeft", "ChevronRight", "ChevronDown", "Check", "Folder", "Layers", "LogOut", "MessageCircle", "Monitor", "MonitorOff", "Plus", "Pin", "Pencil", "Trash2", "Settings", "Unplug", "X"].map(name => [name, name]),
 ));
 jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",
@@ -279,6 +285,92 @@ test("the list's disconnected empty state carries a retry that reaches the conne
   } finally {
     mockRemote.connectionPresentation = connected;
     mockCatalogs.machines = machines;
+  }
+});
+
+/**
+ * One pairing, taken over: the list is not a list this phone can use.
+ *
+ * A taken-over machine answers every command with a refusal and blocks sending,
+ * so drawing its conversations first asked the user to browse a page they could
+ * not act on. The one thing that changes it is the takeover, so the page asks for
+ * it directly — and the list's own "new conversation" affordance goes with it.
+ */
+test("a lone taken-over desktop replaces the list with the takeover", async () => {
+  const desktops = mockRemote.desktops;
+  const presence = mockRemote.presence;
+  mockRemote.desktops = [desktops[0]!];
+  mockRemote.presence = { control: "standby", holder: { name: "Lab MacBook Air" } };
+  try {
+    act(() => { tree.update(createElement(SessionsScreen, { onManageDesktops })); });
+    expect(tree.root.findAllByType(SessionList)).toHaveLength(0);
+    const standby = tree.root.findByType(StandbyScreen);
+    expect(standby.props.holder).toEqual({ name: "Lab MacBook Air" });
+    expect(tree.root.findAll(node =>
+      node.props.accessibilityLabel === "sessions.new" && typeof node.props.onPress === "function",
+    )).toHaveLength(0);
+    await act(async () => { await standby.props.onTakeControl(); });
+    expect(mockRemote.takeControl).toHaveBeenCalledTimes(1);
+  } finally {
+    mockRemote.desktops = desktops;
+    mockRemote.presence = presence;
+  }
+});
+
+/**
+ * A second pairing keeps the ordinary list: its rows are still this phone's,
+ * and the badge already names the open machine's standby.
+ */
+test("a second paired desktop keeps the list while the open one is held", () => {
+  const presence = mockRemote.presence;
+  mockRemote.presence = { control: "standby", holder: { name: "Office" } };
+  try {
+    act(() => { tree.update(createElement(SessionsScreen, { onManageDesktops })); });
+    expect(tree.root.findAllByType(StandbyScreen)).toHaveLength(0);
+    expect(tree.root.findAllByType(SessionList)).toHaveLength(1);
+  } finally {
+    mockRemote.presence = presence;
+  }
+});
+
+test("a lone desktop that still has control keeps the list", () => {
+  const desktops = mockRemote.desktops;
+  const presence = mockRemote.presence;
+  mockRemote.desktops = [desktops[0]!];
+  mockRemote.presence = { control: "active" };
+  try {
+    act(() => { tree.update(createElement(SessionsScreen, { onManageDesktops })); });
+    expect(tree.root.findAllByType(StandbyScreen)).toHaveLength(0);
+    expect(tree.root.findAllByType(SessionList)).toHaveLength(1);
+  } finally {
+    mockRemote.desktops = desktops;
+    mockRemote.presence = presence;
+  }
+});
+
+/**
+ * A link that is down is not a machine someone else holds: the reconnect page
+ * is the one that can get the phone anywhere at all, so it wins.
+ */
+test("a disconnected lone desktop keeps the reconnect page rather than the takeover", () => {
+  const connected = mockRemote.connectionPresentation;
+  const desktops = mockRemote.desktops;
+  const presence = mockRemote.presence;
+  mockRemote.connectionPresentation = {
+    level: "disconnected",
+    titleKey: "connection.disconnected",
+    hintKey: "connection.offlineHint",
+  };
+  mockRemote.desktops = [desktops[0]!];
+  mockRemote.presence = { control: "standby" };
+  try {
+    act(() => { tree.update(createElement(SessionsScreen, { onManageDesktops })); });
+    expect(tree.root.findAllByType(StandbyScreen)).toHaveLength(0);
+    expect(tree.root.findAllByType(DisconnectedScreen)).toHaveLength(1);
+  } finally {
+    mockRemote.connectionPresentation = connected;
+    mockRemote.desktops = desktops;
+    mockRemote.presence = presence;
   }
 });
 
