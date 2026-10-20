@@ -1073,12 +1073,19 @@ enum Out {
 struct ConnHandle {
     subs: Vec<NatsSub>,
     tx: tokio::sync::mpsc::UnboundedSender<Out>,
+    /// The JWT this connection presented in its `CONNECT`, when it sent one.
+    jwt: Option<String>,
 }
 
 #[derive(Default)]
 struct NatsState {
     conns: HashMap<u64, ConnHandle>,
     next_id: u64,
+    /// Every JWT presented, in arrival order. The credential a client reconnects
+    /// with is what says whether a generation was really replaced.
+    presented: Vec<String>,
+    /// JWTs the relay refuses from now on, as an expired or revoked grant is.
+    revoked: std::collections::HashSet<String>,
 }
 
 /// A minimal in-process NATS server: INFO handshake, PING/PONG, SUB/UNSUB,
@@ -1114,6 +1121,7 @@ impl FakeNats {
                         ConnHandle {
                             subs: Vec::new(),
                             tx,
+                            jwt: None,
                         },
                     );
                     tokio::spawn(serve_conn(
@@ -1141,6 +1149,53 @@ impl FakeNats {
     /// Observe every message published through the server (client or injected).
     pub(crate) fn tap(&self) -> tokio::sync::broadcast::Receiver<Published> {
         self.tap.subscribe()
+    }
+
+    /// Every JWT presented in a `CONNECT`, in arrival order.
+    ///
+    /// The credential a client reconnects with is the observable a rotation test
+    /// needs: a replaced generation must present the renewed grant, and a refused
+    /// one must stop being presented at all.
+    pub(crate) fn presented_jwts(&self) -> Vec<String> {
+        self.state.lock().unwrap().presented.clone()
+    }
+
+    /// How many `CONNECT`s carried exactly `jwt`.
+    pub(crate) fn jwt_attempts(&self, jwt: &str) -> usize {
+        self.state
+            .lock()
+            .unwrap()
+            .presented
+            .iter()
+            .filter(|presented| presented.as_str() == jwt)
+            .count()
+    }
+
+    /// Refuse `jwt` from now on, as the relay does for an expired grant: the
+    /// handshake gets `-ERR 'Authorization Violation'` and the socket closes.
+    pub(crate) fn revoke_jwt(&self, jwt: &str) {
+        self.state.lock().unwrap().revoked.insert(jwt.to_string());
+    }
+
+    /// End every live connection that presented `jwt`, as the relay does when a
+    /// grant expires under it (`User Authentication Expired`, then the socket
+    /// closes). The client's own reconnect then decides what to present.
+    pub(crate) fn expire_jwt(&self, jwt: &str) {
+        let mut state = self.state.lock().unwrap();
+        let mut expired = Vec::new();
+        for (id, conn) in state.conns.iter() {
+            if conn.jwt.as_deref() == Some(jwt) {
+                let _ = conn.tx.send(Out::Line(
+                    "-ERR 'User Authentication Expired'\r\n".to_string(),
+                ));
+                expired.push(*id);
+            }
+        }
+        // Dropping the sender closes the write half, which is what the relay's
+        // close looks like from the client.
+        for id in expired {
+            state.conns.remove(&id);
+        }
     }
 
     /// Deliver a message as if published by a client (no sender needed).
@@ -1409,18 +1464,58 @@ async fn serve_conn(
         let tokens: Vec<&str> = text.split_whitespace().collect();
         match tokens.first().copied() {
             Some("PING") => {
-                // The connection entry lives until this read loop breaks, so
-                // the lookup cannot fail here.
+                // The connection entry may be gone: `expire_jwt` removes it to
+                // close the socket, and the client can still send a PING before
+                // it notices. A missing entry is simply a closed connection.
                 let tx = state
                     .lock()
                     .unwrap()
                     .conns
                     .get(&conn_id)
-                    .map(|conn| conn.tx.clone())
-                    .expect("connection registered while its read loop runs");
-                let _ = tx.send(Out::Line("PONG\r\n".to_string()));
+                    .map(|conn| conn.tx.clone());
+                if let Some(tx) = tx {
+                    let _ = tx.send(Out::Line("PONG\r\n".to_string()));
+                }
             }
-            Some("CONNECT") | Some("PONG") => {}
+            Some("CONNECT") => {
+                // `CONNECT {json}`. The JWT is what identifies the credential a
+                // connection was authorized with; the fake only has to see it,
+                // except for grants the test has revoked.
+                let payload = text
+                    .trim_start()
+                    .strip_prefix("CONNECT ")
+                    .unwrap_or_default()
+                    .trim();
+                let jwt = serde_json::from_str::<Value>(payload)
+                    .ok()
+                    .and_then(|value| value.get("jwt").and_then(Value::as_str).map(str::to_string));
+                let refused = {
+                    let mut state = state.lock().unwrap();
+                    let refused = jwt.as_ref().is_some_and(|jwt| state.revoked.contains(jwt));
+                    if let Some(jwt) = &jwt {
+                        state.presented.push(jwt.clone());
+                    }
+                    if let Some(conn) = state.conns.get_mut(&conn_id) {
+                        conn.jwt = jwt;
+                    }
+                    refused
+                };
+                if refused {
+                    // The relay's refusal of the handshake, verbatim.
+                    let tx = state
+                        .lock()
+                        .unwrap()
+                        .conns
+                        .get(&conn_id)
+                        .map(|conn| conn.tx.clone());
+                    if let Some(tx) = tx {
+                        let _ =
+                            tx.send(Out::Line("-ERR 'Authorization Violation'\r\n".to_string()));
+                    }
+                    break;
+                }
+            }
+            Some("PONG") => {}
             Some("SUB") => {
                 // SUB <subject> [queue] <sid>
                 let sub = match tokens.as_slice() {
@@ -1476,7 +1571,10 @@ async fn serve_conn(
         }
     }
     state.lock().unwrap().conns.remove(&conn_id);
-    writer.abort();
+    // Removing the entry dropped its sender, so the writer flushes whatever is
+    // already queued — a refusal's `-ERR`, a final PONG — and then closes the
+    // socket. Aborting it here would drop those bytes instead.
+    drop(writer);
 }
 
 /// Connect an async-nats client to the fake server (no auth).
