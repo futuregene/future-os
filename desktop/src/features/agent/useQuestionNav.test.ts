@@ -408,19 +408,31 @@ describe("useQuestionNav", () => {
   });
 });
 
-describe("useQuestionNav arrow keys", () => {
-  it("walks the transcript with the bare arrow keys", () => {
+describe("useQuestionNav page keys", () => {
+  it("walks the transcript with Page Up / Page Down", () => {
     // The buttons and the keys are one walk, so a press has to land exactly
     // where its button would: ↓ takes the next stop below, ↑ the previous
     // prompt. The reader starts at the top of the loaded window, where only ↓
     // has anywhere to go.
     const { container, hook } = mount();
 
-    press("ArrowDown");
+    press("PageDown");
     expect(container.scrollTop).toBe(100 + 120 - 16);
     expect(hook.current.hasPrevious).toBe(true);
 
-    press("ArrowUp");
+    press("PageUp");
+    expect(container.scrollTop).toBe(0);
+    hook.unmount();
+    container.remove();
+  });
+
+  it("leaves the bare arrows to the page", () => {
+    // ↑/↓ on a scroll container is the reader's ordinary line scroll, and on a
+    // long reply it is the finer control they reach for first. Answering it here
+    // would turn every arrow press into a jump of a whole turn.
+    const { container, hook } = mount();
+
+    expect(press("ArrowDown").defaultPrevented).toBe(false);
     expect(container.scrollTop).toBe(0);
     hook.unmount();
     container.remove();
@@ -428,58 +440,59 @@ describe("useQuestionNav arrow keys", () => {
 
   it("leaves a key the direction cannot answer to the page", () => {
     // Nothing above the first row: the ↑ button is inert there, and so is the
-    // key. Swallowing it would take away the browser's ordinary line scroll —
+    // key. Swallowing it would take away the browser's own screenful scroll —
     // the transcript is a plain scroll container, and a short one still scrolls.
     const { container, hook } = mount();
 
-    const event = press("ArrowUp");
+    const event = press("PageUp");
     expect(event.defaultPrevented).toBe(false);
     expect(container.scrollTop).toBe(0);
     hook.unmount();
     container.remove();
   });
 
-  it("leaves the arrows alone while the caret is in a text field", () => {
-    // The composer is where the reader types, so an arrow there belongs to the
-    // caret. jsdom's `isContentEditable` is undefined, which is why the
+  it("leaves the page keys alone while the caret is in a text field", () => {
+    // The composer is where the reader types, so a page key there belongs to the
+    // field. jsdom's `isContentEditable` is undefined, which is why the
     // predicate walks the attribute instead.
     const { container, hook } = mount();
     const editor = document.createElement("div");
     editor.setAttribute("contenteditable", "true");
     container.append(editor);
 
-    const event = press("ArrowDown", editor);
+    const event = press("PageDown", editor);
     expect(event.defaultPrevented).toBe(false);
     expect(container.scrollTop).toBe(0);
     hook.unmount();
     container.remove();
   });
 
-  it("leaves the arrows alone while a menu is open", () => {
-    // The activity rail's menus move focus with the arrows; a transcript jump
+  it("leaves the page keys alone while a menu is open", () => {
+    // A floating menu can hold its own list of rows; a transcript jump
     // underneath one is the app fighting the user for the same keystroke.
     const { container, hook } = mount();
     const menu = renderHook(() => useKeyboardOwner(true));
 
-    const event = press("ArrowDown");
+    const event = press("PageDown");
     expect(event.defaultPrevented).toBe(false);
     expect(container.scrollTop).toBe(0);
 
     // …and closing it hands the key back.
     menu.unmount();
-    press("ArrowDown");
+    press("PageDown");
     expect(container.scrollTop).toBe(100 + 120 - 16);
     hook.unmount();
     container.remove();
   });
 
-  it("ignores a modified or composing arrow", () => {
-    // Shift/Alt/Cmd+Arrow are selection, word-motion and the platform's line
-    // motion; a composing arrow picks an IME candidate.
+  it("ignores a modified or composing page key", () => {
+    // Ctrl+Page Up/Page Down switches tabs, Shift+Page Up extends a selection,
+    // and a composing press belongs to the IME.
     const { container, hook } = mount();
 
-    press("ArrowDown", undefined, { shiftKey: true });
-    press("ArrowDown", undefined, { isComposing: true });
+    press("PageDown", undefined, { shiftKey: true });
+    press("PageDown", undefined, { ctrlKey: true });
+    press("PageDown", undefined, { isComposing: true });
     expect(container.scrollTop).toBe(0);
     hook.unmount();
     container.remove();
@@ -489,7 +502,7 @@ describe("useQuestionNav arrow keys", () => {
     const { container, hook } = mount();
     hook.unmount();
 
-    press("ArrowDown");
+    press("PageDown");
     expect(container.scrollTop).toBe(0);
     container.remove();
   });
@@ -736,7 +749,7 @@ describe("useQuestionNav paging from the window's top", () => {
     world.container.remove();
   });
 
-  it("pages from the arrow key too, since the keys and the buttons are one walk", () => {
+  it("pages from the page key too, since the keys and the buttons are one walk", () => {
     const world = pagedTranscript();
     world.layOut(WINDOW_IDS);
     const loadOlder = vi.fn(() => Promise.resolve());
@@ -748,7 +761,7 @@ describe("useQuestionNav paging from the window's top", () => {
       scrollRef: world.scrollRef,
     }));
 
-    expect(press("ArrowUp").defaultPrevented).toBe(true);
+    expect(press("PageUp").defaultPrevented).toBe(true);
     expect(loadOlder).toHaveBeenCalledTimes(1);
     hook.unmount();
     world.container.remove();

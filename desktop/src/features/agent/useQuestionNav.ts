@@ -88,10 +88,12 @@ export interface QuestionNavApi {
  * button that looks dead or lies.
  *
  * **The pair is also on the keyboard** (see `questionNavKeys`): inside the
- * conversation an unmodified ↑/↓ is the same walk as the matching button, so a
- * reader who never looks for the control can still page through the transcript.
- * A press that has nowhere to go is left alone rather than swallowed, so a short
- * transcript still gets its ordinary line scroll.
+ * conversation an unmodified Page Up / Page Down is the same walk as the
+ * matching button, so a reader who never looks for the control can still page
+ * through the transcript. The bare arrows are left to the page — they are the
+ * reader's ordinary line scroll, and stealing them would make every arrow press
+ * a jump. A press that has nowhere to go is left alone rather than swallowed, so
+ * a short transcript still gets its ordinary screenful scroll.
  *
  * The hook does not own the scroll container; the caller passes its ref and a
  * callback that disables sticky auto-follow, so a jump is not dragged back to
@@ -356,7 +358,7 @@ export function useQuestionNav<T extends TranscriptMessage>({
   const goToNext = useCallback(() => navigate("next"), [navigate]);
 
   /**
-   * The arrow keys, for as long as a transcript is on screen.
+   * The page keys, for as long as a transcript is on screen.
    *
    * The direction is resolved against the live DOM — the same `step` a press
    * takes, right now — rather than against the published offer: the DOM moves
@@ -375,7 +377,7 @@ export function useQuestionNav<T extends TranscriptMessage>({
         // ↑ at the window's top is the button's own press, not a key the walk
         // cannot answer: the keys and the buttons are one walk, so the key pages
         // too. ↓ has no equivalent — there is no page newer than the window —
-        // and is left to the page, which is the ordinary line scroll.
+        // and is left to the page, which is the ordinary screenful scroll.
         if (direction === "previous" && hasOlderRef.current) {
           event.preventDefault();
           goToPrevious();

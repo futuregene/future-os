@@ -179,25 +179,33 @@ short numeric code. The graphical `futureos` entrypoint no longer accepts
 
 **Pairing is managed from the terminal, through the running Desktop.** Neither
 entry point takes a pairing flag. `future remote devices` (the `future` CLI) is the
-terminal half of the Remote page: `list` and `use` read and edit the pairing book
-directly, because those are changes to the book alone and must work with nothing
-running. `add` and `remove` cannot be: an invitation is only usable while the
-bridge for its pairing is connected, and a removal only stops the device being
-served if that bridge is stopped — both belong to the process that owns the data
-directory.
+terminal half of the Remote page: `list` reads the pairing book and `use` writes
+it, because that is the machine's record of who drives it and must work with
+nothing running. `add`, `remove` and the immediate half of `use` cannot be: an
+invitation is only usable while the bridge for its pairing is connected, a removal
+only stops the device being served if that bridge is stopped, and the live
+controller is an in-memory pointer that only a takeover moves — all three belong
+to the process that owns the data directory.
 
-That request travels as a file. `future remote devices add|remove` writes
-`{"op":"add-device","reply":"<path>"}` or
-`{"op":"remove-device","pairId":"<device>","reply":"<path>"}` into
+That request travels as a file. `future remote devices add|remove|use` writes
+`{"op":"add-device","reply":"<path>"}`,
+`{"op":"remove-device","pairId":"<device>","reply":"<path>"}` or
+`{"op":"takeover","pairId":"<device>","reply":"<path>"}` into
 `~/.future/run/remote-control/`, then polls the reply path for its answer; the
 running Desktop — window or headless, both start `remote::control::spawn_host` —
 claims the request by renaming it, performs the operation and writes
-`{pairId, link, expiresAt}`, `{pairId, removed}` or `{error}` back. A removal is
+`{pairId, link, expiresAt}`, `{pairId, removed}`, a `{status}` snapshot or
+`{error}` back. A removal is
 answered only after `unpair_slot` has revoked the credential, forgotten the slot,
 stopped that bridge and told the device it was unpaired; a terminal that had to
 edit the book itself (no Desktop running, or one too old to know the operation)
 says so, because the device then keeps being served until its credential comes up
-for renewal. The reply
+for renewal. A takeover is answered after the pointer moved, the previous
+controller was published `standby` and the new one `active` — the same move a
+phone makes when it asks to take over — so `use` takes effect at once instead of at
+the next start; a device with no bridge here cannot be handed the machine (there is
+nothing to send it commands), and the terminal then reports the recorded choice as
+applying at the next start, which is what a book-only edit always did. The reply
 path is a temporary file the asking process created for itself, so two terminals
 asking at once cannot read each other's invitation, and a request older than two
 minutes is deleted rather than served: its asker has given up. The Desktop refuses
