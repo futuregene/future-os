@@ -455,3 +455,9 @@ CI `39371045462` 已完成，整体为 failure。Windows 独立 Host 分组、�
 同轮 Linux GUI 为 1025 通过、2 失败、8 个原忽略。未持有共享 HOME 锁的 GUI runtime-update drain 测试会重置全局退出状态，清空另一真实 RPC 用例的归属表。两个原用例并发在本地复现同样的 `owned_count 0 != 1`；只为全局重置夹具补齐 `HomeGuard`，所有产品逻辑与原断言不变。退出协调与 GUI 更新两组并发 26 项通过。[隔离证据](../testing/headless-shutdown-fixture-isolation-2026-10-20.json)保留红/绿日志摘要。
 
 远程主干 `c53191cf` 已由 `0bf843e0` 合入，保留 Remote 开关偏好和新默认值。重命名感知合并将原 Desktop Store 的默认值断言正确落在 Host；新增 4 个上游 GUI 用例单独登记，2193 项原基线不变。合并后 Host 1047 通过/2 个原忽略、共享设置包 20 通过、GUI Remote 17 通过、CLI 设置 10 通过；Desktop/Mobile type-check 与 ESLint、受影响 Clippy `--all-targets` 通过。[同步证据](../testing/headless-remote-switch-sync-2026-10-20.json)区分源码版本。暂不 dispatch 下一轮，避免 CI 并发规则取消仍在运行的 Windows 原生构建；失败的旧运行不计为通过。
+
+### 2026-10-20 恢复状态轮询夹具隔离
+
+候选 `20faf463` 的 CI [39376582909](https://github.com/futuregene/future-os/actions/runs/39376582909) 已完成且失败：Linux GUI 的恢复状态轮询在两个读取之间受到共享状态变化影响，分别读到 ready 与 incompatible。Windows 原生构建、三个平台 Host、Linux headless 及其他独立分组通过；两个汇总 gate 因 GUI 失败而失败，匹配 Windows 编译测量为 skipped。不能将此运行接受为自动化通过。
+
+原测试现持有既有 HomeGuard，并使用真实 loopback Agent RPC 夹具；保留状态、版本和错误的原比较，另要求 ready。当前 Remote 迁移工作树中本地相关 16 项全部通过，未声称确定性本地失败复现。详见[证据](../testing/headless-recovery-poll-isolation-2026-10-20.json)。该修复仍需 Linux CI 复验；Remote 迁移、新 CLI、发行与人工验收继续进行。
