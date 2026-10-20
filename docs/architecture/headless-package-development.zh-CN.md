@@ -429,3 +429,7 @@ CI `39371045462`（候选 `0f9cc395`）的 macOS Host 分组为 933 通过、1 �
 固定最小间隔、手工执行重置时钟、任务串行化、登录/余额判定和模型刷新迁入 Host，保留共享包与原 1h/24h 策略。Desktop 仅保留 Tauri 更新器能力与窗口事件发送，通过同一份不公开内部锁/状态的 job 时钟接线；GUI 的任务/调度适配在调用共享 spawn 前显式安装入口 runtime。headless 仍只启用已有模型目录维护，不新增余额轮询或应用更新。
 
 14 个原核心声明迁入，3 个真实 GUI 更新器/展示接线用例留在 Desktop，49 个原断言全部保留。包含此前任务和登录迁移的同一源码上，Host 全量核心 1030 通过、0 失败、2 原有忽略（80.67 秒）；GUI 调度 3 项通过（0.01 秒）；两个实际旧入口进程组各 13 项通过（5.34 秒、68.54 秒）。宿主/GUI/CLI 和旧 headless Clippy `--all-targets`、fmt、严格 Rustdoc 与联合依赖边界通过，详见[维护调度证据](../testing/headless-host-maintenance-2026-10-20.json)。这不是最终 CLI、跨平台发行或人工验收。
+
+### 2026-10-20 候选 0f9cc395 的完整 CI 归档
+
+CI `39371045462` 已完成，整体为 failure。Windows 独立 Host 分组、构建/联合依赖检查及 13 组非零原生门禁均通过，实际 artifact summary 的 commit 已核对为同一候选；首次下载 EOF 后重试成功，不以读取异常计为通过。Linux headless 全组也通过。实际失败为 macOS shell activity 轮询与 Linux GUI readiness 入口，已分别提交本地复验修复，仍待新候选 CI。完整分组、Windows 平台/命令/耗时与日志摘要见[本轮 CI 证据](../testing/headless-ci-39371045462-2026-10-20.json)。性能比较 job 为 skipped，不记为通过；后续任务/登录/调度迁移不能借用本轮旧候选结果验收。

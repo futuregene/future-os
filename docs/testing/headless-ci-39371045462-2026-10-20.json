@@ -1,0 +1,419 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "candidate": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+  "run": 39371045462,
+  "url": "https://github.com/futuregene/future-os/actions/runs/39371045462",
+  "finalCi": {
+    "conclusion": "failure",
+    "headSha": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+    "jobs": [
+      {
+        "conclusion": "success",
+        "databaseId": 118458758377,
+        "name": "Detect affected checks",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118458758612,
+        "name": "macOS notarization recovery",
+        "status": "completed"
+      },
+      {
+        "conclusion": "skipped",
+        "databaseId": 118458759915,
+        "name": "Matched Windows Rust compilation",
+        "status": "completed"
+      },
+      {
+        "conclusion": "failure",
+        "databaseId": 118458805814,
+        "name": "Rust tests (Linux) (desktop gui)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118458805821,
+        "name": "Mobile typecheck + lint + test",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118458805833,
+        "name": "Rust build (macOS)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118458805835,
+        "name": "Rust tests (Linux) (desktop headless)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118458805839,
+        "name": "Rust build (Windows)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118458805843,
+        "name": "Rust tests (Linux) (tui, cli)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "failure",
+        "databaseId": 118458805856,
+        "name": "Shared host (macOS)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118458805862,
+        "name": "Desktop typecheck + lint + test",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118458805871,
+        "name": "Rust tests (Linux) (agent)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118458805878,
+        "name": "Rust fmt + clippy (Linux)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118458805897,
+        "name": "Windows update fixtures",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118458805914,
+        "name": "Rust tests (Linux) (host)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118458805917,
+        "name": "Rust build (Linux)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118458805944,
+        "name": "Remote packages + interoperability",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118458805949,
+        "name": "Rust tests (Linux) (channels, rpc, goal)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "success",
+        "databaseId": 118458805981,
+        "name": "Shared host (Windows)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "failure",
+        "databaseId": 118461889376,
+        "name": "Rust tests (Linux) (desktop backend)",
+        "status": "completed"
+      },
+      {
+        "conclusion": "failure",
+        "databaseId": 118462694702,
+        "name": "Rust tests (Linux)",
+        "status": "completed"
+      }
+    ],
+    "status": "completed"
+  },
+  "windowsNative": {
+    "artifact": "embedded-agent-Windows",
+    "job": 118458805839,
+    "summary": {
+      "platform": "Windows-2025Server-10.0.26100-SP0",
+      "commit": "0f9cc395e7fb983859bc625bbb3f121b0bc61dda",
+      "suites": [
+        {
+          "name": "connection",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "future-rpc",
+            "--lib",
+            "connection::tests",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 19,
+          "seconds": 50.219
+        },
+        {
+          "name": "service",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "future-agent",
+            "--test",
+            "service_startup",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 15,
+          "seconds": 114.062
+        },
+        {
+          "name": "cli-tools",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "--manifest-path",
+            "desktop/src-tauri/Cargo.toml",
+            "--no-default-features",
+            "--features",
+            "headless",
+            "--lib",
+            "cli_tool::tests",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 6,
+          "seconds": 124.532
+        },
+        {
+          "name": "shared-host",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "future-host",
+            "--lib",
+            "agent_host::",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 16,
+          "seconds": 90.25
+        },
+        {
+          "name": "gui-entry-state",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "futureos",
+            "--lib",
+            "gui::startup_paths_tests::process_state_initializes_without_a_window",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "seconds": 236.031
+        },
+        {
+          "name": "gui-entry-providers",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "futureos",
+            "--lib",
+            "commands::providers::tests::command_wrappers_delegate_to_the_agent",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "seconds": 39.687
+        },
+        {
+          "name": "gui-entry-ready",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "futureos",
+            "--lib",
+            "gui::startup_paths_tests::the_ready_event_starts_the_window_work_and_serves_the_terminal",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "seconds": 5.641
+        },
+        {
+          "name": "gui-entry-exit",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "futureos",
+            "--lib",
+            "gui::startup_paths_tests::the_exit_event_closes_admission_and_publishes_the_stop",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "seconds": 0.719
+        },
+        {
+          "name": "headless-entry",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "futureos",
+            "--no-default-features",
+            "--features",
+            "headless",
+            "--test",
+            "headless_cli",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 8,
+          "seconds": 12.531
+        },
+        {
+          "name": "windows-gui-image",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "futureos",
+            "--test",
+            "windows_stack",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 2,
+          "seconds": 29.031
+        },
+        {
+          "name": "windows-shell-console",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "future-agent",
+            "--lib",
+            "sandbox::backend::tests::plain_windows_shell_runs_without_a_console",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "seconds": 84.11
+        },
+        {
+          "name": "windows-shell-detached-host",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "future-agent",
+            "--lib",
+            "rpc::session::tests::shells_run_after_console_detach",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "seconds": 1.328
+        },
+        {
+          "name": "windows-rpc-shell-console",
+          "command": [
+            "cargo",
+            "test",
+            "--locked",
+            "-p",
+            "future-agent",
+            "--lib",
+            "rpc::session::tests::execute_shell_does_not_create_a_console",
+            "--",
+            "--test-threads=1",
+            "--nocapture"
+          ],
+          "exit_code": 0,
+          "passed": 1,
+          "seconds": 1.453
+        }
+      ],
+      "status": "passed"
+    },
+    "logDigests": {
+      "gui-entry-state.log": "91b9865152a97aac227231e60042bedefdca924bbbd63b2b408db8c255668b8f",
+      "windows-rpc-shell-console.log": "55edd17f4ed989020a7d8d1ba9347a26ef5944fcce8ba0fa6242c3baf6518a7e",
+      "gui-entry-providers.log": "355b38bb2d5edaf45dca297a0e6b2371492890142597e963f1c7228d043f4d3a",
+      "windows-gui-image.log": "0c08dbc68a67eddfd961f40b331f85b780a20935f7f20dee039577853aa09eec",
+      "shared-host.log": "e7f65eabd3b9f8f5b1c37c8fd291a7d9d79033af71d74894bef050d9dc661883",
+      "windows-shell-detached-host.log": "076b78e5e90b713197c9d31c6e8d7bfdb27da2ab5e9e16ebcbfa607d556ba725",
+      "service.log": "810f75a0613996ee15258922e6f43d62c4b32118cf20c0bb1704757139707952",
+      "gui-entry-exit.log": "d4c4f3e6c7b3a4228dcb1ed642866f669c107d8c69e1fd31c531f1387f4ad607",
+      "windows-shell-console.log": "cdd0740228b781a9661d57dd7702cbe67730cbaf967a9afe7b32029bd077c4d2",
+      "cli-tools.log": "9218df8a1036777481bb5e97c17459e5007b1ff44113ae3468bdd4464ad63e6e",
+      "gui-entry-ready.log": "24c695a83ea5cbbcf2d30d360f39dc472953fb87a2b6adf74d4e6f8c63fd244c",
+      "connection.log": "d512d55bdb8c35eb004edb1b610bb16f90f580dae3d0cc8db53f2d2da22c6e11",
+      "headless-entry.log": "c40b38b58cfe013be7776fc2bc4cee2f9fed8eb7f1940a24b7fb62123a502569"
+    },
+    "retrieval": "First archive download returned transient EOF; same artifact retried successfully and actual summary/commit/nonzero suites inspected."
+  },
+  "repairsPendingRevalidation": {
+    "macOS owned shell activity polling": "af695679",
+    "Linux GUI readiness entry runtime": "5894d79b"
+  },
+  "interpretation": [
+    "Windows workspace/GUI/headless checks, combined GUI/CLI dependency boundary and all thirteen nonempty native lifecycle suites passed. Independent Windows Host quality/tests also passed.",
+    "Linux desktop headless completed successfully on this same candidate; the prior hanging run was not counted as passing.",
+    "Two actual failures remain in this CI: macOS Host shell poll and Linux GUI readiness wiring. Aggregate gates fail from these.",
+    "Matched Windows compilation benchmark was skipped, not passed; suite command durations include compilation and are not matched baseline performance.",
+    "Task/login/scheduler changes postdate this candidate; do not reuse these results as their full acceptance.",
+    "No final CLI/release/manual acceptance or overall goal completion."
+  ]
+}
