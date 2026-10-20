@@ -26,7 +26,16 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
         sections.push(build_identity_section(opts));
     }
 
-    // 2. Skills XML — capabilities before project-specific rules, so the model
+    // 2. Sessions — what this conversation may do to other conversations. It is
+    //    early because delegation is an action the model takes mid-task, and it
+    //    is its own section because these are conversation semantics, not
+    //    per-tool advice (see `build_sessions_section`). Every command in it
+    //    runs through the shell tool.
+    if has_tool(&opts.tools, "shell") {
+        sections.push(build_sessions_section(opts.is_subsession));
+    }
+
+    // 3. Skills XML — capabilities before project-specific rules, so the model
     //    knows what it can do before reading constraints.
     if !opts.skills.is_empty() && has_tool(&opts.tools, "read") {
         let visible: Vec<_> = opts
@@ -39,7 +48,7 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
         }
     }
 
-    // 3. Project context (AGENTS.md / CLAUDE.md)
+    // 4. Project context (AGENTS.md / CLAUDE.md)
     if !opts.agent_content.is_empty() {
         sections.push(format!(
             "# Project Context\n\nProject-specific instructions and guidelines:\n\n{}",
@@ -47,7 +56,7 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
         ));
     }
 
-    // 4. Workspace memory (FUTURE.md) — always present so the model knows about
+    // 5. Workspace memory (FUTURE.md) — always present so the model knows about
     //    the feature even before the file exists. FUTURE.md is an INDEX, not a
     //    log: details live in topic files under .future/memory/ and are read on
     //    demand. The loader enforces the caps below (lint_memory_index); the
@@ -92,13 +101,13 @@ pub fn build_prompt(opts: &PromptOptions) -> String {
         sections.push(part);
     }
 
-    // 5. Append prompt — placed late so user overrides can take precedence
+    // 6. Append prompt — placed late so user overrides can take precedence
     //    over earlier rules without being diluted by metadata.
     if !opts.append_prompt.is_empty() {
         sections.push(opts.append_prompt.clone());
     }
 
-    // 6. Environment: date, working directory, host platform, and session info
+    // 7. Environment: date, working directory, host platform, and session info
     //    — always included so the model generates platform-appropriate shell
     //    commands, paths, and can self-identify its own session.
     {
@@ -388,7 +397,7 @@ fn build_identity_section(opts: &PromptOptions) -> String {
         .iter()
         .map(|t| t.def.function.name.as_str())
         .collect();
-    let mut guidelines = build_dynamic_tool_guidelines(&tool_names, !opts.is_subsession);
+    let mut guidelines = build_dynamic_tool_guidelines(&tool_names);
     guidelines.extend(opts.tools.iter().flat_map(|t| t.guidelines.iter()).cloned());
     let guidelines = dedup(guidelines)
         .into_iter()
@@ -415,7 +424,7 @@ fn build_identity_section(opts: &PromptOptions) -> String {
     parts.join("\n\n")
 }
 
-fn build_dynamic_tool_guidelines(tool_names: &[&str], may_delegate: bool) -> Vec<String> {
+fn build_dynamic_tool_guidelines(tool_names: &[&str]) -> Vec<String> {
     let has_shell = tool_names.contains(&"shell");
 
     let mut guidelines = vec![];
@@ -425,47 +434,80 @@ fn build_dynamic_tool_guidelines(tool_names: &[&str], may_delegate: bool) -> Vec
         if tool_names.contains(&"read") {
             guidelines.push("Prefer the read tool for known file contents; use shell when command-line processing is useful.".to_string());
         }
-        // A `#`-picked conversation reaches the model as
-        // `[title](futureos://session/<id>)`, so the id is already in the
-        // message. Acting on it goes through the ordinary `future` CLI rather
-        // than a dedicated tool, the same way the agent inspects itself (see
-        // docs/guide/self-inspection.md): this guideline only has to name the
-        // two commands the reference is for, since the id alone is not
-        // self-explanatory. The last two sentences cover what the target
-        // session cannot see for itself: the message arrives as a bare user
-        // turn with no sender, and the payload can be mangled on the way — see
-        // docs/guide/self-inspection.md.
-        //
-        // Spell the call forms out: they are not uniform. `transcript` and
-        // `run` take `--session <id>`, while `status` and `wait` take the id
-        // positionally and reject `--session` as an unknown option.
-        guidelines.push(
-            "A user message may reference another conversation as [title](futureos://session/<session-id>): the id in that link identifies that conversation. Read it with the shell tool — `future session transcript --session <id>` (add --select/--grep/--limit/--counts to read it cheaply, --runs for its run outcomes) or `future session history search --session <id> --query \"<text>\"` to find a passage. To send it a message use `future run --session <id> \"<message>\"`, which starts a real run there and spends the user's credits; if that conversation is mid-run, you decide whether to append behind it (the default) or interrupt it with --steer. By default the command waits for that run to end, so raise the shell tool's timeout for a long one (max 600s); `future run --no-wait --session <id> \"<message>\"` gets an ack immediately and continues, and the answer comes back later from `future session wait <id> [--run <run-id>]` — the ack carries the run id — while `future session status <id>` shows whether that run is still active. The target sees only a bare user turn, so state what it cannot infer: that the message comes from another conversation (name the sending session id) and whether you expect it to act on the content or merely take note. When the payload is long or non-ASCII, write it to a file and pass it as `@<file>` — the CLI reads the file itself — instead of reading it into a shell variable first: on Windows PowerShell 5.1 `Get-Content` decodes a BOM-less UTF-8 file with the ANSI code page, and the mojibake is what lands in the other conversation."
-                .to_string(),
-        );
-        // Delegation writes into exactly the same machinery, so it is stated as
-        // an extension of the paragraph above rather than a second copy of it:
-        // the commands already named there are not repeated, and the user's own
-        // words for the thing are given because the model matches wording before
-        // it matches concepts.
+    }
+
+    guidelines
+}
+
+// ─── Sessions Section ───────────────────────────────────────────────────────
+
+/// `# Sessions` — what this conversation can do to *other* conversations.
+///
+/// Separate from the tool guidelines on purpose. Those are per-tool advice
+/// ("prefer write over `cat >`"); these are conversation-level semantics, and a
+/// model reading them in that list treats delegation as a shell trick rather
+/// than as a way to organise work. The section is early — directly after the
+/// identity block — because it is an action the model may need to take in the
+/// middle of a task, and instructions that far down a 60KB prompt are the ones
+/// that get skimmed.
+///
+/// Every command here runs through the shell tool, so a session without one
+/// gets no section at all.
+///
+/// The two paragraphs are written to be position-independent: each names its
+/// own commands, and the delegation paragraph refers to a *named* topic
+/// ("a referenced conversation") rather than to "the form above". Reordering or
+/// splitting them therefore cannot leave a dangling pointer, which is what the
+/// previous "form above" wording would have done the moment delegation moved
+/// first.
+fn build_sessions_section(is_subsession: bool) -> String {
+    let mut parts = vec!["# Sessions".to_string()];
+
+    // Delegation is the active half and comes first: a model that has not
+    // thought about splitting the work yet is the one that needs to read this.
+    // A session that already has a parent is at the lineage limit — the agent
+    // refuses a deeper chain (`reject_deep_parent`), so promising the commands
+    // here would only invite a run that cannot succeed. It keeps the reference
+    // paragraph below, because reading and messaging an existing conversation
+    // still works from a child.
+    if !is_subsession {
+        // The user's own words come before the concept, because the model
+        // matches wording before it matches concepts.
         //
         // `--parent` is what makes the child a child: without it the new session
         // is an unrelated conversation that merely happens to be busy, and the
-        // rail, `session list --parent` and the lineage guard would all miss it.
+        // conversation rail, `session list --parent` and the lineage guard would
+        // all miss it.
         //
         // The closing rules are the failure modes seen when this is left to the
         // model's judgement: a prompt that assumes shared history, a turn that
         // ends while a child still runs, and a wait per spawn that serializes
         // work which was delegated precisely to run in parallel.
-        if may_delegate {
-            guidelines.push(
-                "Work can also be handed to another conversation of your own — a sub-session, which the user may also call a subagent, a sub-agent, or 子会话 / 子agent / 子代理; treat those words as asking for one. Create it with the lineage recorded in the same step — `future session new --parent <this-session-id> --name \"<short task>\" --json` — and start it with the `future run --no-wait --session <child>` form above: reading it, appending behind it, --steer and the provenance/intent requirement are all exactly as described there. What that pair does not cover: `future session abort <child>` stops its run and clears its queue, `future session delete <child>` removes it once its result is no longer wanted, `future session approvals <child>` lists the approvals it is parked on — a --no-wait child waiting there looks exactly like a slow one — and `future session list --parent <this-session-id> --json` lists your own children with their isStreaming flags. A child cannot see this conversation, so its prompt must stand alone: the goal, the files to touch, the acceptance check, and that it should return the result rather than a narration. Delegate only when the work is genuinely independent or long enough that its tool chatter would otherwise fill this conversation: the child is a full run on the user's credits, so do not spawn one to answer something you could read yourself, and a child cannot start its own child. Never end your turn with one still running — wait for it, or abort it and say so. Keep at most three in flight, launched first and awaited one at a time, because a blocking wait per spawn serializes the work and loses the point of delegating."
-                    .to_string(),
-            );
-        }
+        parts.push(
+            "Work can also be handed to another conversation of your own — a sub-session, which the user may also call a subagent, a sub-agent, or 子会话 / 子agent / 子代理; treat those words as asking for one. Create it with the lineage recorded in the same step — `future session new --parent <this-session-id> --name \"<short task>\" --json` — then hand it the work with `future run --no-wait --session <child> \"<prompt>\"`: the ack returns at once and the run continues, and `future session wait <child> --timeout 4m` prints its answer when it ends. Reading it, appending behind it, --steer, and the provenance/intent requirement are the same as for a referenced conversation. What neither covers: `future session abort <child>` stops its run and clears its queue, `future session delete <child>` removes it once its result is no longer wanted, `future session approvals <child>` lists the approvals it is parked on — a --no-wait child waiting there looks exactly like a slow one — and `future session list --parent <this-session-id> --json` lists your own children with their isStreaming flags. A child cannot see this conversation, so its prompt must stand alone: the goal, the files to touch, the acceptance check, and that it should return the result rather than a narration. Delegate only when the work is genuinely independent or long enough that its tool chatter would otherwise fill this conversation: the child is a full run on the user's credits, so do not spawn one to answer something you could read yourself, and a child cannot start its own child. Never end your turn with one still running — wait for it, or abort it and say so. Keep at most three in flight, launched first and awaited one at a time, because a blocking wait per spawn serializes the work and loses the point of delegating."
+                .to_string(),
+        );
     }
 
-    guidelines
+    // A `#`-picked conversation reaches the model as
+    // `[title](futureos://session/<id>)`, so the id is already in the message.
+    // Acting on it goes through the ordinary `future` CLI rather than a
+    // dedicated tool, the same way the agent inspects itself (see
+    // docs/guide/self-inspection.md): this paragraph only has to name the two
+    // commands the reference is for, since the id alone is not
+    // self-explanatory. The last two sentences cover what the target session
+    // cannot see for itself: the message arrives as a bare user turn with no
+    // sender, and the payload can be mangled on the way.
+    //
+    // Spell the call forms out: they are not uniform. `transcript` and `run`
+    // take `--session <id>`, while `status` and `wait` take the id positionally
+    // and reject `--session` as an unknown option.
+    parts.push(
+        "A user message may reference another conversation as [title](futureos://session/<session-id>): the id in that link identifies that conversation. Read it with the shell tool — `future session transcript --session <id>` (add --select/--grep/--limit/--counts to read it cheaply, --runs for its run outcomes) or `future session history search --session <id> --query \"<text>\"` to find a passage. To send it a message use `future run --session <id> \"<message>\"`, which starts a real run there and spends the user's credits; if that conversation is mid-run, you decide whether to append behind it (the default) or interrupt it with --steer. By default the command waits for that run to end, so raise the shell tool's timeout for a long one (max 600s); `future run --no-wait --session <id> \"<message>\"` gets an ack immediately and continues, and the answer comes back later from `future session wait <id> [--run <run-id>]` — the ack carries the run id — while `future session status <id>` shows whether that run is still active. The target sees only a bare user turn, so state what it cannot infer: that the message comes from another conversation (name the sending session id) and whether you expect it to act on the content or merely take note. When the payload is long or non-ASCII, write it to a file and pass it as `@<file>` — the CLI reads the file itself — instead of reading it into a shell variable first: on Windows PowerShell 5.1 `Get-Content` decodes a BOM-less UTF-8 file with the ANSI code page, and the mojibake is what lands in the other conversation."
+            .to_string(),
+    );
+
+    parts.join("\n\n")
 }
 
 // ─── Skills Section ─────────────────────────────────────────────────────────
@@ -1041,10 +1083,25 @@ mod tests {
         assert!(prompt.contains("cannot see this conversation"));
         assert!(prompt.contains("Never end your turn with one still running"));
         assert!(prompt.contains("at most three in flight"));
-        // It defers to the reference paragraph instead of restating it.
-        assert!(prompt.contains("the `future run --no-wait --session <child>` form above"));
+        // It names its own commands instead of pointing at "the form above",
+        // so the delegation paragraph is complete wherever the reference
+        // paragraph sits — the ordering is then a readability choice rather
+        // than something the wording depends on.
+        assert!(prompt.contains("future run --no-wait --session <child> \"<prompt>\""));
+        assert!(!prompt.contains("form above"));
+        assert!(prompt.contains("future session wait <child>"));
         // A child cannot delegate again: the model must not promise otherwise.
         assert!(prompt.contains("a child cannot start its own child"));
+        // Delegation leads: the active half comes before the passive one, and
+        // this pins it so a later edit cannot reverse it by accident.
+        let delegation = prompt.find("Work can also be handed to").unwrap();
+        let reference = prompt
+            .find("A user message may reference another conversation")
+            .unwrap();
+        assert!(
+            delegation < reference,
+            "delegation must lead the reference paragraph"
+        );
 
         // A sub-session is at the lineage limit, so the commands are withheld
         // and the rule is stated instead — the agent refuses a deeper chain, so
@@ -1067,6 +1124,47 @@ mod tests {
             ..Default::default()
         });
         assert!(!read_only.contains("future session new --parent"));
+    }
+
+    /// The session capabilities are their own top-level section, early in the
+    /// prompt and out of the tool-rule bullet list, where they had been read as
+    /// shell advice.
+    #[test]
+    fn sessions_are_a_section_of_their_own_before_the_project_context() {
+        let prompt = build_prompt(&PromptOptions {
+            tools: vec![crate::tools::shell_tool(), crate::tools::read_tool()],
+            agent_content: "PROJECT_INSTRUCTION".into(),
+            ..Default::default()
+        });
+        let sessions = prompt.find("# Sessions").expect("the section exists");
+        let delegation = prompt.find("Work can also be handed to").unwrap();
+        let reference = prompt
+            .find("A user message may reference another conversation")
+            .unwrap();
+        let project = prompt.find("# Project Context").unwrap();
+        // Both paragraphs are inside the section, which sits before the project
+        // rules and after the identity/tool block.
+        let execution = prompt.find("# Tool Execution").unwrap();
+        assert!(execution < sessions && sessions < delegation && delegation < reference);
+        assert!(reference < project);
+        // Not in the tool bullet list: the section is the only place the
+        // delegation paragraph appears.
+        assert_eq!(prompt.matches("Work can also be handed to").count(), 1);
+        assert_eq!(
+            prompt
+                .matches("A user message may reference another conversation")
+                .count(),
+            1
+        );
+
+        // Without a shell there is no way to run any of it, so the section is
+        // absent rather than empty.
+        let read_only = build_prompt(&PromptOptions {
+            tools: vec![crate::tools::read_tool()],
+            agent_content: "PROJECT_INSTRUCTION".into(),
+            ..Default::default()
+        });
+        assert!(!read_only.contains("# Sessions"));
     }
 
     #[test]
@@ -1152,8 +1250,13 @@ mod tests {
 
     #[test]
     fn build_dynamic_tool_guidelines_returns_vec() {
-        let guidelines = build_dynamic_tool_guidelines(&["shell", "read", "write", "edit"], true);
+        let guidelines = build_dynamic_tool_guidelines(&["shell", "read", "write", "edit"]);
         assert!(!guidelines.is_empty());
+        // Session semantics live in `# Sessions`, not here: in this list they
+        // read as shell advice ("prefer write over `cat >`") and get skimmed
+        // together with the rest of it.
+        assert!(!guidelines.iter().any(|g| g.contains("futureos://session")));
+        assert!(!guidelines.iter().any(|g| g.contains("sub-session")));
     }
 
     #[test]
