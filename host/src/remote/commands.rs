@@ -221,6 +221,7 @@ mod bridge_tests {
         nats: FakeNats,
         pair_id: String,
         handshake: HandshakeState,
+        reply_slots: ReplySlots,
         loop_handle: tokio::task::JoinHandle<()>,
     }
 
@@ -301,6 +302,7 @@ mod bridge_tests {
                     nats,
                     pair_id,
                     handshake,
+                    reply_slots,
                     loop_handle,
                 },
                 invitation,
@@ -3129,8 +3131,17 @@ mod bridge_tests {
             .await;
         assert_eq!(conflict["error"], json!("command_id_conflict"));
 
-        // After the reply-slot TTL the entry expires and the command runs again.
-        tokio::time::sleep(Duration::from_millis(650)).await;
+        // Retirement runs on the Host executor, separately from this test's
+        // runtime. Observe the real eviction instead of assuming its task has
+        // run after a fixed sleep on a loaded native runner. Never clear the
+        // cache or repeat the command until the actual slot is gone.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while bridge.reply_slots.contains_command(&command_id) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the configured reply-slot TTL must retire the real cache entry");
         let third = bridge.call(cmd()).await;
         assert_eq!(third["success"], json!(true));
         let executions = agent
