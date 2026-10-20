@@ -1,7 +1,7 @@
 use super::*;
 use crate::llm::{
     adapters::AdapterRegistry,
-    schema::{ApiProtocol, ModelRequest, ResolvedModelTarget},
+    schema::{ApiProtocol, ModelRequest, ReasoningEffortValues, ResolvedModelTarget},
 };
 use serde_json::{json, Value};
 use std::str::FromStr;
@@ -23,9 +23,13 @@ fn configured_model(api: &str, entry: Value) -> Model {
 }
 
 fn high_request(model: &Model) -> Value {
+    request_at_level(model, "high")
+}
+
+fn request_at_level(model: &Model, level: &str) -> Value {
     let mut target =
         ResolvedModelTarget::from_model(model, String::new(), None, Some(16384)).unwrap();
-    target.generation.thinking_level = "high".into();
+    target.generation.thinking_level = level.to_string();
     target.generation.thinking_budget = 8192;
     AdapterRegistry::default()
         .get(ApiProtocol::from_str(&model.api).unwrap())
@@ -40,6 +44,25 @@ fn high_request(model: &Model) -> Value {
             },
         )
         .unwrap()
+}
+
+fn configured_model_with_level_map(entry: Value, level_map: Value) -> Model {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("models.json");
+    std::fs::write(
+        &path,
+        json!({"providers": {"custom": {
+            "api": "openai-completions",
+            "baseUrl": "https://example.test/v1",
+            "thinkingLevelMap": level_map,
+            "models": [entry]
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+    let (mut models, _) = load_user_models_with_overrides(path.to_str().unwrap()).unwrap();
+    enrich_user_models(&mut models, &builtin_models_shared());
+    models.remove(0)
 }
 
 #[test]
@@ -170,4 +193,241 @@ fn custom_reasoning_true_sends_each_protocols_controls() {
             "{api}"
         );
     }
+}
+
+#[test]
+fn declared_effort_vocabulary_snaps_each_internal_level() {
+    // A provider that accepts only low/high/xhigh/max (DeepSeek V4.1 style):
+    // declaring the vocabulary is what keeps the internal "medium" from being
+    // sent verbatim.
+    let model = configured_model(
+        "openai-completions",
+        json!({"id": "local", "compat": {"reasoningEffortValues": ["low", "high", "xhigh", "max"]}}),
+    );
+    for (level, expected) in [
+        ("minimal", "low"),
+        ("low", "low"),
+        ("medium", "high"),
+        ("high", "high"),
+        ("xhigh", "xhigh"),
+    ] {
+        assert_eq!(
+            request_at_level(&model, level)["reasoning_effort"],
+            json!(expected),
+            "{level}"
+        );
+    }
+    assert!(request_at_level(&model, "off")
+        .get("reasoning_effort")
+        .is_none());
+}
+
+#[test]
+fn declared_effort_vocabulary_keeps_standard_levels_when_listed() {
+    // A vocabulary that already contains "medium" must not snap it away.
+    let model = configured_model(
+        "openai-completions",
+        json!({"id": "local", "compat": {"reasoningEffortValues": ["minimal", "low", "medium", "high"]}}),
+    );
+    for level in ["minimal", "low", "medium", "high"] {
+        assert_eq!(
+            request_at_level(&model, level)["reasoning_effort"],
+            json!(level)
+        );
+    }
+    // Deeper-than-standard levels clamp to the deepest declared value.
+    assert_eq!(
+        request_at_level(&model, "xhigh")["reasoning_effort"],
+        json!("high")
+    );
+}
+
+#[test]
+fn undeclared_effort_uses_the_standard_enum() {
+    let model = configured_model("openai-completions", json!({"id": "local"}));
+    for level in ["minimal", "low", "medium", "high"] {
+        assert_eq!(
+            request_at_level(&model, level)["reasoning_effort"],
+            json!(level),
+            "standard level sent verbatim"
+        );
+    }
+    assert_eq!(
+        request_at_level(&model, "xhigh")["reasoning_effort"],
+        json!("high"),
+        "non-standard depth clamps to the strongest standard value"
+    );
+}
+
+#[test]
+fn effort_vocabulary_null_or_empty_disables_the_parameter() {
+    for compat in [
+        json!({"reasoningEffortValues": null}),
+        json!({"reasoningEffortValues": []}),
+    ] {
+        let model = configured_model(
+            "openai-completions",
+            json!({"id": "local", "compat": compat}),
+        );
+        let body = request_at_level(&model, "high");
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "expected no reasoning_effort for {body}"
+        );
+    }
+}
+
+#[test]
+fn numeric_level_map_wins_over_the_vocabulary() {
+    // thinkingLevelMap still wins: models that expose an integer effort range
+    // can be steered exactly, and the value keeps its JSON number type.
+    let model = configured_model_with_level_map(
+        json!({
+            "id": "local",
+            "compat": {"reasoningEffortValues": ["low", "high", "xhigh", "max"]}
+        }),
+        json!({"medium": 50, "high": null}),
+    );
+    assert_eq!(
+        request_at_level(&model, "medium")["reasoning_effort"],
+        json!(50)
+    );
+    assert!(request_at_level(&model, "high")
+        .get("reasoning_effort")
+        .is_none());
+}
+
+#[test]
+fn disabled_vocabulary_still_sends_the_thinking_toggle() {
+    // "Do not send reasoning_effort" must not also disable thinking: the
+    // provider-specific toggle (here DeepSeek's `thinking`) is independent.
+    let model = configured_model(
+        "openai-completions",
+        json!({
+            "id": "local",
+            "compat": {"thinkingFormat": "deepseek", "reasoningEffortValues": null}
+        }),
+    );
+    let body = request_at_level(&model, "high");
+    assert_eq!(body["thinking"], json!({"type": "enabled"}));
+    assert!(body.get("reasoning_effort").is_none());
+}
+
+#[test]
+fn responses_effort_uses_the_same_resolution() {
+    let model = configured_model(
+        "openai-responses",
+        json!({"id": "unlisted-deployment", "compat": {"reasoningEffortValues": ["low", "high"]}}),
+    );
+    assert_eq!(
+        request_at_level(&model, "medium")["reasoning"]["effort"],
+        json!("high")
+    );
+    assert_eq!(
+        request_at_level(&model, "minimal")["reasoning"]["effort"],
+        json!("low")
+    );
+}
+
+#[test]
+fn reasoning_effort_values_must_be_strings_or_numbers() {
+    let model = configured_model(
+        "openai-completions",
+        json!({"id": "local", "compat": {"reasoningEffortValues": ["low", {"bogus": true}]}}),
+    );
+    let error = ResolvedModelTarget::from_model(&model, String::new(), None, None).unwrap_err();
+    assert!(
+        error.to_string().contains("reasoningEffortValues"),
+        "{error}"
+    );
+}
+
+#[test]
+fn effort_vocabulary_rejects_descending_known_levels() {
+    // The list doubles as a depth scale for snapping, so a descending known
+    // vocabulary would silently invert every snap decision.
+    let model = configured_model(
+        "openai-completions",
+        json!({"id": "local", "compat": {"reasoningEffortValues": ["high", "low"]}}),
+    );
+    let error = ResolvedModelTarget::from_model(&model, String::new(), None, None).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("reasoningEffortValues"), "{message}");
+    assert!(message.contains("ascending"), "{message}");
+}
+
+#[test]
+fn effort_vocabulary_rejects_repeated_known_levels() {
+    // A repeat is not strictly ascending either — it would make the snap
+    // ambiguous about which entry the level maps to.
+    let model = configured_model(
+        "openai-completions",
+        json!({"id": "local", "compat": {"reasoningEffortValues": ["low", "low"]}}),
+    );
+    let error = ResolvedModelTarget::from_model(&model, String::new(), None, None).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("reasoningEffortValues"), "{message}");
+    assert!(message.contains("ascending"), "{message}");
+}
+
+#[test]
+fn effort_vocabulary_mixed_names_and_numbers_parses() {
+    // Numbers carry no static rank, so they cannot break the known-name
+    // ordering check and stay legal between names.
+    let model = configured_model(
+        "openai-completions",
+        json!({"id": "local", "compat": {"reasoningEffortValues": ["low", 50, "xhigh"]}}),
+    );
+    let target = ResolvedModelTarget::from_model(&model, String::new(), None, None)
+        .expect("mixed vocabulary must parse");
+    assert!(matches!(
+        target.capabilities.reasoning.effort_values,
+        ReasoningEffortValues::Values(_)
+    ));
+}
+
+#[test]
+fn thinking_level_map_rejects_boolean_values() {
+    // resolve_effort sends mapped values verbatim; a boolean there is a
+    // configuration typo and must fail at parse time, not in the request.
+    let model = configured_model_with_level_map(json!({"id": "local"}), json!({"high": true}));
+    let error = ResolvedModelTarget::from_model(&model, String::new(), None, None).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("thinkingLevelMap"), "{message}");
+    assert!(
+        message.contains("`custom`") && message.contains("`local`") && message.contains("`high`"),
+        "error must name provider, model, and level: {message}"
+    );
+}
+
+#[test]
+fn provider_level_compat_carries_the_effort_vocabulary() {
+    // The vocabulary is per provider as often as per model: declared once at
+    // the provider level it must reach every model of that provider.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("models.json");
+    std::fs::write(
+        &path,
+        json!({"providers": {"custom": {
+            "api": "openai-completions",
+            "baseUrl": "https://example.test/v1",
+            "compat": {"reasoningEffortValues": ["low", "high", "xhigh", "max"]},
+            "models": [{"id": "local"}]
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+    let (mut models, _) = load_user_models_with_overrides(path.to_str().unwrap()).unwrap();
+    assert_eq!(
+        models[0].compat.get("reasoningEffortValues"),
+        Some(&json!(["low", "high", "xhigh", "max"])),
+        "provider-level compat must reach the model at load time"
+    );
+    enrich_user_models(&mut models, &builtin_models_shared());
+    let model = models.remove(0);
+    assert_eq!(
+        request_at_level(&model, "medium")["reasoning_effort"],
+        json!("high"),
+        "medium snaps to the deeper neighbor on a tie"
+    );
 }

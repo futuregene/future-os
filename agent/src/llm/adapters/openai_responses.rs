@@ -115,14 +115,14 @@ impl ProtocolAdapter for OpenAiResponsesAdapter {
         {
             let mut reasoning = Map::new();
             if !level.is_empty() {
-                let mapped = target
-                    .capabilities
-                    .reasoning
-                    .levels
-                    .get(level)
-                    .and_then(Value::as_str)
-                    .unwrap_or(level);
-                reasoning.insert("effort".into(), json!(mapped));
+                let effort = crate::llm::schema::resolve_effort(
+                    level,
+                    &target.capabilities.reasoning.levels,
+                    &target.capabilities.reasoning.effort_values,
+                );
+                if let Some(effort) = effort {
+                    reasoning.insert("effort".into(), effort);
+                }
             }
             if config.supports_reasoning_summary {
                 reasoning.insert("summary".into(), json!("auto"));

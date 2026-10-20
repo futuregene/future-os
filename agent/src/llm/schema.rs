@@ -158,10 +158,181 @@ impl ProtocolConfig {
     }
 }
 
+/// Wire values a provider accepts for `reasoning_effort`, in ascending depth
+/// order.
+///
+/// Providers do not share one effort enum: OpenAI-compatible servers may accept
+/// the standard `minimal/low/medium/high`, a subset of it, extra levels
+/// (`xhigh`/`max`), or numeric values. Declaring the vocabulary keeps the
+/// internal thinking level (a product-level concept) separate from the value
+/// actually sent on the wire.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub enum ReasoningEffortValues {
+    /// `compat.reasoningEffortValues` is absent: map internal levels onto the
+    /// standard `minimal/low/medium/high` enum. Deeper levels clamp to `high`.
+    #[default]
+    Default,
+    /// Explicitly `null` or an empty array: never send `reasoning_effort`.
+    Disabled,
+    /// Explicit ascending vocabulary. The requested level snaps to the closest
+    /// allowed value.
+    Values(Vec<Value>),
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ReasoningCapabilities {
     pub supported: bool,
     pub levels: BTreeMap<String, Value>,
+    pub effort_values: ReasoningEffortValues,
+}
+
+/// Depth rank for the internal thinking levels and the standard enum names.
+/// Returns `None` for names the built-in scale does not know.
+fn effort_rank(name: &str) -> Option<f64> {
+    Some(match name {
+        "minimal" => 0.0,
+        "low" => 1.0,
+        "medium" => 2.0,
+        "high" => 3.0,
+        "xhigh" => 4.0,
+        "max" => 5.0,
+        _ => return None,
+    })
+}
+
+/// Collapse an internal level into the standard enum every provider accepts.
+fn standard_effort(level: &str) -> &str {
+    match level {
+        "minimal" | "low" | "medium" | "high" => level,
+        // Deeper-than-standard levels clamp to the strongest standard value.
+        "xhigh" | "max" => "high",
+        other => other,
+    }
+}
+
+/// Resolve the value to send for `reasoning_effort` (or `reasoning.effort`).
+///
+/// Precedence:
+/// 1. `thinkingLevelMap[level]` — an exact per-level value (string or number).
+///    A JSON `null` there opts that level out of being sent.
+/// 2. `compat.reasoningEffortValues` — the declared vocabulary; the level snaps
+///    to the closest allowed value, ties going to the deeper one.
+/// 3. Default — the standard `minimal/low/medium/high` enum.
+///
+/// Returns `None` when nothing should be sent (`off`, a disabled vocabulary, or
+/// a level mapped to `null`).
+pub fn resolve_effort(
+    level: &str,
+    levels: &BTreeMap<String, Value>,
+    values: &ReasoningEffortValues,
+) -> Option<Value> {
+    if level.is_empty() || level == "off" {
+        return None;
+    }
+    if let Some(value) = levels.get(level) {
+        return if value.is_null() {
+            None
+        } else {
+            Some(value.clone())
+        };
+    }
+    match values {
+        ReasoningEffortValues::Disabled => None,
+        ReasoningEffortValues::Default => Some(Value::String(standard_effort(level).to_string())),
+        ReasoningEffortValues::Values(values) => {
+            if values.is_empty() {
+                return None;
+            }
+            if let Some(exact) = values.iter().find(|value| value.as_str() == Some(level)) {
+                return Some(exact.clone());
+            }
+            let Some(rank) = effort_rank(level) else {
+                // Non-standard level names are assumed to be wire values.
+                return Some(Value::String(level.to_string()));
+            };
+            let mut best: Option<(f64, f64, &Value)> = None;
+            for (index, value) in values.iter().enumerate() {
+                if value.is_null() {
+                    continue;
+                }
+                let candidate = value.as_str().and_then(effort_rank).unwrap_or_else(|| {
+                    // Unnamed values (for example a numeric range) are ordered by
+                    // their position in the ascending list, spread across the
+                    // standard scale.
+                    if values.len() > 1 {
+                        index as f64 * 5.0 / (values.len() - 1) as f64
+                    } else {
+                        rank
+                    }
+                });
+                let distance = (candidate - rank).abs();
+                let better = match best {
+                    None => true,
+                    Some((best_distance, best_candidate, _)) => {
+                        distance < best_distance
+                            || (distance == best_distance && candidate > best_candidate)
+                    }
+                };
+                if better {
+                    best = Some((distance, candidate, value));
+                }
+            }
+            best.map(|(_, _, value)| value.clone())
+        }
+    }
+}
+
+/// Parse `compat.reasoningEffortValues` from a model definition.
+pub fn parse_reasoning_effort_values(
+    model: &crate::models::Model,
+) -> Result<ReasoningEffortValues> {
+    match model.compat.get("reasoningEffortValues") {
+        None => Ok(ReasoningEffortValues::Default),
+        Some(Value::Null) => Ok(ReasoningEffortValues::Disabled),
+        Some(Value::Array(items)) => {
+            if items.is_empty() {
+                return Ok(ReasoningEffortValues::Disabled);
+            }
+            for item in items {
+                if !matches!(item, Value::String(_) | Value::Number(_)) {
+                    bail!(
+                        "provider `{}` model `{}` compat.reasoningEffortValues must be an array of strings or numbers",
+                        model.provider,
+                        model.id
+                    );
+                }
+            }
+            // The list is declared ascending because snapping walks it as a
+            // depth scale. Known level names can be judged statically: their
+            // ranks must strictly increase. Numbers and unknown names are
+            // ordered by list position instead, so they are skipped here.
+            let mut previous: Option<(&str, f64)> = None;
+            for item in items {
+                let Value::String(name) = item else {
+                    continue;
+                };
+                let Some(rank) = effort_rank(name) else {
+                    continue;
+                };
+                if let Some((previous_name, previous_rank)) = previous {
+                    if rank <= previous_rank {
+                        bail!(
+                            "provider `{}` model `{}` compat.reasoningEffortValues must list known levels in ascending order (minimal < low < medium < high < xhigh < max), found `{previous_name}` before `{name}`",
+                            model.provider,
+                            model.id
+                        );
+                    }
+                }
+                previous = Some((name.as_str(), rank));
+            }
+            Ok(ReasoningEffortValues::Values(items.clone()))
+        }
+        Some(_) => bail!(
+            "provider `{}` model `{}` compat.reasoningEffortValues must be an array of strings or numbers, or null",
+            model.provider,
+            model.id
+        ),
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -317,6 +488,24 @@ impl ResolvedModelTarget {
             ApiProtocol::AnthropicMessages => AuthScheme::AnthropicApiKey,
             _ => AuthScheme::Bearer,
         };
+        // thinkingLevelMap values go on the wire verbatim (resolve_effort sends
+        // strings, numbers, and the "opt this level out" null), so anything
+        // else is a configuration typo and must fail here rather than reach
+        // the provider.
+        let levels: BTreeMap<String, Value> = model
+            .thinking_level_map
+            .iter()
+            .map(|(key, value)| {
+                if !(value.is_string() || value.is_number() || value.is_null()) {
+                    bail!(
+                        "provider `{}` model `{}` thinkingLevelMap value for `{key}` must be a string, number, or null",
+                        model.provider,
+                        model.id
+                    );
+                }
+                Ok((key.clone(), value.clone()))
+            })
+            .collect::<Result<_>>()?;
 
         Ok(Self {
             model_id: model.id.clone(),
@@ -339,11 +528,8 @@ impl ResolvedModelTarget {
                 supports_parallel_tools: true,
                 reasoning: ReasoningCapabilities {
                     supported: model.reasoning,
-                    levels: model
-                        .thinking_level_map
-                        .iter()
-                        .map(|(key, value)| (key.clone(), value.clone()))
-                        .collect(),
+                    levels,
+                    effort_values: parse_reasoning_effort_values(model)?,
                 },
                 context_window: model.context_window,
                 max_output_tokens: model.max_tokens,

@@ -249,6 +249,13 @@ struct FutureModelEntry {
     architecture: Option<FutureArchitecture>,
     pricing: Option<FuturePricing>,
     supported_parameters: Option<Vec<String>>,
+    /// Server-declared `reasoning_effort` vocabulary (ascending string/number
+    /// list). Type validation happens later in
+    /// `parse_reasoning_effort_values` (via `ResolvedModelTarget::from_model`),
+    /// which reports provider/model-qualified errors — values are stored
+    /// verbatim here.
+    #[serde(default)]
+    reasoning_effort_values: Option<Vec<serde_json::Value>>,
     #[allow(dead_code)]
     knowledge_cutoff: Option<String>,
     #[allow(dead_code)]
@@ -428,7 +435,27 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         .architecture
         .as_ref()
         .and_then(|a| a.tokenizer.as_deref());
-    let (compat, thinking_level_map) = derive_thinking_compat(&supported_params, tokenizer);
+    let (mut compat, mut thinking_level_map) = derive_thinking_compat(&supported_params, tokenizer);
+
+    // The server can declare the model's exact reasoning_effort vocabulary
+    // (wire key `reasoning_effort_values`, ascending string/number list).
+    // When present it is authoritative, and the tokenizer-derived
+    // thinking_level_map MUST be dropped:
+    // - resolve_effort consults the level map *before* the vocabulary, so a
+    //   surviving heuristic map (e.g. deepseek-family derives xhigh → "max")
+    //   would silently override the server-declared list;
+    // - an explicitly empty list means "never send reasoning_effort", and a
+    //   surviving map entry (e.g. high → "high") would keep the parameter
+    //   flowing, defeating the disable semantics.
+    // Values are not validated here: `parse_reasoning_effort_values` checks
+    // them at from_model time and reports provider/model-qualified errors.
+    if let Some(values) = entry.reasoning_effort_values {
+        compat.insert(
+            "reasoningEffortValues".to_string(),
+            serde_json::Value::Array(values),
+        );
+        thinking_level_map.clear();
+    }
 
     let (input, output) = entry
         .architecture
@@ -1010,6 +1037,7 @@ mod tests {
                 "thinking".to_string(),
                 "reasoning_effort".to_string(),
             ]),
+            reasoning_effort_values: None,
             knowledge_cutoff: None,
             provider: None,
             description: None,
@@ -1032,6 +1060,7 @@ mod tests {
             architecture: None,
             pricing: None,
             supported_parameters: Some(vec!["temperature".to_string()]),
+            reasoning_effort_values: None,
             knowledge_cutoff: None,
             provider: None,
             description: None,
@@ -1057,6 +1086,7 @@ mod tests {
             }),
             pricing: None,
             supported_parameters: None,
+            reasoning_effort_values: None,
             knowledge_cutoff: None,
             provider: None,
             description: None,
@@ -1091,6 +1121,7 @@ mod tests {
                 }]),
             }),
             supported_parameters: None,
+            reasoning_effort_values: None,
             knowledge_cutoff: None,
             provider: None,
             description: None,
@@ -1128,6 +1159,123 @@ mod tests {
         // matching `cached_input` rate takes precedence over explicit cache_read.
         assert_eq!(model.cost.cache_read, 1.5);
         assert_eq!(model.cost.cache_write, 15.0);
+    }
+
+    // ─── server-declared reasoning_effort vocabulary ───────────────────────
+
+    /// Build a request body for `model` at a given thinking level. Local copy
+    /// of the `request_at_level` helper from reasoning_tests.rs (private to
+    /// that module) so future.rs tests exercise the same end-to-end path:
+    /// `ResolvedModelTarget::from_model` → adapter `build_body`.
+    fn future_request_body_at_level(model: &Model, level: &str) -> serde_json::Value {
+        use std::str::FromStr;
+        let mut target = crate::llm::schema::ResolvedModelTarget::from_model(
+            model,
+            String::new(),
+            None,
+            Some(16384),
+        )
+        .unwrap();
+        target.generation.thinking_level = level.to_string();
+        target.generation.thinking_budget = 8192;
+        crate::llm::adapters::AdapterRegistry::default()
+            .get(crate::llm::schema::ApiProtocol::from_str(&model.api).unwrap())
+            .unwrap()
+            .build_body(
+                &target,
+                &crate::llm::schema::ModelRequest {
+                    model: model.id.clone(),
+                    system_prompt: String::new(),
+                    messages: vec![],
+                    tools: vec![],
+                },
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn wire_reasoning_effort_values_land_in_compat_and_clear_derived_tlm() {
+        // DeepSeek tokenizer + "reasoning" derive a heuristic map
+        // (xhigh → "max"); the server-declared vocabulary is authoritative and
+        // must replace it (tlm outranks the vocabulary in resolve_effort).
+        let entry: FutureModelEntry = serde_json::from_value(serde_json::json!({
+            "id": "vocab-model",
+            "supported_parameters": ["reasoning"],
+            "architecture": { "tokenizer": "DeepSeek" },
+            "reasoning_effort_values": ["low", "high", "xhigh", "max"]
+        }))
+        .unwrap();
+        let model = convert_future_model(entry, "https://api.example.com/v1");
+        assert_eq!(
+            model.compat.get("reasoningEffortValues"),
+            Some(&serde_json::json!(["low", "high", "xhigh", "max"]))
+        );
+        assert!(
+            model.thinking_level_map.is_empty(),
+            "derived level map must be cleared: {:?}",
+            model.thinking_level_map
+        );
+    }
+
+    #[test]
+    fn wire_empty_effort_vocabulary_disables_effort_but_keeps_thinking_toggle() {
+        // An explicitly empty list means "never send reasoning_effort"; the
+        // thinking toggle itself (deepseek format) stays independent.
+        let entry: FutureModelEntry = serde_json::from_value(serde_json::json!({
+            "id": "no-effort-model",
+            "supported_parameters": ["reasoning"],
+            "reasoning_effort_values": []
+        }))
+        .unwrap();
+        let model = convert_future_model(entry, "https://api.example.com/v1");
+        assert_eq!(
+            model.compat.get("reasoningEffortValues"),
+            Some(&serde_json::json!([]))
+        );
+        assert!(model.thinking_level_map.is_empty());
+
+        let body = future_request_body_at_level(&model, "high");
+        assert_eq!(body["thinking"], serde_json::json!({"type": "enabled"}));
+        assert!(
+            body.get("reasoning_effort").is_none(),
+            "empty vocabulary must suppress reasoning_effort: {body}"
+        );
+    }
+
+    #[test]
+    fn absent_reasoning_effort_values_keep_derived_compat_and_tlm() {
+        let entry: FutureModelEntry = serde_json::from_value(serde_json::json!({
+            "id": "legacy-model",
+            "supported_parameters": ["reasoning"],
+            "architecture": { "tokenizer": "DeepSeek" }
+        }))
+        .unwrap();
+        let model = convert_future_model(entry, "https://api.example.com/v1");
+        assert!(!model.compat.contains_key("reasoningEffortValues"));
+        // Derived heuristic map survives untouched when the server says nothing.
+        assert_eq!(
+            model.thinking_level_map.get("high"),
+            Some(&serde_json::json!("high"))
+        );
+        assert_eq!(
+            model.thinking_level_map.get("xhigh"),
+            Some(&serde_json::json!("max"))
+        );
+    }
+
+    #[test]
+    fn future_model_vocabulary_snaps_medium_to_high_end_to_end() {
+        // End to end: a model declaring ["low","high","xhigh","max"] maps the
+        // internal "medium" onto the deeper of the two equidistant values.
+        let entry: FutureModelEntry = serde_json::from_value(serde_json::json!({
+            "id": "vocab-e2e",
+            "supported_parameters": ["reasoning"],
+            "reasoning_effort_values": ["low", "high", "xhigh", "max"]
+        }))
+        .unwrap();
+        let model = convert_future_model(entry, "https://api.example.com/v1");
+        let body = future_request_body_at_level(&model, "medium");
+        assert_eq!(body["reasoning_effort"], serde_json::json!("high"));
     }
 
     // ─── fetch/cache/refresh against a mock server ─────────────────────────
@@ -1198,6 +1346,29 @@ mod tests {
 
         // Connection refused → None (no server listening here).
         assert!(fetch_future_models("k", "http://127.0.0.1:1").is_none());
+    }
+
+    #[test]
+    fn fetch_future_models_parses_reasoning_effort_values_in_both_shapes() {
+        let _guard = future_test_lock();
+        let entry = r#"{"id":"vocab-wire","supported_parameters":["reasoning"],"reasoning_effort_values":["low","high","xhigh","max"]}"#;
+        let expected = serde_json::json!(["low", "high", "xhigh", "max"]);
+        // {data:[...]} wrapped form…
+        let base = mock_json_server(200, format!(r#"{{"data":[{entry}]}}"#));
+        let models = fetch_future_models("k", &base).expect("data form parses");
+        assert_eq!(models.len(), 1);
+        assert_eq!(
+            models[0].compat.get("reasoningEffortValues"),
+            Some(&expected)
+        );
+        // …and the bare array form.
+        let base = mock_json_server(200, format!("[{entry}]"));
+        let models = fetch_future_models("k", &base).expect("array form parses");
+        assert_eq!(models.len(), 1);
+        assert_eq!(
+            models[0].compat.get("reasoningEffortValues"),
+            Some(&expected)
+        );
     }
 
     #[tokio::test]
