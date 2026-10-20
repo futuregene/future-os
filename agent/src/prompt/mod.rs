@@ -512,8 +512,49 @@ fn build_sessions_section(is_subsession: bool) -> String {
 
 // ─── Skills Section ─────────────────────────────────────────────────────────
 
+/// The absolute directory each skill scope resolves to, paired with the short
+/// name `<location>` uses to refer to it.
+///
+/// The two scopes are fixed and every discovered skill lives in one of them, so a
+/// per-skill absolute path repeats the same 30-odd-character prefix 20+ times.
+/// The block names each root once and every `<location>` is relative to its
+/// scope instead.
+fn skill_scope_roots() -> [(&'static str, String); 2] {
+    let root = |dir: &str| {
+        crate::skills::expand_tilde(dir)
+            .display()
+            .to_string()
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .to_string()
+    };
+    [
+        ("app", root(crate::skills::APP_SKILLS_DIR)),
+        ("shared", root(crate::skills::AGENTS_SKILLS_DIR)),
+    ]
+}
+
+/// Split a skill's absolute location into its scope name and the path inside
+/// that scope, when it sits under a known root. `None` means the skill was
+/// discovered somewhere else (a directory the caller passed explicitly), whose
+/// absolute path is emitted unchanged.
+fn skill_scope_and_path(
+    location: &str,
+    roots: &[(&'static str, String); 2],
+) -> Option<(&'static str, String)> {
+    let normalized = location.replace('\\', "/");
+    for (scope, root) in roots {
+        if let Some(rest) = normalized.strip_prefix(root.as_str()) {
+            let rest = rest.trim_start_matches('/');
+            if !rest.is_empty() {
+                return Some((scope, rest.to_string()));
+            }
+        }
+    }
+    None
+}
+
 /// Formats skills with lead-in text + <available_skills> XML block.
-/// Matches 's formatSkillsSection() exactly.
 fn format_skills_section(skills: &[&Skill]) -> String {
     let mut sb = String::new();
     sb.push_str("# Available Skills\n\n");
@@ -523,6 +564,16 @@ fn format_skills_section(skills: &[&Skill]) -> String {
     );
     sb.push_str("When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.\n");
     sb.push_str("A `/<skill-name>` token in a user message (at the start or mid-sentence) is an explicit invocation: load and follow that skill's SKILL.md, and treat the rest of the message as its input.\n");
+    // The roots are named once here rather than per skill: the `<location>` below
+    // is relative to the root its `scope` names, so the file to read is
+    // `<root>/<location>`. An absolute `<location>` (a scope this session does not
+    // know) is used as it is.
+    let roots = skill_scope_roots();
+    sb.push_str(&format!(
+        "Skill directories, by the `scope` their `<location>` names: app = {}, shared = {}. \
+         A `<location>` without a scope is already an absolute path.\n",
+        roots[0].1, roots[1].1
+    ));
     sb.push('\n');
     sb.push_str("<available_skills>\n");
     for s in skills {
@@ -532,10 +583,16 @@ fn format_skills_section(skills: &[&Skill]) -> String {
             "    <description>{}</description>\n",
             escape_xml(&s.description)
         ));
-        sb.push_str(&format!(
-            "    <location>{}</location>\n",
-            escape_xml(&s.location)
-        ));
+        match skill_scope_and_path(&s.location, &roots) {
+            Some((scope, path)) => sb.push_str(&format!(
+                "    <location scope=\"{scope}\">{}</location>\n",
+                escape_xml(&path)
+            )),
+            None => sb.push_str(&format!(
+                "    <location>{}</location>\n",
+                escape_xml(&s.location)
+            )),
+        }
         sb.push_str("  </skill>\n");
     }
     sb.push_str("</available_skills>");
@@ -1239,13 +1296,63 @@ mod tests {
             name_zh: None,
             description_zh: None,
             version: None,
-            location: "/home/.agents/skills/my-skill/SKILL.md".to_string(),
+            location: "/opt/somewhere/my-skill/SKILL.md".to_string(),
             disable_model_invocation: false,
         };
         let xml = format_skills_section(&[&skill]);
         assert!(xml.contains("<available_skills>"));
         assert!(xml.contains("my-skill"));
         assert!(xml.contains("Does things"));
+    }
+
+    /// A skill under a known scope is named by its path *inside* that scope, and
+    /// the root is printed once — the absolute path repeated the same prefix for
+    /// every skill. A skill from somewhere else keeps its absolute path, because
+    /// no scope describes it.
+    #[test]
+    fn skill_locations_are_relative_to_their_named_scope() {
+        let roots = skill_scope_roots();
+        let app = format!("{}/alpha/SKILL.md", roots[0].1);
+        let shared = format!("{}/beta/SKILL.md", roots[1].1);
+        let elsewhere = "/opt/vendor/gamma/SKILL.md".to_string();
+        let skill = |name: &str, location: String| crate::skills::Skill {
+            name: name.to_string(),
+            description: "d".to_string(),
+            name_zh: None,
+            description_zh: None,
+            version: None,
+            location,
+            disable_model_invocation: false,
+        };
+        let xml = format_skills_section(&[
+            &skill("alpha", app),
+            &skill("beta", shared),
+            &skill("gamma", elsewhere),
+        ]);
+        // Each scope root appears exactly once, in the lead-in, not per skill.
+        assert_eq!(xml.matches(roots[0].1.as_str()).count(), 1, "{xml}");
+        assert_eq!(xml.matches(roots[1].1.as_str()).count(), 1, "{xml}");
+        assert!(xml.contains("<location scope=\"app\">alpha/SKILL.md</location>"));
+        assert!(xml.contains("<location scope=\"shared\">beta/SKILL.md</location>"));
+        // An unknown location is not silently made relative to some scope.
+        assert!(xml.contains("<location>/opt/vendor/gamma/SKILL.md</location>"));
+        // The join rule is stated where the roots are, so the relative form is
+        // usable without guessing.
+        assert!(xml.contains("A `<location>` without a scope is already an absolute path."));
+
+        // The split must also work for a location that uses backslashes (a skill
+        // discovered on Windows) without losing its tail.
+        let windows = format!("{}\\alpha\\SKILL.md", roots[0].1);
+        assert_eq!(
+            skill_scope_and_path(&windows, &roots),
+            Some(("app", "alpha/SKILL.md".to_string()))
+        );
+        // The returned path is normalized too, so it can always be joined with a
+        // root: a location is never a mix of separators.
+        assert_eq!(
+            skill_scope_and_path(&format!("{}/a/b/SKILL.md", roots[1].1), &roots),
+            Some(("shared", "a/b/SKILL.md".to_string()))
+        );
     }
 
     #[test]
