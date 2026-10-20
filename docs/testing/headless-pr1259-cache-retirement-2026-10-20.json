@@ -23,5 +23,14 @@
   "mechanism": "Read-only test-support observation of actual ReplySlots removal under 5s deadline before one re-execution request; original first=1 and final=2 assertions retained. No cache mutation or TTL/product change.",
   "syncedMain": "4eb594f4",
   "localUnitOrNatsTests": 0,
-  "pending": "Fresh native CI; no local Windows pass claimed."
+  "pending": "Fresh native CI; no local Windows pass claimed.",
+  "sameCommitRetry": {
+    "run": 39400905275,
+    "attempt": 2,
+    "candidate": "24f196a3f5a200f1c51dc9ee08a918bc5f3504a5",
+    "status": "completed",
+    "conclusion": "success",
+    "interpretation": "Confirms the fixed-sleep test can pass unchanged; does not prove scheduling reliability. Retain read-only observation of real retirement without changing exact business assertions."
+  },
+  "additionalMainSync": "86d17f7a"
 }
