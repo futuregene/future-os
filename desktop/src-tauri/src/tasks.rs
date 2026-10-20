@@ -1,9 +1,9 @@
 //! Desktop task notification adapter; execution and persistence live in Host.
 #[cfg(test)]
 pub(crate) use future_host::tasks::reset_for_test;
+pub(crate) use future_host::tasks::start_headless;
 #[cfg(all(test, feature = "gui"))]
 pub(crate) use future_host::tasks::wake;
-pub(crate) use future_host::tasks::{start_headless, stop_admission};
 
 #[cfg(feature = "gui")]
 pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
@@ -81,7 +81,7 @@ mod tests {
         assert_eq!(settled.status, RunStatus::Completed, "{settled:?}");
 
         // Closing admission ends the loop; the run already settled is untouched.
-        stop_admission();
+        future_host::tasks::stop_admission();
         let store = Store::open(dir.path()).unwrap();
         assert_eq!(
             store.get_run(&settled.id).unwrap().unwrap().status,

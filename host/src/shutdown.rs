@@ -3,6 +3,9 @@
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+mod services;
+pub use services::ServiceStop;
+
 const TOTAL_BUDGET: Duration = Duration::from_secs(20);
 static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 static STOP_FAILURE: Mutex<Option<String>> = Mutex::new(None);

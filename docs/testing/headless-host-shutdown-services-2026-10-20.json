@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "884c79c3",
+  "scope": "Ordered shared service teardown, with entry-owned runtime and GUI terminal adapters.",
+  "preservedOrder": [
+    "Close command/task/peer admission; freeze Host tasks; freeze entry presentation",
+    "Request embedded Agent stop and wait for admitted callers",
+    "Entry builds cleanup runtime",
+    "Graceful Remote stop with original timeout/fallback; server tasks and controller cleanup",
+    "Cancel only owned runs on an external Agent",
+    "Entry closes GUI terminals and shuts down cleanup runtime",
+    "Stop owned Agent scope; cancel registered background tasks; verify callers; retain sticky failures"
+  ],
+  "testOwnership": {
+    "baselineMoved": 9,
+    "retainedGuiStatusSeam": 1,
+    "note": "All original assertions preserved. Pure admission guard now holds existing HomeGuard for shared-state isolation."
+  },
+  "runtime": "Host production methods create no runtime and do not call block_on. Test harness owns its runtime, as the actual entry does.",
+  "checks": {
+    "host": {
+      "command": "cargo test -p future-host --lib --offline --locked -- shutdown::",
+      "environment": {
+        "RUST_LOG": "unset",
+        "RUSTC_WRAPPER": "",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "1"
+      },
+      "results": [
+        "test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 1576 filtered out; finished in 9.96s"
+      ],
+      "logSha256": "cc4505726f4369f6c0f1fb16f9e25985250fd59924dc9c5326b6c1720ae42b42"
+    },
+    "entry": {
+      "command": "cargo test -p futureos --lib --offline --locked -- desktop_shutdown:: gui::runtime_update_tests:: headless::agent::",
+      "environment": {
+        "RUST_LOG": "unset",
+        "RUSTC_WRAPPER": "",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "1"
+      },
+      "results": [
+        "test result: ok. 28 passed; 0 failed; 0 ignored; 0 measured; 479 filtered out; finished in 1.39s"
+      ],
+      "logSha256": "fa3ae1f7c46721d2a33dba1e484f271de0270ba6af355d7abe67a8a6f05a4a0f"
+    },
+    "process": {
+      "command": "cargo test -p futureos --no-default-features --features headless --test headless_cli --test remote_start_refusal --offline --locked",
+      "environment": {
+        "RUST_LOG": "unset",
+        "RUSTC_WRAPPER": "",
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "1"
+      },
+      "results": [
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.57s",
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 68.44s"
+      ],
+      "logSha256": "4cef03891348c03ab7f10c646a5d45e94aa83848206dc81dddb0296f845833fb"
+    },
+    "combinedClippy": {
+      "status": "pass",
+      "logSha256": "5c1e4f83dd6740ab34f3165f7145e1d4fee6502fd0740ac41115245689eb19ac",
+      "tail": [
+        "    Checking futureos v0.0.0 (/Volumes/ZHITAI/Workspace/future-os/.worktrees/headless-unified/desktop/src-tauri)",
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.82s"
+      ]
+    },
+    "legacyHeadlessClippy": {
+      "status": "pass",
+      "logSha256": "4b36249af176b613b28ac0c94b65e052572be92e0d0356894d84c9dfd4c31bba",
+      "tail": [
+        "    Checking futureos v0.0.0 (/Volumes/ZHITAI/Workspace/future-os/.worktrees/headless-unified/desktop/src-tauri)",
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.61s"
+      ]
+    },
+    "strictRustdoc": {
+      "status": "pass",
+      "logSha256": "eb1948386f386487e83883205c98b0414fb9cc323f381498d0acb21be0f83b78",
+      "tail": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 6.19s",
+        "   Generated /Volumes/ZHITAI/Workspace/future-os/target/doc/future_host/index.html"
+      ]
+    }
+  },
+  "compilerIncident": {
+    "status": "rustc incremental compilation ICE, not an executed test failure",
+    "error": "unstable fingerprints for evaluate_obligation",
+    "toolchain": "rustc 1.97.0 aarch64-apple-darwin",
+    "action": "CARGO_INCREMENTAL=0 for local test invocations only. No source workaround and no shared cache cleanup.",
+    "logSha256": "71328409eaa36053f51a422f7a75dc6b013346199c08e3852fff0d8fda7a2dfa"
+  },
+  "limits": [
+    "Postdates CI candidate 8291d272; no CI acceptance claimed for this batch.",
+    "Process cases still execute the legacy headless entry; actual future headless migration remains.",
+    "No matched performance or manual acceptance claim."
+  ]
+}

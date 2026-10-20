@@ -1,4 +1,5 @@
 //! Desktop entry forwarding to the shared Remote application services.
+#[cfg(feature = "gui")]
 pub(crate) use future_host::remote_peer::*;
 
 #[cfg(test)]

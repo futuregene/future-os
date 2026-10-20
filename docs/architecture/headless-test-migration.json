@@ -16023,8 +16023,9 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown.rs",
-      "status": "planned"
+      "target": "host/src/shutdown/services.rs",
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-shutdown-services-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown.rs:415:a_command_still_active_after_all_cleanup_keeps_the_install_barrier_closed",
@@ -16034,8 +16035,9 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown.rs",
-      "status": "planned"
+      "target": "host/src/shutdown/services.rs",
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-shutdown-services-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown.rs:426:queued_ownership_is_retained_until_verified_terminal_state",
@@ -16045,8 +16047,9 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown.rs",
-      "status": "planned"
+      "target": "host/src/shutdown/services.rs",
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-shutdown-services-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown.rs:450:prompt_acknowledgment_cannot_resurrect_already_completed_ownership",
@@ -16056,8 +16059,9 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown.rs",
-      "status": "planned"
+      "target": "host/src/shutdown/services.rs",
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-shutdown-services-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown.rs:477:external_stop_confirms_terminals_and_retains_unknown_or_wrong_run_results",
@@ -16067,8 +16071,9 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown.rs",
-      "status": "planned"
+      "target": "host/src/shutdown/services.rs",
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-shutdown-services-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown.rs:528:runtime_failure_still_drops_background_work_and_blocks_retry",
@@ -16078,8 +16083,9 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown.rs",
-      "status": "planned"
+      "target": "host/src/shutdown/services.rs",
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-shutdown-services-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown.rs:563:reconcile_keeps_runs_whose_state_could_not_be_read",
@@ -16089,13 +16095,14 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown.rs",
-      "status": "planned",
+      "target": "host/src/shutdown/services.rs",
+      "status": "migrated-local-pass",
       "latestRepairValidation": {
         "evidence": "docs/testing/headless-shutdown-fixture-isolation-2026-10-20.json",
         "status": "local-pass",
         "assertions": "All original assertions retained; shared global-reset fixture now holds existing HOME lock."
-      }
+      },
+      "validationEvidence": "docs/testing/headless-host-shutdown-services-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown.rs:590:closing_admission_rejects_new_commands_without_losing_active_guards",
@@ -16104,9 +16111,11 @@
       "name": "closing_admission_rejects_new_commands_without_losing_active_guards",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
+      "plannedOwner": "futureos",
       "target": "host/src/desktop_shutdown.rs",
-      "status": "planned"
+      "status": "retained",
+      "ownershipDecision": "gui-entry",
+      "ownershipReason": "Retains the original GUI status poll and empty shutdown snapshot assertion; shared admission behavior executes in Host."
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown.rs:625:unconfirmed_runs_report_the_transport_outcome",
@@ -16116,13 +16125,14 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown.rs",
-      "status": "planned",
+      "target": "host/src/shutdown/services.rs",
+      "status": "migrated-local-pass",
       "latestRepairValidation": {
         "evidence": "docs/testing/headless-shutdown-fixture-isolation-2026-10-20.json",
         "status": "local-pass",
         "assertions": "All original assertions retained; shared global-reset fixture now holds existing HOME lock."
-      }
+      },
+      "validationEvidence": "docs/testing/headless-host-shutdown-services-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown.rs:672:quit_admission_guard_closes_admission_and_restores_the_flag",
@@ -16132,8 +16142,9 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown.rs",
-      "status": "planned"
+      "target": "host/src/shutdown/services.rs",
+      "status": "migrated-local-pass",
+      "validationEvidence": "docs/testing/headless-host-shutdown-services-2026-10-20.json"
     },
     {
       "key": "desktop/src-tauri/src/device_identity.rs:88:device_id_is_stable_and_keeps_the_desktop_namespace",
