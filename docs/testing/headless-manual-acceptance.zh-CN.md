@@ -4,15 +4,21 @@
 >
 > 状态：用户于 2026-10-20 报告人工测试完成，并要求整理后提交 PR。逐项平台与证据未单独反馈；体验版本结果不移记到后续源码候选。
 
+## 最新状态与历史构建
+
+[PR #1259](https://github.com/futuregene/future-os/pull/1259) 已合并至 `a5f91752b4e470f90fbe5f4bc303ec0ca814944d`。对应候选 `dac8832f` 的 CI 39408277224 已全部完成且成功，包括最后的 Windows Host。详见[最终 CI 证据](headless-ci-39408277224-2026-10-20.json)及[后置发布清单](headless-release-acceptance.zh-CN.md)。这补齐自动化结论，不自动把旧体验版人工结果移到新候选。
+
+用户随后要求清理本地分支/worktree，主工作区已切回 `main`，`test/headless-primary` 及实施分支已删除，原 `skills` 改动保留。下面的体验身份与命令是历史交付记录；现有 `target/debug` 文件不能因源码切换而视为新候选，使用前必须核对 `future version --json`。后置人工步骤应改用版本明确的实际产物。
+
 ## 候选与顺序
 
-主工作区 `/Volumes/ZHITAI/Workspace/future-os` 的体验分支为 `test/headless-primary`，提交为 `a0d4d8402064dab1b82b0ad39bbd645837446236`。已构建 macOS ARM64 debug CLI/GUI，CLI 自报 `0.0.2-a0d4d840+local.dirty`；dirty 来自保留的 `skills` 子模块改动。详情见[交付记录](headless-primary-handoff-2026-10-20.json)。该目录和运行程序在用户测试期间保持不动；开发继续使用独立实施 worktree。
+人工体验时，主工作区 `/Volumes/ZHITAI/Workspace/future-os` 的体验分支为 `test/headless-primary`，提交为 `a0d4d8402064dab1b82b0ad39bbd645837446236`。已构建 macOS ARM64 debug CLI/GUI，CLI 自报 `0.0.2-a0d4d840+local.dirty`；dirty 来自保留的 `skills` 子模块改动。详情见[交付记录](headless-primary-handoff-2026-10-20.json)。该目录和运行程序在用户测试期间保持不动；开发继续使用独立实施 worktree。
 
-实施分支可以继续修复和同步主干，但结果须记录其完整 SHA。当前主工作区体验结果不能自动归给后续候选。最终候选的完整提交、自动化 run、Desktop/CLI 构建身份、Mobile 构建版本、平台及日志证据均待填写。
+实施分支可以继续修复和同步主干，但结果须记录其完整 SHA。当前主工作区体验结果不能自动归给后续候选。已通过自动化的完整候选及 run 见本文开头；最终发行验收的 Desktop/CLI 产物身份、Mobile 构建版本、平台及逐项人工证据仍待填写。
 
 按用户最新安排，先进行人工体验/功能验证，实际发行打包、签名及安装升级验收后置。既有 CI 安装器回归仍需修复并通过。未执行和未反馈的项目均保持待确认；人工期间源码变化后重新验证受影响项目，不拼接不同候选结果。
 
-## 当前可启动的 macOS 版本
+## 历史 macOS 体验构建
 
 从主工作区执行以下命令。GUI 和 headless 通常轮流运行；M11 再专门验证互斥。
 

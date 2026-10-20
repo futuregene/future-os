@@ -3,11 +3,29 @@
 > [English](headless-package-development.md)
 >
 > 设计日期：2026-10-20。源码基线：`904eab2b`，Remote 拆包已通过 PR #1235 合入。
-> 状态：实施中，源码与依赖基线已固定，共享后端与统一入口已接入，进入统一验证收尾；阶段 0～6 未验收完成。
+> 状态：实现已随 PR #1259 合入，最终候选普通 CI 已全部完成并成功；阶段 5 的实际发布产物及阶段 6 的性能/同候选最终验收仍未完成。
 
 将无界面应用宿主从 Desktop crate 中剥离，统一通过 `future headless` 前台启动。新建无 GUI 的 Rust 库 `future-host`，承接 Desktop GUI 与 headless 共用的应用后端；Desktop 和 CLI 各自负责入口与交互。保持现有功能、数据、配对、审批、沙箱和退出行为兼容。
 
-现有使用契约见 [Headless 使用指南](../guide/desktop-headless.zh-CN.md)，Agent 归属见 [Desktop Agent](../guide/desktop-agent.zh-CN.md)，Remote 层次见 [Remote 拆包计划](remote-package-development.zh-CN.md)。迁移落地时同步更新使用指南；本计划中的目标命令不能当作当前已提供的命令。
+现有使用契约见 [Headless 使用指南](../guide/desktop-headless.zh-CN.md)，Agent 归属见 [Desktop Agent](../guide/desktop-agent.zh-CN.md)，Remote 层次见 [Remote 拆包计划](remote-package-development.zh-CN.md)。源码入口现为 `future headless`；已发布安装包是否包含它，应以具体版本与产物验收记录为准。
+
+## 当前验收结论（2026-10-20）
+
+实现已随 [PR #1259](https://github.com/futuregene/future-os/pull/1259) 合入。候选 `dac8832f725f7f2813cf2cc453d0f847b60f7cfa` 的[最终 CI](https://github.com/futuregene/future-os/actions/runs/39408277224) 已全部结束：19 个成功、2 个可选性能检查跳过、0 个失败。Windows Host 最后完成，1693 通过、0 失败、10 个原忽略；Linux/macOS Host 各 1723 通过、0 失败、10 个原忽略。合并提交为 `a5f91752b4e470f90fbe5f4bc303ec0ca814944d`，与候选源码树一致。
+
+[最终证据](../testing/headless-ci-39408277224-2026-10-20.json)和[测试迁移清单](headless-test-migration.json)按实际 case 核对了 1702 个非忽略 Host 原声明及 53 个 CLI 原声明；168 个此前等待统一执行的声明已闭合。10 个原忽略和 428 个入口保留声明没有被删除或改判。当前的成功结论取代后文各历史批次“运行中/待 CI”的即时状态，不改写历史失败记录。
+
+| 阶段 | 当前实际状态 |
+|---|---|
+| 0 基线 | 源码、依赖、2193 项原测试归属已记录；同条件性能记录仍待执行 |
+| 1 共享库 | 普通无 GUI 库与独立/联合依赖边界已实现，三平台 Host CI 通过 |
+| 2 共享后端 | Store、Agent、应用业务、Remote、调度/观察器及停止协调已迁入，所属套件通过 |
+| 3 统一入口 | `future headless` 已实现，旧产品入口已删除；三平台入口/真实进程检查通过 |
+| 4 测试迁移 | 原声明归属闭合，最终候选归属套件通过；平台条件和原忽略保留 |
+| 5 构建发布 | Cargo/make/sidecar/发布脚本接线与安装器回归已完成；实际包、签名、安装升级卸载仍待验 |
+| 6 最终验收 | 实现及普通自动化通过、PR 已合并；用户报告旧体验版人工完成，最终同候选人工、产物及性能仍待闭合 |
+
+后置工作统一见[发布验收清单](../testing/headless-release-acceptance.zh-CN.md)，人工身份和结果见[人工记录](../testing/headless-manual-acceptance.zh-CN.md)。本轮只整理证据与待办，未启动打包、签名、安装或发布。整体 Goal 继续未完成。
 
 ## 1 目标与范围
 
@@ -270,17 +288,7 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 
 本批迁移 75 个原测试声明。原测试名保持可追踪；清单累计记录 427 个已迁入声明、9 个过渡协调用例及仍需审查的 412 个混合模块用例。宿主单包、GUI/CLI 联合和原 headless 的 Clippy `--all-targets`、fmt、依赖边界通过。[证据](../testing/headless-host-identity-review-2026-10-20.json)也记录提交 `b5bd2f53` 上的中间 CI [39356975686](https://github.com/futuregene/future-os/actions/runs/39356975686)：快照仍待完成，宿主 job 正在运行，且不含本批改动，不能作为 CI 通过、运行或最终候选验收。
 
-当前阶段状态：
-
-| 阶段 | 实际状态 |
-|---|---|
-| 0 | 已固定源码/依赖基线与按名清单，混合模块归属已逐项审查；同条件构建/运行测量未完成 |
-| 1 | 无 GUI 普通库、生命周期/配置、任务注册、展示出口和消费者依赖已接入；独立与联合依赖检查通过，最终运行验收待完成 |
-| 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端/托管与请求归属已迁入；完整业务桥、任务/会话、登录账户与维护调度已迁入；Remote 宿主/Peer 已迁入并完成本地核心执行，跨平台复验待完成；停止协调状态已迁入；共享服务停止顺序已迁入；CLI 维护引导与统一启动边界已接入，批量变更待统一验证 |
-| 3 | 已接入 `future headless`，终端/信号/Agent runtime 归 CLI；旧入口已删除；批量变更待统一验证 |
-| 4 | 2193 项原声明全部明确归属；Host 迁入 1712、CLI 迁入 53、原入口保留 428；本批 168 项迁移待统一执行，跨平台与最终候选复验未完成 |
-| 5 | 已加宿主 CI 分组和 affected 传播；构建、发行物、签名/安装/升级/卸载未完成 |
-| 6 | 尚未开始；无最终冻结候选、同条件性能、产物验收或确认的人工结果 |
+阶段状态已统一更新至本文开头；以下保留按批次记录的历史事实。
 
 ### 2026-10-20 命令接入与精确 run 归属
 

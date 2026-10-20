@@ -3,11 +3,29 @@
 > [中文](headless-package-development.zh-CN.md)
 >
 > Design date: 2026-10-20. Source baseline: `904eab2b`, including Remote extraction merged through PR #1235.
-> Status: in progress. Source/dependency baselines are captured and shared backend and unified entry are connected, with unified acceptance pending; phases 0–6 are incomplete.
+> Status: implementation merged through PR #1259 and final ordinary CI completed successfully; phase 5 actual payloads and phase 6 performance/final same-candidate acceptance remain incomplete.
 
 Extract the application host without a GUI from the Desktop crate and start it in the foreground with `future headless`. Introduce `future-host`, a Rust library without GUI dependencies, for the application backend shared by Desktop GUI and headless. Desktop and CLI own their entry points and interaction. Preserve current functionality, data, pairing, approval, sandbox and shutdown behavior.
 
-The existing contract is documented in the [Headless guide](../guide/desktop-headless.md), [Desktop Agent guide](../guide/desktop-agent.md) and [Remote extraction plan](remote-package-development.md). Update operational guides as implementation lands; commands described as targets here are not commands already provided by the current release.
+The existing contract is documented in the [Headless guide](../guide/desktop-headless.md), [Desktop Agent guide](../guide/desktop-agent.md) and [Remote extraction plan](remote-package-development.md). The source entry is now `future headless`; availability in an installed release depends on that version and its artifact acceptance record.
+
+## Current acceptance conclusion (2026-10-20)
+
+Implementation merged through [PR #1259](https://github.com/futuregene/future-os/pull/1259). [Final CI](https://github.com/futuregene/future-os/actions/runs/39408277224) on `dac8832f725f7f2813cf2cc453d0f847b60f7cfa` is complete: 19 successful jobs, two optional performance jobs skipped, zero failed. Windows Host finished last with 1693 passed/0 failed/10 original ignores; Linux/macOS Host each passed 1723/0/10. Squash merge `a5f91752b4e470f90fbe5f4bc303ec0ca814944d` has the same source tree.
+
+[Final evidence](../testing/headless-ci-39408277224-2026-10-20.json) and the [test migration inventory](headless-test-migration.json) match actual cases for 1702 nonignored original Host declarations and 53 CLI declarations. The latest 168 pending declarations are closed. Ten original ignores and 428 entry-retained declarations are preserved. This current conclusion supersedes running/pending observations in the historical batch journal below without rewriting historical failures.
+
+| Phase | Current actual status |
+|---|---|
+| 0 Baseline | Source/dependency and 2193-case ownership baseline recorded; matched performance outstanding |
+| 1 Shared library | Ordinary GUI-free library and independent/combined boundaries implemented; three-platform Host CI passed |
+| 2 Shared backend | Store, Agent, application operations, Remote, scheduling/observers and shutdown migrated; owner suites passed |
+| 3 Unified entry | `future headless` implemented, old product entry removed; three-platform entry/real-process checks passed |
+| 4 Test migration | Original declaration ownership closed, final owner suites passed; platform conditions and original ignores retained |
+| 5 Build/release | Cargo/make/sidecar/release wiring and installer regression complete; actual packages/signing/install/update/uninstall pending |
+| 6 Final acceptance | Implementation/ordinary automation passed and PR merged; user reports old exploratory manual round complete; final same-candidate manual/artifact/performance acceptance remains |
+
+Use the [release acceptance checklist](../testing/headless-release-acceptance.md) and [manual record](../testing/headless-manual-acceptance.md) for remaining work and candidate identity. This pass only reconciles evidence and work items; no packaging, signing, installation or publication ran. The overall Goal remains incomplete.
 
 ## 1 Goals and scope
 
@@ -270,17 +288,7 @@ Stable installation identity, Future home resolution and the existing `app/deskt
 
 75 original test declarations move in this batch. All original test names remain traceable; the inventory currently records 427 moved declarations in total, 9 intermediate coordination cases and 412 mixed-module cases still requiring review. Native host-only, combined GUI/CLI and original headless Clippy `--all-targets`, fmt and dependency checks pass. [Evidence](../testing/headless-host-identity-review-2026-10-20.json) also records interim CI run [39356975686](https://github.com/futuregene/future-os/actions/runs/39356975686) on `b5bd2f53`: its snapshot is pending, its host job is running, and it does not include this batch. No passing CI, runtime or final-candidate claim is made.
 
-Current phase status:
-
-| Phase | Actual status |
-|---|---|
-| 0 | Source/dependency baseline and named inventory captured; mixed-module ownership reviewed per test; matched build/runtime measurements open |
-| 1 | Ordinary GUI-free crate, lifecycle/config, task registry, presentation outlet and consumers connected; independent/combined boundaries checked; final runtime acceptance open |
-| 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, task/conversation, OAuth/account and maintenance scheduler moved; Remote host/Peer moved with local core execution; cross-platform revalidation, stop coordination state moved; shared service teardown moved; CLI maintenance bootstrap and unified startup boundary connected; bulk validation remains |
-| 3 | `future headless` connected; CLI owns terminal/signals/Agent runtime; old entry removed; bulk changes await unified validation |
-| 4 | All 2193 baseline declarations assigned: Host 1712, CLI 53, retained entries 428; the latest 168 moves await unified execution; cross-platform/final-candidate acceptance open |
-| 5 | Host CI group and affected propagation added; builds, release artifacts, signing/install/update/uninstall still open |
-| 6 | Not started; no frozen final candidate, matched performance, artifact acceptance or confirmed manual results |
+Current phase status is maintained at the beginning of this document; the following batch journal retains historical observations.
 
 ### 2026-10-20 Command admission and exact-run ownership
 
