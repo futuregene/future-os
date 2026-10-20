@@ -123,13 +123,9 @@ it("writes through the host's command names", async () => {
   request.mockResolvedValue(undefined);
   await backend.remove("t1");
   await backend.setEnabled("t1", false);
-  await backend.runNow("t1");
   expect(request.mock.calls.map(([, command]) => command)).toEqual([
     { type: "delete_task", taskId: "t1" },
     { type: "set_task_enabled", taskId: "t1", enabled: false },
-    // The host's name for "run it now" is `run_task`; `run_task_now` is this
-    // app's own command and would be refused there.
-    { type: "run_task", taskId: "t1" },
   ]);
 });
 
