@@ -45,6 +45,7 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 | [goal/](architecture/goal/README.md) | The `future-goal` crate: [architecture](architecture/goal/ARCHITECTURE.md) (en/zh), [upstream attribution](../orchestration/goal/UPSTREAM.md), [decision-kernel snapshot](architecture/goal/snapshots.md) |
 | [Shared packages](architecture/packages.md) ([中文](architecture/packages.zh-CN.md)) | `packages/` conventions: npm/workspace packages and crate boundaries |
 | [Remote package development plan](architecture/remote-package-development.md) ([中文](architecture/remote-package-development.zh-CN.md)) | Planned Rust/TypeScript protocol, client and server extraction; independent Crypto, host adapters, migration phases and CI acceptance |
+| [Headless package development plan](architecture/headless-package-development.md) ([中文](architecture/headless-package-development.zh-CN.md)) | Planned `future headless` entry, GUI-free `future-host` library, shared backend, data compatibility, test ownership and build/release migration |
 | [Channel test coverage](architecture/channels-test-coverage.md) ([中文](architecture/channels-test-coverage.zh-CN.md)) | What the channel framework's tests promise, and the 22 lines that are deliberately not covered, with the reason for each |
 | [RPC crate](architecture/rpc.md) ([中文](architecture/rpc.zh-CN.md)) | `packages/rpc` — the protobuf wire contract (single source of truth) |
 
