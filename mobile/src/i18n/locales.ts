@@ -341,6 +341,7 @@ export const resources = {
         delete: "Delete",
         deleteConfirm:
           'Delete "{{title}}"? This conversation can\'t be restored.',
+        listActions: "Conversation list actions",
         search: "Search conversations",
         clearSearch: "Clear search",
         noResults: "No matching conversations",
@@ -1271,6 +1272,7 @@ export const resources = {
         unpin: "取消置顶",
         delete: "删除",
         deleteConfirm: "删除「{{title}}」？此对话无法恢复。",
+        listActions: "会话列表操作",
         search: "搜索会话",
         clearSearch: "清除搜索",
         noResults: "没有匹配的会话",

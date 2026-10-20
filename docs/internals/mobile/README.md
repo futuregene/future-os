@@ -37,6 +37,13 @@ development and distribution maintenance.
   workspaces can be deleted wholesale (including their sessions; files inside
   the desktop's workspace directory are not deleted), and workspace
   collapse state survives restarts.
+- The session list's header is two rows: a desktop picker (a chosen machine shows
+  its own glyph and name, the name on up to two lines, and the row takes a line
+  of its own at the reader's largest text size), the list-actions menu `⋯`
+  (search, batch selection), the connection dot and settings; the row under it
+  belongs entirely to the page switch (workspaces / conversations). The search
+  field and the batch bar still replace that lower row, so the header — machine,
+  connection, settings — stays visible while typing or selecting.
 - The workspace picker in the new-conversation dialog can register a directory
   on the connected desktop as a workspace. The user types the host path (the
   phone has no folder picker for the desktop); the directory must already exist,

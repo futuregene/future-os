@@ -1,7 +1,7 @@
 import type { DesktopFilter } from "../remote/mergeSessions";
 import type { PairedDesktop } from "../remote/types";
 import type { MachineSummary } from "../remote/desktopStatus";
-import { Check, ChevronDown, Layers, Monitor, X } from "lucide-react-native";
+import { Check, ChevronDown, Layers, X } from "lucide-react-native";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
@@ -33,6 +33,7 @@ export function DesktopPicker({
   desktops,
   machines,
   onTakeControl,
+  fullWidth = false,
 }: {
   filter: DesktopFilter;
   onChange: (filter: DesktopFilter) => void;
@@ -49,6 +50,15 @@ export function DesktopPicker({
   machines?: MachineSummary[];
   /** Ask `desktopId` to let this phone drive it. */
   onTakeControl?: (desktopId: string) => Promise<void> | void;
+  /**
+   * Give the trigger the row to itself.
+   *
+   * At the largest text size the name a reader chose no longer fits beside the
+   * list's tools, the status dot and settings — and the name is the one thing
+   * here that must not be cut — so the header above the list puts this trigger
+   * on its own line and the tools on the next one.
+   */
+  fullWidth?: boolean;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -93,15 +103,32 @@ export function DesktopPicker({
         accessibilityLabel={t("desktops.pickerLabel")}
         accessibilityRole="button"
         onPress={() => setOpen(true)}
-        style={({ pressed }) => [styles.trigger, pressed && styles.pressed]}
+        style={({ pressed }) => [
+          styles.trigger,
+          fullWidth && styles.triggerFullWidth,
+          pressed && styles.pressed,
+        ]}
       >
-        <View style={styles.triggerIcon}>
-          <Monitor color={colors.accent} size={20} />
-        </View>
-        <Text numberOfLines={1} style={styles.triggerLabel}>
+        {/* One machine indicator, not two. A chosen machine's row already leads
+            with its own glyph — the same one the sheet draws beside its name —
+            so the general icon here would repeat it on every drawn width and
+            take the points the name needs; it stays for the merged scope, which
+            has no machine of its own to show. */}
+        {selected ? null : (
+          <View style={styles.triggerIcon}>
+            <Layers color={colors.accent} size={17} />
+          </View>
+        )}
+        {/* Two lines, not one: the row above the list now shares its width with
+            the list's own tools, and a machine name the reader gave it can be
+            longer than what is left. Wrapping keeps the whole name on screen
+            instead of cutting it to "实验室的…" — the sheet this button opens is
+            a place to *choose* a machine, not the only place to find out which
+            one is on screen. */}
+        <Text numberOfLines={2} style={styles.triggerLabel}>
           {selected ? `${iconGlyph(selected.icon)} ${label(selected)}` : t("desktops.filterAll")}
         </Text>
-        <ChevronDown color={colors.inkSoft} size={16} />
+        <ChevronDown color={colors.inkSoft} size={14} />
       </Pressable>
 
       <Modal
@@ -223,17 +250,23 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     flex: 1,
     minWidth: 0,
     // 44pt is the smallest comfortable target, and this one sits in a header
-    // where a miss lands on the connection badge instead.
+    // where a miss lands on the list's own tools.
     minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.sm,
+    // Tighter than the sheet's own spacing: this row also holds the list's
+    // tools, the status dot and settings, and every point the two chevrons and
+    // the icon give up is a point the machine's name keeps.
+    gap: 6,
     borderWidth: 1,
     borderColor: theme.colors.line,
     borderRadius: radius.md,
-    paddingHorizontal: spacing.sm,
+    paddingLeft: spacing.sm,
+    paddingRight: 6,
+    paddingVertical: spacing.xs,
   },
-  triggerIcon: { width: 24, alignItems: "center" },
+  triggerIcon: { width: 17, alignItems: "center" },
+  triggerFullWidth: { flexBasis: "100%" },
   triggerLabel: { flex: 1, minWidth: 0, color: theme.colors.inkStrong, fontSize: theme.font(15), fontWeight: "600" },
   pressed: { opacity: 0.7 },
   header: { flexDirection: "row", alignItems: "center", gap: spacing.sm },

@@ -15,7 +15,7 @@ import {
   Trash2,
   X,
 } from "lucide-react-native";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
 import { useTranslation } from "react-i18next";
 import {
   ActivityIndicator,
@@ -28,7 +28,6 @@ import {
   TextInput,
   View,
 } from "react-native";
-import type { ReactNode } from "react";
 import { ActionMenu } from "../components/ActionMenu";
 import { useAppDialog } from "../components/useAppDialog";
 import { RenameModal } from "../features/chat/components/RenameModal";
@@ -40,25 +39,15 @@ import type { RemoteSession } from "../remote/types";
 import { layout, radius, spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 import { catalogRows, mergedRows as sessionTreeMergedRows, type CatalogRow } from "./sessionTree";
+import { listTargets, selectableTargets, type SessionTarget } from "./sessionSelection";
+import { adjacentTab, TABS, type Tab } from "./sessionTabs";
 import { useCollapsedWorkspaces } from "./useCollapsedWorkspaces";
 import { useSessionListScroll } from "./useSessionListScroll";
-import { useTabSwipe, type PageDirection } from "./useTabSwipe";
+import { useTabSwipe } from "./useTabSwipe";
 
 // Keep navigation state when the screen unmounts to open a conversation.
 // Workspace folds are persisted separately (they survive a restart too).
 let savedExpanded = new Set<string>();
-
-// The list's two pages, in the order the toolbar's tab control shows them and
-// the horizontal swipe reads them: workspaces are the left page, conversations
-// the right one.
-const TABS = ["workspace", "chat"] as const;
-type Tab = (typeof TABS)[number];
-
-/** The page beside `tab` in a swipe direction, or null at either end of the row. */
-function adjacentTab(tab: Tab, direction: PageDirection): Tab | null {
-  const index = TABS.indexOf(tab) + (direction === "next" ? 1 : -1);
-  return TABS[index] ?? null;
-}
 
 // Column geometry, mirroring the desktop rail (see docs/internals/desktop/PRODUCT.md §5.2):
 // every row is [toggle column 16][gap 4][title], and a child row's start is its
@@ -84,18 +73,25 @@ type SessionRow = Extract<CatalogRow, { kind: "session" }>;
 type WorkspaceRow = Extract<CatalogRow, { kind: "workspace" }>;
 
 /**
- * One conversation a batch can address: the key a tick refers to, what it is,
- * and the machine that owns it.
+ * The list's secondary tools, reached from the header rather than from this
+ * row: the pages' tabs get the row's whole width.
  */
-interface BatchTarget {
-  key: string;
-  session: RemoteSession;
-  desktopId: string | null;
-}
+export type SessionListHandle = {
+  /** Open the search field, which replaces the tab row while the reader types. */
+  startSearch(): void;
+  /**
+   * Enter batch selection.
+   *
+   * A no-op when a batch could hold nothing — the header's menu item is
+   * disabled in that state, and this is the same judgement made once more at
+   * the point of acting.
+   */
+  startSelecting(): void;
+};
 
 /** A batch's rows, grouped by the machine that will delete them. */
-function groupByMachine(targets: BatchTarget[]): Map<string | null, BatchTarget[]> {
-  const byMachine = new Map<string | null, BatchTarget[]>();
+function groupByMachine(targets: SessionTarget[]): Map<string | null, SessionTarget[]> {
+  const byMachine = new Map<string | null, SessionTarget[]>();
   for (const target of targets) {
     const group = byMachine.get(target.desktopId);
     if (group) group.push(target);
@@ -114,6 +110,7 @@ export function SessionList({
   activeDesktopId = null,
   commandsFor,
   onMenu,
+  ref,
 }: {
   tab: Tab;
   active?: boolean;
@@ -150,6 +147,16 @@ export function SessionList({
   commandsFor: (desktopId: string | null) => DesktopCommands | null;
   /** The row's own machine accompanies it, so the action knows where to go. */
   onMenu: (session: RemoteSession, desktopId: string | null) => void;
+  /**
+   * The header's way into the toolbar's two secondary modes.
+   *
+   * The search field and the batch bar live in this component — they hold its
+   * rows' state — while the header, which owns the machine and the connection,
+   * is the screen's. The screen therefore asks for these two modes through the
+   * handle rather than owning them: there is one piece of state, where the rows
+   * are.
+   */
+  ref?: Ref<SessionListHandle>;
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
@@ -230,26 +237,14 @@ export function SessionList({
    * Every conversation the list holds, folded or not, under the key a batch
    * uses for it.
    *
-   * The batch cannot be resolved against the drawn rows: a folded group's rows
-   * leave the list while a selection made before the fold still has to be
-   * deleted, and a "select all in this workspace" is exactly the action that
-   * reaches conversations the reader cannot see. In the ordinary single-machine
-   * list a conversation's key is its own id, which is what the batch always
-   * used.
+   * Shared with the screen that offers the batch's entry point (see
+   * `listTargets`): the header must not offer a selection the list would refuse
+   * to make, and one function answering for both is what keeps them agreeing.
    */
-  const allSessions = useMemo<BatchTarget[]>(() => {
-    if (merged !== undefined)
-      return merged.map(row => ({
-        key: row.key,
-        session: row.session,
-        desktopId: row.desktopId,
-      }));
-    return remote.sessions.map(session => ({
-      key: session.sessionId,
-      session,
-      desktopId: null,
-    }));
-  }, [merged, remote.sessions]);
+  const allSessions = useMemo<SessionTarget[]>(
+    () => listTargets(merged, remote.sessions),
+    [merged, remote.sessions],
+  );
   // What a batch may hold: conversations that are not pinned shortcuts, on a
   // machine that can take the command. Pinned sessions are promoted above the
   // groups (and, on the workspace tab, out of their own workspace), so they
@@ -272,18 +267,16 @@ export function SessionList({
    * not — which is a different question from the one `selectableRows` answers.
    *
    * That one is about the rows on screen, because "select visible" selects the
-   * visible ones. This one decides whether the select control above the list is
-   * offered, and a folded group's conversations are still in the list: they are
+   * visible ones. This one decides whether entering a batch is offered at all,
+   * and a folded group's conversations are still in the list: they are
    * reachable by expanding the group, and by the group's own sheet. Read off the
    * drawn rows, a list of nothing but folded groups and pinned shortcuts — the
    * shape a list takes after a while, and one no batch may hold — drew nothing
-   * selectable at all and switched the control off (at 40% opacity, which reads
-   * as gone) on a list of hundreds of conversations; the desktop rail's own
-   * "select conversations" is offered throughout.
+   * selectable at all and switched the entry off on a list of hundreds of
+   * conversations; the desktop rail's own "select conversations" is offered
+   * throughout.
    */
-  const selectableTargets = allSessions.filter(
-    target => !target.session.pinned && commandsFor(target.desktopId ?? null) !== null,
-  );
+  const batchTargets = selectableTargets(allSessions, commandsFor);
   /** The conversations the batch holds, folded away or not. */
   const targets = allSessions.filter(target => selected.has(target.key));
   const allSelected =
@@ -298,6 +291,29 @@ export function SessionList({
    * carry out at all.
    */
   const canDeleteSelected = targets.some(target => commandsFor(target.desktopId) !== null);
+
+  /**
+   * The header's two entry points, as this component's own modes.
+   *
+   * Both are exclusive: the tab row is replaced by whichever is active, so
+   * entering one leaves the other. Batch selection also drops a search filter —
+   * the batch spans the catalogue, so leaving a filter on screen would hide rows
+   * whose ticks are already counted.
+   */
+  useImperativeHandle(ref, () => ({
+    startSearch: () => {
+      setSelecting(false);
+      setSelected(new Set());
+      setSearching(true);
+    },
+    startSelecting: () => {
+      if (batchTargets.length === 0) return;
+      setSearching(false);
+      setQuery("");
+      setSelecting(true);
+      setSelected(new Set());
+    },
+  }));
 
   useEffect(() => {
     if (!active || (!selecting && !searching)) return;
@@ -409,7 +425,7 @@ export function SessionList({
    * get it: the batch is addressed to the group's own machine, so rows it would
    * refuse are left out here rather than failing later.
    */
-  const sessionsInWorkspace = (workspace: WorkspaceRow): BatchTarget[] =>
+  const sessionsInWorkspace = (workspace: WorkspaceRow): SessionTarget[] =>
     allSessions.filter(target =>
       target.session.mode === "workspace"
       && !target.session.pinned
@@ -927,52 +943,27 @@ export function SessionList({
             </Pressable>
           </>
         ) : (
-          <>
-            <View style={styles.tabs}>
-              {TABS.map(value => (
-                <Pressable
-                  key={value}
-                  accessibilityRole="tab"
-                  accessibilityLabel={t(value === "workspace" ? "sessions.workspace" : "sessions.conversations")}
-                  accessibilityState={{ selected: tab === value }}
-                  onPress={() => onTabChange(value)}
-                  style={[styles.tab, tab === value && styles.tabActive]}
+          <View style={styles.tabs}>
+            {TABS.map(value => (
+              <Pressable
+                key={value}
+                accessibilityRole="tab"
+                accessibilityLabel={t(value === "workspace" ? "sessions.workspace" : "sessions.conversations")}
+                accessibilityState={{ selected: tab === value }}
+                onPress={() => onTabChange(value)}
+                style={[styles.tab, tab === value && styles.tabActive]}
+              >
+                <Text
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.85}
+                  numberOfLines={1}
+                  style={[styles.tabText, tab === value && styles.tabTextActive]}
                 >
-                  <Text
-                    adjustsFontSizeToFit
-                    minimumFontScale={0.85}
-                    numberOfLines={1}
-                    style={[styles.tabText, tab === value && styles.tabTextActive]}
-                  >
-                    {t(value === "workspace" ? "sessions.workspace" : "sessions.conversations")}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-            <View style={styles.toolActions}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t("sessions.search")}
-                onPress={() => setSearching(true)}
-                style={styles.manage}
-              >
-                <Search size={19} color={colors.inkSoft} />
+                  {t(value === "workspace" ? "sessions.workspace" : "sessions.conversations")}
+                </Text>
               </Pressable>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={t("sessions.select")}
-                accessibilityState={{ disabled: deleting || selectableTargets.length === 0 }}
-                disabled={deleting || selectableTargets.length === 0}
-                onPress={() => {
-                  setSelecting(true);
-                  setSelected(new Set());
-                }}
-                style={[styles.manage, (deleting || selectableTargets.length === 0) && styles.disabled]}
-              >
-                <ListChecks size={19} color={colors.inkSoft} />
-              </Pressable>
-            </View>
-          </>
+            ))}
+          </View>
         )}
       </View>
       <Animated.View
@@ -1026,9 +1017,7 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     paddingBottom: spacing.md,
   },
   tabs: {
-    width: "65%",
-    maxWidth: 240,
-    flexShrink: 1,
+    flex: 1,
     minWidth: 0,
     flexDirection: "row",
     padding: spacing.xs,
@@ -1047,11 +1036,6 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   tabActive: { backgroundColor: theme.colors.surface },
   tabText: { textAlign: "center", color: theme.colors.inkSoft, fontSize: theme.font(14), fontWeight: "600" },
   tabTextActive: { color: theme.colors.accent, fontWeight: "700" },
-  toolActions: {
-    marginLeft: "auto",
-    flexDirection: "row",
-    gap: spacing.xs,
-  },
   cancelSearch: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   search: {
     flex: 1,
@@ -1070,15 +1054,6 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     paddingVertical: spacing.sm,
     fontSize: theme.font(14),
     color: theme.colors.ink,
-  },
-  manage: {
-    width: 44,
-    height: 44,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: theme.colors.lineSoft,
   },
   list: { paddingHorizontal: layout.gutter, paddingTop: spacing.xs, paddingBottom: 96 },
   empty: {

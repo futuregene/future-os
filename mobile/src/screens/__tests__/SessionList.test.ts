@@ -16,7 +16,7 @@ import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
 import { RenameModal } from "../../features/chat/components/RenameModal";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
-import { SessionList } from "../SessionList";
+import { SessionList, type SessionListHandle } from "../SessionList";
 import { currentAppAlert, finishAppAlert } from "../../components/appAlerts";
 import { ActionMenu } from "../../components/ActionMenu";
 import type { DesktopCommands } from "../../remote/desktopCommands";
@@ -119,6 +119,18 @@ const onMenu = jest.fn();
 const onTabChange = jest.fn();
 
 /**
+ * The list's handle, as the header above it reaches the same two modes.
+ *
+ * Search and batch selection moved out of the row under the header — a third
+ * page there would have shrunk every tab — so what the tests drive is the way
+ * in the header uses: the handle, not a button in the list. A test for the
+ * button itself lives with the header, in `SessionsScreen.test.ts`.
+ */
+const listRef: { current: SessionListHandle | null } = { current: null };
+const enterSearch = () => act(() => listRef.current!.startSearch());
+const enterSelection = () => act(() => listRef.current!.startSelecting());
+
+/**
  * What each machine answers, as the list sees it.
  *
  * Every action a row offers is a command to the machine that owns it, so the
@@ -168,6 +180,9 @@ function swipeHarness(tab: "workspace" | "chat") {
   const pan = jest.spyOn(PanResponder, "create");
   jest.spyOn(Animated, "timing").mockImplementation(() => finishedAnimation);
   const tabChange = jest.fn();
+  // Its own handle: this harness mounts a second list beside the one the test
+  // already drew, and a shared ref would be cleared when this one unmounts.
+  const handle: { current: SessionListHandle | null } = { current: null };
   let rendered!: ReactTestRenderer;
   act(() => {
     rendered = create(
@@ -177,6 +192,7 @@ function swipeHarness(tab: "workspace" | "chat") {
         onMenu,
         onTabChange: tabChange,
         commandsFor: testCommandsFor,
+        ref: handle,
       }),
     );
   });
@@ -188,6 +204,8 @@ function swipeHarness(tab: "workspace" | "chat") {
   return {
     rendered,
     tabChange,
+    search: () => act(() => handle.current!.startSearch()),
+    select: () => act(() => handle.current!.startSelecting()),
     press: (label: string) => {
       act(() =>
         rendered.root
@@ -211,6 +229,10 @@ function swipeHarness(tab: "workspace" | "chat") {
     },
   };
 }
+/** The page bar's tabs, which exist exactly when neither batch nor search is up. */
+const pageTabs = () => tree.root.findAll(
+  node => node.props.accessibilityRole === "tab" && typeof node.props.onPress === "function",
+);
 const button = (label: string) =>
   tree.root.findAll(
     node => node.props.accessibilityLabel === label && typeof node.props.onPress === "function",
@@ -248,6 +270,7 @@ beforeEach(async () => {
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     }));
     // Let the persisted-folds read land inside act() so it cannot update the
     // tree after the test body has finished.
@@ -277,13 +300,16 @@ test("explicit row action opens rename/pin/delete menu; offline management is di
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     })));
   expect(button("sessions.actions:First").props.disabled).toBe(true);
-  expect(button("sessions.select").props.disabled).toBe(true);
+  // The batch entry is the header's now, and its availability is the header's
+  // question too — it reads the same catalogue helpers this list selects by.
+  // `SessionsScreen.test.ts` covers the item being unavailable.
 });
 
 /**
- * The select control answers for the list, not for the page.
+ * Entering a batch answers for the list, not for the page.
  *
  * A folded group's conversations leave the page and stay in the list, and a
  * pinned conversation is a shortcut no batch may hold. Read off the drawn rows,
@@ -292,8 +318,9 @@ test("explicit row action opens rename/pin/delete menu; offline management is di
  * on a list whose conversations were all still there, one fold away. The desktop
  * rail's own "select conversations" is offered throughout; this is the same
  * answer, and the one the list gave before the control learned to disable itself.
+ * The header asks `selectableTargets` the same question of the same catalogue.
  */
-test("the select control stays available while a folded group holds conversations", () => {
+test("a batch opens while a folded group holds the only conversations", () => {
   mockRemote.workspaces = [
     { id: "w-select-fold", name: "Folded project", path: "/tmp/folded" },
     { id: "w-select-pinned", name: "Pinned project", path: "/tmp/pinned" },
@@ -323,36 +350,65 @@ test("the select control stays available while a folded group holds conversation
     onMenu,
     onTabChange,
     commandsFor: testCommandsFor,
+    ref: listRef,
   })));
 
   // Fold the only group that holds an ordinary conversation: what is left on the
   // page is the pinned shortcut, which no batch may hold.
   act(() => button("Folded project").props.onPress());
   expect(mergedTitles()).toEqual(["Pinned plan"]);
-  expect(button("sessions.select").props.disabled).toBe(false);
 
-  // And it works: selection mode opens on the list, whose folded conversations
-  // are one fold away — the pinned shortcut keeps no checkbox, as it never did.
-  act(() => button("sessions.select").props.onPress());
+  // Entering a batch reads the catalogue, not the page: the folded conversation
+  // is still one fold away, and the entry opens on a list whose drawn rows hold
+  // nothing a batch may carry — the pinned shortcut keeps no checkbox, as it
+  // never did.
+  enterSelection();
   expect(button("sessions.selectVisible")).toBeDefined();
-  expect(button("sessions.select")).toBeUndefined();
   expect(tree.root.findAll(node => node.props.accessibilityRole === "checkbox")).toHaveLength(0);
+  // And it is still reachable: unfolding puts the checkbox back.
+  act(() => button("Folded project").props.onPress());
+  act(() => button("sessions.selectVisible").props.onPress());
+  expect(
+    tree.root.findAll(node => node.props.children === "sessions.selectedCount:1").length,
+  ).toBeGreaterThan(0);
 
   // This test replaced the catalogue every other test in this file starts from,
   // so put it back rather than leave the next one to inherit this fixture.
   renderChatTab();
 });
 
+test("a batch cannot be entered when nothing may join it", () => {
+  // Every conversation is a pinned shortcut: no checkbox, so no batch. The
+  // header's item is disabled in this state, and the handle refuses the same way
+  // — one judgement, made where the rows are.
+  mockRemote.sessions = mockRemote.sessions.map(session => ({ ...session, pinned: true }));
+  act(() => tree.update(createElement(SessionList, {
+    tab: "chat",
+    empty: null,
+    onMenu,
+    onTabChange,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+  })));
+  enterSelection();
+  expect(button("sessions.selectVisible")).toBeUndefined();
+  expect(pageTabs()).toHaveLength(2);
+
+  // This test replaced the catalogue every other test in this file starts from.
+  mockRemote.sessions = mockRemote.sessions.map(session => ({ ...session, pinned: false }));
+  renderChatTab();
+});
+
 test("search finds a collapsed child without changing folds", () => {
   expect(button("sessions.actions:Child")).toBeUndefined();
-  act(() => button("sessions.search").props.onPress());
+  enterSearch();
   act(() => tree.root.findByType(TextInput).props.onChangeText("Child"));
   expect(button("sessions.actions:Child")).toBeDefined();
   act(() => button("sessions.clearSearch").props.onPress());
   expect(button("sessions.actions:Child")).toBeUndefined();
 });
 
-test("tabs, search and selection share one toolbar with full touch targets", () => {
+test("the tab row is the list's whole width, with the page tools in the header", () => {
   expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
   const toolbar = tree.root.findByProps({ testID: "session-toolbar" });
   const tabs = toolbar.findAll(node => node.props.accessibilityRole === "tab" && node.props.onPress);
@@ -363,18 +419,16 @@ test("tabs, search and selection share one toolbar with full touch targets", () 
     expect(label.props.numberOfLines).toBe(1);
     expect(label.props.adjustsFontSizeToFit).toBe(true);
   }
+  // The page bar takes every point the row has: a third page has to fit beside
+  // the other two without the labels shrinking, so nothing else shares the row.
   const tabBar = tabs[0]!.parent!;
-  expect(StyleSheet.flatten(tabBar.props.style)).toMatchObject({
-    width: "65%",
-    maxWidth: 240,
-    flexShrink: 1,
-  });
-  const toolActions = button("sessions.search").parent!;
-  expect(StyleSheet.flatten(toolActions.props.style)).toMatchObject({ marginLeft: "auto" });
+  expect(StyleSheet.flatten(tabBar.props.style)).toMatchObject({ flex: 1, minWidth: 0 });
+  // And the two page tools are not here at all — they moved to the header, which
+  // is what freed the width (`SessionListActions`).
+  expect(toolbar.findAll(node => node.props.accessibilityLabel === "sessions.search")).toHaveLength(0);
+  expect(toolbar.findAll(node => node.props.accessibilityLabel === "sessions.select")).toHaveLength(0);
   act(() => tabs[0]!.props.onPress());
   expect(onTabChange).toHaveBeenCalledWith("workspace");
-  expect(toolbar.findAll(node => node.props.accessibilityLabel === "sessions.search").length).toBeGreaterThan(0);
-  expect(toolbar.findAll(node => node.props.accessibilityLabel === "sessions.select").length).toBeGreaterThan(0);
 });
 
 test("a horizontal swipe pages the list between workspaces and conversations", () => {
@@ -400,17 +454,17 @@ test("a vertical drag stays with the list, and search/selection keep the tabs pu
   expect(harness.drag(-120, 60)).toBe(false);
   // The tab bar is hidden while searching or selecting, so a swipe there would
   // change mode unseen rather than move between two visible pages.
-  harness.press("sessions.search");
+  harness.search();
   expect(harness.drag(-120, 4)).toBe(false);
   harness.press("chat.cancel");
-  harness.press("sessions.select");
+  harness.select();
   expect(harness.drag(-120, 4)).toBe(false);
   expect(harness.tabChange).not.toHaveBeenCalled();
   act(() => harness.rendered.unmount());
 });
 
 test("search replaces tabs in place and cancel clears the filter", () => {
-  act(() => button("sessions.search").props.onPress());
+  enterSearch();
   expect(tree.root.findAll(node => node.props.accessibilityRole === "tab")).toHaveLength(0);
   expect(button("sessions.select")).toBeUndefined();
   expect(tree.root.findByType(TextInput).props.autoFocus).toBe(true);
@@ -420,12 +474,12 @@ test("search replaces tabs in place and cancel clears the filter", () => {
   expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
   expect(button("sessions.conversations").props.accessibilityState.selected).toBe(true);
   expect(tree.root.findByType(FlatList).props.data).not.toHaveLength(0);
-  act(() => button("sessions.search").props.onPress());
+  enterSearch();
   expect(tree.root.findByType(TextInput).props.value).toBe("");
 });
 
 test("selection replaces the toolbar and can be cancelled even after going offline", () => {
-  act(() => button("sessions.select").props.onPress());
+  enterSelection();
   expect(button("sessions.search")).toBeUndefined();
   expect(button("sessions.conversations")).toBeUndefined();
   expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
@@ -437,6 +491,7 @@ test("selection replaces the toolbar and can be cancelled even after going offli
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     })));
   expect(button("chat.cancel").props.disabled).toBe(false);
   expect(button("sessions.deleteSelected").props.disabled).toBe(true);
@@ -446,7 +501,7 @@ test("selection replaces the toolbar and can be cancelled even after going offli
 
 test("Android back closes search without leaving a hidden filter", () => {
   const subscribe = jest.spyOn(BackHandler, "addEventListener");
-  act(() => button("sessions.search").props.onPress());
+  enterSearch();
   act(() => tree.root.findByType(TextInput).props.onChangeText("absent"));
   const back = subscribe.mock.calls.at(-1)![1];
   act(() => { expect(back({} as never)).toBe(true); });
@@ -455,7 +510,7 @@ test("Android back closes search without leaving a hidden filter", () => {
 });
 
 test("cancelling deletion does not send any requests", () => {
-  act(() => button("sessions.select").props.onPress());
+  enterSelection();
   act(() => button("sessions.selectVisible").props.onPress());
   act(() => button("sessions.deleteSelected").props.onPress());
   const modal = activeDialog();
@@ -465,7 +520,7 @@ test("cancelling deletion does not send any requests", () => {
 });
 
 test("a successful batch exits selection and duplicate confirmation cannot delete twice", async () => {
-  act(() => button("sessions.select").props.onPress());
+  enterSelection();
   act(() => button("First").props.onPress());
   act(() => button("sessions.deleteSelected").props.onPress());
   const modal = activeDialog();
@@ -474,14 +529,14 @@ test("a successful batch exits selection and duplicate confirmation cannot delet
   expect(activeCommands.deleteSession).not.toHaveBeenCalled();
   await act(async () => { modal.props.onDismiss(); modal.props.onDismiss(); });
   expect(activeCommands.deleteSession).toHaveBeenCalledTimes(1);
-  expect(button("sessions.select")).toBeDefined();
+  expect(pageTabs()).toHaveLength(2);
 });
 
 test("batch deletion confirms exact visible selection, preserves hidden children, and retains failures for retry", async () => {
   activeCommands.deleteSession.mockImplementation(async (id: string, _threadId: string) => {
     if (id === "s2") throw new Error("offline");
   });
-  act(() => button("sessions.select").props.onPress());
+  enterSelection();
   // A collapsed child must never be implicitly selected by Select visible.
   act(() => button("sessions.selectVisible").props.onPress());
   act(() => button("sessions.deleteSelected").props.onPress());
@@ -505,8 +560,9 @@ test("select visible skips pinned chats, which carry no checkbox", () => {
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     })));
-  act(() => button("sessions.select").props.onPress());
+  enterSelection();
   act(() => button("sessions.selectVisible").props.onPress());
   // Only the unpinned chat joined the batch; the pinned shortcut above it did not.
   expect(button("First").props.accessibilityState.checked).toBe(true);
@@ -543,6 +599,7 @@ function renderWorkspaceTab(): void {
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     }));
   });
 }
@@ -564,6 +621,7 @@ function renderChatTab(): void {
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     })));
 }
 
@@ -625,6 +683,7 @@ test.each(["workspace", "chat"] as const)("%s parents fold with +/−, not the w
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     })));
 
     const parentRow = sessionBody("Glyph parent").parent!;
@@ -649,6 +708,7 @@ test.each(["workspace", "chat"] as const)("%s parents fold with +/−, not the w
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     })));
   }
 });
@@ -663,6 +723,7 @@ test("a child in one workspace does not enlarge other workspace session gutters"
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     })));
   expect(rowInset("Independent")).toBe(ROW_INSET);
   act(() => button("sessions.expandChildren").props.onPress());
@@ -688,6 +749,7 @@ test.each(["workspace", "chat"] as const)("a parent's title column is its rows' 
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     })));
     act(() => button("sessions.expandChildren").props.onPress());
 
@@ -716,6 +778,7 @@ test.each(["workspace", "chat"] as const)("a parent's title column is its rows' 
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     })));
   }
 });
@@ -738,6 +801,7 @@ test.each(["workspace", "chat"] as const)("independent %s sessions keep their gu
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     })));
   try {
     mockRemote.workspaces = [{ id: "gutter-workspace", name: "Gutter project", path: "/tmp/gutter" }];
@@ -764,7 +828,7 @@ test.each(["workspace", "chat"] as const)("independent %s sessions keep their gu
     act(() => button("sessions.collapseChildren").props.onPress());
     expect(rowInset("Independent root")).toBe(ROW_INSET);
 
-    act(() => button("sessions.search").props.onPress());
+    enterSearch();
     act(() => tree.root.findByType(TextInput).props.onChangeText("Independent"));
     expect(rowInset("Independent root")).toBe(ROW_INSET);
     act(() => button("chat.cancel").props.onPress());
@@ -772,7 +836,7 @@ test.each(["workspace", "chat"] as const)("independent %s sessions keep their gu
 
     // Selection mode prepends the 44px checkbox and shifts every row by it —
     // the toggle keeps its own width, so parent/child stay in step.
-    act(() => button("sessions.select").props.onPress());
+    enterSelection();
     expect(rowInset("Independent root")).toBe(ROW_INSET);
     act(() => button("sessions.expandChildren").props.onPress());
     expect(rowInset("Independent root")).toBe(ROW_INSET);
@@ -864,6 +928,7 @@ test("the workspace menu pins a group and offers unpin once it is pinned", async
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     })));
   pressWorkspaceMenu("sessions.unpin");
   expect(activeCommands.setWorkspacePinned).toHaveBeenLastCalledWith("w1", false);
@@ -915,7 +980,7 @@ test("deleting a workspace confirms with its session count and calls the desktop
     // A batch assembled over the workspace before it was removed: the host takes
     // its conversations with it, so those ticks must go too — a selection that
     // survives would offer to delete conversations the host no longer has.
-    act(() => button("sessions.select").props.onPress());
+    enterSelection();
     act(() => button("sessions.selectVisible").props.onPress());
     expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:1").length).toBeGreaterThan(0);
     pressWorkspaceMenu("sessions.deleteWorkspace");
@@ -943,6 +1008,7 @@ test("promoted workspace pins stay visible and openable but are left out of work
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     })));
   const rows = tree.root.findByType(FlatList).props.data;
   expect(rows.map((row: { key: string }) => row.key)).toEqual(["w1b", "workspace:w1", "w1a"]);
@@ -991,6 +1057,7 @@ test("a workspace menu cannot outlive the screen that opened it", () => {
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
       active: false,
     })));
   expect(tree.root.findByType(ActionMenu).props.visible).toBe(false);
@@ -1000,6 +1067,7 @@ test("a workspace menu cannot outlive the screen that opened it", () => {
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
       active: true,
     })));
   expect(tree.root.findByType(ActionMenu).props.visible).toBe(false);
@@ -1010,19 +1078,19 @@ test("system back leaves batch selection before it leaves the list", () => {
   // The listener is registered when selection opens, so the spy has to exist
   // first or there is nothing to capture.
   const subscribe = jest.spyOn(BackHandler, "addEventListener");
-  act(() => button("sessions.select").props.onPress());
+  enterSelection();
   act(() => button("First").props.onPress());
   expect(button("First").props.accessibilityState.checked).toBe(true);
   const back = subscribe.mock.calls.at(-1)![1];
   act(() => { expect(back({} as never)).toBe(true); });
-  // The toolbar is back and the batch is empty, so a stray back cannot delete.
-  expect(button("sessions.select")).toBeDefined();
+  // The pages are back and the batch is empty, so a stray back cannot delete.
+  expect(pageTabs()).toHaveLength(2);
   expect(button("First")).toBeUndefined();
 });
 
 test("tapping a selected row removes it from the batch", () => {
   renderChatTab();
-  act(() => button("sessions.select").props.onPress());
+  enterSelection();
   act(() => button("First").props.onPress());
   expect(button("First").props.accessibilityState.checked).toBe(true);
   expect(button("sessions.deleteSelected").props.disabled).toBe(false);
@@ -1035,7 +1103,7 @@ test("tapping a selected row removes it from the batch", () => {
 
 test("deselect visible empties the batch that select visible made", () => {
   renderChatTab();
-  act(() => button("sessions.select").props.onPress());
+  enterSelection();
   act(() => button("sessions.selectVisible").props.onPress());
   expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:2").length).toBeGreaterThan(0);
   act(() => button("sessions.deselectVisible").props.onPress());
@@ -1046,7 +1114,7 @@ test("deselect visible empties the batch that select visible made", () => {
 test("a batch tap with nothing selected, or while offline, sends nothing", () => {
   renderChatTab();
   const visibleDialog = () => tree.root.findAllByType(Modal).some(node => node.props.visible);
-  act(() => button("sessions.select").props.onPress());
+  enterSelection();
   // The button is disabled in both states; a tap that began before the disable
   // still reaches the handler, which is what the guard is for. Asserting only
   // that no request was sent would miss a confirmation that should never have
@@ -1062,6 +1130,7 @@ test("a batch tap with nothing selected, or while offline, sends nothing", () =>
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     })));
   act(() => button("sessions.deleteSelected").props.onPress());
   expect(activeCommands.deleteSession).not.toHaveBeenCalled();
@@ -1071,7 +1140,7 @@ test("a batch tap with nothing selected, or while offline, sends nothing", () =>
 
 test("selecting a row inside a workspace group works the same as in a chat list", () => {
   renderWorkspaceTab();
-  act(() => button("sessions.select").props.onPress());
+  enterSelection();
   act(() => sessionBody("Plan").props.onPress());
   // Row taps route to the same toggle as the checkbox while selecting.
   expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:1").length).toBeGreaterThan(0);
@@ -1088,12 +1157,13 @@ test("a workspace select-all with nothing to select is inert", () => {
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     })));
   pressWorkspaceMenu("sessions.selectWorkspaceSessions");
   // The shortcut must not open an empty batch: the toolbar would then offer a
   // delete with nothing selected.
   expect(button("sessions.deleteSelected")).toBeUndefined();
-  expect(button("sessions.select")).toBeDefined();
+  expect(pageTabs()).toHaveLength(2);
 });
 
 test("a workspace menu does not open while the desktop is unreachable", () => {
@@ -1105,6 +1175,7 @@ test("a workspace menu does not open while the desktop is unreachable", () => {
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
     })));
   act(() => button("sessions.workspaceActions:Project").props.onPress());
   // Pin/rename/delete are all desktop writes; opening the sheet on a dead link
@@ -1144,7 +1215,7 @@ test("a double tap on the delete confirmation cannot queue the batch twice", asy
   activeCommands.deleteSession.mockReturnValueOnce(
     new Promise<void>(done => { resolveFirst = () => done(); }),
   );
-  act(() => button("sessions.select").props.onPress());
+  enterSelection();
   act(() => button("First").props.onPress());
   // Two confirmations are queued: the toolbar button stays enabled until the
   // delete actually starts, so a second tap re-arms it.
@@ -1276,7 +1347,7 @@ test("a queued second batch confirmation cannot delete while the first is in fli
       return { promise: new Promise<void>(done => { resolve = done; }), resolve: () => resolve() };
     })();
     activeCommands.deleteSession.mockReturnValue(pending.promise);
-    act(() => button("sessions.select").props.onPress());
+    enterSelection();
     act(() => button("First").props.onPress());
     act(() => button("sessions.deleteSelected").props.onPress());
     act(() => button("sessions.deleteSelected").props.onPress());
@@ -1309,7 +1380,7 @@ test("a second tap on the same batch-delete confirm cannot start a second round"
       return { promise: new Promise<void>(done => { resolve = done; }), resolve: () => resolve() };
     })();
     activeCommands.deleteSession.mockReturnValue(pending.promise);
-    act(() => button("sessions.select").props.onPress());
+    enterSelection();
     act(() => button("First").props.onPress());
     act(() => button("sessions.deleteSelected").props.onPress());
     const modal = tree.root.findAllByType(Modal).find(node => node.props.visible)!;
@@ -1343,7 +1414,7 @@ test("a long press on a row opens the menu only outside selection mode", () => {
   act(() => sessionBody("First").props.onLongPress());
   expect(onMenu).toHaveBeenCalledWith(mockRemote.sessions[0], null);
   onMenu.mockClear();
-  act(() => button("sessions.select").props.onPress());
+  enterSelection();
   // Inside the batch a long press is a no-op: the row already has a checkbox.
   act(() => sessionBody("First").props.onLongPress());
   expect(onMenu).not.toHaveBeenCalled();
@@ -1393,6 +1464,7 @@ test("a merged row from another desktop is opened on that desktop", () => {
     onMenu,
     onTabChange,
     commandsFor: testCommandsFor,
+    ref: listRef,
     merged,
     activeDesktopId: "desk-a",
     icons: new Map([["desk-a", "🖥️"], ["desk-b", "💻"]]),
@@ -1432,6 +1504,7 @@ test("a row whose machine refuses to open reports the refusal by name", async ()
       onMenu,
       onTabChange,
       commandsFor: testCommandsFor,
+      ref: listRef,
       merged,
       activeDesktopId: "desk-a",
       icons: new Map([["desk-b", "💻"]]),
@@ -1476,6 +1549,7 @@ function renderMerged(
     onMenu,
     onTabChange,
     commandsFor: testCommandsFor,
+    ref: listRef,
     merged,
     activeDesktopId,
     icons: new Map([["desk-a", "🖥️"], ["desk-b", "💻"]]),
@@ -1647,6 +1721,7 @@ test("an empty merged list draws none of the active machine's rows", () => {
     onMenu,
     onTabChange,
     commandsFor: testCommandsFor,
+    ref: listRef,
     merged: [],
     activeDesktopId: "desk-a",
   })));
@@ -1884,7 +1959,7 @@ test("a batch deletes each machine's conversations through its own connection", 
     mergedRow("desk-a", "a1", "Local plan"),
     mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
   ]);
-  act(() => button("sessions.select").props.onPress());
+  enterSelection();
   act(() => button("sessions.selectVisible").props.onPress());
   expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:2").length).toBeGreaterThan(0);
   expect(button("Remote review").props.accessibilityRole).toBe("checkbox");
@@ -1904,7 +1979,7 @@ test("a machine that cannot answer keeps its rows selected for retry", async () 
     mergedRow("desk-a", "a1", "Local plan"),
     mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
   ]);
-  act(() => button("sessions.select").props.onPress());
+  enterSelection();
   act(() => button("sessions.selectVisible").props.onPress());
   expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:2").length).toBeGreaterThan(0);
 
@@ -1965,7 +2040,7 @@ test("a batch with no machine left to answer offers no confirmation", () => {  r
     mergedRow("desk-a", "a1", "Local plan"),
     mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
   ]);
-  act(() => button("sessions.select").props.onPress());
+  enterSelection();
   act(() => button("sessions.selectVisible").props.onPress());
   machinesAnswer = false;
   renderMerged([

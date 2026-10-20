@@ -37,17 +37,18 @@ import { mergeSessions, type DesktopFilter } from "../remote/mergeSessions";
 import type { DesktopCommands } from "../remote/desktopCommands";
 import { iconGlyph } from "../remote/peerIcons";
 import type { RemoteSession, RemoteWorkspace } from "../remote/types";
-import { SessionList } from "./SessionList";
+import { SessionList, type SessionListHandle } from "./SessionList";
+import { SessionListActions } from "./SessionListActions";
+import { listTargets, selectableTargets } from "./sessionSelection";
+import { type Tab } from "./sessionTabs";
 import { DesktopPicker } from "./DesktopPicker";
 import { DisconnectedScreen } from "./DisconnectedScreen";
 import { StandbyScreen } from "./StandbyScreen";
 import { layout, radius, spacing } from "../theme/tokens";
-import { createThemedStyles, useTheme } from "../theme/ThemeContext";
+import { createThemedStyles, useAppearance, useTheme } from "../theme/ThemeContext";
 import { promptUpgrade } from "../update/prompt";
 import { checkForUpdate } from "../update/update";
 import { SettingsScreen, type SettingsScreenHandle } from "../features/settings/SettingsScreen";
-
-type Tab = "workspace" | "chat";
 
 /** A conversation row, with the machine that owns it. */
 interface SessionRow {
@@ -81,6 +82,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
+  const { fontSize } = useAppearance();
   const Alert = useAppDialog(active);
   const { t, i18n } = useTranslation();
   const remote = useRemote();
@@ -266,6 +268,14 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<SettingsScreenHandle>(null);
+  /**
+   * The list, for the two modes its own header no longer carries.
+   *
+   * Search and batch selection are still the list's — they hold its rows' state
+   * — while the header above it belongs to this screen. The handle is the way
+   * in, the same shape the settings screen is driven by.
+   */
+  const listRef = useRef<SessionListHandle>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [menuSession, setMenuSession] = useState<SessionRow | null>(null);
   // Which conversation a dialog is editing, and which machine owns it: every
@@ -882,6 +892,30 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
    * list is describing as unreachable.
    */
   const canStartConversation = scopedPeerId === null ? scopeAnswers : canCommand(scopedPeerId);
+  /**
+   * Whether the header gives the machine its own line.
+   *
+   * At the largest text size the name no longer fits beside the list's tools,
+   * the status dot and settings on a phone-sized width — measured at 20px text
+   * on a 360pt phone, "实验室的 MacBook Pro" needs about 340pt of line and 140pt
+   * is left — and the name is the one thing here that must stay whole. So the
+   * machine takes a line of its own and the tools move under it, which is the
+   * shape this header had before its two rows were merged.
+   */
+  const stackHeader = fontSize === "xlarge";
+  /**
+   * Whether entering a batch selection has anything to hold.
+   *
+   * Read through the same two functions the list selects rows by — the list's
+   * rows, then the machines that can answer a delete — so the header's item
+   * cannot offer a selection the list would refuse to make. It is the list's
+   * *catalogue* rather than its drawn rows: a folded group's conversations are
+   * still selectable, which is why the list answers this question the same way.
+   */
+  const canSelect = selectableTargets(
+    listTargets(showMerged ? mergedRows : undefined, remote.sessions),
+    commandsFor,
+  ).length > 0;
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -912,7 +946,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
             { label: t("sessions.delete"), icon: <Trash2 size={18} color={colors.danger} />, destructive: true, disabled: !canManage, onPress: () => confirmDelete(menuSession) },
           ] : []}
         />
-        <View style={styles.deviceBar}>
+        <View style={[styles.deviceBar, stackHeader && styles.deviceBarStacked]}>
           <DesktopPicker
             desktops={remote.desktops}
             filter={scopedFilter}
@@ -920,6 +954,12 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
             onChange={setDesktopFilter}
             onManage={onManageDesktops}
             onTakeControl={remote.catalogs.takeControlFor}
+            fullWidth={stackHeader}
+          />
+          <SessionListActions
+            canSelect={canSelect}
+            onSearch={() => listRef.current?.startSearch()}
+            onSelect={() => listRef.current?.startSelecting()}
           />
           <View style={styles.topActions}>
             <ConnectionBadge
@@ -963,6 +1003,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
             onTakeControl={remote.takeControl}
           />
         ) : <SessionList
+          ref={listRef}
           key={tab}
           tab={tab}
           active={active}
@@ -1235,7 +1276,7 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   deviceBar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.md,
+    gap: spacing.sm,
     paddingHorizontal: layout.gutter,
     paddingVertical: spacing.sm,
   },
@@ -1260,7 +1301,10 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   desktopIdentity: { flex: 1, minWidth: 0, color: theme.colors.ink, fontSize: theme.font(15), fontWeight: "600" },
   safe: { flex: 1, backgroundColor: theme.colors.surface },
   page: { flex: 1, width: "100%", maxWidth: layout.contentMaxWidth, alignSelf: "center", backgroundColor: theme.colors.surface },
-  topActions: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  // A line of its own for the machine when the reader's text size says so; the
+  // tools wrap under it, still inside this row (see `stackHeader`).
+  deviceBarStacked: { flexWrap: "wrap" },
+  topActions: { flexDirection: "row", alignItems: "center", gap: spacing.xs, marginLeft: "auto" },
   settingsButton: {
     width: 44,
     height: 44,
