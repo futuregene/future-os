@@ -361,6 +361,59 @@ async fn disconnect_drops_the_connection_but_keeps_the_pairing() {
     teardown(&fx.pair_id).await;
 }
 
+/// A connected client keeps telling the host it is still there.
+///
+/// The host reads a lapsed beat as a departure (`client_presence_v1`), so a
+/// client that never sent one would be reported gone while it was connected —
+/// the same stale row that a client which really left would produce, in the
+/// opposite direction.
+#[tokio::test]
+async fn a_connected_client_keeps_telling_the_host_it_is_here() {
+    let (_home, fx) = start("peer-rt-presence-beat").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    let mut tap = fx.nats.tap();
+    connect(&desktop_id).await.expect("connect");
+
+    crate::remote::test_support::await_publish_matching(
+        &mut tap,
+        &format!("p.{}.cmd.client_presence", fx.pair_id),
+        std::time::Duration::from_secs(10),
+        |_| true,
+    )
+    .await;
+
+    teardown(&fx.pair_id).await;
+}
+
+/// Disconnecting says so on the wire.
+///
+/// Without it the host keeps a bridge pointed at a client that is gone and its
+/// Remote page goes on saying "in control" until the lease lapses; the goodbye
+/// is what makes the row true at the moment the user pressed the button.
+#[tokio::test]
+async fn disconnecting_tells_the_host_the_client_left() {
+    let (_home, fx) = start("peer-rt-presence-goodbye").await;
+    let desktop_id = fx.paired.creds.desktop_id.clone();
+    let mut tap = fx.nats.tap();
+    connect(&desktop_id).await.expect("connect");
+
+    disconnect(&desktop_id).await;
+
+    let goodbye = crate::remote::test_support::await_publish_matching(
+        &mut tap,
+        &format!("p.{}.cmd.client_disconnect", fx.pair_id),
+        std::time::Duration::from_secs(10),
+        |_| true,
+    )
+    .await;
+    assert!(
+        goodbye.payload.starts_with(b"FRE2"),
+        "the departure is sealed like every other command"
+    );
+
+    teardown(&fx.pair_id).await;
+}
+
 #[tokio::test]
 async fn unpairing_removes_the_host_locally_and_revokes_it_remotely() {
     let (_home, fx) = start("peer-rt-unpair").await;

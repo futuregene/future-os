@@ -386,9 +386,49 @@ back to neutral wording rather than inventing an identity.
 this process with `superseded`, before any handler runs, so nothing already in
 flight survives the moment control moves. It also receives no agent events and
 no catalog snapshots; its presence packet says why. `takeover`, `get_presence`
-and `unpair` are the only commands it may speak. The payload it gets back from
-`get_presence` is the light one: the conversation list is the machine's, not
-every paired device's.
+and `unpair` are the only commands it may speak, plus the two presence commands
+below. The payload it gets back from `get_presence` is the light one: the
+conversation list is the machine's, not every paired device's.
+
+**Whether the client is there (2026-10-20).** Everything above describes the
+*machine's* half of a device: its bridge, its connection, its credential. None
+of it says whether anybody is behind it. A client that was disconnected (or
+force-quit) leaves the bridge serving an empty room, and the page — reading only
+the bridge — went on saying "in control" about a device that had left.
+
+Presence is therefore tracked from the client's side of the wire, per pairing
+(`RemoteDevice.present`, beside `connected`):
+
+- **Speaking proves presence.** Every authenticated command — the handshake and
+  `secure_ready` included — records that the client is here, so an idle client
+  needs no new traffic to be believed.
+- **Leaving is said out loud.** `client_disconnect` with `reason: "disconnected"`
+  is the user's own stop: the machine is given up (the pointer is released, and
+  the one device that is actually present inherits it; several present devices
+  means nobody does, and their own "let this control" decides).
+  `reason: "background"` only stops the device drawing as present — a suspended
+  app is coming back, and taking its machine away every time it is backgrounded
+  would be a different product decision.
+- **A silent client is presumed gone, but only if it promised to speak.** A
+  client that declares `client_presence_v1` on `secure_ready` keeps sending
+  `client_presence` beats (15 s; the host's lease is four of them), because a
+  crash cannot say goodbye. A client that never declared it is not presumed
+  gone: it sends no beats, so silence would be indistinguishable from idleness,
+  and it is retired only by its own goodbye.
+
+A client that has not spoken since the bridge came up is not present — the
+truthful reading of an empty room, and what makes the row correct in the first
+place rather than only after somebody leaves. The page reads the two facts
+together: a row is `connected && present !== false` before it may say "in
+control", and a device that is not there reads "offline" with its unpair action
+still offered.
+
+**The mobile half** of the same rule: the phone's client sends the beats and the
+goodbye from `packages/remote-client/src/client.ts` (beats on a timer that stops
+with the connection; the goodbye is flushed before the socket is disposed,
+because a publish only queues the frame — the last message a client sends is the
+one nobody can retry). The Rust client role does the same in
+`runtime::spawn_presence_beats` and `Runtime::disconnect`/`shutdown`.
 
 The mobile half: the sessions
 screen keeps its cues to a yellow status dot — green would claim the machine

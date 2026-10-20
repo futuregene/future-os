@@ -104,6 +104,13 @@ struct Runtime {
     /// The subscription task per host, aborted on disconnect so a host the user
     /// removed cannot keep emitting into a UI that has forgotten it.
     tasks: HashMap<String, TaskHandle>,
+    /// The presence-beat task per host.
+    ///
+    /// Separate from `tasks` because it does not stand or fall with the stream:
+    /// a host this client watches without an emitter still has to be told the
+    /// client is here, or its Remote page would draw this device as gone while
+    /// it is connected.
+    beats: HashMap<String, TaskHandle>,
     /// The reconnect task per host, aborted on an explicit disconnect so a
     /// deliberate stop cannot be undone by a retry that was already scheduled.
     supervisors: HashMap<String, TaskHandle>,
@@ -157,6 +164,23 @@ fn delay_unit() -> std::time::Duration {
 #[cfg(any(test, feature = "test-support"))]
 fn delay_unit() -> std::time::Duration {
     std::time::Duration::from_millis(1)
+}
+
+/// How often a connected client proves it is here.
+///
+/// Production sends at [`session::CLIENT_PRESENCE_BEAT`]; the test build ticks
+/// far faster so a suite can observe a beat without waiting out a production
+/// quarter-minute. The *shape* is the same either way — the client beats on a
+/// timer that stops with the connection — and the host's lease is asserted
+/// against the production number where it lives
+/// (`future-remote-server::supervisor::link`).
+#[cfg(not(any(test, feature = "test-support")))]
+fn presence_beat_interval() -> std::time::Duration {
+    session::CLIENT_PRESENCE_BEAT
+}
+#[cfg(any(test, feature = "test-support"))]
+fn presence_beat_interval() -> std::time::Duration {
+    std::time::Duration::from_millis(100)
 }
 
 /// The un-jittered delay for an attempt, in seconds.
@@ -990,6 +1014,7 @@ impl Client {
                 .map(|(_, session)| session)
                 .collect::<Vec<_>>();
             state.tasks.clear();
+            state.beats.clear();
             state.supervisors.clear();
             state.emitters.clear();
             state.visible.clear();
@@ -1002,6 +1027,16 @@ impl Client {
             sessions
         };
         for session in sessions {
+            // Closing the app is a departure, and the host is still listening: a
+            // goodbye here is what keeps every host this machine was driving from
+            // drawing it as present until the lease runs out. Bounded twice —
+            // once by the goodbye's own budget, once by the caller's deadline.
+            if tokio::time::timeout_at(deadline, session.leave("disconnected"))
+                .await
+                .is_err()
+            {
+                timed_out = true;
+            }
             if tokio::time::timeout_at(deadline, session.close_socket())
                 .await
                 .is_err()
@@ -1541,8 +1576,64 @@ impl Client {
             if let Some(supervisor) = live.supervisors.remove(desktop_id) {
                 supervisor.abort();
             }
+            // Start proving this client is here, on the connection that was just
+            // installed. A reconnect replaces it: the old task's session is no
+            // longer the live one and exits on its next tick (`spawn_presence_beats`).
+            let beats = self.spawn_presence_beats(
+                desktop_id.to_string(),
+                std::sync::Arc::clone(&live.live[desktop_id]),
+            );
+            if let Some(previous) = live.beats.insert(desktop_id.to_string(), beats) {
+                previous.abort();
+            }
         }
         Ok(summary)
+    }
+
+    /// Tell the host this client is here, for as long as this connection is the
+    /// live one.
+    ///
+    /// The promise made by [`future_remote_protocol::CLIENT_PRESENCE_FEATURE`]:
+    /// an idle client sends nothing, and a host that knows the capability reads
+    /// that silence as a departure. Returns as soon as the session is no longer
+    /// the live one, is stopped, or the socket refuses a beat — each of those has
+    /// an owner elsewhere (a reconnect, the user's stop, the recovery path), and
+    /// a beat task that outlived its connection would tell the host the wrong
+    /// thing on the right pairing.
+    fn spawn_presence_beats(
+        &self,
+        desktop_id: String,
+        session: std::sync::Arc<PeerSession>,
+    ) -> TaskHandle {
+        let client = self.clone();
+        self.spawn(async move {
+            let mut beat = tokio::time::interval(presence_beat_interval());
+            // A laptop that slept is not behind: skip the missed ticks instead
+            // of firing a burst of them when it wakes.
+            beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                beat.tick().await;
+                {
+                    let state = client.inner.state.lock().await;
+                    if client.is_stopped()
+                        || state.stopped.contains(&desktop_id)
+                        || !state
+                            .live
+                            .get(&desktop_id)
+                            .is_some_and(|current| std::sync::Arc::ptr_eq(current, &session))
+                    {
+                        return;
+                    }
+                }
+                if session.beat_presence().await.is_err() {
+                    // The transport owns the failure: a dropped socket is the
+                    // supervisor's to rebuild, and a beat that could not leave
+                    // costs at most the lease, which is the same answer a client
+                    // that crashed gets.
+                    return;
+                }
+            }
+        })
     }
     ///
     /// Keep one host connected: watch the socket, and reconnect when it drops.
@@ -1999,24 +2090,46 @@ impl Client {
     /// dropped, and without this it could not tell one the user turned off from one
     /// that fell over. Connecting the host later clears the mark.
     pub async fn disconnect(&self, desktop_id: &str) {
-        let mut live = self.inner.state.lock().await;
-        let epoch = live.epochs.entry(desktop_id.to_string()).or_default();
-        *epoch = epoch.wrapping_add(1);
-        self.inner
-            .chunks
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .retain(|(desktop, _, _), _| desktop != desktop_id);
-        if let Some(task) = live.tasks.remove(desktop_id) {
-            task.abort();
+        // Tell the host this was the user's stop, not a crash — *before* the
+        // connection is torn down, while the socket that carries it is still
+        // the live one. Without it the host keeps a bridge pointed at a client
+        // that is gone and its Remote page goes on saying "in control" until
+        // the lease lapses, which is the exact stale row a disconnect is
+        // supposed to clear. Bounded by the goodbye's own budget
+        // (`PeerSession::leave`); the lease is the fallback.
+        let session = self.session_handle(desktop_id).await;
+        if let Some(session) = &session {
+            if let Err(error) = session.leave("disconnected").await {
+                eprintln!("remote_peer: could not tell {desktop_id} we left: {error}");
+            }
         }
-        // Without this, a retry scheduled a second ago would silently bring the
-        // connection back after the user asked for it to stop.
-        if let Some(supervisor) = live.supervisors.remove(desktop_id) {
-            supervisor.abort();
+        {
+            let mut live = self.inner.state.lock().await;
+            let epoch = live.epochs.entry(desktop_id.to_string()).or_default();
+            *epoch = epoch.wrapping_add(1);
+            self.inner
+                .chunks
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .retain(|(desktop, _, _), _| desktop != desktop_id);
+            if let Some(task) = live.tasks.remove(desktop_id) {
+                task.abort();
+            }
+            if let Some(beats) = live.beats.remove(desktop_id) {
+                beats.abort();
+            }
+            // Without this, a retry scheduled a second ago would silently bring the
+            // connection back after the user asked for it to stop.
+            if let Some(supervisor) = live.supervisors.remove(desktop_id) {
+                supervisor.abort();
+            }
+            live.stopped.insert(desktop_id.to_string());
+            live.live.remove(desktop_id);
         }
-        live.live.remove(desktop_id);
-        live.stopped.insert(desktop_id.to_string());
+        if let Some(session) = session {
+            let _ =
+                tokio::time::timeout(session::PRESENCE_CLOSE_BUDGET, session.close_socket()).await;
+        }
     }
     /// Drop the pairing locally, then try to revoke it server-side.
     ///

@@ -351,6 +351,38 @@ describe("the list", () => {
     expect(container.querySelectorAll("button[role='switch']").length).toBe(1);
   });
 
+  it("stops calling a device in control once its client has left", async () => {
+    // The bridge keeps serving a pairing whose client was disconnected, so the
+    // row has to read the client half: driving a machine that is not there is
+    // exactly the lie the row used to tell.
+    await mount({
+      remoteStatus: status({
+        pairId: "pair_alpha",
+        phase: "ready",
+        devices: [{ ...control, present: false }],
+      }),
+    });
+
+    expect(container.textContent).toContain("Offline");
+    expect(container.textContent).not.toContain("In control");
+  });
+
+  it("offers no takeover to a standby device that is not there", async () => {
+    await mount({
+      remoteStatus: status({
+        pairId: "pair_alpha",
+        phase: "ready",
+        devices: [{ ...standby, present: false }],
+      }),
+    });
+
+    const row = [...container.querySelectorAll<HTMLLIElement>("li")]
+      .find(item => (item.textContent ?? "").includes("studio-imac"))!;
+    expect(hasButton(row, "Let this control")).toBe(false);
+    // Unpair stays: a device that left is still a pairing to remove.
+    expect(hasButton(row, "Unpair")).toBe(true);
+  });
+
   it("hands control to a standby device from its own row", async () => {
     await mount({
       remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, standby] }),

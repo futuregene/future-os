@@ -74,19 +74,34 @@ export function deviceLabel(
   return device.connected ? t("clientUnknown") : t("devicePaired");
 }
 
+/**
+ * Whether the machine can actually serve this device right now.
+ *
+ * Two halves, and both are needed: the bridge (`connected`) and the client that
+ * is supposed to be behind it (`present`). A row that read only the bridge said
+ * "in control" about a device whose user had just disconnected — the bridge was
+ * healthy, and nobody was on the other side of it.
+ */
+export function deviceReady(device: RemoteDevice): boolean {
+  return device.connected && device.present !== false;
+}
+
 /** The status of one client, as a badge tone + label pair. */
 export function deviceState(
   device: RemoteDevice,
   t: TFunction<"remote">,
 ): { label: string; tone: "accent" | "warning" | "neutral" | "info" } {
-  if (device.control === "active") {
-    return { label: t("deviceActive"), tone: "accent" };
-  }
   if (device.pairingCode != null) {
     return { label: t("deviceWaiting"), tone: "info" };
   }
-  if (device.connected) {
-    return { label: t("deviceStandby"), tone: "warning" };
+  // A device that is not there is not controlling anything, whatever the
+  // machine's control pointer still says. Saying otherwise is what made the row
+  // keep reading "in control" after the client disconnected.
+  if (!deviceReady(device)) {
+    return { label: t("deviceOffline"), tone: "neutral" };
   }
-  return { label: t("deviceOffline"), tone: "neutral" };
+  if (device.control === "active") {
+    return { label: t("deviceActive"), tone: "accent" };
+  }
+  return { label: t("deviceStandby"), tone: "warning" };
 }

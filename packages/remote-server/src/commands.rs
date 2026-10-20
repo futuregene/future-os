@@ -148,6 +148,16 @@ pub fn apply_declared_features(handshake: &HandshakeState, pair_id: &str, featur
         features.iter().any(|feature| feature == REPLY_GZIP_FEATURE),
         Ordering::Release,
     );
+    // The promise that makes silence mean something. A client that declares it
+    // will keep beating while it is there, so a lapsed beat is a departure; a
+    // client that does not is only ever retired by its own goodbye.
+    if let Some(link) = handshake.runtime.client_link(pair_id) {
+        link.declare(
+            features
+                .iter()
+                .any(|feature| feature == future_remote_protocol::CLIENT_PRESENCE_FEATURE),
+        );
+    }
 }
 
 #[derive(Clone)]
@@ -297,6 +307,11 @@ pub async fn command_loop_with_ready(
                             apply_declared_features(&handshake, &pair_id, &command.features);
                             record_client_identity(handshake.runtime.as_ref(), &pair_id, command);
                         }
+                        // The sealed `secure_ready` is the client saying it is
+                        // here on the channel it will keep beating on.
+                        if let Some(link) = handshake.runtime.client_link(&pair_id) {
+                            link.observe();
+                        }
                         let activate = || {
                             handshake.secure.activate(&security)?;
                             handshake.active.store(true, Ordering::Release);
@@ -361,6 +376,15 @@ pub async fn command_loop_with_ready(
                         }
                     }
                     let accepted = result.is_ok();
+                    if accepted {
+                        // A successful handshake is the client proving it is
+                        // there: the pairing's keys are the only way to reach
+                        // this branch.
+                        if let Some(link) = handshake.runtime.client_link(&handshake.creds.pair_id)
+                        {
+                            link.observe();
+                        }
+                    }
                     if let Some(reply) = msg.reply {
                         let body = match result {
                             Ok(data) => json!({ "success": true, "data": data }),
@@ -580,6 +604,13 @@ async fn handle_command_inner(
         return;
     }
 
+    // Every authenticated command is also a proof the client is there. Recorded
+    // before the control gate: a standby device is one this machine asked to sit
+    // still, not one it pretends has gone.
+    if let Some(link) = handshake.runtime.client_link(&handshake.creds.pair_id) {
+        link.observe();
+    }
+
     // Control arbitration happens here, on the machine the two devices are
     // fighting over — not on the platform, which has no downlink and could only
     // be asked about the decision after the fact. A standby device's business
@@ -587,12 +618,13 @@ async fn handle_command_inner(
     // moment of takeover clean: nothing already in flight can still execute.
     //
     // The exceptions are the commands a standby device legitimately speaks:
-    // asking to take over, reading its own state, unpairing itself, and the
-    // pairing handshakes that establish who it even is.
+    // asking to take over, reading its own state, unpairing itself, proving it
+    // is still there (a standby device that went silent would read as gone), and
+    // the pairing handshakes that establish who it even is.
     if !handshake_command
         && !matches!(
             cmd.cmd_type.as_str(),
-            "takeover" | "get_presence" | "unpair"
+            "takeover" | "get_presence" | "unpair" | "client_presence" | "client_disconnect"
         )
         && !handshake.runtime.in_control(&handshake.creds.pair_id)
     {
@@ -663,6 +695,38 @@ async fn handle_command_inner(
                     .light_presence(pair_id, &handshake.bridge_instance_id)
             };
             reply(client, &msg, true, payload, None).await;
+        }
+        // A beat: the client is still there. Answering is not required (the
+        // client sends these without a reply subject), but a beat that does ask
+        // gets an answer, which is what lets a test drive it as a request.
+        //
+        // The proof itself was recorded before the control gate, so a standby
+        // device keeps proving it is present without being allowed to command
+        // anything — presence and authority are different questions.
+        "client_presence" => {
+            reply(client, &msg, true, json!({}), None).await;
+        }
+        // The client is leaving.
+        //
+        // `reason` decides what the machine does with it. A user's own stop
+        // (`disconnected`) gives up the machine: the pointer it held is
+        // released and a device that is actually there may take it. An app that
+        // went off screen (`background`) does not — a suspended phone is not a
+        // user who quit, and taking its machine away every time it is
+        // backgrounded would be a different product decision — so it only stops
+        // being reported as present, exactly as a lapsed beat would.
+        //
+        // Acknowledged first: the sender closes its connection right after, and
+        // a reply nobody reads costs nothing.
+        "client_disconnect" => {
+            reply(client, &msg, true, json!({}), None).await;
+            if cmd.reason == "background" {
+                if let Some(link) = handshake.runtime.client_link(&handshake.creds.pair_id) {
+                    link.depart();
+                }
+            } else {
+                handshake.runtime.client_left(&handshake.creds.pair_id);
+            }
         }
         // A phone-initiated unpair first reaches the desktop over the existing
         // authenticated command channel. Acknowledge before stopping the
@@ -1036,6 +1100,10 @@ pub(crate) trait CommandRuntime: crate::secure::HandshakeHost {
         &self,
         pair: &str,
     ) -> Option<Arc<Mutex<Option<crate::types::ClientIdentity>>>>;
+    /// The pairing's record of whether its client is at the other end.
+    fn client_link(&self, pair: &str) -> Option<Arc<crate::supervisor::ClientLink>>;
+    /// The client on `pair` said it is leaving.
+    fn client_left(&self, pair: &str);
     fn coalesce_events(&self, pair: &str) -> Arc<AtomicBool>;
     fn catalog_activity(&self, pair: &str) -> Arc<AtomicBool>;
     fn lean_events(&self, pair: &str) -> Arc<AtomicBool>;
