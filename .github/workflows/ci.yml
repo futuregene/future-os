@@ -2,19 +2,42 @@ name: CI
 
 permissions: read-all
 
-# Fast feedback on every PR and on manual dispatch:
-# lint + typecheck + tests + a 3-platform Rust compile check. Full
+# Fast feedback on every PR, cache warming on every merge to main, and manual
+# dispatch: lint + typecheck + tests + a 3-platform Rust compile check. Full
 # cross-platform *packaging* stays in build.yml (tags / dispatch) — this
 # workflow exists so breakage (especially platform-conditional Rust that only
 # shows up on Windows/macOS) is caught BEFORE a release build is cut.
 #
-# Push-to-main trigger is intentionally absent: "Require branches to be up
-# to date before merging" on branch protection already forces the PR check
-# to re-run on the merged result, so a post-merge run would be redundant.
-#
-# PRs save caches in their merge-ref scope; manual CI saves in its branch scope.
+# The push-to-main trigger exists to WARM THE CACHES, not to gate anything. A
+# cache saved on the default branch is restorable from every pull request; one
+# saved by a PR is scoped to that PR's merge ref alone. When PRs saved their own
+# entries, ~2-4 PRs in flight each stored ~6-7 GB, overflowed the repository's
+# 10 GB quota and evicted one another (measured 2026-10-20: 14.97 GB stored, and
+# the Windows/macOS builds swinging between 3 min on a cache hit and 20-22 min
+# cold). So `save-if` below is main-only and PR runs are read-only: one writer
+# per key, and a first PR run already starts warm. The main run still verifies
+# the merged tree on three platforms, but it is not a gate — branch protection
+# applies to PRs, and a red main run never blocks anyone.
 on:
   pull_request:
+  # Only the inputs that change cache keys/content; a docs-only or frontend-only
+  # merge must not start a full run.
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.cargo/**'
+      - 'rust-toolchain.toml'
+      - 'packages/**'
+      - 'agent/**'
+      - 'channels/**'
+      - 'tui/**'
+      - 'cli/**'
+      - 'orchestration/**'
+      - 'desktop/src-tauri/**'
+      - 'scripts/ci/**'
+      - '.github/workflows/ci.yml'
   # Full PR-check suite by default; narrow scopes avoid rerunning unrelated
   # suites while iterating on offline updates or Desktop Rust fixtures.
   workflow_dispatch:
@@ -37,7 +60,13 @@ on:
 # (this workflow never triggers on tags anyway).
 concurrency:
   group: ci-${{ github.ref }}-${{ inputs.scope || 'all' }}
-  cancel-in-progress: true
+  # Main runs are cache writers and must not cancel each other: a cancelled job
+  # does not reliably reach its cache-save post step, and merges land every few
+  # minutes, so cancelling would leave every entry half-written and PRs
+  # permanently cold. Serializing a handful of runs is free on a public
+  # repository. Everything else (a re-pushed PR, a repeated dispatch) is stale
+  # by definition and is cancelled.
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
   macos-notarization:
@@ -52,8 +81,9 @@ jobs:
       - name: Test submission recovery and publication policy
         run: node --test scripts/tests/notarize-macos-dmg.test.mjs
 
-  # On PRs, run only affected suites. Manual default runs cover everything;
-  # explicit scopes select Remote, offline updates, or Desktop Rust validation.
+  # On PRs and merges to main, run only affected suites. Manual default runs
+  # cover everything; explicit scopes select Remote, offline updates, or Desktop
+  # Rust validation.
   changes:
     name: Detect affected checks
     runs-on: ubuntu-latest
@@ -80,19 +110,34 @@ jobs:
       desktop_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
       mobile: ${{ steps.remote.outputs.remote_mobile == 'true' || steps.force.outputs.all == 'true' || steps.filter.outputs.mobile == 'true' || steps.filter.outputs.ci == 'true' }}
     steps:
+      # Needed before the changed-file filter: on a push to main
+      # dorny/paths-filter diffs the pushed tree against the previous main tip
+      # with git, so that commit must be in the clone. Pull requests go through
+      # the REST API and ignore the depth.
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # One merge commit deep is enough: main gets squash merges.
+          fetch-depth: 2
+
       - id: force
         shell: bash
         env:
           REQUESTED_SCOPE: ${{ inputs.scope }}
         run: |
-          if [[ "$GITHUB_EVENT_NAME" == "pull_request" || ( -n "$REQUESTED_SCOPE" && "$REQUESTED_SCOPE" != "all" ) ]]; then
+          # A merge to main narrows to its own affected suites exactly like a PR:
+          # the entries it warms then stay valid for every later PR until an
+          # input changes, and a short filtered run keeps the single cache
+          # writer from queueing behind full-suite runs while merges keep
+          # landing.
+          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || ( -n "$REQUESTED_SCOPE" && "$REQUESTED_SCOPE" != "all" ) ]]; then
             echo "all=false" >> "$GITHUB_OUTPUT"
           else
             echo "all=true" >> "$GITHUB_OUTPUT"
           fi
 
       - id: filter
-        if: github.event_name == 'pull_request'
+        if: github.event_name != 'workflow_dispatch'
         uses: dorny/paths-filter@v4
         with:
           # v4.0.3+ supports 'some-with-excludes': a file is included only if it
@@ -264,7 +309,6 @@ jobs:
               - 'package.json'
               - 'package-lock.json'
 
-      - uses: actions/checkout@v7
       - name: Select Remote packages and consumers
         id: remote
         env:
@@ -330,6 +374,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: remote-packages
+          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
@@ -384,13 +429,13 @@ jobs:
         if: steps.affected.outputs.run == 'true'
         run: node scripts/ci/setup-rust.mjs
 
-      # PRs and manual branch runs save in their own ref scope.
+      # Written by the merge-to-main run (and manual branch validation) only.
       - name: Cache Rust
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-quality
-          save-if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
@@ -545,14 +590,19 @@ jobs:
         if: steps.affected.outputs.run == 'true'
         run: node scripts/ci/setup-rust.mjs
 
-      # Each matrix group writes its own cache. Sharing one writable key would
-      # let the first finisher save an incomplete snapshot for the other groups.
+      # Read-only, deliberately not warmed on main: the three groups store
+      # ~1.6 GB together, but their wall clock is test *execution*, not
+      # compilation (2-3 min of compiles inside a 5-7 min job, already hidden
+      # behind the ~10 min desktop suite). Spending a sixth of the 10 GB quota
+      # on that buys no critical-path time — see the header for the eviction
+      # this quota pressure caused. A run still restores whatever its own ref
+      # left behind; re-enable warming only with smaller entries.
       - name: Cache Rust
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-tests-workspace-${{ matrix.filter }}
-          save-if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+          save-if: false
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
@@ -664,13 +714,16 @@ jobs:
         if: steps.affected.outputs.run == 'true'
         run: node scripts/ci/setup-rust.mjs
 
-      # GUI and headless write distinct entries under this shared-key family.
+      # GUI and headless are distinct entries under this shared-key family,
+      # both written by the merge-to-main run. Warming this suite is the one
+      # test cache that pays: it is the PR critical path, and the entry removes
+      # ~2.5 min of compiles from a ~10 min job.
       - name: Cache Rust
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-tests-desktop-${{ matrix.flavor }}
-          save-if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
@@ -807,10 +860,10 @@ jobs:
         if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
         uses: Swatinem/rust-cache@v2
         with:
-          # Saved in the current PR or manual branch scope.
+          # Written by the merge-to-main run only; every PR restores it.
           # rust-cache appends OS/architecture to separate the native targets.
           shared-key: rust-build
-          save-if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
