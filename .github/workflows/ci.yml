@@ -14,10 +14,17 @@ permissions: read-all
 # entries, ~2-4 PRs in flight each stored ~6-7 GB, overflowed the repository's
 # 10 GB quota and evicted one another (measured 2026-10-20: 14.97 GB stored, and
 # the Windows/macOS builds swinging between 3 min on a cache hit and 20-22 min
-# cold). So `save-if` below is main-only and PR runs are read-only: one writer
-# per key, and a first PR run already starts warm. The main run still verifies
-# the merged tree on three platforms, but it is not a gate — branch protection
-# applies to PRs, and a red main run never blocks anyone.
+# cold). So `save-if` below is `github.ref == refs/heads/main` and every other
+# ref is read-only: one writer per key, and a first PR run already starts warm.
+# The main run still verifies the merged tree on three platforms, but it is not
+# a gate — branch protection applies to PRs, and a red main run never blocks
+# anyone.
+#
+# Dispatches count as writers only when they target main. A dispatch on a
+# feature branch is a reader: those entries would be restorable by that branch
+# alone (measured 2026-10-20: a long-lived branch held 7.4 GB in seven entries
+# no PR could see, and evicted main's Windows build, desktop suite and remote
+# entries in the process). To re-warm after an eviction, dispatch on main.
 on:
   pull_request:
   # Only the inputs that change cache keys/content; a docs-only or frontend-only
@@ -356,7 +363,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: remote-packages
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
@@ -411,13 +418,13 @@ jobs:
         if: steps.affected.outputs.run == 'true'
         run: node scripts/ci/setup-rust.mjs
 
-      # Written by the merge-to-main run (and manual branch validation) only.
+      # Written by the merge-to-main run only; every other ref restores.
       - name: Cache Rust
         if: steps.affected.outputs.run == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-quality
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
@@ -649,7 +656,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: rust-tests-desktop-${{ matrix.flavor }}
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
@@ -783,7 +790,7 @@ jobs:
           # Written by the merge-to-main run only; every PR restores it.
           # rust-cache appends OS/architecture to separate the native targets.
           shared-key: rust-build
-          save-if: ${{ github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: .
           cache-on-failure: true
           cache-all-crates: true
