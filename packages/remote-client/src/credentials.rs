@@ -49,12 +49,25 @@ pub struct PeerCreds {
     pub secure: Option<PeerIdentity>,
 }
 
+/// How long before a grant's declared expiry it must be rotated.
+///
+/// The relay closes a socket whose user authentication expired, and a socket can
+/// only reconnect with the JWT it was opened with — so a generation that reaches
+/// its expiry can never come back. Rotating this far ahead keeps the handshake
+/// out of the expiring second, which would fail it in a way that looks like a
+/// protocol fault. Mirrors the mobile client's margin.
+pub const REFRESH_LEAD_SECS: i64 = 60;
+
 impl PeerCreds {
-    /// Expired (or unreadable) JWTs are refreshed before a connect attempt.
-    /// Mirrors the mobile client's 60 s margin: a token that expires *during*
-    /// the handshake fails it in a way that looks like a protocol fault.
+    /// Whether this grant has entered the window in which it must be rotated
+    /// before it is used again.
+    ///
+    /// One predicate for both callers: a connect attempt that is about to present
+    /// the grant, and a live generation deciding whether it still holds a usable
+    /// credential. They must agree, or a live connection would be rotated into a
+    /// grant the next connect would immediately refresh again.
     pub fn needs_refresh(&self, now: i64) -> bool {
-        self.jwt_expires_at > 0 && self.jwt_expires_at - 60 <= now
+        self.jwt_expires_at > 0 && self.jwt_expires_at - REFRESH_LEAD_SECS <= now
     }
 
     pub fn revoke_url(&self) -> String {

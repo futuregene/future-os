@@ -89,8 +89,10 @@ export function remotePeerErrorKind(message: string): RemotePeerErrorKind | null
     return "timeout";
   // A command sent over a link that is no longer there. From the user's seat
   // that is the same fact as "could not reach it", and it is repaired the same
-  // way.
-  if (/peer_not_connected|not connected/i.test(text))
+  // way. `nats_connection_exhausted` is the runtime's own record of a generation
+  // whose socket closed for good (the retry that follows normally replaces it,
+  // but a row read in between must not show the token).
+  if (/peer_not_connected|not connected|nats_connection_exhausted/i.test(text))
     return "unreachable";
   return null;
 }
