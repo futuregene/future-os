@@ -87,7 +87,7 @@ const STATE_JSON: &str = r#"{
   "queuedRuns": []
 }"#;
 
-/// Fixed model list (`list_models` / `get_available_models` data).
+/// Fixed model list (`list_models` data).
 const MODELS_JSON: &str = r#"{
   "models": [
     {"id": "mock-model", "label": "Mock Model", "provider": "future", "supportsImages": true, "thinkingLevel": "off", "contextWindow": 128000, "isDefault": true},
@@ -628,7 +628,7 @@ impl FutureAgent for MockAgent {
         let data = match cmd.r#type.as_str() {
             // ── State, models, sessions (P4 baseline) ────────────────────
             "get_state" => STATE_JSON.to_string(),
-            "list_models" | "get_available_models" => MODELS_JSON.to_string(),
+            "list_models" => MODELS_JSON.to_string(),
             // The lightweight connectivity probe (`try_connect` /
             // `wait_for_agent`): reports identity + version without touching
             // session hydration or the model catalog, mirroring the agent's

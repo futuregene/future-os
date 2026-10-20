@@ -3,13 +3,14 @@
 //!   - `parse_args` — 1:1 arg parsing (incl. the `--model model:thinking`
 //!     colon split, `-p` message capture, `@file` args, `--help` exiting
 //!     during scanning, unknown-option exit 1)
-//!   - `list_models` — `get_available_models` table (provider/model/context/
-//!     max-out/thinking/images, K/M suffixes, 100-row cap)
+//!   - `list_models` — `list_models` table (provider/model/context/thinking/
+//!     images, K/M suffixes, 100-row cap)
 //!   - `run_print_mode` — non-interactive `-p` prompt via raw gRPC
 //!   - `run_interactive` — the App event loop (input/events/cmds/timers)
 
 use crate::app::{App, CliOptions, UiCmd, UiInput};
 use crate::rpc::grpc_client::GrpcClient;
+use crate::rpc::types::ModelInfo;
 use crate::version::VERSION;
 use future_rpc::proto::{RpcCommand, RpcResponse, StreamRequest};
 use std::process::ExitCode;
@@ -773,11 +774,11 @@ fn fmt_num(n: f64) -> String {
     }
 }
 
-/// `listModels(grpcAddr, search?)` — `get_available_models` table.
+/// `listModels(grpcAddr, search?)` — `list_models` table.
 async fn list_models(grpc_addr: &str, search: Option<&str>) -> Result<(), String> {
     let cmd = RpcCommand {
         id: "1".to_string(),
-        r#type: "get_available_models".to_string(),
+        r#type: "list_models".to_string(),
         ..Default::default()
     };
     let resp = execute_unary(grpc_addr, cmd, GRPC_DEADLINE_SEC).await?;
@@ -791,56 +792,15 @@ async fn list_models(grpc_addr: &str, search: Option<&str>) -> Result<(), String
     }
     let result: serde_json::Value = serde_json::from_str(&resp.data).map_err(|e| e.to_string())?;
 
-    struct Row {
-        provider: String,
-        id: String,
-        name: String,
-        reasoning: bool,
-        image: bool,
-        context_window: f64,
-        max_tokens: f64,
-    }
-    let mut models: Vec<Row> = result
+    // Same wire shape the interactive client parses (`ModelInfo`): `label`
+    // is the display name, and the agent sends no `maxTokens`, so the table
+    // has no max-out column.
+    let mut models: Vec<ModelInfo> = result
         .get("models")
         .and_then(serde_json::Value::as_array)
         .map(|arr| {
             arr.iter()
-                .filter_map(|m| {
-                    let obj = m.as_object()?;
-                    Some(Row {
-                        provider: obj
-                            .get("provider")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("")
-                            .to_string(),
-                        id: obj
-                            .get("id")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("")
-                            .to_string(),
-                        name: obj
-                            .get("name")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("")
-                            .to_string(),
-                        reasoning: obj
-                            .get("reasoning")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false),
-                        image: obj
-                            .get("image")
-                            .and_then(serde_json::Value::as_bool)
-                            .unwrap_or(false),
-                        context_window: obj
-                            .get("contextWindow")
-                            .and_then(serde_json::Value::as_f64)
-                            .unwrap_or(0.0),
-                        max_tokens: obj
-                            .get("maxTokens")
-                            .and_then(serde_json::Value::as_f64)
-                            .unwrap_or(0.0),
-                    })
-                })
+                .filter_map(|m| serde_json::from_value(m.clone()).ok())
                 .collect()
         })
         .unwrap_or_default();
@@ -849,7 +809,7 @@ async fn list_models(grpc_addr: &str, search: Option<&str>) -> Result<(), String
         let search_lower = search.to_lowercase();
         models.retain(|m| {
             m.id.to_lowercase().contains(&search_lower)
-                || m.name.to_lowercase().contains(&search_lower)
+                || m.label.to_lowercase().contains(&search_lower)
                 || m.provider.to_lowercase().contains(&search_lower)
         });
     }
@@ -868,30 +828,33 @@ async fn list_models(grpc_addr: &str, search: Option<&str>) -> Result<(), String
         .max()
         .unwrap_or(0);
     let ctx_w = "context".len();
-    let out_w = "max-out".len();
     let think_w = "thinking".len();
     let img_w = "images".len();
 
     let header = format!(
-        "{}  {}  {}  {}  {}  {}",
+        "{}  {}  {}  {}  {}",
         pad_end("provider", max_provider),
         pad_end("model", max_model),
         pad_start("context", ctx_w),
-        pad_start("max-out", out_w),
         pad_start("thinking", think_w),
         pad_start("images", img_w),
     );
     println!("{header}");
 
     for model in models.iter().take(100) {
+        // Absent thinkingLevel means "off" (the agent always sends high/off).
+        let thinking = if model.thinking_level == "off" || model.thinking_level.is_empty() {
+            "no"
+        } else {
+            "yes"
+        };
         let row = format!(
-            "{}  {}  {}  {}  {}  {}",
+            "{}  {}  {}  {}  {}",
             pad_end(&model.provider, max_provider),
             pad_end(&model.id, max_model),
-            pad_start(&fmt_num(model.context_window), ctx_w),
-            pad_start(&fmt_num(model.max_tokens), out_w),
-            pad_start(if model.reasoning { "yes" } else { "no" }, think_w),
-            pad_start(if model.image { "yes" } else { "no" }, img_w),
+            pad_start(&fmt_num(model.context_window as f64), ctx_w),
+            pad_start(thinking, think_w),
+            pad_start(if model.supports_images { "yes" } else { "no" }, img_w,),
         );
         println!("{row}");
     }
@@ -1766,7 +1729,7 @@ mod tests {
     use tonic::transport::server::TcpIncoming;
     use tonic::transport::Server;
 
-    /// Configurable mock: canned data for get_state/get_available_models,
+    /// Configurable mock: canned data for get_state/list_models,
     /// canned stream events, and command types answered with success=false.
     #[derive(Clone, Default)]
     struct MockAgent {
@@ -1812,6 +1775,24 @@ mod tests {
             }));
             }
             self.seen_commands.lock().unwrap().push(cmd.r#type.clone());
+            // Mirror the real dispatcher: commands outside the shared
+            // registry are answered with `unknown command`, never a canned
+            // success — otherwise a client-side rename stays green against
+            // this mock while failing against the real agent (exactly the
+            // `get_available_models` drift this guard was added for).
+            if future_rpc::command_policy::command_policy(&cmd.r#type).is_none() {
+                return Ok(tonic::Response::new(RpcResponse {
+                    id: cmd.id,
+                    r#type: "response".into(),
+                    command: cmd.r#type.clone(),
+                    success: false,
+                    data: String::new(),
+                    error: format!("unknown command: {}", cmd.r#type),
+                    error_code: String::new(),
+                    error_data: String::new(),
+                    payload: None,
+                }));
+            }
             if self.unary_status_types.contains(&cmd.r#type) {
                 return Err(tonic::Status::new(tonic::Code::Unknown, ""));
             }
@@ -1823,7 +1804,7 @@ mod tests {
             }
             let data = match cmd.r#type.as_str() {
                 "get_state" => self.state_data.clone(),
-                "get_available_models" => self.models_data.clone(),
+                "list_models" => self.models_data.clone(),
                 other => self
                     .command_data
                     .get(other)
@@ -1914,9 +1895,18 @@ mod tests {
             ..Default::default()
         })
         .await;
-        let resp = execute_unary(&addr, RpcCommand::default(), 5)
-            .await
-            .unwrap();
+        // The success case needs a registered command type — the mock (like
+        // the real dispatcher) rejects unknown/empty types.
+        let resp = execute_unary(
+            &addr,
+            RpcCommand {
+                r#type: "get_state".into(),
+                ..Default::default()
+            },
+            5,
+        )
+        .await
+        .unwrap();
         assert!(resp.success);
 
         // Server-reported failure surfaces the error string.
@@ -2085,12 +2075,12 @@ mod tests {
     fn models_json() -> String {
         serde_json::json!({
             "models": [
-                {"provider": "openai", "id": "gpt-4o", "name": "GPT-4o",
-                 "reasoning": false, "image": true,
-                 "contextWindow": 128000, "maxTokens": 4096},
-                {"provider": "anthropic", "id": "claude-sonnet-4", "name": "Claude Sonnet 4",
-                 "reasoning": true, "image": false,
-                 "contextWindow": 200000, "maxTokens": 8192}
+                {"provider": "openai", "id": "gpt-4o", "label": "GPT-4o",
+                 "supportsImages": true, "thinkingLevel": "off",
+                 "contextWindow": 128000, "isDefault": false},
+                {"provider": "anthropic", "id": "claude-sonnet-4", "label": "Claude Sonnet 4",
+                 "supportsImages": false, "thinkingLevel": "high",
+                 "contextWindow": 200000, "isDefault": true}
             ]
         })
         .to_string()
@@ -2112,14 +2102,14 @@ mod tests {
     async fn list_models_error_paths() {
         // Server-side failure.
         let addr = spawn_mock(MockAgent {
-            fail_types: HashSet::from(["get_available_models".to_string()]),
+            fail_types: HashSet::from(["list_models".to_string()]),
             ..Default::default()
         })
         .await;
         assert_eq!(list_models(&addr, None).await, Err("boom".into()));
         // …and with an empty error → "unknown error".
         let addr = spawn_mock(MockAgent {
-            fail_silent_types: HashSet::from(["get_available_models".to_string()]),
+            fail_silent_types: HashSet::from(["list_models".to_string()]),
             ..Default::default()
         })
         .await;

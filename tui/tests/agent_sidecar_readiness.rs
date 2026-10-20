@@ -1,27 +1,26 @@
-//! The **successful** half of the sidecar launch: a candidate that spawns *and*
+//! The **successful** half of the sidecar launch: a stub that spawns *and*
 //! then answers the readiness handshake, which is the arm that returns
-//! `Ok(Some(OwnedAgent { child }))` — and the hard-error arm beside it, where a
-//! spawned candidate's agent is reachable but incompatible, so the child is
-//! killed and the error reported instead of the next candidate being tried.
+//! `Ok(Some(OwnedAgent { child }))` — and the hard-error arm beside it, where
+//! the spawned stub's agent is reachable but incompatible, so the child is
+//! killed and the incompatibility reported instead of an owned guard returned.
 //!
 //! The unit-test build cannot reach either (`ensure_agent_running` refuses to
 //! launch under `cfg!(test)`), so this integration target drives the real loop.
 //! Nothing real is started, and no host binary can be picked up:
 //!
-//! * `PATH` is **only** the fixture directory, holding a single `future` stub.
-//!   The launch loop's sibling candidates live next to *this test binary*
-//!   (`…/deps/future`), and cargo does not put them there, so the stub is the
-//!   candidate that spawns. The stub uses `/bin/sleep` by absolute path and a
+//! * the sidecar program is a fixture-owned stub, handed to
+//!   `ensure_agent_running_within` as its `program` argument — nothing is
+//!   looked up on `PATH`. The stub uses `/bin/sleep` by absolute path and a
 //!   shell builtin for its sentinel, so it needs no `PATH` at all;
 //! * an in-process mock Agent serves the instance's own local endpoint
 //!   (`$FUTURE_HOME/run/agent.sock`) — but only **after** the stub has touched
 //!   its sentinel. `ensure_agent_running` probes every 125 ms, so answering
 //!   earlier would let the fixture win the race against the shell the loop just
 //!   spawned and the sentinel assertion would be about timing instead of about
-//!   which candidate ran (observed: green without instrumentation, red under
+//!   which program ran (observed: green without instrumentation, red under
 //!   `cargo llvm-cov` on a loaded host).
 //!
-//! Both tests mutate the process-global `PATH`, `FUTURE_HOME` and
+//! Both tests mutate the process-global `FUTURE_HOME` and
 //! `FUTURE_AGENT_SOCKET`, and a test target's tests run in parallel threads, so
 //! they serialize on [`ENV_LOCK`].
 
@@ -44,21 +43,22 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 ///
 /// The loop's *default* window is a product budget (how long a user waits for a
 /// cold sidecar), and this fixture must not assert the host's speed against it:
-/// the candidate here is a `/bin/sh` script, so what the loop is really waiting
-/// for is a fork/exec plus a filesystem write, and on a loaded host that is
-/// unbounded. The window is therefore supplied by the fixture, and its only job
-/// is to outlast [`SENTINEL_WAIT`] so the loop is still probing while the fixture
-/// waits for the child to become observable.
+/// the stub here is injected directly as the sidecar program, but it is still a
+/// `/bin/sh` script, so what the loop is really waiting for is a fork/exec plus
+/// a filesystem write, and on a loaded host that is unbounded. The window is
+/// therefore supplied by the fixture, and its only job is to outlast
+/// [`SENTINEL_WAIT`] so the loop is still probing while the fixture waits for
+/// the child to become observable.
 const LAUNCH_FIXTURE_WINDOW: Duration = Duration::from_secs(60);
 
-/// Bound on waiting for the launched candidate's sentinel **before this fixture
+/// Bound on waiting for the launched stub's sentinel **before this fixture
 /// binds its endpoint**, and it is what makes the assertions below deterministic:
 ///
 /// * the fixture must not be listening while the launch loop is still *deciding* -
 ///   `select_agent` treats a reachable endpoint as an agent that was already
 ///   there, `ensure_agent_running` then returns `Ok(None)`, and this target is
 ///   about exactly that;
-/// * so the bind is gated on the sentinel, i.e. on the candidate having *run*, and
+/// * so the bind is gated on the sentinel, i.e. on the stub having *run*, and
 ///   because this bound is well inside [`LAUNCH_FIXTURE_WINDOW`] the loop is still
 ///   probing when the sentinel appears - which is why the guard is still alive
 ///   when the loop returns, and why "the sentinel exists" needs no wait.
@@ -67,6 +67,20 @@ const LAUNCH_FIXTURE_WINDOW: Duration = Duration::from_secs(60);
 /// that misses this bound by two orders of magnitude is then reported by the
 /// sentinel assertion, not by the loop's window - which is the point of the pair.
 const SENTINEL_WAIT: Duration = Duration::from_secs(30);
+
+/// The probe window of the give-up fixture, and it has one hard requirement
+/// beyond outlasting the stub's startup: the stub's stderr echo must be
+/// *written before the loop kills the child at window end*, because a child
+/// killed before its first write leaves the pipes empty and the report's
+/// output tail legitimately empty - the assertion on `stuck before answering`
+/// would then flake on host speed, not on the loop. Measured on an idle host,
+/// the stub's fork/exec plus shell startup alone runs **~130-165 ms** (30-run
+/// standalone repro; 2 of 30 runs exceeded a 250 ms window, and the same race
+/// showed as intermittent empty tails under `cargo test`), and
+/// [`SENTINEL_WAIT`]'s notes put stub startup at 0.38-1.07 s under load. 5 s
+/// clears both with margin while keeping the give-up (the loop burns the whole
+/// window probing a candidate that never answers) still fast.
+const GIVE_UP_FIXTURE_WINDOW: Duration = Duration::from_secs(5);
 
 /// The readiness handshake a real Agent answers, with the fixture's own data
 /// root so `validate_readiness`'s home check passes, and a configurable version
@@ -134,6 +148,9 @@ struct FixtureRun {
     /// existing agent was found, `Err` = the reported failure. The guard itself
     /// is dropped inside the helper, so the stub child is reaped either way.
     outcome: Result<bool, String>,
+    /// The stub handed to the launch loop as the sidecar program, so a failure
+    /// message can be checked against the exact program it names.
+    program: PathBuf,
     sentinel: PathBuf,
     handshakes: Arc<AtomicUsize>,
     _home: tempfile::TempDir,
@@ -153,14 +170,14 @@ async fn wait_for_path(path: &Path, budget: Duration) -> bool {
     path.exists()
 }
 
-/// Run the launch loop against a `PATH` stub and, when `answers` is set, a
-/// readiness fixture that reports `version`. Everything the tests below need, so
-/// the environment mutation exists once.
+/// Run the launch loop against a stub program the loop is handed directly and,
+/// when `answers` is set, a readiness fixture that reports `version`. Everything
+/// the tests below need, so the environment mutation exists once.
 ///
 /// `answers: false` is the loop's give-up arm: the stub spawns and stays alive
-/// but never serves anything, so no candidate can be accepted. `probe_window` is
-/// the loop's per-candidate budget, supplied by the caller because it is a
-/// product decision and a stand-in child's fork/exec latency is the host's (see
+/// but never serves anything, so the attempt cannot be accepted. `probe_window`
+/// is the loop's launch budget, supplied by the caller because it is a product
+/// decision and a stand-in child's fork/exec latency is the host's (see
 /// [`LAUNCH_FIXTURE_WINDOW`]).
 fn run_launch_fixture(version: &str, answers: bool, probe_window: Duration) -> FixtureRun {
     use std::io::Write as _;
@@ -171,17 +188,20 @@ fn run_launch_fixture(version: &str, answers: bool, probe_window: Duration) -> F
     let sentinel = tools.path().join("spawned");
     let stub = tools.path().join("future");
     let mut file = std::fs::File::create(&stub).expect("create the stub");
-    // The sentinel is the only proof of *which* candidate was launched, since the
+    // The sentinel is the only proof that *this* stub was launched, since the
     // launch loop reports failures only. `: >` is a shell builtin and the sleeper
-    // is absolute, so the stub needs no `PATH` of its own - and the test sets
-    // `PATH` to this directory alone.
+    // is absolute, so the stub needs no `PATH` of its own - and nothing on
+    // `PATH` is ever consulted, because the program is handed over directly.
+    // The stderr echoes are the fixture's words for the failure reports: the
+    // incompatible and give-up arms below assert they surface, so a launch
+    // that drops the sidecar's own output fails here too.
     std::writeln!(
         file,
         "#!/bin/sh\n{}\nexec /bin/sleep 30\n",
         if answers {
-            format!(": > '{}'", sentinel.display())
+            format!(": > '{}'\necho refusing >&2", sentinel.display())
         } else {
-            ": true".to_string()
+            "echo stuck before answering >&2\n: true".to_string()
         }
     )
     .expect("write the stub");
@@ -189,20 +209,6 @@ fn run_launch_fixture(version: &str, answers: bool, probe_window: Duration) -> F
     drop(file);
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).expect("chmod");
 
-    let old_path = std::env::var_os("PATH");
-    std::env::set_var("PATH", tools.path());
-    // The launch loop tries `<parent of this test binary>/future` *before* `PATH`.
-    // Cargo never creates that name — it produces `deps/future-<hash>` and the
-    // uplifted `debug/future`, not an unhashed `deps/future` — so the stub below
-    // is the candidate that spawns. A planted sibling would silently change
-    // which agent answered, so this precondition is asserted rather than assumed.
-    let sibling = std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("future")));
-    assert!(
-        !sibling.as_ref().is_some_and(|path| path.exists()),
-        "this fixture needs the launch loop's sibling candidate to be absent: {sibling:?}"
-    );
     let old_home = std::env::var_os("FUTURE_HOME");
     std::env::set_var("FUTURE_HOME", home.path());
     // The local endpoint is `$FUTURE_HOME/run/agent.sock` unless this overrides
@@ -252,6 +258,7 @@ fn run_launch_fixture(version: &str, answers: bool, probe_window: Duration) -> F
     let outcome = runtime
         .block_on(future_tui::agent_supervisor::ensure_agent_running_within(
             "auto",
+            &stub,
             probe_window,
         ))
         .map(|guard| guard.is_some());
@@ -260,12 +267,12 @@ fn run_launch_fixture(version: &str, answers: bool, probe_window: Duration) -> F
     }
     drop(runtime);
 
-    restore("PATH", old_path);
     restore("FUTURE_HOME", old_home);
     restore("FUTURE_AGENT_SOCKET", old_socket);
 
     FixtureRun {
         outcome,
+        program: stub,
         sentinel,
         handshakes,
         _home: home,
@@ -277,7 +284,7 @@ fn launch_with_a_stub_candidate(version: &str) -> FixtureRun {
     run_launch_fixture(version, true, LAUNCH_FIXTURE_WINDOW)
 }
 
-/// The launch loop's success arm: the candidate spawned, the agent answered a
+/// The launch loop's success arm: the stub spawned, the agent answered a
 /// matching readiness handshake, and the guard the TUI keeps alive is returned.
 #[test]
 fn a_candidate_that_answers_readiness_is_returned_as_an_owned_child() {
@@ -293,7 +300,7 @@ fn a_candidate_that_answers_readiness_is_returned_as_an_owned_child() {
     }
     assert!(
         run.sentinel.exists(),
-        "the PATH stub must be the candidate that was launched"
+        "the injected stub must be the program that was launched"
     );
     assert!(
         run.handshakes.load(Ordering::SeqCst) >= 1,
@@ -301,10 +308,10 @@ fn a_candidate_that_answers_readiness_is_returned_as_an_owned_child() {
     );
 }
 
-/// The launch loop's hard-error arm: the candidate spawned and its agent
+/// The launch loop's hard-error arm: the stub spawned and its agent
 /// answered, but with a version this client refuses. The loop must kill that
-/// child, stop trying candidates and report why — a next candidate would be a
-/// *different* agent, and the TUI must not silently move on to it.
+/// child and report the incompatibility itself — not bury it in a generic
+/// give-up, and not return an agent it just failed to verify.
 #[test]
 fn an_incompatible_agent_stops_the_launch_loop_and_is_reported() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
@@ -326,24 +333,29 @@ fn an_incompatible_agent_stops_the_launch_loop_and_is_reported() {
         error.contains("Incompatible Future Agent") && error.contains("9.9.9"),
         "the failure must name the incompatibility it found: {error}"
     );
+    assert!(
+        error.contains("refusing"),
+        "the report must carry the sidecar's own output beside the incompatibility: {error}"
+    );
 }
 
-/// The loop's give-up arm, deterministically: a candidate that spawns and stays
+/// The loop's give-up arm, deterministically: a stub that spawns and stays
 /// alive but never answers.
 ///
 /// Until now this arm was reachable only when a loaded host happened to exceed
 /// the loop's own probe window, which made it both rare and indistinguishable
 /// from the fixture's own timing (see `docs/testing/flaky-tui.md` §7). With the
-/// window supplied by the caller it is a 250 ms assertion about the *loop*: it
-/// must kill the candidate, try the remaining candidates, and report every one it
-/// tried.
+/// window supplied by the caller it is an assertion about the *loop*: it must
+/// kill the stub and report the give-up with the program it waited for - and,
+/// since the launch now captures sidecar output, with the stub's own words
+/// (see [`GIVE_UP_FIXTURE_WINDOW`] for why the window cannot be minimal).
 #[test]
 fn a_candidate_that_never_answers_is_reported_after_the_probe_window() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let run = run_launch_fixture(
         future_rpc::connection::EXPECTED_AGENT_VERSION,
         false,
-        Duration::from_millis(250),
+        GIVE_UP_FIXTURE_WINDOW,
     );
 
     let error = match run.outcome {
@@ -354,9 +366,18 @@ fn a_candidate_that_never_answers_is_reported_after_the_probe_window() {
         error.contains("no Future Agent was reachable"),
         "the failure must report the give-up it performed: {error}"
     );
+    let program = run.program.display().to_string();
     assert!(
-        error.contains("deps/future") && error.contains("future-agent"),
-        "the failure must list the candidates it tried: {error}"
+        error.contains(&program),
+        "the failure must name the program it waited on: {error}"
+    );
+    assert!(
+        error.contains("did not become ready"),
+        "the give-up must say the probe window ran out: {error}"
+    );
+    assert!(
+        error.contains("stuck before answering"),
+        "a live but unready candidate must still show what it printed: {error}"
     );
     assert!(
         !run.sentinel.exists(),
