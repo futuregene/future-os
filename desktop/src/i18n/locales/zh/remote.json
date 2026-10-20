@@ -8,7 +8,6 @@
   "pairAgain": "重新配对",
   "reconnect": "重新连接",
   "loginAgain": "重新登录",
-  "disconnect": "断开",
   "pairAndStart": "配对并启动",
   "preparingPairingHint": "正在建立安全连接，连接就绪后将显示二维码。",
   "pairingCodeExpired": "配对码已过期，请重新添加设备。",
@@ -69,15 +68,5 @@
   "clientsTitle": "已配对的设备",
   "noClients": "还没有配对的设备。",
   "addDeviceTitle": "添加设备",
-  "addDeviceDescription": "用手机端扫描二维码，或在另一台电脑上输入配对码。",
-  "clientDetailTitle": "客户端",
-  "clientName": "名称",
-  "clientPairId": "配对 ID",
-  "clientState": "状态",
-  "clientActions": "操作",
-  "clientActionsHint": "断开只停用这台客户端的连接，配对仍然保留；删除会解除配对。",
-  "clientGone": "这台客户端已不在列表中。",
-  "removeClient": "删除",
-  "removeClientConfirmTitle": "删除这个客户端？",
-  "removeClientConfirmDesc": "{{name}} 将解除配对，之后无法再连接这台电脑。"
+  "addDeviceDescription": "用手机端扫描二维码，或在另一台电脑上输入配对码。"
 }

@@ -8,7 +8,6 @@
   "pairAgain": "Pair again",
   "reconnect": "Reconnect",
   "loginAgain": "Sign in again",
-  "disconnect": "Disconnect",
   "pairAndStart": "Pair & start",
   "preparingPairingHint": "Establishing a secure connection. The QR code will appear when it is ready.",
   "pairingCodeExpired": "That pairing code expired. Add the device again.",
@@ -69,15 +68,5 @@
   "clientsTitle": "Paired devices",
   "noClients": "No devices are paired yet.",
   "addDeviceTitle": "Add a device",
-  "addDeviceDescription": "Scan the QR code with the mobile app, or enter the pairing code on another computer.",
-  "clientDetailTitle": "Client",
-  "clientName": "Name",
-  "clientPairId": "Pair ID",
-  "clientState": "Status",
-  "clientActions": "Actions",
-  "clientActionsHint": "Disconnect stops this client's connection but keeps its pairing; Remove unpairs it.",
-  "clientGone": "This client is no longer in the list.",
-  "removeClient": "Remove",
-  "removeClientConfirmTitle": "Remove this client?",
-  "removeClientConfirmDesc": "{{name}} will be unpaired and can no longer connect to this computer."
+  "addDeviceDescription": "Scan the QR code with the mobile app, or enter the pairing code on another computer."
 }

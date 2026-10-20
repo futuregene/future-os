@@ -11,12 +11,9 @@ import { RemoteHubView } from "./RemoteHubView";
  * needs, and that a machine's own pages (its settings, its tasks) replace this
  * page rather than opening a window of their own.
  *
- * The sections and the sub-pages are stubbed: their internals are their own
+ * The sections and the two sub-pages are stubbed: their internals are their own
  * concern. What belongs to *this* component is the page shell, the lead that
  * distinguishes local from remote, the wiring, and the navigation.
- *
- * This direction has no settings page: its switch carries the preference, so
- * there is nothing behind a gear of its own.
  */
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -84,24 +81,8 @@ vi.mock("../remote-peer/remotePeerClient", () => ({
   setRemotePeerLabel: (...args: Parameters<typeof setRemotePeerLabel>) => setRemotePeerLabel(...args),
 }));
 
-/** The page *this machine's* direction can open: one paired client. */
-const hostPages = vi.hoisted(() => ({
-  client: null as unknown,
-}));
+/** The page *this machine's* direction owns, stubbed the same way. */
 
-vi.mock("./RemoteHostClientPage", async () => {
-  const { createElement } = await import("react");
-  return {
-    RemoteHostClientPage: (props: { onBack: () => void; pairId: string }) => {
-      hostPages.client = props;
-      return createElement(
-        "div",
-        { "data-child": "host-client", "data-pair": props.pairId },
-        createElement("button", { "data-back": "1", "onClick": props.onBack }),
-      );
-    },
-  };
-});
 const toasts = vi.hoisted(() => [] as Array<{ message: string; tone?: string }>);
 vi.mock("../../lib/futureEvents", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../lib/futureEvents")>();
@@ -169,7 +150,6 @@ async function openSettings(desktopId = "desk_a") {
 
 beforeEach(() => {
   toasts.length = 0;
-  hostPages.client = null;
   setRemotePeerLabel.mockReset().mockResolvedValue(undefined);
   sections.host = null;
   sections.client = null;
@@ -248,9 +228,9 @@ it("gives each direction what it needs, and nothing crossed over", async () => {
   expect(sections.host).toMatchObject({
     remoteStatus: { pairId: "pair_1" },
   });
-  // The host list opens one client's page; the switch above it carries the
-  // preference, so there is no settings page to open.
-  expect(sections.host).toHaveProperty("onOpenDevice");
+  // The host list opens nothing: a client's page repeated the row, and the
+  // direction's own settings page is gone too (its switch is the preference).
+  expect(sections.host).not.toHaveProperty("onOpenDevice");
   expect(sections.host).not.toHaveProperty("onOpenSettings");
   expect(sections.client).toMatchObject({ onReconnectAll: props.onReconnectRemoteAll });
   // The host half has no machines to reconnect, and the client half has no
@@ -358,27 +338,4 @@ it("re-reads the machines when the settings page reports a change", async () => 
   await act(async () => container.querySelector<HTMLButtonElement>("[data-back='1']")!.click());
 
   expect((sections.client as { refreshNonce?: number }).refreshNonce).not.toBe(before);
-});
-
-/**
- * A paired client's own page is a page of this window too.
- *
- * The hub's list is a list: which client is which, what it may do, and whether
- * it stays paired are details, and details are behind a row.
- */
-it("opens a paired client's page in this window, and comes back to the list", async () => {
-  await mount({ remoteStatus: status({ pairId: "pair_1" }) });
-
-  await act(async () => (sections.host as { onOpenDevice: (pairId: string) => void })
-    .onOpenDevice("pair_beta"));
-
-  expect(container.querySelector("[data-child='host-client']")!.getAttribute("data-pair")).toBe("pair_beta");
-  // One page at a time: the hub's own content is gone, not behind it.
-  expect(container.querySelector("[data-testid='remote-hub-lead']")).toBeNull();
-  expect(container.querySelector("[data-child='host-section']")).toBeNull();
-
-  await act(async () => container.querySelector<HTMLButtonElement>("[data-back='1']")!.click());
-
-  expect(container.querySelector("[data-child='host-client']")).toBeNull();
-  expect(container.querySelector("[data-child='host-section']")).not.toBeNull();
 });

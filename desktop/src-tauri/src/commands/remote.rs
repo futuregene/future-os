@@ -97,8 +97,10 @@ pub async fn remote_unpair_device(
 /// Disconnect one device but keep it paired.
 ///
 /// Stops serving that device (and tells it it is offline) without touching its
-/// credential, so "断开" and "删除" stay distinct actions in the client list: the
-/// device can be reconnected by turning the remote desktop off and on again.
+/// credential. The desktop client list does not offer it: its two per-device
+/// actions are "take control" and "unpair", and a connection that is stopped
+/// but still paired has no way back except restarting the remote desktop. The
+/// command stays as the supervisor's per-device stop, which the tests drive.
 #[tauri::command]
 pub async fn remote_disconnect_device(
     pair_id: String,
