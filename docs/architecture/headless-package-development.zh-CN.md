@@ -505,3 +505,7 @@ CLI 可执行文件发现、身份缓存、版本/能力校验、3 秒探测期�
 CI 39379461294 已结束且整体失败。除 Windows Host 外的独立分组通过，包括 Windows 原生构建；Windows Host 1544 通过、1 失败、10 个原 ignore。失败用例固定等待 120ms 后尚未看到后台 new_session 写回，实际请求列表为空。现先在真实 loopback RPC 服务有界观察该会话的写回请求，再保留原回复清理等待和全部原断言；不修改产品逻辑。
 
 本地完整导入组 48 项通过，没有声称本地复现 Windows 失败，原生复验仍交给 CI。见[证据](../testing/headless-windows-cwd-observation-2026-10-20.json)。当前统一 CLI 入口正在开发和本地验证，尚未计入这个已完成候选。
+
+### 2026-10-20 主干日志健康修复合并
+
+推送前同步远程主干 edb9d134。日志写入冲突同时保留主干的批次回复延后和本分支独立于待重试队列的 storage_failed 判定；所有失败项都有 durable 回执时也先发布不健康再回复，并让 flush 返回失败。真实 SQLite/journal 组 47 项通过，包含本分支 durable-only 回归；主干任务页变更的 46 项通过，type-check、ESLint、fmt 和相关 Clippy --all-targets 通过。临时依赖链接已移除，见[证据](../testing/headless-postsync-journal-2026-10-20.json)。统一 CLI 工作单独保存，不夹带在这批后端验收候选中。
