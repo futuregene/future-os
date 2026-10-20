@@ -162,10 +162,6 @@ export function remoteTaskBackend(desktopId: string): TaskBackend {
       await send(desktopId, { type: "set_task_enabled", taskId: id, enabled });
     },
 
-    async runNow(id) {
-      await send(desktopId, { type: "run_task", taskId: id });
-    },
-
     async listRuns(id, limit) {
       const data = await send<{ runs?: unknown[] }>(
         desktopId,

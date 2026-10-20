@@ -6,11 +6,13 @@ import { ChevronDown, ChevronLeft, ChevronRight, FolderOpen, Plus, Trash2 } from
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
+import { Dialog } from "../../components/ui/Dialog";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
 import { defaultThinkingLevel, modelSupportsThinking, normalizeThinkingLevel } from "../../integrations/agent/agentClient";
 import { formatDateTime } from "../../lib/date";
 import { useTauriEvent } from "../../lib/useTauriEvent";
+import { MarkdownContent } from "../markdown/MarkdownContent";
 import { useTasks } from "./useTasks";
 
 /** Task times are epoch milliseconds; the date helpers take ISO strings. */
@@ -20,8 +22,15 @@ function formatEpoch(ms: number | null, locale: string): string {
 
 const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
 
-/** Trigger modes the form can edit (mirrors the kernel's schedule modes). */
-type TriggerMode = "manual" | "once" | "interval" | "daily" | "weekly" | "monthly" | "yearly";
+/**
+ * Trigger modes the form can edit (mirrors the kernel's schedule modes). The
+ * empty string is a new task's unchosen state: with the run-now button gone,
+ * a manual task can no longer be fired from anywhere in the UI, so the form
+ * stops offering "manual" as a fresh choice — it must be picked, like the
+ * model is. A task that already is manual keeps the option so an edit
+ * round-trips instead of silently rewriting it into a scheduled one.
+ */
+type TriggerMode = "" | "manual" | "once" | "interval" | "daily" | "weekly" | "monthly" | "yearly";
 
 interface DraftTrigger {
   mode: TriggerMode;
@@ -34,9 +43,9 @@ interface DraftTrigger {
 }
 
 const emptyTrigger: DraftTrigger = {
-  mode: "manual",
+  mode: "",
   date: "",
-  time: "09:00",
+  time: "",
   everyMinutes: 60,
   days: ["mon"],
   day: 1,
@@ -82,14 +91,17 @@ const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as 
 type Draft = typeof emptyDraft;
 
 function triggerFromTask(task: TaskView): DraftTrigger {
+  // A stored manual task keeps its mode so the edit round-trips: with the
+  // run-now button gone it can no longer be fired by hand, but silently
+  // rewriting it into a schedule would move a task the user did not touch.
   if (task.triggerKind !== "schedule")
-    return { ...emptyTrigger };
+    return { ...emptyTrigger, mode: "manual" };
   const trigger = task.trigger as Record<string, unknown>;
   const mode = String(trigger.mode ?? "daily") as TriggerMode;
   return {
     mode,
     date: String(trigger.date ?? ""),
-    time: String(trigger.time ?? "09:00"),
+    time: String(trigger.time ?? ""),
     everyMinutes: Number(trigger.every_minutes ?? 60),
     days: Array.isArray(trigger.days) ? (trigger.days as string[]) : ["mon"],
     day: Number(trigger.day ?? 1),
@@ -97,11 +109,17 @@ function triggerFromTask(task: TaskView): DraftTrigger {
   };
 }
 
-function triggerPayload(draft: DraftTrigger): { kind: string; trigger: Record<string, unknown> } {
+function triggerPayload(draft: DraftTrigger): { kind: string; trigger: Record<string, unknown> } | null {
+  // No mode chosen yet: the caller reports the missing field, the way it does
+  // for an unchosen model. (A stored manual task keeps its own mode below.)
+  if (!draft.mode)
+    return null;
   if (draft.mode === "manual")
     return { kind: "manual", trigger: {} };
   switch (draft.mode) {
     case "once":
+      // Both fields are required: an unset one is reported by the caller
+      // (`missingTriggerField`), never sent as an empty string.
       return { kind: "schedule", trigger: { mode: "once", date: draft.date, time: draft.time } };
     case "interval":
       return { kind: "schedule", trigger: { mode: "interval", every_minutes: draft.everyMinutes } };
@@ -117,6 +135,20 @@ function triggerPayload(draft: DraftTrigger): { kind: string; trigger: Record<st
     default:
       return { kind: "schedule", trigger: { mode: "daily", time: draft.time } };
   }
+}
+
+/**
+ * The one-off trigger's first missing field, or null when both are set.
+ * The kernel needs a real local date-time to schedule from, so an empty
+ * date or time is a save refusal with its own message, not a silent
+ * fallback to a moment the user never chose.
+ */
+function missingTriggerField(draft: DraftTrigger): "date" | "time" | null {
+  if (!draft.date.trim())
+    return "date";
+  if (!draft.time.trim())
+    return "time";
+  return null;
 }
 
 /**
@@ -204,6 +236,9 @@ export function TasksView({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Draft>({ ...emptyDraft });
   const [saveError, setSaveError] = useState<string | null>(null);
+  /** The delete confirmation lives in a dialog, not a browser `confirm()`. */
+  const [deleting, setDeleting] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const selected = useMemo(
     () => store.tasks.find(task => task.id === selectedId) ?? null,
@@ -239,7 +274,6 @@ export function TasksView({
   }, []);
 
   const save = useCallback(async () => {
-    const { kind, trigger } = triggerPayload(draft.trigger);
     const input: TaskInput = {
       name: draft.name.trim(),
       prompt: draft.prompt,
@@ -251,22 +285,41 @@ export function TasksView({
       // combination that means nothing (see `parse_session_retention`).
       sessionRetention: draft.sessionPolicy === "new" ? draft.sessionRetention : "keep",
       conversationMode: draft.conversationMode,
-      triggerKind: kind,
-      trigger,
       enabled: draft.enabled,
     };
-    // One message per missing decision: a task that names no model would run on
-    // whatever the app happens to default to, and the form does not offer that
-    // choice, so saving one is refused rather than silently reinterpreted.
+    // One message per missing decision, in the form's own order: a task that
+    // names no model would run on whatever the app happens to default to, and
+    // the form does not offer that choice, so saving one is refused rather
+    // than silently reinterpreted. The trigger comes last — with the run-now
+    // button gone it is the one decision that must exist before a save, but
+    // it sits at the bottom of the form.
     let problem: string | null = null;
-    if (!input.name || !input.prompt)
+    if (!input.name || !input.prompt) {
       problem = t("form.required");
-    else if (draft.conversationMode === "workspace" && !input.cwd)
+    }
+    else if (draft.conversationMode === "workspace" && !input.cwd) {
       problem = t("form.cwdRequired");
-    else if (!input.modelId)
+    }
+    else if (!input.modelId) {
       problem = t("form.modelRequired");
-    else if (!input.thinkingLevel)
+    }
+    else if (!input.thinkingLevel) {
       problem = t("form.thinkingRequired");
+    }
+    else {
+      const payload = triggerPayload(draft.trigger);
+      if (!payload) {
+        problem = t("form.triggerRequired");
+      }
+      else if (payload.kind === "schedule" && payload.trigger.mode === "once"
+        && missingTriggerField(draft.trigger)) {
+        problem = t(missingTriggerField(draft.trigger) === "date" ? "form.dateRequired" : "form.timeRequired");
+      }
+      else {
+        input.triggerKind = payload.kind;
+        input.trigger = payload.trigger;
+      }
+    }
     if (problem) {
       setSaveError(problem);
       return;
@@ -282,6 +335,31 @@ export function TasksView({
       setSaveError(caught instanceof Error ? caught.message : String(caught));
     }
   }, [draft, selectedId, store, t]);
+
+  /**
+   * Remove the task, then drop the dialog. Deleting only marks the row
+   * (`deleted_at`): a run already executing carries its own snapshot and
+   * finishes into the ledger untouched, so there is nothing to cancel here —
+   * the confirm dialog is about losing the schedule, not stopping a run.
+   */
+  const confirmDelete = useCallback(async () => {
+    if (!selected)
+      return;
+    setDeleteBusy(true);
+    try {
+      await store.deleteTask(selected.id);
+      setDeleting(false);
+      setSelectedId(null);
+      setEditing(false);
+    }
+    catch (caught) {
+      setSaveError(caught instanceof Error ? caught.message : String(caught));
+      setDeleting(false);
+    }
+    finally {
+      setDeleteBusy(false);
+    }
+  }, [selected, store]);
 
   return (
     <section className="flex h-full min-h-0 flex-col bg-surface">
@@ -358,6 +436,11 @@ export function TasksView({
             : selected
               ? (
                   <TaskDetail
+                    deleteBusy={deleteBusy}
+                    onDelete={() => {
+                      setSaveError(null);
+                      setDeleting(true);
+                    }}
                     store={store}
                     task={selected}
                     onEdit={() => startEdit(selected)}
@@ -367,6 +450,25 @@ export function TasksView({
               : <p className="px-6 py-10 text-sm text-ink-muted">{t("selectHint")}</p>}
         </div>
       </div>
+
+      <Dialog
+        description={t("deleteConfirm", { name: selected?.name ?? "" })}
+        footer={(
+          <>
+            <Button disabled={deleteBusy} onClick={() => setDeleting(false)} type="button" variant="ghost">
+              {t("common:cancel")}
+            </Button>
+            <Button disabled={deleteBusy} onClick={() => void confirmDelete()} type="button" variant="danger">
+              {deleteBusy ? t("deleting") : t("common:delete")}
+            </Button>
+          </>
+        )}
+        onClose={() => setDeleting(false)}
+        open={deleting}
+        title={t("deleteTitle")}
+      >
+        <p className="text-sm leading-5 text-ink-soft">{t("deleteDetail")}</p>
+      </Dialog>
     </section>
   );
 }
@@ -561,8 +663,18 @@ function TaskForm({
 
       <fieldset className="space-y-3 rounded-md border border-line-soft p-3">
         <legend className="px-1 text-xs text-ink-soft">{t("form.trigger")}</legend>
-        <Select value={trigger.mode} onChange={e => setTrigger({ mode: e.target.value as TriggerMode })}>
-          <option value="manual">{t("triggerMode.manual")}</option>
+        <Select
+          value={trigger.mode}
+          onChange={e => setTrigger({ mode: e.target.value as TriggerMode })}
+        >
+          {/* An unchosen trigger is the empty option, required like the model:
+              the run-now button is gone, so a task that runs only when the
+              trigger fires must have one that can fire. A task that is already
+              manual keeps its option below so an edit round-trips. */}
+          <option value="" disabled>{t("form.triggerPlaceholder")}</option>
+          {trigger.mode === "manual"
+            ? <option value="manual">{t("triggerMode.manual")}</option>
+            : null}
           <option value="once">{t("triggerMode.once")}</option>
           <option value="interval">{t("triggerMode.interval")}</option>
           <option value="daily">{t("triggerMode.daily")}</option>
@@ -576,11 +688,16 @@ function TaskForm({
               <div className="grid grid-cols-2 gap-3">
                 <label className="block space-y-1.5">
                   <span className="text-xs text-ink-soft">{t("form.date")}</span>
-                  <TextInput placeholder="2026-12-24" value={trigger.date} onChange={e => setTrigger({ date: e.target.value })} />
+                  {/* Native date picker: a placeholder like "2026-12-24" read as
+                      a date already chosen, and typed days were easy to fumble.
+                      The picker starts empty and reports no value until one is
+                      actually picked; the save refuses an empty one. */}
+                  <TextInput required type="date" value={trigger.date} onChange={e => setTrigger({ date: e.target.value })} />
                 </label>
                 <label className="block space-y-1.5">
                   <span className="text-xs text-ink-soft">{t("form.time")}</span>
-                  <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
+                  {/* Same for the time: no default minute the user never chose. */}
+                  <TextInput required type="time" value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
                 </label>
               </div>
             )
@@ -604,7 +721,7 @@ function TaskForm({
           ? (
               <label className="block space-y-1.5">
                 <span className="text-xs text-ink-soft">{t("form.time")}</span>
-                <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
+                <TextInput type="time" value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
               </label>
             )
           : null}
@@ -631,7 +748,7 @@ function TaskForm({
                 </div>
                 <label className="block space-y-1.5">
                   <span className="text-xs text-ink-soft">{t("form.time")}</span>
-                  <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
+                  <TextInput type="time" value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
                 </label>
               </div>
             )
@@ -652,7 +769,7 @@ function TaskForm({
                 </label>
                 <label className="block space-y-1.5">
                   <span className="text-xs text-ink-soft">{t("form.time")}</span>
-                  <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
+                  <TextInput type="time" value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
                 </label>
                 {/* The short-month rule is user-visible by design. */}
                 <p className="text-2xs text-ink-muted">{t("form.shortMonthHint")}</p>
@@ -687,7 +804,7 @@ function TaskForm({
                 </div>
                 <label className="block space-y-1.5">
                   <span className="text-xs text-ink-soft">{t("form.time")}</span>
-                  <TextInput value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
+                  <TextInput type="time" value={trigger.time} onChange={e => setTrigger({ time: e.target.value })} />
                 </label>
                 {/* A clamped day is user-visible by design, the same rule the
                     monthly mode states. */}
@@ -715,11 +832,17 @@ function TaskForm({
 }
 
 function TaskDetail({
+  deleteBusy,
+  onDelete,
   task,
   store,
   onEdit,
   onOpenThread,
 }: {
+  /** The delete dialog in the parent is working; the row button waits. */
+  deleteBusy: boolean;
+  /** Ask the parent to open the delete confirmation dialog. */
+  onDelete: () => void;
   task: TaskView;
   store: ReturnType<typeof useTasks>;
   onEdit: () => void;
@@ -768,12 +891,10 @@ function TaskDetail({
         </Button>
         <Button
           aria-label={t("delete")}
+          disabled={deleteBusy}
           size="sm"
           variant="danger-soft"
-          onClick={() => {
-            if (window.confirm(t("deleteConfirm", { name: task.name })))
-              void store.deleteTask(task.id);
-          }}
+          onClick={onDelete}
         >
           <Trash2 className="size-3.5" />
         </Button>
@@ -892,9 +1013,20 @@ function TaskDetail({
                         : null}
                     </div>
                     <div className="space-y-3 px-3.5 py-3">
-                      <p className="text-xs leading-relaxed text-ink-soft">
-                        {run.errorMessage ?? run.resultSummary ?? t("runNoSummary")}
-                      </p>
+                      {/* The summary is the model's markdown answer, not a plain
+                          paragraph: headings, lists and tables a task produced
+                          render formatted, the way the conversation shows them.
+                          An error stays plain text — it is a message from the
+                          host, not the model's prose. */}
+                      {run.errorMessage
+                        ? <p className="text-xs leading-relaxed text-danger">{run.errorMessage}</p>
+                        : run.resultSummary
+                          ? (
+                              <div className="text-xs leading-relaxed">
+                                <MarkdownContent content={run.resultSummary} />
+                              </div>
+                            )
+                          : <p className="text-xs leading-relaxed text-ink-soft">{t("runNoSummary")}</p>}
                       {/* The run's conversation is gone by design: say so, so the
                           missing "open conversation" reads as intended rather
                           than broken, and point at where the output is. */}

@@ -23,7 +23,6 @@ export interface TaskBackend {
   update: (id: string, input: TaskInput) => Promise<TaskView>;
   remove: (id: string) => Promise<void>;
   setEnabled: (id: string, enabled: boolean) => Promise<void>;
-  runNow: (id: string) => Promise<void>;
   listRuns: (id: string, limit: number) => Promise<TaskRunView[]>;
 }
 
@@ -44,9 +43,6 @@ export const localTaskBackend: TaskBackend = {
   },
   async setEnabled(id, enabled) {
     await invokeCommand<TaskView>("set_task_enabled", { id, enabled });
-  },
-  async runNow(id) {
-    await invokeCommand<TaskView>("run_task_now", { id });
   },
   listRuns(id, limit) {
     return invokeCommand<TaskRunView[]>("list_task_runs", { id, limit });
