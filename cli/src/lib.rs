@@ -10,6 +10,7 @@ pub mod constants;
 pub mod headless;
 pub mod help;
 pub mod output;
+pub mod prompt;
 pub mod relay;
 pub mod rpc;
 #[cfg(test)]

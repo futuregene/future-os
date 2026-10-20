@@ -1892,6 +1892,10 @@ fn confirmed(device: &Device, remaining: usize) -> Result<bool, String> {
 }
 
 /// The prompt itself, so the "all devices" question reads the same way.
+///
+/// One key answers (`prompt::ask_yes_no`): a `[y/N]` question that waits for
+/// Enter is a question that looks hung, and a typed `y` with no newline behind it
+/// was indistinguishable from a command that had stopped responding.
 fn ask(question: &str) -> Result<bool, String> {
     if !stdin_is_terminal() {
         return Err(format!(
@@ -1899,19 +1903,7 @@ fn ask(question: &str) -> Result<bool, String> {
              --yes if that is what you mean."
         ));
     }
-    eprint!("{question} [y/N] ");
-    std::io::stderr().flush().ok();
-    let mut answer = String::new();
-    std::io::stdin()
-        .read_line(&mut answer)
-        .map_err(|error| format!("Cannot read the answer: {error}"))?;
-    Ok(is_yes(&answer))
-}
-
-/// What counts as consent: `y` or `yes`, in any case. Everything else — a bare
-/// Enter included — is a no.
-fn is_yes(answer: &str) -> bool {
-    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    crate::prompt::ask_yes_no(question)
 }
 
 /// Revoke `device` where it was minted. Returns the line to print when the
@@ -4235,16 +4227,6 @@ mod tests {
         assert_eq!(home.read(PENDING_REVOKES_FILE), "{ broken");
         // The local unpair happened anyway.
         assert!(!home.exists(BOOK_FILE));
-    }
-
-    #[test]
-    fn only_y_or_yes_is_consent() {
-        for yes in ["y", "Y", "yes", "YES", " yes \n"] {
-            assert!(is_yes(yes), "{yes:?}");
-        }
-        for no in ["", "n", "no", "nope", "yess", "1"] {
-            assert!(!is_yes(no), "{no:?}");
-        }
     }
 
     // ── status ──────────────────────────────────────────────────────────────
