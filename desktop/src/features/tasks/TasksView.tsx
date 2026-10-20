@@ -2,7 +2,7 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { TaskBackend } from "./taskBackend";
 import type { TaskInput, TaskView } from "./useTasks";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, ChevronLeft, ChevronRight, FolderOpen, Play, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, FolderOpen, Plus, Trash2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
@@ -758,9 +758,6 @@ function TaskDetail({
             {task.nextDueAt ? ` · ${t("nextDue")} ${formatEpoch(task.nextDueAt, locale)}` : ""}
           </p>
         </div>
-        <Button leftIcon={<Play className="size-3.5" />} size="sm" variant="secondary" onClick={() => void store.runNow(task.id).then(refresh)}>
-          {t("runNow")}
-        </Button>
         <Button size="sm" variant="secondary" onClick={() => onEdit()}>{t("edit")}</Button>
         <Button
           size="sm"
