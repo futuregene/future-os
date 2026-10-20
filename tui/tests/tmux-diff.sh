@@ -21,8 +21,9 @@
 # whole card at 80x72, and scrolled to the end at 80x36), the model selector,
 # the session list, the model-scope and tool menus, the providers list (both
 # tabs and the edit form), the skill browser (list, search-filtered, the filter
-# cleared by an escape, catalogue rows), the sandbox/permission panel (before
-# and after applying a tier and a permission level), the theme picker (before
+# cleared by an escape, catalogue rows), the sandbox panel (before and after
+# applying a mode, plus the `/permission` level set through the command), the
+# theme picker (before
 # and after `/theme light`), and the `/usage`, `/transcript` (+ a real
 # PageDown/PageUp and the search editor), `/agent`, `/metrics`,
 # `/snapshot`, `/tool-output` (list and diff body) and `/history` readouts.
@@ -667,32 +668,31 @@ close_overlay
 expect_pane_lacks skills-closed "Skills (" "the second escape closed the panel"
 step skills-closed
 
-# ── Sandbox / permissions: the panel, then a mode applied ──
+# ── Sandbox: the mode card, then a mode applied ──
 submit_cmd "/sandbox"
-step_when sandbox-overlay "Sandbox & permissions"
+step_when sandbox-overlay "Approval mode"
 
 tmux send-keys -t "$RUST_PANE" Up
 tmux send-keys -t "$RUST_PANE" Enter
 # A mode pick closes the card (select ⇒ apply ⇒ dismiss), so the applied mode
 # is reported in the transcript, not in a panel that no longer exists. The
-# message, not the panel's `current:` row, is what this screen pins.
+# message, not the panel's `current:` row, is what this screen pins. The
+# still-open check uses the card's key legend: the panel title "Approval mode"
+# also appears in the transcript message itself.
 step_when sandbox-tier "Approval mode: Manual"
-expect_pane_lacks sandbox-tier "Sandbox & permissions" "a mode pick closes the card"
+expect_pane_lacks sandbox-tier "enter applies" "a mode pick closes the card"
 
 close_overlay
 
-# `/permission` with no argument opens the same card as `/sandbox` with the
-# focus moved into the permission half (b84fa0a1, D4): the first selectable row
-# is `All`, so one `↓` lands on `Workspace`. It used to take three presses —
-# they started from the tier rows above — and those three now clamp on the last
-# row (`None`), which is why this scenario applies `Workspace` deliberately
-# instead of by counting presses that no longer mean the same thing.
+# `/permission` no longer opens the card (it is mode-only now): the bare
+# command is a usage error, and `<level>` applies the level directly, which
+# the transcript — not a panel — reports.
 submit_cmd "/permission"
-step_when permission-overlay "Tool permissions"
+step_when permission-usage "Usage: /permission [all|workspace|none]"
+expect_pane_lacks permission-usage "enter applies" "no panel opens"
 
-tmux send-keys -t "$RUST_PANE" Down
-tmux send-keys -t "$RUST_PANE" Enter
-step_when permission-applied "current: Workspace"
+submit_cmd "/permission workspace"
+step_when permission-applied "Tool permission level: Workspace"
 expect_pane_has permission-applied "Tool permission level: Workspace" \
   "the applied level reached the chat"
 

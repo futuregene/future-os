@@ -1,4 +1,4 @@
-//! Sandbox approval modes and tool-permission settings for the TUI.
+//! The TUI's approval-mode card.
 //!
 //! Port of the desktop's approval-mode surface: the tier `<Select>` in
 //! `desktop/src/features/settings/GeneralPage.tsx` (and the composer dropdown
@@ -11,6 +11,10 @@
 //! second model classifies each Ask request and approves the bounded ones) and
 //! `off`. On the wire `auto` is not a tier: [`ApprovalMode::to_wire`] sends
 //! `tier = sandbox, reviewer = model`.
+//!
+//! The card is deliberately mode-only: the tool-permission level is a separate
+//! legacy setting the `/permission` command sets directly, not something the
+//! mode picker needs to surface.
 //!
 //! The agent owns all halves of the state — the policy
 //! (`set_sandbox_policy`), the probe (`probe_sandbox`) and the account gate
@@ -53,12 +57,8 @@ use crate::utils::{
 
 // ─── Copy ──────────────────────────────────────────────────────────────────
 
-/// Panel title.
-const TITLE: &str = "Sandbox & permissions";
-/// Heading of the approval-tier section (desktop `approvalTier.title`).
-const TIER_HEADING: &str = "Approval mode";
-/// Heading of the tool-permission section.
-const PERMISSION_HEADING: &str = "Tool permissions";
+/// Panel title (also the section heading — the card has one section).
+const TITLE: &str = "Approval mode";
 /// Key legend rendered as the last row.
 const KEY_LEGEND: &str = "↑/↓ move · enter applies · r re-checks · esc closes";
 /// `off` description (desktop `approvalTier.description.off`). Names the
@@ -770,179 +770,35 @@ impl PermissionKind {
     }
 }
 
-/// The three-level permission picker, rendered under the mode list.
-///
-/// It owns its own highlight and is *focused* only while the enclosing
-/// [`SandboxView`] has moved the selection into it, so the highlight bar is
-/// never drawn in two sections at once.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PermissionView {
-    level: PermissionKind,
-    index: usize,
-    focused: bool,
-    theme: Theme,
-}
-
-impl PermissionView {
-    /// A picker whose highlight starts on `level`.
-    pub fn new(level: PermissionKind) -> Self {
-        PermissionView {
-            level,
-            index: PermissionView::index_of(level),
-            focused: false,
-            theme: DARK_THEME,
-        }
-    }
-
-    /// Replace the applied level (after `set_permission_level` came back) and
-    /// move the highlight to it.
-    pub fn set_level(&mut self, level: PermissionKind) {
-        self.level = level;
-        self.index = PermissionView::index_of(level);
-    }
-
-    /// The applied level.
-    pub fn level(&self) -> PermissionKind {
-        self.level
-    }
-
-    /// The highlighted row.
-    pub fn highlighted(&self) -> PermissionKind {
-        PermissionKind::ALL
-            .get(self.index)
-            .copied()
-            .unwrap_or(PermissionKind::All)
-    }
-
-    /// Apply the theme used for the rows.
-    pub fn set_theme(&mut self, theme: &Theme) {
-        self.theme = *theme;
-    }
-
-    /// Whether the enclosing view has the selection in this section.
-    pub fn set_focused(&mut self, focused: bool) {
-        self.focused = focused;
-    }
-
-    /// Move the highlight to the first row (used when the focus enters).
-    fn focus_first(&mut self) {
-        self.index = 0;
-    }
-
-    /// Navigation and the apply key, reporting the same [`SandboxAction`] shape
-    /// as [`SandboxView::handle_key`]. `up` at the first row is [`SandboxAction::None`]:
-    /// leaving the section is the enclosing view's decision.
-    pub fn handle_key(&mut self, key: &str) -> SandboxAction {
-        match key {
-            "up" | "k" => match self.index.checked_sub(1) {
-                Some(index) => {
-                    self.index = index;
-                    SandboxAction::Moved
-                }
-                None => SandboxAction::None,
-            },
-            "down" | "j" => {
-                if self.index + 1 >= PermissionKind::ALL.len() {
-                    return SandboxAction::None;
-                }
-                self.index += 1;
-                SandboxAction::Moved
-            }
-            "enter" | " " => SandboxAction::PermissionSelected(self.highlighted()),
-            _ => SandboxAction::None,
-        }
-    }
-
-    /// One row per level. Empty for `width == 0`; every row is exactly `width`
-    /// visible columns.
-    pub fn render(&self, width: usize) -> Vec<String> {
-        if width == 0 {
-            return Vec::new();
-        }
-        PermissionKind::ALL
-            .iter()
-            .map(|kind| self.row(*kind, width))
-            .collect()
-    }
-
-    /// Index of `level` in the picker order.
-    fn index_of(level: PermissionKind) -> usize {
-        PermissionKind::ALL
-            .iter()
-            .position(|candidate| *candidate == level)
-            .unwrap_or(0)
-    }
-
-    fn row(&self, kind: PermissionKind, width: usize) -> String {
-        let highlighted = self.focused && self.highlighted() == kind;
-        let marker = if highlighted { "›" } else { " " };
-        let mut row = format!("{marker} {}", kind.label());
-        row.push_str("  ");
-        row.push_str(&fg(self.theme.dim as u8, kind.description()));
-        if kind == self.level {
-            row.push_str("  ");
-            row.push_str(&fg(self.theme.dim as u8, "· current"));
-        }
-        // The description is what makes these rows longer than a terminal:
-        // clip the assembled row with a visible ellipsis instead of letting
-        // `fit_row` shear it mid-word (`… the grant is scope`).
-        let row = truncate_to_width(
-            &row,
-            width,
-            &TruncateOptions {
-                ellipsis: true,
-                pad: false,
-            },
-        );
-        if highlighted {
-            return selected_row(&row, width, &self.theme);
-        }
-        fg(self.theme.fg as u8, &row)
-    }
-}
-
 // ─── Sandbox view ──────────────────────────────────────────────────────────
 
-/// Which section of [`SandboxView`] owns the keyboard.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Section {
-    Modes,
-    Permissions,
-}
-
-/// The sandbox settings screen.
+/// The approval-mode card.
 ///
-/// A flat list of seven rows — four approval modes followed by three
-/// permission levels — with exactly one highlight, so `↑`/`↓` walk the whole
-/// screen and `enter` applies whatever is highlighted.
+/// A flat list of four rows with exactly one highlight, so `↑`/`↓` walk the
+/// card and `enter` applies whatever is highlighted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxView {
     status: SandboxStatus,
     theme: Theme,
-    section: Section,
     mode_index: usize,
-    permission: PermissionView,
 }
 
 impl SandboxView {
     /// A view for `platform`, with the status the desktop starts from (no RPC
-    /// has been sent yet) and the permission picker on the agent's default.
+    /// has been sent yet).
     pub fn new(platform: SandboxPlatform) -> Self {
         let status = SandboxStatus::new(platform);
         let mode_index = SandboxView::index_of(status.effective_mode());
         SandboxView {
             status,
             theme: DARK_THEME,
-            section: Section::Modes,
             mode_index,
-            permission: PermissionView::new(PermissionKind::All),
         }
     }
 
     /// Apply the theme used for every row.
     pub fn set_theme(&mut self, theme: &Theme) {
         self.theme = *theme;
-        self.permission.set_theme(theme);
     }
 
     /// Replace the status (a `set_sandbox_policy` answer, a probe, or a
@@ -956,22 +812,6 @@ impl SandboxView {
     /// The current status.
     pub fn status(&self) -> &SandboxStatus {
         &self.status
-    }
-
-    /// The permission picker (level, highlight).
-    pub fn permission(&self) -> &PermissionView {
-        &self.permission
-    }
-
-    /// The applied permission level.
-    pub fn permission_level(&self) -> PermissionKind {
-        self.permission.level()
-    }
-
-    /// Set the applied permission level (after `set_permission_level` came back
-    /// or a `get_state` reload).
-    pub fn set_permission_level(&mut self, level: PermissionKind) {
-        self.permission.set_level(level);
     }
 
     /// The picker rows with their selectability. `sandbox` needs an available
@@ -1007,13 +847,13 @@ impl SandboxView {
         SandboxAction::ModeSelected(mode)
     }
 
-    /// `up`/`k`, `down`/`j` walk the seven rows, `enter`/`space` applies the
+    /// `up`/`k`, `down`/`j` walk the four rows, `enter`/`space` applies the
     /// highlighted one, `r` asks for a fresh probe and `esc` closes.
     pub fn handle_key(&mut self, key: &str) -> SandboxAction {
         match key {
             "up" | "k" => self.move_up(),
             "down" | "j" => self.move_down(),
-            "enter" | " " => self.activate(),
+            "enter" | " " => self.select_mode(self.highlighted_mode()),
             "r" => SandboxAction::RefreshProbe,
             "esc" => SandboxAction::Cancelled,
             _ => SandboxAction::None,
@@ -1027,12 +867,11 @@ impl SandboxView {
             return Vec::new();
         }
         let mut rows = vec![
-            fg(self.theme.accent as u8, &bold(TITLE)),
-            String::new(),
             self.heading_row(
-                TIER_HEADING,
+                TITLE,
                 &format!("current: {}", self.status.effective_mode().label()),
             ),
+            String::new(),
         ];
         rows.extend(self.mode_rows(width));
         rows.extend(wrapped_rows(
@@ -1043,78 +882,31 @@ impl SandboxView {
         rows.extend(self.platform_rows(width));
         rows.extend(self.availability_rows(width));
         rows.extend(self.fallback_rows(width));
-        rows.push(String::new());
-        rows.push(self.heading_row(
-            PERMISSION_HEADING,
-            &format!("current: {}", self.permission.level().label()),
-        ));
-        rows.extend(self.permission.render(width));
         rows.push(fg(self.theme.dim as u8, &fit_hint_row(KEY_LEGEND, width)));
         rows.truncate(height);
         rows.into_iter().map(|row| fit_row(&row, width)).collect()
     }
 
-    // ── sections ──
+    // ── navigation ──
 
     fn move_up(&mut self) -> SandboxAction {
-        match self.section {
-            Section::Modes => match self.step(false) {
-                Some(index) => {
-                    self.mode_index = index;
-                    SandboxAction::Moved
-                }
-                None => SandboxAction::None,
-            },
-            Section::Permissions => self.move_up_in_permissions(),
+        match self.step(false) {
+            Some(index) => {
+                self.mode_index = index;
+                SandboxAction::Moved
+            }
+            None => SandboxAction::None,
         }
-    }
-
-    /// `up` inside the permission section: walk its rows, and leave the section
-    /// (back into the mode list) from its first row.
-    fn move_up_in_permissions(&mut self) -> SandboxAction {
-        if self.permission.handle_key("up") == SandboxAction::Moved {
-            return SandboxAction::Moved;
-        }
-        self.leave_permissions();
-        SandboxAction::Moved
     }
 
     fn move_down(&mut self) -> SandboxAction {
-        match self.section {
-            Section::Modes => match self.step(true) {
-                Some(index) => {
-                    self.mode_index = index;
-                    SandboxAction::Moved
-                }
-                None => {
-                    self.enter_permissions();
-                    SandboxAction::Moved
-                }
-            },
-            Section::Permissions => self.permission.handle_key("down"),
+        match self.step(true) {
+            Some(index) => {
+                self.mode_index = index;
+                SandboxAction::Moved
+            }
+            None => SandboxAction::None,
         }
-    }
-
-    fn activate(&mut self) -> SandboxAction {
-        match self.section {
-            Section::Modes => self.select_mode(self.highlighted_mode()),
-            Section::Permissions => self.permission.handle_key("enter"),
-        }
-    }
-
-    /// Move the selection into the permission section (first row).
-    fn enter_permissions(&mut self) {
-        self.section = Section::Permissions;
-        self.permission.focus_first();
-        self.permission.set_focused(true);
-    }
-
-    /// Move the selection back up into the mode section, landing on its last
-    /// selectable row so `↓` returns to where it left.
-    fn leave_permissions(&mut self) {
-        self.section = Section::Modes;
-        self.permission.set_focused(false);
-        self.mode_index = self.last_enabled_mode();
     }
 
     // ── rows ──
@@ -1136,7 +928,7 @@ impl SandboxView {
     }
 
     fn mode_row(&self, index: usize, mode: ApprovalMode, enabled: bool, width: usize) -> String {
-        let focused = self.section == Section::Modes && index == self.mode_index;
+        let focused = index == self.mode_index;
         let marker = if focused { "›" } else { " " };
         let mut row = format!("{marker} {}", mode.label());
         let suffix = self.mode_suffix(mode);
@@ -1268,15 +1060,6 @@ impl SandboxView {
         })
     }
 
-    /// Index of the last selectable row (where `↑` lands when the selection
-    /// comes back from the permission section).
-    fn last_enabled_mode(&self) -> usize {
-        self.mode_options()
-            .iter()
-            .rposition(|(_, enabled)| *enabled)
-            .unwrap_or(0)
-    }
-
     /// Keep the highlight on a selectable row after the status changed.
     fn clamp_mode_index(&mut self) {
         let options = self.mode_options();
@@ -1305,8 +1088,6 @@ pub enum SandboxAction {
     Moved,
     /// Apply this approval mode (`set_sandbox_policy`).
     ModeSelected(ApprovalMode),
-    /// Apply this permission level (`set_permission_level`).
-    PermissionSelected(PermissionKind),
     /// Close the screen.
     Cancelled,
     /// Re-run `probe_sandbox`.
@@ -1902,8 +1683,6 @@ mod tests {
         assert!(notice.contains("probe_failed"));
     }
 
-    // ── permission level ──
-
     #[test]
     fn permission_kind_wire_values_and_copy() {
         assert_eq!(
@@ -1938,95 +1717,6 @@ mod tests {
         assert!(PermissionKind::None.description().contains("denied"));
     }
 
-    #[test]
-    fn permission_view_navigates_and_applies() {
-        let mut view = PermissionView::new(PermissionKind::Workspace);
-        assert_eq!(view.level(), PermissionKind::Workspace);
-        assert_eq!(view.highlighted(), PermissionKind::Workspace);
-        assert_eq!(view.handle_key("up"), SandboxAction::Moved);
-        assert_eq!(view.highlighted(), PermissionKind::All);
-        assert_eq!(view.handle_key("k"), SandboxAction::None);
-        assert_eq!(view.handle_key("down"), SandboxAction::Moved);
-        assert_eq!(view.handle_key("j"), SandboxAction::Moved);
-        assert_eq!(view.highlighted(), PermissionKind::None);
-        assert_eq!(view.handle_key("j"), SandboxAction::None);
-        assert_eq!(
-            view.handle_key("enter"),
-            SandboxAction::PermissionSelected(PermissionKind::None)
-        );
-        assert_eq!(
-            view.handle_key(" "),
-            SandboxAction::PermissionSelected(PermissionKind::None)
-        );
-        assert_eq!(view.handle_key("x"), SandboxAction::None);
-        assert_eq!(view.level(), PermissionKind::Workspace);
-    }
-
-    #[test]
-    fn permission_view_level_and_focus_are_settable() {
-        let mut view = PermissionView::new(PermissionKind::All);
-        view.set_level(PermissionKind::None);
-        assert_eq!(view.level(), PermissionKind::None);
-        assert_eq!(view.highlighted(), PermissionKind::None);
-        view.set_focused(true);
-        view.focus_first();
-        assert_eq!(view.highlighted(), PermissionKind::All);
-    }
-
-    #[test]
-    fn permission_view_renders_three_rows_that_fit_the_width() {
-        let mut view = PermissionView::new(PermissionKind::Workspace);
-        let rows: Vec<String> = view
-            .render(200)
-            .iter()
-            .map(|row| strip_ansi_codes(row).trim_end().to_string())
-            .collect();
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0], "  All  Every tool call runs without asking.");
-        assert!(rows[1].starts_with("  Workspace  Tool calls ask for approval"));
-        assert!(rows[1].ends_with("· current"));
-        assert_eq!(rows[2], "  None  Every tool call is denied before it runs.");
-        assert!(view.render(0).is_empty());
-
-        view.set_focused(true);
-        let focused = view.render(200);
-        assert!(strip_ansi_codes(&focused[1]).starts_with("›"));
-        assert!(focused[1].contains("\x1b[48;5;38m"));
-        assert!(focused[1].contains("\x1b[38;5;255m"));
-        assert!(strip_ansi_codes(&focused[0]).starts_with("  All"));
-    }
-
-    /// The permission rows carry a sentence, so on a normal 80-column pane they
-    /// are longer than the row: the clip has to be *visible* (`… the gra…`)
-    /// instead of shearing the sentence mid-word (`… the grant is scope`, which
-    /// reads as a typo). Both the plain and the highlighted row are clipped the
-    /// same way, and both still fill the pane exactly.
-    #[test]
-    fn narrow_permission_rows_end_in_an_ellipsis() {
-        let mut view = PermissionView::new(PermissionKind::Workspace);
-        let rows: Vec<String> = view
-            .render(60)
-            .iter()
-            .map(|row| strip_ansi_codes(row).trim_end().to_string())
-            .collect();
-        assert_eq!(rows[0], "  All  Every tool call runs without asking.");
-        assert_eq!(
-            rows[1],
-            "  Workspace  Tool calls ask for approval before they run; t…"
-        );
-        // The `· current` marker is the first thing to go, and the highlight
-        // still spans the full width.
-        assert_eq!(rows[2], "  None  Every tool call is denied before it runs.");
-        view.set_focused(true);
-        let focused = view.render(60);
-        assert_eq!(visible_width(&focused[1]), 60);
-        assert_eq!(
-            strip_ansi_codes(&focused[1]).trim_end(),
-            "› Workspace  Tool calls ask for approval before they run; t…"
-        );
-        assert!(focused[1].contains("\x1b[48;5;38m"));
-    }
-
     // ── view: options and selection ──
 
     #[test]
@@ -2034,7 +1724,6 @@ mod tests {
         let macos = SandboxView::new(SandboxPlatform::Macos);
         assert_eq!(macos.highlighted_mode(), ApprovalMode::Sandbox);
         assert_eq!(macos.status().effective_mode(), ApprovalMode::Sandbox);
-        assert_eq!(macos.permission_level(), PermissionKind::All);
 
         let linux = SandboxView::new(SandboxPlatform::Linux);
         assert_eq!(linux.highlighted_mode(), ApprovalMode::Manual);
@@ -2166,7 +1855,7 @@ mod tests {
     }
 
     #[test]
-    fn global_keys_work_from_both_sections() {
+    fn global_keys_work_from_every_row() {
         let mut view = SandboxView::new(SandboxPlatform::Macos);
         assert_eq!(view.handle_key("r"), SandboxAction::RefreshProbe);
         assert_eq!(view.handle_key("esc"), SandboxAction::Cancelled);
@@ -2178,39 +1867,6 @@ mod tests {
         assert_eq!(view.handle_key("esc"), SandboxAction::Cancelled);
     }
 
-    #[test]
-    fn the_selection_walks_into_and_out_of_the_permission_section() {
-        let mut view = SandboxView::new(SandboxPlatform::Macos);
-        assert_eq!(view.handle_key("down"), SandboxAction::Moved); // Off
-        assert_eq!(view.highlighted_mode(), ApprovalMode::Off);
-        assert_eq!(view.handle_key("down"), SandboxAction::Moved); // into the permissions
-        assert_eq!(view.highlighted_mode(), ApprovalMode::Off);
-        assert_eq!(
-            view.handle_key("enter"),
-            SandboxAction::PermissionSelected(PermissionKind::All)
-        );
-        assert_eq!(view.handle_key("down"), SandboxAction::Moved); // Workspace
-        assert_eq!(
-            view.handle_key("enter"),
-            SandboxAction::PermissionSelected(PermissionKind::Workspace)
-        );
-        assert_eq!(view.handle_key("down"), SandboxAction::Moved); // None
-        assert_eq!(view.handle_key("down"), SandboxAction::None);
-        assert_eq!(
-            view.handle_key("enter"),
-            SandboxAction::PermissionSelected(PermissionKind::None)
-        );
-        assert_eq!(view.handle_key("k"), SandboxAction::Moved);
-        assert_eq!(view.handle_key("k"), SandboxAction::Moved);
-        assert_eq!(view.handle_key("k"), SandboxAction::Moved); // back to the modes
-        assert_eq!(view.highlighted_mode(), ApprovalMode::Off);
-        assert_eq!(view.handle_key("k"), SandboxAction::Moved);
-        assert_eq!(view.highlighted_mode(), ApprovalMode::Sandbox);
-        assert_eq!(view.handle_key("k"), SandboxAction::Moved);
-        assert_eq!(view.highlighted_mode(), ApprovalMode::Manual);
-        assert_eq!(view.handle_key("k"), SandboxAction::None);
-    }
-
     /// Rows carrying the focus marker.
     fn marked(view: &mut SandboxView) -> usize {
         lines(view, 200)
@@ -2220,23 +1876,15 @@ mod tests {
     }
 
     #[test]
-    fn only_the_focused_section_draws_a_marker() {
+    fn exactly_one_row_draws_the_focus_marker() {
         let mut view = SandboxView::new(SandboxPlatform::Macos);
         assert_eq!(marked(&mut view), 1);
-        assert!(lines(&mut view, 200)[4].starts_with("› Sandboxed"));
-        view.handle_key("down");
+        assert!(lines(&mut view, 200)[3].starts_with("› Sandboxed"));
         view.handle_key("down");
         assert_eq!(marked(&mut view), 1);
-        assert!(lines(&mut view, 200)
-            .iter()
-            .any(|row| row.starts_with("› All")));
         assert!(!lines(&mut view, 200)
             .iter()
             .any(|row| row.starts_with("› Sandboxed")));
-        view.handle_key("down");
-        assert!(lines(&mut view, 200)
-            .iter()
-            .any(|row| row.starts_with("› Workspace")));
     }
 
     #[test]
@@ -2251,19 +1899,6 @@ mod tests {
         assert_eq!(view.highlighted_mode(), ApprovalMode::Off);
         view.set_status(SandboxStatus::new(SandboxPlatform::Linux));
         assert_eq!(view.highlighted_mode(), ApprovalMode::Off);
-        // The selection can sit in the permission section while the status
-        // changes underneath it.
-        view.set_status(SandboxStatus::new(SandboxPlatform::Macos));
-        assert_eq!(view.highlighted_mode(), ApprovalMode::Off);
-    }
-
-    #[test]
-    fn permission_level_accessors_round_trip() {
-        let mut view = SandboxView::new(SandboxPlatform::Linux);
-        assert_eq!(view.permission().level(), PermissionKind::All);
-        view.set_permission_level(PermissionKind::None);
-        assert_eq!(view.permission_level(), PermissionKind::None);
-        assert!(text(&mut view, 200).contains("Tool permissions  current: None"));
     }
 
     // ── rendering ──
@@ -2272,31 +1907,19 @@ mod tests {
     fn the_panel_renders_its_chrome_in_order() {
         let mut view = SandboxView::new(SandboxPlatform::Macos);
         let rows = lines(&mut view, 200);
-        assert_eq!(rows.len(), 15);
-        assert_eq!(rows[0], TITLE);
+        assert_eq!(rows.len(), 9);
+        assert_eq!(rows[0], "Approval mode  current: Sandboxed");
         assert_eq!(rows[1], "");
-        assert_eq!(rows[2], "Approval mode  current: Sandboxed");
-        assert_eq!(rows[3], "  Manual");
-        assert_eq!(rows[4], "› Sandboxed");
-        assert_eq!(rows[5], "  Automatic review (checking)");
-        assert_eq!(rows[6], "  Full access");
+        assert_eq!(rows[2], "  Manual");
+        assert_eq!(rows[3], "› Sandboxed");
+        assert_eq!(rows[4], "  Automatic review (checking)");
+        assert_eq!(rows[5], "  Full access");
         assert_eq!(
-            rows[7],
+            rows[6],
             "  Commands run in the macOS sandbox and ask for approval when needed."
         );
-        assert_eq!(rows[8], "  Sandbox: available — backend macos_seatbelt");
-        assert_eq!(rows[9], "");
-        assert_eq!(rows[10], "Tool permissions  current: All");
-        assert_eq!(
-            rows[11],
-            "  All  Every tool call runs without asking.  · current"
-        );
-        assert!(rows[12].starts_with("  Workspace  Tool calls ask for approval"));
-        assert_eq!(
-            rows[13],
-            "  None  Every tool call is denied before it runs."
-        );
-        assert_eq!(rows[14], KEY_LEGEND);
+        assert_eq!(rows[7], "  Sandbox: available — backend macos_seatbelt");
+        assert_eq!(rows[8], KEY_LEGEND);
     }
 
     /// The key legend is a hint row like the menus': on a pane too narrow for
@@ -2486,7 +2109,6 @@ mod tests {
         };
         let mut view = downgraded_view(SandboxPlatform::Linux);
         view.set_theme(&theme);
-        view.set_permission_level(PermissionKind::Workspace);
         let rows = view.render(120, 200);
         let joined = rows.join("\n");
         assert!(joined.contains("\x1b[38;5;100m"));
@@ -2497,7 +2119,6 @@ mod tests {
         assert!(joined.contains("\x1b[48;5;105m"));
 
         let mut default = downgraded_view(SandboxPlatform::Linux);
-        default.set_permission_level(PermissionKind::Workspace);
         assert_ne!(default.render(120, 200).join("\n"), joined);
     }
 

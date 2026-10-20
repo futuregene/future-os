@@ -8,22 +8,22 @@
 
 [49m Hello from the mock agent!
 
-  [1m[38;5;39mSandbox & permissions[0m
 
-  [1m[38;5;39mApproval mode[0m  [38;5;245mcurrent: Sandboxed[39m
+[48;5;236m [1m[38;5;109medit[0m[48;5;236m [38;5;39msrc/greeting.rs[39m [38;5;143m+2[39m [38;5;204m-1[39m
+
+[49m  [1m[38;5;39mApproval mode[0m  [38;5;245mcurrent: Sandboxed[39m
+
   [38;5;252m  Manual[39m
   [38;5;255m[48;5;38m› Sandboxed[39m                                                                 [49m
   [38;5;252m  Automatic review
 [39m  [38;5;252m  Full access[39m
     Commands run in the macOS sandbox and ask for approval when needed.
   [38;5;143m  Sandbox: available — backend macos_seatbelt[39m
-
-  [1m[38;5;39mTool permissions[0m  [38;5;245mcurrent: All[39m
-  [38;5;252m  All  [38;5;245mEvery tool call runs without asking.[39m  [38;5;245m· current[39m
-  [38;5;252m  Workspace  [38;5;245mTool calls ask for approval before they run; the grant is scop…[39m
-  [38;5;252m  None  [38;5;245mEvery tool call is denied before it runs.[39m
   [38;5;245m↑/↓ move · enter applies · r re-checks · esc closes                         [39m
   Mode shown is this platform's default — apply one here to set the session's.
+ [38;5;245mThinking: off[39m
+ [38;5;245mPermission: all[39m
+ [38;5;245mApproval mode: (not set)[39m
  [38;5;245mQueries: 42[39m
  [38;5;245mAuto compaction: off[39m
  [38;5;245mStreaming: no[39m

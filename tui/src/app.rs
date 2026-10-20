@@ -4907,10 +4907,6 @@ impl SandboxOverlay {
         }
     }
 
-    fn view_mut(&mut self) -> &mut SandboxView {
-        &mut self.view
-    }
-
     fn set_status(&mut self, status: SandboxStatus) {
         self.note = sandbox_mode_caveat(&status);
         self.view.set_status(status);
@@ -5159,42 +5155,6 @@ fn sandbox_mode_caveat(status: &SandboxStatus) -> Option<String> {
     status.mode.is_none().then(|| {
         "Mode shown is this platform's default — apply one here to set the session's.".to_string()
     })
-}
-
-/// Which half of the shared sandbox card a command opens on.
-///
-/// The card holds two settings — the approval mode and the tool-permission
-/// level — and `/sandbox`, `/mode` and `/permission` all open it, so the
-/// initial highlight is the only thing that can tell the commands apart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SandboxFocus {
-    /// `/sandbox` / `/mode`: the mode list owns the highlight.
-    Modes,
-    /// `/permission`: the tool-permission rows do.
-    Permissions,
-}
-
-/// Move the card's highlight from the mode list into the permission block.
-///
-/// The card is one flat list of seven rows — `↑`/`↓` walk the four approval
-/// modes and then the three permission levels — so its own `↓` is what does
-/// this, and walking it is exactly what a user pressing `/permission` would do
-/// next. (`PermissionView` is reachable from the app read-only; the walk is
-/// the only way in.) `below` counts the *selectable* modes under the current
-/// one, so the walk lands on the block's first row instead of skipping into
-/// it.
-fn focus_permission_block(view: &mut SandboxView) {
-    let options = view.mode_options();
-    let current = view.highlighted_mode();
-    let below = options
-        .iter()
-        .skip_while(|(mode, _)| *mode != current)
-        .skip(1)
-        .filter(|(_, enabled)| *enabled)
-        .count();
-    for _ in 0..=below {
-        let _ = view.handle_key("down");
-    }
 }
 
 /// Does this host want Chinese chrome? The TUI has no language setting (its
@@ -7105,7 +7065,6 @@ impl<T: TerminalIo> App<T> {
         Box::new(move |action: SandboxAction| {
             let cmd = match action {
                 SandboxAction::ModeSelected(mode) => UiCmd::SandboxModeRequested(mode),
-                SandboxAction::PermissionSelected(kind) => UiCmd::PermissionLevelRequested(kind),
                 SandboxAction::RefreshProbe => UiCmd::SandboxProbeRequested,
                 SandboxAction::Cancelled => UiCmd::OverlayCancel,
                 SandboxAction::None | SandboxAction::Moved => return,
@@ -7368,14 +7327,13 @@ impl<T: TerminalIo> App<T> {
     /// makes the Linux/Windows probe decision reachable from a test on any
     /// host.
     fn open_sandbox_panel(&mut self, platform: SandboxPlatform) {
-        self.open_sandbox_card(platform, SandboxFocus::Modes);
+        self.open_sandbox_card(platform);
     }
 
-    /// The card `/sandbox`, `/permission` and `/mode` share: the approval mode
-    /// and the tool-permission picker are one screen (the agent owns both
-    /// halves of the policy), so the commands differ in *where they start*,
-    /// not in what they open.
-    fn open_sandbox_card(&mut self, platform: SandboxPlatform, focus: SandboxFocus) {
+    /// `/sandbox` and `/mode` open the same card: the approval-mode picker.
+    /// The commands differ in *when they are useful*, not in what they open —
+    /// `/mode` with an argument skips the card entirely.
+    fn open_sandbox_card(&mut self, platform: SandboxPlatform) {
         let status = self
             .sandbox
             .clone()
@@ -7385,10 +7343,6 @@ impl<T: TerminalIo> App<T> {
         self.sandbox = Some(status.clone());
         let mut view = SandboxView::new(platform);
         view.set_status(status.clone());
-        view.set_permission_level(self.state.permission_level);
-        if focus == SandboxFocus::Permissions {
-            focus_permission_block(&mut view);
-        }
         let rows = (self.terminal.rows() as usize).max(3);
         let overlay = SandboxOverlay::new(
             view,
@@ -7450,22 +7404,17 @@ impl<T: TerminalIo> App<T> {
         });
     }
 
-    /// `/permission [all|workspace|none]` — without an argument the panel that
-    /// owns the permission picker opens; with one the level is applied.
+    /// `/permission <all|workspace|none>` — the tool-permission level, applied
+    /// directly. The level is a legacy setting the mode card deliberately does
+    /// not surface, so an argument is required.
     fn show_permission(&mut self, arg: &str) {
         let arg = arg.trim();
-        if arg.is_empty() {
-            // The same card `/sandbox` opens, but with the tool-permission
-            // block under the highlight: two commands that open a
-            // byte-identical panel read as a bug, and this is the difference
-            // worth showing — nothing is hidden either way, `↑` still walks
-            // into the mode list.
-            self.open_sandbox_card(Self::host_sandbox_platform(), SandboxFocus::Permissions);
-            return;
-        }
-        match PermissionKind::from_wire(arg) {
-            Some(level) => self.set_permission_level(level, true),
-            None => self.add_system_message(format!(
+        match (PermissionKind::from_wire(arg), arg.is_empty()) {
+            (Some(level), _) => self.set_permission_level(level, true),
+            (None, true) => {
+                self.add_system_message("Usage: /permission [all|workspace|none]".to_string())
+            }
+            (None, false) => self.add_system_message(format!(
                 "Usage: /permission [all|workspace|none] (got '{arg}')"
             )),
         }
@@ -7603,12 +7552,10 @@ impl<T: TerminalIo> App<T> {
         });
     }
 
-    /// Push a new permission level into the open panel (a no-op otherwise).
+    /// Push a new status into the open panel (a no-op otherwise).
     fn sync_sandbox_panel(&mut self) {
-        let level = self.state.permission_level;
         let status = self.sandbox.clone();
         if let Some(overlay) = self.top_sandbox_overlay() {
-            overlay.view_mut().set_permission_level(level);
             if let Some(status) = status {
                 overlay.set_status(status);
             }
@@ -21391,74 +21338,17 @@ mod tests {
         app.stop();
     }
 
-    /// `/sandbox` and `/permission` open one card — the agent owns both halves
-    /// of the policy, so there is one screen — but not in the same state: the
-    /// tier list has the highlight under `/sandbox`, the tool-permission block
-    /// under `/permission`. Two commands opening byte-identical panels is what
-    /// this pins down (the card itself is unchanged, and nothing is hidden
-    /// either way).
+    /// `/permission` no longer opens the shared card — the card is mode-only,
+    /// so the bare command is a usage error pointing at the level vocabulary.
     #[tokio::test(flavor = "multi_thread")]
-    async fn permission_opens_the_permission_half_of_the_shared_card() {
-        let (mut sandbox_app, _rx) = make_app(100, 30);
-        sandbox_app.handle_submit("/sandbox");
-        let sandbox = top_overlay_text(&mut sandbox_app, 80);
-
-        let mock = AppMockAgent::default();
-        let requests = mock.requests.clone();
-        let (addr, _seen) = spawn_app_mock_with(mock).await;
-        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
-        app.start(mpsc::unbounded_channel().0).await.unwrap();
+    async fn permission_without_an_argument_is_a_usage_error() {
+        let (mut app, _rx) = make_app(100, 30);
         app.handle_submit("/permission");
-        let permission = top_overlay_text(&mut app, 80);
-
-        // One card, both blocks, two entry states.
-        for text in [&sandbox, &permission] {
-            assert!(text.contains("Sandbox & permissions"), "{text}");
-            assert!(text.contains("Approval mode"), "{text}");
-            assert!(text.contains("Tool permissions"), "{text}");
-        }
-        assert_ne!(
-            sandbox, permission,
-            "the two commands must not open the same panel"
-        );
-        let marked = |text: &str| {
-            text.lines()
-                .find(|line| line.trim_start().starts_with('›'))
-                .unwrap_or_default()
-                .to_string()
-        };
-        assert!(marked(&sandbox).contains("Sandboxed"), "{sandbox}");
-        assert!(marked(&permission).contains("All"), "{permission}");
-
-        // The block `/permission` lands on is live: ↓ to Workspace, enter
-        // applies it through the agent.
-        press_on_overlay(&mut app, &mut rx, "down");
-        press_on_overlay(&mut app, &mut rx, "enter");
-        pump_until_msg(&mut app, &mut rx, "Tool permission level: Workspace").await;
-        assert_eq!(app.state.permission_level, PermissionKind::Workspace);
-
-        // …and the tier half is still reachable: `↑` walks back through the
-        // block and then out of it into the tier list, whose rows apply a tier
-        // (so `/permission` reaches everything `/sandbox` does).
-        press_on_overlay(&mut app, &mut rx, "up"); // Workspace → All
-        press_on_overlay(&mut app, &mut rx, "up"); // …and out of the block
-        let back = top_overlay_text(&mut app, 80);
-        assert!(marked(&back).contains("Full access"), "{back}");
-        press_on_overlay(&mut app, &mut rx, "enter");
-        // Wait for the command to arrive, not for the command *channel* to go
-        // quiet: the RPC runs in a spawned task, so `pump` could return during
-        // the connect and the count below would read zero on a busy host (the
-        // assertion is the same, it just stops racing the transport).
-        pump_until_agent_commands(&mut app, &mut rx, &requests, "set_sandbox_policy", 1).await;
-        assert_eq!(
-            agent_command_count(&requests, "set_sandbox_policy"),
-            1,
-            "the tier row still writes the policy"
-        );
-        app.stop();
+        assert!(app.overlay_stack.is_empty(), "no panel opens");
+        assert!(last_system(&app).contains("Usage: /permission [all|workspace|none]"));
     }
 
-    /// `/sandbox` opens the mode + permission panel with the platform's initial
+    /// `/sandbox` opens the mode panel with the platform's initial
     /// status, says out loud that the mode is the platform default (the agent
     /// has no policy read-back), applies a mode through the agent — closing
     /// the panel on the pick, like every other menu — and turns a silent
@@ -21469,9 +21359,8 @@ mod tests {
         app.handle_submit("/sandbox");
         assert!(top_overlay_is::<SandboxOverlay>(&app));
         let text = top_overlay_text(&mut app, 80);
-        assert!(text.contains("Sandbox & permissions"), "{text}");
         assert!(text.contains("Approval mode"), "{text}");
-        assert!(text.contains("Tool permissions"), "{text}");
+        assert!(!text.contains("Tool permissions"), "{text}");
         // macOS is sandboxed by construction, and no policy has been read.
         assert!(text.contains("current: Sandboxed"), "{text}");
         assert!(
@@ -22062,7 +21951,8 @@ mod tests {
     }
 
     /// `/permission <level>` applies and persists the level; a bad value is a
-    /// usage error, and no argument opens the panel that owns the picker.
+    /// usage error, and no argument stays one too (the card no longer carries
+    /// the picker).
     #[tokio::test(flavor = "multi_thread")]
     async fn permission_command_sets_persists_and_opens_the_picker() {
         let mock = AppMockAgent::default();
@@ -22089,11 +21979,11 @@ mod tests {
 
         app.handle_submit("/permission  sometimes");
         assert!(last_system(&app).contains("Usage: /permission [all|workspace|none]"));
-        // No argument: the panel with the permission picker opens instead.
+        // No argument: a usage error too — the card is mode-only now, so there
+        // is no panel that owns the picker.
         app.handle_submit("/permission");
-        assert!(top_overlay_is::<SandboxOverlay>(&app));
-        let text = top_overlay_text(&mut app, 80);
-        assert!(text.contains("current: None"), "{text}");
+        assert!(app.overlay_stack.is_empty(), "no panel opens");
+        assert!(last_system(&app).contains("Usage: /permission [all|workspace|none]"));
 
         let sent = requests.lock().unwrap().clone();
         let levels: Vec<String> = sent
@@ -22134,11 +22024,10 @@ mod tests {
             app.tui_settings.default_permission_level.is_none(),
             "a panel pick is not the startup default"
         );
+        // The card is mode-only now: an open sandbox panel is untouched by a
+        // permission answer, and the mode rows it renders are still there.
         let text = top_overlay_text(&mut app, 80);
-        assert!(
-            text.contains("current: None"),
-            "the open panel follows the applied level: {text}"
-        );
+        assert!(text.contains("current: Sandboxed"), "{text}");
 
         // With no panel open the same command still mirrors the level.
         app.hide_overlay();
@@ -22989,11 +22878,6 @@ mod tests {
         assert!(matches!(
             rx.try_recv(),
             Ok(UiCmd::SandboxModeRequested(ApprovalMode::Off))
-        ));
-        sandbox_sink(SandboxAction::PermissionSelected(PermissionKind::None));
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(UiCmd::PermissionLevelRequested(PermissionKind::None))
         ));
         sandbox_sink(SandboxAction::RefreshProbe);
         assert!(matches!(rx.try_recv(), Ok(UiCmd::SandboxProbeRequested)));

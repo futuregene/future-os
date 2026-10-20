@@ -81,9 +81,9 @@ model as an ordinary prompt.
 | `/skills` | Skill browser: search, preview, insert, install / uninstall / upgrade |
 | `/skill-recommend [on\|off]` | Offer a fitting skill before sending a message (on by default) |
 | `/tools [none\|all]` | Multi-select the built-in tools; `none` disables all of them |
-| `/permission [all\|workspace\|none]` | Set the tool permission level (and remember it); no arg opens the sandbox panel |
+| `/permission <all\|workspace\|none>` | Set the tool permission level (and remember it) |
 | `/mode [manual\|sandbox\|auto\|off]` | Show the approval mode, or apply one directly (it persists) |
-| `/sandbox` | Approval mode, backend availability and the permission picker |
+| `/sandbox` | Approval mode card: the four modes and backend availability |
 | `/theme [id]` | Pick a theme, or set one directly by id |
 | `/sessions` | Browse and switch sessions |
 | `/new` | Start a new session |
@@ -132,9 +132,8 @@ the same flow is reached with `k`.
 state. Both are agent-side settings for this session: the footer shows an
 indicator while auto-compaction is on, and `/autoretry` is mirrored in the TUI
 because the agent does not report it back. `/permission <level>`
-also persists its argument as `defaultPermissionLevel` in the TUI's settings
-file, so the next `future tui` starts from it (a level picked inside the
-`/sandbox` panel is applied without persisting anything).
+persists its argument as `defaultPermissionLevel` in the TUI's settings
+file, so the next `future tui` starts from it.
 
 `/shell <cmd>` takes the raw rest of the line rather than the whitespace-collapsed
 argument, so `printf '%s  %s'` reaches the agent unchanged. There is no PTY: it is
@@ -319,13 +318,14 @@ a failure, a timeout or a rejected id reports the outcome and re-reads nothing.
 
 ## Sandbox and tool permissions
 
-`/sandbox` opens the sandbox panel. The same panel is what `/permission` opens
-when you give it no argument, because the mode and the permission level belong
-together.
+`/sandbox` opens the approval-mode card: the four modes, their descriptions,
+the backend availability line and (after a refused request) the fallback
+banner. The tool-permission level is not on the card — `/permission <level>`
+is its only surface.
 
 | Key | Action |
 |---|---|
-| `↑↓` / `k` `j` | Move over the seven rows (four approval modes, then three permission levels) |
+| `↑↓` / `k` `j` | Move over the four mode rows |
 | `enter` / `space` | Apply the highlighted row |
 | `r` | Re-check the sandbox backend and the FutureOS account |
 | `esc` | Close |
@@ -380,10 +380,10 @@ The permission rows are the agent's three levels for tool calls:
 | `Workspace` | Tool calls ask for approval before they run; the grant is scoped to this workspace. |
 | `None` | Every tool call is denied before it runs. |
 
-`/permission <level>` applies one directly and persists it as
-`defaultPermissionLevel` in `~/.future/tui/settings.json`; a level picked inside
-the panel is applied without being persisted. `defaultPermissionLevel` is
-re-applied to the agent the next time this TUI starts.
+`/permission <level>` applies the level directly and persists it as
+`defaultPermissionLevel` in `~/.future/tui/settings.json`.
+`defaultPermissionLevel` is re-applied to the agent the next time this TUI
+starts.
 
 ## Providers and models
 
@@ -512,7 +512,7 @@ and the defaults stay in force.
 | `/copy` says "unconfirmed" or fails | The native clipboard program is unavailable (remote/SSH session?) and the copy went out as an OSC 52 request — the terminal has to apply it. A payload above 100 KB is refused; copy a smaller range. |
 | `/skills` cannot install: "the `future` executable was not found" | The panel resolves `future` once, when this TUI starts. Run `future tui` (or put the unified binary on `PATH`) instead of the standalone `future-tui`; a restart is needed after installing it. |
 | `/sandbox` says the sandbox is unavailable | The probe found no usable backend (macOS Seatbelt; Linux Bubblewrap). The reason and its diagnostic code are on the panel; `r` re-probes. On Linux the agent falls back to `Manual` and the panel says so rather than pretending the tier stuck. |
-| A tool call is refused without asking | The permission level is `None` — check `/sandbox` → Tool permissions, or apply `/permission workspace`. |
+| A tool call is refused without asking | The permission level is `None` — apply `/permission workspace` (or `all`). |
 | No bell / no desktop notification | Check `notify.enabled` (and `notify.bell` / `notify.osc9`, plus a `bellOnComplete: false` legacy key) in `~/.future/tui/settings.json`. A run started by another client, print mode and piped output never notify. |
 | A theme does not repaint something | The chat area, footer, menus, provider list, session lists, pager and usage/sandbox panels all follow `/theme`. If a widget still looks unstyled, it is a bug — the input line is the only intentional non-participant, because it draws no colours. |
 

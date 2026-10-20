@@ -66,7 +66,7 @@ future tui        # 终端 2：终端界面
 | `/skills` | 技能浏览器：搜索、预览、插入、安装 / 卸载 / 升级 |
 | `/skill-recommend [on\|off]` | 发送前推荐合适的技能（默认开启） |
 | `/tools [none\|all]` | 多选内置工具；`none` 表示全部禁用 |
-| `/permission [all\|workspace\|none]` | 设置工具权限级别（并记住它）；不带参数时打开沙箱面板 |
+| `/permission <all\|workspace\|none>` | 设置工具权限级别（并记住它） |
 | `/mode [manual\|sandbox\|auto\|off]` | 查看审批模式，或直接设置（会记住） |
 | `/sandbox` | 审批模式、后端可用性与权限选择器 |
 | `/theme [id]` | 打开主题选择器，或按 id 直接设置主题 |
@@ -114,8 +114,8 @@ future tui        # 终端 2：终端界面
 `false`/`disable`，不区分大小写）；不带参数时翻转当前状态。两者都是本会话的
 agent 侧设置：自动压缩开启时页脚会显示指示；`/autoretry` 则在 TUI 内保留镜像，
 因为 agent 不回传该值。
-`/permission <level>` 还会把参数持久化为 TUI 设置文件里的 `defaultPermissionLevel`，
-下次 `future tui` 启动即从该值开始（在 `/sandbox` 面板里选的级别只应用、不持久化）。
+`/permission <level>` 会把参数持久化为 TUI 设置文件里的 `defaultPermissionLevel`，
+下次 `future tui` 启动即从该值开始。
 
 `/shell <cmd>` 取的是命令名之后的**原始行内容**，而不是按空白折叠后的参数，因此
 `printf '%s  %s'` 会原样传给 agent。它没有 PTY：这就是 agent 的一次性 `shell` 命令
@@ -271,12 +271,13 @@ unavailable.`，而不是稍后抛出难以理解的系统错误。只有**成�
 
 ## 沙箱与工具权限
 
-`/sandbox` 打开沙箱面板；不带参数的 `/permission` 打开的是同一个面板——因为模式
-与权限级别本就属于同一处设置。
+`/sandbox` 打开审批模式卡片：四种模式、各自的说明、后端可用性行，以及（请求被
+降级后的）回退提示。工具权限级别不在这张卡片上——`/permission <level>` 是它唯一的
+入口。
 
 | 按键 | 动作 |
 |---|---|
-| `↑↓` / `k` `j` | 在七行之间移动（四个审批模式，然后三个权限级别） |
+| `↑↓` / `k` `j` | 在四个模式行之间移动 |
 | `enter` / `space` | 应用高亮行 |
 | `r` | 重新探测沙箱后端，并重查 FutureOS 登录状态 |
 | `esc` | 关闭 |
@@ -324,9 +325,9 @@ agent 会如实回落而不是假装成功：在探测不到后端的主机上�
 | `Workspace` | 工具调用先请求审批；授权范围限于当前工作区。 |
 | `None` | 所有工具调用在执行前即被拒绝。 |
 
-`/permission <level>` 直接应用并把它持久化为 `~/.future/tui/settings.json` 里的
-`defaultPermissionLevel`；在面板里选的级别只应用、不持久化。下次启动此 TUI 时，
-`defaultPermissionLevel` 会重新应用到 agent。
+`/permission <level>` 直接应用级别并把它持久化为 `~/.future/tui/settings.json` 里的
+`defaultPermissionLevel`。下次启动此 TUI 时，`defaultPermissionLevel` 会重新应用到
+agent。
 
 ## Provider 与模型
 
@@ -438,7 +439,7 @@ TUI 把客户端侧设置持久化到 `~/.future/tui/settings.json`：
 | `/copy` 提示 unconfirmed 或失败 | 原生剪贴板程序不可用（远程/SSH 会话？），已改为 OSC 52 请求，需终端自行应用。超过 100 KB 的内容会被拒绝，请改复制较小的范围。 |
 | `/skills` 无法安装：提示找不到 `future` 可执行文件 | 面板只在本 TUI 启动时解析一次 `future`。请用 `future tui` 启动（或把统一二进制放进 `PATH`）而不是独立的 `future-tui`；安装后需要重启才生效。 |
 | `/sandbox` 显示沙箱不可用 | 探测没有找到可用后端（macOS Seatbelt；Linux Bubblewrap）。面板会给出原因与诊断码，按 `r` 可重新探测。在 Linux 上 agent 会回落到 `Manual`，面板会如实说明而不是假装模式已生效。 |
-| 工具调用未被询问就被拒绝 | 权限级别是 `None`——见 `/sandbox` → Tool permissions，或执行 `/permission workspace`。 |
+| 工具调用未被询问就被拒绝 | 权限级别是 `None`——执行 `/permission workspace`（或 `all`）。 |
 | 没有铃声 / 没有桌面通知 | 检查 `~/.future/tui/settings.json` 中的 `notify.enabled`（以及 `notify.bell` / `notify.osc9`，还有旧版 `bellOnComplete: false`）。其他客户端启动的 run、print 模式与管道输出都不会通知。 |
 | 主题没有重绘某处 | 对话区、页脚、菜单、provider 列表、会话列表、分页浮层与用量/沙箱面板都会跟随 `/theme`。若仍有部件未被重绘，那是一个 bug——唯一有意不参与的是输入行，因为它本身不输出颜色。 |
 

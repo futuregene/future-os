@@ -1,8 +1,3 @@
-[48;5;236m [1m[38;5;109medit[0m[48;5;236m [38;5;39msrc/greeting.rs[39m [38;5;143m+2[39m [38;5;204m-1[39m
-
-[49m Hello from the mock agent!
-
- This is a [1mdeterministic[0m reply with [38;5;151mcode[39m and a [4m[38;5;117m]8;;https://example.com\link[0m]8;;\.
 
  [38;5;245mModel: Mock Model (`mock-model`)[39m
  [38;5;245mProvider: future[39m
@@ -12,6 +7,11 @@
  [38;5;245mCWD: /mock[39m
  [38;5;245mThinking: off[39m
  [38;5;245mPermission: all[39m
+ [38;5;245mApproval mode: (not set)[39m
+ [38;5;245mQueries: 42[39m
+ [38;5;245mAuto compaction: off[39m
+ [38;5;245mStreaming: no[39m
+ [38;5;245mContext: 48000 / 128000 (37.5%)[39m
           [1m[38;5;252mTheme[0m
           [38;5;255m[48;5;38m› current Dark[39m                                              [49m
           [38;5;252m  Light[39m
@@ -20,16 +20,16 @@
           [38;5;252m  High Contrast[39m
           [38;5;252m  Dracula[39m
           [38;5;245m↑↓ navigate · enter select · / search · esc close           [39m
- [38;5;245m  tool calls/results: 57/57[39m
- [38;5;245m  tokens in/out: 812000/12000[39m
- [38;5;245m  tokens cache read/write: 780000/12000
-[39m [38;5;245m  tokens total: 824000[39m
- [38;5;245m  cost: 8.42[39m
+
+ [38;5;245mTool permission level raised to Workspace — the approval mode only asks while[39m
+ [38;5;245mthe gate is armed.[39m
 
  [38;5;245mApproval mode: Manual — File access follows approval rules; allowlisted[39m
  [38;5;245mread-only commands run automatically, other commands ask. No OS sandbox.[39m
 
- [38;5;245mTool permission level: Workspace. Tool calls ask for approval before they[39m
+ [38;5;245mUsage: /permission [all|workspace|none]
+
+[39m [38;5;245mTool permission level: Workspace. Tool calls ask for approval before they[39m
  [38;5;245mrun; the grant is scoped to this workspace.[39m
 
 >

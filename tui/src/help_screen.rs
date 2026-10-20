@@ -189,8 +189,8 @@ const COMMANDS: [HelpEntry; 44] = [
         desc: "start a new session",
     },
     HelpEntry {
-        key: "/permission [level]",
-        desc: "tool permissions; or set the level",
+        key: "/permission <all|workspace|none>",
+        desc: "set the tool permission level",
     },
     HelpEntry {
         key: "/provider-key <id>",
@@ -210,7 +210,7 @@ const COMMANDS: [HelpEntry; 44] = [
     },
     HelpEntry {
         key: "/sandbox",
-        desc: "approval mode + tool permissions (one card)",
+        desc: "show and set the approval mode",
     },
     HelpEntry {
         key: "/scoped-models",
@@ -485,7 +485,7 @@ mod tests {
         "/tool-output [call-id]",
         "/sandbox",
         "/mode [manual|sandbox|auto|off]",
-        "/permission [level]",
+        "/permission <all|workspace|none>",
         "/shell <cmd>",
         "/title [zh|en]",
         "/metrics",
@@ -735,11 +735,11 @@ mod tests {
         }
     }
 
-    /// `/sandbox` and `/permission` are two doors into one card, and the card
-    /// is the only place that can say so — the two rows used to describe two
-    /// different panels.
+    /// `/sandbox` is the approval-mode card; `/permission` sets the legacy
+    /// level directly — the two rows must not describe one shared panel, which
+    /// the card no longer is.
     #[test]
-    fn the_sandbox_and_permission_rows_name_the_shared_card() {
+    fn the_sandbox_and_permission_rows_name_their_own_surfaces() {
         let text = render_help(80)
             .iter()
             .map(|l| strip_ansi_codes(l))
@@ -752,11 +752,10 @@ mod tests {
                 .to_string()
         };
         let sandbox = row("/sandbox");
-        assert!(sandbox.contains("one card"), "{sandbox}");
-        assert!(sandbox.contains("tool permissions"), "{sandbox}");
+        assert!(sandbox.contains("approval mode"), "{sandbox}");
+        assert!(!sandbox.contains("tool permissions"), "{sandbox}");
         let permission = row("/permission");
-        assert!(permission.contains("tool permissions"), "{permission}");
-        assert!(permission.contains("level"), "{permission}");
+        assert!(permission.contains("permission level"), "{permission}");
     }
 
     #[test]
