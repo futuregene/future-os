@@ -558,7 +558,7 @@ fn set_builtin_base_url_rejects_placeholder_and_bad_url() {
 // ── validate.rs field-rule coverage ─────────────────────────────────────────
 
 use super::validate::{model_json_values, validate_custom_provider};
-use crate::remote::test_support::{ensure_mock_agent, mock_agent_lock};
+use crate::test_support::provider_responses::mock_provider_agent;
 
 fn valid_input() -> UpsertCustomProviderInput {
     input("prov", "Prov", true)
@@ -745,15 +745,14 @@ fn validate_model_rules() {
 #[test]
 fn catalog_unavailable_logs_and_returns_empty() {
     let _home = HomeGuard::new("cat-down");
-    let map = super::catalog::catalog_unavailable(crate::AppError::Message("down".to_string()));
+    let map = super::catalog::catalog_unavailable(crate::Error::Message("down".to_string()));
     assert!(map.is_empty());
 }
 
 #[tokio::test]
 async fn builtin_catalog_providers_fetches_from_the_agent() {
-    let _lock = mock_agent_lock();
     let _home = HomeGuard::new("cat-fetch");
-    ensure_mock_agent();
+    let _agent = mock_provider_agent();
     let catalog = super::catalog::builtin_catalog_providers().await;
     assert!(catalog.contains_key("deepseek"));
     assert!(catalog.contains_key("azure-openai-responses"));
@@ -767,9 +766,8 @@ async fn builtin_catalog_providers_fetches_from_the_agent() {
 
 #[tokio::test]
 async fn list_agent_providers_builds_the_view() {
-    let _lock = mock_agent_lock();
     let _home = HomeGuard::new("cat-list");
-    ensure_mock_agent();
+    let _agent = mock_provider_agent();
     let view = list_agent_providers().await.unwrap();
     assert_eq!(view.builtin.first().map(|p| p.id.as_str()), Some("future"));
     assert!(view.builtin.iter().any(|p| p.id == "deepseek"));
@@ -786,9 +784,8 @@ fn key_input(id: &str, api_key: Option<&str>) -> UpdateBuiltinProviderKeyInput {
 
 #[tokio::test]
 async fn builtin_key_update_applied_by_agent_and_validated() {
-    let _lock = mock_agent_lock();
     let _home = HomeGuard::new("wr-key-rpc");
-    let agent = ensure_mock_agent();
+    let agent = mock_provider_agent();
 
     // Agent applies the change: the view comes straight back, no local write.
     let view = update_builtin_provider_key(key_input("deepseek", Some("sk-live")))
@@ -827,9 +824,8 @@ async fn builtin_key_update_applied_by_agent_and_validated() {
 
 #[tokio::test]
 async fn builtin_key_update_never_falls_back_to_local_writes() {
-    let _lock = mock_agent_lock();
     let _home = HomeGuard::new("wr-key-local");
-    let agent = ensure_mock_agent();
+    let agent = mock_provider_agent();
     // A legacy Agent cannot turn Desktop into a second writer.
     agent.script("set_auth", false, json!(null), "unknown command: set_auth");
     let error = update_builtin_provider_key(key_input("deepseek", Some("sk-local")))
@@ -849,9 +845,8 @@ async fn builtin_key_update_never_falls_back_to_local_writes() {
 
 #[tokio::test]
 async fn builtin_base_url_update_paths() {
-    let _lock = mock_agent_lock();
     let _home = HomeGuard::new("wr-url-rpc");
-    let agent = ensure_mock_agent();
+    let agent = mock_provider_agent();
     let base_url_input = |id: &str, base_url: &str| SetBuiltinProviderBaseUrlInput {
         id: id.to_string(),
         base_url: base_url.to_string(),
@@ -932,9 +927,8 @@ async fn builtin_base_url_update_paths() {
 
 #[tokio::test]
 async fn update_builtin_provider_atomic_paths() {
-    let _lock = mock_agent_lock();
     let _home = HomeGuard::new("wr-atomic");
-    let agent = ensure_mock_agent();
+    let agent = mock_provider_agent();
     let input = |id: &str, base_url: Option<&str>, api_key: Option<&str>, update_api_key: bool| {
         UpdateBuiltinProviderInput {
             id: id.to_string(),
@@ -1055,9 +1049,8 @@ fn upsert_local_preserves_unmanaged_model_fields() {
 
 #[tokio::test]
 async fn custom_provider_upsert_paths() {
-    let _lock = mock_agent_lock();
     let _home = HomeGuard::new("wr-upsert-rpc");
-    let agent = ensure_mock_agent();
+    let agent = mock_provider_agent();
 
     // Agent-applied create: the RPC carries the validated provider; the mock
     // does not persist files, so the view simply re-reads the (empty) locals.
@@ -1146,9 +1139,8 @@ fn upsert_local_rolls_back_when_models_write_fails() {
 
 #[tokio::test]
 async fn custom_provider_delete_paths() {
-    let _lock = mock_agent_lock();
     let _home = HomeGuard::new("wr-delete-rpc");
-    let agent = ensure_mock_agent();
+    let agent = mock_provider_agent();
 
     // Seed a provider locally (models.json + auth.json).
     upsert_custom_provider_with_catalog(input("gone", "Gone", true), &fixture_catalog()).unwrap();

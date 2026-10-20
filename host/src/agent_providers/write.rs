@@ -17,7 +17,7 @@ use crate::agent_bridge::config as agent_config;
 use crate::auth_store::FUTURE_PROVIDER_ID;
 #[cfg(test)]
 use crate::config_io;
-use crate::AppError;
+use crate::Error as AppError;
 
 #[cfg(test)]
 use super::catalog::models_json_path;
@@ -331,8 +331,8 @@ fn validate_upsert_against_catalog(
 /// The `upsert_provider` RPC payload for a validated custom provider.
 pub(super) fn provider_upsert_message(
     validated: &ValidatedCustomProvider,
-) -> crate::agent_proto::ProviderUpsert {
-    crate::agent_proto::ProviderUpsert {
+) -> future_rpc::proto::ProviderUpsert {
+    future_rpc::proto::ProviderUpsert {
         id: validated.id.clone(),
         name: validated.name.clone(),
         api: validated.api.clone(),
@@ -340,7 +340,7 @@ pub(super) fn provider_upsert_message(
         models: validated
             .models
             .iter()
-            .map(|model| crate::agent_proto::ProviderModel {
+            .map(|model| future_rpc::proto::ProviderModel {
                 id: model.id.clone(),
                 name: model.name.clone(),
                 modalities: model.modalities.clone(),

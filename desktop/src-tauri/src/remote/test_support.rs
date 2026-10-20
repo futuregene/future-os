@@ -772,66 +772,8 @@ fn default_answer(
             "version": null,
             "capabilities": null,
         })),
-        "list_models" => ok(json!({
-            "models": [],
-            "defaultModel": "",
-            "isScoped": false,
-            "builtinProviders": {
-                "deepseek": {
-                    "name": "DeepSeek",
-                    "modelCount": 3,
-                    "baseUrl": "https://api.deepseek.com/v1",
-                },
-                "azure-openai-responses": {
-                    "name": "Azure OpenAI Responses",
-                    "modelCount": 1,
-                    "baseUrl": "https://YOUR_RESOURCE.openai.azure.com/openai",
-                },
-                // Filtered out of the GUI catalog: FutureGene is presented
-                // separately, and an empty id is invalid.
-                "future": {
-                    "name": "Future",
-                    "modelCount": 9,
-                    "baseUrl": "https://future-os.cn/api/v1",
-                },
-                "": { "name": "", "modelCount": 0, "baseUrl": "" },
-                // A pre-display-name agent entry: the GUI falls back to the id.
-                "noname": {
-                    "name": "",
-                    "modelCount": 1,
-                    "baseUrl": "https://noname.example.com/v1",
-                },
-            },
-        })),
-        "list_providers" => ok(json!({
-            "builtin": [
-                {
-                    "id": "future",
-                    "name": "Future",
-                    "baseUrl": "https://future-os.cn/api/v1",
-                    "hasApiKey": false,
-                    "modelCount": 9,
-                    "requiresBaseUrl": false
-                },
-                {
-                    "id": "deepseek",
-                    "name": "DeepSeek",
-                    "baseUrl": "https://api.deepseek.com/v1",
-                    "hasApiKey": false,
-                    "modelCount": 3,
-                    "requiresBaseUrl": false
-                },
-                {
-                    "id": "azure-openai-responses",
-                    "name": "Azure OpenAI Responses",
-                    "baseUrl": "https://YOUR_RESOURCE.openai.azure.com/openai",
-                    "hasApiKey": false,
-                    "modelCount": 1,
-                    "requiresBaseUrl": true
-                }
-            ],
-            "custom": []
-        })),
+        "list_models" => ok(future_host::test_support::provider_responses::models()),
+        "list_providers" => ok(future_host::test_support::provider_responses::providers()),
         "get_messages" => ok(json!({
             "messages": [
                 { "role": "user", "content": "hi" },

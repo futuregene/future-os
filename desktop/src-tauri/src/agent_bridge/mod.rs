@@ -1,11 +1,11 @@
 mod approval;
 mod client;
-pub(crate) mod config;
+pub(crate) use future_host::agent_bridge::config;
 mod config_observer;
 mod delete_outbox;
 mod headless;
 mod import;
-mod models;
+use future_host::agent_bridge::models;
 mod observer;
 mod persist;
 mod presence;
@@ -17,7 +17,7 @@ mod review;
 mod run_control;
 mod session;
 mod session_events;
-mod skills;
+use future_host::agent_bridge::skills;
 mod stream;
 #[cfg(test)]
 pub(crate) mod test_support;
@@ -44,7 +44,7 @@ pub use self::headless::{
     prepare_prompt_persisted_with_trigger, run_prepared_prompt_with_acceptance, PreparedPrompt,
 };
 pub(crate) use self::import::{list_agent_session_ids, session_has_messages};
-pub use self::models::{list_agent_models, list_builtin_providers, AgentModelOption};
+pub use self::models::{list_agent_models, AgentModelOption};
 #[cfg(test)]
 pub(crate) use self::observer::has_observer;
 pub(crate) use self::observer::reconcile_deleted_session;

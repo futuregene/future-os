@@ -44,7 +44,7 @@ struct AgentModelsResponse {
     models: Vec<AgentModelOption>,
 }
 
-pub async fn list_agent_models() -> Result<Vec<AgentModelOption>, crate::AppError> {
+pub async fn list_agent_models() -> Result<Vec<AgentModelOption>, crate::Error> {
     let mut client = connect_agent().await?;
     let response = client
         .execute_command(base_command("list_models", String::new()))
@@ -86,7 +86,7 @@ struct BuiltinProvidersResponse {
 /// former compile-time `#[path]` include of the agent's generated catalog —
 /// the agent is the single source of the catalog.
 pub async fn list_builtin_providers(
-) -> Result<BTreeMap<String, BuiltinProviderCatalogEntry>, crate::AppError> {
+) -> Result<BTreeMap<String, BuiltinProviderCatalogEntry>, crate::Error> {
     let mut client = connect_agent().await?;
     let response = client
         .execute_command(list_builtin_providers_command())
@@ -159,7 +159,7 @@ mod tests {
         );
         let error = list_agent_models().await.expect_err("transport");
         assert!(
-            matches!(error, crate::AppError::AgentUnavailable(_)),
+            matches!(error, crate::Error::AgentUnavailable(_)),
             "transport maps through map_rpc_error: {error}"
         );
 
@@ -204,7 +204,7 @@ mod tests {
 
         mock.push("list_models", Reply::Status(tonic::Code::Internal, "boom"));
         let error = list_builtin_providers().await.expect_err("transport");
-        assert!(matches!(error, crate::AppError::Message(_)), "{error}");
+        assert!(matches!(error, crate::Error::Message(_)), "{error}");
 
         mock.push_data(
             "list_models",

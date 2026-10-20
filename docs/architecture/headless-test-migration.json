@@ -1437,7 +1437,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/config.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_bridge::config::tests::applied_and_rejected_outcomes_never_fall_back"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/config.rs:280:auth_update_variants",
@@ -1448,7 +1456,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/config.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_bridge::config::tests::auth_update_variants"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/config.rs:315:provider_config_commands",
@@ -1459,7 +1475,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/config.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_bridge::config::tests::provider_config_commands"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/config.rs:399:update_builtin_provider_skips_api_key_when_none",
@@ -1470,7 +1494,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/config.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_bridge::config::tests::update_builtin_provider_skips_api_key_when_none"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/config.rs:417:list_providers_error_paths",
@@ -1481,7 +1513,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/config.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_bridge::config::tests::list_providers_error_paths"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/config_observer.rs:122:observe_once_ping_snapshot_invalidates_and_ends",
@@ -2174,7 +2214,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/models.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_bridge::models::tests::list_agent_models_parses_the_catalog"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/models.rs:148:list_agent_models_surfaces_rejection_transport_and_parse_errors",
@@ -2185,7 +2233,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/models.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_bridge::models::tests::list_agent_models_surfaces_rejection_transport_and_parse_errors"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/models.rs:176:list_builtin_providers_parses_and_defaults_name",
@@ -2196,7 +2252,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/models.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_bridge::models::tests::list_builtin_providers_parses_and_defaults_name"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/observer.rs:1345:a_restored_or_restarted_source_replays_from_its_own_cursor_origin",
@@ -4198,7 +4262,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/skills.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_bridge::skills::tests::list_installed_skills_uses_agent_snapshot"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/skills.rs:174:list_installed_skills_error_paths",
@@ -4209,7 +4281,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/skills.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_bridge::skills::tests::list_installed_skills_error_paths"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/skills.rs:209:management_commands_forward_identity_and_upgrade_status",
@@ -4220,7 +4300,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/skills.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_bridge::skills::tests::management_commands_forward_identity_and_upgrade_status"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/skills.rs:239:refresh_skills_is_best_effort",
@@ -4231,7 +4319,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/skills.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_bridge::skills::tests::refresh_skills_is_best_effort"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/skills.rs:265:suggest_skill_surfaces_transport_and_malformed_replies",
@@ -4242,7 +4338,15 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_bridge/skills.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_bridge::skills::tests::suggest_skill_surfaces_transport_and_malformed_replies"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/stream.rs:535:terminal_reason_categories_survive_live_and_snapshot_paths",
@@ -5991,8 +6095,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::custom_provider_model_serde_defaults_context_window_and_max_tokens"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:87:create_rejects_existing_id",
@@ -6003,8 +6115,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::create_rejects_existing_id"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:98:edit_allows_same_id",
@@ -6015,8 +6135,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::edit_allows_same_id"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:111:rejects_duplicate_name_case_insensitive",
@@ -6027,8 +6155,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::rejects_duplicate_name_case_insensitive"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:121:rejects_builtin_name",
@@ -6039,8 +6175,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::rejects_builtin_name"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:130:reserves_future_id",
@@ -6051,8 +6195,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::reserves_future_id"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:139:list_filters_stray_future_entry",
@@ -6063,8 +6215,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::list_filters_stray_future_entry"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:155:list_includes_catalog_providers_after_future",
@@ -6075,8 +6235,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::list_includes_catalog_providers_after_future"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:165:future_provider_uses_cached_model_count",
@@ -6087,8 +6255,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::future_provider_uses_cached_model_count"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:186:custom_provider_shadows_builtin_catalog_provider",
@@ -6099,8 +6275,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::custom_provider_shadows_builtin_catalog_provider"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:202:update_builtin_provider_key_sets_and_clears_auth_entry",
@@ -6111,8 +6295,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::update_builtin_provider_key_sets_and_clears_auth_entry"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:255:create_rejects_builtin_catalog_id_and_name",
@@ -6123,8 +6315,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::create_rejects_builtin_catalog_id_and_name"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:269:id_is_lowercased",
@@ -6135,8 +6335,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::id_is_lowercased"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:279:rejects_bad_id_charset_and_length",
@@ -6147,8 +6355,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::rejects_bad_id_charset_and_length"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:290:rejects_non_ascii_name",
@@ -6159,8 +6375,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::rejects_non_ascii_name"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:298:rejects_bad_base_url_and_api",
@@ -6171,8 +6395,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::rejects_bad_base_url_and_api"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:311:validates_models",
@@ -6183,8 +6415,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::validates_models"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:331:empty_provider_and_model_names_fall_back_to_their_ids",
@@ -6195,8 +6435,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::empty_provider_and_model_names_fall_back_to_their_ids"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:349:model_reasoning_round_trips_through_validation_rpc_and_persistence",
@@ -6207,8 +6455,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::model_reasoning_round_trips_through_validation_rpc_and_persistence"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:373:model_prices_round_trip_and_are_validated",
@@ -6219,8 +6475,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::model_prices_round_trip_and_are_validated"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:433:model_modalities_round_trip",
@@ -6231,8 +6495,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::model_modalities_round_trip"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:475:catalog_base_url_placeholder_drives_requires_base_url",
@@ -6243,8 +6515,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::catalog_base_url_placeholder_drives_requires_base_url"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:496:set_builtin_base_url_override_keeps_provider_builtin",
@@ -6255,8 +6535,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::set_builtin_base_url_override_keeps_provider_builtin"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:535:set_builtin_base_url_rejects_placeholder_and_bad_url",
@@ -6267,8 +6555,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::set_builtin_base_url_rejects_placeholder_and_bad_url"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:567:validate_rejects_missing_and_reserved_ids",
@@ -6279,8 +6575,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::validate_rejects_missing_and_reserved_ids"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:585:validate_base_url_rules",
@@ -6291,8 +6595,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::validate_base_url_rules"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:611:validate_api_and_name_rules",
@@ -6303,8 +6615,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::validate_api_and_name_rules"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:639:validate_api_key_rules",
@@ -6315,8 +6635,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::validate_api_key_rules"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:665:validate_model_rules",
@@ -6327,8 +6655,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::validate_model_rules"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:745:catalog_unavailable_logs_and_returns_empty",
@@ -6339,8 +6675,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::catalog_unavailable_logs_and_returns_empty"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:752:builtin_catalog_providers_fetches_from_the_agent",
@@ -6351,8 +6695,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::builtin_catalog_providers_fetches_from_the_agent"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:768:list_agent_providers_builds_the_view",
@@ -6363,8 +6715,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::list_agent_providers_builds_the_view"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:787:builtin_key_update_applied_by_agent_and_validated",
@@ -6375,8 +6735,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::builtin_key_update_applied_by_agent_and_validated"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:828:builtin_key_update_never_falls_back_to_local_writes",
@@ -6387,8 +6755,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::builtin_key_update_never_falls_back_to_local_writes"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:850:builtin_base_url_update_paths",
@@ -6399,8 +6775,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::builtin_base_url_update_paths"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:933:update_builtin_provider_atomic_paths",
@@ -6411,8 +6795,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::update_builtin_provider_atomic_paths"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:990:upsert_local_persists_the_auth_key_on_success",
@@ -6423,8 +6815,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::upsert_local_persists_the_auth_key_on_success"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1009:upsert_local_preserves_unmanaged_model_fields",
@@ -6435,8 +6835,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::upsert_local_preserves_unmanaged_model_fields"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1056:custom_provider_upsert_paths",
@@ -6447,8 +6855,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::custom_provider_upsert_paths"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1097:upsert_refuses_to_create_against_an_unavailable_catalog",
@@ -6459,8 +6875,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::upsert_refuses_to_create_against_an_unavailable_catalog"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1104:upsert_local_rejects_a_non_object_providers_root",
@@ -6471,8 +6895,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::upsert_local_rejects_a_non_object_providers_root"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1115:upsert_local_rolls_back_when_the_key_write_fails",
@@ -6483,8 +6915,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::upsert_local_rolls_back_when_the_key_write_fails"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1131:upsert_local_rolls_back_when_models_write_fails",
@@ -6495,8 +6935,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::upsert_local_rolls_back_when_models_write_fails"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1147:custom_provider_delete_paths",
@@ -6507,8 +6955,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::custom_provider_delete_paths"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1198:delete_local_removes_the_auth_entry_on_success",
@@ -6519,8 +6975,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::delete_local_removes_the_auth_entry_on_success"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1209:delete_local_is_a_noop_for_unknown_ids",
@@ -6531,8 +6995,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::delete_local_is_a_noop_for_unknown_ids"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1219:delete_local_rolls_back_when_the_auth_write_fails",
@@ -6543,8 +7015,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::delete_local_rolls_back_when_the_auth_write_fails"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1233:delete_local_rolls_back_when_models_write_fails",
@@ -6555,8 +7035,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::delete_local_rolls_back_when_models_write_fails"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1249:override_only_detection_and_base_url_override_lookup",
@@ -6567,8 +7055,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::override_only_detection_and_base_url_override_lookup"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1277:clear_base_url_keeps_entries_with_other_fields",
@@ -6579,8 +7075,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::clear_base_url_keeps_entries_with_other_fields"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1303:clear_base_url_is_a_noop_without_a_providers_object",
@@ -6591,8 +7095,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::clear_base_url_is_a_noop_without_a_providers_object"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1320:clear_base_url_is_a_noop_when_the_entry_is_not_an_object",
@@ -6603,8 +7115,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::clear_base_url_is_a_noop_when_the_entry_is_not_an_object"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1348:upsert_rolls_models_back_when_the_paired_key_write_fails",
@@ -6615,8 +7135,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::upsert_rolls_models_back_when_the_paired_key_write_fails"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:1373:delete_restores_models_when_the_auth_removal_fails",
@@ -6627,8 +7155,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/tests.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::tests::delete_restores_models_when_the_auth_removal_fails"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/write.rs:675:preserve_unmanaged_model_fields_skips_whatever_it_cannot_merge",
@@ -6639,8 +7175,16 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_providers/write.rs",
-      "status": "planned",
-      "ownershipDecision": "host-provider"
+      "status": "migrated-local-pass",
+      "ownershipDecision": "host-provider",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "6e0ec7e7b80b84907d7524321880881e6b07c59a",
+        "cases": [
+          "agent_providers::write::preserve_tests::preserve_unmanaged_model_fields_skips_whatever_it_cannot_merge"
+        ],
+        "evidence": "docs/testing/headless-host-providers-2026-10-20.json"
+      }
     },
     {
       "key": "desktop/src-tauri/src/agent_supervisor.rs:276:forced_exit_deadline_does_not_depend_on_agent_cleanup_or_the_ui_loop",

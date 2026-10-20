@@ -110,7 +110,7 @@ pub(super) struct ValidatedCustomProvider {
 /// locked write path; only request-local rules live here.
 pub(super) fn validate_custom_provider(
     input: UpsertCustomProviderInput,
-) -> Result<ValidatedCustomProvider, crate::AppError> {
+) -> Result<ValidatedCustomProvider, crate::Error> {
     // Provider id: lowercased, [a-z0-9_-], length-bounded, `future` reserved.
     let id = input.id.trim().to_lowercase();
     if id.is_empty() {

@@ -278,7 +278,7 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 | 1 | 已建立无 GUI 普通库、任务注册、展示出口和消费者依赖；完整生命周期/配置边界未完成 |
 | 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端/托管与请求归属已迁入；完整业务桥、Remote、维护和停止协调未迁入 |
 | 3 | 尚未实现；产品入口仍是 `futureos-headless` |
-| 4 | 已迁移 498 个原测试声明并在本地 macOS 执行通过；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
+| 4 | 已迁移 566 个原测试声明并在本地 macOS 执行通过；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
 | 5 | 已加宿主 CI 分组和 affected 传播；构建、发行物、签名/安装/升级/卸载未完成 |
 | 6 | 尚未开始；无最终冻结候选、同条件性能、产物验收或确认的人工结果 |
 
@@ -345,3 +345,9 @@ Agent 的状态、发现/兼容性决策、服务锁作用域、准备、readine
 CI `39361847974` 的 Windows Desktop 编译通过，原缺失 trait 已修复；新增依赖图步骤却按 Windows 默认编码解码 Cargo UTF-8 JSON，产生 `UnicodeDecodeError`，导致后续原生生命周期和产物步骤未运行。脚本现在对 rustc/Cargo 输出显式指定 UTF-8，所有 GUI 依赖断言保持不变。本地真实 metadata 可复现 cp1252 解码错误；强制默认编码为 cp1252 后运行修复脚本，实际依赖遍历及全部断言通过，见[编码修复证据](../testing/headless-host-boundary-encoding-2026-10-20.json)。Windows 原生验证依用户安排继续由 CI 执行。
 
 按本地先测再开下一轮 CI 的安排，在 `caa99a78` 的共享宿主源码上运行独立 `cargo test -p future-host`：500 项通过、0 失败、0 忽略，10.31 秒；原有一个 `record_macro` 文档示例仍为 ignored，未新增跳过。无需 Desktop 或 npm 环境；500 项包含 498 个迁移原声明和 2 个新增事件出口测试，按实际输出逐项关联迁移清单，状态 `migrated-local-pass` 仅表示本地 macOS 通过。真实旧 headless 入口文件另有 13 项通过（7.51 秒），Remote 进程文件也有 13 项通过（184.80 秒），两份真实入口文件共 26 项通过、0 失败、0 忽略。详见[本地执行记录](../testing/headless-host-local-2026-10-20.json)。这不是最终 `future headless` CLI 入口验收，也不代表跨平台或性能验收完成。
+
+### 2026-10-20 模型、技能和 Provider 服务迁移
+
+模型目录、技能 RPC、Provider/auth RPC 及 Provider 校验/视图服务迁入宿主；Desktop 转发至同一实现。生产写入仍只由 Agent 提交，本地事务 helper 仍仅用于原有真实文件事务、原子写入及回滚测试。未改 RPC 类型、数据字段或配置路径。
+
+68 个原声明随服务迁移：模型/技能/配置 RPC 13 项、Provider 55 项，本地定向执行均通过，原断言保持。Provider RPC 用例复用共用 gRPC 夹具，原 Remote mock 的目录/快照响应提取为一份共享测试数据，两边复用；Provider 用例遵循 canonical 夹具的 HOME→mock 锁顺序，不引入第二个协议或后端。宿主、GUI/CLI 组合及旧 headless Clippy `--all-targets`、fmt 通过，见[证据](../testing/headless-host-providers-2026-10-20.json)。本批晚于 CI 候选 `6e0ec7e7`，跨平台执行仍待后续运行。

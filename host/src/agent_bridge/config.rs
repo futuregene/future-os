@@ -12,15 +12,15 @@
 //! an unavailable or outdated Agent is an error. This keeps every client and
 //! every conversation on one authoritative configuration revision.
 
-use crate::agent_proto::{AuthUpdate, RpcCommand};
-use crate::AppError;
+use crate::Error as AppError;
+use future_rpc::proto::{AuthUpdate, RpcCommand};
 
 use super::client::{base_command, connect_agent};
 
 /// Read the Agent-owned, secret-redacted provider snapshot. This deliberately
 /// does not inspect Desktop's filesystem, so a custom Agent endpoint or HOME
 /// cannot make the displayed state diverge from the process serving prompts.
-pub(crate) async fn list_providers() -> Result<crate::agent_providers::ProvidersView, AppError> {
+pub async fn list_providers() -> Result<crate::agent_providers::ProvidersView, AppError> {
     let mut client = connect_agent().await?;
     let response = client
         .execute_command(base_command("list_providers", String::new()))
@@ -80,7 +80,7 @@ fn set_auth_command(update: AuthUpdate) -> RpcCommand {
 }
 
 /// Set a provider's API key (`auth.json` entry, preserving other fields).
-pub(crate) async fn set_provider_key(id: &str, key: &str) -> Result<bool, AppError> {
+pub async fn set_provider_key(id: &str, key: &str) -> Result<bool, AppError> {
     send_config_write(
         set_auth_command(AuthUpdate {
             provider: id.to_string(),
@@ -93,7 +93,7 @@ pub(crate) async fn set_provider_key(id: &str, key: &str) -> Result<bool, AppErr
 }
 
 /// Remove a provider's API key, keeping the rest of its entry.
-pub(crate) async fn clear_provider_key(id: &str) -> Result<bool, AppError> {
+pub async fn clear_provider_key(id: &str) -> Result<bool, AppError> {
     send_config_write(
         set_auth_command(AuthUpdate {
             provider: id.to_string(),
@@ -107,7 +107,7 @@ pub(crate) async fn clear_provider_key(id: &str) -> Result<bool, AppError> {
 
 /// FutureGene login: store the device-flow key and pin `base_url` (mirrors the
 /// CLI's `saveAuth` shape, applied by the agent).
-pub(crate) async fn future_login(key: &str, base_url: &str) -> Result<bool, AppError> {
+pub async fn future_login(key: &str, base_url: &str) -> Result<bool, AppError> {
     send_config_write(
         set_auth_command(AuthUpdate {
             provider: crate::auth_store::FUTURE_PROVIDER_ID.to_string(),
@@ -121,7 +121,7 @@ pub(crate) async fn future_login(key: &str, base_url: &str) -> Result<bool, AppE
 }
 
 /// FutureGene logout: drop the key, keep `base_url`.
-pub(crate) async fn future_logout() -> Result<bool, AppError> {
+pub async fn future_logout() -> Result<bool, AppError> {
     send_config_write(
         set_auth_command(AuthUpdate {
             provider: crate::auth_store::FUTURE_PROVIDER_ID.to_string(),
@@ -135,13 +135,10 @@ pub(crate) async fn future_logout() -> Result<bool, AppError> {
 
 /// Set (or clear, when `base_url` is empty) a built-in provider's Base URL
 /// override in `models.json`.
-pub(crate) async fn set_builtin_provider_base_url(
-    id: &str,
-    base_url: &str,
-) -> Result<bool, AppError> {
+pub async fn set_builtin_provider_base_url(id: &str, base_url: &str) -> Result<bool, AppError> {
     send_config_write(
         RpcCommand {
-            provider_config: Some(crate::agent_proto::ProviderUpsert {
+            provider_config: Some(future_rpc::proto::ProviderUpsert {
                 id: id.to_string(),
                 base_url: base_url.to_string(),
                 clear_base_url: base_url.is_empty(),
@@ -155,12 +152,12 @@ pub(crate) async fn set_builtin_provider_base_url(
 }
 
 /// Atomically update a built-in provider's optional Base URL and API key.
-pub(crate) async fn update_builtin_provider(
+pub async fn update_builtin_provider(
     id: &str,
     base_url: Option<&str>,
     api_key: Option<Option<&str>>,
 ) -> Result<bool, AppError> {
-    let mut config = crate::agent_proto::ProviderUpsert {
+    let mut config = future_rpc::proto::ProviderUpsert {
         id: id.to_string(),
         ..Default::default()
     };
@@ -178,9 +175,7 @@ pub(crate) async fn update_builtin_provider(
 }
 
 /// Create/update a `models.json` provider entry (plus optional auth key).
-pub(crate) async fn upsert_provider(
-    config: crate::agent_proto::ProviderUpsert,
-) -> Result<bool, AppError> {
+pub async fn upsert_provider(config: future_rpc::proto::ProviderUpsert) -> Result<bool, AppError> {
     send_config_write(
         RpcCommand {
             provider_config: Some(config),
@@ -192,10 +187,10 @@ pub(crate) async fn upsert_provider(
 }
 
 /// Remove a provider's `models.json` entry AND its `auth.json` entry.
-pub(crate) async fn delete_provider(id: &str) -> Result<bool, AppError> {
+pub async fn delete_provider(id: &str) -> Result<bool, AppError> {
     send_config_write(
         RpcCommand {
-            provider_config: Some(crate::agent_proto::ProviderUpsert {
+            provider_config: Some(future_rpc::proto::ProviderUpsert {
                 id: id.to_string(),
                 ..Default::default()
             }),
@@ -344,7 +339,7 @@ mod tests {
 
         // Full upsert.
         mock.push("upsert_provider", Reply::Data("{}".to_string()));
-        let upsert = crate::agent_proto::ProviderUpsert {
+        let upsert = future_rpc::proto::ProviderUpsert {
             id: "custom".to_string(),
             name: "Custom".to_string(),
             ..Default::default()

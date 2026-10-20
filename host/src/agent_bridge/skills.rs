@@ -17,7 +17,7 @@ pub struct InstalledSkill {
     pub version: Option<String>,
 }
 
-pub async fn list_installed_skills() -> Result<Vec<InstalledSkill>, crate::AppError> {
+pub async fn list_installed_skills() -> Result<Vec<InstalledSkill>, crate::Error> {
     serde_json::from_value(
         skill_command(base_command("list_installed_skills", String::new())).await?,
     )
@@ -47,8 +47,8 @@ pub struct AvailableSkill {
 }
 
 async fn skill_command(
-    command: crate::agent_proto::RpcCommand,
-) -> Result<serde_json::Value, crate::AppError> {
+    command: future_rpc::proto::RpcCommand,
+) -> Result<serde_json::Value, crate::Error> {
     let mut client = connect_agent().await?;
     let response = client
         .execute_command(command)
@@ -59,14 +59,14 @@ async fn skill_command(
     Ok(future_rpc::decode::response_data(&response))
 }
 
-pub async fn list_available_skills() -> Result<Vec<AvailableSkill>, crate::AppError> {
+pub async fn list_available_skills() -> Result<Vec<AvailableSkill>, crate::Error> {
     serde_json::from_value(
         skill_command(base_command("list_available_skills", String::new())).await?,
     )
     .map_err(|error| format!("Invalid available skills response: {error}").into())
 }
 
-pub async fn install_skill(id: String, version: String) -> Result<(), crate::AppError> {
+pub async fn install_skill(id: String, version: String) -> Result<(), crate::Error> {
     let mut command = base_command("install_skill", String::new());
     command.skill_id = id;
     command.skill_version = version;
@@ -74,7 +74,7 @@ pub async fn install_skill(id: String, version: String) -> Result<(), crate::App
     Ok(())
 }
 
-pub async fn uninstall_skill(id: String) -> Result<bool, crate::AppError> {
+pub async fn uninstall_skill(id: String) -> Result<bool, crate::Error> {
     let mut command = base_command("uninstall_skill", String::new());
     command.skill_id = id;
     let response = skill_command(command).await?;
@@ -84,7 +84,7 @@ pub async fn uninstall_skill(id: String) -> Result<bool, crate::AppError> {
         .unwrap_or(false))
 }
 
-pub async fn sync_skills(enabled: bool) -> Result<serde_json::Value, crate::AppError> {
+pub async fn sync_skills(enabled: bool) -> Result<serde_json::Value, crate::Error> {
     let mut command = base_command("sync_skills", String::new());
     command.enabled = enabled;
     skill_command(command).await
@@ -117,7 +117,7 @@ pub struct SkillCandidate {
 pub async fn suggest_skill(
     query: &str,
     candidates: Vec<SkillCandidate>,
-) -> Result<Option<SkillCandidate>, crate::AppError> {
+) -> Result<Option<SkillCandidate>, crate::Error> {
     #[derive(Deserialize)]
     struct SuggestResponse {
         #[serde(default)]
@@ -128,7 +128,7 @@ pub async fn suggest_skill(
     command.suggest_query = query.to_string();
     command.suggest_candidates = candidates
         .into_iter()
-        .map(|c| crate::agent_proto::SkillCandidate {
+        .map(|c| future_rpc::proto::SkillCandidate {
             name: c.name,
             description: c.description,
         })

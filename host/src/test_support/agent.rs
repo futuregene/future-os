@@ -111,6 +111,7 @@ struct MockState {
     /// failure arm read `DA:0` for a whole segment because another caller took
     /// the reply). This map is keyed by command type and survives the call.
     reject_defaults: HashMap<String, String>,
+    default_data: HashMap<String, String>,
     atomic_streams: VecDeque<StreamScript>,
     plain_streams: VecDeque<StreamScript>,
     requests: Vec<RpcCommand>,
@@ -202,7 +203,13 @@ impl FutureAgent for MockAgent {
             let reject_default = state.reject_defaults.get(&cmd.r#type).cloned();
             reply.unwrap_or_else(|| match reject_default {
                 Some(error) => Reply::Reject(error),
-                None => Reply::Data(default_reply_data(&cmd)),
+                None => Reply::Data(
+                    state
+                        .default_data
+                        .get(&cmd.r#type)
+                        .cloned()
+                        .unwrap_or_else(|| default_reply_data(&cmd)),
+                ),
             })
         };
         match reply {
@@ -433,6 +440,7 @@ pub fn mock_agent_with_cleanup(cleanup: fn()) -> MockAgentGuard {
         let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
         state.replies.clear();
         state.reject_defaults.clear();
+        state.default_data.clear();
         state.atomic_streams.clear();
         state.plain_streams.clear();
         state.requests.clear();
@@ -442,6 +450,38 @@ pub fn mock_agent_with_cleanup(cleanup: fn()) -> MockAgentGuard {
 }
 
 impl MockAgentGuard {
+    #[cfg(test)]
+    pub(crate) fn default_data(&self, command: &str, data: serde_json::Value) {
+        STATE
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .default_data
+            .insert(command.into(), data.to_string());
+    }
+    #[cfg(test)]
+    pub(crate) fn script(
+        &self,
+        command: &str,
+        success: bool,
+        data: serde_json::Value,
+        error: &str,
+    ) {
+        self.push(
+            command,
+            if success {
+                Reply::Data(data.to_string())
+            } else {
+                Reply::Reject(error.into())
+            },
+        );
+    }
+    #[cfg(test)]
+    pub(crate) fn served(&self, command: &str, session: &str) -> bool {
+        self.requests()
+            .iter()
+            .any(|request| request.r#type == command && request.session_id == session)
+    }
+
     /// Queue a reply for one command type (FIFO within the type).
     pub fn push(&self, command_type: &str, reply: Reply) {
         STATE
