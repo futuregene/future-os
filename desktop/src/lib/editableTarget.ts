@@ -1,9 +1,9 @@
 /**
  * Whether a key event's target is somewhere the user is typing.
  *
- * A global handler for an unmodified key (the transcript's ↑/↓ pair, the
- * approval prompt's Enter) must leave a key alone when the caret is in a text
- * field: inside the composer's editor an arrow belongs to the caret, not to the
+ * A global handler for an unmodified key (the transcript's PageUp/PageDown pair,
+ * the approval prompt's Enter) must leave a key alone when the caret is in a text
+ * field: inside the composer's editor the key belongs to the field, not to the
  * transcript.
  *
  * The ancestor walk is what covers `contentEditable`: a keystroke's target is
@@ -19,11 +19,10 @@
  *
  * The composer autofocuses on mount and after every send, so at the moment a
  * reader takes over a finished reply the caret is sitting in an empty editor —
- * and "an arrow belongs to the caret" would leave them with no keyboard way to
- * page the transcript at all. An empty editor is not a place anyone is typing
- * in*, so the arrow is free for the surrounding view; the moment one character
- * or mention lands in it the marker is gone and the arrows are the caret's
- * again.
+ * and "a page key belongs to the field" would leave them with no keyboard way
+ * to page the transcript at all. An empty editor is not a place anyone is typing
+ * in*, so the key is free for the surrounding view; the moment one character or
+ * mention lands in it the marker is gone and the key is the field's again.
  *
  * `MentionEditor` (and the remote composer's textarea) set it themselves, since
  * only they know whether they are empty.

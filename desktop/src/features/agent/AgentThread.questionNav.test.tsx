@@ -180,10 +180,10 @@ describe("agentThread question navigation", () => {
     expect(previous).not.toBeNull();
     expect(next).not.toBeNull();
 
-    // The pair is the only place that says the arrow keys do the same thing,
-    // so the keys belong in the tooltip: a shortcut nobody can find is not one.
-    expect(previous?.title).toContain("↑");
-    expect(next?.title).toContain("↓");
+    // The pair is the only place that says the page keys do the same thing, so
+    // the keys belong in the tooltip: a shortcut nobody can find is not one.
+    expect(previous?.title).toContain("PgUp");
+    expect(next?.title).toContain("PgDn");
 
     // At the top of two turns: the first row is the reader's own, so ↑ has
     // nowhere to go, while ↓ has the first turn's reply below it.
@@ -221,8 +221,8 @@ function press(key: string, target?: EventTarget, init: KeyboardEventInit = {}) 
   return event;
 }
 
-describe("agentThread arrow-key navigation", () => {
-  it("reads the transcript with the bare arrow keys", () => {
+describe("agentThread page-key navigation", () => {
+  it("reads the transcript with Page Up / Page Down", () => {
     // The pair in the corner is on the keyboard too, so a reader who never
     // looks for the buttons pages through the conversation all the same. The
     // press lands where its button would — same walk, same geometry.
@@ -230,18 +230,30 @@ describe("agentThread arrow-key navigation", () => {
     const scroller = container.querySelector<HTMLElement>("[data-chat-scroll]")!;
     act(() => layoutTranscript(120, 400));
 
-    press("ArrowDown");
+    press("PageDown");
     // ↓ from the top of the loaded window reaches the first turn's reply, at
     // the row start (its prose is what the mocked transcript has).
     expect(scroller.scrollTop).toBe(120 - 16);
 
-    press("ArrowUp");
+    press("PageUp");
     expect(scroller.scrollTop).toBe(0);
   });
 
-  it("leaves the arrows to the composer's caret", () => {
-    // The reader types in the composer, and an arrow there moves the caret.
-    // Taking it would be the app stealing every keystroke in a text field.
+  it("leaves the bare arrows to the page's own scroll", () => {
+    // ↑/↓ here is the reader's ordinary line scroll — the finer control on a
+    // long reply — so the walk must not answer it.
+    act(() => root.render(createElement(AgentThread, props)));
+    const scroller = container.querySelector<HTMLElement>("[data-chat-scroll]")!;
+    act(() => layoutTranscript(120, 400));
+
+    expect(press("ArrowDown").defaultPrevented).toBe(false);
+    expect(scroller.scrollTop).toBe(0);
+  });
+
+  it("leaves the page keys to the composer's field", () => {
+    // The reader types in the composer; a page key there belongs to the field,
+    // not to the transcript. Taking it would be the app stealing keystrokes in
+    // a text field.
     act(() => root.render(createElement(AgentThread, props)));
     const scroller = container.querySelector<HTMLElement>("[data-chat-scroll]")!;
     act(() => layoutTranscript(120, 400));
@@ -249,24 +261,24 @@ describe("agentThread arrow-key navigation", () => {
     editor.setAttribute("contenteditable", "true");
     container.append(editor);
 
-    const event = press("ArrowDown", editor);
+    const event = press("PageDown", editor);
     expect(event.defaultPrevented).toBe(false);
     expect(scroller.scrollTop).toBe(0);
   });
 
-  it("leaves the arrows to the rail's own menus", () => {
-    // The rail's menus walk their rows with the arrows. A transcript jump
+  it("leaves the page keys to the rail's own menus", () => {
+    // A menu on top can hold its own scrollable rows. A transcript jump
     // underneath one is the app answering a key the user aimed elsewhere.
     act(() => root.render(createElement(AgentThread, props)));
     const scroller = container.querySelector<HTMLElement>("[data-chat-scroll]")!;
     act(() => layoutTranscript(120, 400));
 
     const menu = renderHook(() => useKeyboardOwner(true));
-    expect(press("ArrowDown").defaultPrevented).toBe(false);
+    expect(press("PageDown").defaultPrevented).toBe(false);
     expect(scroller.scrollTop).toBe(0);
 
     menu.unmount();
-    press("ArrowDown");
+    press("PageDown");
     expect(scroller.scrollTop).toBe(120 - 16);
   });
 });
