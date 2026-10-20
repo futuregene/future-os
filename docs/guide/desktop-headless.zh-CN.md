@@ -9,6 +9,8 @@
 **默认前台运行、持续占用终端；按 Ctrl+C 关闭远程入口并退出。**
 不会自动转入后台，也不会安装系统服务。
 
+后续统一到 `future headless` 的设计见 [Headless 拆分开发计划](../architecture/headless-package-development.zh-CN.md)。该计划尚未实施，本文仍描述现有入口。
+
 ## 1. 启动前准备
 
 - Linux `.deb` 和 portable 发布包已包含 `futureos-headless` 及匹配版本的 `future` CLI；

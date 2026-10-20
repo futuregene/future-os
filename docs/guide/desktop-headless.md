@@ -10,6 +10,8 @@ file handling; it is not a separate Remote service or SDK.
 **The process stays in the foreground. Press Ctrl+C to close remote access and exit.**
 It does not daemonize or install a system service.
 
+The planned move to `future headless` is described in the [Headless extraction plan](../architecture/headless-package-development.md). That migration is not implemented yet; this guide still describes the current entry point.
+
 ## 1. Before you start
 
 - Linux `.deb` and portable releases include `futureos-headless` and the matching
