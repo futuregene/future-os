@@ -128,7 +128,9 @@ mod tests {
         assert_eq!(settings.approval_tier, "off");
         assert!(settings.hidden_models.is_empty());
         assert!(settings.auto_upgrade_skills);
-        assert!(!settings.auto_connect_remote);
+        // The remote desktop switch defaults to on; the machine is "on and
+        // empty" until a device is added.
+        assert!(settings.auto_connect_remote);
         assert!(!settings.skill_guide_dismissed);
         assert!(!settings.skill_intro_dismissed);
         assert!(!settings.community_edition);

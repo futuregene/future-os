@@ -1193,12 +1193,10 @@ function ReadyAppShell({
                   : section === "remote"
                     ? (
                         <RemoteHubView
-                          autoConnect={appSettings.autoConnectRemote}
                           leftPanelExpanded={showLeftPanel}
                           onOpenRemoteSession={openRemoteSession}
                           onReconnectRemoteAll={reconnectRemotePeers}
                           onRefreshRemote={refreshRemote}
-                          onToggleAutoConnect={value => void changeSettings({ autoConnectRemote: value })}
                           onToggleLeftPanel={handleToggleLeftPanel}
                           remoteStatus={remoteStatus}
                         />

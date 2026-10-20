@@ -70,7 +70,6 @@
   "noClients": "No devices are paired yet.",
   "addDeviceTitle": "Add a device",
   "addDeviceDescription": "Scan the QR code with the mobile app, or enter the pairing code on another computer.",
-  "hostSettings": "Settings",
   "clientDetailTitle": "Client",
   "clientName": "Name",
   "clientPairId": "Pair ID",

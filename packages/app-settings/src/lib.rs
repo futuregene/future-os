@@ -29,9 +29,10 @@ pub struct AppSettings {
     /// Silently upgrade installed skills to their latest catalogue version on
     /// app open (and immediately when toggled on). On by default.
     pub auto_upgrade_skills: bool,
-    /// Auto-connect the single paired remote device on app launch. Off by
-    /// default. Remote control is a dev-only feature, so this is only consulted
-    /// on non-release builds (see the startup auto-connect in `lib.rs`).
+    /// Whether the remote desktop is on: the desktop's own switch stores its
+    /// state here, so the machine serves its paired devices again after a
+    /// restart. On by default — an empty machine is "on and empty" and mints
+    /// no invitation, so being on costs nothing until a device is added.
     pub auto_connect_remote: bool,
     /// The user closed the skill-onboarding banner on the new-conversation
     /// screen. Off by default (the banner shows until dismissed).
@@ -219,7 +220,7 @@ pub const SETTINGS: &[Setting] = &[
         key: "autoConnectRemote",
         stored: KEY_AUTO_CONNECT_REMOTE,
         kind: ValueKind::Bool,
-        help: "Auto-connect the paired remote device on launch",
+        help: "Keep the remote desktop on after a restart",
     },
     Setting {
         key: "skillGuideDismissed",
@@ -412,7 +413,7 @@ pub fn defaults() -> AppSettings {
         approval_tier: "off".to_string(),
         hidden_models: Vec::new(),
         auto_upgrade_skills: true,
-        auto_connect_remote: false,
+        auto_connect_remote: true,
         skill_guide_dismissed: false,
         skill_intro_dismissed: false,
         bell_on_complete: true,
@@ -456,7 +457,7 @@ pub fn read(conn: &Connection) -> Result<AppSettings, Error> {
         .unwrap_or(true); // On by default — keeps skills current without manual intervention.
     let auto_connect_remote = read_value(conn, KEY_AUTO_CONNECT_REMOTE)?
         .map(|value| value == "true")
-        .unwrap_or(false); // Off by default — remote auto-connect is opt-in.
+        .unwrap_or(true); // On by default — the switch persists its own state, so "on" survives a restart.
     let skill_guide_dismissed = read_value(conn, KEY_SKILL_GUIDE_DISMISSED)?
         .map(|value| value == "true")
         .unwrap_or(false); // Off by default — the banner shows until dismissed.
@@ -878,6 +879,9 @@ mod tests {
         let settings = apply(&conn, &UpdateAppSettingsInput::default(), 1).expect("noop");
         assert_eq!(settings.approval_tier, "off");
         assert!(settings.auto_upgrade_skills);
+        // The remote desktop is on unless the user turned its switch off: the
+        // switch is the only writer, and it is the state after a restart.
+        assert!(settings.auto_connect_remote);
         assert!(settings.skill_recommend);
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM app_settings", [], |row| row

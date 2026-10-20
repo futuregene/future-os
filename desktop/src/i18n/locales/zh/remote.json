@@ -70,7 +70,6 @@
   "noClients": "还没有配对的设备。",
   "addDeviceTitle": "添加设备",
   "addDeviceDescription": "用手机端扫描二维码，或在另一台电脑上输入配对码。",
-  "hostSettings": "设置",
   "clientDetailTitle": "客户端",
   "clientName": "名称",
   "clientPairId": "配对 ID",
