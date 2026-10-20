@@ -9,6 +9,7 @@ pub mod builtin;
 mod future;
 #[cfg(test)]
 mod reasoning_tests;
+pub use future::set_future_models_sync_callback;
 pub(crate) use future::{cached_model_count, display_base_url_from_auth};
 use future::{
     derive_thinking_compat, get_future_models_with_cache, resolve_future_base_url,
