@@ -48,7 +48,10 @@ mod tests {
 
         let mut queued = task("queued");
         queued.prompt = "summarize yesterday".into();
-        queued.cwd = std::env::temp_dir().display().to_string();
+        // Review captures real before/after snapshots. Never snapshot all of
+        // TEMP, which includes concurrent fixtures and this run's own home.
+        let workspace = TempDir::new().unwrap();
+        queued.cwd = workspace.path().display().to_string();
         queued.pending_request_at = Some(crate::store::now_millis());
         queued.pending_origin = Some(RunOrigin::Cli);
         store.insert_task(&queued).unwrap();
