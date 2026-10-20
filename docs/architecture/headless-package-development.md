@@ -3,7 +3,7 @@
 > [中文](headless-package-development.zh-CN.md)
 >
 > Design date: 2026-10-20. Source baseline: `904eab2b`, including Remote extraction merged through PR #1235.
-> Status: planned. This change establishes the plan; existing commands, behavior and release artifacts are unchanged.
+> Status: in progress. Source/dependency baselines are captured and shared-host extraction is starting; phases 0–6 are incomplete.
 
 Extract the application host without a GUI from the Desktop crate and start it in the foreground with `future headless`. Introduce `future-host`, a Rust library without GUI dependencies, for the application backend shared by Desktop GUI and headless. Desktop and CLI own their entry points and interaction. Preserve current functionality, data, pairing, approval, sandbox and shutdown behavior.
 
@@ -211,3 +211,15 @@ Implementation updates CLI help; Headless, Agent, build/install and directory gu
 - [ ] Bilingual documentation, command help and distribution instructions match implementation.
 
 Creating a package, compiling an entry or merging a PR does not complete these requirements. Record actual phase changes, commands, candidate and remaining limitations; close the migration after manual confirmation.
+
+## 8 Implementation record
+
+### 2026-10-20 Baseline capture
+
+Implementation uses `refactor/headless-host` in `.worktrees/headless-host`. Plan commit `e2251323` was integrated first; product source baseline is `904eab2b`. No PR is created and no local unit or NATS tests run.
+
+The [test migration inventory](headless-test-migration.json) captures digests for 204 source files and 2143 test declarations identified by original path, line and function name. Declarations are not execution counts; final CI must reconcile conditional compilation, macros and runtime discovery. Initial ownership assigns 1535 to the shared host, 35 to CLI and 160 to Desktop, while 413 mixed-module cases need individual classification before originals may be removed. Planned destinations do not establish implementation or execution.
+
+The [build/dependency baseline](../testing/headless-baseline-2026-10-20.json) records actual Cargo feature graphs for CLI, GUI and headless, Cargo/lock/build/release source digests, toolchain and compatible paths. Only metadata/dependency queries ran, without build timings or tests. Final performance still needs matched measurements.
+
+Phase 0 source capture is recorded; test ownership remains open. Phases 1–6 are incomplete and the original entry remains current.
