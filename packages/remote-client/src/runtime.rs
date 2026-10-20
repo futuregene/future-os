@@ -1203,29 +1203,11 @@ impl Client {
                     code: Some(error.support_code().to_string()),
                     message: error.message().to_string(),
                 })?;
-        let device_id = self.inner.host.device_id()?;
-        // A machine cannot remote-control itself. The invitation names the host's
-        // device, and a host writes that field from the same installation identity
-        // this client reports as its own — so an equality means the link was issued
-        // by the machine pasting it. Pairing anyway is never useful (the local
-        // sessions are already here) and it is not free: the platform counts the
-        // device against this desktop's allowance, and the Remote page grows a row
-        // for a "remote" machine that is this one.
-        //
-        // Checked before the attempt is registered, so a refusal leaves no state
-        // behind for a machine that was never going to be paired.
-        if parsed.desktop_id == device_id {
-            return Err(crate::Error::Message(
-                "remote_self_pairing: this invitation was issued by this machine itself. Open \
-                 the Remote page to serve a device from here, or paste an invitation issued by \
-                 a different machine."
-                    .into(),
-            ));
-        }
         let epoch = self.begin_attempt(&parsed.desktop_id).await?;
         let device = nkeys::KeyPair::new_user();
         let (private, public) = future_remote_crypto::generate_identity()
             .map_err(|_| crate::Error::Message("remote_secure_channel_invalid".into()))?;
+        let device_id = self.inner.host.device_id()?;
         let claimed = self
             .while_running(self.inner.host.claim(
                 &parsed,

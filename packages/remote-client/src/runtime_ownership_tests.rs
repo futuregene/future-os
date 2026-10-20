@@ -8,6 +8,7 @@ use std::sync::{
 };
 use tokio::sync::Notify;
 
+#[derive(Default)]
 struct MemoryHost {
     book: StdMutex<PeerBook>,
     entered: Notify,
@@ -18,34 +19,6 @@ struct MemoryHost {
     reject_tasks: AtomicBool,
     reject_load: AtomicBool,
     rejected_loads: AtomicUsize,
-    /// This installation's own device id. The default is deliberately *not* a
-    /// `desktop_` id, so the invitations the other tests use (which must name a
-    /// `desktop_…` host) can never look like this machine's own.
-    own_device: StdMutex<String>,
-}
-impl Default for MemoryHost {
-    fn default() -> Self {
-        Self {
-            book: StdMutex::default(),
-            entered: Notify::new(),
-            release: Notify::new(),
-            updates: AtomicUsize::default(),
-            refreshes: AtomicUsize::default(),
-            finished_refreshes: AtomicUsize::default(),
-            reject_tasks: AtomicBool::default(),
-            reject_load: AtomicBool::default(),
-            rejected_loads: AtomicUsize::default(),
-            own_device: StdMutex::new("device_fixture".to_string()),
-        }
-    }
-}
-impl MemoryHost {
-    /// Pretend this installation is the desktop `device`, which is how a test
-    /// arranges an invitation this machine issued itself.
-    fn own_device(self, device: &str) -> Self {
-        *self.own_device.lock().unwrap() = device.to_string();
-        self
-    }
 }
 
 struct RefreshCompletion<'a>(&'a AtomicUsize);
@@ -71,7 +44,7 @@ fn creds() -> PeerCreds {
 }
 impl ClientHost for MemoryHost {
     fn device_id(&self) -> Result<String, crate::Error> {
-        Ok(self.own_device.lock().unwrap().clone())
+        Ok("device_fixture".into())
     }
     fn connection_options(&self) -> crate::ConnectionOptions {
         crate::ConnectionOptions::new("fixture", "cli")
@@ -235,42 +208,6 @@ async fn rejected_unpolled_tasks_also_finish_and_drop_their_captures() {
     });
     assert!(task.is_finished());
     assert!(dropped.load(Ordering::SeqCst));
-    client.shutdown(Duration::from_secs(1)).await.unwrap();
-}
-
-/// Pairing a machine with itself is refused before anything is claimed.
-///
-/// The invitation carries the host's desktop id, and this process's own device id
-/// is exactly what that host would write there for itself. The claim used to go
-/// through: the platform counted a device against this desktop's allowance (five,
-/// for the whole account), and the Remote page gained a row for a "remote" machine
-/// that was this one — with a second bridge to the same rooms.
-#[tokio::test]
-async fn an_invitation_issued_by_this_machine_is_refused_before_claiming() {
-    // The platform only mints `desktop_…` ids, so this is what a machine's own
-    // invitation names when the host side and the client side are one install.
-    let host = Arc::new(MemoryHost::default().own_device("desktop_self_fixture"));
-    let client = Client::new(host.clone());
-    let code = URL_SAFE_NO_PAD.encode(
-        json!({"v":2,"nonce":"fixture","claim_url":"https://example.invalid/pair/claim","exp":4_102_444_800u64})
-            .to_string(),
-    );
-    let key = URL_SAFE_NO_PAD.encode([7u8; 32]);
-    // `MemoryHost` reports `desktop_self_fixture` as this installation, so this is
-    // the machine's own invitation.
-    let invitation = format!(
-        "futureos://remote/pair?v=2&code={code}&desktopId=desktop_self_fixture&desktopKey=UFIXTURE&secureKey={key}&secret={key}"
-    );
-
-    let error = client
-        .pair_with_emitter(&invitation, None)
-        .await
-        .expect_err("a machine must not pair with itself");
-    assert!(error.to_string().contains("remote_self_pairing"), "{error}");
-    assert!(
-        host.load().unwrap().peers.is_empty(),
-        "nothing may be stored for a refused pairing"
-    );
     client.shutdown(Duration::from_secs(1)).await.unwrap();
 }
 
