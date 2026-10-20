@@ -50,6 +50,17 @@ describe("shortcut store", () => {
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!).overrides).toEqual({ "chat.new": null });
   });
 
+  it("keeps a device's key after the chord is rebound or cleared", async () => {
+    // `vibe.menu` is the remote control's menu button plus a keyboard chord. The
+    // button belongs to the device: rebinding the chord moves the chord only, and
+    // clearing it leaves the button alone.
+    const store = await freshStore();
+    store.setCommandBinding("vibe.menu", "ctrl+shift+m");
+    expect(store.resolvedBindingTexts("vibe.menu")).toEqual(["ctrl+shift+KeyM", "contextmenu"]);
+    store.setCommandBinding("vibe.menu", null);
+    expect(store.resolvedBindingTexts("vibe.menu")).toEqual(["contextmenu"]);
+  });
+
   it("resets one command and all of them", async () => {
     const store = await freshStore();
     store.setCommandBinding("chat.new", "ctrl+shift+k");

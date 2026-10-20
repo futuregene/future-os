@@ -54,6 +54,7 @@
       },
       "open": "Zoom into the selected conversation",
       "back": "Leave the zoomed conversation",
+      "close": "Close the Vibe panel",
       "zoom": {
         "previous": "Previous conversation in the zoomed cell",
         "next": "Next conversation in the zoomed cell"
@@ -78,11 +79,23 @@
       "add": "Add a conversation to the panel",
       "remove": "Remove the selected conversation from the panel",
       "fullscreen": "Toggle native full screen",
-      "help": "Show all shortcuts"
+      "help": "Show all shortcuts",
+      "menu": "Open this layer’s menu",
+      "home": "Jump to the live end of the conversation",
+      "block": {
+        "previous": "Previous message block",
+        "next": "Next message block"
+      },
+      "input": {
+        "open": "Start the input layer (type or dictate)",
+        "close": "Leave the input layer",
+        "send": "Send the dictation"
+      }
     }
   },
   "page": {
     "hint": "Shortcuts work anywhere in the app.",
+    "deviceKey": "A remote control’s key: always on this command",
     "search": "Search commands",
     "noMatches": "No command matches “{{query}}”",
     "reset": "Restore default",

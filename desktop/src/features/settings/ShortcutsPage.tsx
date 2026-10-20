@@ -18,9 +18,9 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { IconButton } from "../../components/ui/IconButton";
 import { TextInput } from "../../components/ui/TextInput";
-import { keyLabel } from "../../lib/keybinding";
+import { formatBinding, keyLabel, parseBinding } from "../../lib/keybinding";
 import { isMacOS } from "../../lib/platform";
-import { CATEGORIES, COMMANDS, FIXED_KEYS, scopeOf } from "../keyboard/catalog";
+import { aliasBindingTexts, CATEGORIES, COMMANDS, FIXED_KEYS, scopeOf } from "../keyboard/catalog";
 import { bindingLabel, isMultiKeyCommand, resetAllCommandBindings, resetCommandBinding, useShortcutOverrides } from "../keyboard/shortcuts";
 import { SettingsList, SettingsRow, SettingsSection } from "./SettingsPrimitives";
 import { ShortcutRecorder } from "./ShortcutRecorder";
@@ -145,6 +145,22 @@ export function ShortcutsPage() {
                               }}
                             />
                           )}
+                      {/* The device's own keys. They stay on this command whatever the
+                          reader binds above, so they are shown, not recorded. */}
+                      {aliasBindingTexts(spec).map((text) => {
+                        const parsed = parseBinding(text);
+                        return parsed
+                          ? (
+                              <span
+                                className="rounded border border-line-soft bg-surface-subtle px-1.5 py-0.5 font-mono text-xs text-ink-soft"
+                                key={text}
+                                title={t("page.deviceKey")}
+                              >
+                                {formatBinding(parsed, isMac)}
+                              </span>
+                            )
+                          : null;
+                      })}
                     </div>
                   </SettingsRow>
                 );
