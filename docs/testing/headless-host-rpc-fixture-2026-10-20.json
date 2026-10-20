@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "parent": "5da65cceaec979103e76e4a41c93f30fa6e74941",
+  "change": "Canonical scripted real-loopback FutureAgent service and temporary real SQLite fixture now live once in future-host test support. Desktop injects its existing observer/task cleanup and installs its entry-owned channel runtime before shared mock use. Store retry, close-before-remove, lock ordering, scripts and wire payloads are preserved.",
+  "testOwnership": [
+    {
+      "source": "desktop/src-tauri/src/agent_bridge/client.rs",
+      "target": "host/src/agent_client.rs",
+      "names": [
+        "shared_channel_survives_caller_runtime_drop",
+        "raw_agent_addr_defaults_to_auto_discovery",
+        "raw_agent_addr_defaults_to_auto_without_env",
+        "connect_agent_rejects_an_unparseable_endpoint",
+        "readiness_failure_maps_to_unavailable_without_business_calls",
+        "a_cached_connection_that_reports_a_changed_instance_is_dropped",
+        "get_agent_readiness_rejects_a_half_filled_payload"
+      ],
+      "originalAssertionMacros": 12,
+      "movedAssertionMacros": 12
+    },
+    {
+      "source": "desktop/src-tauri/src/agent_bridge/test_support.rs",
+      "target": "host/src/test_support/agent.rs",
+      "names": [
+        "a_deferred_reply_whose_answerer_disappears_cancels_the_rpc",
+        "default_reply_falls_back_to_mock_run_for_empty_requested_id",
+        "test_home_drop_removes_home_when_unset_before",
+        "test_home_retries_a_busy_store_initialization"
+      ],
+      "originalAssertionMacros": 7,
+      "movedAssertionMacros": 7
+    }
+  ],
+  "testHarnessRuntime": "Only the cfg(test)/test-support fixture may construct its own channel driver; production agent_client still requires entry injection.",
+  "localChecks": [
+    {
+      "command": "cargo fmt -p future-host -p futureos",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p future-host --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p futureos -p future-cli --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked --no-default-features --features headless --manifest-path desktop/src-tauri/Cargo.toml --all-targets -- -D warnings",
+      "result": "PASS"
+    }
+  ],
+  "executedLocalTestsForThisBatch": 0,
+  "ci": {
+    "runningCandidate": "5da65cceaec979103e76e4a41c93f30fa6e74941",
+    "runId": 39361847974,
+    "doesNotCoverThisBatch": true
+  },
+  "limits": [
+    "Assertion-macro counts and declaration-name comparison supplement source review; they do not prove runtime correctness.",
+    "New fixture/connection ownership still needs actual independent host and Desktop CI execution.",
+    "Full Agent owner and shutdown coordination are still in Desktop."
+  ]
+}

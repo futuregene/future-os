@@ -33,3 +33,6 @@ impl Drop for EnvGuard {
         }
     }
 }
+
+/// Canonical real-loopback RPC and temporary SQLite fixture.
+pub mod agent;

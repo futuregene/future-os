@@ -278,7 +278,7 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 | 1 | 已建立无 GUI 普通库、任务注册、展示出口和消费者依赖；完整生命周期/配置边界未完成 |
 | 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端与请求归属已迁入；Agent 托管、完整业务桥、Remote、维护和停止协调未迁入 |
 | 3 | 尚未实现；产品入口仍是 `futureos-headless` |
-| 4 | 已迁移 465 个原测试声明；中间 CI 含失败和待验证批次，真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
+| 4 | 已迁移 476 个原测试声明；中间 CI 含失败和待验证批次，真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
 | 5 | 已加宿主 CI 分组和 affected 传播；构建、发行物、签名/安装/升级/卸载未完成 |
 | 6 | 尚未开始；无最终冻结候选、同条件性能、产物验收或确认的人工结果 |
 
@@ -327,3 +327,9 @@ CI `39358154196` 的 headless 进程组失败于 `a_reconnect_with_a_pre_v2_slot
 用户明确要求修复后、下轮 CI 前进行本地复测。原失败用例通过（1 项，7.62 秒）；同文件完整真实进程测试通过（13 项、0 失败、0 忽略，189.97 秒），见[修复证据](../testing/headless-remote-start-repair-2026-10-20.json)。首次沙箱执行在 loopback 监听时被 EPERM 拒绝，解除该限制后使用隔离 Future home 与临时端口复测。Remote、旧 headless 与 GUI/CLI 组合 Clippy `--all-targets`、fmt、依赖边界和文档检查通过。本机结果不能替代 Linux/Windows CI、最终 CLI 进程迁移或发布与人工验收；这些本地耗时也不是匹配条件下的性能对比。
 
 后续补跑 Agent 原失败用例及新增真实 SQLite 回归用例，均为 1 项通过、0 失败。推送前合入 `origin/main` 的 `2e282c65`（设备邀请重试），在合并后的 `1d32b73a` 再跑完整 headless 进程文件：13 项通过、0 失败、0 忽略，189.16 秒；Remote/GUI/CLI Clippy、原 headless Clippy、fmt、Desktop type-check/ESLint 和依赖边界复验通过。临时复用相同锁文件对应的现有 npm 依赖，检查后删除临时链接。用户明确将 Windows 原生构建留给 CI，本机仅安装 macOS Rust target，未声称 Windows 已通过。上述对应项和日志摘要均在同一修复证据中。
+
+### 2026-10-20 共享 RPC/数据库夹具与连接集成测试
+
+原 scripted FutureAgent 的真实 loopback gRPC 服务和临时 SQLite 夹具迁入 `host/src/test_support/agent.rs`，不复制协议、脚本或 schema。Desktop 只注入原有观察器/任务清理，保留清理后发布 HOME、数据库重试以及关闭连接后删目录的顺序。夹具专用驱动仅在 test/test-support 编译；生产客户端仍要求入口注入 runtime，没有增加生产回退。
+
+7 个连接/实例 fencing/readiness/调用方 runtime 结束测试和 4 个夹具/真实数据库测试迁入宿主，保留原名称、断言及测试行为。宿主单包、GUI/CLI 组合和原 headless Clippy `--all-targets`、fmt 通过，见[迁移证据](../testing/headless-host-rpc-fixture-2026-10-20.json)。本批未本地执行测试，晚于 CI 候选 `5da65cce`（运行 `39361847974`），不能使用该轮结果声称本批通过。Agent 托管与完整停止协调仍需继续迁移。

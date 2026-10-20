@@ -1091,8 +1091,11 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_client.rs",
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-rpc-fixture-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/client.rs:689:raw_agent_addr_defaults_to_auto_discovery",
@@ -1102,8 +1105,11 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_client.rs",
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-rpc-fixture-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/client.rs:698:raw_agent_addr_defaults_to_auto_without_env",
@@ -1113,8 +1119,11 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_client.rs",
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-rpc-fixture-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/client.rs:707:connect_agent_rejects_an_unparseable_endpoint",
@@ -1124,8 +1133,11 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_client.rs",
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-rpc-fixture-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/client.rs:721:readiness_failure_maps_to_unavailable_without_business_calls",
@@ -1135,8 +1147,11 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_client.rs",
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-rpc-fixture-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/client.rs:739:map_rpc_error_distinguishes_unavailable_from_app_failures",
@@ -1256,8 +1271,11 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_client.rs",
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-rpc-fixture-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/client.rs:1101:get_agent_readiness_rejects_a_half_filled_payload",
@@ -1267,8 +1285,11 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_client.rs",
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-rpc-fixture-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/config.rs:228:applied_and_rejected_outcomes_never_fall_back",
@@ -4402,8 +4423,11 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/test_support.rs",
-      "status": "planned"
+      "target": "host/src/test_support/agent.rs",
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-rpc-fixture-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/test_support.rs:810:default_reply_falls_back_to_mock_run_for_empty_requested_id",
@@ -4413,8 +4437,11 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/test_support.rs",
-      "status": "planned"
+      "target": "host/src/test_support/agent.rs",
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-rpc-fixture-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/test_support.rs:837:test_home_drop_removes_home_when_unset_before",
@@ -4424,8 +4451,11 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/test_support.rs",
-      "status": "planned"
+      "target": "host/src/test_support/agent.rs",
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-rpc-fixture-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/test_support.rs:874:test_home_retries_a_busy_store_initialization",
@@ -4435,8 +4465,11 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/test_support.rs",
-      "status": "planned"
+      "target": "host/src/test_support/agent.rs",
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-rpc-fixture-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/tests.rs:14:attaches_when_agent_still_running_this_run",
