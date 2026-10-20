@@ -90,6 +90,44 @@ pub(crate) fn forget_known_device(pair_id: &str) {
     SUPERVISOR.forget_device(pair_id);
 }
 
+/// Remember the remote desktop switch across restarts.
+///
+/// The switch on the Remote page *is* the preference: "remote desktop on" and
+/// "come back on at launch" are one state, not two, so turning it on or off
+/// stores itself. Only the user's own switch writes here — the shutdown,
+/// suspend and crash paths stop the bridge without touching this value, so
+/// quitting the app is not the same as turning the remote desktop off.
+///
+/// Shared with the control channel, where `future remote enable|disable` is the
+/// same switch reached from a terminal: two writers of one preference that
+/// disagreed would make the window and the CLI describe different machines.
+///
+/// A failure is reported and swallowed: the bridge is already running (or
+/// already stopped), which is what the switch renders. Failing the command over
+/// an unwritten preference would leave the UI describing a state it cannot
+/// show.
+pub fn remember_switch(on: bool) {
+    if let Err(error) = crate::store::update_app_settings(crate::store::UpdateAppSettingsInput {
+        auto_connect_remote: Some(on),
+        ..Default::default()
+    }) {
+        eprintln!("remote: could not store the switch state: {error}");
+    }
+}
+
+/// Whether a phase describes a machine that is serving (and so is "on").
+///
+/// The same set the Remote page's switch renders as on: stopped, failed and
+/// revoked are the three states that read as off. Everything else — including
+/// a start that is retrying its connection — is the machine still trying to
+/// serve, which is what the user asked for by turning it on.
+pub fn is_on(phase: RemotePhase) -> bool {
+    !matches!(
+        phase,
+        RemotePhase::Stopped | RemotePhase::Failed | RemotePhase::Revoked
+    )
+}
+
 fn host() -> &'static dyn future_remote_server::services::RemoteHost {
     crate::remote_host::host()
 }

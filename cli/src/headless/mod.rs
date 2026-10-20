@@ -23,8 +23,18 @@ With --relay, no Future account is needed at all.
 Login uses your phone/computer browser; phone pairing uses the FutureOS app.
 First-time setup requires an interactive terminal. No background service is installed.
 
+Without --relay this entry needs a Future OS account: if this machine is signed
+out it runs the login flow before serving (or fails, when the terminal is not
+interactive — `future auth login` does the same thing on its own). With --relay
+there is no account at all.
+
 Pair a device, drop one, or choose which one is in control with `future remote
-devices` — from any terminal, while this entry is running.";
+devices` — from any terminal, while this entry is running.
+
+The entry serves the machine's remote desktop, and the remote desktop switch is
+shared with the window's Remote page: with the switch off, it starts (and stays)
+idle instead of exiting, so `future remote enable` turns it back on without a
+restart.";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Launch {
@@ -153,10 +163,15 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     future_host::auth_store::read()?;
     let paired = future_host::remote::pairing::load_creds_checked()?.is_some();
     // A self-hosted relay is the whole answer to "which account": it has none.
-    // The login gate exists because the Future platform mints the invitation,
-    // and with `--relay` it no longer does.
+    // The login gate exists because the Future platform mints the invitation and
+    // the credential, and with `--relay` it no longer does — so without one this
+    // entry is signed in before it does anything else.
     let relay = future_host::remote::relay::endpoint();
-    if relay.is_none() && (!paired || future_login::future_api_key().is_err()) {
+    if needs_login(
+        relay.as_deref(),
+        paired,
+        future_login::future_api_key().is_ok(),
+    ) {
         require_terminal()?;
     }
     if relay.is_some() {
@@ -211,8 +226,24 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
         future_host::agent_bridge::reconcile_pending_approvals().await;
     });
 
-    eprintln!("Preparing the remote connection...");
-    let mut status = remote::start(remote::RemoteStartInput {}).await?;
+    // The switch is the user's decision and this entry point obeys it: a machine
+    // whose remote desktop was turned off (in the window, or with `future remote
+    // disable`) must not come back serving just because a server restarted. A
+    // fresh install defaults to on, so the ordinary launch is unchanged.
+    let switch_on = future_host::store::get_app_settings()
+        .map(|settings| settings.auto_connect_remote)
+        .unwrap_or(true);
+    let mut status = if switch_on {
+        eprintln!("Preparing the remote connection...");
+        remote::start(remote::RemoteStartInput {}).await?
+    } else {
+        eprintln!(
+            "The remote desktop switch is off, so this entry serves nothing yet. It stays up as \
+             the machine's control endpoint: turn the switch on with `future remote enable` \
+             (no restart needed), or in the window's Remote page."
+        );
+        remote::status()
+    };
     // `future remote devices add` asks this process for an invitation: only a
     // process that can serve the new pairing may mint one, and a server has no
     // window to print it in — the terminal that asked does. Started after the
@@ -223,6 +254,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     let mut invitation_expiry = None;
     let mut previous_state = String::new();
     let mut was_paired = false;
+    let mut said_idle = false;
     loop {
         agent.check_running()?;
         // Logout/account/environment changes never leave an old account's
@@ -251,10 +283,35 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
         }
         if matches!(
             status.phase,
-            remote::RemotePhase::Failed
-                | remote::RemotePhase::Revoked
-                | remote::RemotePhase::Stopped
+            remote::RemotePhase::Failed | remote::RemotePhase::Revoked
         ) {
+            return Err(format!("Remote connection stopped ({:?}). Check platform login/network, then restart; use `future remote devices` to pair or drop a device.", status.reason).into());
+        }
+        // A stop is only a fault while the switch says on. Turning the switch off
+        // is the user's decision: a server told to stop serving stays up and keeps
+        // answering control requests — that is what lets `future remote enable`
+        // turn it back on without a restart — instead of exiting as if it broke.
+        let switch_on = future_host::store::get_app_settings()
+            .map(|settings| settings.auto_connect_remote)
+            .unwrap_or(true);
+        let idle = matches!(status.phase, remote::RemotePhase::Stopped) && !switch_on;
+        if idle {
+            // An invitation minted before the switch went off is not something to
+            // wait for, expire over, or exit on.
+            invitation_expiry = None;
+            shown_invitation = None;
+            was_paired = false;
+            if !said_idle {
+                eprintln!(
+                    "Remote desktop is off (the switch is off). Turn it on with `future remote \
+                     enable` — this entry keeps running and serves again without a restart."
+                );
+                said_idle = true;
+            }
+        } else {
+            said_idle = false;
+        }
+        if matches!(status.phase, remote::RemotePhase::Stopped) && switch_on {
             return Err(format!("Remote connection stopped ({:?}). Check platform login/network, then restart; use `future remote devices` to pair or drop a device.", status.reason).into());
         }
         invitation_expiry = status.pairing_code_expires_at.or(invitation_expiry);
@@ -394,11 +451,30 @@ async fn starting_with_notice<T>(
     }
 }
 
+/// Whether this launch has to sign in before it can serve.
+///
+/// A self-hosted relay is the whole answer to "which account": it has none, so
+/// there is no login to run. Otherwise the Future platform mints this machine's
+/// credential *and* its invitations, so both being signed in and having a pairing
+/// are prerequisites — and both are decided here, before anything is started, so
+/// a server that cannot serve says so in one sentence instead of coming up and
+/// serving nobody. The switch comes after this: turning it on later is what makes
+/// the account matter, and it is stored for the next launch either way.
+fn needs_login(relay: Option<&str>, paired: bool, signed_in: bool) -> bool {
+    relay.is_none() && (!paired || !signed_in)
+}
+
 fn require_terminal() -> Result<(), AppError> {
     if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         Ok(())
     } else {
-        Err("Login/pairing requires an interactive terminal. Run `future headless` as the same user first; authorization links are not written to redirected logs.".into())
+        Err(
+            "Login/pairing requires an interactive terminal. Sign in first with `future auth \
+             login` (or run `future headless` in a terminal as the same user); authorization \
+             links are not written to redirected logs. A self-hosted relay needs no account: \
+             `future headless --relay <url>`."
+                .into(),
+        )
     }
 }
 
@@ -783,6 +859,28 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Launch, String> {
         Options::parse(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    /// Login first, then everything else: without an account (and without a
+    /// relay) this entry can neither mint an invitation nor serve one.
+    #[test]
+    fn login_is_required_unless_a_relay_supplies_the_account() {
+        // Needs a login: signed out, or never paired (pairing needs a terminal).
+        assert!(needs_login(None, true, false), "signed out");
+        assert!(needs_login(None, false, true), "never paired");
+        assert!(needs_login(None, false, false), "neither");
+        // Already able to serve.
+        assert!(!needs_login(None, true, true), "paired and signed in");
+        // A self-hosted relay has no account to sign into, whatever else is true.
+        for paired in [true, false] {
+            for signed_in in [true, false] {
+                assert!(!needs_login(
+                    Some("https://relay.example"),
+                    paired,
+                    signed_in
+                ));
+            }
+        }
     }
 
     #[test]
