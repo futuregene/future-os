@@ -136,6 +136,15 @@ future remote devices remove --all     # 全部设备，各自交给自己的签
 全程不涉及 FutureOS 登录：中继没有账号，`add` 也只是去问运行中的 Desktop。
 中继使用私有 CA 时这些命令也不需要额外参数——用 `FUTURE_RELAY_CA` 指定即可，它只作用于这次请求。设置同样不跨次保留：自建中继靠每次启动的 `--relay` 选择，不带就是官方平台。
 
+终端是另一个进程，所以当它需要自己判断（`future remote enable` 会先确认这台机器能
+不能在不依赖账号的情况下提供服务）时，用同样的方式指定中继：
+
+```bash
+FUTURE_RELAY_URL=https://relay.example.com future remote enable
+```
+
+只去问运行中 Desktop 的命令不需要额外提示：Desktop 知道自己是用哪个中继启动的。
+
 ## 4. 官方中继与自建中继共存
 
 不需要任何额外操作。一台机器可以持有多个配对，每个配对有自己的中继、自己的

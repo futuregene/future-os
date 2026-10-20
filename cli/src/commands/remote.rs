@@ -514,6 +514,10 @@ fn switch_advice(running: bool) -> &'static str {
 /// "signed in" for this purpose. Everything else mints its credential from the
 /// platform: without a login the switch can be turned on and nothing can
 /// connect, which is exactly the state this check exists to prevent.
+///
+/// The relay is chosen per launch and never written down (`relay.rs`), so this
+/// process only knows about one it was told: `FUTURE_RELAY_URL`, which is how a
+/// terminal on a relay machine says the same thing the Desktop's `--relay` said.
 fn signed_in() -> bool {
     future_host::remote::relay::endpoint().is_some()
         || future_host::future_platform::future_api_key().is_ok()
@@ -523,7 +527,8 @@ fn signed_in() -> bool {
 fn login_advice() -> &'static str {
     "Not signed in to Future OS. The remote desktop serves through your account, so sign in \
      first: `future auth login`, then run this again. (A self-hosted relay needs no account: \
-     `future headless --relay <url>`.)"
+     start the Desktop with `futureos --relay <url>`, and export FUTURE_RELAY_URL=<url> here so \
+     this command knows the machine serves through a relay rather than an account.)"
 }
 
 // ── list ────────────────────────────────────────────────────────────────────
@@ -2327,14 +2332,13 @@ mod tests {
         .unwrap();
     }
 
-    /// Put this machine in self-hosted relay mode, where there is no account.
-    fn use_relay(home: &Home, url: &str) {
-        std::fs::create_dir_all(home.future()).unwrap();
-        std::fs::write(
-            home.future().join(RELAY_SETTINGS_FILE),
-            json!({ "url": url }).to_string(),
-        )
-        .unwrap();
+    /// Put this process in self-hosted relay mode, where there is no account.
+    ///
+    /// The relay is not stored anywhere (`relay.rs`), so a terminal names it the
+    /// only way another process can: the environment variable the Desktop
+    /// honours too. Keep the guard alive for the test's duration.
+    fn use_relay(url: &str) -> EnvGuard {
+        EnvGuard::set(&[("FUTURE_RELAY_URL", std::ffi::OsString::from(url))])
     }
 
     #[tokio::test]
@@ -3146,8 +3150,8 @@ mod tests {
     #[tokio::test]
     async fn enable_needs_no_account_in_relay_mode() {
         let _guard = crate::test_env::lock_env().await;
-        let home = Home::new();
-        use_relay(&home, "https://relay.example.com");
+        let _home = Home::new();
+        let _relay = use_relay("https://relay.example.com");
         crate::commands::desktop::store("autoConnectRemote", "false").unwrap();
 
         let (code, _, stderr) = run(&["remote", "enable"]).await;
@@ -4002,7 +4006,7 @@ mod tests {
             }),
         );
         // Relay mode: no account at all, and no auth.json anywhere.
-        use_relay(&home, "https://relay.example.com");
+        let _relay = use_relay("https://relay.example.com");
         assert!(!auth_file().exists());
 
         let (code, stdout, stderr) = run(&["remote", "devices", "add", "--json"]).await;

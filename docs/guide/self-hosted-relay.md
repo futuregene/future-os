@@ -159,6 +159,17 @@ name it with `FUTURE_RELAY_CA` and it is applied to that relay's requests.
 Nothing is remembered between runs: a self-hosted relay is chosen per launch
 with `--relay`, and a launch without it uses the Future platform.
 
+A terminal on a relay machine is a separate process, so it names the relay
+the same way when it has to decide something itself (`future remote enable`
+checks whether this machine can serve without an account):
+
+```bash
+FUTURE_RELAY_URL=https://relay.example.com future remote enable
+```
+
+The commands that only ask the running Desktop need no hint: the Desktop knows
+which relay it was launched with.
+
 ## 4. Run the official relay and a self-hosted one together
 
 Nothing special is required. A machine can hold several pairings, each with its
