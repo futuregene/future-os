@@ -286,11 +286,18 @@ made in the app's own Settings screen applies immediately."#;
 pub const REMOTE_HELP: &str = r#"future remote — manage the devices paired to this machine's remote desktop
 
 Usage:
+  future remote status [--json]                      Whether the remote desktop is on, and who is connected
   future remote devices [list] [--json]              Every paired device, and the one in control
   future remote devices add [--json]                 Pair a new device: print its invitation
   future remote devices remove <id|#> [--yes]        Unpair one device; the others stay paired
   future remote devices remove --all [--yes]         Unpair every device
   future remote devices use <id|#>                   Make a paired device the one in control
+
+status answers two different questions and keeps them apart: whether this
+machine is serving its devices right now (runtime state, which only a running
+Desktop knows), and the stored autoConnectRemote switch that decides whether it
+serves again after a restart. Run `future remote status --help` for its fields,
+its --json document and its exit codes.
 
 Every action takes --json and prints the same document `future remote devices
 --json` prints (except `add`, which prints the invitation: pairId, link,
@@ -331,11 +338,66 @@ Run `future remote devices --help` for the ids remove and use accept."#;
 
 /// The one-line usage every `future remote` argument error repeats.
 pub const REMOTE_USAGE: &str = r#"Usage:
+  future remote status [--json]
   future remote devices [list] [--json]
   future remote devices add [--json]
   future remote devices remove <id|#> [--yes] [--json]
   future remote devices remove --all [--yes] [--json]
   future remote devices use <id|#> [--json]"#;
+
+/// `future remote status --help` output.
+pub const REMOTE_STATUS_HELP: &str = r#"future remote status — is the remote desktop on, and who is connected
+
+Usage:
+  future remote status [--json]
+
+Two facts, printed separately because they are different facts:
+
+  Remote desktop      Whether this machine is serving its devices right now.
+                      Only a running Desktop (the window, or futureos-headless)
+                      can answer; with none running this reads "off — no
+                      Desktop is running for this machine".
+  Saved switch        autoConnectRemote, the same value the window's Remote page
+                      stores. It decides whether the machine serves again at the
+                      next launch.
+
+The Devices block lists every paired device: whether it is in control, whether
+its bridge is connected (only a running Desktop knows that), the device's own
+name when it declared one, and where it was minted (the Future platform, or a
+self-hosted relay).
+
+--json prints one object:
+  desktopRunning             a Desktop owns this data directory (window or headless)
+  state                      off | unknown | on | connecting | serving | degraded |
+                             failed | revoked — the word to test in a script
+  phase                      the Desktop's own phase, or null when it did not answer
+  serving                    the machine is trying to serve (connecting, ready,
+                             reconnecting or refreshing)
+  reachable                  phase is ready: a device can connect right now
+  reason                     why it is not serving (network, credential_expired, …)
+  recovery                   a retry in progress: attempt, maxAttempts, nextRetryAt
+  switch.autoConnectRemote   the stored switch
+  agentAvailable             this machine's Agent, or null when unknown
+  transport                  where it connects, with any credential in the URL removed
+  active                     the device in control, or null
+  devicesTotal, devices      every paired device: pairId, control, connected
+                             (the bridge), present (the client is actually
+                             there), phase, endpoint (platform | relay),
+                             relayUrl, client
+  warningCode                a non-fatal local problem (e.g. the web listener)
+  invitationExpiresAt        when an unscanned invitation lapses; the code itself
+                             is never printed by this command
+
+Exit codes:
+  0  the status was read — including "off", "failed" and "revoked": a machine
+     that is off answered the question.
+  1  it was not read: a Desktop that owns this directory did not answer (an
+     older build, or one that died mid-request), or the settings store could not
+     be read. --json still prints the document — state "unknown", plus the half
+     read from disk — so a script gets a document either way.
+
+Test `state`, not the exit code:
+  future remote status --json | jq -e '.state == "serving"'"#;
 
 /// `future remote devices add --help` output.
 pub const REMOTE_ADD_HELP: &str = r#"future remote devices add — pair a new device

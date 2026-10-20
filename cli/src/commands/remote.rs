@@ -87,6 +87,7 @@ pub async fn remote(command: Option<&str>, rest: &[String], out: &Output) -> Res
             Ok(())
         }
         Some("devices") => devices(rest, out).await,
+        Some("status") => status(rest, out).await,
         Some(other) => Err(format!(
             "Unknown argument: {other}\n\n{}",
             help::REMOTE_USAGE
@@ -572,6 +573,435 @@ fn document(book: &Book, running: bool) -> Value {
     })
 }
 
+// ── status ──────────────────────────────────────────────────────────────────
+
+/// `future remote status [--json]`
+///
+/// The switch has two halves and they are not the same fact. Whether this
+/// machine is serving its devices *now* is runtime state that lives in the
+/// Desktop process and nowhere on disk; whether it will serve them after a
+/// restart is the stored switch. Both are printed, always, under their own
+/// labels — a reader must never have to guess which one "on" meant.
+async fn status(args: &[String], out: &Output) -> Result<(), String> {
+    if args
+        .iter()
+        .any(|argument| argument == "--help" || argument == "-h")
+    {
+        out.log(help::REMOTE_STATUS_HELP);
+        return Ok(());
+    }
+    let values = positional(args, &["--json"], help::REMOTE_USAGE)?;
+    if let Some(extra) = values.first() {
+        return Err(format!(
+            "`status` takes no argument (drop `{extra}`).\n\n{}",
+            help::REMOTE_USAGE
+        ));
+    }
+    let json_flag = args.iter().any(|argument| argument == "--json");
+    let observed = observe().await?;
+    if json_flag {
+        out.log(
+            &serde_json::to_string_pretty(&observed.document())
+                .map_err(|error| error.to_string())?,
+        );
+    } else {
+        for line in observed.text() {
+            out.log(&line);
+        }
+    }
+    // A Desktop that owns this data directory but did not answer is a real
+    // failure — the question was "what is it doing", and nobody could say. The
+    // half read from disk is printed regardless, so `--json` still yields a
+    // document a script can read; the exit code is what says the runtime half
+    // is missing.
+    if let Some(silence) = &observed.silence {
+        out.log_err(silence);
+        out.set_exit_code(1);
+    }
+    Ok(())
+}
+
+/// Everything one `status` read knows, from both sources.
+struct Observed {
+    /// A Desktop (windowed or headless) holds the lock on this data directory.
+    running: bool,
+    /// That Desktop's own answer, when it gave one.
+    reported: Option<Value>,
+    /// Why there is no answer although a Desktop owns the directory.
+    silence: Option<String>,
+    /// Which devices are paired, and where each was minted.
+    book: Book,
+    /// The stored switch (`autoConnectRemote`): serve again after a restart.
+    switch: bool,
+}
+
+/// Read both halves: the runtime state from the running Desktop, the rest from
+/// disk.
+async fn observe() -> Result<Observed, String> {
+    let running = desktop_running();
+    let book = Book::load()?;
+    // The stored switch is the desktop app's own preference, read through the
+    // same loader `future desktop settings` uses so the two cannot disagree
+    // about defaults.
+    let switch = crate::commands::desktop::load()
+        .map(|settings| settings.auto_connect_remote)
+        .map_err(|error| format!("Cannot read the desktop app's settings: {error}"))?;
+    let (reported, silence) = if running {
+        match request_desktop_within("status", None, "nothing was changed", STATUS_TIMEOUT).await {
+            Ok(reply) => match reply.get("error").and_then(Value::as_str) {
+                Some(error) => (
+                    None,
+                    Some(format!(
+                        "The running Desktop did not report its status: {error}"
+                    )),
+                ),
+                None => match reply.get("status").filter(|status| status.is_object()) {
+                    Some(status) => (Some(status.clone()), None),
+                    None => (
+                        None,
+                        Some("The running Desktop answered without a status.".to_string()),
+                    ),
+                },
+            },
+            // The timeout already says which silence it was (an older Desktop
+            // that never picked the request up, or one that took it and died).
+            Err(silence) => (None, Some(silence)),
+        }
+    } else {
+        (None, None)
+    };
+    Ok(Observed {
+        running,
+        reported,
+        silence,
+        book,
+        switch,
+    })
+}
+
+/// The same phase → word mapping `future remote status --json` promises, kept in
+/// one place so the document and the prose cannot disagree.
+fn state_of(running: bool, phase: Option<&str>) -> &'static str {
+    match (running, phase) {
+        (false, _) => "off",
+        (true, None) => "unknown",
+        (true, Some("stopped")) => "off",
+        (true, Some("enabled")) => "on",
+        (true, Some("connecting" | "refreshing")) => "connecting",
+        (true, Some("ready")) => "serving",
+        (true, Some("reconnecting")) => "degraded",
+        (true, Some("failed")) => "failed",
+        (true, Some("revoked")) => "revoked",
+        // A phase a newer Desktop knows and this terminal does not. "unknown" is
+        // honest; calling it "off" would be a guess a script would act on.
+        (true, Some(_)) => "unknown",
+    }
+}
+
+/// Whether a phase means "this machine is trying to serve": the four phases the
+/// server itself counts as a live runtime.
+fn is_serving_phase(phase: &str) -> bool {
+    matches!(
+        phase,
+        "connecting" | "ready" | "reconnecting" | "refreshing"
+    )
+}
+
+impl Observed {
+    fn phase(&self) -> Option<&str> {
+        self.reported.as_ref()?.get("phase")?.as_str()
+    }
+
+    fn state(&self) -> &'static str {
+        state_of(self.running, self.phase())
+    }
+
+    /// A field of the Desktop's answer, or JSON null when it did not answer.
+    fn reported_value(&self, key: &str) -> Value {
+        self.reported
+            .as_ref()
+            .and_then(|status| status.get(key))
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+
+    /// Every paired device, with what the running Desktop adds when it answered.
+    ///
+    /// The book is authoritative for *which* devices exist and where each was
+    /// minted (the status carries no endpoint); the Desktop is authoritative for
+    /// live state, which the book cannot know. A device with a pending invitation
+    /// is in the Desktop's list but not yet in the book, so it is appended.
+    fn devices(&self) -> Vec<Value> {
+        let reported = self
+            .reported
+            .as_ref()
+            .and_then(|status| status.get("devices"))
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let live = |pair_id: &str| {
+            reported
+                .iter()
+                .find(|device| device.get("pairId").and_then(Value::as_str) == Some(pair_id))
+        };
+        let controller = self.book.controller().map(|device| device.pair_id.clone());
+        let mut rows: Vec<Value> = Vec::new();
+        for device in &self.book.devices {
+            let row = live(&device.pair_id);
+            let control = row
+                .and_then(|row| row.get("control"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    if controller.as_deref() == Some(device.pair_id.as_str()) {
+                        "active".to_string()
+                    } else {
+                        "standby".to_string()
+                    }
+                });
+            rows.push(json!({
+                "pairId": device.pair_id,
+                "control": control,
+                "connected": row
+                    .and_then(|row| row.get("connected"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                "present": row
+                    .and_then(|row| row.get("present"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                "phase": row.and_then(|row| row.get("phase")).cloned().unwrap_or(Value::Null),
+                "endpoint": if device.is_relay() { "relay" } else { "platform" },
+                "relayUrl": device.control_url,
+                "client": row.and_then(|row| row.get("client")).cloned().unwrap_or(Value::Null),
+            }));
+        }
+        for row in &reported {
+            let pair_id = row
+                .get("pairId")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if self
+                .book
+                .devices
+                .iter()
+                .any(|device| device.pair_id == pair_id)
+            {
+                continue;
+            }
+            rows.push(json!({
+                "pairId": pair_id,
+                "control": row.get("control").cloned().unwrap_or(Value::Null),
+                "connected": row.get("connected").and_then(Value::as_bool).unwrap_or(false),
+                "present": row.get("present").and_then(Value::as_bool).unwrap_or(false),
+                "phase": row.get("phase").cloned().unwrap_or(Value::Null),
+                // Not in the book yet, so nothing minted it as far as this side
+                // knows: an invitation waiting to be scanned.
+                "endpoint": Value::Null,
+                "relayUrl": Value::Null,
+                "client": row.get("client").cloned().unwrap_or(Value::Null),
+            }));
+        }
+        rows
+    }
+
+    /// The machine-readable document `--json` prints.
+    fn document(&self) -> Value {
+        let phase = self.phase();
+        let devices = self.devices();
+        let active = self
+            .reported
+            .as_ref()
+            .and_then(|status| status.get("active"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| self.book.controller().map(|device| device.pair_id.clone()));
+        json!({
+            "desktopRunning": self.running,
+            "state": self.state(),
+            "phase": phase,
+            "serving": phase.is_some_and(is_serving_phase),
+            "reachable": phase == Some("ready"),
+            "reason": self.reported_value("reason"),
+            "recovery": self.reported_value("recovery"),
+            "switch": { "autoConnectRemote": self.switch },
+            "agentAvailable": self.reported_value("agentAvailable"),
+            "transport": self.reported_value("transport"),
+            "active": active,
+            "devicesTotal": devices.len(),
+            "devices": devices,
+            "warningCode": self.reported_value("warningCode"),
+            "invitationExpiresAt": self.reported_value("invitationExpiresAt"),
+        })
+    }
+
+    /// The same read, for a person.
+    fn text(&self) -> Vec<String> {
+        let mut lines = vec![self.headline()];
+        lines.push(format!(
+            "Saved switch (autoConnectRemote): {}{}",
+            if self.switch { "on" } else { "off" },
+            if self.switch {
+                "   (it will be on again at the next launch)"
+            } else {
+                "   (it will stay off at the next launch)"
+            }
+        ));
+        if self.reported.is_some() {
+            lines.push(format!(
+                "Desktop: running            Agent: {}",
+                match self.reported_value("agentAvailable").as_bool() {
+                    Some(true) => "available",
+                    Some(false) => "unavailable",
+                    None => "unknown",
+                }
+            ));
+        }
+        lines.push(String::new());
+        lines.extend(self.device_lines());
+        if let Some(expiry) = self.reported_value("invitationExpiresAt").as_i64() {
+            if let Some(when) = local_wall_clock(expiry) {
+                lines.push(String::new());
+                lines.push(format!(
+                    "An invitation is printed on the Remote page and lapses at {when}."
+                ));
+            }
+        }
+        lines
+    }
+
+    /// The one-line summary: what the switch is doing, and why.
+    fn headline(&self) -> String {
+        let sentence = match (self.state(), self.running, self.phase()) {
+            ("off", false, _) => "off — no Desktop is running for this machine".to_string(),
+            ("off", true, _) => "off — stopped".to_string(),
+            ("unknown", false, _) => "unknown — no Desktop is running".to_string(),
+            ("unknown", true, _) => "unknown — the running Desktop did not answer".to_string(),
+            ("on", _, _) => "on — no device bridge is running yet".to_string(),
+            ("connecting", _, _) => "on — connecting".to_string(),
+            ("serving", _, _) => "on — serving".to_string(),
+            ("degraded", _, _) => "on — reconnecting".to_string(),
+            ("failed", _, _) => "off — failed".to_string(),
+            ("revoked", _, _) => "off — revoked".to_string(),
+            (other, _, _) => (*other).to_string(),
+        };
+        let mut headline = format!("Remote desktop: {sentence}");
+        if let Some(reason) = self.reported_value("reason").as_str() {
+            headline.push_str(&format!(" ({})", reason.replace('_', " ")));
+        }
+        if let Some(recovery) = self
+            .reported
+            .as_ref()
+            .and_then(|status| status.get("recovery"))
+        {
+            if !recovery.is_null() {
+                let attempt = recovery.get("attempt").and_then(Value::as_u64);
+                match attempt {
+                    Some(attempt) => headline.push_str(&format!(
+                        " (retry {}{})",
+                        attempt,
+                        recovery
+                            .get("maxAttempts")
+                            .and_then(Value::as_u64)
+                            .map(|max| format!("/{max}"))
+                            .unwrap_or_default()
+                    )),
+                    None => headline.push_str(" (retrying)"),
+                }
+            }
+        }
+        headline
+    }
+
+    fn device_lines(&self) -> Vec<String> {
+        let rows = self.devices();
+        if rows.is_empty() {
+            return vec![
+                "Devices: none are paired.".to_string(),
+                "Pair one with `future remote devices add` while the Desktop is running."
+                    .to_string(),
+            ];
+        }
+        let controller = rows
+            .iter()
+            .filter(|row| row.get("control").and_then(Value::as_str) == Some("active"))
+            .count();
+        let header = match (self.reported.is_some(), controller) {
+            (true, 0) => format!("Devices: {} paired, none in control", rows.len()),
+            (true, count) => format!("Devices: {} paired, {count} in control", rows.len()),
+            // Without the Desktop's answer there is no live state to report; the
+            // pairing itself is still worth printing.
+            (false, _) => format!("Devices: {} paired", rows.len()),
+        };
+        let ids: Vec<String> = rows
+            .iter()
+            .map(|row| {
+                row.get("pairId")
+                    .and_then(Value::as_str)
+                    .map(display_pair_id)
+                    .unwrap_or_default()
+            })
+            .collect();
+        let id_width = ids.iter().map(String::len).max().unwrap_or(0).max(6);
+        let mut lines = vec![header, String::new()];
+        for (index, row) in rows.iter().enumerate() {
+            let control = row
+                .get("control")
+                .and_then(Value::as_str)
+                .unwrap_or("standby");
+            let connected = match (
+                row.get("present").and_then(Value::as_bool),
+                row.get("connected").and_then(Value::as_bool),
+            ) {
+                // The client is there: this device can command the machine now
+                // (if it also holds control).
+                (Some(true), _) => "connected",
+                // A bridge serving a pairing whose device is closed or lost. It
+                // is not "connected" in any sense a person means.
+                (_, Some(true)) => "idle",
+                _ if self.reported.is_some() => "offline",
+                _ => "—",
+            };
+            let client = match row.get("client") {
+                Some(client) if client.is_object() => {
+                    let name = client
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    let kind = client
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if kind.is_empty() {
+                        name.to_string()
+                    } else {
+                        format!("{name} ({kind})")
+                    }
+                }
+                _ => "—".to_string(),
+            };
+            let endpoint = match row.get("endpoint").and_then(Value::as_str) {
+                Some("relay") => format!(
+                    "relay {}",
+                    row.get("relayUrl").and_then(Value::as_str).unwrap_or("")
+                ),
+                Some("platform") => "Future platform".to_string(),
+                _ => "unpaired invitation".to_string(),
+            };
+            lines.push(format!(
+                "  {:>2}  {:<id_width$}  {:<8}  {:<10}  {:<20}  {}",
+                index + 1,
+                ids[index],
+                control,
+                connected,
+                client,
+                endpoint.trim_end()
+            ));
+        }
+        lines
+    }
+}
+
 // ── add ─────────────────────────────────────────────────────────────────────
 
 /// How long a running Desktop gets to answer.
@@ -592,6 +1022,20 @@ const REPLY_TIMEOUT: Duration = Duration::from_millis(400);
 const REPLY_POLL: Duration = Duration::from_millis(100);
 #[cfg(test)]
 const REPLY_POLL: Duration = Duration::from_millis(5);
+
+/// How long `status` waits for the running Desktop.
+///
+/// The control host looks for requests every 200ms and answers a status from
+/// memory, so a Desktop that is there answers almost at once. This covers a
+/// Desktop busy with another request — and a Desktop that will never answer
+/// (an older build), which must not hold a pure query for the minute an `add`
+/// may legitimately take.
+#[cfg(not(test))]
+const STATUS_TIMEOUT: Duration = Duration::from_secs(5);
+/// A fake answers in the same millisecond; this only has to outlast a poll or
+/// two so the "silent Desktop" cases stay reachable without a real wait.
+#[cfg(test)]
+const STATUS_TIMEOUT: Duration = Duration::from_millis(150);
 
 /// The directory the running Desktop watches (`~/.future/run/remote-control`).
 ///
@@ -849,6 +1293,21 @@ async fn request_desktop(
     pair_id: Option<&str>,
     unchanged: &str,
 ) -> Result<Value, String> {
+    request_desktop_within(op, pair_id, unchanged, REPLY_TIMEOUT).await
+}
+
+/// [`request_desktop`] with a caller-chosen deadline.
+///
+/// Only a read shortens it: the Desktop answers a `status` from memory, so
+/// waiting the minute an `add` may take would be a minute of a hang for a
+/// question that has no slow path. A write keeps the long deadline, because
+/// minting an invitation is a platform round trip.
+async fn request_desktop_within(
+    op: &str,
+    pair_id: Option<&str>,
+    unchanged: &str,
+    timeout: Duration,
+) -> Result<Value, String> {
     let directory = control_directory()?;
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -869,7 +1328,14 @@ async fn request_desktop(
         body["pairId"] = json!(pair_id);
     }
     write_json(&request, &body)?;
-    let outcome = wait_for_answer(&answer, &|| request.exists(), &desktop_running, unchanged).await;
+    let outcome = wait_for_answer(
+        &answer,
+        &|| request.exists(),
+        &desktop_running,
+        unchanged,
+        timeout,
+    )
+    .await;
     let _ = std::fs::remove_file(&answer);
     let _ = std::fs::remove_file(&request);
     outcome
@@ -914,8 +1380,9 @@ async fn wait_for_answer(
     request_still_there: &dyn Fn() -> bool,
     still_running: &dyn Fn() -> bool,
     unchanged: &str,
+    timeout: Duration,
 ) -> Result<Value, String> {
-    let deadline = Instant::now() + REPLY_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     loop {
         // A poll that lands before the writer has finished is "not yet", not a
         // failure: the answer is written atomically, so a parsed one is whole.
@@ -926,11 +1393,7 @@ async fn wait_for_answer(
             return Ok(value);
         }
         if Instant::now() >= deadline {
-            return Err(timeout_message(
-                REPLY_TIMEOUT,
-                request_still_there,
-                unchanged,
-            ));
+            return Err(timeout_message(timeout, request_still_there, unchanged));
         }
         if !still_running() {
             return Err(format!(
@@ -2547,9 +3010,15 @@ mod tests {
         // The Desktop's lock is released on drop; the probe is the same
         // `desktop_running` the command uses, injected so the wait can be cut short.
         drop(_desktop);
-        let error = wait_for_answer(&answer, &|| true, &|| false, "nothing was paired")
-            .await
-            .expect_err("a Desktop that stopped must not look like a slow one");
+        let error = wait_for_answer(
+            &answer,
+            &|| true,
+            &|| false,
+            "nothing was paired",
+            REPLY_TIMEOUT,
+        )
+        .await
+        .expect_err("a Desktop that stopped must not look like a slow one");
         assert!(error.contains("stopped before it answered"), "{error}");
         assert!(!error.contains("did not answer within"), "{error}");
     }
@@ -2564,9 +3033,15 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let answer = home.path().join("never-written.json");
 
-        let unclaimed = wait_for_answer(&answer, &|| true, &|| true, "nothing was paired")
-            .await
-            .expect_err("an unclaimed request times out");
+        let unclaimed = wait_for_answer(
+            &answer,
+            &|| true,
+            &|| true,
+            "nothing was paired",
+            STATUS_TIMEOUT,
+        )
+        .await
+        .expect_err("an unclaimed request times out");
         assert!(
             unclaimed.contains("No Desktop picked the request up"),
             "{unclaimed}"
@@ -2578,9 +3053,15 @@ mod tests {
         // another device" cannot be the explanation for this one.
         assert!(!unclaimed.contains("busy pairing"), "{unclaimed}");
 
-        let claimed = wait_for_answer(&answer, &|| false, &|| true, "nothing was paired")
-            .await
-            .expect_err("a claimed request that never answers times out");
+        let claimed = wait_for_answer(
+            &answer,
+            &|| false,
+            &|| true,
+            "nothing was paired",
+            STATUS_TIMEOUT,
+        )
+        .await
+        .expect_err("a claimed request that never answers times out");
         assert!(
             claimed.contains("took the request but did not answer"),
             "{claimed}"
@@ -3234,5 +3715,226 @@ mod tests {
         for no in ["", "n", "no", "nope", "yess", "1"] {
             assert!(!is_yes(no), "{no:?}");
         }
+    }
+
+    // ── status ──────────────────────────────────────────────────────────────
+
+    /// The Desktop's answer for a machine that is serving one device.
+    fn serving_status() -> Value {
+        json!({
+            "phase": "ready",
+            "agentAvailable": true,
+            "transport": "tls://relay.example:4222",
+            "active": "pair_BBBB",
+            "warningCode": null,
+            "invitationExpiresAt": null,
+            "devices": [
+                {
+                    "pairId": "pair_AAAA",
+                    "phase": "ready",
+                    "control": "standby",
+                    "connected": true,
+                    "present": false,
+                    "client": { "name": "MacBook", "kind": "desktop" },
+                },
+                {
+                    "pairId": "pair_BBBB",
+                    "phase": "ready",
+                    "control": "active",
+                    "connected": true,
+                    "present": true,
+                    "client": { "name": "iPhone 15", "kind": "phone" },
+                }
+            ],
+        })
+    }
+
+    #[tokio::test]
+    async fn status_with_no_desktop_reports_the_half_it_can_read() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+
+        let (code, stdout, stderr) = run(&["remote", "status"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stderr.is_empty(), "{stderr}");
+        assert!(
+            stdout.contains("Remote desktop: off — no Desktop is running for this machine"),
+            "{stdout}"
+        );
+        // The stored switch is a disk fact, so it is known even with no Desktop.
+        assert!(
+            stdout.contains("Saved switch (autoConnectRemote): on"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Devices: 2 paired"), "{stdout}");
+        assert!(
+            stdout.contains("relay https://relay.example.com"),
+            "{stdout}"
+        );
+        // The book is a credential: nothing from it is printed.
+        assert!(!stdout.contains("SUAAAA"), "{stdout}");
+        assert!(!stdout.contains("jwt-a"), "{stdout}");
+    }
+
+    #[tokio::test]
+    async fn status_prints_the_running_desktops_own_state() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+        let seen = answer_requests(&home, json!({ "status": serving_status() }));
+
+        let (code, stdout, stderr) = run(&["remote", "status"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("Remote desktop: on — serving"), "{stdout}");
+        assert!(stdout.contains("Agent: available"), "{stdout}");
+        assert!(
+            stdout.contains("Devices: 2 paired, 1 in control"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("iPhone 15 (phone)"), "{stdout}");
+        // A bridge serving a pairing whose client is gone reads "idle", not
+        // "connected": the second device is the only one actually there.
+        assert!(stdout.contains("connected"), "{stdout}");
+        assert!(stdout.contains("idle"), "{stdout}");
+        let posed = seen.lock().unwrap();
+        assert_eq!(posed.len(), 1);
+        assert_eq!(posed[0]["op"], "status", "{}", posed[0]);
+        assert!(
+            posed[0].get("pairId").is_none(),
+            "a status names no device: {}",
+            posed[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn status_json_is_the_documented_document() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+        answer_requests(&home, json!({ "status": serving_status() }));
+
+        let (code, stdout, stderr) = run(&["remote", "status", "--json"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        let value: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(value["desktopRunning"], true);
+        assert_eq!(value["state"], "serving");
+        assert_eq!(value["phase"], "ready");
+        assert_eq!(value["serving"], true);
+        assert_eq!(value["reachable"], true);
+        assert_eq!(value["reason"], Value::Null);
+        assert_eq!(value["switch"]["autoConnectRemote"], true);
+        assert_eq!(value["agentAvailable"], true);
+        assert_eq!(value["transport"], "tls://relay.example:4222");
+        assert_eq!(value["active"], "pair_BBBB");
+        assert_eq!(value["devicesTotal"], 2);
+        // Endpoints come from the book, live state from the Desktop.
+        assert_eq!(value["devices"][0]["endpoint"], "platform");
+        assert_eq!(value["devices"][0]["control"], "standby");
+        assert_eq!(value["devices"][1]["endpoint"], "relay");
+        assert_eq!(value["devices"][1]["relayUrl"], "https://relay.example.com");
+        assert_eq!(value["devices"][1]["control"], "active");
+        assert_eq!(value["devices"][0]["present"], false);
+        assert_eq!(value["devices"][1]["present"], true);
+        assert_eq!(value["devices"][1]["client"]["name"], "iPhone 15");
+    }
+
+    /// A Desktop that took the request and never answered is a failure — but the
+    /// document is still printed, so a script is not left with nothing.
+    #[tokio::test]
+    async fn a_silent_desktop_is_unknown_and_exits_one() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+        // The request is picked up (the file disappears) and nothing is written.
+        let directory = home.future().join("run").join(CONTROL_DIRECTORY);
+        std::fs::create_dir_all(&directory).unwrap();
+        tokio::spawn(async move {
+            loop {
+                let claimed = std::fs::read_dir(&directory)
+                    .map(|entries| entries.filter_map(Result::ok).collect::<Vec<_>>())
+                    .unwrap_or_default()
+                    .into_iter()
+                    .any(|entry| {
+                        entry
+                            .file_name()
+                            .to_string_lossy()
+                            .ends_with(REQUEST_SUFFIX)
+                            && std::fs::remove_file(entry.path()).is_ok()
+                    });
+                if claimed {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        });
+
+        let (code, stdout, stderr) = run(&["remote", "status", "--json"]).await;
+        assert_eq!(code, 1, "{stdout}");
+        let value: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(value["state"], "unknown");
+        assert_eq!(value["phase"], Value::Null);
+        assert_eq!(value["desktopRunning"], true);
+        // The disk half still made it into the document.
+        assert_eq!(value["switch"]["autoConnectRemote"], true);
+        assert_eq!(value["devicesTotal"], 2);
+        assert!(!stderr.is_empty(), "the reason goes to stderr");
+    }
+
+    /// A Desktop that refuses the request (an older build) is the same answer as
+    /// one that stays silent: nothing is invented, and the exit code says so.
+    #[tokio::test]
+    async fn a_desktop_that_refuses_the_request_is_unknown_too() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+        answer_requests(
+            &home,
+            json!({ "error": "this Desktop does not know the `status` request" }),
+        );
+
+        let (code, stdout, stderr) = run(&["remote", "status"]).await;
+        assert_eq!(code, 1);
+        assert!(stdout.contains("Remote desktop: unknown"), "{stdout}");
+        assert!(stderr.contains("did not report its status"), "{stderr}");
+    }
+
+    #[tokio::test]
+    async fn status_takes_no_argument_and_creates_nothing() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (code, _, stderr) = run(&["remote", "status", "pair_AAAA"]).await;
+        assert_eq!(code, 1);
+        assert!(stderr.contains("takes no argument"), "{stderr}");
+        // A read never invents a data directory.
+        assert!(!home.exists("run"), "{}", home.future().display());
+        assert!(!home.exists("app"), "{}", home.future().display());
+    }
+
+    #[test]
+    fn every_phase_maps_to_the_state_the_document_promises() {
+        assert_eq!(state_of(false, Some("ready")), "off", "no Desktop wins");
+        assert_eq!(state_of(false, None), "off");
+        assert_eq!(state_of(true, None), "unknown");
+        for (phase, state) in [
+            ("stopped", "off"),
+            ("enabled", "on"),
+            ("connecting", "connecting"),
+            ("refreshing", "connecting"),
+            ("ready", "serving"),
+            ("reconnecting", "degraded"),
+            ("failed", "failed"),
+            ("revoked", "revoked"),
+        ] {
+            assert_eq!(state_of(true, Some(phase)), state, "{phase}");
+        }
+        // A phase only a newer Desktop knows is not guessed at.
+        assert_eq!(state_of(true, Some("draining")), "unknown");
+        assert!(is_serving_phase("ready"));
+        assert!(!is_serving_phase("stopped"));
+        assert!(!is_serving_phase("enabled"));
     }
 }
