@@ -1099,3 +1099,6 @@ mod test_support;
 
 #[cfg(test)]
 mod ownership_tests;
+
+#[cfg(test)]
+mod reconnect_tests;
