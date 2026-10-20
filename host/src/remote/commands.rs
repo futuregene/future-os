@@ -3135,9 +3135,24 @@ mod bridge_tests {
         // runtime. Observe the real eviction instead of assuming its task has
         // run after a fixed sleep on a loaded native runner. Never clear the
         // cache or repeat the command until the actual slot is gone.
-        tokio::time::timeout(Duration::from_secs(5), async {
+        //
+        // The wait proves the slot *is* retired, and its ceiling is only a
+        // liveness guard — "the task exists, runs and removes this entry" —
+        // not a latency bound, because the scheduling is not this test's to
+        // bound. That executor is the process-wide host runtime every other
+        // test in this binary shares, and the command handlers block its
+        // workers on store and file work (`crate::store::*` runs inline, not
+        // through `spawn_blocking`), so its timer can go unpolled for seconds
+        // while the suite is busy. Measured on the Windows runner: this test
+        // took 5.32 s and spent all of it in a 5 s ceiling over a 500 ms TTL,
+        // with 1700 sibling tests passing before, during and after it — a
+        // frozen task registry (whose spawns are silently dropped) is ruled
+        // out by that, since it is process-wide and sticky. A minute keeps
+        // >10x the stall actually observed, and a real regression still fails
+        // it far inside the job's budget.
+        tokio::time::timeout(Duration::from_secs(60), async {
             while bridge.reply_slots.contains_command(&command_id) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                tokio::time::sleep(Duration::from_millis(25)).await;
             }
         })
         .await

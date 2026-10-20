@@ -533,7 +533,8 @@ add`.
 
 Asks for confirmation from the terminal unless --yes is given, and refuses to
 read an answer from a redirected stdin: a prompt nobody saw must not become
-"yes".
+"yes". One key answers — `y` or `Y` unpairs, `n`, `N`, Enter or Esc cancels —
+so nothing has to be followed by Enter.
 
 The device is revoked before the local slot is dropped — at the Future platform,
 or by deleting its room at the relay that minted it. A running Desktop is asked to

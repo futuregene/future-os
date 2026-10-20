@@ -87,3 +87,8 @@ portable-pty = "0.9"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console"] }
+
+# `prompt::ask_yes_no` reads one key at a time on a terminal: termios is what
+# turns the line wait and the echo off, and what puts them back.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
