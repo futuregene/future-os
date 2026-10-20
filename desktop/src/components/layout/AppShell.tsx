@@ -14,8 +14,8 @@ import { saveComposerDraft } from "../../features/agent/composerDraft";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { sessionMentionOptions } from "../../features/agent/sessionMention";
 import { useSkillRecommendation } from "../../features/agent/useSkillRecommendation";
-import { COMMANDS } from "../../features/keyboard/catalog";
-import { useCommand } from "../../features/keyboard/commands";
+import { COMMANDS, isCommandId } from "../../features/keyboard/catalog";
+import { runCommand, useCommand } from "../../features/keyboard/commands";
 import { useShortcutDispatcher } from "../../features/keyboard/useDispatcher";
 import { CommandPalette } from "../../features/palette/CommandPalette";
 import { ShortcutCheatSheet } from "../../features/palette/ShortcutCheatSheet";
@@ -571,6 +571,15 @@ function ReadyAppShell({
   useTauriEvent("open-settings", () => {
     setSettingsTab("about");
     setSettingsOpen(true);
+  });
+
+  // The rest of the macOS menu (New Conversation, Settings…) names a **command**,
+  // not an action or a key: the item carries no accelerator, so this is where the
+  // user's current binding, the palette and the menu converge on one handler. An
+  // id this build does not know is ignored rather than guessed at.
+  useTauriEvent<string>("menu-command", (id) => {
+    if (isCommandId(id))
+      runCommand(id);
   });
 
   // Remote (phone) activity: a phone client created or drove a thread. Refresh

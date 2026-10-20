@@ -1548,6 +1548,13 @@ describe("app shell event bridges", () => {
   it("opens Settings on the About tab from the macOS menu event", () => {
     const view = mount(<AppShell />);
     act(() => tauri("open-settings")(undefined));
+    // … and the menu's own items name a command id, so they run whatever binding it
+    // has today: the macOS menu carries no accelerator (see `menu.rs`).
+    act(() => tauri("menu-command")("chat.new"));
+    expect(view.container.querySelector("[data-child=\"new-conversation\"]")).not.toBeNull();
+    // An id this build does not know is ignored instead of guessed at.
+    act(() => tauri("menu-command")("vibe.nonsense"));
+    expect(view.container.querySelector("[data-child=\"new-conversation\"]")).not.toBeNull();
     expect(children.settingsDialog).toMatchObject({ initialTab: "about", open: true });
     view.unmount();
   });
