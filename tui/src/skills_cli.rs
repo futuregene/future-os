@@ -6,10 +6,10 @@
 //! `future skills <verb>` exactly like the desktop app does for built-in skills
 //! (`desktop/src-tauri/src/skills_bootstrap.rs` runs the bundled `future` CLI).
 //!
-//! Binary resolution mirrors `crate::agent_supervisor::launch_candidates`:
-//! when the process *is* the unified binary (`future tui`) use it directly,
-//! else look for a sibling `future` next to the current executable, else fall
-//! back to `PATH`.
+//! Binary resolution: when the process *is* the unified binary (`future tui`)
+//! use it directly, else look for a sibling `future` next to the current
+//! executable, else fall back to `PATH` — wider than the sidecar launcher,
+//! which spawns only the running binary itself (see `agent_supervisor`).
 //!
 //! Implemented by the `skills-cli` worker; see
 //! `.future/tui-parity/texts/skills-cli.md` for the required API.
