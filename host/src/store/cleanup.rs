@@ -54,7 +54,7 @@ pub struct UnverifiedRun {
     pub started_at: Option<i64>,
 }
 
-/// Runs settled in an unverified shape (see [`UNVERIFIED_TERMINAL_RUN_SQL`])
+/// Runs settled in an unverified shape (see `UNVERIFIED_TERMINAL_RUN_SQL`)
 /// whose last write is at or after `since_ms`, oldest first. The bound is what
 /// keeps the repair pass from re-reading the whole run history on every start;
 /// `session_id` resolution mirrors [`list_active_runs`].

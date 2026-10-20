@@ -661,7 +661,7 @@ pub struct SyncFutureModelsResult {
 /// its cache) and rebuild its model registry, so the next [`list_agent_models`]
 /// returns a complete list. Used by post-login setup, manual refresh, and the
 /// desktop's low-frequency maintenance schedule.
-/// Best-effort like [`reload_agent_credentials`]: an unavailable agent yields a
+/// Best-effort: an unavailable agent yields a
 /// zeroed result rather than an error.
 pub async fn sync_future_models() -> Result<SyncFutureModelsResult, crate::Error> {
     let mut client = match connect_agent().await {

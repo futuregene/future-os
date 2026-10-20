@@ -183,7 +183,7 @@ pub(super) async fn abort_agent_thread(
 }
 
 /// Abort an in-flight run for an already-resolved agent session id. Unlike
-/// [`abort_agent_thread`] it takes the session id directly (the quit guard reads
+/// `abort_agent_thread` it takes the session id directly (the quit guard reads
 /// it from `store::active_run_sessions`, so there is no thread to reload) and
 /// accepts orphaned rows while checking any recorded source — on force-quit we need the agent to stop
 /// streaming before the process exits; startup convergence settles the run rows

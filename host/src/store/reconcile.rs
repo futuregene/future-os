@@ -88,7 +88,7 @@ pub async fn reconcile_orphan_sessions() -> Result<usize, crate::Error> {
 /// always had something to show — and only when the Agent itself answers that
 /// the session holds no message. An unreachable Agent, an unreadable journal, or
 /// a partially read one all leave the row alone (see
-/// [`crate::agent_bridge::session_has_messages`]), and a thread created within
+/// `session_has_messages`), and a thread created within
 /// the existing grace interval is skipped so a conversation being started
 /// right now is never caught mid-bind. Returns the number of threads deleted.
 pub async fn reconcile_empty_conversations() -> Result<usize, crate::Error> {

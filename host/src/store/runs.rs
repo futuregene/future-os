@@ -338,7 +338,7 @@ pub(super) fn cancel_children_of_runs(
     Ok(())
 }
 
-/// Like [`update_run_status`], but only transitions a run that is *not already
+/// Only transitions a run that is *not already
 /// terminal* — the guard is part of the `UPDATE`'s `WHERE`, so a concurrent
 /// `abort_run`/`fail_run_if_active` (which sets `cancelled`/`failed`) is never
 /// clobbered by a late read-then-write. Returns whether a row changed; the

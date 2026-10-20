@@ -419,3 +419,7 @@ CI `39371045462`（候选 `0f9cc395`）的 macOS Host 分组为 933 通过、1 �
 设备码 OAuth、账户/profile/balance/auth-state、错误/重试/Retry-After 和 Agent 独占凭据写入服务迁入 Host；Host 仅返回已验证的授权 URL 与代码。Desktop 保留原 `start`/`start_with_browser` 入口及 best-effort 浏览器打开，旧 SSH/headless 不打开浏览器。保持 client_name、平台参数、HTTP 消息、凭据路径及成功前等待 Agent 持久提交/刷新会话的规则不变。
 
 49 个原服务声明和全部原断言迁入 Host，真实 loopback HTTP/文件/RPC 失败验证本地 49 项通过（0.20 秒）；浏览器适配原用例留在 Desktop 并通过。修改全局 Agent endpoint 的测试先持有既有 canonical RPC 串行锁，防止跨用例干扰，原恢复/失败断言保留。宿主/GUI/CLI 和旧 headless Clippy `--all-targets`、fmt 通过，见[登录迁移证据](../testing/headless-host-login-2026-10-20.json)。尚非最终 CLI、跨平台或人工登录验收。
+
+### 2026-10-20 独立库文档生成门禁
+
+`RUSTDOCFLAGS="-D warnings" cargo doc -p future-host --no-deps --offline --locked` 通过。修正迁移后 11 处指向测试专用、已移除或私有 helper/常量的公开 Rustdoc 链接，使用准确文字/code 引用，没有为文档扩大实现可见性或屏蔽警告。Linux Host affected 测试组新增同一严格生成检查，不依赖 npm/Desktop，详见[文档生成证据](../testing/headless-host-rustdoc-2026-10-20.json)。

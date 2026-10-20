@@ -68,7 +68,7 @@ pub struct BuiltinProvider {
     pub has_api_key: bool,
     pub model_count: usize,
     /// True when the catalog base URL is a placeholder (contains
-    /// [`BASE_URL_PLACEHOLDER`]) so the user must supply their own — the
+    /// `BASE_URL_PLACEHOLDER`) so the user must supply their own — the
     /// Providers page then offers a Base URL field alongside the API key.
     pub requires_base_url: bool,
 }

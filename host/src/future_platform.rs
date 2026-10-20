@@ -32,7 +32,7 @@ pub const TEST_PLATFORM_URL: &str = "https://test.future-os.cn";
 ///   3. [`DEFAULT_FUTURE_PLATFORM_URL`]
 ///
 /// Auth/account endpoints live here (`{platform}/client/v1/...`); the model API
-/// base is [`resolve_future_base_url`].
+/// base is `resolve_future_base_url`.
 pub fn resolve_future_platform_url(auth: &Value) -> String {
     let Some(future) = auth.get(FUTURE_PROVIDER_ID) else {
         return DEFAULT_FUTURE_PLATFORM_URL.to_string();

@@ -173,7 +173,7 @@ fn log_reconcile(result: Result<usize, crate::Error>, op: &str) {
 }
 
 /// Wipe all GUI-local data and rebuild a pristine DB from the latest schema:
-/// drop every table, then re-apply [`apply_schema`] (so a reset matches the
+/// drop every table, then re-apply `apply_schema` (so a reset matches the
 /// current schema even if the old DB predates a change — not just emptied rows
 /// on a stale structure). Dropping in place avoids the Windows file-lock risk of
 /// deleting the db file while a connection is open. Also removes the temp chat

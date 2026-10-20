@@ -569,6 +569,12 @@ jobs:
             mold \
             pkg-config
 
+      - name: Host public library documentation
+        if: steps.affected.outputs.run == 'true' && matrix.filter == 'rust_host'
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc -p future-host --no-deps --locked
+
       - name: cargo test (${{ matrix.name }})
         if: steps.affected.outputs.run == 'true'
         env:

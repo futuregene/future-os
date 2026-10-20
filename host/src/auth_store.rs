@@ -138,7 +138,7 @@ pub fn clear_future_key() -> Result<bool, AppError> {
 /// CLI's `auth login --url` does) and drop the now-stale API key plus any
 /// `platform_base_url`, so the resolved platform is unambiguous and the user
 /// re-logs in against the target environment (credentials don't carry across
-/// environments). Mirrors [`set_future_login`] minus the key.
+/// environments). Mirrors `set_future_login` minus the key.
 pub fn set_future_base_url(base_url: &str) -> Result<(), AppError> {
     upsert_provider_entry(FUTURE_PROVIDER_ID, |object| {
         object.remove("key");

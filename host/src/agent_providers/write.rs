@@ -255,7 +255,7 @@ fn apply_builtin_base_url_local(id: &str, base_url: &str) -> Result<(), AppError
 
 /// Set (or clear) a built-in provider's Base URL override in models.json. Used
 /// for catalog providers whose base URL is a placeholder (see
-/// [`BASE_URL_PLACEHOLDER`]); the agent applies it to that provider's models.
+/// `BASE_URL_PLACEHOLDER`); the agent applies it to that provider's models.
 pub async fn set_builtin_provider_base_url(
     input: SetBuiltinProviderBaseUrlInput,
 ) -> Result<ProvidersView, AppError> {

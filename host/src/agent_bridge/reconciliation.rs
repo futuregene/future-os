@@ -546,7 +546,7 @@ fn settle_orphaned_run(run_id: &str, message: &str) -> Result<(), String> {
 /// - The Agent outlived the client's read of a run: an accepted-but-queued
 ///   submission returns its invoke response at the ack, so a row can reach a
 ///   terminal state the Agent then contradicts by going on to complete that
-///   run ([`reconcile_settled_runs`]).
+///   run (`reconcile_settled_runs`).
 ///
 /// All writes go through the compare-and-set writers, so a healthy collector,
 /// a concurrent user abort, and the normal pipeline are never clobbered. The
@@ -556,7 +556,7 @@ pub fn spawn_active_run_watchdog() {
     crate::runtime::spawn(async move {
         // Run ids already compared against the Agent ledger with nothing to
         // correct, for the lifetime of this process (see
-        // [`reconcile_settled_runs`]). Owned by the loop rather than a global,
+        // `reconcile_settled_runs`). Owned by the loop rather than a global,
         // so each watchdog instance — and each test — starts clean.
         let mut settled_verified: HashSet<String> = HashSet::new();
         loop {
