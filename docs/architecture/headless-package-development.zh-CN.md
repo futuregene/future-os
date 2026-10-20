@@ -22,10 +22,10 @@
 | 2 共享后端 | Store、Agent、应用业务、Remote、调度/观察器及停止协调已迁入，所属套件通过 |
 | 3 统一入口 | `future headless` 已实现，旧产品入口已删除；三平台入口/真实进程检查通过 |
 | 4 测试迁移 | 原声明归属闭合，最终候选归属套件通过；平台条件和原忽略保留 |
-| 5 构建发布 | Cargo/make/sidecar/发布脚本接线与安装器回归已完成；实际包、签名、安装升级卸载仍待验 |
+| 5 构建发布 | Cargo/make/sidecar/发布脚本接线与安装器回归已完成；dev unsigned 实际包已全部通过；平台签名、真实安装升级卸载仍待验 |
 | 6 最终验收 | 实现及普通自动化通过、PR 已合并；用户报告旧体验版人工完成，最终同候选人工、产物及性能仍待闭合 |
 
-后置工作统一见[发布验收清单](../testing/headless-release-acceptance.zh-CN.md)，人工身份和结果见[人工记录](../testing/headless-manual-acceptance.zh-CN.md)。归档最终 CI 时仅整理证据；用户随后授权的 dev unsigned 构建现已启动，运行与候选见发布清单。平台签名测试由用户稍后执行，真实安装与最终验收仍待完成。整体 Goal 继续未完成。
+后置工作统一见[发布验收清单](../testing/headless-release-acceptance.zh-CN.md)，人工身份和结果见[人工记录](../testing/headless-manual-acceptance.zh-CN.md)。归档最终 CI 时仅整理证据；用户随后授权的 dev unsigned 构建现已全部成功，公开下载与验证见[unsigned 结果](../testing/headless-unsigned-results.zh-CN.md)，运行与候选见发布清单。平台签名测试由用户稍后执行，真实安装与最终验收仍待完成。整体 Goal 继续未完成。
 
 ## 1 目标与范围
 

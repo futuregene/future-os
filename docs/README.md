@@ -47,6 +47,7 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 | [Remote package development plan](architecture/remote-package-development.md) ([中文](architecture/remote-package-development.zh-CN.md)) | Planned Rust/TypeScript protocol, client and server extraction; independent Crypto, host adapters, migration phases and CI acceptance |
 | [Headless package development plan](architecture/headless-package-development.md) ([中文](architecture/headless-package-development.zh-CN.md)) | Implemented `future headless` entry, GUI-free `future-host` library, shared backend, data compatibility, test ownership and build/release migration |
 | [Headless release acceptance](testing/headless-release-acceptance.md) ([中文](testing/headless-release-acceptance.zh-CN.md)) | Final successful CI evidence and deferred packaging, signing, installation, performance and same-candidate acceptance |
+| [Headless unsigned downloads/results](testing/headless-unsigned-results.md) ([中文](testing/headless-unsigned-results.zh-CN.md)) | Verified dev payloads, public URLs, SHA-256, CLI/sidecar and static/old-Linux checks |
 | [Channel test coverage](architecture/channels-test-coverage.md) ([中文](architecture/channels-test-coverage.zh-CN.md)) | What the channel framework's tests promise, and the 22 lines that are deliberately not covered, with the reason for each |
 | [RPC crate](architecture/rpc.md) ([中文](architecture/rpc.zh-CN.md)) | `packages/rpc` — the protobuf wire contract (single source of truth) |
 

@@ -20,6 +20,7 @@
 | [Desktop Agent](guide/desktop-agent.zh-CN.md)（[en](guide/desktop-agent.md)） | 默认内置/外部服务、退出中断范围、CLI 接入、开发启动、日志与升级恢复 |
 | [无头桌面](guide/desktop-headless.zh-CN.md)（[en](guide/desktop-headless.md)） | 前台 `future headless` 启动、终端登录/配对二维码与链接、Ctrl+C、无 GUI 服务器构建与排障 |
 | [Headless 发布验收](testing/headless-release-acceptance.zh-CN.md)（[en](testing/headless-release-acceptance.md)） | 最终成功 CI、打包签名、真实安装升级、性能与同候选验收遗留清单 |
+| [Headless unsigned 下载与结果](testing/headless-unsigned-results.zh-CN.md)（[en](testing/headless-unsigned-results.md)） | 实际 dev 包、公开地址、SHA-256、CLI/sidecar 和静态/旧 Linux 验证 |
 | [目录布局](guide/directory-layout.zh-CN.md)（[en](guide/directory-layout.md)） | `~/.future/` 下各目录职责（agent、channels、TUI、GUI、goal） |
 | [会话历史召回](guide/session-history.zh-CN.md)（[en](guide/session-history.md)） | 只读的历史检索／条目读取、字节分页，以及压缩后的模型指引 |
 | [移动端延迟诊断](guide/mobile-latency-diagnosis.zh-CN.md)（[en](guide/mobile-latency-diagnosis.md)） | 移动端端到端延迟测量与诊断 |

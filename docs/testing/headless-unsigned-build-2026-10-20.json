@@ -13,11 +13,12 @@
         "signed": false,
         "strict_verification": false
       },
-      "status": "queued",
+      "status": "completed",
       "jobs": {
-        "Intel": "in_progress",
-        "Apple Silicon": "queued"
-      }
+        "Intel": "success",
+        "Apple Silicon": "success"
+      },
+      "conclusion": "success"
     },
     {
       "platform": "Windows",
@@ -26,14 +27,16 @@
       "inputs": {
         "signed": false
       },
-      "status": "in_progress"
+      "status": "completed",
+      "conclusion": "success"
     },
     {
       "platform": "Linux x86_64/aarch64",
       "workflow": "build-linux.yaml",
       "run": 39418482527,
       "inputs": {},
-      "status": "in_progress"
+      "status": "completed",
+      "conclusion": "success"
     }
   ],
   "notDispatched": [
@@ -45,11 +48,14 @@
   ],
   "sideEffects": "Existing standalone dev/ upload paths and updater authentication signatures remain. Platform code-signing certificates/notarization services not invoked.",
   "pending": [
-    "Completed platform build results",
-    "Actual version/download/checksum manifest",
-    "Packaged entrypoints, GUI-free binary dependencies, Linux static/old-system smoke results",
-    "Real install/upgrade/uninstall",
     "User platform signing/notarization tests",
+    "Real install/upgrade/uninstall",
     "Matched performance and final same-candidate manual confirmation"
-  ]
+  ],
+  "status": "completed",
+  "conclusion": "success",
+  "results": "docs/testing/headless-unsigned-results-2026-10-20.json",
+  "completedObservedAt": "2026-10-20T12:51:23.219605+00:00",
+  "downloadManifest": "docs/testing/headless-unsigned-results.zh-CN.md",
+  "sha256Manifest": "docs/testing/headless-unsigned-2026-10-20.sha256"
 }

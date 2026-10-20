@@ -22,10 +22,10 @@ Implementation merged through [PR #1259](https://github.com/futuregene/future-os
 | 2 Shared backend | Store, Agent, application operations, Remote, scheduling/observers and shutdown migrated; owner suites passed |
 | 3 Unified entry | `future headless` implemented, old product entry removed; three-platform entry/real-process checks passed |
 | 4 Test migration | Original declaration ownership closed, final owner suites passed; platform conditions and original ignores retained |
-| 5 Build/release | Cargo/make/sidecar/release wiring and installer regression complete; actual packages/signing/install/update/uninstall pending |
+| 5 Build/release | Cargo/make/sidecar/release wiring and installer regression complete; dev unsigned payloads all passed; platform signing and real install/update/uninstall pending |
 | 6 Final acceptance | Implementation/ordinary automation passed and PR merged; user reports old exploratory manual round complete; final same-candidate manual/artifact/performance acceptance remains |
 
-Use the [release acceptance checklist](../testing/headless-release-acceptance.md) and [manual record](../testing/headless-manual-acceptance.md) for remaining work and candidate identity. Final CI archival initially only reconciled evidence. User-authorized dev unsigned builds have now started; see the release checklist for runs/candidate. Platform signing tests are deferred to the user; real installation and final acceptance remain open. The overall Goal remains incomplete.
+Use the [release acceptance checklist](../testing/headless-release-acceptance.md) and [manual record](../testing/headless-manual-acceptance.md) for remaining work and candidate identity. Final CI archival initially only reconciled evidence. User-authorized dev unsigned builds all succeeded; see [unsigned results](../testing/headless-unsigned-results.md) for public downloads/validation and the release checklist for runs/candidate. Platform signing tests are deferred to the user; real installation and final acceptance remain open. The overall Goal remains incomplete.
 
 ## 1 Goals and scope
 
