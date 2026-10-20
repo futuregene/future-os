@@ -529,3 +529,8 @@ Linux musl、deb/portable 与 CLI-only 使用同一 `future`；兼容 make 目�
 [批量静态证据](../testing/headless-host-application-2026-10-20.json)记录联合 Host/CLI/GUI `cargo check --all-targets`、Clippy `--all-targets -D warnings`、fmt 和实际 feature 合并依赖图通过；本批测试执行数为 0，运行验证统一后置。原候选 `5c56a885` Windows Host 原生 CI 已完成：1562 通过、0 失败、10 个原忽略，原 cwd 写回失败用例实际通过；不用于证明本批或新 Windows CLI 夹具通过。
 
 阶段 1～3 的共享实现与入口已接入；阶段 4 的归属清单已收口、统一运行复验未完成；阶段 5 的产物、签名、安装升级及阶段 6 的同条件性能/最终人工仍待验收。
+
+
+### 2026-10-20 统一候选主干同步
+
+已在实施分支合入远程 `6b89bd4f`，包括 TUI 从当前可执行程序启动 Agent 的修复、Desktop 加设备网关错误文案与 Mobile 单一待接管配对流程。无冲突。合并后 Host/CLI/GUI/TUI 联合 Clippy `--all-targets -D warnings`、Desktop/Mobile type-check 与受影响 TS 文件 ESLint 通过，未运行单元测试。临时依赖符号链接已移除。见[同步静态证据](../testing/headless-postsync-bulk-2026-10-20.json)。这不是最终冻结或人工验收。

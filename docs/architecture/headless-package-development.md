@@ -529,3 +529,8 @@ This batch moves 115 original declarations: 104 application cases, three RPC fix
 [Bulk static evidence](../testing/headless-host-application-2026-10-20.json) records combined Host/CLI/GUI all-target check, all-target Clippy with warnings denied, formatting and actual merged-feature dependency closure passing. This batch executes zero tests; runtime revalidation remains consolidated. Prior candidate `5c56a885` Windows Host CI completed with 1562 passed, zero failures and ten original ignores, including the original cwd write-back case; it does not validate this batch or new Windows CLI fixtures.
 
 Phases 1–3 have their shared implementation and entries connected; phase 4 ownership is closed with unified execution pending. Phase 5 artifacts/signing/install/update and phase 6 matched performance/final manual acceptance remain open.
+
+
+### 2026-10-20 Unified candidate main synchronization
+
+The implementation branch merged remote `6b89bd4f`, including TUI current-executable Agent launch, Desktop add-device gateway error text and Mobile lone-held-pair takeover, without conflicts. Post-merge combined Host/CLI/GUI/TUI all-target Clippy with warnings denied, Desktop/Mobile typechecks and affected TS ESLint passed; no unit tests ran. Temporary dependency symlinks were removed. See [post-sync static evidence](../testing/headless-postsync-bulk-2026-10-20.json). This is not a final freeze or manual acceptance.
