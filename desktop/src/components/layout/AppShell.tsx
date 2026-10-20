@@ -225,9 +225,16 @@ function ReadyAppShell({
   // Remote desktops (client role). Enabled for the whole session: the merged
   // conversation list is the chat section's own list, so a peer appearing must
   // update it without the user having visited the Remote Desktops screen first.
+  //
+  // The same list is what the Remote page's client section draws, and that is
+  // deliberate: it is the one that is live. That section used to read its own
+  // copy once, when the page opened, so a machine taken over from another device
+  // kept saying "Connected" — until the user left the page and came back.
   const {
     peers: remotePeers,
     catalogs: remoteCatalogs,
+    error: remotePeersError,
+    loading: remotePeersLoading,
     refresh: refreshRemotePeers,
     reconnectAll: reconnectRemotePeers,
   } = useRemotePeers(true);
@@ -1196,8 +1203,12 @@ function ReadyAppShell({
                           leftPanelExpanded={showLeftPanel}
                           onOpenRemoteSession={openRemoteSession}
                           onReconnectRemoteAll={reconnectRemotePeers}
+                          onRefreshPeers={refreshRemotePeers}
                           onRefreshRemote={refreshRemote}
                           onToggleLeftPanel={handleToggleLeftPanel}
+                          peers={remotePeers}
+                          peersError={remotePeersError}
+                          peersLoading={remotePeersLoading}
                           remoteStatus={remoteStatus}
                         />
                       )

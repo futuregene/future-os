@@ -1,6 +1,6 @@
 import type { RemotePeer } from "./remotePeerClient";
 import { ChevronDown } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -19,7 +19,6 @@ import {
 import {
   connectRemotePeer,
   disconnectRemotePeer,
-  listRemotePeers,
   pairRemotePeer,
   takeoverRemotePeer,
   unpairRemotePeer,
@@ -41,12 +40,43 @@ import { remotePeerErrorText } from "./remotePeerError";
  * they no longer want it. (It was a row on that machine's settings page until it
  * moved here: an action the user has to go and find on another page is one they
  * conclude does not exist.)
+ *
+ * The rows are drawn from the shell's peer list rather than from a read of this
+ * section's own (`useRemotePeers`). That list is the live one: it is polled, and
+ * the backend's `control` packet re-reads it the moment another paired device
+ * takes a machine over — which is the one change on this page that happens
+ * elsewhere, while the user is looking at it. A private copy here was read
+ * once, when the page opened, so a takeover made on the other machine left this
+ * row saying "Connected" with nothing to take, and the reverse (control coming
+ * back) stayed wrong too, until the user left the page and returned. Reading
+ * the list twice also meant two answers to the same question could disagree on
+ * screen.
  */
 export function RemoteClientSection({
+  error,
+  loading,
   onOpenSettings,
   onReconnectAll,
-  refreshNonce,
+  onRefresh,
+  peers,
 }: {
+  /**
+   * Why the peer list could not be read — the shell's own read, whose failure is
+   * the difference between "no machines are paired" and "I could not find out".
+   */
+  error: string | null;
+  /**
+   * Whether the shell's first read has answered yet.
+   *
+   * The rows start empty, so "no machines are paired" and "the answer has not
+   * arrived" would look identical — and the read goes through the backend's
+   * runtime lock, which a host that has just dropped can hold for a while. The
+   * section would then say "no remote desktops yet" and quietly fill in: a
+   * machine the user has paired looked *removed*. Saying it is still reading is
+   * the honest reading, and the same distinction `peerStatus` draws between
+   * "offline" and "still being reached".
+   */
+  loading: boolean;
   /** Open that machine's settings, as a page of the window the user is in. */
   onOpenSettings: (peer: RemotePeer) => void;
   /**
@@ -58,29 +88,26 @@ export function RemoteClientSection({
    */
   onReconnectAll: () => Promise<void>;
   /**
-   * Bumped when something outside this section changed a machine — a rename on
-   * its settings page — so the list re-reads instead of showing what it read
-   * when the page was first opened.
+   * Re-read the peer list after something changed a machine from this section
+   * (a pairing, a connect, a takeover, an unpair). The read belongs to the
+   * shell — see the section comment — so an action asks for it rather than
+   * keeping a second list of its own.
    */
-  refreshNonce?: number;
+  onRefresh: () => Promise<void>;
+  /** The paired machines, as the shell's live list has them. */
+  peers: readonly RemotePeer[];
 }) {
   const { t } = useTranslation("remotePeer");
-  const [peers, setPeers] = useState<RemotePeer[]>([]);
-  /**
-   * Whether the first read has answered yet.
-   *
-   * The rows start empty, so "no machines are paired" and "the answer has not
-   * arrived" looked identical — and the read goes through the backend's runtime
-   * lock, which a host that has just dropped can hold for a while. The section
-   * then said "no remote desktops yet" and quietly filled in: a machine the user
-   * has paired looked *removed*. Saying it is still reading is the honest
-   * reading, and the same distinction `peerStatus` draws between "offline" and
-   * "still being reached".
-   */
-  const [loading, setLoading] = useState(true);
   const [invitation, setInvitation] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  /**
+   * The failure of one action taken on this page, as opposed to the list read.
+   *
+   * Kept apart from `error` because they answer different questions — "that
+   * command did not go through" against "I could not read your machines" — and
+   * a successful action must not clear a read failure it did not fix.
+   */
+  const [actionError, setActionError] = useState<string | null>(null);
   /** The machine whose unpair confirmation is open, if any. */
   const [unpairTarget, setUnpairTarget] = useState<RemotePeer | null>(null);
   /**
@@ -92,35 +119,18 @@ export function RemoteClientSection({
    */
   const [addOpen, setAddOpen] = useState(false);
 
-  const refresh = useCallback(async () => {
-    try {
-      setPeers(await listRemotePeers());
-    }
-    catch (err) {
-      // A read failure here is local (the credential book); the per-host
-      // connection errors arrive on the peers themselves.
-      setError(err instanceof Error ? err.message : String(err));
-    }
-    finally {
-      // Either way the question "is this a list, or is it still being read?"
-      // has an answer now.
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh, refreshNonce]);
-
   async function run(desktopId: string, action: () => Promise<unknown>) {
     setBusy(desktopId);
-    setError(null);
+    setActionError(null);
     try {
       await action();
-      await refresh();
+      // The rows are the shell's list, so the read is what makes the action
+      // visible: without it a Connect would leave its own row looking untouched
+      // for a whole poll.
+      await onRefresh();
     }
     catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setActionError(err instanceof Error ? err.message : String(err));
     }
     finally {
       setBusy(null);
@@ -129,13 +139,13 @@ export function RemoteClientSection({
 
   async function handleReconnectAll() {
     setBusy("__all__");
-    setError(null);
+    setActionError(null);
     try {
       await onReconnectAll();
-      await refresh();
+      await onRefresh();
     }
     catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setActionError(err instanceof Error ? err.message : String(err));
     }
     finally {
       setBusy(null);
@@ -163,7 +173,7 @@ export function RemoteClientSection({
     if (!link)
       return;
     setBusy("__pair__");
-    setError(null);
+    setActionError(null);
     try {
       await pairRemotePeer(link);
       // The link is single-use: keeping it in the box would invite the user to
@@ -172,10 +182,10 @@ export function RemoteClientSection({
       // Paired: the machine it added is now a row below, which is what the user
       // came to see — so the form folds away behind the row it came from.
       setAddOpen(false);
-      await refresh();
+      await onRefresh();
     }
     catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setActionError(err instanceof Error ? err.message : String(err));
     }
     finally {
       setBusy(null);
@@ -185,6 +195,9 @@ export function RemoteClientSection({
   // Machines another paired device drives: connected, and not contributing a
   // single conversation to the list above.
   const heldCount = peers.filter(peerHeld).length;
+  // The action that was just attempted is the more useful of the two: it is the
+  // one the user caused, and the read failure under it would be the older fact.
+  const shownError = actionError ?? error;
 
   return (
     <>
@@ -240,13 +253,13 @@ export function RemoteClientSection({
             : null}
         </div>
 
-        {error
+        {shownError
           ? (
               // The backend's own words are diagnostics ("Remote handshake
               // failed: no responders: no responders"); the sentence is the
               // UI's. The raw text stays as the tooltip so support can still
               // see what actually failed.
-              <p className="text-xs text-danger" title={error}>{remotePeerErrorText(error, t)}</p>
+              <p className="text-xs text-danger" title={shownError}>{remotePeerErrorText(shownError, t)}</p>
             )
           : null}
 
