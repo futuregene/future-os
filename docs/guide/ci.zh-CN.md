@@ -30,9 +30,38 @@ npm workspace manifest 读取依赖，包含 Rust 的 build/dev/target 路径依
 Rust/TS 混合目录按输入语言区分，共享 schema/fixture 可以同时选择两种语言。
 互操作项目明确排除在常规执行范围外。
 
-下表列出直接**依赖项**，改动影响沿反方向传播。Rust 名称省略 `future-`，
-`futureos` 表示 Desktop Rust crate。manifest 是事实来源；每次 CI summary
-都会输出当前执行计划和选择原因。
+依赖图的箭头表示**依赖项 → 消费者**，改动影响沿箭头传播。为便于阅读，图中省略了
+可由中间项目推导出的重复连线；表格保留全部直接 workspace 依赖，包含这些省略的边。
+Rust 名称省略 `future-`，`futureos` 表示 Desktop Rust crate。
+manifest 是事实来源；每次 CI summary 都会输出当前执行计划和选择原因。
+
+```mermaid
+flowchart TD
+    rpc["rpc"] --> agent["agent"]
+    rpc --> tasks["tasks"]
+    rpc --> channel["channel"]
+    rpc --> goal["goal"]
+    rpc --> tui["tui"]
+
+    settings["app-settings"] --> workspaces["app-workspaces"]
+    settings --> goal
+
+    crypto["remote-crypto"] --> protocol["remote-protocol"]
+    protocol --> client["remote-client"]
+    protocol --> server["remote-server"]
+
+    agent --> host["host"]
+    tasks --> host
+    workspaces --> host
+    client --> host
+    server --> host
+
+    host --> cli["cli"]
+    host --> desktop["futureos"]
+    channel --> cli
+    goal --> cli
+    tui --> cli
+```
 
 | Rust crate | 直接 workspace 依赖 |
 |---|---|
@@ -53,6 +82,20 @@ Rust/TS 混合目录按输入语言区分，共享 schema/fixture 可以同时�
 | futureos | agent、app-settings、app-workspaces、host、remote-client、remote-crypto、remote-protocol、remote-server、rpc、tasks |
 
 TS 名称省略 npm scope（通常为 `@future-os/`，Desktop 为 `@futureos/`）。
+
+```mermaid
+flowchart TD
+    crypto["remote-crypto"] --> protocol["remote-protocol"]
+    projection["thread-projection"] --> protocol
+    protocol --> client["remote-client"]
+    client --> mobile["mobile"]
+
+    projection --> desktop["desktop"]
+    markdown["markdown"] --> desktop
+    markdown --> mobile
+    json["json-preview"] --> desktop
+    json --> mobile
+```
 
 | TypeScript 项目 | 直接 workspace 依赖 |
 |---|---|

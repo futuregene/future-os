@@ -33,10 +33,40 @@ Test-only inputs select the owner. A mixed Rust/TS directory is selected by inpu
 language; shared schema/fixture inputs can select both languages. Interoperability
 projects are explicitly excluded from regular execution.
 
-The tables list direct **dependencies**; impact propagates in the reverse
-direction. Rust names below omit `future-`; `futureos` is the Desktop Rust crate.
-The manifests remain authoritative; CI prints the current execution plan and
-selection reasons in its summary.
+In the diagrams, arrows point from a **dependency to its consumer**: changes
+propagate along the arrows. Repeated edges that can be inferred through an
+intermediate project are omitted for readability. The tables list every direct
+workspace dependency, including those omitted edges. Rust names below omit
+`future-`; `futureos` is the Desktop Rust crate. The manifests remain authoritative;
+CI prints the current execution plan and selection reasons in its summary.
+
+```mermaid
+flowchart TD
+    rpc["rpc"] --> agent["agent"]
+    rpc --> tasks["tasks"]
+    rpc --> channel["channel"]
+    rpc --> goal["goal"]
+    rpc --> tui["tui"]
+
+    settings["app-settings"] --> workspaces["app-workspaces"]
+    settings --> goal
+
+    crypto["remote-crypto"] --> protocol["remote-protocol"]
+    protocol --> client["remote-client"]
+    protocol --> server["remote-server"]
+
+    agent --> host["host"]
+    tasks --> host
+    workspaces --> host
+    client --> host
+    server --> host
+
+    host --> cli["cli"]
+    host --> desktop["futureos"]
+    channel --> cli
+    goal --> cli
+    tui --> cli
+```
 
 | Rust crate | Direct workspace dependencies |
 |---|---|
@@ -57,6 +87,20 @@ selection reasons in its summary.
 | futureos | agent, app-settings, app-workspaces, host, remote-client, remote-crypto, remote-protocol, remote-server, rpc, tasks |
 
 TS names omit their npm scopes (`@future-os/`, Desktop uses `@futureos/`).
+
+```mermaid
+flowchart TD
+    crypto["remote-crypto"] --> protocol["remote-protocol"]
+    projection["thread-projection"] --> protocol
+    protocol --> client["remote-client"]
+    client --> mobile["mobile"]
+
+    projection --> desktop["desktop"]
+    markdown["markdown"] --> desktop
+    markdown --> mobile
+    json["json-preview"] --> desktop
+    json --> mobile
+```
 
 | TypeScript project | Direct workspace dependencies |
 |---|---|
