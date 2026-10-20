@@ -107,6 +107,42 @@ describe("useSessionCatalog", () => {
     expect(result.current.sessions.map((item) => item.sessionId)).toEqual(["new"]);
   });
 
+  test("forgetting a taken-over catalogue keeps the epoch so the next snapshot is not rejected", () => {
+    render();
+    act(() => result.current.setCatalogEpoch("E"));
+    let applied = false;
+    act(() => {
+      applied = result.current.applySessionSnapshot(
+        [session("s1"), session("s2")],
+        { epoch: "E", revision: 4 },
+      ) === true;
+    });
+    expect(applied).toBe(true);
+    act(() => result.current.setUnreadSessions(new Set(["s1"])));
+    act(() => result.current.setTitleOverrides({ s1: "Mine" }));
+
+    act(() => result.current.forgetCatalogue());
+
+    expect(result.current.sessions).toEqual([]);
+    expect(result.current.unreadSessions.size).toBe(0);
+    expect(result.current.titleOverrides).toEqual({});
+    expect(result.current.catalogSync.sessions).toBe("idle");
+
+    // A host whose catalogue did not move while it withheld it re-sends the
+    // revision this client already applied. A gate left holding that revision
+    // would refuse it as a duplicate for as long as nothing changed, and the
+    // list would stay empty after control returned.
+    let reapplied = false;
+    act(() => {
+      reapplied = result.current.applySessionSnapshot(
+        [session("s1")],
+        { epoch: "E", revision: 4 },
+      ) === true;
+    });
+    expect(reapplied).toBe(true);
+    expect(result.current.sessions.map((item) => item.sessionId)).toEqual(["s1"]);
+  });
+
   test("reset fences outstanding directory and settings requests", async () => {
     render();
     let resolve!: (value: unknown) => void;

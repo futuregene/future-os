@@ -98,6 +98,21 @@ impl AgentHost {
     }
 
     pub fn start(&self, configured: String) -> Result<(), crate::Error> {
+        // The launch's last step is the Agent coming up; the entry points arm a
+        // watchdog over it, so both outcomes must close the launch out.
+        match self.start_agent(configured) {
+            Ok(()) => {
+                crate::startup::global().ready();
+                Ok(())
+            }
+            Err(error) => {
+                crate::startup::global().failed();
+                Err(error)
+            }
+        }
+    }
+
+    fn start_agent(&self, configured: String) -> Result<(), crate::Error> {
         if crate::request_scope::is_stopping() {
             return Err("Desktop is stopping".into());
         }

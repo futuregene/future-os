@@ -874,3 +874,38 @@ describe("the rail's remote row controls", () => {
     view.unmount();
   });
 });
+
+/**
+ * The device picker and the search field share one row above the list.
+ *
+ * They shared it half-and-half, so opening search squeezed the picker down to
+ * its glyph and the field down to a few characters — reported as "they are
+ * squeezed together".
+ */
+describe("the search field and the device picker", () => {
+  it("gives the whole row to search while it is open, and hands it back on close", async () => {
+    const view = await mountRail({
+      deviceFilter: { kind: "all" },
+      onChangeDeviceFilter: vi.fn(),
+      remotePeers: [peer],
+    });
+    const picker = () => view.container.querySelector("button[aria-label='All devices']");
+    expect(picker()).not.toBeNull();
+
+    await act(async () => view.container
+      .querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!
+      .click());
+
+    expect(picker()).toBeNull();
+    // Search still filters within the chosen device; only the control is gone
+    // while the field needs the room.
+    expect(view.container.querySelector("input[aria-label='Search conversations']")).not.toBeNull();
+
+    await act(async () => view.container
+      .querySelector<HTMLButtonElement>("button[aria-label='Close search']")!
+      .click());
+
+    expect(picker()).not.toBeNull();
+    view.unmount();
+  });
+});

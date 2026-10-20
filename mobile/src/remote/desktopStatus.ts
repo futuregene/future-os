@@ -29,6 +29,14 @@ export interface MachineSummary {
    * or a phone that was just displaced reads as fully working.
    */
   control?: "active" | "standby";
+  /**
+   * Who holds the machine, while this phone does not.
+   *
+   * The standby page names them, the same way the badge's sheet does: "taken
+   * over" without a name is the fallback for a holder that never declared one,
+   * not the default reading.
+   */
+  holder?: { name?: string } | null;
 }
 
 /** i18n key for a status, under the popover's rows. */

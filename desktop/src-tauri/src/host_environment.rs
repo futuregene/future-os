@@ -5,11 +5,10 @@ pub(crate) fn initialize() -> Result<(), crate::AppError> {
     INITIALIZED
         .get_or_init(|| {
             future_host::environment::prepare_process();
-            // After hydration: a login shell may supply `FUTURE_HOME`, and the
-            // relay choice is stored under the home this process will use.
             // Before the first store access, because an invitation minted by
-            // this launch has to know which relay it points at.
-            crate::launch::apply_relay_from_argv()?;
+            // this launch has to know which relay it points at — and that choice
+            // dies with the process, so nothing is read back from disk here.
+            crate::launch::apply_relay_from_argv();
             crate::cli_tool::prepare_path().map_err(|e| e.to_string())
         })
         .clone()

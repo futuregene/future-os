@@ -75,6 +75,9 @@ mod remote_platform;
 
 pub mod shutdown;
 
+/// Launch steps and the stall watchdog shared by every host entry point.
+pub mod startup;
+
 pub mod cli_tool;
 
 pub mod application;

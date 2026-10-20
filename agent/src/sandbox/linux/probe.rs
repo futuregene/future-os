@@ -559,8 +559,17 @@ fn run_bounded(program: &Path, args: &[&str], timeout: Duration) -> ProbeCommand
             }
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             Ok(None) | Err(_) => {
+                // End the timed-out probe without ever blocking on its exit: a
+                // child wedged in an uninterruptible syscall must not hold up
+                // the launch that is asking whether the sandbox works.
                 let _ = child.kill();
-                let _ = child.wait();
+                let reap_deadline = Instant::now() + Duration::from_millis(500);
+                while Instant::now() < reap_deadline {
+                    match child.try_wait() {
+                        Ok(Some(_)) | Err(_) => break,
+                        Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+                    }
+                }
                 return ProbeCommandOutput {
                     success: false,
                     stdout: String::new(),

@@ -1,4 +1,4 @@
-//! The graphical entry point's command line.
+﻿//! The graphical entry point's command line.
 //!
 //! `futureos` shows the window; the flags it accepts are about what that window
 //! should do, not about how remote access is implemented. Managing the devices
@@ -6,10 +6,10 @@
 //! devices`), which asks a *running* Desktop for an invitation — so there is no
 //! launch flag for it here.
 //!
-//! What remains is small on purpose: `--relay`/`--relay-ca` (which relay new
-//! invitations point at, applied before anything reads the pairing store), the
-//! refusal of the other binary's `--headless`, Finder's process serial number, and
-//! `--help`.
+//! What remains is small on purpose: `--relay`/`--relay-ca` (which relay *this
+//! launch* points new invitations at, applied before anything reads the pairing
+//! store), the refusal of the other binary's `--headless`, Finder's process
+//! serial number, and `--help`.
 
 use std::io::IsTerminal;
 
@@ -18,8 +18,8 @@ pub const HELP: &str = "Usage: futureos [--relay URL [--relay-ca PEM]] [--help]
 Start the graphical Desktop.
 
   --relay URL Print an invitation that points at a self-hosted relay
-              (future-relay) instead of the Future platform. The address is
-              remembered for later launches; pass an empty value to go back.
+              (future-relay) instead of the Future platform. It applies to this
+              launch only: run again without it to use the Future platform.
   --relay-ca  PEM file with the relay's CA, when its certificate is not issued
               by a public CA.
   --help      Show this help without starting Desktop.
@@ -85,7 +85,7 @@ impl Launch {
 /// this launch has to know which relay it points at. `future headless` reads
 /// the same flags from its own parser; applying them twice is harmless because
 /// the values are identical.
-pub(crate) fn apply_relay_from_argv() -> Result<(), String> {
+pub(crate) fn apply_relay_from_argv() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut relay = None;
     let mut relay_ca = None;
@@ -107,16 +107,16 @@ pub(crate) fn apply_relay_from_argv() -> Result<(), String> {
     apply_relay_settings(relay.as_deref(), relay_ca.as_deref())
 }
 
-/// Persist the relay flags, if any were given.
+/// Apply the relay flags to this process, if any were given.
 ///
-/// Both entry points call this before the remote runtime starts, so the
-/// setting means the same thing whether it arrived through the GUI's command
-/// line or through `future headless`. An empty `--relay` clears the choice and
-/// returns this machine to the Future platform for *new* pairings; existing ones
-/// are untouched either way.
-pub fn apply_relay_settings(relay: Option<&str>, relay_ca: Option<&str>) -> Result<(), String> {
+/// Both entry points call this before the remote runtime starts, so the choice
+/// means the same thing whether it arrived through the GUI's command line or
+/// through `future headless`. Nothing is written down: these flags decide
+/// where *this launch* mints its invitations, and a launch that names no relay
+/// uses the Future platform for new pairings. Existing pairings keep the relay
+/// that issued them either way.
+pub fn apply_relay_settings(relay: Option<&str>, relay_ca: Option<&str>) {
     future_host::remote::relay::apply_launch_settings(relay, relay_ca)
-        .map_err(|error| error.to_string())
 }
 
 /// Resolve the environment the Desktop itself will use.

@@ -739,9 +739,9 @@ fn probe_legacy_bash(shell: &str, timeout: std::time::Duration) -> Option<bool> 
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             Ok(None) | Err(_) => {
-                // Do not leave a failed version probe running in the background.
-                let _ = child.kill();
-                let _ = child.wait();
+                // Do not leave a failed version probe running in the background,
+                // and do not let reaping it block the launch either.
+                kill_and_reap(&mut child);
                 return None;
             }
         }
@@ -873,8 +873,7 @@ pub fn hydrate_from_login_shell() {
         }
         Err(_) => {
             tracing::debug!("login-shell env hydration timed out; using inherited env");
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_and_reap(&mut child);
             return;
         }
     };
@@ -912,17 +911,48 @@ fn apply_env_dump(dump: &str, shell: &str) {
 /// background jobs must never block agent startup.
 #[cfg(not(target_os = "windows"))]
 fn reap_with_grace(child: &mut std::process::Child, grace: std::time::Duration) {
-    let deadline = std::time::Instant::now() + grace;
+    if wait_until_exit(child, std::time::Instant::now() + grace) {
+        return;
+    }
+    // The shell outlived its grace period (backgrounded rc jobs keep it alive),
+    // so end it — but through the same bounded path: startup must not wait for
+    // a process the kernel refuses to reap.
+    kill_and_reap(child);
+}
+
+/// How long a killed hydration shell gets to actually die before the launch
+/// gives up on reaping it. SIGKILL is normally delivered in milliseconds; a
+/// process stuck in an uninterruptible syscall is the case this bound exists
+/// for.
+#[cfg(not(target_os = "windows"))]
+const REAP_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Kill the hydration shell and reap it if it lets us, within [`REAP_GRACE`].
+///
+/// Deliberately never calls the blocking `Child::wait`: a shell stuck in an
+/// uninterruptible syscall (a dead network mount is the common cause) would
+/// otherwise freeze the whole launch, which is exactly the failure the 5 s
+/// hydration timeout exists to prevent. An unreaped child leaks one process
+/// slot; a blocked `wait()` costs every startup.
+#[cfg(not(target_os = "windows"))]
+fn kill_and_reap(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = wait_until_exit(child, std::time::Instant::now() + REAP_GRACE);
+}
+
+/// Poll for the child's exit until `deadline`; `true` when it has exited (or
+/// can no longer be waited for). Never blocks past the deadline.
+#[cfg(not(target_os = "windows"))]
+fn wait_until_exit(child: &mut std::process::Child, deadline: std::time::Instant) -> bool {
     loop {
         match child.try_wait() {
-            Ok(Some(_)) | Err(_) => return,
-            Ok(None) if std::time::Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return;
-            }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Ok(Some(_)) | Err(_) => return true,
+            Ok(None) => {}
         }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 
@@ -2278,6 +2308,34 @@ mod tests {
         reap_with_grace(&mut child, std::time::Duration::from_millis(100));
         assert!(child.try_wait().unwrap().is_some());
         assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    /// The timeout arm of the hydration wait: the shell is killed and reaped
+    /// through the bounded poll, never through a blocking `wait()`. A shell
+    /// stuck in an uninterruptible syscall cannot be simulated portably, so the
+    /// contract asserted here is the reachable half — the kill is delivered and
+    /// the call still returns immediately instead of waiting the process out.
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn kill_and_reap_returns_without_waiting_out_the_child() {
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exec sleep 30"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let started = std::time::Instant::now();
+        kill_and_reap(&mut child);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "kill_and_reap must be bounded, took {elapsed:?}"
+        );
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "a killed shell must be reaped"
+        );
+        assert!(child.try_wait().unwrap().is_some(), "reaping is idempotent");
     }
     /// Falsifier for the registration that carries the shell tool's Linux
     /// helper-report block (`tools/shell/execution.rs`: the `expects_report` guard

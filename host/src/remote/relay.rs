@@ -1,4 +1,4 @@
-//! The self-hosted relay (host role).
+﻿//! The self-hosted relay (host role).
 //!
 //! Remote v2's transport does not know which relay carries it: the Noise
 //! handshake, the `FRE2` records, the subjects and the JSON commands are the
@@ -26,14 +26,10 @@ use std::path::PathBuf;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use nkeys::KeyPair;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use future_remote_server::PairingCreds;
-
-/// Where the relay endpoint is remembered.
-const SETTINGS_FILE: &str = "relay.json";
 
 /// How long an invitation stays usable. Short on purpose: the QR is a bearer
 /// credential, and the relay keeps only its hash.
@@ -59,86 +55,83 @@ pub fn canonical_request(method: &str, path: &str, timestamp: i64, body: &[u8]) 
     )
 }
 
-/// The relay this installation should use, as persisted.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
-pub struct RelaySettings {
+/// The relay *this launch* points at, as `--relay` / `--relay-ca` gave it.
+///
+/// Deliberately not persisted. The flag answers "where do the invitations this
+/// process mints go", and a Desktop that writes that answer down turns one
+/// debugging launch into a machine that silently stops using the official relay
+/// — including every launch the user never typed a flag into. So a launch with
+/// no flag means the official relay, always, and leaving a self-hosted relay
+/// behind is just not passing the flag again. Existing pairings are unaffected
+/// either way: each records the relay that issued it in `controlUrl`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RelayLaunch {
     /// `Some` means new invitations are minted against a self-hosted relay.
     pub url: Option<String>,
     /// Extra TLS root (PEM) for a relay with a private CA.
     pub ca: Option<String>,
 }
 
-fn settings_path() -> Result<PathBuf, crate::Error> {
-    Ok(crate::store::future_dir()?.join(SETTINGS_FILE))
+/// `None` until a launch applies its flags. A `Mutex` rather than a `OnceLock`
+/// because both entry points apply the same parsed flags (the GUI from
+/// `launch.rs`, `future headless` from its own parser): identical values must be
+/// harmless rather than an "already set" error.
+static LAUNCH: std::sync::Mutex<Option<RelayLaunch>> = std::sync::Mutex::new(None);
+
+/// Record this launch's relay flags. Absent flags leave the official relay in
+/// place — the same thing an empty `--relay` means.
+pub fn set_launch(relay: Option<&str>, relay_ca: Option<&str>) {
+    let normalized = |value: Option<&str>| {
+        value
+            .map(|value| value.trim().trim_end_matches('/').to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let launch = RelayLaunch {
+        url: normalized(relay),
+        ca: normalized(relay_ca),
+    };
+    *LAUNCH.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(launch);
 }
 
-pub fn load_settings() -> RelaySettings {
-    settings_path()
-        .ok()
-        .and_then(|path| match crate::config_io::read_json_object(&path) {
-            Ok(value) => serde_json::from_value(value).ok(),
-            Err(_) => None,
-        })
+fn launch() -> RelayLaunch {
+    LAUNCH
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .clone()
         .unwrap_or_default()
 }
 
-/// Persist the relay choice. An empty `url` clears it, which is how a machine
-/// goes back to the official relay without touching the pairs it already has.
-pub fn save_settings(settings: &RelaySettings) -> Result<(), crate::Error> {
-    let path = settings_path()?;
-    if settings.url.as_deref().is_none_or(|url| url.is_empty()) {
-        if path.exists() {
-            std::fs::remove_file(&path).map_err(|error| {
-                crate::Error::Message(format!("remove relay settings: {error}"))
-            })?;
-        }
-        return Ok(());
-    }
-    let value = serde_json::to_value(settings)
-        .map_err(|error| crate::Error::Message(format!("encode relay settings: {error}")))?;
-    crate::config_io::write_json_atomic(&path, &value, true)
-}
-
-/// The configured relay endpoint, normalized without a trailing slash.
-/// Apply the entry's parsed relay options before reading pairing state. Empty
-/// relay clears only the default for new pairings; existing slots stay intact.
-pub fn apply_launch_settings(
-    relay: Option<&str>,
-    relay_ca: Option<&str>,
-) -> Result<(), crate::Error> {
+/// Apply the entry's parsed relay options before reading pairing state.
+///
+/// Called by both entry points, so the choice means the same thing whether it
+/// arrived on the GUI's command line or through `future headless`. Nothing is
+/// written down: these flags decide where *this launch* mints its invitations,
+/// and a launch that names no relay uses the Future platform for new pairings.
+/// Existing pairings keep the relay that issued them either way, which is why an
+/// empty `--relay` needs no bookkeeping to undo.
+pub fn apply_launch_settings(relay: Option<&str>, relay_ca: Option<&str>) {
     if relay.is_none() && relay_ca.is_none() {
-        return Ok(());
+        return;
     }
-    let mut settings = load_settings();
-    if let Some(url) = relay {
-        let url = url.trim().trim_end_matches('/');
-        settings.url = (!url.is_empty()).then(|| url.to_string());
-    }
-    if let Some(ca) = relay_ca {
-        let ca = ca.trim();
-        settings.ca = (!ca.is_empty()).then(|| ca.to_string());
-    }
-    save_settings(&settings)
+    set_launch(relay, relay_ca);
 }
 
+/// The relay endpoint this launch points at, normalized without a trailing
+/// slash.
 pub fn endpoint() -> Option<String> {
-    // The environment wins over the file so a test or a container can point at
-    // a relay without writing into HOME; an empty value means "official".
+    // The environment wins over the flags so a test or a container can point at
+    // a relay without going through argv; an empty value means "official".
     if let Ok(value) = std::env::var("FUTURE_RELAY_URL") {
         let value = value.trim().trim_end_matches('/').to_string();
         return (!value.is_empty()).then_some(value);
     }
-    load_settings()
-        .url
-        .map(|url| url.trim().trim_end_matches('/').to_string())
-        .filter(|url| !url.is_empty())
+    launch().url
 }
 
-/// The extra CA bundle for the relay's TLS, when one is configured.
+/// The extra CA bundle for the relay's TLS, when this launch named one.
 pub fn ca_path() -> Option<PathBuf> {
     let from_env = std::env::var("FUTURE_RELAY_CA").ok();
-    let value = from_env.or_else(|| load_settings().ca)?;
+    let value = from_env.or(launch().ca)?;
     let value = value.trim().to_string();
     (!value.is_empty()).then(|| PathBuf::from(value))
 }
@@ -331,32 +324,58 @@ fn grant_from(body: serde_json::Value, action: &str) -> Result<Grant, crate::Err
 
 #[cfg(test)]
 mod tests {
+    /// The flags decide where *this process* mints invitations and are not
+    /// written down, so the next launch — one that names no relay — is back on
+    /// the Future platform without anyone remembering to undo anything.
     #[test]
-    fn relay_flags_are_persisted_and_cleared() {
+    fn relay_flags_apply_to_this_launch_only() {
         let _home = crate::auth_store::test_support::HomeGuard::new("launch-relay-settings");
-        crate::store::initialize_app_store().expect("store init");
 
-        apply_launch_settings(Some("https://relay.example/"), Some("/etc/ca.pem"))
-            .expect("apply relay settings");
-        let settings = crate::remote::relay::load_settings();
-        assert_eq!(settings.url.as_deref(), Some("https://relay.example"));
-        assert_eq!(settings.ca.as_deref(), Some("/etc/ca.pem"));
+        apply_launch_settings(Some("https://relay.example/"), Some("/etc/ca.pem"));
         assert_eq!(
             crate::remote::relay::endpoint().as_deref(),
             Some("https://relay.example")
         );
+        assert_eq!(
+            crate::remote::relay::ca_path().as_deref(),
+            Some(std::path::Path::new("/etc/ca.pem"))
+        );
+        // Nothing was written: a fresh home has no `relay.json` at all.
+        let relay_file = crate::store::future_dir()
+            .expect("future dir")
+            .join("relay.json");
+        assert!(!relay_file.exists(), "{} was written", relay_file.display());
 
-        apply_launch_settings(Some(""), None).expect("clear relay settings");
+        // An empty `--relay` is this launch saying "the Future platform", which
+        // is the same answer as not passing the flag.
+        apply_launch_settings(Some(""), None);
         assert!(!crate::remote::relay::enabled());
-        // The whole file goes: a CA with no relay to verify would be a stale
-        // trust anchor waiting to be mistaken for configuration.
-        let settings = crate::remote::relay::load_settings();
-        assert_eq!(settings.url, None);
-        assert_eq!(settings.ca, None);
+        assert_eq!(crate::remote::relay::ca_path(), None);
 
-        // A launch with neither flag changes nothing.
-        apply_launch_settings(None, None).expect("no-op");
+        // A launch with neither flag leaves the official relay in place.
+        apply_launch_settings(None, None);
         assert!(!crate::remote::relay::enabled());
+    }
+
+    /// A launch that never names a relay speaks for the Future platform, even
+    /// when an older build left `relay.json` in the data root: that file is the
+    /// trap this rule exists to remove, so it must not come back to life.
+    #[test]
+    fn a_leftover_relay_file_does_not_choose_the_relay() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("relay-file-ignored");
+        crate::store::initialize_app_store().expect("store init");
+        let path = crate::store::future_dir()
+            .expect("future dir")
+            .join("relay.json");
+        std::fs::write(
+            &path,
+            r#"{"url":"http://192.168.1.2:8099","ca":"/etc/private-ca.pem"}"#,
+        )
+        .expect("write legacy file");
+
+        apply_launch_settings(None, None);
+        assert!(!crate::remote::relay::enabled());
+        assert_eq!(crate::remote::relay::ca_path(), None);
     }
 
     use super::*;
@@ -394,21 +413,6 @@ mod tests {
         let token = new_join_token();
         assert!(token.len() >= 40, "{token}");
         assert_ne!(token, new_join_token());
-    }
-
-    #[test]
-    fn cleared_settings_remove_the_file() {
-        let _home = crate::remote::test_support::HomeGuard::new("relay-settings");
-        crate::store::initialize_app_store().unwrap();
-        save_settings(&RelaySettings {
-            url: Some("http://127.0.0.1:8099".into()),
-            ca: None,
-        })
-        .unwrap();
-        assert_eq!(endpoint().as_deref(), Some("http://127.0.0.1:8099"));
-        assert!(enabled());
-        save_settings(&RelaySettings::default()).unwrap();
-        assert!(!enabled());
     }
 
     #[test]

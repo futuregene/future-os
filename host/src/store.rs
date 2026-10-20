@@ -111,17 +111,37 @@ pub fn app_data_path() -> Result<AppDataPath, crate::Error> {
     })
 }
 
+/// Open the Desktop database and bring its schema up to date. This is the only
+/// part of startup that commands depend on, so it stays on the launch path.
+///
+/// Everything that converges *leftovers* (legacy soft-deleted rows, orphaned
+/// image/chat/review directories) is deliberately NOT here: it walks the data
+/// tree, and the Desktop runs it off the launch path — see
+/// [`reconcile_after_startup`].
 pub fn initialize_app_store() -> Result<(), crate::Error> {
     ensure_app_dirs()?;
     let conn = connect()?;
     migrations::initialize(&conn)?;
     drop(conn);
+    Ok(())
+}
+
+/// Best-effort convergence of pre-existing leftovers: legacy soft-deleted rows
+/// and directories whose owner is gone.
+///
+/// Runs after the window and event loop are live (and after the Agent is
+/// startable), because none of it is needed to answer a command: every query
+/// already filters `status != 'deleted'`. It is pure hygiene over the data
+/// directory, so a slow or unreachable filesystem must never hold up the first
+/// frame. Each step is independent and best-effort; failures are logged and
+/// retried on the next launch.
+pub fn reconcile_after_startup() {
     // Reconcile GUI threads against the agent's session list (orphan-session
-    // cleanup) runs later, off the launch path, once the agent is reachable —
-    // see store::reconcile_orphan_sessions.
+    // cleanup) runs separately, once the agent is reachable — see
+    // store::reconcile_orphan_sessions.
     // Hard-delete any threads left in the legacy soft-deleted state (and their
     // orphaned child rows). delete_thread now hard-deletes, so this only clears
-    // pre-existing rows. Best-effort — never block startup.
+    // pre-existing rows. Best-effort — never fail startup.
     log_purge(
         purge_soft_deleted_threads(),
         "soft-deleted thread(s)",
@@ -151,7 +171,6 @@ pub fn initialize_app_store() -> Result<(), crate::Error> {
         cleanup::reconcile_orphan_review_repos(),
         "reconcile_orphan_review_repos",
     );
-    Ok(())
 }
 
 /// Log a best-effort purge result; never propagate (startup must not block on
@@ -271,8 +290,9 @@ mod tests {
     fn initialize_app_store_purges_soft_deleted_rows() {
         let _home = HomeGuard::new("store-init-purge");
         initialize_app_store().unwrap();
-        // Seed a legacy soft-deleted thread and workspace, then re-initialize:
-        // the purge branches (Ok(count)) must run and hard-delete them.
+        // Seed a legacy soft-deleted thread and workspace, then re-initialize
+        // and reconcile: the purge branches (Ok(count)) must run and
+        // hard-delete them.
         {
             let conn = connect().unwrap();
             conn.execute(
@@ -289,6 +309,7 @@ mod tests {
             .unwrap();
         }
         initialize_app_store().unwrap();
+        reconcile_after_startup();
         let conn = connect().unwrap();
         let count: i64 = conn
             .query_row(

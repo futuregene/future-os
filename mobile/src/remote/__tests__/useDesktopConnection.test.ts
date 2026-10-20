@@ -85,12 +85,16 @@ interface MockClientCallbacks {
   onEventDecodeFailure(sessionId: string, error: Error): void;
   onCatalogEpoch(epoch: string | undefined): void;
   onPresence(p: Presence): void;
-  onSessions(s: PresenceSession[]): void;
+  onControl?(control: "active" | "standby"): void;
+  onSessions(s: PresenceSession[], version?: SnapshotVersion): void;
   // A catalog activity packet: the rows that moved, and the version they moved
   // to (see `RemoteClientCallbacks`). `useDesktopConnection` always wires this
   // one, so the harness keeps it required and the frames below are real ones.
   onSessionActivity(activity: SessionActivity[], version?: SnapshotVersion): void;
-  onWorkspaces(w: unknown[], version: number): void;
+  // The harness types this loosely on purpose: the frames it feeds are the ones
+  // the hook forwards verbatim, and a test may carry either an epoch-stamped
+  // version or (for the old shape) a bare number.
+  onWorkspaces(w: unknown[], version?: SnapshotVersion | number): void;
   onFeatures(f: string[]): void;
   onConnectionState(s: ConnectionState): void;
   onReconnected(): void;
@@ -160,6 +164,7 @@ function makeOptions(): Options {
     refreshSettings: jest.fn(async () => {}),
     refreshWorkspaces: jest.fn(async () => {}),
     noteCatalogRevisions: jest.fn(),
+    controlChanged: jest.fn(),
     closeConversation: jest.fn(),
     resetConversation: jest.fn(),
     resetCatalog: jest.fn(),
@@ -297,6 +302,87 @@ describe("useDesktopConnection", () => {
       act(() => c.callbacks.onPresence(presence));
       expect(result.current.presence).toBe(presence);
       expect(result.current.desktopOnline).toBe(false);
+    });
+
+    test("a heartbeat that moves control is reported once, and repeats are not", async () => {
+      await mountConnected();
+      const c = client();
+      act(() => c.callbacks.onConnectionState("ready"));
+      // The first presence after a connect describes the control the handshake
+      // already read under, so it is not a move.
+      act(() => c.callbacks.onPresence({ ...presence, control: "active" }));
+      expect(options.controlChanged).not.toHaveBeenCalled();
+
+      act(() => c.callbacks.onPresence({ ...presence, control: "standby" }));
+      expect(options.controlChanged).toHaveBeenCalledWith("standby");
+      expect(result.current.presence?.control).toBe("standby");
+
+      // Presence repeats the fact every tick; a second report would make the
+      // runtime drop a catalogue it already dropped (and re-read on return).
+      act(() => c.callbacks.onPresence({ ...presence, control: "standby" }));
+      expect(options.controlChanged).toHaveBeenCalledTimes(1);
+    });
+
+    test("a first presence that already says standby is a move, not a baseline", async () => {
+      await mountConnected();
+      const c = client();
+      act(() => c.callbacks.onConnectionState("ready"));
+      // A runtime rebuilt after a transport fault has no memory of the control
+      // it had, and a machine is the phone's until it says otherwise. So a
+      // standby word on this first heartbeat must take the mirrored rows away
+      // rather than be swallowed as the baseline — nothing else would ever say
+      // it moved.
+      act(() => c.callbacks.onPresence({ ...presence, control: "standby" }));
+      expect(options.controlChanged).toHaveBeenCalledWith("standby");
+    });
+
+    test("a control packet is the host's first word, heard without waiting for a heartbeat", async () => {
+      await mountConnected();
+      const c = client();
+      act(() => c.callbacks.onConnectionState("ready"));
+      act(() => c.callbacks.onPresence({ ...presence, control: "active" }));
+
+      // Control moved to another device: the packet says so as it happens, and
+      // the same tick that stops the phone driving this machine must stop it
+      // drawing the machine's conversations.
+      act(() => c.callbacks.onControl!("standby"));
+      expect(result.current.presence?.control).toBe("standby");
+      expect(options.controlChanged).toHaveBeenCalledWith("standby");
+
+      // The heartbeat repeating it is not news.
+      act(() => c.callbacks.onPresence({ ...presence, control: "standby" }));
+      expect(options.controlChanged).toHaveBeenCalledTimes(1);
+
+      act(() => c.callbacks.onControl!("active"));
+      expect(result.current.presence?.control).toBe("active");
+      expect(result.current.presence?.holder).toBeNull();
+      expect(options.controlChanged).toHaveBeenLastCalledWith("active");
+    });
+
+    test("a catalog snapshot in flight behind the takeover is not applied", async () => {
+      await mountConnected();
+      const c = client();
+      act(() => c.callbacks.onConnectionState("ready"));
+      act(() => c.callbacks.onPresence({ ...presence, control: "standby" }));
+      // Published before control moved, delivered after: the machine has no
+      // catalogue for this client any more, so the rows must not reappear under
+      // the standby state that just emptied them.
+      act(() => c.callbacks.onSessions([presenceSession("late")], { epoch: "E", revision: 3 }));
+      expect(options.applySessionSnapshot).not.toHaveBeenCalled();
+      act(() => c.callbacks.onWorkspaces([], { epoch: "E", revision: 3 }));
+      expect(options.setWorkspaces).not.toHaveBeenCalled();
+    });
+
+    test("a standby heartbeat asks for no catalogue: there is nothing to heal towards", async () => {
+      await mountConnected();
+      const c = client();
+      act(() => c.callbacks.onConnectionState("ready"));
+      act(() => c.callbacks.onPresence({
+        ...presence,
+        control: "standby",
+        catalogVersion: { epoch: "E", sessions: 7, workspaces: 2 },
+      }));
+      expect(options.noteCatalogRevisions).not.toHaveBeenCalled();
     });
 
     test("onPresence unpaired tears down this machine but keeps its pairing", async () => {
