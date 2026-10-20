@@ -155,21 +155,25 @@ future remote devices use <id|#>       # choose the one in control
 - A device is named by its pair id — the `pair_` prefix and letter case are
   decoration, and a unique prefix is enough — or by the row number the list prints.
 - `remove` revokes the device where it was minted (the Future platform, or its
-  room on a self-hosted relay) and only then drops the local slot. A headless
-  process that is running therefore stops serving that device at its next
-  credential refresh. A revoke that cannot be delivered is queued for the next
-  Desktop to retry; the local unpair still happens.
+  room on a self-hosted relay) and only then drops the local slot. When a Desktop
+  is running it is asked to perform the removal, which is what stops serving the
+  device immediately; without one (or with a Desktop too old to know the request)
+  the book is edited here and the device is served until its next credential
+  refresh. A revoke that cannot be delivered is queued for the next Desktop to
+  retry; the local unpair still happens.
 - `use` writes the same pointer the window's "Let this control" writes. With a
   Desktop running, control is an in-memory decision (a device asking to take over
   moves it too), so a running Desktop keeps its current controller and the written
   value applies at the next start.
-- `list`, `remove` and `use` read and write `~/.future/remote_pairings.json` (an
-  older single-pairing file is read as one slot), so they need no running Desktop
-  and, on a self-hosted relay, no account.
-- `add` is the exception. An invitation is only usable while the bridge for that
-  pairing is connected, so the request goes to the running Desktop — window or
-  headless — and the answer carries the invitation, printed as a QR code and link
-  in the terminal that asked. Existing devices stay paired; this adds beside them.
+- `list` and `use` read and write `~/.future/remote_pairings.json` (an older
+  single-pairing file is read as one slot), so they need no running Desktop and,
+  on a self-hosted relay, no account.
+- `add` and `remove` are the exceptions, because the running process is what
+  actually serves a device. An invitation is only usable while the bridge for that
+  pairing is connected, and a removal only takes effect now if that bridge is
+  stopped, so both ask the running Desktop — window or headless — and carry its
+  answer back. `add` prints the invitation it returns as a QR code and link in the
+  terminal that asked. Existing devices stay paired; this adds beside them.
   `remove --all` followed by `add` is how a machine's pairing is replaced, and the
   `add` stops any stale bridge left by the removal before minting the replacement.
 

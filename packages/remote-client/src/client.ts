@@ -29,6 +29,18 @@ const FOREGROUND_PROBE_TIMEOUT_MS = 4_000;
 const SYSTEM_FAILURE_WINDOW_MS = 10 * 60_000;
 const HEALTHY_RESET_MS = 60_000;
 const MAX_SYSTEM_RECOVERIES = 3;
+/**
+ * How often a connected client tells the desktop it is still there.
+ *
+ * The desktop's lease is four of these (`CLIENT_PRESENCE_LEASE` in
+ * `packages/remote-server/src/supervisor/link.rs`), so a beat lost to a hiccup
+ * is not a departure while a client that is really gone drops out of the page
+ * within a poll of a minute. Keep the two in step: the client is the half that
+ * has to beat inside the lease.
+ */
+const CLIENT_PRESENCE_BEAT_MS = 15_000;
+/** How long a goodbye may hold the socket open before it is closed anyway. */
+const GOODBYE_FLUSH_BUDGET_MS = 500;
 const FAILURE_LOG_WINDOW_MS = 24 * 60 * 60_000;
 const MAX_FAILURE_LOGS_PER_CATEGORY = 16;
 export type RecoveryReason =
@@ -251,6 +263,18 @@ export class RemoteClient {
   private confirmedBridgeInstanceId = "";
   private readonly handshakes = new WeakMap<NatsConnection, Promise<HandshakeConfirmation>>();
   private readonly secureChannels = new WeakMap<NatsConnection, SecureChannel>();
+  /**
+   * The timer that keeps telling the desktop this client is still here.
+   *
+   * A client that can only prove presence by speaking would look absent every
+   * time it is idle, so a client that declares `client_presence_v1` promises to
+   * keep beating; the desktop presumes it gone when the beats lapse. No beats
+   * are sent before `secure_ready` (there is no sealed channel to send them on)
+   * or after the pairing is left.
+   */
+  private presenceBeatTimer: ReturnType<typeof setInterval> | null = null;
+  /** A goodbye whose bytes may still be in flight; see `disposeConnection`. */
+  private pendingGoodbye: Promise<void> | null = null;
   /** Guards against overlapping token refresh (timer + auth failure racing). */
   private refreshInFlight = false;
   private systemFailures: number[] = [];
@@ -489,6 +513,11 @@ export class RemoteClient {
   private stop(reason: "UserInitiated" | "Unpair"): void {
     if (this.stopped) return;
     this.stopped = true;
+    // Tell the desktop this was a departure before the socket goes: a client
+    // that vanishes without a word leaves "in control" on the page until the
+    // lease runs out.
+    this.sayGoodbye("disconnected");
+    this.stopPresenceBeats();
     this.closed.abort();
     this.clearDeadline();
     if (this.presenceTimer) clearTimeout(this.presenceTimer);
@@ -521,6 +550,11 @@ export class RemoteClient {
     this.cancelAttempt();
     this.clearTimers();
     this.signal({ type: "transport_disconnect" });
+    // Off screen is not the same as gone: say so, so the desktop stops drawing
+    // this device as present, but keep the machine it holds — the app is coming
+    // back, and the lease would have hidden it anyway.
+    this.sayGoodbye("background");
+    this.stopPresenceBeats();
     this.disposeConnection("background");
   }
 
@@ -936,11 +970,18 @@ export class RemoteClient {
     this.activeGeneration = null;
     this.confirmedBridgeInstanceId = "";
     this.rejectDownloadWaiters(reason);
+    this.stopPresenceBeats();
+    // A goodbye published a moment ago may still be in the socket's write
+    // buffer. Close after it has been flushed (bounded) instead of racing it.
+    const goodbye = this.pendingGoodbye;
+    this.pendingGoodbye = null;
     if (connection) {
       this.eventSubscriptions.delete(connection);
       this.secureChannels.get(connection)?.destroy();
       this.secureChannels.delete(connection);
-      void this.closeConnection(connection);
+      const close = () => void this.closeConnection(connection);
+      if (goodbye) void goodbye.then(close, close);
+      else close();
     }
   }
 
@@ -1496,6 +1537,76 @@ export class RemoteClient {
       },
       "handshake",
     );
+    // The desktop now knows this client is here (the sealed `secure_ready`
+    // proved it). Keep proving it until this connection goes away: the
+    // declaration above says silence will be read as a departure.
+    this.startPresenceBeats();
+  }
+
+  /**
+   * Ask the desktop to read this client as gone *now* rather than after the
+   * lease.
+   *
+   * Best effort by construction: the connection is about to be disposed, and a
+   * lost goodbye costs the lease's worth of stale "in control" — the same
+   * answer a client that crashed gets. `reason` is what separates the two
+   * halves of leaving: a user's own stop gives up the machine the device was
+   * holding, while an app that merely went off screen keeps it.
+   */
+  private sayGoodbye(reason: "disconnected" | "background"): void {
+    const connection = this.connection;
+    const channel = connection && this.secureChannels.get(connection);
+    if (!connection || !channel) return;
+    const subject = `p.${this.credentials.pairId}.cmd.client_disconnect`;
+    try {
+      const wire = channel.seal(subject, encoder.encode(JSON.stringify({ type: "client_disconnect", reason })));
+      connection.publish(subject, wire);
+    }
+    catch {
+      return;
+    }
+    // Hold the socket open until the bytes are out: closing straight after a
+    // publish can drop them, and the whole point is that the desktop hears
+    // this rather than waiting out the lease.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    this.pendingGoodbye = Promise.race([
+      connection.flush().then(() => undefined, () => undefined),
+      new Promise<void>(resolve => { timer = setTimeout(resolve, GOODBYE_FLUSH_BUDGET_MS); }),
+    ]).then(() => { if (timer) clearTimeout(timer); });
+  }
+
+  /**
+   * One beat while this client is ready and connected.
+   *
+   * Read from `this.connection` rather than a captured one: a generation swap
+   * replaces the socket, and a beat must leave on the socket that is serving
+   * now — never on one that was just closed.
+   */
+  private beatPresence(): void {
+    const connection = this.connection;
+    if (this.stopped || this.state !== "ready" || !connection) return;
+    const channel = this.secureChannels.get(connection);
+    if (!channel) return;
+    const subject = `p.${this.credentials.pairId}.cmd.client_presence`;
+    try {
+      connection.publish(subject, channel.seal(subject, encoder.encode(JSON.stringify({ type: "client_presence" }))));
+    }
+    catch {
+      // A closed socket is not a client-side failure: the recovery path owns
+      // the connection, and the desktop's lease turns a missed beat into its
+      // own answer.
+    }
+  }
+
+  private startPresenceBeats(): void {
+    this.stopPresenceBeats();
+    this.presenceBeatTimer = setInterval(() => this.beatPresence(), CLIENT_PRESENCE_BEAT_MS);
+    this.beatPresence();
+  }
+
+  private stopPresenceBeats(): void {
+    if (this.presenceBeatTimer) clearInterval(this.presenceBeatTimer);
+    this.presenceBeatTimer = null;
   }
 
   /** The capabilities this client declares on `secure_ready`. */
@@ -1505,6 +1616,11 @@ export class RemoteClient {
       "reply_gzip_v1",
       "lean_events_v1",
       "catalog_activity_v1",
+      // The promise this client keeps for the rest of the connection: beats
+      // while it is here, a goodbye when it leaves. A desktop that knows the
+      // capability presumes it gone when the beats lapse; one too old to know
+      // it ignores the command and keeps reading presence the old way.
+      "client_presence_v1",
     ];
   }
 

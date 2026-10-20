@@ -20,6 +20,7 @@ import {
 import {
   addDeviceErrorText,
   deviceLabel,
+  deviceReady,
   deviceState,
   formatCountdown,
   formatPairId,
@@ -113,6 +114,10 @@ export function RemoteHostSection({
       phase: remoteStatus.phase,
       control: "active" as const,
       connected: remoteStatus.phase === "ready",
+      // A backend that sends no rows predates the client-presence field too: it
+      // could not tell a disconnected client from an idle one, so its single row
+      // is the old answer rather than an absence.
+      present: true,
       client: remoteStatus.client,
       pairingCode: remoteStatus.pairingCode,
       pairingCodeExpiresAt: remoteStatus.pairingCodeExpiresAt,
@@ -424,7 +429,7 @@ export function RemoteHostSection({
                                 </span>
                                 <span className="shrink-0 text-xs text-ink-muted">{formatPairId(device.pairId)}</span>
                                 <Badge tone={state.tone}>{state.label}</Badge>
-                                {device.control === "standby" && device.connected
+                                {device.control === "standby" && deviceReady(device)
                                   ? (
                                       <Button
                                         disabled={busy}

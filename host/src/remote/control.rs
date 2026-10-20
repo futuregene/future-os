@@ -1,11 +1,18 @@
-//! `future remote devices add` — a terminal asking the running Desktop for a
-//! pairing invitation.
+//! `future remote devices add|remove` — a terminal asking the running Desktop to
+//! change what it serves.
 //!
 //! A device can only be *added* by the process that will serve it: the invitation
 //! carries a single-use secret and the pair-scoped credential, and the bridge for
 //! that pairing has to be up when the phone scans. That process is whichever
 //! Desktop owns this data directory — the window, or `future headless` — so the
 //! request travels to it as a file and the answer comes back as one.
+//!
+//! A device can only be *removed immediately* by that same process, for the mirror
+//! reason: it owns the bridge, and a bridge nobody stopped keeps carrying the
+//! device's commands until its credential comes up for renewal. Editing the book
+//! from the terminal is still authoritative for the next start, so a removal falls
+//! back to it when no Desktop answers — but while one is running, the device keeps
+//! talking to a machine that has already forgotten it.
 //!
 //! This is the same one-shot hand-off the launcher's old `--re-pair` performed
 //! through the single-instance plugin, with two differences that are the reason
@@ -14,7 +21,8 @@
 //!
 //! The files are a request/reply pair in `~/.future/run/remote-control/`:
 //!
-//! * `*.request.json` — `{"op": "add-device", "reply": "<absolute path>"}`;
+//! * `*.request.json` — `{"op": "add-device", "reply": "<absolute path>"}`, or
+//!   `{"op": "remove-device", "pairId": "<device>", "reply": "<absolute path>"}`;
 //! * the reply goes to the path the *asker* named, which it created for itself as
 //!   a temporary file — so two terminals asking at once cannot read each other's
 //!   invitation, and a process that exits takes its answer path with it.
@@ -31,10 +39,17 @@
 //! authority, and the directory is created `0700`-under-the-user's data root only
 //! so that other users cannot reach it at all.
 //!
-//! What this deliberately is *not* is a general control API. Removing a device and
-//! choosing the controller are changes to the pairing book alone, which is why
-//! `future remote devices remove|use` edit it directly and need nothing running.
-//! Adding one is the only operation that needs code executed inside the Desktop.
+//! What this deliberately is *not* is a general control API. Choosing the
+//! controller is a change to the pairing book alone, which is why `future remote
+//! devices use` edits it directly and needs nothing running.
+//!
+//! Adding and removing are the two operations that need code executed inside the
+//! Desktop, for the same reason from both sides: the Desktop owns the bridges. An
+//! invitation is only usable while the bridge for its pairing is up, and a removal
+//! is only *immediate* if that bridge is stopped now. Editing the book from the
+//! terminal leaves a running bridge serving a device the book no longer lists,
+//! which goes quiet only when its credential comes up for renewal — up to the
+//! lifetime of the JWT it holds, minutes later.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -56,10 +71,11 @@ const ABANDONED_AFTER: Duration = Duration::from_secs(120);
 /// ours (including a claim, below).
 const REQUEST_SUFFIX: &str = ".request.json";
 
-/// The only operation there is. Named rather than implied so a newer terminal
-/// asking for something this Desktop does not know gets an explicit refusal
-/// instead of a silence it would have to time out on.
+/// The operations a terminal can ask for. Named rather than implied so a newer
+/// terminal asking for something this Desktop does not know gets an explicit
+/// refusal instead of a silence it would have to time out on.
 const OP_ADD_DEVICE: &str = "add-device";
+const OP_REMOVE_DEVICE: &str = "remove-device";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,6 +84,9 @@ pub(crate) struct Request {
     pub(crate) op: String,
     /// Absolute path the asker is polling for its answer.
     pub(crate) reply: String,
+    /// The device a removal names. Absent for `add-device`, which creates one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pair_id: Option<String>,
 }
 
 /// What a terminal is told once the request has been handled.
@@ -90,6 +109,14 @@ pub(crate) struct Reply {
     /// Why there is no invitation, when there is none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
+    /// The Desktop stopped serving the device and forgot it.
+    ///
+    /// Its own field rather than "no `error`, so it worked": a removal has no
+    /// invitation to show, and the terminal has to tell "this Desktop performed
+    /// it" (stop now, nothing else to do) from "this Desktop does not know the
+    /// request" (fall back to editing the book, which is slower but final).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) removed: bool,
     /// Invitations forgotten on the platform so this one could be minted.
     ///
     /// Carried out to the terminal because the alternative is another silent
@@ -97,6 +124,10 @@ pub(crate) struct Reply {
     /// disappeared to make it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) cleared: Vec<String>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl Reply {
@@ -119,6 +150,7 @@ impl Reply {
                 link: Some(link),
                 expires_at: status.pairing_code_expires_at,
                 error: None,
+                removed: false,
                 cleared: status.cleared_invitations.clone(),
             },
             None => Self::of_error(format!(
@@ -132,12 +164,22 @@ impl Reply {
         }
     }
 
+    /// The answer for a removal the Desktop performed.
+    pub(crate) fn of_removed(pair_id: &str) -> Self {
+        Self {
+            pair_id: Some(pair_id.to_string()),
+            removed: true,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn of_error(message: impl Into<String>) -> Self {
         Self {
             pair_id: None,
             link: None,
             expires_at: None,
             error: Some(message.into()),
+            removed: false,
             cleared: Vec::new(),
         }
     }
@@ -261,7 +303,7 @@ async fn serve_one(path: &Path) {
             return;
         }
     };
-    let reply = answer(&request, perform(&request.op)).await;
+    let reply = answer(&request, perform(&request)).await;
     if let Err(error) = write_reply(Path::new(&request.reply), &reply) {
         eprintln!("remote: cannot answer a device request: {error}");
     }
@@ -270,9 +312,10 @@ async fn serve_one(path: &Path) {
 
 /// What the request asks for, as a future the host can run.
 fn perform(
-    op: &str,
+    request: &Request,
 ) -> impl std::future::Future<Output = Result<crate::remote::RemoteStatus, crate::Error>> {
-    let op = op.to_string();
+    let op = request.op.clone();
+    let pair_id = request.pair_id.clone();
     async move {
         match op.as_str() {
             OP_ADD_DEVICE => {
@@ -290,6 +333,21 @@ fn perform(
                     ));
                 }
                 crate::remote::pair_new_device().await
+            }
+            OP_REMOVE_DEVICE => {
+                // The running supervisor owns every bridge: `unpair_slot` queues
+                // the platform revoke, forgets the slot, stops serving that device
+                // and tells it it was unpaired. That is the whole point of routing
+                // this through here — a terminal editing the book alone leaves the
+                // bridge alive until its credential comes up for renewal.
+                let pair_id = pair_id
+                    .filter(|pair_id| !pair_id.trim().is_empty())
+                    .ok_or_else(|| {
+                        crate::Error::Message(
+                            "the removal names no device (`pairId` is missing)".to_string(),
+                        )
+                    })?;
+                crate::remote::unpair_slot(&pair_id).await
             }
             other => Err(crate::Error::Message(format!(
                 "this Desktop does not know the `{other}` request; update the FutureOS Desktop \
@@ -311,14 +369,22 @@ pub(crate) async fn answer(
     // Checked before waiting on anything: a request written by a newer terminal
     // for an operation this Desktop does not implement should be refused at once,
     // not after the pairing attempt it never asked for.
-    if request.op != OP_ADD_DEVICE {
-        return Reply::of_error(format!(
-            "this Desktop does not know the `{}` request; update the FutureOS Desktop or the \
-             `future` CLI so the two match",
-            request.op
-        ));
-    }
+    let removal = match request.op.as_str() {
+        OP_ADD_DEVICE => false,
+        OP_REMOVE_DEVICE => true,
+        _ => {
+            return Reply::of_error(format!(
+                "this Desktop does not know the `{}` request; update the FutureOS Desktop or the \
+                 `future` CLI so the two match",
+                request.op
+            ))
+        }
+    };
     match result.await {
+        // A removal answers with the device it stopped serving rather than with
+        // the status's own subject: after the last device leaves there is no
+        // pairing left to project, and the terminal asked about one device.
+        Ok(_) if removal => Reply::of_removed(request.pair_id.as_deref().unwrap_or_default()),
         Ok(status) => Reply::of_status(&status),
         Err(error) => Reply::of_error(error.to_string()),
     }
@@ -400,6 +466,7 @@ mod tests {
         let request = Request {
             op: OP_ADD_DEVICE.into(),
             reply: "/tmp/unused".into(),
+            pair_id: None,
         };
         let link =
             "futureos://remote/pair?v=2&code=a&desktopId=d&desktopKey=U&secureKey=K&secret=S";
@@ -418,6 +485,7 @@ mod tests {
         let request = Request {
             op: OP_ADD_DEVICE.into(),
             reply: "/tmp/unused".into(),
+            pair_id: None,
         };
         let reply = answer(&request, async {
             Err(crate::Error::Message("pairing_limit_reached".into()))
@@ -434,6 +502,7 @@ mod tests {
         let request = Request {
             op: OP_ADD_DEVICE.into(),
             reply: "/tmp/unused".into(),
+            pair_id: None,
         };
         let refused = RemoteStatus {
             phase: RemotePhase::Failed,
@@ -455,6 +524,7 @@ mod tests {
         let request = Request {
             op: "remove-everything".into(),
             reply: "/tmp/unused".into(),
+            pair_id: None,
         };
         let mut performed = false;
         let reply = answer(&request, async {
@@ -482,18 +552,99 @@ mod tests {
         // An omitted `op` is not guessed at.
         let missing: Request = serde_json::from_str(r#"{"reply":"/tmp/x.json"}"#).unwrap();
         assert_eq!(missing.op, "");
+        assert_eq!(missing.pair_id, None);
+
+        // A removal names its device on the same wire, and an add has no device
+        // to name.
+        let removal: Request = serde_json::from_str(
+            r#"{"op":"remove-device","pairId":"pair_B","reply":"/tmp/y.json"}"#,
+        )
+        .unwrap();
+        assert_eq!(removal.op, OP_REMOVE_DEVICE);
+        assert_eq!(removal.pair_id.as_deref(), Some("pair_B"));
+        assert_eq!(serde_json::to_value(&removal).unwrap()["pairId"], "pair_B");
+        let add = serde_json::to_value(Request {
+            op: OP_ADD_DEVICE.into(),
+            reply: "/tmp/x.json".into(),
+            pair_id: None,
+        })
+        .unwrap();
+        assert!(
+            add.get("pairId").is_none(),
+            "an addition names no device: {add}"
+        );
 
         let reply = Reply {
             pair_id: Some("pair_A".into()),
             link: Some("futureos://remote/pair?v=2".into()),
             expires_at: Some(7),
             error: None,
+            removed: false,
             cleared: Vec::new(),
         };
         let value = serde_json::to_value(&reply).unwrap();
         assert_eq!(value["pairId"], "pair_A");
         assert_eq!(value["expiresAt"], 7);
         assert!(value.get("error").is_none(), "absent error is omitted");
+    }
+
+    /// A removal answers with the device it stopped serving — no invitation, and
+    /// not a failure. The terminal needs this arm told apart from "no reply".
+    #[tokio::test]
+    async fn a_removal_answers_with_the_device_it_stopped_serving() {
+        let request = Request {
+            op: OP_REMOVE_DEVICE.into(),
+            reply: "/tmp/unused".into(),
+            pair_id: Some("pair_GONE".into()),
+        };
+        // The status after a removal describes whoever is left, not the device
+        // that just left; the reply must not report that one.
+        let remaining = RemoteStatus {
+            pair_id: "pair_OTHER".into(),
+            ..status(RemotePhase::Ready, None)
+        };
+        let reply = answer(&request, async { Ok(remaining) }).await;
+        assert_eq!(reply.error, None);
+        assert!(reply.link.is_none(), "a removal issues no invitation");
+        assert!(reply.removed, "{reply:?}");
+        assert_eq!(reply.pair_id.as_deref(), Some("pair_GONE"));
+        // And it is written as `removed`, not inferred from a missing error.
+        let value = serde_json::to_value(&reply).unwrap();
+        assert_eq!(value["removed"], true);
+        assert!(value.get("link").is_none());
+    }
+
+    /// A removal that failed says why and never claims it happened: the terminal
+    /// would otherwise stop waiting and report a device it is still serving.
+    #[tokio::test]
+    async fn a_failed_removal_reports_the_reason_and_claims_nothing() {
+        let request = Request {
+            op: OP_REMOVE_DEVICE.into(),
+            reply: "/tmp/unused".into(),
+            pair_id: Some("pair_GONE".into()),
+        };
+        let reply = answer(&request, async {
+            Err(crate::Error::Message("pairing_book_unreadable".into()))
+        })
+        .await;
+        assert!(!reply.removed, "{reply:?}");
+        assert_eq!(reply.error.as_deref(), Some("pairing_book_unreadable"));
+    }
+
+    /// A removal that names no device is refused before anything is stopped; the
+    /// older wire shape (which a stale terminal could still write) is not a
+    /// machine-wide stop.
+    #[tokio::test]
+    async fn a_removal_without_a_device_is_refused() {
+        let request = Request {
+            op: OP_REMOVE_DEVICE.into(),
+            reply: "/tmp/unused".into(),
+            pair_id: None,
+        };
+        let error = perform(&request)
+            .await
+            .expect_err("a nameless removal must not run");
+        assert!(error.to_string().contains("names no device"), "{error}");
     }
 
     #[test]
@@ -504,6 +655,7 @@ mod tests {
             &Request {
                 op: OP_ADD_DEVICE.into(),
                 reply: "/tmp/a".into(),
+                pair_id: None,
             },
         );
         let second = root.write_request(
@@ -511,6 +663,7 @@ mod tests {
             &Request {
                 op: OP_ADD_DEVICE.into(),
                 reply: "/tmp/b".into(),
+                pair_id: None,
             },
         );
         std::fs::write(root.control().join("0003.request.json.12.claim"), b"").unwrap();
@@ -528,6 +681,7 @@ mod tests {
             &Request {
                 op: OP_ADD_DEVICE.into(),
                 reply: "/tmp/a".into(),
+                pair_id: None,
             },
         );
         let claimed = claim(&path).expect("the first host claims it");
@@ -549,6 +703,7 @@ mod tests {
             &Request {
                 op: OP_ADD_DEVICE.into(),
                 reply: reply_path.display().to_string(),
+                pair_id: None,
             },
         );
         // The injected operation cannot be reached through `serve_one`, so this
@@ -587,6 +742,7 @@ mod tests {
             &Request {
                 op: OP_ADD_DEVICE.into(),
                 reply: reply_path.display().to_string(),
+                pair_id: None,
             },
         );
         let old = SystemTime::now() - ABANDONED_AFTER - Duration::from_secs(60);
@@ -614,6 +770,7 @@ mod tests {
                 link: Some("futureos://remote/pair?v=2".into()),
                 expires_at: None,
                 error: None,
+                removed: false,
                 cleared: Vec::new(),
             },
         )

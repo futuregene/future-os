@@ -45,6 +45,16 @@ export interface RemoteDevice {
   phase: RemotePhase;
   control: DeviceControl;
   connected: boolean;
+  /**
+   * Whether the device's client is at the other end.
+   *
+   * `connected` is this machine's half — the bridge serving that pairing — and
+   * the two are separate facts: a bridge keeps serving a device whose client was
+   * disconnected or force-quit. Absent from a backend that predates the field;
+   * read it as `true` there, because that backend could not tell the difference
+   * and every row it sent was one it believed was there.
+   */
+  present?: boolean;
   client: { name: string; kind: string } | null;
   /** An invitation for this device that nobody has claimed yet. */
   pairingCode: string | null;
