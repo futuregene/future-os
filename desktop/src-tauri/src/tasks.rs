@@ -6,6 +6,7 @@ pub(crate) use future_host::tasks::{accept_revision, start_headless, stop_admiss
 #[cfg(feature = "gui")]
 pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     let _ = app;
+    crate::runtime::set(tauri::async_runtime::handle().inner().clone());
     let notify: future_host::tasks::Notifier = std::sync::Arc::new(|thread_id| {
         if let Some(thread_id) = thread_id {
             crate::emit_remote_activity(thread_id);

@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "f5faf2c6c06f92abc4b650e2671b6dc128992434",
+  "change": "Shared maintenance minimum-delay clocks, serial execution, manual-trigger deadlines, account-state policy and signed-in model catalogue refresh move into Host. Desktop retains updater/plugin calls and window event emission using the same opaque job clocks. GUI task/maintenance adapters explicitly install their entry runtime before shared spawning.",
+  "testOwnership": {
+    "newOriginalDeclarations": 14,
+    "totalMovedOriginalDeclarations": 1029,
+    "totalExecutedOriginalDeclarations": 1027,
+    "baselineIgnored": 2,
+    "retainedGui": [
+      "an_explicit_update_check_uses_the_endpoint_it_is_given",
+      "starting_the_loops_on_a_mock_app_is_inert",
+      "the_job_bodies_report_their_outcomes_to_the_window"
+    ],
+    "originalAssertions": 49,
+    "coreAssertions": 41,
+    "guiAssertions": 8
+  },
+  "localTests": [
+    {
+      "command": "cargo test -p future-host --lib --offline --locked",
+      "results": [
+        "test result: ok. 1030 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 80.67s"
+      ],
+      "logSha256": "eee75b1a91233a8dca8fac9c2e66ec2581878f636cdbbc7ae194dcea85300bd6"
+    },
+    {
+      "command": "cargo test -p futureos --lib scheduler::tests:: --offline --locked",
+      "results": [
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1053 filtered out; finished in 0.01s"
+      ],
+      "logSha256": "5dadfd067e831e5f0219a3a58b0b53c06b7e14bf73f84071a162291945bbfd35"
+    },
+    {
+      "command": "cargo test -p futureos --no-default-features --features headless --test headless_cli --test remote_start_refusal --offline --locked",
+      "results": [
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.34s",
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 68.54s"
+      ],
+      "logSha256": "8c27c18d7988f19000fac26cd25752aa0ce86d0cf415c0ccddd4c45fec5f4f30"
+    }
+  ],
+  "localChecks": [
+    "Host/GUI/CLI Clippy --all-targets PASS",
+    "Original headless Clippy --all-targets PASS",
+    "fmt PASS",
+    "Host public Rustdoc with -D warnings PASS"
+  ],
+  "profile": "aarch64-apple-darwin / Rust 1.97.0 / CARGO_PROFILE_TEST_DEBUG=1 / RUST_LOG unset / offline locked / existing shared root target. No matched performance claim.",
+  "limits": [
+    "Local macOS results only; native CI revalidation pending.",
+    "Current complete CI 39371045462 at 0f9cc395 predates task/login/maintenance changes and has two actual failed groups.",
+    "Remote, shared bootstrap/maintenance CLI capability, complete shutdown, future headless and final release/manual acceptance remain open."
+  ],
+  "dependencyGraph": {
+    "desktopGuiFeatures": [
+      "default",
+      "gui"
+    ],
+    "future-host": {
+      "packages": 370,
+      "forbidden": []
+    },
+    "future-cli": {
+      "packages": 395,
+      "forbidden": []
+    }
+  }
+}

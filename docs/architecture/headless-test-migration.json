@@ -25258,8 +25258,19 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "target": "host/src/scheduler.rs",
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "f5faf2c6c06f92abc4b650e2671b6dc128992434",
+        "cases": [
+          "scheduler::tests::overdue_schedule_runs_once_and_reanchors_after_resume"
+        ],
+        "evidence": "docs/testing/headless-host-maintenance-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-maintenance-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:351:explicit_trigger_resets_the_automatic_deadline",
@@ -25269,8 +25280,19 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "target": "host/src/scheduler.rs",
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "f5faf2c6c06f92abc4b650e2671b6dc128992434",
+        "cases": [
+          "scheduler::tests::explicit_trigger_resets_the_automatic_deadline"
+        ],
+        "evidence": "docs/testing/headless-host-maintenance-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-maintenance-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:363:configured_intervals_match_product_policy",
@@ -25280,8 +25302,19 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "target": "host/src/scheduler.rs",
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "f5faf2c6c06f92abc4b650e2671b6dc128992434",
+        "cases": [
+          "scheduler::tests::configured_intervals_match_product_policy"
+        ],
+        "evidence": "docs/testing/headless-host-maintenance-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-maintenance-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:373:a_job_delegates_to_its_schedule",
@@ -25291,8 +25324,19 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "target": "host/src/scheduler.rs",
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "f5faf2c6c06f92abc4b650e2671b6dc128992434",
+        "cases": [
+          "scheduler::tests::a_job_delegates_to_its_schedule"
+        ],
+        "evidence": "docs/testing/headless-host-maintenance-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-maintenance-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:397:a_poisoned_schedule_is_recovered",
@@ -25302,8 +25346,19 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "target": "host/src/scheduler.rs",
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "f5faf2c6c06f92abc4b650e2671b6dc128992434",
+        "cases": [
+          "scheduler::tests::a_poisoned_schedule_is_recovered"
+        ],
+        "evidence": "docs/testing/headless-host-maintenance-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-maintenance-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:414:an_explicit_run_returns_the_inner_result_and_its_error",
@@ -25313,8 +25368,19 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "target": "host/src/scheduler.rs",
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "f5faf2c6c06f92abc4b650e2671b6dc128992434",
+        "cases": [
+          "scheduler::tests::an_explicit_run_returns_the_inner_result_and_its_error"
+        ],
+        "evidence": "docs/testing/headless-host-maintenance-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-maintenance-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:436:concurrent_explicit_runs_never_overlap",
@@ -25324,8 +25390,19 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "target": "host/src/scheduler.rs",
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "f5faf2c6c06f92abc4b650e2671b6dc128992434",
+        "cases": [
+          "scheduler::tests::concurrent_explicit_runs_never_overlap"
+        ],
+        "evidence": "docs/testing/headless-host-maintenance-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-maintenance-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:484:a_spawned_job_fires_at_its_deadline_and_reanchors",
@@ -25335,8 +25412,19 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "target": "host/src/scheduler.rs",
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "f5faf2c6c06f92abc4b650e2671b6dc128992434",
+        "cases": [
+          "scheduler::tests::a_spawned_job_fires_at_its_deadline_and_reanchors"
+        ],
+        "evidence": "docs/testing/headless-host-maintenance-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-maintenance-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:532:starting_the_loops_on_a_mock_app_is_inert",
@@ -25345,9 +25433,9 @@
       "name": "starting_the_loops_on_a_mock_app_is_inert",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/scheduler/mod.rs",
+      "status": "retained"
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:556:the_account_pass_announces_a_credential_that_is_gone_or_rejected",
@@ -25357,8 +25445,19 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "target": "host/src/scheduler.rs",
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "f5faf2c6c06f92abc4b650e2671b6dc128992434",
+        "cases": [
+          "scheduler::tests::the_account_pass_announces_a_credential_that_is_gone_or_rejected"
+        ],
+        "evidence": "docs/testing/headless-host-maintenance-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-maintenance-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:599:the_headless_catalogue_job_skips_while_signed_out_and_keeps_its_clock",
@@ -25368,8 +25467,19 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "target": "host/src/scheduler.rs",
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "f5faf2c6c06f92abc4b650e2671b6dc128992434",
+        "cases": [
+          "scheduler::tests::the_headless_catalogue_job_skips_while_signed_out_and_keeps_its_clock"
+        ],
+        "evidence": "docs/testing/headless-host-maintenance-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-maintenance-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:622:future_signed_in_requires_a_non_blank_key",
@@ -25379,8 +25489,19 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "target": "host/src/scheduler.rs",
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "f5faf2c6c06f92abc4b650e2671b6dc128992434",
+        "cases": [
+          "scheduler::tests::future_signed_in_requires_a_non_blank_key"
+        ],
+        "evidence": "docs/testing/headless-host-maintenance-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-maintenance-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:684:a_manual_refresh_resets_its_own_job_deadline_on_failure",
@@ -25390,8 +25511,19 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "target": "host/src/scheduler.rs",
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "f5faf2c6c06f92abc4b650e2671b6dc128992434",
+        "cases": [
+          "scheduler::tests::a_manual_refresh_resets_its_own_job_deadline_on_failure"
+        ],
+        "evidence": "docs/testing/headless-host-maintenance-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-maintenance-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:713:the_job_bodies_report_their_outcomes_to_the_window",
@@ -25400,9 +25532,9 @@
       "name": "the_job_bodies_report_their_outcomes_to_the_window",
       "attribute": "    #[tokio::test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/scheduler/mod.rs",
+      "status": "retained"
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:762:the_catalogue_body_runs_the_sync_when_signed_in",
@@ -25412,8 +25544,19 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "target": "host/src/scheduler.rs",
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "f5faf2c6c06f92abc4b650e2671b6dc128992434",
+        "cases": [
+          "scheduler::tests::the_catalogue_body_runs_the_sync_when_signed_in"
+        ],
+        "evidence": "docs/testing/headless-host-maintenance-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-maintenance-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:772:the_catalogue_body_reports_a_sync_and_a_no_op",
@@ -25423,8 +25566,19 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "target": "host/src/scheduler.rs",
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "f5faf2c6c06f92abc4b650e2671b6dc128992434",
+        "cases": [
+          "scheduler::tests::the_catalogue_body_reports_a_sync_and_a_no_op"
+        ],
+        "evidence": "docs/testing/headless-host-maintenance-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-maintenance-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:804:an_explicit_update_check_uses_the_endpoint_it_is_given",
@@ -25433,9 +25587,9 @@
       "name": "an_explicit_update_check_uses_the_endpoint_it_is_given",
       "attribute": "    #[tokio::test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/scheduler/mod.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/scheduler/mod.rs",
+      "status": "retained"
     },
     {
       "key": "desktop/src-tauri/src/shadow_review/diff.rs:265:name_status_parses_renames_and_plain",

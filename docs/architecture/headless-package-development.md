@@ -276,9 +276,9 @@ Current phase status:
 |---|---|
 | 0 | Source/dependency baseline and named inventory captured; mixed-module ownership reviewed per test; matched build/runtime measurements open |
 | 1 | Ordinary GUI-free crate, task registry, presentation outlet and consumer dependencies established; complete lifecycle/config boundary still open |
-| 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, task execution/conversation deletion and OAuth/account services moved; Remote, maintenance and stop coordination remain |
+| 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, task/conversation, OAuth/account and maintenance scheduler moved; Remote, CLI maintenance bootstrap and stop coordination remain |
 | 3 | Not implemented; the product entry is still `futureos-headless` |
-| 4 | 1015 original test declarations moved (1013 executed locally on macOS, two retain their original ignores); this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
+| 4 | 1029 original test declarations moved (1027 executed locally on macOS, two retain their original ignores); this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
 | 5 | Host CI group and affected propagation added; builds, release artifacts, signing/install/update/uninstall still open |
 | 6 | Not started; no frozen final candidate, matched performance, artifact acceptance or confirmed manual results |
 
@@ -423,3 +423,9 @@ Forty-nine original service declarations and all assertions move, with 49 local 
 ### 2026-10-20 Standalone library documentation gate
 
 Strict `RUSTDOCFLAGS="-D warnings" cargo doc -p future-host --no-deps --offline --locked` passes. Repair eleven public Rustdoc references to test-only, removed or private helpers/constants left by extraction, using accurate prose/code references without widening implementation visibility or suppressing warnings. The affected Linux Host test group gains the same strict documentation build, with no npm/Desktop prerequisite; see [documentation evidence](../testing/headless-host-rustdoc-2026-10-20.json).
+
+### 2026-10-20 Maintenance scheduler and same-source validation
+
+Minimum fixed delays, explicit-trigger clock resets, serial execution, account/balance policy and model refresh move into Host, preserving the existing shared services and 1h/24h policy. Desktop keeps Tauri updater capabilities and window emission, wired to the same opaque job clocks without exposing locks/state. GUI task/maintenance adapters explicitly install their entry runtime before shared spawning. Headless still starts only its existing model-catalogue maintenance, adding no balance polling or app updates.
+
+Fourteen original core declarations move; three real GUI updater/presentation cases stay in Desktop, preserving all 49 assertions. On the same source including task/login migration, full Host core passes 1030 tests with zero failures and two original ignores (80.67 seconds), GUI maintenance passes three (0.01 seconds), and both actual legacy entry process groups pass 13 each (5.34 and 68.54 seconds). Host/GUI/CLI and original headless all-target Clippy, fmt, strict Rustdoc and combined dependency checks pass; see [maintenance evidence](../testing/headless-host-maintenance-2026-10-20.json). Final CLI, cross-platform distribution and manual acceptance remain open.
