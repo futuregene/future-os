@@ -678,8 +678,7 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
     out.log("");
     match expires_at {
         Some(expiry) => {
-            let when = local_wall_clock(expiry)
-                .map(|clock| format!("{clock} (local time)"))
+            let when = deadline_phrase(expiry, now_seconds())
                 // The Desktop's clock is far enough out that no calendar can
                 // name the day; the raw epoch at least says how far.
                 .unwrap_or_else(|| format!("Unix time {expiry}"));
@@ -702,6 +701,47 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+/// A deadline as the reader's own clocks: the wall clock they can compare with
+/// their watch, and the time left to act (`2026-10-20 09:45:32 (local time, in
+/// 9m 58s)`). `None` for an instant no calendar can express.
+///
+/// Spelled the same way in `futureos-headless`, which prints an invitation of
+/// its own — one wording, both entry points.
+fn deadline_phrase(expiry: i64, now: i64) -> Option<String> {
+    let clock = local_wall_clock(expiry)?;
+    Some(match time_left(expiry, now) {
+        Some(left) => format!("{clock} (local time, in {left})"),
+        // Already passed, or this machine's clock is ahead of the Desktop's:
+        // the deadline still names itself, and "in 0s" would only puzzle.
+        None => format!("{clock} (local time)"),
+    })
+}
+
+/// How long is left before `expiry`, in the largest unit worth naming:
+/// `42s`, `9m 58s`, `2h 05m`. `None` once it has passed.
+fn time_left(expiry: i64, now: i64) -> Option<String> {
+    let left = expiry.checked_sub(now)?;
+    if left <= 0 {
+        return None;
+    }
+    let (hours, minutes, seconds) = (left / 3600, (left % 3600) / 60, left % 60);
+    Some(if hours > 0 {
+        format!("{hours}h {minutes:02}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    })
+}
+
+/// `SystemTime::now()` in whole seconds, the unit every deadline here uses.
+fn now_seconds() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_secs() as i64)
+        .unwrap_or_default()
 }
 
 /// A deadline as the local clock the reader can look at, e.g.
@@ -1945,12 +1985,17 @@ mod tests {
     const LINK: &str =
         "futureos://remote/pair?v=2&code=abc&desktopId=d&desktopKey=U&desktopSecret=S";
 
-    /// The `It expires at <clock> (local time)` clause of an invitation, parsed.
-    fn printed_clock(stdout: &str) -> chrono::NaiveDateTime {
-        let line = stdout
+    /// The `Single-use.` line of an invitation, which carries the deadline.
+    fn single_use_line(stdout: &str) -> &str {
+        stdout
             .lines()
             .find(|line| line.contains("Single-use."))
-            .unwrap_or_else(|| panic!("no single-use line: {stdout}"));
+            .unwrap_or_else(|| panic!("no single-use line: {stdout}"))
+    }
+
+    /// The `It expires at <clock> (local time)` clause of an invitation, parsed.
+    fn printed_clock(stdout: &str) -> chrono::NaiveDateTime {
+        let line = single_use_line(stdout);
         assert!(
             !line.contains("Unix time"),
             "a deadline a calendar can name is printed as a clock: {line}"
@@ -1958,7 +2003,9 @@ mod tests {
         let clock = line
             .split("expires at ")
             .nth(1)
-            .and_then(|rest| rest.split(" (local time)").next())
+            // The clock ends where the parenthetical about zone and time left
+            // begins: `2026-10-20 09:45:32 (local time, in 9m 58s)`.
+            .and_then(|rest| rest.split(" (").next())
             .unwrap_or_else(|| panic!("no expiry in {line}"));
         chrono::NaiveDateTime::parse_from_str(clock, "%Y-%m-%d %H:%M:%S")
             .unwrap_or_else(|error| panic!("{clock:?} is not YYYY-MM-DD HH:MM:SS: {error}"))
@@ -1974,6 +2021,22 @@ mod tests {
         // of panicking in the formatter.
         assert_eq!(local_wall_clock(i64::MAX), None);
         assert_eq!(local_wall_clock(-1), None);
+    }
+
+    /// The time-left clause names the largest unit worth reading, and disappears
+    /// rather than saying "in 0s" once the deadline is behind the reader's clock.
+    #[test]
+    fn the_time_left_is_readable_and_never_counts_down_to_zero() {
+        assert_eq!(time_left(1_042, 1_000).as_deref(), Some("42s"));
+        assert_eq!(time_left(1_598, 1_000).as_deref(), Some("9m 58s"));
+        assert_eq!(time_left(1_000 + 7_500, 1_000).as_deref(), Some("2h 05m"));
+        assert_eq!(time_left(1_000, 1_000), None, "a deadline now is gone");
+        assert_eq!(time_left(999, 1_000), None, "a deadline past is gone");
+        assert_eq!(deadline_phrase(i64::MAX, 0), None);
+        // A machine whose clock runs ahead of the Desktop's still names the
+        // deadline instead of printing "in 0s" — or panicking.
+        let phrase = deadline_phrase(1_800_000_000, 1_900_000_000).expect("a clock");
+        assert!(phrase.ends_with("(local time)"), "{phrase}");
     }
 
     #[tokio::test]
@@ -2005,6 +2068,12 @@ mod tests {
             1_800_000_000,
             "the printed clock is the deadline itself: {stdout}"
         );
+        // The time left to act is in the same clause, so nobody has to subtract
+        // two clocks to learn how long they have.
+        assert!(
+            single_use_line(&stdout).contains("(local time, in "),
+            "{stdout}"
+        );
         // The request carried the operation and a reply path, and was cleaned up.
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 1, "one request, one answer");
@@ -2021,6 +2090,37 @@ mod tests {
                     .to_string_lossy()
                     .ends_with(REQUEST_SUFFIX)),
             "a request must not outlive the command"
+        );
+    }
+
+    /// A freshly minted invitation counts down the budget the phone actually
+    /// has: "in 9m 58s" answers the question the epoch did not.
+    #[tokio::test]
+    async fn add_counts_down_the_time_left_to_scan() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+        answer_requests(
+            &home,
+            json!({
+                "pairId": "pair_NEW",
+                "link": LINK,
+                "expiresAt": now_seconds() + 600,
+            }),
+        );
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "add"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        let line = single_use_line(&stdout);
+        let left = line
+            .split("(local time, in ")
+            .nth(1)
+            .and_then(|rest| rest.split(')').next())
+            .unwrap_or_else(|| panic!("no time left in {line}"));
+        // A ten-minute budget, read a moment after the Desktop answered.
+        assert!(
+            left == "10m 00s" || left.starts_with("9m "),
+            "the countdown must match the invitation's budget: {line}"
         );
     }
 
