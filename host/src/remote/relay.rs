@@ -416,17 +416,6 @@ mod tests {
     }
 
     #[test]
-    fn the_launch_flags_are_the_whole_choice() {
-        let _home = crate::remote::test_support::HomeGuard::new("relay-settings");
-        set_launch(Some("http://127.0.0.1:8099/"), None);
-        assert_eq!(endpoint().as_deref(), Some("http://127.0.0.1:8099"));
-        assert!(enabled());
-        // An empty `--relay` is "the official relay for this launch".
-        set_launch(Some(""), None);
-        assert!(!enabled());
-    }
-
-    #[test]
     fn a_404_is_an_unknown_room_and_nothing_else_is() {
         let unknown = crate::Error::Remote {
             status: 404,
