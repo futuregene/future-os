@@ -57,6 +57,13 @@ export function addDeviceErrorText(err: unknown, t: TFunction<"remote">): string
     return t("failure.serviceSupport", { code: "AU001" });
   if (/failed to connect to nats|nats_connect|connection refused|connection reset|network is unreachable|lookup host|name or service not known|broken pipe|timed out|timed_out|deadline/i.test(message))
     return t("failure.network", { code: "NW001" });
+  // A gateway error carries no platform body, so the status is all that reaches
+  // here — `Failed to create pairing code (HTTP 502)`. That is the service
+  // failing, not this machine: the same request succeeds seconds later, and
+  // telling the user their device faulted sends them looking for the wrong
+  // problem. Matches the `SV001` the status page already uses for it.
+  if (/\(HTTP 5\d\d\)/i.test(message))
+    return t("failure.serviceLater", { code: "SV001" });
   return t("error.generic");
 }
 
