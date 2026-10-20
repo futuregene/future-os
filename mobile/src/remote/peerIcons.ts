@@ -37,20 +37,27 @@ export const PEER_ICONS: PeerIcon[] = [
   { id: "phone", glyph: "📱", labelKey: "phone" },
   { id: "server", glyph: "🗄️", labelKey: "server" },
   { id: "cloud", glyph: "☁️", labelKey: "cloud" },
+  // Which OS it runs. Emoji stand-ins for the three logos: a real logo would
+  // be an image in the picker *and* in the row, so it stays inside the one
+  // glyph the rest of the set is drawn with — 🪟 window, 🍎 apple, 🐧 Tux.
+  { id: "windows", glyph: "🪟", labelKey: "windows" },
+  { id: "macos", glyph: "🍎", labelKey: "macos" },
+  { id: "linux", glyph: "🐧", labelKey: "linux" },
   // Where it stands.
   { id: "home", glyph: "🏠", labelKey: "home" },
   { id: "office", glyph: "🏢", labelKey: "office" },
   { id: "cafe", glyph: "☕", labelKey: "cafe" },
   { id: "school", glyph: "🏫", labelKey: "school" },
-  { id: "factory", glyph: "🏭", labelKey: "factory" },
-  { id: "store", glyph: "🏪", labelKey: "store" },
   // What it is for.
   { id: "rocket", glyph: "🚀", labelKey: "rocket" },
   { id: "flask", glyph: "🧪", labelKey: "flask" },
   { id: "dev", glyph: "⚙️", labelKey: "dev" },
   { id: "build", glyph: "🤖", labelKey: "build" },
-  { id: "sandbox", glyph: "📦", labelKey: "sandbox" },
   { id: "data", glyph: "📊", labelKey: "data" },
+  { id: "storage", glyph: "💾", labelKey: "storage" },
+  { id: "media", glyph: "📺", labelKey: "media" },
+  { id: "design", glyph: "🎨", labelKey: "design" },
+  { id: "ai", glyph: "🧠", labelKey: "ai" },
   { id: "research", glyph: "🔬", labelKey: "research" },
   { id: "secure", glyph: "🛡️", labelKey: "secure" },
   { id: "private", glyph: "🔒", labelKey: "private" },
@@ -60,7 +67,6 @@ export const PEER_ICONS: PeerIcon[] = [
   { id: "gaming", glyph: "🎮", labelKey: "gaming" },
   // How it is reached.
   { id: "remote", glyph: "🌐", labelKey: "remote" },
-  { id: "edge", glyph: "🛰️", labelKey: "edge" },
 ];
 
 /**
