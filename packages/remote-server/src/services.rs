@@ -52,7 +52,25 @@ pub struct SessionsCatalog {
 
 use crate::PairingCreds;
 type HostResult<T> = Result<T, crate::Error>;
-pub type Invitation = (PairingCreds, String, Option<i64>);
+
+/// What a host hands back after minting an invitation.
+pub struct Invitation {
+    pub creds: PairingCreds,
+    /// The complete `futureos://remote/pair` link, as the UI shows it and the
+    /// phone scans it.
+    pub code: String,
+    /// Unix seconds after which `code` no longer works.
+    pub expires_at: Option<i64>,
+    /// Invitations forgotten on the platform so this one could be minted, by
+    /// pair id.
+    ///
+    /// Only ever non-empty after the platform refused the mint for the
+    /// per-desktop cap: an unclaimed invitation counts against that cap for
+    /// minutes, so an `add` may have to clear its own orphans first. Every
+    /// ordinary mint reports none.
+    pub cleared: Vec<String>,
+}
+
 pub trait PairingHost: Send + Sync {
     /// The device in control, else the first one paired.
     fn load(&self) -> Option<PairingCreds>;
@@ -67,7 +85,16 @@ pub trait PairingHost: Send + Sync {
     fn clear(&self) -> HostResult<()>;
     /// `keep_existing` decides whether the platform adds a device beside the
     /// existing ones or replaces them all; this side only forwards it.
-    fn invite(&self, keep_existing: bool) -> BoxFuture<'_, HostResult<Invitation>>;
+    ///
+    /// `shown` names the pair ids whose invitation this desktop is displaying.
+    /// Filling the platform's per-desktop cap with invitations that can never
+    /// be claimed is the host's problem to solve, and `shown` is the one thing
+    /// it must not solve it by revoking.
+    fn invite(
+        &self,
+        keep_existing: bool,
+        shown: &[String],
+    ) -> BoxFuture<'_, HostResult<Invitation>>;
     fn refresh(&self, creds: PairingCreds) -> BoxFuture<'_, HostResult<PairingCreds>>;
     fn queue_revoke(&self, creds: &PairingCreds) -> HostResult<()>;
     fn retry_revokes(&self) -> BoxFuture<'_, HostResult<()>>;

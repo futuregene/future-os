@@ -6,7 +6,7 @@ use crate::{
     events::EventPublish,
     health::NatsHealth,
     lifecycle, secure,
-    services::RemoteHost,
+    services::{Invitation, RemoteHost},
     tasks::{self, NativeHandle},
     types::ClientIdentity,
     PairingCreds,

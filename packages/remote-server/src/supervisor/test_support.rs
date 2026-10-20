@@ -61,7 +61,7 @@ impl PairingHost for MemoryHost {
         self.slots.lock().unwrap().clear();
         Ok(())
     }
-    fn invite(&self, _: bool) -> BoxFuture<'_, Result<Invitation, crate::Error>> {
+    fn invite(&self, _: bool, _: &[String]) -> BoxFuture<'_, Result<Invitation, crate::Error>> {
         let pause = self.invitation.lock().unwrap().take();
         Box::pin(async move {
             let Some((entered, result)) = pause else {

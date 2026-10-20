@@ -7,6 +7,7 @@ pub struct SlotPlan {
     pub pairing_code: Option<String>,
     pub pairing_code_expires_at: Option<i64>,
 }
+
 impl Supervisor {
     pub async fn start(self: &Arc<Self>) -> Result<RemoteStatus, crate::Error> {
         self.start_with(true).await
@@ -199,7 +200,15 @@ impl Supervisor {
     ) -> Result<RemoteStatus, crate::Error> {
         self.spawn_revoke_cleanup();
         let keep_existing = !self.host.load_slots().is_empty();
-        let (creds, code, expires_at) = self.host.invite(keep_existing).await?;
+        let Invitation {
+            creds,
+            code,
+            expires_at,
+            cleared,
+        } = self
+            .host
+            .invite(keep_existing, &self.shown_invitations())
+            .await?;
         let plan = SlotPlan {
             creds,
             pairing_code: Some(code),
@@ -217,7 +226,9 @@ impl Supervisor {
         let added = plan.creds.pair_id.clone();
         let _start_guard = self.start_lock.lock().await;
         self.start_slot(plan, epoch, true, false).await?;
-        Ok(self.status_focused(Some(&added)))
+        let mut status = self.status_focused(Some(&added));
+        status.cleared_invitations = cleared;
+        Ok(status)
     }
 
     pub async fn pair_new_device(self: &Arc<Self>) -> Result<RemoteStatus, crate::Error> {
@@ -259,11 +270,17 @@ impl Supervisor {
             // Nothing left to serve: mint one invitation, exactly as a
             // single-device install always did. Replacing is right here because
             // there is nothing to keep.
-            let (creds, code, exp) = self.host.invite(false).await?;
+            let Invitation {
+                creds,
+                code,
+                expires_at,
+                ..
+            // Nothing is on screen yet: this invitation is the one starting.
+            } = self.host.invite(false, &[]).await?;
             plans.push(SlotPlan {
                 creds,
                 pairing_code: Some(code),
-                pairing_code_expires_at: exp,
+                pairing_code_expires_at: expires_at,
             });
         }
         Ok(plans)
