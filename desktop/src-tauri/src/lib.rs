@@ -174,11 +174,12 @@ pub(crate) fn future_home_root() -> std::path::PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join(".future"))
 }
 
-#[cfg(feature = "gui")]
-pub(crate) use gui::{
+pub(crate) use future_host::events::{
     emit_approvals_updated, emit_remote_activity, emit_review_updated, emit_thread_runtime_updated,
-    emit_threads_updated, APP_HANDLE,
+    emit_threads_updated,
 };
+#[cfg(feature = "gui")]
+pub(crate) use gui::APP_HANDLE;
 #[cfg(feature = "gui")]
 pub use gui::{run, run_with};
 // The menu builder is reachable from an integration test only through a public path:
@@ -188,10 +189,6 @@ pub use gui::{run, run_with};
 #[cfg(all(feature = "gui", target_os = "macos"))]
 #[doc(hidden)]
 pub use menu::build_macos_menu;
-#[cfg(not(feature = "gui"))]
-mod no_gui;
-#[cfg(not(feature = "gui"))]
-pub(crate) use no_gui::*;
 
 #[cfg(feature = "gui")]
 mod gui {
@@ -201,6 +198,31 @@ mod gui {
     /// background tasks (e.g. deferred shadow-review materialization).
     pub(crate) static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> =
         std::sync::OnceLock::new();
+
+    fn present_host_event(event: future_host::events::Event<'_>) {
+        use future_host::events::Event;
+        match event {
+            Event::ReviewUpdated(thread_id) => emit_review_updated(thread_id),
+            Event::RemoteActivity(thread_id) => emit_remote_activity(thread_id),
+            Event::ThreadsUpdated => emit_threads_updated(),
+            Event::ThreadRuntimeUpdated {
+                thread_id,
+                run_id,
+                status,
+                reset_projection,
+            } => emit_thread_runtime_updated(thread_id, run_id, status, reset_projection),
+            Event::ApprovalsUpdated {
+                thread_id,
+                approval_request_id,
+            } => emit_approvals_updated(thread_id, approval_request_id),
+            Event::Notification { name, payload } => {
+                if let Some(app) = APP_HANDLE.get() {
+                    use tauri::Emitter;
+                    let _ = app.emit(name, payload);
+                }
+            }
+        }
+    }
 
     /// Both the initial launch and a second-instance notification must activate
     /// the window, including when it was created hidden for icon setup.
@@ -1003,6 +1025,7 @@ mod gui {
         let app = gui_builder::<tauri::Wry>()
             .setup(|app| {
                 let _ = APP_HANDLE.set(app.handle().clone());
+                let _ = future_host::events::attach(present_host_event);
                 #[cfg(target_os = "macos")]
                 macos_power::install_disconnect_notifier();
                 #[cfg(target_os = "windows")]

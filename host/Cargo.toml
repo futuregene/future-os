@@ -22,3 +22,6 @@ future-app-settings = { path = "../packages/app-settings" }
 future-app-workspaces = { path = "../packages/app-workspaces" }
 future-remote-client = { path = "../packages/remote-client" }
 future-remote-server = { path = "../packages/remote-server" }
+
+tokio.workspace = true
+futures = "0.3"

@@ -1986,10 +1986,12 @@ dependencies = [
  "future-app-workspaces",
  "future-remote-client",
  "future-remote-server",
+ "futures",
  "rusqlite",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
+ "tokio",
 ]
 
 [[package]]

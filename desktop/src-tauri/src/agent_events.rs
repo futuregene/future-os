@@ -48,11 +48,7 @@ pub(crate) fn publish_event(
 /// No preferences or credentials are carried by this notification: both clients
 /// reread the desktop's authoritative state, including after reconnect/resume.
 pub(crate) fn publish_invalidation(event_type: &str) {
-    #[cfg(feature = "gui")]
-    if let Some(handle) = crate::APP_HANDLE.get() {
-        use tauri::Emitter;
-        let _ = handle.emit(event_type, ());
-    }
+    future_host::events::notify(event_type, serde_json::Value::Null);
     publish_event(
         "_global",
         event_type,

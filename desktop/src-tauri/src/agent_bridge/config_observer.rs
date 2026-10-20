@@ -7,9 +7,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-#[cfg(feature = "gui")]
-use tauri::Emitter;
-
 use super::connect_agent;
 
 static STARTED: AtomicBool = AtomicBool::new(false);
@@ -92,10 +89,7 @@ async fn observe_once(
             object.insert("agentInstanceId".into(), serde_json::json!(instance));
         }
         let data = payload.to_string();
-        #[cfg(feature = "gui")]
-        if let Some(handle) = crate::APP_HANDLE.get() {
-            let _ = handle.emit("provider-config-changed", &payload);
-        }
+        future_host::events::notify("provider-config-changed", payload.clone());
         crate::agent_events::publish_event(
             "_global",
             "provider_config_changed",

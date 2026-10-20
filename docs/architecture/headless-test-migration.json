@@ -18308,7 +18308,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/runtime.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/runtime.rs:215:cleanup_waits_for_process_lifetime_tasks",
@@ -18319,7 +18319,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/runtime.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/runtime.rs:224:frozen_registry_never_polls_late_work_or_starts_native_jobs",
@@ -18330,7 +18330,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/runtime.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/runtime.rs:242:cleanup_waits_for_native_jobs_and_reports_persistence_failure",
@@ -18341,7 +18341,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/runtime.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/runtime.rs:261:background_task_outlives_its_callers_runtime",
@@ -18352,7 +18352,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/runtime.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/runtime.rs:291:a_native_job_that_outlives_the_budget_fails_the_cleanup_barrier",
@@ -18363,7 +18363,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/runtime.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/runtime.rs:319:a_panicking_native_job_is_reported_at_the_barrier",
@@ -18374,7 +18374,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/runtime.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/scheduler/mod.rs:338:overdue_schedule_runs_once_and_reanchors_after_resume",

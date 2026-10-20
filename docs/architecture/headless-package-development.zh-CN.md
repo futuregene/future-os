@@ -237,3 +237,11 @@ CLI 和 Desktop 已依赖新库，但 `future headless` 尚未接线。`scripts/
 新的实施工作树 `.worktrees/headless-unified` 与分支 `refactor/headless-unified` 继承已提交基线和首批迁移，不修改原工作树。显式合入原计划分支（包含 `e2251323` 祖先），并独立合入当前 `origin/main`，不合入本地 main。
 
 审批规则原子持久化、git diff 解析、run 错误分类和平台子进程标志现归 `future-host`，Desktop 保留导入适配。原测试随实现迁移，清单记录新归属。macOS 上宿主/CLI/GUI 联合 Clippy `--all-targets`、格式与依赖边界通过，见[验证记录](../testing/headless-host-leaves-2026-10-20.json)。文档检查报告已有 Agent 数据库夹具 README 未在白名单。本地未执行单元/NATS 测试；全部阶段仍需最终 CI、产物及人工验收。
+
+### 2026-10-20 共享任务注册与展示出口
+
+进程任务注册、future 实际销毁确认、原生任务追踪、接入冻结与有界清理现只保留于 `host/src/runtime.rs`。生产代码要求入口传入 Tokio handle，不创建兜底 runtime。Desktop 传入现有 Tauri runtime 的 Tokio handle；过渡 headless 入口继续传入原 runtime。7 个原注册表测试迁入宿主，以注册表锁/重置夹具代替无关的 HOME/Store 夹具，保留超时、panic、未轮询销毁及任务生命周期断言。仅测试的 runtime 仍属于隔离夹具。
+
+`host/src/events.rs` 定义不含 GUI 类型的展示出口。Desktop 保留事件序列化和合并，在启动生产者前接入适配。Store/业务桥继续通过统一出口通知；未接入展示时不发送 GUI 事件，不影响 Remote 或持久化。删除重复的 `no_gui.rs` 通知实现。Agent 设置失效与 provider 配置通知接入同一出口，保留事件名和 payload。
+
+这是阶段 1/2 的增量变更。Agent 托管、Store、Remote、调度及完整停止协调仍在 Desktop，不代表候选验收。原 headless 与 GUI 测试目标通过 Clippy 编译，本地测试执行数为 0。
