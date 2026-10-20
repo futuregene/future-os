@@ -4,8 +4,8 @@ import type { RemoteDevice } from "./remoteClient";
 /**
  * Shared presentation rules for the host direction.
  *
- * Kept out of the components so both the list and a client's own page describe
- * the same device the same way — and so the view modules only export components
+ * Kept out of the components so the list and the confirm dialogs it opens
+ * describe the same device the same way — and so the view modules only export components
  * (a module's fast-refresh boundary is its component exports).
  */
 
