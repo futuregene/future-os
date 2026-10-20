@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "parent": "fc8ab2f8",
+  "scope": "Shared file/attachment IO, canonical path/credential boundaries, previews and persistence; GUI OS/clipboard/asset scope stays in Desktop.",
+  "migratedTestDeclarations": 27,
+  "retainedGuiTestDeclarations": 9,
+  "executedTests": 0,
+  "checks": [
+    {
+      "command": "cargo clippy --offline --locked -p future-host -p future-cli -p futureos --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p future-host --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p futureos --no-default-features --features headless --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo fmt -p future-host -p future-cli -p futureos --check",
+      "result": "PASS"
+    },
+    {
+      "command": "python3 scripts/ci/host-boundaries.py",
+      "result": "PASS",
+      "hostPackages": 369,
+      "cliPackages": 395
+    }
+  ],
+  "compatibility": "Original validation/persistence bodies and field serialization retained. Desktop IPC wrappers delegate. Credential roots, size limits, thumbnail formats, temporary attachment directory and fresh asset version format remain unchanged.",
+  "environment": {
+    "target": "aarch64-apple-darwin",
+    "rust": "1.97.0",
+    "RUSTC_WRAPPER": "",
+    "CARGO_TARGET_DIR": "<root>/target (shared incremental)"
+  },
+  "limits": [
+    "No local unit/NATS tests run.",
+    "This batch has not executed in CI.",
+    "GUI scope/clipboard/OS tests remain at their actual adapter.",
+    "No Windows acceptance, matched performance or release artifact claim."
+  ]
+}

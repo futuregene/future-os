@@ -69,6 +69,7 @@ mod windows_power;
 use commands::*;
 use error::AppError;
 
+#[cfg(test)]
 pub(crate) use future_host::home_dir;
 
 /// Process-wide lock for tests that mutate the global `HOME` env var

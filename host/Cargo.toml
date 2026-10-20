@@ -41,6 +41,8 @@ fs2 = "0.4"
 nkeys = "0.4"
 tonic.workspace = true
 
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+
 [dev-dependencies]
 libc = "0.2"
 tempfile = "3"

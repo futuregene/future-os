@@ -47,3 +47,5 @@ pub mod agent_commands;
 pub mod request_scope;
 
 pub mod agent_client;
+
+pub mod files;

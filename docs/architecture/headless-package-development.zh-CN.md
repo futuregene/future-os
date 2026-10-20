@@ -309,3 +309,9 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 ### 2026-10-20 Windows 适配编译修复
 
 CI `39358154196` 的 Agent 与宿主测试分组通过，证明该候选的日志竞态修复复验通过。Windows Desktop 编译失败是移除旧 `proc` 转发时遗漏终端进程树清理的 Windows 专用 import，导致 `NoWindow` 缺失并触发 E0432/E0599；编译提前停止后，原生证据上传也因没有文件失败。现从宿主根部只导出原 trait，Windows 终端适配直接导入，不改变进程标志或终止范围。[证据](../testing/headless-host-windows-repair-2026-10-20.json)记录具体失败 job。Windows 验收仍待下一次 CI，不跳过失败步骤。
+
+### 2026-10-20 共享文件与附件服务
+
+`host/src/files.rs` 现拥有路径规范化/凭据访问检查、附件与图片校验、缩略图、临时导入/删除、目录列表、相对预览解析、有界文本读取/导出及粘贴图片/文件持久化。保留原业务函数体、限制、私有序列化字段和 `futureos-attachments` 路径。Desktop 保留薄 IPC、原生剪贴板、Tauri asset 授权、OS 打开/回退；图片预览注册使用共享校验及原 stamp 来源/格式，不把 asset scope 带入宿主。
+
+27 个原真实文件系统/图片/持久化测试迁入宿主，9 个 GUI/剪贴板/OS 用例留适配。真实 asset-scope 用例保留全部断言，并使用拥有生命周期的临时目录作为夹具。[静态证据](../testing/headless-host-files-2026-10-20.json)覆盖宿主单包、GUI/CLI 联合、原 headless、格式和依赖边界。本地未执行测试，本批仍需 CI 执行及后续产品验收。
