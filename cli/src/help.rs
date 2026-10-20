@@ -480,6 +480,10 @@ The invitation is whatever the Desktop is configured to mint: an official
 `v=2` link, or a self-hosted relay's `v=3` one. Relay mode needs no FutureOS
 account, and neither does this command — it only asks the Desktop.
 
+An invitation is only usable while the Desktop serves, so with the remote desktop
+switch off this refuses instead of minting one, and says to run
+`future remote enable` (which starts serving at once when a Desktop is running).
+
 Existing devices stay paired: this adds beside them. `remove --all` followed by
 `add` is what replaces the pairing on a machine whose phone is being retired.
 
@@ -507,7 +511,11 @@ null), and devices[] with pairId, desktopId, control, endpoint and relayUrl.
 Credentials are never part of it.
 
 Live connection state — who is connected at this moment, and the name a device
-gave itself — is known only to a running Desktop: it is not in the pairing book."#;
+gave itself — is known only to a running Desktop: it is not in the pairing book.
+
+The list says what the machine is actually doing: serving, not serving because no
+Desktop is running, or not serving because the remote desktop switch is off — in
+which case it names `future remote enable`, the command that turns it back on."#;
 
 /// `future remote devices remove --help` output.
 pub const REMOTE_REMOVE_HELP: &str = r#"future remote devices remove — unpair one device, leaving the others paired

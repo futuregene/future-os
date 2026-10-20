@@ -478,6 +478,57 @@ fn desktop_running() -> bool {
     }
 }
 
+// ── The switch, as every command here reads it ──────────────────────────────
+
+/// The stored switch (`autoConnectRemote`): whether this machine serves its
+/// paired devices, now and after a restart.
+///
+/// Read from disk through the same loader `future desktop settings` uses, so a
+/// command's advice and the value it reports cannot disagree about defaults. It
+/// never creates a database: a machine the app has never run on reports the
+/// documented default.
+fn switch_is_on() -> Result<bool, String> {
+    crate::commands::desktop::load()
+        .map(|settings| settings.auto_connect_remote)
+        .map_err(|error| format!("Cannot read the desktop app's settings: {error}"))
+}
+
+/// The one line a command prints when the machine is not serving because the
+/// switch is off.
+///
+/// Advice rather than a warning: listing, unpairing and choosing a controller all
+/// work with the switch off, they just do not make this machine reachable. The
+/// sentence names the command that fixes it, and says how fast that takes,
+/// because "turn it on" reads like a restart otherwise.
+fn switch_advice(running: bool) -> &'static str {
+    if running {
+        "The remote desktop switch is off, so this machine serves nobody. Turn it on with \
+         `future remote enable` — a running Desktop starts serving at once, no restart."
+    } else {
+        "The remote desktop switch is off, so the next start will not serve either. Turn it on \
+         with `future remote enable`."
+    }
+}
+
+/// Whether this machine can serve at all right now: is it signed in to Future OS?
+///
+/// A self-hosted relay needs no account — the pairing's own credential and the
+/// room registration are the whole authorization — so relay machines are always
+/// "signed in" for this purpose. Everything else mints its credential from the
+/// platform: without a login the switch can be turned on and nothing can
+/// connect, which is exactly the state this check exists to prevent.
+fn signed_in() -> bool {
+    future_host::remote::relay::endpoint().is_some()
+        || future_host::future_platform::future_api_key().is_ok()
+}
+
+/// The one line that sends a signed-out reader to `future auth login`.
+fn login_advice() -> &'static str {
+    "Not signed in to Future OS. The remote desktop serves through your account, so sign in \
+     first: `future auth login`, then run this again. (A self-hosted relay needs no account: \
+     `future headless --relay <url>`.)"
+}
+
 // ── list ────────────────────────────────────────────────────────────────────
 
 fn list(args: &[String], out: &Output) -> Result<(), String> {
@@ -491,6 +542,7 @@ fn list(args: &[String], out: &Output) -> Result<(), String> {
     }
     let book = Book::load()?;
     let running = desktop_running();
+    let switch = switch_is_on()?;
     if json_flag {
         out.log(
             serde_json::to_string_pretty(&document(&book, running))
@@ -502,6 +554,10 @@ fn list(args: &[String], out: &Output) -> Result<(), String> {
     if book.devices.is_empty() {
         out.log("No devices are paired to this machine.");
         out.log("Start the Desktop (windowed or future headless) to pair one.");
+        if !switch {
+            out.log("");
+            out.log(switch_advice(running));
+        }
         return Ok(());
     }
     let controller = book.controller().map(|device| device.pair_id.clone());
@@ -542,9 +598,15 @@ fn list(args: &[String], out: &Output) -> Result<(), String> {
     out.log("");
     out.log("The device in control is the one allowed to command this machine; the others stay");
     out.log("paired in standby.");
-    if running {
-        out.log("");
+    out.log("");
+    // "Serving these pairings" was printed whenever a Desktop held the lock, which
+    // was false whenever the switch was off: such a Desktop serves nobody.
+    if !switch {
+        out.log(switch_advice(running));
+    } else if running {
         out.log("A Desktop is running and is serving these pairings.");
+    } else {
+        out.log("No Desktop is running, so nothing is serving these pairings right now.");
     }
     Ok(())
 }
@@ -634,6 +696,8 @@ struct Observed {
     book: Book,
     /// The stored switch (`autoConnectRemote`): serve again after a restart.
     switch: bool,
+    /// This machine has an account (or a self-hosted relay) to serve with.
+    signed_in: bool,
 }
 
 /// Read both halves: the runtime state from the running Desktop, the rest from
@@ -644,9 +708,7 @@ async fn observe() -> Result<Observed, String> {
     // The stored switch is the desktop app's own preference, read through the
     // same loader `future desktop settings` uses so the two cannot disagree
     // about defaults.
-    let switch = crate::commands::desktop::load()
-        .map(|settings| settings.auto_connect_remote)
-        .map_err(|error| format!("Cannot read the desktop app's settings: {error}"))?;
+    let switch = switch_is_on()?;
     let (reported, silence) = if running {
         match request_desktop_within("status", None, "nothing was changed", STATUS_TIMEOUT).await {
             Ok(reply) => match reply.get("error").and_then(Value::as_str) {
@@ -677,6 +739,7 @@ async fn observe() -> Result<Observed, String> {
         silence,
         book,
         switch,
+        signed_in: signed_in(),
     })
 }
 
@@ -826,6 +889,9 @@ impl Observed {
             "reason": self.reported_value("reason"),
             "recovery": self.reported_value("recovery"),
             "switch": { "autoConnectRemote": self.switch },
+            // Separate from the switch: "on" and "able to serve" are different
+            // facts, and a signed-out machine with the switch on serves nobody.
+            "signedIn": self.signed_in,
             "agentAvailable": self.reported_value("agentAvailable"),
             "transport": self.reported_value("transport"),
             "active": active,
@@ -860,6 +926,17 @@ impl Observed {
         }
         lines.push(String::new());
         lines.extend(self.device_lines());
+        if !self.switch {
+            // The two halves above say what is true; this says what to do about it,
+            // which is the question a reader actually has.
+            lines.push(String::new());
+            lines.push(switch_advice(self.running).to_string());
+        } else if !self.signed_in {
+            // "On" but unable to serve: the switch is right and the account is
+            // missing, so naming the switch again would send the reader in circles.
+            lines.push(String::new());
+            lines.push(login_advice().to_string());
+        }
         if let Some(expiry) = self.reported_value("invitationExpiresAt").as_i64() {
             if let Some(when) = local_wall_clock(expiry) {
                 lines.push(String::new());
@@ -1061,6 +1138,13 @@ async fn switch(on: bool, args: &[String], out: &Output) -> Result<(), String> {
         ));
     }
     let json_flag = args.iter().any(|argument| argument == "--json");
+    // Signing in comes before the switch, because it is what the switch needs:
+    // turning it on without an account stores a preference that cannot serve
+    // anything, and the failure the Desktop reports for that is about
+    // credentials — one step removed from what the user has to do.
+    if on && !signed_in() {
+        return Err(login_advice().to_string());
+    }
     let running = desktop_running();
     let mut reported: Option<Value> = None;
     let mut silence: Option<String> = None;
@@ -1091,15 +1175,14 @@ async fn switch(on: bool, args: &[String], out: &Output) -> Result<(), String> {
     if reported.is_none() {
         crate::commands::desktop::store("autoConnectRemote", if on { "true" } else { "false" })?;
     }
-    let switch = crate::commands::desktop::load()
-        .map(|settings| settings.auto_connect_remote)
-        .map_err(|error| format!("Cannot read the desktop app's settings: {error}"))?;
+    let switch = switch_is_on()?;
     let observed = Observed {
         running,
         reported,
         silence,
         book: Book::load()?,
         switch,
+        signed_in: signed_in(),
     };
     if json_flag {
         out.log(
@@ -1200,13 +1283,38 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
             help::REMOTE_USAGE
         ));
     }
+    let switch = switch_is_on()?;
     if !desktop_running() {
         return Err(format!(
             "No Desktop is running for {} — a new device can only be paired by the process \
              that serves it. Start the Desktop (the window, or future headless) and run this \
-             again. A machine with no device at all prints an invitation as it starts.",
-            future_dir()?.display()
+             again. A machine with no device at all prints an invitation as it starts.{}",
+            future_dir()?.display(),
+            if switch {
+                ""
+            } else {
+                "\n\nThe remote desktop switch is also off, so a Desktop that starts now serves \
+                 nobody: once it is running, `future remote enable` turns it on."
+            }
         ));
+    }
+    // Refused here rather than by the Desktop, because the answer is the same and
+    // this one can name the command that fixes it: an invitation is only usable
+    // while a bridge serves it, and the switch being off is the one cause the user
+    // can undo from this terminal.
+    if !switch {
+        return Err(format!(
+            "The remote desktop is off, so no device can be paired: an invitation is only usable \
+             while the Desktop is serving. Turn it on with `future remote enable` — a running \
+             Desktop starts serving at once, no restart — and run this again.\n\n{}",
+            help::REMOTE_USAGE
+        ));
+    }
+    // Same reasoning as the switch: the platform mints the invitation, so without
+    // a login the Desktop's own refusal ("not signed in") would be one step away
+    // from what the user has to type.
+    if !signed_in() {
+        return Err(login_advice().to_string());
     }
     // One invitation at a time. Two `add`s in flight would each mint a device —
     // both plausible, but the second is almost always a double-tap or a shell
@@ -2091,6 +2199,13 @@ fn take_control(args: &[String], out: &Output) -> Result<(), String> {
              takes effect.",
         );
     }
+    // Choosing a controller is real either way, but with the switch off nobody is
+    // being served to command: say so, or the next "why can't I connect" starts
+    // from the wrong end.
+    if !switch_is_on()? {
+        out.log("");
+        out.log(switch_advice(running));
+    }
     Ok(())
 }
 
@@ -2259,6 +2374,30 @@ mod tests {
             ]
         }))
         .unwrap()
+    }
+
+    /// The signed-in Future account, as `future auth login` leaves it: a key in
+    /// `auth.json`. Several commands now need it (the platform mints invitations
+    /// and credentials), so each test that wants a signed-in machine says so.
+    fn sign_in() {
+        let auth = auth_file();
+        std::fs::create_dir_all(auth.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth,
+            json!({ "future": { "key": "sk-test", "base_url": "https://future-os.cn/api" } })
+                .to_string(),
+        )
+        .unwrap();
+    }
+
+    /// Put this machine in self-hosted relay mode, where there is no account.
+    fn use_relay(home: &Home, url: &str) {
+        std::fs::create_dir_all(home.future()).unwrap();
+        std::fs::write(
+            home.future().join(RELAY_SETTINGS_FILE),
+            json!({ "url": url }).to_string(),
+        )
+        .unwrap();
     }
 
     #[tokio::test]
@@ -2872,10 +3011,119 @@ mod tests {
 
     // ── enable / disable ────────────────────────────────────────────────────
 
+    // ── the hint when the machine is not on ────────────────────────────────
+
+    /// A machine whose switch is off says so *and* names the command that fixes
+    /// it, in every command whose result depends on it. Silence here is what made
+    /// "nothing works" start from the wrong end.
+    #[tokio::test]
+    async fn list_explains_an_off_switch_and_never_claims_to_be_serving() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        crate::commands::desktop::store("autoConnectRemote", "false").unwrap();
+        std::fs::create_dir_all(_home.future()).unwrap();
+        _home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+
+        let (code, stdout, stderr) = run(&["remote", "devices"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("future remote enable"), "{stdout}");
+        assert!(
+            !stdout.contains("is serving these pairings"),
+            "a Desktop with the switch off serves nobody: {stdout}"
+        );
+    }
+
+    /// With a Desktop running, the advice says the turn-on takes effect at once —
+    /// the whole point of routing the switch through the control channel.
+    #[tokio::test]
+    async fn list_says_the_running_desktop_will_serve_as_soon_as_it_is_enabled() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        crate::commands::desktop::store("autoConnectRemote", "false").unwrap();
+        let _desktop = RunningDesktop::claim(&home);
+
+        let (code, stdout, _) = run(&["remote", "devices"]).await;
+        assert_eq!(code, 0);
+        assert!(
+            stdout.contains("starts serving at once, no restart"),
+            "{stdout}"
+        );
+    }
+
+    /// `add` refuses before asking the Desktop, because the Desktop's answer would
+    /// be the same and this one can name the command that fixes it.
+    #[tokio::test]
+    async fn add_refuses_an_off_switch_with_the_command_that_turns_it_on() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+        crate::commands::desktop::store("autoConnectRemote", "false").unwrap();
+        let seen = answer_requests(&home, json!({ "status": serving_status() }));
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "add"]).await;
+        assert_eq!(code, 1);
+        assert!(stdout.is_empty(), "{stdout}");
+        assert!(stderr.contains("future remote enable"), "{stderr}");
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a refusal must not ask the Desktop for an invitation"
+        );
+    }
+
+    /// With no Desktop the two problems are separate — nothing to serve *and* the
+    /// switch off — and the one message names both, in the order they are undone.
+    #[tokio::test]
+    async fn add_with_no_desktop_and_an_off_switch_names_both_steps() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        crate::commands::desktop::store("autoConnectRemote", "false").unwrap();
+
+        let (code, _, stderr) = run(&["remote", "devices", "add"]).await;
+        assert_eq!(code, 1);
+        assert!(stderr.contains("No Desktop is running"), "{stderr}");
+        assert!(stderr.contains("future remote enable"), "{stderr}");
+        let _ = home;
+    }
+
+    #[tokio::test]
+    async fn use_explains_that_nobody_is_being_served_yet() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        crate::commands::desktop::store("autoConnectRemote", "false").unwrap();
+
+        // `BBBB` is already the controller, so `use` on `AAAA` is the interesting
+        // case: the pointer moves while nothing serves it.
+        let (code, stdout, stderr) = run(&["remote", "devices", "use", "AAAA"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("now drives this machine"), "{stdout}");
+        assert!(stdout.contains("future remote enable"), "{stdout}");
+    }
+
+    #[tokio::test]
+    async fn status_says_how_to_turn_an_off_switch_on() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        crate::commands::desktop::store("autoConnectRemote", "false").unwrap();
+
+        let (code, stdout, _) = run(&["remote", "status"]).await;
+        assert_eq!(code, 0);
+        assert!(
+            stdout.contains("Saved switch (autoConnectRemote): off"),
+            "{stdout}"
+        );
+        assert!(stdout.contains("future remote enable"), "{stdout}");
+        // `--json` stays a document: advice is for the person reading.
+        let (_, json, _) = run(&["remote", "status", "--json"]).await;
+        assert!(!json.contains("future remote enable"), "{json}");
+    }
+
     #[tokio::test]
     async fn enable_without_a_desktop_stores_the_switch_and_says_it_is_not_serving() {
         let _guard = crate::test_env::lock_env().await;
         let _home = Home::new();
+        sign_in();
         // Seeded off, so "true" afterwards is this command's doing and not the
         // default the store starts with.
         crate::commands::desktop::store("autoConnectRemote", "false").unwrap();
@@ -2916,12 +3164,117 @@ mod tests {
         assert_eq!(value.trim(), "false", "{value}");
     }
 
+    // ── signing in comes first ─────────────────────────────────────────────
+
+    /// `enable` with no account sends the reader to `future auth login` and
+    /// stores nothing: the switch is stored by this command only when it can
+    /// actually take effect.
+    #[tokio::test]
+    async fn enable_without_a_login_points_at_auth_login_and_stores_nothing() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        crate::commands::desktop::store("autoConnectRemote", "false").unwrap();
+
+        let (code, stdout, stderr) = run(&["remote", "enable"]).await;
+        assert_eq!(code, 1);
+        assert!(stdout.is_empty(), "{stdout}");
+        assert!(stderr.contains("Not signed in to Future OS"), "{stderr}");
+        assert!(stderr.contains("future auth login"), "{stderr}");
+        // Untouched: a switch turned on without an account cannot serve, and the
+        // next launch would replay a state the user never saw work.
+        let (_, value, _) = run(&["desktop", "settings", "get", "autoConnectRemote"]).await;
+        assert_eq!(value.trim(), "false", "{value}");
+    }
+
+    /// `disable` needs no account: turning serving off is never blocked by not
+    /// being able to serve in the first place.
+    #[tokio::test]
+    async fn disable_without_a_login_still_turns_it_off() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        crate::commands::desktop::store("autoConnectRemote", "true").unwrap();
+
+        let (code, stdout, stderr) = run(&["remote", "disable"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("Saved switch (autoConnectRemote): off"),
+            "{stdout}"
+        );
+        let (_, value, _) = run(&["desktop", "settings", "get", "autoConnectRemote"]).await;
+        assert_eq!(value.trim(), "false", "{value}");
+    }
+
+    /// A self-hosted relay is the whole answer to "which account": with one
+    /// configured, `enable` proceeds with no login at all.
+    #[tokio::test]
+    async fn enable_needs_no_account_in_relay_mode() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        use_relay(&home, "https://relay.example.com");
+        crate::commands::desktop::store("autoConnectRemote", "false").unwrap();
+
+        let (code, _, stderr) = run(&["remote", "enable"]).await;
+        // Nothing is serving (no Desktop), which is the ordinary relay answer —
+        // not the login refusal.
+        assert_eq!(code, 1, "{stderr}");
+        assert!(!stderr.contains("Not signed in"), "{stderr}");
+        let (_, value, _) = run(&["desktop", "settings", "get", "autoConnectRemote"]).await;
+        assert_eq!(value.trim(), "true", "{value}");
+    }
+
+    #[tokio::test]
+    async fn status_reports_a_signed_out_machine_and_says_to_sign_in() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+
+        let (code, stdout, _) = run(&["remote", "status"]).await;
+        assert_eq!(code, 0);
+        assert!(stdout.contains("future auth login"), "{stdout}");
+        let (_, json, _) = run(&["remote", "status", "--json"]).await;
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["signedIn"], false);
+    }
+
+    #[tokio::test]
+    async fn status_reports_a_signed_in_machine_without_advice() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = Home::new();
+        sign_in();
+
+        let (code, stdout, _) = run(&["remote", "status"]).await;
+        assert_eq!(code, 0);
+        assert!(!stdout.contains("future auth login"), "{stdout}");
+        let (_, json, _) = run(&["remote", "status", "--json"]).await;
+        let value: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["signedIn"], true);
+    }
+
+    /// `add` mints through the platform, so a signed-out machine is refused here
+    /// rather than by the Desktop with a message about credentials.
+    #[tokio::test]
+    async fn add_refuses_a_signed_out_machine_with_the_login_command() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let _desktop = RunningDesktop::claim(&home);
+        let seen = answer_requests(&home, json!({ "status": serving_status() }));
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "add"]).await;
+        assert_eq!(code, 1);
+        assert!(stdout.is_empty(), "{stdout}");
+        assert!(stderr.contains("future auth login"), "{stderr}");
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "a signed-out refusal must not ask for an invitation"
+        );
+    }
+
     /// With a Desktop running the request goes to it, and its answer is the
     /// report — the same document `status` prints, so a script reads one shape.
     #[tokio::test]
     async fn enable_asks_the_running_desktop_and_reports_what_it_did() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
+        sign_in();
         let _desktop = RunningDesktop::claim(&home);
         let seen = answer_requests(&home, json!({ "status": serving_status() }));
 
@@ -3026,6 +3379,7 @@ mod tests {
     async fn add_prints_the_invitation_the_desktop_answered_with() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
+        sign_in();
         let _desktop = RunningDesktop::claim(&home);
         let seen = answer_requests(
             &home,
@@ -3082,6 +3436,7 @@ mod tests {
     async fn add_counts_down_the_time_left_to_scan() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
+        sign_in();
         let _desktop = RunningDesktop::claim(&home);
         answer_requests(
             &home,
@@ -3111,6 +3466,7 @@ mod tests {
     async fn add_json_prints_what_a_script_needs() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
+        sign_in();
         let _desktop = RunningDesktop::claim(&home);
         answer_requests(
             &home,
@@ -3132,6 +3488,7 @@ mod tests {
     async fn add_reports_the_invitations_it_cleared_to_make_room() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
+        sign_in();
         let _desktop = RunningDesktop::claim(&home);
         answer_requests(
             &home,
@@ -3153,6 +3510,7 @@ mod tests {
     async fn add_json_carries_the_cleared_invitations() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
+        sign_in();
         let _desktop = RunningDesktop::claim(&home);
         answer_requests(
             &home,
@@ -3176,6 +3534,7 @@ mod tests {
     async fn add_reports_the_desktops_refusal() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
+        sign_in();
         let _desktop = RunningDesktop::claim(&home);
         let _answer = answer_requests(&home, json!({ "error": "pairing_limit_reached" }));
 
@@ -3194,6 +3553,7 @@ mod tests {
     async fn the_platforms_device_cap_is_passed_through_word_for_word() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
+        sign_in();
         let _desktop = RunningDesktop::claim(&home);
         let _answer = answer_requests(&home, json!({ "error": "pairing_limit_reached" }));
 
@@ -3212,6 +3572,7 @@ mod tests {
     async fn a_second_add_is_refused_while_one_is_waiting() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
+        sign_in();
         let _desktop = RunningDesktop::claim(&home);
         // Hold the same lock the first `add` takes — exactly the state a second
         // terminal finds while the first is waiting.
@@ -3344,6 +3705,7 @@ mod tests {
     async fn add_gives_up_when_the_desktop_never_answers() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
+        sign_in();
         let _desktop = RunningDesktop::claim(&home);
         let (code, _, stderr) = run(&["remote", "devices", "add"]).await;
         assert_eq!(code, 1);
@@ -3733,7 +4095,8 @@ mod tests {
                 "expiresAt": 1_800_000_000i64,
             }),
         );
-        // No auth.json anywhere: relay mode has no account to read.
+        // Relay mode: no account at all, and no auth.json anywhere.
+        use_relay(&home, "https://relay.example.com");
         assert!(!auth_file().exists());
 
         let (code, stdout, stderr) = run(&["remote", "devices", "add", "--json"]).await;

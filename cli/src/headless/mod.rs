@@ -23,6 +23,11 @@ With --relay, no Future account is needed at all.
 Login uses your phone/computer browser; phone pairing uses the FutureOS app.
 First-time setup requires an interactive terminal. No background service is installed.
 
+Without --relay this entry needs a Future OS account: if this machine is signed
+out it runs the login flow before serving (or fails, when the terminal is not
+interactive — `future auth login` does the same thing on its own). With --relay
+there is no account at all.
+
 Pair a device, drop one, or choose which one is in control with `future remote
 devices` — from any terminal, while this entry is running.
 
@@ -159,10 +164,15 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     future_host::auth_store::read()?;
     let paired = future_host::remote::pairing::load_creds_checked()?.is_some();
     // A self-hosted relay is the whole answer to "which account": it has none.
-    // The login gate exists because the Future platform mints the invitation,
-    // and with `--relay` it no longer does.
+    // The login gate exists because the Future platform mints the invitation and
+    // the credential, and with `--relay` it no longer does — so without one this
+    // entry is signed in before it does anything else.
     let relay = future_host::remote::relay::endpoint();
-    if relay.is_none() && (!paired || future_login::future_api_key().is_err()) {
+    if needs_login(
+        relay.as_deref(),
+        paired,
+        future_login::future_api_key().is_ok(),
+    ) {
         require_terminal()?;
     }
     if relay.is_some() {
@@ -442,11 +452,30 @@ async fn starting_with_notice<T>(
     }
 }
 
+/// Whether this launch has to sign in before it can serve.
+///
+/// A self-hosted relay is the whole answer to "which account": it has none, so
+/// there is no login to run. Otherwise the Future platform mints this machine's
+/// credential *and* its invitations, so both being signed in and having a pairing
+/// are prerequisites — and both are decided here, before anything is started, so
+/// a server that cannot serve says so in one sentence instead of coming up and
+/// serving nobody. The switch comes after this: turning it on later is what makes
+/// the account matter, and it is stored for the next launch either way.
+fn needs_login(relay: Option<&str>, paired: bool, signed_in: bool) -> bool {
+    relay.is_none() && (!paired || !signed_in)
+}
+
 fn require_terminal() -> Result<(), AppError> {
     if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         Ok(())
     } else {
-        Err("Login/pairing requires an interactive terminal. Run `future headless` as the same user first; authorization links are not written to redirected logs.".into())
+        Err(
+            "Login/pairing requires an interactive terminal. Sign in first with `future auth \
+             login` (or run `future headless` in a terminal as the same user); authorization \
+             links are not written to redirected logs. A self-hosted relay needs no account: \
+             `future headless --relay <url>`."
+                .into(),
+        )
     }
 }
 
@@ -831,6 +860,28 @@ mod tests {
 
     fn parse(args: &[&str]) -> Result<Launch, String> {
         Options::parse(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+    }
+
+    /// Login first, then everything else: without an account (and without a
+    /// relay) this entry can neither mint an invitation nor serve one.
+    #[test]
+    fn login_is_required_unless_a_relay_supplies_the_account() {
+        // Needs a login: signed out, or never paired (pairing needs a terminal).
+        assert!(needs_login(None, true, false), "signed out");
+        assert!(needs_login(None, false, true), "never paired");
+        assert!(needs_login(None, false, false), "neither");
+        // Already able to serve.
+        assert!(!needs_login(None, true, true), "paired and signed in");
+        // A self-hosted relay has no account to sign into, whatever else is true.
+        for paired in [true, false] {
+            for signed_in in [true, false] {
+                assert!(!needs_login(
+                    Some("https://relay.example"),
+                    paired,
+                    signed_in
+                ));
+            }
+        }
     }
 
     #[test]

@@ -190,7 +190,7 @@ after `remove --all`.
 ### 3.2 The remote desktop switch
 
 A machine serves its paired devices only while its remote desktop switch is on.
-It is one preference, shared by the window's Remote page, `futureos-headless` and
+It is one preference, shared by the window's Remote page, `future headless` and
 the CLI, and it decides both "serve now" and "serve again at the next launch":
 
 ```bash
@@ -198,6 +198,16 @@ future remote status               # is it on now? what is the stored switch?
 future remote enable               # turn it on now, and keep it on
 future remote disable              # turn it off now, and keep it off
 ```
+
+**Signing in comes first.** Without `--relay`, everything Remote does runs on your
+Future OS account: the platform mints the invitation, the credential and the
+relay connection. So `future remote enable` checks for a login before it touches
+the switch and refuses with `future auth login` when there is none — a switch
+that is on but unsigned-in serves nobody. `future headless` runs the login flow
+itself before it serves (and says the same thing when its terminal is not
+interactive). `future remote disable` needs no account: turning serving off is
+never blocked by being unable to serve. With `--relay` there is no account at all,
+and none of this applies.
 
 - `status` prints the two halves under their own labels — the live state
   (`phase`, which devices are connected, what is in control) and the stored

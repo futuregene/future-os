@@ -150,13 +150,20 @@ future remote devices use <id|序号>        # 指定哪一台在控
 ### 3.2 远程桌面开关
 
 机器只有在远程桌面开关打开时才服务已配对设备。这是**一个**偏好值，窗口的 Remote 页面、
-`futureos-headless` 和 CLI 共用它，同时决定"现在是否服务"和"下次启动是否恢复服务"：
+`future headless` 和 CLI 共用它，同时决定"现在是否服务"和"下次启动是否恢复服务"：
 
 ```bash
 future remote status               # 现在开着吗？存下来的开关是什么？
 future remote enable               # 现在打开，并且以后保持打开
 future remote disable              # 现在关闭，并且以后保持关闭
 ```
+
+**先登录，再谈开关。** 不带 `--relay` 时，远程相关的每一步都跑在你的 Future OS 账号上：
+邀请、凭据、中继连接都由平台签发。所以 `future remote enable` 在动开关之前先查登录，
+没有登录就拒绝并让你执行 `future auth login`——开关开着但没登录的机器谁也服务不了。
+`future headless` 自己会先走完登录流程再开始服务（终端非交互时给出的也是同一句提示）。
+`future remote disable` 不需要账号："停止服务"这件事不该被"本来就没法服务"挡住。
+带 `--relay` 时根本没有账号，上述都不适用。
 
 - `status` 把两半分开展示：运行态（`phase`、哪些设备连着、谁在控）和存下来的
   `autoConnectRemote`——因为"偏好是开"和"进程在服务"本来就是两件事。`--json` 打印一份

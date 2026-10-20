@@ -496,14 +496,16 @@ fn perform(
             OP_ADD_DEVICE => {
                 // A Desktop with the remote switch off serves nobody, so an
                 // invitation it minted would not work. Saying so is the honest
-                // answer; turning the switch on is the operator's decision.
+                // answer; turning the switch on is the operator's decision — but
+                // the sentence names the switch that can do it from any terminal,
+                // not only the window this process may not have.
                 if matches!(
                     crate::remote::status().phase,
                     crate::remote::RemotePhase::Stopped
                 ) {
                     return Err(crate::Error::Message(
-                        "the remote desktop is off in the Desktop. Turn it on there (Remote \
-                         page, or the window's Remote desktop switch) and try again."
+                        "the remote desktop is off. Turn it on with `future remote enable` (or \
+                         the Remote page's switch, which stores the same setting) and try again."
                             .to_string(),
                     ));
                 }
