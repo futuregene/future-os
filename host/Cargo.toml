@@ -1,0 +1,24 @@
+[package]
+name = "future-host"
+version = "0.0.0"
+edition = "2021"
+description = "GUI-free application backend shared by FutureOS entry points"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = []
+# Helpers used by real application integration tests; no GUI/test framework.
+test-support = []
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2"
+rusqlite = { version = "0.40", features = ["bundled"] }
+future-app-settings = { path = "../packages/app-settings" }
+future-app-workspaces = { path = "../packages/app-workspaces" }
+future-remote-client = { path = "../packages/remote-client" }
+future-remote-server = { path = "../packages/remote-server" }

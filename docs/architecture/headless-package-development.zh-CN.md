@@ -223,3 +223,11 @@ CI 分别报告共享库、CLI 入口、Desktop GUI 和产物检查。共同 fix
 [构建与依赖基线](../testing/headless-baseline-2026-10-20.json)记录原 CLI、GUI、headless 的实际 Cargo feature 依赖图，Cargo/锁文件、构建发布脚本摘要、工具链及兼容路径。只运行元数据与依赖查询，没有构建计时或执行测试；最终性能仍需同条件对照。
 
 阶段 0 的源码基线已保存，测试归属仍需收口。阶段 1～6 未完成，当前命令仍为原入口。
+
+### 2026-10-20 共享库首批迁移
+
+建立 `host/` 的普通库 `future-host`，无 bin、FFI 或 GUI feature。现有共用错误分类、边界转换及字符串序列化移入 `host/src/error.rs`，配置严格读取、逐路径锁、原子写入和权限处理移入 `host/src/config_io.rs`。Desktop 原模块暂为薄转发；13 个原测试声明随实现迁入，不在 Desktop 再复制执行。仅测试夹具使用的 lenient/snapshot/restore 工具通过 `test-support` 暴露给现有应用集成，包内测试仍属于新库。
+
+CLI 和 Desktop 已依赖新库，但 `future headless` 尚未接线。`scripts/ci/host-boundaries.py` 检查包含 Desktop GUI 的实际 Cargo 联合 feature 解析，禁止宿主与 CLI 引入 Desktop/GUI 框架，禁止宿主反向依赖 CLI 或生成产品二进制/FFI 产物。当前 macOS 目标验证通过；其他平台须由 CI 分别验证。
+
+[静态验证记录](../testing/headless-host-phase1-2026-10-20.json)包含 Host 默认/测试辅助配置、CLI+GUI 和原 headless 的 Clippy `--all-targets`、fmt 及依赖边界。测试目标只编译，执行数为 0。阶段 1 的生命周期/事件接口、阶段 2 大部分业务后端、阶段 3 命令及后续测试/发布验收仍未完成；薄转发将在迁移收尾移除。

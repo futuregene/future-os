@@ -10034,7 +10034,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/config_io.rs",
-      "status": "planned"
+      "status": "migrated-source",
+      "execution": "not run locally"
     },
     {
       "key": "desktop/src-tauri/src/config_io.rs:234:corrupt_file_errors_and_is_not_clobbered",
@@ -10045,7 +10046,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/config_io.rs",
-      "status": "planned"
+      "status": "migrated-source",
+      "execution": "not run locally"
     },
     {
       "key": "desktop/src-tauri/src/config_io.rs:247:non_object_root_errors",
@@ -10056,7 +10058,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/config_io.rs",
-      "status": "planned"
+      "status": "migrated-source",
+      "execution": "not run locally"
     },
     {
       "key": "desktop/src-tauri/src/config_io.rs:255:atomic_write_round_trips",
@@ -10067,7 +10070,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/config_io.rs",
-      "status": "planned"
+      "status": "migrated-source",
+      "execution": "not run locally"
     },
     {
       "key": "desktop/src-tauri/src/config_io.rs:263:path_lock_reuses_the_same_arc",
@@ -10078,7 +10082,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/config_io.rs",
-      "status": "planned"
+      "status": "migrated-source",
+      "execution": "not run locally"
     },
     {
       "key": "desktop/src-tauri/src/config_io.rs:273:reading_a_directory_is_a_real_io_error",
@@ -10089,7 +10094,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/config_io.rs",
-      "status": "planned"
+      "status": "migrated-source",
+      "execution": "not run locally"
     },
     {
       "key": "desktop/src-tauri/src/config_io.rs:284:snapshot_file_treats_directory_as_error",
@@ -10100,7 +10106,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/config_io.rs",
-      "status": "planned"
+      "status": "migrated-source",
+      "execution": "not run locally"
     },
     {
       "key": "desktop/src-tauri/src/config_io.rs:293:write_over_a_directory_fails_and_cleans_up",
@@ -10111,7 +10118,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/config_io.rs",
-      "status": "planned"
+      "status": "migrated-source",
+      "execution": "not run locally"
     },
     {
       "key": "desktop/src-tauri/src/config_io.rs:304:restore_file_writes_snapshot_and_deletes_on_none",
@@ -10122,7 +10130,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/config_io.rs",
-      "status": "planned"
+      "status": "migrated-source",
+      "execution": "not run locally"
     },
     {
       "key": "desktop/src-tauri/src/conversations.rs:104:missing_sessions_delete_local_threads_and_runs_without_a_second_probe",
@@ -10408,7 +10417,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/error.rs",
-      "status": "planned"
+      "status": "migrated-source",
+      "execution": "not run locally"
     },
     {
       "key": "desktop/src-tauri/src/error.rs:239:controller_error_conversion_preserves_retry_categories_and_wire_codes",
@@ -10419,7 +10429,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/error.rs",
-      "status": "planned"
+      "status": "migrated-source",
+      "execution": "not run locally"
     },
     {
       "key": "desktop/src-tauri/src/error.rs:266:serializes_as_plain_string",
@@ -10430,7 +10441,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/error.rs",
-      "status": "planned"
+      "status": "migrated-source",
+      "execution": "not run locally"
     },
     {
       "key": "desktop/src-tauri/src/error.rs:289:converts_shared_crate_errors_into_typed_app_errors",
@@ -10441,7 +10453,8 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/error.rs",
-      "status": "planned"
+      "status": "migrated-source",
+      "execution": "not run locally"
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:613:browser_url_accepts_http_and_https_any_host",

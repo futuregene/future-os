@@ -14,6 +14,8 @@ name = "future_cli"
 path = "src/lib.rs"
 
 [dependencies]
+# Shared application host; the foreground entry is connected in phase 3.
+future-host = { path = "../host" }
 tokio.workspace = true
 tonic.workspace = true
 # Single proto codegen owner (PR #112): generated proto code lives in the

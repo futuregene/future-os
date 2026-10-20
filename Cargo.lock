@@ -1930,6 +1930,7 @@ dependencies = [
  "future-app-workspaces",
  "future-channel",
  "future-goal",
+ "future-host",
  "future-rpc",
  "future-tasks",
  "future-tui",
@@ -1975,6 +1976,20 @@ dependencies = [
  "tonic",
  "uuid",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "future-host"
+version = "0.0.0"
+dependencies = [
+ "future-app-settings",
+ "future-app-workspaces",
+ "future-remote-client",
+ "future-remote-server",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -2144,6 +2159,7 @@ dependencies = [
  "future-agent",
  "future-app-settings",
  "future-app-workspaces",
+ "future-host",
  "future-remote-client",
  "future-remote-crypto",
  "future-remote-protocol",

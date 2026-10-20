@@ -1,0 +1,92 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "sourceParentCommit": "8d048a0b",
+  "scope": "Initial future-host extraction: shared error type and atomic configuration IO, with Desktop facades and CLI dependency.",
+  "environment": {
+    "target": "aarch64-apple-darwin",
+    "rust": "1.97.0",
+    "cargoTargetDir": "Shared local root target for incremental compilation; not a matched performance measurement."
+  },
+  "checks": [
+    {
+      "name": "Host compilation",
+      "command": "RUSTC_WRAPPER= cargo check --offline -p future-host",
+      "result": "PASS"
+    },
+    {
+      "name": "Host default test-target lint",
+      "command": "RUSTC_WRAPPER= cargo clippy --offline --locked -p future-host --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "name": "Host test-support test-target lint",
+      "command": "RUSTC_WRAPPER= cargo clippy --offline --locked -p future-host --features test-support --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "name": "CLI and GUI consumers",
+      "command": "RUSTC_WRAPPER= cargo clippy --offline --locked -p future-cli -p futureos --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "name": "Existing headless consumer",
+      "command": "RUSTC_WRAPPER= cargo clippy --offline --locked -p futureos --no-default-features --features headless --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "name": "Formatting",
+      "command": "cargo fmt -p future-host -p futureos -p future-cli --check",
+      "result": "PASS"
+    },
+    {
+      "name": "Combined feature boundaries",
+      "command": "RUSTC_WRAPPER= python3 scripts/ci/host-boundaries.py",
+      "result": "PASS"
+    }
+  ],
+  "boundaryResult": {
+    "checked": {
+      "future-cli": {
+        "forbidden": [],
+        "packages": 387
+      },
+      "future-host": {
+        "forbidden": [],
+        "packages": 203
+      }
+    },
+    "desktopGuiFeatures": [
+      "default",
+      "gui"
+    ],
+    "executedTests": 0,
+    "target": "aarch64-apple-darwin"
+  },
+  "sourceDigests": [
+    {
+      "path": "host/Cargo.toml",
+      "sha256": "bc037582ae05ab22bf546043f3fd100eeee98eec4e090af30433459e2affca58"
+    },
+    {
+      "path": "host/src/config_io.rs",
+      "sha256": "af04d11e761645a63a83116aad31f121be5c2a9e65488d91d923252f2d5f70db"
+    },
+    {
+      "path": "host/src/error.rs",
+      "sha256": "551d302920d43fe197d1fa9f232803d0987fe71a8ebe62336df81c5ad5da1901"
+    },
+    {
+      "path": "host/src/lib.rs",
+      "sha256": "5558707f6ba72525aa3c8c64904f7d518c9cb179c9c9724d96286b87b5cd09eb"
+    }
+  ],
+  "migratedTestDeclarations": 13,
+  "executedTests": 0,
+  "limits": [
+    "Native macOS compilation/static evidence only; no unit, network or product runtime acceptance.",
+    "Host lifecycle/event APIs and the bulk of application backend migration remain incomplete.",
+    "The future headless entry and build/release migration are not implemented yet.",
+    "Dependency counts are not performance evidence."
+  ]
+}
