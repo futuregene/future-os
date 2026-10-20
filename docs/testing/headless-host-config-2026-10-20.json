@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "parent": "e6135d19",
+  "scope": "Shared auth persistence, home resolution, platform and build-channel policy, skill guide and TLS provider initialization.",
+  "migratedTestDeclarations": 29,
+  "retainedDesktopPoolRegression": 1,
+  "executedTests": 0,
+  "checks": [
+    {
+      "command": "cargo clippy --offline --locked -p future-host -p future-cli -p futureos --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p future-host --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo clippy --offline --locked -p futureos --no-default-features --features headless --all-targets -- -D warnings",
+      "result": "PASS"
+    },
+    {
+      "command": "cargo fmt -p future-host -p future-cli -p futureos --check",
+      "result": "PASS"
+    },
+    {
+      "command": "python3 scripts/ci/host-boundaries.py",
+      "result": "PASS",
+      "hostPackages": 363,
+      "cliPackages": 389
+    }
+  ],
+  "environment": {
+    "target": "aarch64-apple-darwin",
+    "rust": "1.97.0",
+    "RUSTC_WRAPPER": "",
+    "CARGO_TARGET_DIR": "<root>/target (shared incremental)"
+  },
+  "limits": [
+    "No local tests executed.",
+    "No comparative performance, product runtime, artifact or platform acceptance.",
+    "Store, Agent business bridge, owner and shutdown coordination not yet migrated."
+  ]
+}

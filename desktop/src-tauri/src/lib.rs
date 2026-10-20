@@ -71,92 +71,16 @@ mod windows_power;
 use commands::*;
 use error::AppError;
 
-/// Cross-platform home directory. Prefers `HOME` (always set on macOS/Linux, and
-/// what the test suite overrides to redirect storage) and falls back to
-/// `USERPROFILE` on Windows, where `HOME` is normally unset.
-pub(crate) fn home_dir() -> Option<String> {
-    home_dir_from(
-        std::env::var("HOME").ok(),
-        std::env::var("USERPROFILE").ok(),
-    )
-}
-
-fn home_dir_from(home: Option<String>, userprofile: Option<String>) -> Option<String> {
-    [home, userprofile]
-        .into_iter()
-        .flatten()
-        .find(|value| !value.is_empty() && std::path::Path::new(value).is_absolute())
-}
-
-#[cfg(test)]
-mod home_tests {
-    #[test]
-    fn rejects_empty_and_relative_home_overrides() {
-        let absolute = std::env::temp_dir().to_string_lossy().into_owned();
-        for invalid in ["", "relative-home"] {
-            assert_eq!(
-                super::home_dir_from(Some(invalid.into()), Some(absolute.clone())),
-                Some(absolute.clone())
-            );
-            assert_eq!(
-                super::home_dir_from(Some(invalid.into()), Some(invalid.into())),
-                None
-            );
-        }
-        assert_eq!(
-            super::home_dir_from(Some(absolute.clone()), None),
-            Some(absolute)
-        );
-    }
-}
+pub(crate) use future_host::home_dir;
 
 /// Process-wide lock for tests that mutate the global `HOME` env var
 /// (`auth_store` and the shadow-review smoke test). `HOME` is process-global, so
 /// those tests must run one at a time or they clobber each other's paths.
 #[cfg(test)]
-pub(crate) static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-#[cfg(test)]
-mod helper_dispatch_tests {
-    /// Two callers reach this dispatcher with the same request spelled
-    /// differently: a launcher passes its own `argv` unchanged, while a sandbox
-    /// child arrives behind the `agent` subcommand token. Stripping that token is
-    /// the whole of `dispatch_agent_helper`'s parsing, so both spellings must end
-    /// up in the same place — an unstripped `agent` would be read as the helper's
-    /// own positional argument and silently change what runs.
-    ///
-    /// `--linux-sandbox-helper` is Linux-only: on every other platform the helper
-    /// CLI refuses the request (agent/src/cli.rs:213-218), which is the answer
-    /// asserted here. On Linux the same argv would execute the real helper
-    /// instead, so this comparison is not a portable test — see
-    /// docs/testing/module-tauri-shell.md for the `platform-unmeasured` row that
-    /// covers the Linux success arm.
-    #[cfg(not(target_os = "linux"))]
-    #[test]
-    fn an_agent_subcommand_prefix_reaches_the_same_helper_request() {
-        let request: Vec<String> = ["--linux-sandbox-helper", "probe"]
-            .iter()
-            .map(|part| (*part).to_string())
-            .collect();
-        let direct = super::dispatch_agent_helper(&request).expect("the flag dispatches");
-        let mut prefixed_args = vec!["agent".to_string()];
-        prefixed_args.extend(request.iter().cloned());
-        let prefixed = super::dispatch_agent_helper(&prefixed_args).expect("the flag dispatches");
-
-        assert!(
-            direct.is_err(),
-            "off Linux the helper CLI refuses the request instead of running it"
-        );
-        assert_eq!(
-            direct.map_err(|error| error.to_string()),
-            prefixed.map_err(|error| error.to_string()),
-            "the `agent` prefix must be stripped before the helper CLI parses the request"
-        );
-    }
-}
+pub(crate) use future_host::TEST_HOME_LOCK;
 
 fn install_rustls_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    future_host::install_rustls_provider();
 }
 
 /// FutureOS home root (`<home>/agent`, `<home>/tasks`, …), normally `~/.future`.
@@ -2682,5 +2606,44 @@ mod gui {
             }
             eprintln!("{ARM}: the stopping-process confirm path executed");
         }
+    }
+}
+
+#[cfg(test)]
+mod helper_dispatch_tests {
+    /// Two callers reach this dispatcher with the same request spelled
+    /// differently: a launcher passes its own `argv` unchanged, while a sandbox
+    /// child arrives behind the `agent` subcommand token. Stripping that token is
+    /// the whole of `dispatch_agent_helper`'s parsing, so both spellings must end
+    /// up in the same place — an unstripped `agent` would be read as the helper's
+    /// own positional argument and silently change what runs.
+    ///
+    /// `--linux-sandbox-helper` is Linux-only: on every other platform the helper
+    /// CLI refuses the request (agent/src/cli.rs:213-218), which is the answer
+    /// asserted here. On Linux the same argv would execute the real helper
+    /// instead, so this comparison is not a portable test — see
+    /// docs/testing/module-tauri-shell.md for the `platform-unmeasured` row that
+    /// covers the Linux success arm.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn an_agent_subcommand_prefix_reaches_the_same_helper_request() {
+        let request: Vec<String> = ["--linux-sandbox-helper", "probe"]
+            .iter()
+            .map(|part| (*part).to_string())
+            .collect();
+        let direct = super::dispatch_agent_helper(&request).expect("the flag dispatches");
+        let mut prefixed_args = vec!["agent".to_string()];
+        prefixed_args.extend(request.iter().cloned());
+        let prefixed = super::dispatch_agent_helper(&prefixed_args).expect("the flag dispatches");
+
+        assert!(
+            direct.is_err(),
+            "off Linux the helper CLI refuses the request instead of running it"
+        );
+        assert_eq!(
+            direct.map_err(|error| error.to_string()),
+            prefixed.map_err(|error| error.to_string()),
+            "the `agent` prefix must be stripped before the helper CLI parses the request"
+        );
     }
 }

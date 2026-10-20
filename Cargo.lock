@@ -1982,12 +1982,16 @@ dependencies = [
 name = "future-host"
 version = "0.0.0"
 dependencies = [
+ "future-agent",
  "future-app-settings",
  "future-app-workspaces",
  "future-remote-client",
  "future-remote-server",
+ "future-rpc",
  "futures",
+ "reqwest 0.13.4",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "thiserror 2.0.19",

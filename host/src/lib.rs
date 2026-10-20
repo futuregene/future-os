@@ -15,3 +15,18 @@ pub mod run_error;
 pub mod runtime;
 
 pub mod events;
+
+pub mod auth_store;
+pub mod build_info;
+pub mod future_platform;
+mod home;
+pub mod skills;
+pub use home::home_dir;
+
+pub fn install_rustls_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

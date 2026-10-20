@@ -175,7 +175,7 @@ pub fn spawn_native(job: impl FnOnce() + Send + 'static) {
 
 #[cfg(test)]
 mod tests {
-    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    use crate::TEST_HOME_LOCK as TEST_LOCK;
     struct RegistryGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
     }

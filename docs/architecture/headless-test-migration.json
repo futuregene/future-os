@@ -6424,9 +6424,9 @@
       "name": "home_guard_removes_its_directory_even_with_a_live_pooled_connection",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/auth_store.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/auth_store.rs",
+      "status": "retained-store-integration"
     },
     {
       "key": "desktop/src-tauri/src/auth_store.rs:243:home_guard_restores_absent_home",
@@ -6437,7 +6437,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/auth_store.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/auth_store.rs:275:home_guard_restores_a_previously_set_future_home",
@@ -6448,7 +6448,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/auth_store.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/auth_store.rs:316:read_missing_file_is_empty",
@@ -6459,7 +6459,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/auth_store.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/auth_store.rs:322:corrupt_json_errors_and_does_not_clobber",
@@ -6470,7 +6470,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/auth_store.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/auth_store.rs:340:non_object_root_errors",
@@ -6481,7 +6481,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/auth_store.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/auth_store.rs:349:set_future_login_writes_key_and_base_url",
@@ -6492,7 +6492,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/auth_store.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/auth_store.rs:378:clear_future_key_keeps_base_url",
@@ -6503,7 +6503,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/auth_store.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/auth_store.rs:399:set_future_base_url_switches_env_and_drops_key",
@@ -6514,7 +6514,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/auth_store.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/auth_store.rs:431:remove_provider_entry_drops_whole_entry",
@@ -6525,7 +6525,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/auth_store.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/auth_store.rs:447:non_object_provider_entry_is_normalized",
@@ -6536,7 +6536,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/auth_store.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/auth_store.rs:462:write_sets_owner_only_permissions",
@@ -6547,7 +6547,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/auth_store.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/bin/futureos-headless.rs:46:a_sandbox_helper_request_is_dispatched_before_any_startup",
@@ -6569,7 +6569,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/build_info.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/build_info.rs:61:classifies_every_distribution_channel",
@@ -6580,7 +6580,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/build_info.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/build_info.rs:80:unknown_zero_versions_are_conservative_dev_builds",
@@ -6591,7 +6591,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/build_info.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/cli_tool.rs:409:structured_discovery_rejects_legacy_and_incompatible_tools",
@@ -11015,7 +11015,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_platform.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/future_platform.rs:164:platform_url_defaults_when_absent",
@@ -11026,7 +11026,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_platform.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/future_platform.rs:176:platform_url_strips_trailing_api_from_base_url",
@@ -11037,7 +11037,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_platform.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/future_platform.rs:193:base_url_wins_over_platform_base_url",
@@ -11048,7 +11048,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_platform.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/future_platform.rs:208:platform_base_url_is_the_legacy_fallback",
@@ -11059,7 +11059,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_platform.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/future_platform.rs:221:base_url_without_api_suffix_is_used_as_platform",
@@ -11070,7 +11070,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_platform.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/future_platform.rs:235:future_entry_with_no_url_falls_back_to_default",
@@ -11081,7 +11081,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_platform.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/future_platform.rs:249:current_platform_url_reads_auth_or_defaults",
@@ -11092,7 +11092,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_platform.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/future_platform.rs:256:dev_channel_defaults_to_test_env_when_unset",
@@ -11103,7 +11103,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_platform.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/future_platform.rs:267:dev_channel_leaves_explicit_env_alone",
@@ -11114,7 +11114,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_platform.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/future_platform.rs:279:release_channel_pins_non_production_back_to_production",
@@ -11125,7 +11125,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_platform.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/future_platform.rs:291:release_channel_is_noop_when_already_production",
@@ -11136,7 +11136,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_platform.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/future_platform.rs:303:public_wrapper_wires_the_compile_time_channel",
@@ -11147,7 +11147,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_platform.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/git_diff_parse.rs:114:numstat_parses_text_and_binary",
@@ -12003,9 +12003,9 @@
       "name": "rejects_empty_and_relative_home_overrides",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "split-review",
-      "target": null,
-      "status": "review-required"
+      "plannedOwner": "future-host",
+      "target": "host/src/home.rs",
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/lib.rs:135:an_agent_subcommand_prefix_reaches_the_same_helper_request",
@@ -19023,7 +19023,7 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/skills.rs",
-      "status": "planned"
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/skills_bootstrap.rs:113:bootstrap_runs_future_init",

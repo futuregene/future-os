@@ -245,3 +245,9 @@ The process task registry, future-drop acknowledgement, native-job tracking, adm
 `host/src/events.rs` defines the presentation outlet without GUI types. Existing Desktop event serialization/coalescing stays in Desktop; setup attaches the adapter before producers start. Store/bridge notifications continue through the common outlet. Missing presentation is a no-op and does not disable Remote or persistence. The old `no_gui.rs` duplicate notification implementation is removed. Agent settings invalidation and provider configuration events use the same outlet and preserve event names/payloads.
 
 These are incremental phase 1/2 changes. Agent owner, Store, Remote, scheduler and full shutdown coordination still remain in Desktop; this is not candidate acceptance. Original headless and GUI test targets compile via Clippy, with zero local test executions.
+
+### 2026-10-20 Credentials, platform policy and skill guide
+
+Credentials retain the strict atomic file reader/writer in `host/src/auth_store.rs`; platform URL and release-channel policy, build-channel classification, HOME resolution and skill-guide requests move to the host. Shared host build identity uses the embedded Agent's existing build version, keeping RPC and release policy aligned without a second host version generator. TLS provider initialization also lives once in the host.
+
+The HOME fixture shares its serialization lock between Desktop and host. An entry-supplied fixture cleanup callback drains remaining Desktop resources and closes pooled connections before changing HOME. Core credential/platform/guide tests move with their implementation. The real pooled-database file-release regression remains in Desktop until the Store moves. No business assertion is replaced by a callback assertion. Static evidence is [recorded here](../testing/headless-host-config-2026-10-20.json); runtime compatibility and cross-platform acceptance remain pending.

@@ -245,3 +245,9 @@ CLI 和 Desktop 已依赖新库，但 `future headless` 尚未接线。`scripts/
 `host/src/events.rs` 定义不含 GUI 类型的展示出口。Desktop 保留事件序列化和合并，在启动生产者前接入适配。Store/业务桥继续通过统一出口通知；未接入展示时不发送 GUI 事件，不影响 Remote 或持久化。删除重复的 `no_gui.rs` 通知实现。Agent 设置失效与 provider 配置通知接入同一出口，保留事件名和 payload。
 
 这是阶段 1/2 的增量变更。Agent 托管、Store、Remote、调度及完整停止协调仍在 Desktop，不代表候选验收。原 headless 与 GUI 测试目标通过 Clippy 编译，本地测试执行数为 0。
+
+### 2026-10-20 凭据、平台策略与技能指南
+
+凭据严格原子读写现位于 `host/src/auth_store.rs`；平台地址和发行渠道策略、构建渠道分类、HOME 解析及技能指南请求迁入共享宿主。宿主构建身份复用内置 Agent 的现有构建版本，使 RPC 与发行策略保持一致，不增加第二个宿主版本生成器。TLS provider 初始化也只保留于宿主。
+
+HOME 夹具在 Desktop 与宿主之间共享序列化锁。入口提供的夹具清理回调在更换 HOME 前等待 Desktop 剩余任务并关闭数据库连接池。凭据、平台及指南核心测试随实现迁入；真实数据库文件释放回归在 Store 迁入前仍留于 Desktop，没有用回调调用断言替代业务断言。[静态验证记录](../testing/headless-host-config-2026-10-20.json)保留实际结果；运行兼容性及跨平台验收仍待完成。
