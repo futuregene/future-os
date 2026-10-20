@@ -336,6 +336,21 @@ refresh, command loop and event queue. A device losing its link or its JWT is
 that device's problem; the others keep serving. A dead slot is rebuilt on its
 own (`restart_slot`), never by restarting the whole machine.
 
+**Filling the cap is the desktop's own doing.** A `pending` row is created by
+the mint, not by the phone, so an `add` whose answer never reached the desktop
+— a dropped connection, a killed window — still holds one of the five slots
+until its nonce expires, and no phone has ever seen that code. Adding a device
+is therefore allowed to answer the cap refusal (`pairing_limit_reached`) by
+forgetting those: it lists the account's devices, and revokes only rows that
+are this desktop's, `pending`, never claimed, not among the codes it is
+currently showing, and older than `STALE_INVITATION_FLOOR_SECS`. That floor is
+measured, not guessed — over the pairings this account ever claimed, mint →
+claim ran 2.4 s to 18.0 s — and sits ten times above the slowest, so a code
+somebody is still scanning is never a candidate. The retry happens only after
+the refusal, never before a mint that could still have succeeded; with nothing
+to clear, the platform's answer passes through verbatim, machine code and
+sentence included.
+
 **Who controls, and how it moves.** One `pair_id` is in control, persisted in
 the book so a restart cannot hand the machine to someone else. It moves in
 exactly three places, and nowhere else:
