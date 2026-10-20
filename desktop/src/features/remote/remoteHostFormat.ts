@@ -35,6 +35,31 @@ export function isLimitError(err: unknown): boolean {
   return text.includes("pairing_limit_reached");
 }
 
+/**
+ * The sentence to show when asking for a new invitation fails.
+ *
+ * "Add a device" is two round trips — minting the code on the platform, then
+ * connecting the bridge that will serve it — and the serialized error the
+ * frontend receives is the backend's plain message. Collapsing every one of them
+ * into the same "try again later" told the user nothing they could act on: an
+ * offline laptop, a stale sign-in and a self-hosted relay that is not up yet all
+ * looked identical. The classes below are the ones with a different next step;
+ * anything unrecognised keeps the neutral sentence, because there is nothing
+ * honest to add.
+ */
+export function addDeviceErrorText(err: unknown, t: TFunction<"remote">): string {
+  if (isLimitError(err))
+    return t("error.limitReached");
+  const message = err instanceof Error ? err.message : String(err ?? "");
+  if (/not signed in/i.test(message))
+    return t("failure.account");
+  if (/authorization violation|remote_authorization|unauthorized/i.test(message))
+    return t("failure.serviceSupport", { code: "AU001" });
+  if (/failed to connect to nats|nats_connect|connection refused|connection reset|network is unreachable|lookup host|name or service not known|broken pipe|timed out|timed_out|deadline/i.test(message))
+    return t("failure.network", { code: "NW001" });
+  return t("error.generic");
+}
+
 /** What to call a device: what it said it was, else what we can see. */
 export function deviceLabel(
   device: Pick<RemoteDevice, "client" | "connected">,
