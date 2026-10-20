@@ -162,7 +162,7 @@ function draftPayload(draft: Draft): Record<string, unknown> {
 }
 
 /** Why the form cannot be submitted yet, or null when it can. */
-function draftProblem(draft: Draft): "name" | "prompt" | "cwd" | "model" | "thinking" | "date" | null {
+function draftProblem(draft: Draft): "name" | "prompt" | "cwd" | "model" | "thinking" | "date" | "time" | null {
   if (!draft.name.trim())
     return "name";
   if (!draft.prompt.trim())
@@ -176,6 +176,10 @@ function draftProblem(draft: Draft): "name" | "prompt" | "cwd" | "model" | "thin
     return "thinking";
   if (draft.trigger.mode === "once" && !/^\d{4}-\d{2}-\d{2}$/.test(draft.trigger.date.trim()))
     return "date";
+  // A one-off also needs a time: the desktop no longer seeds one the user
+  // never picked, so an empty field here would schedule an unparsable instant.
+  if (draft.trigger.mode === "once" && !/^\d{2}:\d{2}$/.test(draft.trigger.time.trim()))
+    return "time";
   return null;
 }
 
@@ -592,9 +596,10 @@ function TaskForm({
               {/* One compact row, not a stack of full-width buttons: the
                   phone's vertical space belongs to the form, and the desktop
                   puts these on one line too. Delete stays two-step (armed,
-                  then confirmed). */}
+                  then confirmed). No run-now control: the desktop's panel
+                  dropped it (a task runs when its trigger fires), and the
+                  phone shows the same actions. */}
               <View style={settingsStyles.actions}>
-                <Button compact label={t("tasks.runNow")} disabled={busy} onPress={() => void onMutate?.(() => remote.runTask(detail!.id))} />
                 <Button compact label={detail!.enabled ? t("tasks.disable") : t("tasks.enable")} disabled={busy} variant="secondary" onPress={() => void onMutate?.(() => remote.setTaskEnabled(detail!.id, !detail!.enabled))} />
                 {confirmDelete
                   ? (
@@ -842,6 +847,8 @@ function TaskForm({
               {trigger.mode === "once"
                 ? (
                     <SettingsField label={t("tasks.form.date")}>
+                      {/* A time is required with it: the desktop's form refuses a
+                          one-off without both, and this payload must match. */}
                       <TextInput accessibilityLabel={t("tasks.form.date")} placeholder="2026-12-24" style={settingsStyles.input} value={trigger.date} onChangeText={date => patchTrigger({ date })} />
                     </SettingsField>
                   )

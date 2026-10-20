@@ -429,16 +429,20 @@ describe("tasksView", () => {
     await click(buttonByText(container, "Disable"));
     expect(mocks.invokeCommand).toHaveBeenCalledWith("set_task_enabled", { id: "tsk_1", enabled: false });
 
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    await click(container.querySelector<HTMLButtonElement>("button[aria-label='Delete scheduled task']")!);
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("daily report"));
-    expect(mocks.invokeCommand).toHaveBeenCalledWith("delete_task", { id: "tsk_1" });
-
-    // A declined confirmation must not delete anything.
-    mocks.invokeCommand.mockClear();
-    confirm.mockReturnValue(false);
+    // The first press only opens the confirmation dialog; nothing is deleted yet.
     await click(container.querySelector<HTMLButtonElement>("button[aria-label='Delete scheduled task']")!);
     expect(mocks.invokeCommand).not.toHaveBeenCalledWith("delete_task", { id: "tsk_1" });
+    expect(container.textContent).toContain("daily report");
+
+    // A declined confirmation must not delete anything, and the task stays.
+    await click(buttonByText(container, "Cancel"));
+    expect(mocks.invokeCommand).not.toHaveBeenCalledWith("delete_task", { id: "tsk_1" });
+    expect(container.textContent).toContain("daily report");
+
+    // Confirming inside the dialog deletes, and the detail closes.
+    await click(container.querySelector<HTMLButtonElement>("button[aria-label='Delete scheduled task']")!);
+    await click(buttonByText(container, "Delete"));
+    expect(mocks.invokeCommand).toHaveBeenCalledWith("delete_task", { id: "tsk_1" });
   });
 
   // Runs are the page's history: consecutive ones used to share a box split by a
@@ -472,6 +476,13 @@ describe("tasksView", () => {
     // No working directory is asked for: a chat conversation carries its own.
     expect(container.querySelector("input[aria-label='Working directory']")).toBeNull();
     await chooseModelAndThinking(container);
+    // The trigger is required too: with the run-now button gone, a task the
+    // user cannot fire needs a schedule that fires itself.
+    await click(buttonByText(container, "Save"));
+    expect(container.textContent).toContain("Choose a trigger first");
+    await setValue(triggerModeSelect(container), "once");
+    await setValue(field(container, "Date") as HTMLInputElement, "2026-12-24");
+    await setValue(field(container, "Time") as HTMLInputElement, "18:00");
     await click(buttonByText(container, "Save"));
 
     const created = mocks.invokeCommand.mock.calls.find(([command]) => command === "create_task");
@@ -481,7 +492,8 @@ describe("tasksView", () => {
         prompt: "do the thing",
         cwd: "",
         conversationMode: "chat",
-        triggerKind: "manual",
+        triggerKind: "schedule",
+        trigger: { mode: "once", date: "2026-12-24", time: "18:00" },
         sessionPolicy: "new",
       },
     });
@@ -504,10 +516,15 @@ describe("tasksView", () => {
     expect((field(container, "Thinking level") as HTMLSelectElement).value).toBe("");
 
     await chooseModelAndThinking(container, "future/gpt-5", "medium");
+    // The trigger is now the last missing decision.
+    await click(buttonByText(container, "Save"));
+    expect(container.textContent).toContain("Choose a trigger first");
+    await setValue(triggerModeSelect(container), "daily");
+    await setValue(field(container, "Time") as HTMLInputElement, "09:00");
     await click(buttonByText(container, "Save"));
     const created = mocks.invokeCommand.mock.calls.find(([command]) => command === "create_task");
     expect(created?.[1]).toMatchObject({
-      input: { modelId: "future/gpt-5", thinkingLevel: "medium" },
+      input: { modelId: "future/gpt-5", thinkingLevel: "medium", triggerKind: "schedule" },
     });
   });
 
@@ -525,6 +542,8 @@ describe("tasksView", () => {
     expect(mocks.invokeCommand).not.toHaveBeenCalledWith("create_task", expect.anything());
 
     await setValue(field(container, "Working directory") as HTMLInputElement, "/tmp/filed");
+    await setValue(triggerModeSelect(container), "daily");
+    await setValue(field(container, "Time") as HTMLInputElement, "09:00");
     await click(buttonByText(container, "Save"));
     const created = mocks.invokeCommand.mock.calls.find(([command]) => command === "create_task");
     expect(created?.[1]).toMatchObject({
@@ -582,6 +601,13 @@ describe("tasksView", () => {
       await chooseModelAndThinking(container);
       await setValue(triggerModeSelect(container), mode);
       await extra(container);
+      // A scheduled mode with a time field needs that time explicitly: the
+      // form no longer seeds one the user never picked.
+      if (["daily", "weekly", "monthly", "yearly"].includes(mode)) {
+        const timeField = fieldOrNull(container, "Time") as HTMLInputElement | null;
+        if (timeField && !timeField.value)
+          await setValue(timeField, "09:00");
+      }
       mocks.invokeCommand.mockClear();
       backend([task()]);
       await click(buttonByText(container, "Save"));
@@ -627,7 +653,28 @@ describe("tasksView", () => {
       trigger: { mode: "monthly", day: 31, time: "09:00" },
     });
 
-    expect(await submit("manual")).toMatchObject({ triggerKind: "manual", trigger: {} });
+    // Manual is no longer offered on a fresh form: the run-now button is gone,
+    // so a task the user cannot ever fire is not a choice worth making.
+    const freshForm = (await (async () => {
+      const { container: c } = await renderView([]);
+      await click(buttonByText(c, "New scheduled task"));
+      return c;
+    })());
+    expect((triggerModeSelect(freshForm) as HTMLSelectElement).querySelector("option[value='manual']")).toBeNull();
+    expect(await submit("once", async (container) => {
+      await setValue(field(container, "Date") as HTMLInputElement, "2026-01-01");
+      await setValue(field(container, "Time") as HTMLInputElement, "08:00");
+    })).toMatchObject({ triggerKind: "schedule" });
+  });
+
+  /** A stored manual task round-trips: its option stays selectable for edits. */
+  it("keeps the manual option for a task that already is manual", async () => {
+    const { container } = await renderView([
+      task({ triggerKind: "manual", trigger: {}, nextDueAt: null }),
+    ]);
+    await click(rows(container)[0]);
+    await click(buttonByText(container, "Edit"));
+    expect((triggerModeSelect(container) as HTMLSelectElement).value).toBe("manual");
   });
 
   it("shows the short-month rule and the full-permission warning while editing", async () => {
@@ -636,6 +683,73 @@ describe("tasksView", () => {
     await setValue(triggerModeSelect(container), "monthly");
     expect(container.textContent).toContain("last day of the month");
     expect(container.textContent).toContain("full permission");
+  });
+
+  /** The one-off trigger's date and time are required, each with its own message. */
+  it("refuses a one-off save without a date or a time", async () => {
+    const { container } = await renderView([]);
+    await click(buttonByText(container, "New scheduled task"));
+    await setValue(field(container, "Name") as HTMLInputElement, "one-off");
+    await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
+    await chooseModelAndThinking(container);
+    await setValue(triggerModeSelect(container), "once");
+    mocks.invokeCommand.mockClear();
+
+    await click(buttonByText(container, "Save"));
+    expect(container.textContent).toContain("Pick the date");
+    expect(mocks.invokeCommand).not.toHaveBeenCalledWith("create_task", expect.anything());
+
+    // A date without a time is refused on the time.
+    await setValue(field(container, "Date") as HTMLInputElement, "2026-12-24");
+    await click(buttonByText(container, "Save"));
+    expect(container.textContent).toContain("Pick the time");
+    expect(mocks.invokeCommand).not.toHaveBeenCalledWith("create_task", expect.anything());
+
+    // Both set: the save goes out with exactly what the pickers wrote.
+    await setValue(field(container, "Time") as HTMLInputElement, "07:15");
+    await click(buttonByText(container, "Save"));
+    const created = mocks.invokeCommand.mock.calls.find(([command]) => command === "create_task");
+    expect(created?.[1]).toMatchObject({
+      input: { trigger: { mode: "once", date: "2026-12-24", time: "07:15" } },
+    });
+  });
+
+  /** A new one-off opens with no value in either picker. */
+  it("opens the one-off pickers empty instead of pre-filling a date and time", async () => {
+    const { container } = await renderView([]);
+    await click(buttonByText(container, "New scheduled task"));
+    await setValue(triggerModeSelect(container), "once");
+    expect((field(container, "Date") as HTMLInputElement).value).toBe("");
+    expect((field(container, "Time") as HTMLInputElement).value).toBe("");
+  });
+
+  /** The run ledger renders the model's markdown, not its raw source. */
+  it("renders a completed run's summary as markdown", async () => {
+    const { container } = await renderView(
+      [task()],
+      vi.fn(),
+      MODELS,
+      [run({ resultSummary: "## Summary\n\n- **done** quickly" })],
+    );
+    await click(rows(container)[0]);
+    const card = runCard(container, "done");
+    expect(card?.querySelector("h2"));
+    expect(card?.querySelector("li"));
+    expect(card?.querySelector("strong"));
+    expect(card?.textContent).not.toContain("## Summary");
+  });
+
+  /** An error stays plain text: it is the host's message, not the model's prose. */
+  it("shows a failed run's error as plain text", async () => {
+    const { container } = await renderView(
+      [task()],
+      vi.fn(),
+      MODELS,
+      [run({ status: "failed", resultSummary: null, errorMessage: "agent unreachable" })],
+    );
+    await click(rows(container)[0]);
+    const card = runCard(container, "agent unreachable");
+    expect(card?.querySelector("h2, li, strong")).toBeNull();
   });
 
   it("adds and removes weekdays on a weekly trigger", async () => {
@@ -858,6 +972,8 @@ describe("tasksView", () => {
 
     await setValue(field(container, "Name") as HTMLInputElement, "ephemeral");
     await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
+    await setValue(triggerModeSelect(container), "daily");
+    await setValue(field(container, "Time") as HTMLInputElement, "09:00");
     mocks.invokeCommand.mockClear();
     backend([task()]);
     await click(buttonByText(container, "Save"));
