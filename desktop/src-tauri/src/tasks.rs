@@ -30,6 +30,12 @@ mod tests {
     #[cfg(feature = "gui")]
     #[tokio::test]
     async fn the_gui_loop_runs_a_queued_request_it_is_woken_for() {
+        #[cfg(windows)]
+        if crate::test_process::reexec(
+            "tasks::tests::the_gui_loop_runs_a_queued_request_it_is_woken_for",
+        ) {
+            return;
+        }
         let _home = crate::agent_bridge::test_support::TestHome::new("tasks-loop-gui");
         let mock = crate::agent_bridge::test_support::mock_agent();
         let dir = TempDir::new().unwrap();

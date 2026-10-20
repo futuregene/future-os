@@ -40,6 +40,12 @@ mod tests {
     /// leaving this line at the mercy of the host's PATH.
     #[test]
     fn a_host_without_a_resolvable_cli_still_starts_logging() {
+        #[cfg(all(windows, feature = "gui"))]
+        if crate::test_process::reexec(
+            "host_environment::tests::a_host_without_a_resolvable_cli_still_starts_logging",
+        ) {
+            return;
+        }
         let _home = crate::auth_store::test_support::HomeGuard::new("host-start-logging");
         let empty = tempfile::tempdir().expect("an empty directory to search");
         // A PATH to restore is a precondition of this fixture, not a branch: the

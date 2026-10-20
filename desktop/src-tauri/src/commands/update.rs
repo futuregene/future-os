@@ -1247,26 +1247,40 @@ mod tests {
             .contains("Update maintenance is in progress"));
     }
 
-    /// A `failed-restored` record is restart-safe, but only after the saved
-    /// program fingerprint is re-verified — and here nothing was saved, so the
-    /// restart stops instead of relaunching.
+    /// Unix rechecks saved fingerprints on restart. Windows' independent
+    /// observer verifies rollback before publishing restartSafe in the journal;
+    /// it does not create the Unix original-files.json. Test both trust states.
     #[test]
-    fn a_failed_restored_record_reverifies_the_saved_program_files() {
-        let _home = crate::auth_store::test_support::HomeGuard::new("update-restart-restored");
-        let app = tauri::test::mock_app();
-        let operation = journal::Operation::begin("0.0.2-abcdef+local").expect("journal record");
-        operation
-            .finish(
-                "failed-restored",
-                Some("installer launch denied".into()),
-                true,
-            )
-            .expect("persist result");
-        let error = restart_after_app_update_with(app.handle().clone(), |_| {
-            panic!("an unverified record must not relaunch")
-        })
-        .unwrap_err();
-        assert!(!error.to_string().is_empty());
+    fn a_failed_restored_record_requires_platform_recovery_verification() {
+        for verified in [false, true] {
+            let _home = crate::auth_store::test_support::HomeGuard::new(if verified {
+                "update-restart-restored-verified"
+            } else {
+                "update-restart-restored-unverified"
+            });
+            let app = tauri::test::mock_app();
+            let operation =
+                journal::Operation::begin("0.0.2-abcdef+local").expect("journal record");
+            operation
+                .finish(
+                    "failed-restored",
+                    Some("installer launch denied".into()),
+                    verified,
+                )
+                .expect("persist result");
+            let relaunched = std::cell::Cell::new(false);
+            let result = restart_after_app_update_with(app.handle().clone(), |_| {
+                relaunched.set(true);
+                Ok(())
+            });
+            let allowed = cfg!(windows) && verified;
+            assert_eq!(result.is_ok(), allowed, "verified={verified}: {result:?}");
+            assert_eq!(
+                relaunched.get(),
+                allowed,
+                "unverified recovery must never relaunch"
+            );
+        }
     }
 }
 

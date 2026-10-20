@@ -345,6 +345,10 @@ static TEST_DISCOVERY_STOP: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 pub fn spawn_session_discovery() {
+    // A previous fixture may have been cancelled before consuming its stop
+    // flag. HOME cleanup has joined that task before the next fixture starts.
+    #[cfg(test)]
+    TEST_DISCOVERY_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
     crate::runtime::spawn(async move {
         loop {
             tokio::time::sleep(discovery_interval()).await;
@@ -2257,12 +2261,21 @@ mod tests {
                 serde_json::json!({"entries": [], "hasMore": false}),
             );
         }
-        std::env::set_var("FUTURE_TEST_DISCOVERY_INTERVAL_MS", "10");
+        let _interval = crate::test_support::EnvGuard::set(
+            "FUTURE_TEST_DISCOVERY_INTERVAL_MS",
+            std::ffi::OsStr::new("10"),
+        );
         spawn_session_discovery();
-        tokio::time::sleep(Duration::from_millis(80)).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while crate::store::get_thread("t-empty").expect("get").is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "discovery never reclaimed the empty mirror"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         TEST_DISCOVERY_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
         tokio::time::sleep(Duration::from_millis(30)).await;
-        std::env::remove_var("FUTURE_TEST_DISCOVERY_INTERVAL_MS");
 
         assert!(
             crate::store::get_thread("t-empty").expect("get").is_none(),

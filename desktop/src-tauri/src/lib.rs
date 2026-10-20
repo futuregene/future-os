@@ -24,6 +24,8 @@ mod git_review;
 mod host_environment;
 mod instance;
 pub mod launch;
+#[cfg(all(test, windows, feature = "gui"))]
+mod test_process;
 
 /// Sandbox children enter the existing Agent helper before constructing GUI
 /// or headless state. The helper never starts a service or takes its lock.

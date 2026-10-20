@@ -92,6 +92,10 @@ mod tests {
     /// ("should reject a malformed body") because the malformed body is accepted.
     #[tokio::test]
     async fn the_bootstrap_spawns_the_cli_runner_and_tolerates_a_missing_cli() {
+        #[cfg(windows)]
+        if crate::test_process::reexec("commands::skills::tests::the_bootstrap_spawns_the_cli_runner_and_tolerates_a_missing_cli") {
+            return;
+        }
         let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-bootstrap");
         let _path = future_host::test_support::EnvGuard::set("PATH", std::ffi::OsStr::new(""));
         assert!(
