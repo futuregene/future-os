@@ -367,7 +367,7 @@ describe("activity rail keyboard commands", () => {
   it("opens the first conversation when nothing is selected", () => {
     const p = props([thread("root"), thread("second")], { activeThreadId: null });
     const view = mount(<ActivityRail {...p} />);
-    press({ code: "ArrowDown", ctrlKey: true, altKey: true, key: "ArrowDown" });
+    press({ code: "BracketRight", ctrlKey: true, key: "]" });
     expect(p.onSelectThread).toHaveBeenCalledTimes(1);
     view.unmount();
   });
@@ -431,8 +431,8 @@ describe("activity rail two-level navigation", () => {
 
   const coarseNext = () => press({ code: "BracketRight", ctrlKey: true, key: "]", shiftKey: true });
   const coarsePrevious = () => press({ code: "BracketLeft", ctrlKey: true, key: "[", shiftKey: true });
-  const fineNext = () => press({ code: "ArrowDown", ctrlKey: true, altKey: true, key: "ArrowDown" });
-  const finePrevious = () => press({ code: "ArrowUp", ctrlKey: true, altKey: true, key: "ArrowUp" });
+  const fineNext = () => press({ code: "BracketRight", ctrlKey: true, key: "]" });
+  const finePrevious = () => press({ code: "BracketLeft", ctrlKey: true, key: "[" });
 
   /** A chat conversation, two in one workspace, and a second workspace. */
   function fixture() {
@@ -561,20 +561,33 @@ describe("two-level navigation in the merged list", () => {
   }
 
   const coarseNext = () => press({ code: "BracketRight", ctrlKey: true, key: "]", shiftKey: true });
+  const fineNext = () => press({ code: "BracketRight", ctrlKey: true, key: "]" });
 
-  async function mountMerged(overrides: Parameters<typeof props>[1] = {}) {
+  /**
+   * Two conversations in `alpha`, one in `beta`, one chat — timestamps set, so the
+   * drawn order is `alpha-1`, `alpha-2`, `beta-1`, `chat-a` and the assertions can
+   * name rows instead of "anything but".
+   */
+  async function mountMerged() {
     const container = document.createElement("div");
     document.body.append(container);
     const root = createRoot(container);
-    const all: Required<Parameters<typeof props>[1]> = {
-      ...props(
-        [
-          thread("alpha-1", { mode: "workspace", workspaceId: "ws-a" }),
-          thread("alpha-2", { mode: "workspace", workspaceId: "ws-a" }),
-          thread("chat-a"),
-        ],
-        { active: "workspace", activeThreadId: "alpha-1", onOpenRemoteConversation: vi.fn(), workspaces: [alpha], ...overrides },
-      ),
+    const base = props(
+      [
+        thread("alpha-1", { lastMessageAt: 4_000, mode: "workspace", updatedAt: 4_000, workspaceId: "ws-a" }),
+        thread("alpha-2", { lastMessageAt: 3_000, mode: "workspace", updatedAt: 3_000, workspaceId: "ws-a" }),
+        thread("beta-1", { lastMessageAt: 2_000, mode: "workspace", updatedAt: 2_000, workspaceId: "ws-b" }),
+        thread("chat-a", { lastMessageAt: 1_000, updatedAt: 1_000 }),
+      ],
+      {
+        active: "workspace",
+        activeThreadId: "alpha-1",
+        onOpenRemoteConversation: vi.fn(),
+        workspaces: [alpha, beta],
+      },
+    );
+    const all = {
+      ...base,
       // A paired host is what puts the rail into merged mode.
       remotePeers: [{
         agentAvailable: true,
@@ -591,21 +604,27 @@ describe("two-level navigation in the merged list", () => {
       remoteCatalogs: [{
         desktopId: "desktop_a",
         sessions: [
-          { lastMessageAt: 9_000, sessionId: "remote-1", threadId: "remote-1_thread", title: "Remote one" },
-          { lastMessageAt: 1_000, sessionId: "remote-2", threadId: "remote-2_thread", title: "Remote two" },
+          { lastMessageAt: 500, sessionId: "remote-1", threadId: "remote-1_thread", title: "Remote one" },
         ],
       }],
     } as unknown as Required<Parameters<typeof props>[1]>;
     act(() => root.render(<ActivityRail {...(all as unknown as ComponentProps<typeof ActivityRail>)} />));
     await flushAsync();
     return {
-      // Re-render with a new selection, as the shell would after a step.
-      rerender: (next: Parameters<typeof props>[1]) => act(() => root.render(<ActivityRail {...(all as unknown as ComponentProps<typeof ActivityRail>)} {...next} />)),
-      selected: () => ({
-        thread: (all!.onSelectThread as unknown as ReturnType<typeof vi.fn>).mock.calls.slice(-1)[0]?.[0] as { id?: string } | undefined,
-        remote: (all!.onOpenRemoteConversation as unknown as ReturnType<typeof vi.fn>).mock.calls.slice(-1)[0]?.[0] as { id?: string } | undefined,
-      }),
       all,
+      /** Re-render as the shell does: the opened row is the new current one. */
+      rerender: (next: Parameters<typeof props>[1]) => act(() => root.render(
+        <ActivityRail {...(all as unknown as ComponentProps<typeof ActivityRail>)} {...next} />,
+      )),
+      selected: () => {
+        const threadCall = (all!.onSelectThread as unknown as ReturnType<typeof vi.fn>).mock.calls;
+        const remoteCall = (all!.onOpenRemoteConversation as unknown as ReturnType<typeof vi.fn>).mock.calls;
+        return {
+          calls: threadCall.length + remoteCall.length,
+          id: (threadCall.slice(-1)[0]?.[0] as { id?: string } | undefined)?.id
+            ?? (remoteCall.slice(-1)[0]?.[0] as { id?: string } | undefined)?.id,
+        };
+      },
       unmount: () => {
         act(() => root.unmount());
         container.remove();
@@ -613,15 +632,41 @@ describe("two-level navigation in the merged list", () => {
     };
   }
 
-  it("steps to the next workspace rather than stalling on the current row", async () => {
+  it("steps past a workspace's other conversations, and walks rows one at a time", async () => {
     const view = await mountMerged();
+
+    // From the first conversation of `alpha`: the coarse move leaves the
+    // workspace, the fine move takes the next row of it.
     coarseNext();
     await flushAsync();
-    // A stall on the conversation it started from is the bug this covers; landing
-    // on *some* other row is the contract, whichever machine holds it.
-    const landed = view.selected();
-    expect(landed.thread?.id ?? landed.remote?.id).toBeTruthy();
-    expect(landed.thread?.id ?? landed.remote?.id).not.toBe("alpha-1");
+    expect(view.selected().id).toBe("beta-1");
+
+    view.rerender({ activeThreadId: "alpha-1" });
+    fineNext();
+    await flushAsync();
+    expect(view.selected().id).toBe("alpha-2");
+    view.unmount();
+  });
+
+  it("walks the section's rows in the order the merged list draws them", async () => {
+    // The list regroups its rows by workspace, so the drawn order is the grouped
+    // one. The first version of the fine move walked the tree order instead, and
+    // the two levels then disagreed about where a workspace began: `⇧]` skipped a
+    // conversation the plain `]` walked into. Both levels now read one block list.
+    const view = await mountMerged();
+    const visited: string[] = [];
+    for (let step = 0; step < 3; step += 1) {
+      fineNext();
+      await flushAsync();
+      const landed = view.selected().id;
+      // No call means the walk had nowhere to go; keep the row so the assertion
+      // below says "it stopped" rather than quietly starting over.
+      visited.push(landed ?? visited[visited.length - 1] ?? "alpha-1");
+      view.rerender({ activeThreadId: landed ?? "beta-1" });
+    }
+    // The workspace section holds the two workspaces' rows and nothing else: it
+    // walks them in drawn order and stops at the end instead of wrapping.
+    expect(visited).toEqual(["alpha-2", "beta-1", "beta-1"]);
     view.unmount();
   });
 });

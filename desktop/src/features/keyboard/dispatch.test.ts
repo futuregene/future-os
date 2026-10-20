@@ -82,10 +82,10 @@ describe("dispatchShortcut", () => {
   });
 
   it("repeats only the commands that walk a list", () => {
-    const bindings = { "chat.new": "mod+n", "thread.next": "mod+shift+bracketright" };
+    const bindings = { "chat.new": "mod+n", "thread.next": "mod+bracketright" };
     const held = event("n", { code: "KeyN", ctrlKey: true, repeat: true });
     expect(dispatchShortcut(held, context({ bindings }))).toBeNull();
-    const walk = event("]", { code: "BracketRight", ctrlKey: true, repeat: true, shiftKey: true });
+    const walk = event("]", { code: "BracketRight", ctrlKey: true, repeat: true });
     expect(dispatchShortcut(walk, context({ bindings }))).toBe("thread.next");
   });
 

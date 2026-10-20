@@ -86,8 +86,8 @@ which one?* — and never executes anything. In order:
 7. **Inside the terminal, only commands marked `inTerminal` fire.** `Ctrl` is the
    accelerator on Windows and Linux, and the terminal is a shell: `Ctrl+B` is
    "back one character", `Ctrl+F` "forward one", `Ctrl+A` "line start", `Ctrl+K`
-   "kill to end". Taking any of them over would break line editing in the one
-   place the user is typing a command line.
+   "kill to end", `Ctrl+[` is `ESC`. Taking any of them over would break line
+   editing in the one place the user is typing a command line.
 
 The listener is installed in the **capture** phase so xterm — which attaches its
 handler to its own textarea and cancels what it handles — cannot swallow a
@@ -107,9 +107,25 @@ So the walk is layered, and each layer answers its own question:
 
 | Layer | Keys | Question it answers |
 | --- | --- | --- |
+| fine | `mod+[` / `mod+]` | *which conversation, wherever it sits?* |
 | coarse | `mod+shift+[` / `mod+shift+]` | *which workspace, or which conversation?* |
-| fine | `mod+alt+↑` / `mod+alt+↓` | *which conversation, wherever it sits?* |
 | inside a conversation | `Page Up` / `Page Down` | *which question in this transcript?* |
+
+Why these keys: `mod+[` / `mod+]` is the pair every browser already uses to go
+back and forward, so it is a habit rather than a memorised chord, and holding
+`⇧` for the bigger step is the same instinct one notch harder. An earlier
+version put the fine move on `mod+alt+↑/↓` to stay clear of text-editing chords:
+accurate, but three fingers for the move a reader makes most often. Both remain
+rebindable, so a layout that cannot type `[` cheaply (German, where it needs
+`AltGr`) can move them without a code change.
+
+Both levels read **one** description of the list (`walkBlocks` in
+`ActivityRail.tsx`): a block is a conversation with the forks drawn under it, and
+a workspace's block is the whole workspace. The fine move flattens the blocks the
+current section draws; the coarse move steps between all of them. Two separate
+derivations is exactly how the first version broke — in the merged list the fine
+move followed the tree order while the coarse move followed the grouped order, so
+`⇧]` skipped a conversation that `]` walked into.
 
 Details that matter:
 
@@ -118,14 +134,15 @@ Details that matter:
   above the other, so the coarse walk goes pinned → workspaces → chats and back.
   Opening a conversation is what switches the section: the shell derives it from
   the conversation's own mode, so nothing else has to know.
+* **The fine move stays inside the section that is drawn.** It walks the rows the
+  eye can see: the workspaces’ rows while the workspace section is open, the chats
+  while the chat section is. That is what "the next conversation on screen" means,
+  and it is why the coarse move is the one that crosses over.
 * **A conversation inside a workspace belongs to that workspace's stop**, so
   "previous" from a nested conversation goes to the stop *before* the workspace,
   not to the workspace it is already in.
 * **A stop with no conversations is still a stop** (an empty workspace is listed,
   so it is selectable); a stop that holds a fork lands on its root.
-* **The fine move works across stops too** — the last conversation of a workspace
-  then the next workspace's first — because it follows the drawn order, which is
-  what the eye follows.
 * **Neither move wraps.** Running off either end does nothing, and the key is not
   consumed; the list is a list, not a ring.
 * **Both are unclaimed when there is nowhere to go** (one stop, or a section with
@@ -179,8 +196,8 @@ Moving the document to the backend's `app_settings` later means changing
 | Stop generating | `mod+.` | registered only while a reply streams |
 | Focus the composer | `mod+l` | |
 | Find in this conversation | `mod+f` | was a private listener in `ThreadSearch` |
-| Previous / next workspace or conversation | `mod+shift+[` / `mod+shift+]` | the coarse move; repeats |
-| Previous / next conversation | `mod+alt+↑` / `mod+alt+↓` | the fine move: every drawn conversation row; repeats |
+| Previous / next conversation | `mod+[` / `mod+]` | the fine move: every drawn conversation row; repeats |
+| Previous / next workspace or conversation | `mod+shift+[` / `mod+shift+]` | the coarse move: hold ⇧ for the bigger step; repeats |
 | Filter the conversation list | `mod+shift+f` | jumps to the field, does not navigate |
 | Go to Chats / Workspaces / Skills / Scheduled tasks / Remote | `mod+1` … `mod+5` | |
 | Show or hide the sidebar | `mod+b` | |
@@ -233,7 +250,7 @@ different risk.
 
 Verified by hand as well as by tests: on Linux with a Chinese IME, a modified key
 pressed mid-composition does not fire a command; inside the terminal, `Ctrl+B`,
-`Ctrl+F`, `Ctrl+A` and `Ctrl+K` still reach the shell.
+`Ctrl+F`, `Ctrl+A`, `Ctrl+K` and `Ctrl+[` (ESC) still reach the shell.
 
 ## Going further (P2 / P3, not implemented)
 

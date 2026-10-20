@@ -696,146 +696,130 @@ export function ActivityRail({
   }, [onOpenRemoteConversation, onSelectThread, threadById]);
 
   /**
-   * The conversation rows the list draws, in the order it draws them — what the
-   * fine move (`thread.previous` / `thread.next`) walks.
+   * What the list draws, as the two navigation levels read it.
    *
-   * Built here rather than in the shell because the order is this list's own
-   * (pinned section first, then the section's groups, a fork under the
-   * conversation it came from), and a second copy of it anywhere else would be a
-   * copy that drifts. Both list modes produce the same shape, so the commands do
-   * not care which one is on screen.
+   * **One description, two views.** A block is a conversation together with the
+   * forks drawn under it — the unit the list ranks. A workspace's block is the
+   * whole workspace, because that is how it is drawn: one heading, its
+   * conversations under it.
+   *
+   * The fine move (`thread.*`) flattens the blocks that the current section shows;
+   * the coarse move (`group.*`) steps between all of them, because a chat and a
+   * workspace are siblings in the user's model even though the rail draws them in
+   * two sections. Both read this one array, so they cannot disagree about what
+   * comes next — the first version derived them separately and, in the merged
+   * list, the fine move followed the tree order while the coarse move followed
+   * the grouped order, so a step down and a step sideways disagreed about where a
+   * workspace began.
    */
-  const walkableRows = useMemo(() => {
-    if (mergedMode) {
-      return mergedRowTree.rows.map(row => ({
-        key: row.key,
-        open: () => openRow(row),
-      }));
+  const walkBlocks = useMemo(() => {
+    type Section = "pinned" | "workspace" | "chat";
+    interface WalkBlock {
+      section: Section;
+      rows: { key: string; open: () => void }[];
+      /** What the coarse move opens: the block's first conversation. */
+      open: () => void;
     }
-    const rows = active === "workspace"
-      ? [...visiblePinnedThreads, ...visibleWorkspaceGroups.flatMap(group => group.rows)]
-      : [...visiblePinnedThreads, ...visibleChatThreads];
-    return rows.map(row => ({
+    /** Split consecutive rows that share a root into one block each. */
+    const byRoot = <T,>(rows: T[], rootOf: (row: T) => string): T[][] => {
+      const blocks: T[][] = [];
+      let root: string | null = null;
+      for (const row of rows) {
+        const owner = rootOf(row);
+        if (owner !== root || blocks.length === 0) {
+          root = owner;
+          blocks.push([]);
+        }
+        blocks[blocks.length - 1]!.push(row);
+      }
+      return blocks;
+    };
+    const toBlock = (section: Section, rows: { key: string; open: () => void }[], open?: () => void): WalkBlock => ({
+      section,
+      rows,
+      open: open ?? (() => rows[0]?.open()),
+    });
+
+    if (mergedMode) {
+      // The merged list's own grouping decides its blocks — pinned, then the
+      // workspaces, then the chats — so this cannot be a second opinion about
+      // where a workspace begins.
+      const { chats, pinned, workspaces } = groupMergedRows(mergedRowTree.rows, mergedRowTree.roots);
+      const rootOf = (row: MergedConversation) => mergedRowTree.roots.get(row.key)?.key ?? row.key;
+      const toRows = (row: MergedConversation) => ({ key: row.key, open: () => openRow(row) });
+      return [
+        ...byRoot(pinned, rootOf).map(rows => toBlock("pinned", rows.map(toRows))),
+        ...workspaces.map(group => toBlock("workspace", group.rows.map(toRows))),
+        ...byRoot(chats, rootOf).map(rows => toBlock("chat", rows.map(toRows))),
+      ];
+    }
+
+    // This machine's list: a fork's root is decided by the thread tree, so a
+    // pinned conversation and its forks are one block, and so is a chat.
+    const rootOf = (id: string): string => {
+      let current = id;
+      for (let guard = 0; guard < 64; guard += 1) {
+        const parent = threadParents.get(current);
+        if (!parent)
+          return current;
+        current = parent;
+      }
+      return current;
+    };
+    const toRows = (row: { thread: StoredThread }) => ({
       key: `local::${row.thread.id}`,
       open: () => onSelectThread(row.thread),
-    }));
+    });
+    return [
+      ...byRoot(visiblePinnedThreads, row => rootOf(row.thread.id))
+        .map(rows => toBlock("pinned", rows.map(toRows))),
+      ...visibleWorkspaceGroups.map(group => toBlock(
+        "workspace",
+        group.rows.map(toRows),
+        // A workspace with no conversations is still a stop, and opening it
+        // selects the workspace rather than a row it does not have.
+        () => (group.rows[0]
+          ? onSelectThread(group.rows[0].thread)
+          : onSelectWorkspace(group.workspace, [])),
+      )),
+      ...byRoot(visibleChatThreads, row => rootOf(row.thread.id))
+        .map(rows => toBlock("chat", rows.map(toRows))),
+    ];
   }, [
-    active,
     mergedMode,
     mergedRowTree.rows,
+    mergedRowTree.roots,
     onSelectThread,
+    onSelectWorkspace,
     openRow,
+    threadParents,
     visibleChatThreads,
     visiblePinnedThreads,
     visibleWorkspaceGroups,
   ]);
 
+  /** The rows the fine move walks: the blocks the current section draws. */
+  const walkableRows = useMemo(
+    () => walkBlocks
+      .filter(block => block.section === "pinned" || (active === "workspace" ? block.section === "workspace" : block.section === "chat"))
+      .flatMap(block => block.rows),
+    [active, walkBlocks],
+  );
+
   /**
    * The coarse stops: **a workspace, or one conversation** — the two kinds of
    * thing the rail lists, and the level "which workspace / which chat" answers.
    *
-   * This list spans *both* sections on purpose. A chat conversation and a
-   * workspace are siblings in the user's mental model even though the rail draws
-   * them in two sections, so the coarse move has to cross that boundary; opening
-   * a conversation is what switches the section, because the shell derives it
-   * from the conversation's own mode. The fine move then walks inside whatever
-   * the coarse move landed in — a workspace's conversations, or a conversation's
-   * forks — which is the second level of the same model.
-   *
-   * Each stop carries the conversation ids that count as "on" it, so stepping
-   * backwards from a nested conversation returns to its own workspace rather
-   * than to the next one over.
+   * This list spans *both* sections on purpose; opening a conversation is what
+   * switches the section, because the shell derives it from the conversation's own
+   * mode. Each stop carries the conversation ids that count as "on" it, so
+   * stepping backwards from a fork returns to its own workspace rather than to
+   * the next one over.
    */
-  const groupStops = useMemo(() => {
-    if (mergedMode) {
-      // The merged list draws its rows in groups — pinned, then workspaces, then
-      // chats — and `groupMergedRows` is what decides them. Reusing it is the
-      // point: a second grouping here would be a second opinion about where a
-      // workspace begins.
-      const { chats, pinned, workspaces } = groupMergedRows(mergedRowTree.rows, mergedRowTree.roots);
-      const stops: { keys: Set<string>; open: () => void }[] = [];
-      // A pinned conversation leads the list on its own, so it is a stop of its
-      // own; a workspace is one stop holding all its conversations.
-      for (const row of pinned)
-        stops.push({ keys: new Set([row.key]), open: () => openRow(row) });
-      for (const group of workspaces) {
-        const first = group.rows[0];
-        if (first)
-          stops.push({ keys: new Set(group.rows.map(row => row.key)), open: () => openRow(first) });
-      }
-      // A chat is its own stop; a fork is not (it belongs to the conversation it
-      // came from), so only a row that is its own root counts.
-      for (const row of chats) {
-        if (mergedRowTree.roots.get(row.key)?.key !== row.key)
-          continue;
-        stops.push({ keys: new Set([row.key]), open: () => openRow(row) });
-      }
-      return stops;
-    }
-    const descendantIds = (node: (typeof threadTree)[number]): Set<string> => {
-      const ids = new Set<string>([node.item.id]);
-      for (const child of node.children) {
-        for (const id of descendantIds(child))
-          ids.add(id);
-      }
-      return ids;
-    };
-    // A pinned workspace conversation is drawn twice over: hoisted into the
-    // pinned section *and* listed under its workspace. It belongs to the
-    // workspace's stop only — otherwise two stops would both claim it, "next"
-    // would keep landing on the same conversation, and the walk would stall.
-    const workspaceThreadIds = new Set(
-      threads
-        .filter(thread => thread.mode === "workspace" && thread.workspaceId)
-        .map(thread => thread.id),
-    );
-    const stops: { keys: Set<string>; open: () => void }[] = [];
-    // Pinned conversations lead both lists, so they lead this walk — but only the
-    // ones that are not already a workspace's business.
-    for (const node of threadTree.filter(node => node.item.pinned)) {
-      const keys = new Set(
-        [...descendantIds(node)]
-          .filter(id => !workspaceThreadIds.has(id))
-          .map(id => `local::${id}`),
-      );
-      if (keys.size === 0)
-        continue;
-      stops.push({ keys, open: () => onSelectThread(node.item) });
-    }
-    for (const group of workspaceGroups) {
-      const first = group.rows[0]?.thread;
-      stops.push({
-        keys: new Set(
-          threads
-            .filter(thread => thread.mode === "workspace" && thread.workspaceId === group.workspace.id)
-            .map(thread => `local::${thread.id}`),
-        ),
-        open: () => {
-          if (first)
-            onSelectThread(first);
-          else
-            onSelectWorkspace(group.workspace, []);
-        },
-      });
-    }
-    for (const node of threadTree.filter(node => node.item.mode === "chat" && !node.item.pinned)) {
-      stops.push({
-        keys: new Set([...descendantIds(node)].map(id => `local::${id}`)),
-        open: () => onSelectThread(node.item),
-      });
-    }
-    return stops;
-  }, [
-    mergedMode,
-    mergedRowTree.rows,
-    onSelectThread,
-    onSelectWorkspace,
-    mergedRowTree.roots,
-    openRow,
-    threads,
-    threadTree,
-    workspaceGroups,
-  ]);
+  const groupStops = useMemo(
+    () => walkBlocks.map(block => ({ keys: new Set(block.rows.map(row => row.key)), open: block.open })),
+    [walkBlocks],
+  );
 
   /** Move the selection by one row; from nothing, `next` opens the first row. */
   const stepConversation = useCallback((delta: 1 | -1) => {

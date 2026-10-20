@@ -73,15 +73,20 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "composer.focus", category: "chat", defaultBinding: "mod+l", inTerminal: false },
   { id: "thread.find", category: "chat", defaultBinding: "mod+f", inTerminal: false },
   // Two levels, because the list is two levels: a workspace holds conversations,
-  // a conversation holds its forks. `group.*` steps between the top-level items
-  // (each workspace, each standalone conversation); `thread.*` steps through
-  // every conversation row and continues into the next group, so the coarse move
-  // is "the next workspace or conversation" and the fine one is "the next
-  // conversation, wherever it sits".
+  // a conversation holds its forks. `thread.*` walks the conversation rows;
+  // `group.*` steps between the top-level items (each workspace, each standalone
+  // conversation).
+  //
+  // **One key family, one modifier each, ⇧ for the bigger step.** `mod+[` /
+  // `mod+]` is the pair every browser already uses to go back and forward, so it
+  // is learned rather than memorised, and the coarse move is the same keys held
+  // one notch harder. An earlier version put the fine move on `mod+alt+↑/↓` to
+  // keep clear of text-editing chords; the keys were accurate and the reach was
+  // wrong — three fingers for the move people make most often.
+  { id: "thread.previous", category: "navigation", defaultBinding: "mod+bracketleft", inTerminal: false, repeat: true },
+  { id: "thread.next", category: "navigation", defaultBinding: "mod+bracketright", inTerminal: false, repeat: true },
   { id: "group.previous", category: "navigation", defaultBinding: "mod+shift+bracketleft", inTerminal: false, repeat: true },
   { id: "group.next", category: "navigation", defaultBinding: "mod+shift+bracketright", inTerminal: false, repeat: true },
-  { id: "thread.previous", category: "navigation", defaultBinding: "mod+alt+up", inTerminal: false, repeat: true },
-  { id: "thread.next", category: "navigation", defaultBinding: "mod+alt+down", inTerminal: false, repeat: true },
   { id: "rail.search", category: "navigation", defaultBinding: "mod+shift+f", inTerminal: false },
   { id: "section.chat", category: "navigation", defaultBinding: "mod+1", inTerminal: false },
   { id: "section.workspace", category: "navigation", defaultBinding: "mod+2", inTerminal: false },
