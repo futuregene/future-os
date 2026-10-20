@@ -44,3 +44,5 @@ pub mod test_support;
 
 pub mod agent_commands;
 pub mod request_scope;
+
+pub mod agent_client;

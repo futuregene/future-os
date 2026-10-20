@@ -27,7 +27,6 @@ mod tests;
 pub(crate) use self::test_support::get_state_payload;
 
 pub use self::approval::{decide_approval, inject_session_rule, reconcile_pending_approvals};
-pub(crate) use self::client::raw_agent_addr;
 #[cfg(test)]
 pub(crate) use self::client::reset_test_connection;
 pub use self::client::{
@@ -38,6 +37,7 @@ pub use self::client::{
     set_thinking_level_command, RpcResponseExt,
 };
 pub(crate) use self::client::{get_agent_readiness, map_connection_error};
+pub(crate) use self::client::{install_channel_runtime, raw_agent_addr};
 pub use self::config_observer::spawn_provider_config_observer;
 pub use self::delete_outbox::{reconcile_delete_outbox, spawn_delete_outbox_worker};
 pub use self::headless::{

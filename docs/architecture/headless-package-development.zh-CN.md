@@ -299,3 +299,9 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 剩余 412 个 `review-required` 声明现已逐测试明确归属：206 个共享宿主业务/夹具测试、181 个 GUI/IPC/安装器或指定的真实 GUI 命令集成测试、25 个 CLI headless 入口/终端测试。清单的 `ownershipRules` 记录每个决定的职责，目标明确到文件；`planned` 不代表实现已迁入或 CI 已执行。共用文件/审批/run/会话/任务/review 业务归宿主服务；剪贴板、asset scope 注册、OS 打开、IPC 校验、更新/安装/重启和 GUI 事件/入口集成留于 Desktop。本次仅收口未分配归属，不代表阶段 0～6 完成。
 
 此前完整文档检查拒绝旧 Agent 数据库夹具溯源 README 位于 `docs/` 外。原内容不变移入 `docs/testing/agent-database-fixtures.md`，SQL 夹具仍留原处，不新增检查豁免；完整文档检查继续使用常规规则。
+
+### 2026-10-20 共享 Agent 客户端与入口拥有的连接 runtime
+
+已验证连接选择/缓存、readiness、实例隔离、逐命令截止时间及 prompt 归属现归 `host/src/agent_client.rs`。宿主接收连接 runtime handle，不创建 runtime、不调用 `block_on`。过渡 Desktop/headless 入口保留原有独立单 worker 连接 runtime，在调用共享服务前明确注入，保持资源上限及连接跨临时调用者 runtime 存活的行为，不新增第二份连接缓存或归属表。
+
+迁入 1 个纯 RPC 错误分类测试。真实 loopback、调用者 runtime 销毁、readiness、实例变更测试在统一 RPC 夹具迁入前仍留入口，原断言不变。[静态证据](../testing/headless-host-agent-client-2026-10-20.json)包含宿主、GUI/CLI 联合和旧 headless 的 Clippy。溯源说明归位后完整文档检查通过。修复提交 `df56f5f2` 已启动完整 CI [39358154196](https://github.com/futuregene/future-os/actions/runs/39358154196)，该运行不含本批客户端迁移，也不是最终验收。

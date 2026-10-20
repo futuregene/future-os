@@ -1146,8 +1146,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/client.rs",
-      "status": "planned"
+      "target": "host/src/agent_client.rs",
+      "status": "migrated-not-executed"
     },
     {
       "key": "desktop/src-tauri/src/agent_bridge/client.rs:756:ok_or_rpc_error_variants",

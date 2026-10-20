@@ -16,12 +16,13 @@ static STOP_FAILURE: Mutex<Option<String>> = Mutex::new(None);
 use future_host::request_scope::{
     active_callers, clear_owned_runs, close_admission, stop_owned_runs,
 };
-pub(crate) use future_host::request_scope::{
-    admit, is_stopping, own_run, reconcile_owned_runs, release_run,
-};
+pub(crate) use future_host::request_scope::{is_stopping, reconcile_owned_runs, release_run};
 
 #[cfg(any(feature = "gui", test))]
 pub(crate) use future_host::request_scope::owned_count;
+
+#[cfg(test)]
+pub(crate) use future_host::request_scope::{admit, own_run};
 
 pub(crate) fn stop(reason: &'static str) -> Result<(), crate::AppError> {
     begin(reason).wait().map_err(Into::into)

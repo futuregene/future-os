@@ -1163,6 +1163,7 @@ mod gui {
         let guard = instance::InstanceGuard::acquire()?;
         tauri::Manager::manage(app, guard);
         crate::host_environment::start_logging()?;
+        agent_bridge::install_channel_runtime();
         store::initialize_app_store()?;
         if let Err(error) = terminal::server::bind() {
             eprintln!("FutureOS terminal server bind failed: {error}");

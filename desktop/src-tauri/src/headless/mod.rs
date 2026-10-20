@@ -160,6 +160,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     }
     crate::store::initialize_app_store()?;
     ensure_agent_running(agent).await?;
+    crate::agent_bridge::install_channel_runtime();
     let account_key = if let Some(url) = relay.as_deref() {
         eprintln!(
             "Self-hosted relay ({url}). No Future account is used for phone pairing; \
