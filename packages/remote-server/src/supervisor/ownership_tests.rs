@@ -264,8 +264,8 @@ async fn a_final_shutdown_refuses_new_starts_and_late_background_work() {
 
 /// An invitation for a broker that is not there, in the shape `invite` hands back.
 fn invitation_for(pair_id: &str, nats_url: &str) -> crate::services::Invitation {
-    (
-        PairingCreds {
+    crate::services::Invitation {
+        creds: PairingCreds {
             handshake_version: 2,
             secure: None,
             pair_id: pair_id.to_string(),
@@ -277,9 +277,10 @@ fn invitation_for(pair_id: &str, nats_url: &str) -> crate::services::Invitation 
             jwt_expires_at: 0,
             control_url: None,
         },
-        format!("futureos://remote/pair?v=2&code={pair_id}"),
-        Some(1_800_000_000),
-    )
+        code: format!("futureos://remote/pair?v=2&code={pair_id}"),
+        expires_at: Some(1_800_000_000),
+        cleared: Vec::new(),
+    }
 }
 
 /// An invitation whose bridge cannot be reached is retried **with the same
