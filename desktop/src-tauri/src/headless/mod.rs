@@ -261,7 +261,10 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
                     "PHONE PAIRING - scan in the FutureOS app, or paste this complete link",
                     &link,
                 )?;
-                eprintln!("Single-use invitation; expires at Unix time {}. Do not share it or save it in logs.", status.pairing_code_expires_at.unwrap_or_default());
+                eprintln!(
+                    "{}",
+                    single_use_notice(status.pairing_code_expires_at, unix_seconds())
+                );
                 shown_invitation = Some(link);
             }
         }
@@ -283,6 +286,67 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
 
 /// How long the owned Agent may take before the wait is worth explaining.
 const SLOW_STARTUP_NOTICE: Duration = Duration::from_secs(30);
+
+/// The line under a printed invitation: single-use, and when it lapses.
+///
+/// The deadline is the reader's own clock and the time left to act
+/// (`2026-10-20 09:45:32 (local time, in 9m 58s)`), not an epoch to convert by
+/// hand. Spelled the same way as `future remote devices add`, which prints an
+/// invitation of its own. An instant no calendar can name falls back to the
+/// epoch — never to a wrong date, and never to a `0` for "no deadline given".
+fn single_use_notice(expires_at: Option<i64>, now: i64) -> String {
+    let Some(expiry) = expires_at else {
+        return "Single-use invitation. Do not share it or save it in logs.".to_string();
+    };
+    let when = deadline_phrase(expiry, now).unwrap_or_else(|| format!("Unix time {expiry}"));
+    format!("Single-use invitation; expires at {when}. Do not share it or save it in logs.")
+}
+
+/// A deadline as the reader's own clocks: the wall clock and the time left.
+/// `None` for an instant no calendar can express.
+fn deadline_phrase(expiry: i64, now: i64) -> Option<String> {
+    let clock = local_wall_clock(expiry)?;
+    Some(match time_left(expiry, now) {
+        Some(left) => format!("{clock} (local time, in {left})"),
+        // Already passed, or this machine's clock runs ahead of the Desktop's:
+        // the deadline still names itself, and "in 0s" would only puzzle.
+        None => format!("{clock} (local time)"),
+    })
+}
+
+/// A deadline as the local clock, e.g. `2026-10-20 09:45:32`.
+///
+/// The zone is spelled out by the caller rather than taken from `%Z`: chrono
+/// derives that from the platform, and it is inconsistent across Windows and
+/// Unix. The range guard keeps `with_timezone` inside what the platform's time
+/// zone database answers for.
+fn local_wall_clock(unix: i64) -> Option<String> {
+    let instant = chrono::DateTime::from_timestamp(unix, 0)
+        .filter(|instant| (1970..=9999).contains(&chrono::Datelike::year(instant)))?;
+    Some(
+        instant
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
+    )
+}
+
+/// How long is left before `expiry`, in the largest unit worth naming:
+/// `42s`, `9m 58s`, `2h 05m`. `None` once it has passed.
+fn time_left(expiry: i64, now: i64) -> Option<String> {
+    let left = expiry.checked_sub(now)?;
+    if left <= 0 {
+        return None;
+    }
+    let (hours, minutes, seconds) = (left / 3600, (left % 3600) / 60, left % 60);
+    Some(if hours > 0 {
+        format!("{hours}h {minutes:02}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    })
+}
 
 /// What the terminal says while the Agent is still initializing. On a cold or
 /// network-mounted data root that wait is normal; a host enforcing a per-user
@@ -1380,5 +1444,67 @@ mod tests {
     fn print_invitation_writes_the_link_and_the_qr() {
         print_invitation("PLATFORM LOGIN", "https://example.com/device?code=ABCD")
             .expect("writing to the test's captured stdout must succeed");
+    }
+
+    /// The deadline under an invitation is the reader's own clock plus the time
+    /// left — never a bare epoch, and never a `0` standing in for "no deadline".
+    /// The zone is the machine's, so the test reads the printed clock back
+    /// instead of naming CI's timezone.
+    #[test]
+    fn the_single_use_notice_prints_a_clock_and_the_time_left() {
+        use chrono::TimeZone;
+
+        let now = 1_800_000_000;
+        // The printed clock is the instant the Desktop meant, rendered locally.
+        let local = chrono::DateTime::from_timestamp(now + 600, 0)
+            .unwrap()
+            .with_timezone(&chrono::Local);
+        assert_eq!(
+            chrono::Local
+                .from_local_datetime(&local.naive_local())
+                .single()
+                .expect("an unambiguous local time")
+                .timestamp(),
+            now + 600,
+            "the formatter must not shift the instant"
+        );
+        let clock = local.format("%Y-%m-%d %H:%M:%S").to_string();
+
+        let notice = single_use_notice(Some(now + 600), now);
+        assert_eq!(
+            notice,
+            format!(
+                "Single-use invitation; expires at {clock} (local time, in 10m 00s). Do not \
+                 share it or save it in logs."
+            )
+        );
+
+        // A terminal that starts a few seconds after the code was minted reads
+        // the smaller budget, not the original one.
+        assert!(single_use_notice(Some(now + 600), now + 3).contains("in 9m 57s"));
+        // No deadline given is not a deadline of 0.
+        assert_eq!(
+            single_use_notice(None, now),
+            "Single-use invitation. Do not share it or save it in logs."
+        );
+        // A Desktop clock set absurdly far out keeps the notice printable.
+        assert_eq!(local_wall_clock(i64::MAX), None);
+        assert_eq!(
+            single_use_notice(Some(i64::MAX), now),
+            format!(
+                "Single-use invitation; expires at Unix time {}. Do not share it or save it in \
+                 logs.",
+                i64::MAX
+            )
+        );
+        // A machine whose clock runs ahead of the Desktop's still names the
+        // deadline rather than printing "in 0s".
+        assert_eq!(
+            single_use_notice(Some(now + 600), now + 660),
+            format!(
+                "Single-use invitation; expires at {clock} (local time). Do not share it or save \
+                 it in logs."
+            )
+        );
     }
 }

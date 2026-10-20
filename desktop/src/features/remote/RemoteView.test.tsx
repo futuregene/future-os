@@ -12,6 +12,7 @@ const startRemote = vi.fn<() => Promise<unknown>>();
 const stopRemote = vi.fn<() => Promise<unknown>>();
 const addRemoteDevice = vi.fn<() => Promise<unknown>>();
 const unpairRemoteDevice = vi.fn<(pairId: string) => Promise<unknown>>();
+const takeoverRemote = vi.fn<(pairId: string) => Promise<unknown>>();
 
 vi.mock("./remoteClient", async importOriginal => ({
   ...await importOriginal<typeof import("./remoteClient")>(),
@@ -19,6 +20,7 @@ vi.mock("./remoteClient", async importOriginal => ({
   stopRemote: () => stopRemote(),
   addRemoteDevice: () => addRemoteDevice(),
   unpairRemoteDevice: (pairId: string) => unpairRemoteDevice(pairId),
+  takeoverRemote: (pairId: string) => takeoverRemote(pairId),
 }));
 
 const openExternalUrl = vi.fn<(url: string) => Promise<void>>();
@@ -87,7 +89,6 @@ let root: ReturnType<typeof createRoot>;
 let refresh: Mock<() => Promise<void>>;
 
 interface Props {
-  onOpenDevice?: (pairId: string) => void;
   onOpenSettings?: () => void;
   onRefreshRemote?: () => Promise<void>;
   remoteStatus?: RemoteStatus | null;
@@ -95,7 +96,6 @@ interface Props {
 
 async function mount(overrides: Props = {}) {
   const props = {
-    onOpenDevice: vi.fn<(pairId: string) => void>(),
     onOpenSettings: vi.fn<() => void>(),
     onRefreshRemote: refresh,
     remoteStatus: status(),
@@ -116,8 +116,8 @@ async function flush(times = 3) {
 }
 
 /** Whether this row carries a button with that exact label. */
-function hasButton(root: ParentNode, text: string): boolean {
-  return [...root.querySelectorAll<HTMLButtonElement>("button")]
+function hasButton(row: ParentNode, text: string): boolean {
+  return [...row.querySelectorAll<HTMLButtonElement>("button")]
     .some(button => (button.textContent ?? "").trim() === text);
 }
 
@@ -152,10 +152,12 @@ beforeEach(() => {
   stopRemote.mockReset();
   addRemoteDevice.mockReset();
   unpairRemoteDevice.mockReset();
+  takeoverRemote.mockReset();
   openExternalUrl.mockReset();
   startWindowDrag.mockReset();
   startRemote.mockResolvedValue(undefined);
   stopRemote.mockResolvedValue(undefined);
+  takeoverRemote.mockResolvedValue(undefined);
   // The backend answers with the connection it just created; the window speaks
   // for that one, so the mock has to name it.
   addRemoteDevice.mockResolvedValue({ pairId: "pair_gamma" });
@@ -318,7 +320,7 @@ describe("off hides everything the switch enables", () => {
 });
 
 describe("the list", () => {
-  it("lists the connections, and unpairs only the one driving this machine", async () => {
+  it("carries each connection's actions in its own row", async () => {
     await mount({
       remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, standby] }),
     });
@@ -330,29 +332,60 @@ describe("the list", () => {
     expect(container.textContent).toContain("In control");
     expect(container.textContent).toContain("Standby");
 
-    // The device this machine is serving can be unpaired from its row; the
-    // others keep their actions on their own page, so the list stays a list.
     const rowOf = (name: string) =>
       [...container.querySelectorAll<HTMLLIElement>("li")]
         .find(row => (row.textContent ?? "").includes(name))!;
+
+    // Unpair is on every row: it is the only way back out of a paired
+    // connection, and a standby device is still a connection.
     expect(hasButton(rowOf("Pixel 9"), "Unpair")).toBe(true);
-    expect(hasButton(rowOf("studio-imac"), "Unpair")).toBe(false);
+    expect(hasButton(rowOf("studio-imac"), "Unpair")).toBe(true);
+    // The standby device can take control; the one already driving this machine
+    // has nothing to hand over, and no button that would do nothing.
+    expect(hasButton(rowOf("studio-imac"), "Let this control")).toBe(true);
+    expect(hasButton(rowOf("Pixel 9"), "Let this control")).toBe(false);
+    // The row is a record, not a door: its name is not a control, and the page
+    // it used to open left none of its buttons behind as loose controls.
+    expect([...container.querySelectorAll("li button")]
+      .some(button => (button.textContent ?? "").includes("studio-imac"))).toBe(false);
     expect(buttonByText("Disconnect")).toBeUndefined();
     expect(buttonByText("Remove")).toBeUndefined();
     // The list is the whole body; the settings live behind their own control.
     expect(container.textContent).not.toContain("Auto-connect on launch");
   });
 
-  it("opens a client's page when its row is clicked", async () => {
-    const props = await mount({
+  it("hands control to a standby device from its own row", async () => {
+    await mount({
       remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, standby] }),
     });
 
-    const row = [...container.querySelectorAll<HTMLButtonElement>("li button")]
-      .find(button => (button.textContent ?? "").includes("studio-imac"))!;
-    await act(async () => row.click());
+    const row = [...container.querySelectorAll<HTMLLIElement>("li")]
+      .find(item => (item.textContent ?? "").includes("studio-imac"))!;
+    const takeover = [...row.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => (button.textContent ?? "").trim() === "Let this control")!;
+    await act(async () => takeover.click());
+    await flush();
 
-    expect(props.onOpenDevice).toHaveBeenCalledWith("pair_beta");
+    expect(takeoverRemote).toHaveBeenCalledWith("pair_beta");
+  });
+
+  it("unpairs a standby device, not just the one in control", async () => {
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, standby] }),
+    });
+
+    const row = [...container.querySelectorAll<HTMLLIElement>("li")]
+      .find(item => (item.textContent ?? "").includes("studio-imac"))!;
+    const unpair = [...row.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => (button.textContent ?? "").trim() === "Unpair")!;
+    await act(async () => unpair.click());
+    await flush();
+    // The confirm names the device it would cut off, and only then unpairs it.
+    expect(container.textContent).toContain("studio-imac (a computer) will no longer connect to this computer.");
+    await act(async () => buttonByText("Delete")!.click());
+    await flush();
+
+    expect(unpairRemoteDevice).toHaveBeenCalledWith("pair_beta");
   });
 
   it("opens this direction's settings from its own control", async () => {
