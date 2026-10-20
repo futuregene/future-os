@@ -16159,7 +16159,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::browser_url_accepts_http_and_https_any_host"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:620:browser_url_rejects_non_web_schemes",
@@ -16170,7 +16181,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::browser_url_rejects_non_web_schemes"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:628:error_message_prefers_message_then_description",
@@ -16181,7 +16203,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::error_message_prefers_message_then_description"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:641:append_login_platform_preserves_query_and_tags_platform",
@@ -16192,7 +16225,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::append_login_platform_preserves_query_and_tags_platform"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:657:append_login_platform_adds_param_without_existing_query",
@@ -16203,7 +16247,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::append_login_platform_adds_param_without_existing_query"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:668:append_login_platform_returns_unparseable_url_unchanged",
@@ -16214,7 +16269,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::append_login_platform_returns_unparseable_url_unchanged"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:673:poll_constructors_set_status_and_message",
@@ -16225,7 +16291,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::poll_constructors_set_status_and_message"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:689:http_client_is_reused",
@@ -16236,7 +16313,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::http_client_is_reused"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:694:retryable_poll_statuses_are_bounded_to_transient_failures",
@@ -16247,7 +16335,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::retryable_poll_statuses_are_bounded_to_transient_failures"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:708:retry_after_accepts_seconds_and_http_dates",
@@ -16258,7 +16357,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::retry_after_accepts_seconds_and_http_dates"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:715:future_api_key_errors_when_signed_out",
@@ -16269,7 +16379,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::future_api_key_errors_when_signed_out"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:726:future_api_key_reads_stored_key",
@@ -16280,7 +16401,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::future_api_key_reads_stored_key"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:736:auth_state_is_signed_out_without_a_key",
@@ -16291,7 +16423,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::auth_state_is_signed_out_without_a_key"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:744:open_browser_uses_injected_opener",
@@ -16300,9 +16443,12 @@
       "name": "open_browser_uses_injected_opener",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/future_login.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/future_login.rs",
+      "status": "retained",
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:750:broken_agent_endpoint_restores_unset_env",
@@ -16313,7 +16459,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::broken_agent_endpoint_restores_unset_env"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:761:broken_agent_endpoint_restores_a_previous_value",
@@ -16324,7 +16481,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::broken_agent_endpoint_restores_a_previous_value"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:775:auth_state_is_unavailable_when_the_credential_cannot_be_read",
@@ -16335,7 +16503,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::auth_state_is_unavailable_when_the_credential_cannot_be_read"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:865:fetch_balance_parses_credits",
@@ -16346,7 +16525,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::fetch_balance_parses_credits"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:878:fetch_balance_http_error_uses_body_message",
@@ -16357,7 +16547,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::fetch_balance_http_error_uses_body_message"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:894:fetch_balance_preserves_auth_rejection_status",
@@ -16368,7 +16569,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::fetch_balance_preserves_auth_rejection_status"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:907:fetch_balance_parse_error",
@@ -16379,7 +16591,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::fetch_balance_parse_error"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:919:fetch_balance_requires_key",
@@ -16390,7 +16613,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::fetch_balance_requires_key"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:929:fetch_profile_parses_account",
@@ -16401,7 +16635,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::fetch_profile_parses_account"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:943:fetch_profile_http_error",
@@ -16412,7 +16657,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::fetch_profile_http_error"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:959:fetch_profile_parse_error",
@@ -16423,7 +16679,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::fetch_profile_parse_error"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:971:fetch_profile_requires_key",
@@ -16434,7 +16701,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::fetch_profile_requires_key"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:981:auth_state_requires_platform_validation",
@@ -16445,7 +16723,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::auth_state_requires_platform_validation"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:996:auth_state_marks_rejected_key_invalid",
@@ -16456,7 +16745,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::auth_state_marks_rejected_key_invalid"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1011:auth_state_keeps_server_failure_recoverable",
@@ -16467,7 +16767,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::auth_state_keeps_server_failure_recoverable"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1026:headless_start_returns_browser_authorization_without_writing_a_key",
@@ -16478,7 +16789,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::headless_start_returns_browser_authorization_without_writing_a_key"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1041:start_returns_device_codes",
@@ -16489,7 +16811,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::start_returns_device_codes"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1057:start_http_error",
@@ -16500,7 +16833,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::start_http_error"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1069:start_parse_error",
@@ -16511,7 +16855,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::start_parse_error"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1077:start_missing_required_fields",
@@ -16522,7 +16877,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::start_missing_required_fields"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1090:start_invalid_expiry",
@@ -16533,7 +16899,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::start_invalid_expiry"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1103:start_missing_authorization_url",
@@ -16544,7 +16921,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::start_missing_authorization_url"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1116:start_rejects_non_web_url_scheme",
@@ -16555,7 +16943,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::start_rejects_non_web_url_scheme"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1125:start_network_error",
@@ -16566,7 +16965,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::start_network_error"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1136:poll_error_statuses",
@@ -16577,7 +16987,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::poll_error_statuses"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1155:poll_parse_error",
@@ -16588,7 +17009,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::poll_parse_error"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1166:poll_undecodable_error_body_names_the_http_status",
@@ -16599,7 +17031,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::poll_undecodable_error_body_names_the_http_status"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1179:poll_network_error",
@@ -16610,7 +17053,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::poll_network_error"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1186:poll_retries_transient_http_status",
@@ -16621,7 +17075,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::poll_retries_transient_http_status"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1200:poll_honors_retry_after_header",
@@ -16632,7 +17097,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::poll_honors_retry_after_header"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1215:fetch_balance_http_error_without_message",
@@ -16643,7 +17119,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::fetch_balance_http_error_without_message"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1227:fetch_profile_http_error_without_message",
@@ -16654,7 +17141,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::fetch_profile_http_error_without_message"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1239:poll_missing_api_key",
@@ -16665,7 +17163,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::poll_missing_api_key"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1253:poll_unsupported_token_type",
@@ -16676,7 +17185,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::poll_unsupported_token_type"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1267:poll_malformed_token_body",
@@ -16687,7 +17207,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::poll_malformed_token_body"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_login.rs:1279:poll_does_not_report_authorized_when_agent_write_fails",
@@ -16698,7 +17229,18 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/future_login.rs",
-      "status": "planned"
+      "status": "migrated-local-pass",
+      "localValidation": {
+        "target": "aarch64-apple-darwin",
+        "baseCommit": "5894d79b1ff08dfdc7de162103f9a322366cd253",
+        "cases": [
+          "future_login::tests::poll_does_not_report_authorized_when_agent_write_fails"
+        ],
+        "evidence": "docs/testing/headless-host-login-2026-10-20.json"
+      },
+      "validationEvidence": [
+        "docs/testing/headless-host-login-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/future_platform.rs:148:external_channel_policy_rejects_nonproduction_without_mutating_auth_or_keys",

@@ -8,7 +8,7 @@ FutureOS: one AI agent everywhere — terminal (TUI), desktop (GUI), mobile (And
 
 The Rust workspace (`Cargo.toml`) members and their slice of `~/.future/` (see `docs/guide/directory-layout.md`):
 
-- `host/` — `future-host`, the GUI-free shared application backend under extraction. Owns shared Store/migrations, credentials/platform and identity/lock, files/review, Agent client/hosting, the application bridge, task execution/conversation lifetime and request ownership. Entry points install runtimes; Remote, maintenance/scheduling and complete shutdown extraction remain in progress. See `docs/architecture/headless-package-development.zh-CN.md`.
+- `host/` — `future-host`, the GUI-free shared application backend under extraction. Owns shared Store/migrations, credentials/platform and OAuth/account services, identity/lock, files/review, Agent client/hosting, the application bridge, task execution/conversation lifetime and request ownership. Entry points install runtimes; Remote, maintenance/scheduling and complete shutdown extraction remain in progress. See `docs/architecture/headless-package-development.zh-CN.md`.
 - `agent/` — `future-agent`, the gRPC backend. Owns `~/.future/agent/` (settings, models, auth, JSONL sessions, skills).
 - `channels/` — `future-channel`, the Feishu / DingTalk IM bridge. Owns `~/.future/channels/config.json`.
 - `orchestration/goal/` — `future-goal`, the goal control plane (durable goals/todos/gates, deterministic should-run kernel, event-sourced state). Owns project-local `<cwd>/.future/goal/` by default (`FUTURE_GOAL_ROOT` overrides it); see `docs/architecture/goal-control-plane.md`.

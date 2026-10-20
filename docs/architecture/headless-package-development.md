@@ -276,9 +276,9 @@ Current phase status:
 |---|---|
 | 0 | Source/dependency baseline and named inventory captured; mixed-module ownership reviewed per test; matched build/runtime measurements open |
 | 1 | Ordinary GUI-free crate, task registry, presentation outlet and consumer dependencies established; complete lifecycle/config boundary still open |
-| 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, task execution and conversation deletion moved; Remote, maintenance and stop coordination remain |
+| 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, task execution/conversation deletion and OAuth/account services moved; Remote, maintenance and stop coordination remain |
 | 3 | Not implemented; the product entry is still `futureos-headless` |
-| 4 | 966 original test declarations moved (964 executed locally on macOS, two retain their original ignores); this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
+| 4 | 1015 original test declarations moved (1013 executed locally on macOS, two retain their original ignores); this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
 | 5 | Host CI group and affected propagation added; builds, release artifacts, signing/install/update/uninstall still open |
 | 6 | Not started; no frozen final candidate, matched performance, artifact acceptance or confirmed manual results |
 
@@ -413,3 +413,9 @@ The original failing case passes locally (0.16 seconds), all 22 real Agent owner
 The same CI 39371045462 Linux GUI library reports 1122 passed, one failed and ten pre-existing ignored cases: an owned real Agent starts, but status is unavailable while the original assertion requires ready. The exact case reproduces locally. The bridge group's glob forwarding bypassed Desktop readiness's entry-owned channel runtime installation. Restore that thin forwarding before the shared client probe; Host production still has no fallback runtime.
 
 Original ready/version/quit/stop assertions are unchanged. All nine real GUI supervisor fixtures pass locally (0.08 seconds); see [readiness wiring evidence](../testing/headless-readiness-entry-2026-10-20.json). This repairs actual entry wiring without changing assertions or status mapping. Complete subsequent Linux/Windows CI revalidation remains required.
+
+### 2026-10-20 Login and account services
+
+Device-code OAuth, account/profile/balance/auth-state, error/retry/Retry-After policy and Agent-owned credential commit move into Host. Host returns validated authorization URLs/codes; Desktop retains start/start_with_browser and best-effort browser launch, while old SSH/headless remains browser-free. Keep client_name, platform parameters, HTTP messages, credential paths and the durable Agent commit/live-session-refresh success boundary unchanged.
+
+Forty-nine original service declarations and all assertions move, with 49 local real loopback HTTP/file/RPC failure cases passing (0.20 seconds). The original browser adapter case remains in Desktop and passes. Tests changing the global Agent endpoint acquire the existing canonical RPC serialization guard first, retaining restoration/failure assertions. Host/GUI/CLI and original headless all-target Clippy/fmt pass; see [login migration evidence](../testing/headless-host-login-2026-10-20.json). Final CLI, cross-platform and manual login acceptance remain open.

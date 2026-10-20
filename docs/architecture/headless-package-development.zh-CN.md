@@ -276,9 +276,9 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 |---|---|
 | 0 | 已固定源码/依赖基线与按名清单，混合模块归属已逐项审查；同条件构建/运行测量未完成 |
 | 1 | 已建立无 GUI 普通库、任务注册、展示出口和消费者依赖；完整生命周期/配置边界未完成 |
-| 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端/托管与请求归属已迁入；完整业务桥、任务执行与会话删除已迁入；Remote、维护和停止协调未迁入 |
+| 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端/托管与请求归属已迁入；完整业务桥、任务执行/会话删除与登录账户服务已迁入；Remote、维护和停止协调未迁入 |
 | 3 | 尚未实现；产品入口仍是 `futureos-headless` |
-| 4 | 已迁移 966 个原测试声明（964 个本地 macOS 执行通过，2 个保留原忽略声明）；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
+| 4 | 已迁移 1015 个原测试声明（1013 个本地 macOS 执行通过，2 个保留原忽略声明）；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
 | 5 | 已加宿主 CI 分组和 affected 传播；构建、发行物、签名/安装/升级/卸载未完成 |
 | 6 | 尚未开始；无最终冻结候选、同条件性能、产物验收或确认的人工结果 |
 
@@ -413,3 +413,9 @@ CI `39371045462`（候选 `0f9cc395`）的 macOS Host 分组为 933 通过、1 �
 同一 CI `39371045462` 的 Linux GUI 库测试为 1122 通过、1 失败、10 原有忽略：自有 Agent 启动后 status 得到 unavailable，原断言要求 ready。本地原用例精确复现。业务桥整组迁移的 glob 转发绕过了 Desktop readiness 入口原有的 channel runtime 安装；现恢复薄接线，在共享客户端探测前安装入口拥有的通道驱动，Host 生产代码仍无 runtime 回退。
 
 原 ready/版本/退出/停止断言不变，整组 9 个真实 GUI supervisor 夹具本地通过（0.08 秒），详见[readiness 接线证据](../testing/headless-readiness-entry-2026-10-20.json)。这是实际入口接线修复，不以修改测试断言或状态映射获得通过；Linux 和 Windows 仍待后续完整 CI 复验。
+
+### 2026-10-20 登录与账户服务
+
+设备码 OAuth、账户/profile/balance/auth-state、错误/重试/Retry-After 和 Agent 独占凭据写入服务迁入 Host；Host 仅返回已验证的授权 URL 与代码。Desktop 保留原 `start`/`start_with_browser` 入口及 best-effort 浏览器打开，旧 SSH/headless 不打开浏览器。保持 client_name、平台参数、HTTP 消息、凭据路径及成功前等待 Agent 持久提交/刷新会话的规则不变。
+
+49 个原服务声明和全部原断言迁入 Host，真实 loopback HTTP/文件/RPC 失败验证本地 49 项通过（0.20 秒）；浏览器适配原用例留在 Desktop 并通过。修改全局 Agent endpoint 的测试先持有既有 canonical RPC 串行锁，防止跨用例干扰，原恢复/失败断言保留。宿主/GUI/CLI 和旧 headless Clippy `--all-targets`、fmt 通过，见[登录迁移证据](../testing/headless-host-login-2026-10-20.json)。尚非最终 CLI、跨平台或人工登录验收。

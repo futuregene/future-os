@@ -61,3 +61,5 @@ pub mod agent_providers;
 
 pub mod conversations;
 pub mod tasks;
+
+pub mod future_login;
