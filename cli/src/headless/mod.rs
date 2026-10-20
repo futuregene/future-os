@@ -888,7 +888,7 @@ mod tests {
     #[test]
     fn the_exit_hint_names_an_existing_log_only() {
         let _home = future_host::auth_store::test_support::HomeGuard::new("headless-log-hint");
-        let log = crate::host_environment::log_file_path();
+        let log = future_host::environment::log_file_path();
         assert_eq!(with_log_hint("failed".into()), "failed");
         std::fs::create_dir_all(log.parent().unwrap()).unwrap();
         std::fs::write(&log, "FutureOS: host starting\n").unwrap();

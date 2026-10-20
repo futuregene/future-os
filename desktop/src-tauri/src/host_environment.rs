@@ -26,7 +26,9 @@ pub(crate) fn start_logging() -> Result<(), crate::AppError> {
     Ok(())
 }
 
-pub(crate) use future_host::environment::{log_file_path, report};
+#[cfg(all(test, feature = "gui"))]
+pub(crate) use future_host::environment::log_file_path;
+pub(crate) use future_host::environment::report;
 
 #[cfg(test)]
 mod tests {

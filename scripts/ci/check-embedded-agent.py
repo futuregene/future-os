@@ -52,6 +52,13 @@ def main():
             ["-p", "future-cli", "--test", "headless_cli"],
         ),
     ]
+    if platform.system() != "Linux":
+        # Linux's complete CLI owner suite already runs these once. Native
+        # macOS/Windows jobs exercise terminal, signal and real broker fixtures.
+        suites.extend([
+            ("headless-terminal", ["-p", "future-cli", "--lib", "headless::"]),
+            ("headless-remote", ["-p", "future-cli", "--test", "remote_start_refusal"]),
+        ])
     if platform.system() == "Windows":
         suites.append((
             "windows-gui-image",

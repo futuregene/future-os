@@ -1625,7 +1625,7 @@ mod tests {
     /// Isolated FUTURE_HOME (browser config) + the shared env lock.
     #[allow(clippy::type_complexity)]
     async fn isolated_home() -> (
-        tokio::sync::MutexGuard<'static, ()>,
+        crate::test_env::EnvironmentGuard,
         crate::test_env::EnvGuard,
         tempfile::TempDir,
     ) {

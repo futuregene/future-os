@@ -46,3 +46,5 @@ pub mod tasks;
 pub fn configure_entry_fixture() {
     crate::remote::enable_fixture_mode();
 }
+
+pub mod command_agent;

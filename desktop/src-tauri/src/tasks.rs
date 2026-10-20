@@ -1,7 +1,6 @@
 //! Desktop task notification adapter; execution and persistence live in Host.
 #[cfg(test)]
 pub(crate) use future_host::tasks::reset_for_test;
-pub(crate) use future_host::tasks::start_headless;
 #[cfg(all(test, feature = "gui"))]
 pub(crate) use future_host::tasks::wake;
 

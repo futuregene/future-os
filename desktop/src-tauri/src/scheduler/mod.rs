@@ -7,13 +7,13 @@ use crate::commands::UpdateStatus;
 use crate::AppError;
 #[cfg(feature = "gui")]
 pub(crate) use future_host::scheduler::refresh_future_balance_now;
+pub(crate) use future_host::scheduler::refresh_future_models_now;
 #[cfg(feature = "gui")]
 use future_host::scheduler::{
     balance_pass, future_signed_in, run_explicit, spawn_fixed_interval, BalancePass,
     APP_UPDATE_EVENT, APP_UPDATE_JOB, FUTURE_AUTH_CHANGED_EVENT, FUTURE_BALANCE_EVENT,
     FUTURE_BALANCE_JOB, FUTURE_MODELS_EVENT, FUTURE_MODELS_JOB,
 };
-pub(crate) use future_host::scheduler::{refresh_future_models_now, start_headless};
 #[cfg(feature = "gui")]
 use tauri::Emitter;
 /// Start the three process-lifetime maintenance loops. Their first automatic

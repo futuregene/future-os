@@ -1,7 +1,6 @@
 //! Desktop test cleanup adapters into the canonical GUI-free RPC/store fixture.
 pub(crate) use future_host::test_support::agent::{
-    get_state_payload, seed_run, seed_thread, seed_workspace, stream_event, MockAgentGuard, Reply,
-    StreamScript,
+    seed_run, seed_thread, seed_workspace, stream_event, MockAgentGuard, Reply, StreamScript,
 };
 
 pub(crate) fn mock_agent() -> MockAgentGuard {
@@ -29,3 +28,5 @@ fn cleanup() {
     crate::runtime::cancel_test_tasks();
     future_host::agent_bridge::cancel_all_observers();
 }
+
+pub(crate) use future_host::test_support::agent::get_state_payload;

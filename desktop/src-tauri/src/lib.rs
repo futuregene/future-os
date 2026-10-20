@@ -3,14 +3,11 @@
 
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
 mod agent_bridge;
-#[cfg(feature = "gui")]
-mod agent_events;
 mod agent_host;
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
 mod agent_providers;
 #[cfg(feature = "gui")]
 mod agent_supervisor;
-mod approval_rules;
 mod auth_store;
 #[cfg(feature = "gui")]
 mod build_info;
@@ -18,8 +15,6 @@ mod cli_tool;
 mod commands;
 #[cfg(feature = "gui")]
 mod config_io;
-#[cfg(feature = "gui")]
-mod conversations;
 mod desktop_shutdown;
 mod error;
 mod future_login;

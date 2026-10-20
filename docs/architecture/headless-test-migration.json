@@ -10975,9 +10975,10 @@
       "name": "forced_exit_deadline_does_not_depend_on_agent_cleanup_or_the_ui_loop",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/agent_supervisor.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/agent_supervisor.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/agent_supervisor.rs:288:unknown_or_busy_activity_requires_confirmation",
@@ -10986,9 +10987,10 @@
       "name": "unknown_or_busy_activity_requires_confirmation",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/agent_supervisor.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/agent_supervisor.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/agent_supervisor.rs:305:mock_gui_does_not_start_an_agent",
@@ -10997,9 +10999,10 @@
       "name": "mock_gui_does_not_start_an_agent",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/agent_supervisor.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/agent_supervisor.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/agent_supervisor.rs:316:supervision_through_the_gui_entry_point_is_also_safe_for_a_mock_app",
@@ -11008,9 +11011,10 @@
       "name": "supervision_through_the_gui_entry_point_is_also_safe_for_a_mock_app",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/agent_supervisor.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/agent_supervisor.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/agent_supervisor.rs:327:an_authorized_exit_proceeds_without_a_dialog",
@@ -11019,9 +11023,10 @@
       "name": "an_authorized_exit_proceeds_without_a_dialog",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/agent_supervisor.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/agent_supervisor.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/agent_supervisor.rs:336:the_recovery_poll_reports_the_same_phase_as_the_plain_poll",
@@ -11030,9 +11035,10 @@
       "name": "the_recovery_poll_reports_the_same_phase_as_the_plain_poll",
       "attribute": "    #[tokio::test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/agent_supervisor.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/agent_supervisor.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/agent_supervisor.rs:351:the_status_serialization_matches_the_webview_contract",
@@ -11041,9 +11047,10 @@
       "name": "the_status_serialization_matches_the_webview_contract",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/agent_supervisor.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/agent_supervisor.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/agent_supervisor.rs:401:a_starting_host_is_reported_as_starting_and_refuses_a_quit_decision",
@@ -11052,9 +11059,10 @@
       "name": "a_starting_host_is_reported_as_starting_and_refuses_a_quit_decision",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/agent_supervisor.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/agent_supervisor.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/agent_supervisor.rs:406:a_failed_host_reports_the_workers_error_on_the_status",
@@ -11063,9 +11071,10 @@
       "name": "a_failed_host_reports_the_workers_error_on_the_status",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/agent_supervisor.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/agent_supervisor.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/agent_supervisor.rs:411:an_unreachable_agent_is_an_error_not_a_ready_status",
@@ -11074,9 +11083,10 @@
       "name": "an_unreachable_agent_is_an_error_not_a_ready_status",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/agent_supervisor.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/agent_supervisor.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/agent_supervisor.rs:416:an_owned_host_counts_its_activity_and_a_stopped_host_reports_none",
@@ -11085,9 +11095,10 @@
       "name": "an_owned_host_counts_its_activity_and_a_stopped_host_reports_none",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/agent_supervisor.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/agent_supervisor.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/agent_supervisor.rs:421:a_failed_stop_is_a_stopping_status_with_its_reason",
@@ -11096,9 +11107,10 @@
       "name": "a_failed_stop_is_a_stopping_status_with_its_reason",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/agent_supervisor.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/agent_supervisor.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/agent_supervisor.rs:426:a_quit_while_another_action_owns_the_barrier_starts_no_stop",
@@ -11107,9 +11119,10 @@
       "name": "a_quit_while_another_action_owns_the_barrier_starts_no_stop",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/agent_supervisor.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/agent_supervisor.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/agent_supervisor.rs:431:a_forced_quit_can_join_cleanup_during_maintenance",
@@ -11118,9 +11131,10 @@
       "name": "a_forced_quit_can_join_cleanup_during_maintenance",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/agent_supervisor.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/agent_supervisor.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/agent_supervisor.rs:436:a_repeated_quit_is_answered_without_starting_a_second_stop",
@@ -11129,9 +11143,10 @@
       "name": "a_repeated_quit_is_answered_without_starting_a_second_stop",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/agent_supervisor.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/agent_supervisor.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/agent_supervisor.rs:501:host_fixture",
@@ -11140,9 +11155,10 @@
       "name": "host_fixture",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/agent_supervisor.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/agent_supervisor.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/approval_rules.rs:104:creates_file_with_rule",
@@ -11931,8 +11947,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/test_support/agent.rs",
-      "status": "planned",
+      "target": "host/src/test_support/command_agent.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-fixture"
     },
     {
@@ -11943,8 +11959,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/test_support/agent.rs",
-      "status": "planned",
+      "target": "host/src/test_support/command_agent.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-fixture"
     },
     {
@@ -11955,8 +11971,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/test_support/agent.rs",
-      "status": "planned",
+      "target": "host/src/test_support/command_agent.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-fixture"
     },
     {
@@ -12003,8 +12019,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/approval.rs",
-      "status": "planned",
+      "target": "host/src/application/approvals.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-approval"
     },
     {
@@ -12015,8 +12031,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/approval.rs",
-      "status": "planned",
+      "target": "host/src/application/approvals.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-approval"
     },
     {
@@ -12027,8 +12043,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/approval.rs",
-      "status": "planned",
+      "target": "host/src/application/approvals.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-approval"
     },
     {
@@ -12051,8 +12067,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/approval.rs",
-      "status": "planned",
+      "target": "host/src/application/approvals.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-approval"
     },
     {
@@ -12063,8 +12079,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/approval.rs",
-      "status": "planned",
+      "target": "host/src/application/approvals.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-approval"
     },
     {
@@ -12075,8 +12091,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/approval.rs",
-      "status": "planned",
+      "target": "host/src/application/approvals.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-approval"
     },
     {
@@ -12087,8 +12103,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/approval.rs",
-      "status": "planned",
+      "target": "host/src/application/approvals.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-approval"
     },
     {
@@ -12099,8 +12115,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/approval.rs",
-      "status": "planned",
+      "target": "host/src/application/approvals.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-approval"
     },
     {
@@ -13400,8 +13416,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/git_review.rs",
-      "status": "planned",
+      "target": "host/src/application/review.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-review"
     },
     {
@@ -13412,8 +13428,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/git_review.rs",
-      "status": "planned",
+      "target": "host/src/application/review.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-review"
     },
     {
@@ -13424,8 +13440,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/git_review.rs",
-      "status": "planned",
+      "target": "host/src/application/review.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-review"
     },
     {
@@ -13436,8 +13452,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/git_review.rs",
-      "status": "planned",
+      "target": "host/src/application/review.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-review"
     },
     {
@@ -13448,8 +13464,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/git_review.rs",
-      "status": "planned",
+      "target": "host/src/application/review.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-review"
     },
     {
@@ -13472,8 +13488,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/git_review.rs",
-      "status": "planned",
+      "target": "host/src/application/review.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-review"
     },
     {
@@ -13484,8 +13500,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/git_review.rs",
-      "status": "planned",
+      "target": "host/src/application/review.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-review"
     },
     {
@@ -13496,8 +13512,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/git_review.rs",
-      "status": "planned",
+      "target": "host/src/application/review.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-review"
     },
     {
@@ -13508,8 +13524,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/git_review.rs",
-      "status": "planned",
+      "target": "host/src/application/review.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-review"
     },
     {
@@ -13520,8 +13536,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/git_review.rs",
-      "status": "planned",
+      "target": "host/src/application/review.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-review"
     },
     {
@@ -13532,8 +13548,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/git_review.rs",
-      "status": "planned",
+      "target": "host/src/application/review.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-review"
     },
     {
@@ -13544,8 +13560,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/git_review.rs",
-      "status": "planned",
+      "target": "host/src/application/review.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-review"
     },
     {
@@ -13580,8 +13596,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13592,8 +13608,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13604,8 +13620,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13616,8 +13632,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13628,8 +13644,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13640,8 +13656,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13652,8 +13668,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13664,8 +13680,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13676,8 +13692,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13688,8 +13704,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13700,8 +13716,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13712,8 +13728,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13724,8 +13740,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13736,8 +13752,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13748,8 +13764,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13760,8 +13776,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13772,8 +13788,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13784,8 +13800,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13796,8 +13812,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13808,8 +13824,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13820,8 +13836,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13832,8 +13848,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13844,8 +13860,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13856,8 +13872,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13868,8 +13884,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/run_queries.rs",
-      "status": "planned",
+      "target": "host/src/application/runs.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-run-query"
     },
     {
@@ -13928,8 +13944,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/skills.rs",
-      "status": "planned",
+      "target": "host/src/application/skills.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-skills"
     },
     {
@@ -13940,8 +13956,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/agent_bridge/skills.rs",
-      "status": "planned",
+      "target": "host/src/application/skills.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-skills"
     },
     {
@@ -14234,8 +14250,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14246,8 +14262,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14258,8 +14274,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14270,8 +14286,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14282,8 +14298,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14294,8 +14310,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14306,8 +14322,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14330,8 +14346,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14342,8 +14358,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14354,8 +14370,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14366,8 +14382,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14378,8 +14394,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14390,8 +14406,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14402,8 +14418,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14414,8 +14430,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14426,8 +14442,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14438,8 +14454,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14450,8 +14466,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14462,8 +14478,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14474,8 +14490,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14486,8 +14502,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14498,8 +14514,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14510,8 +14526,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14522,8 +14538,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14534,8 +14550,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14546,8 +14562,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14558,8 +14574,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14570,8 +14586,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14582,8 +14598,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14594,8 +14610,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14606,8 +14622,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14618,8 +14634,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14630,8 +14646,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14642,8 +14658,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14654,8 +14670,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14666,8 +14682,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14678,8 +14694,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14690,8 +14706,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14702,8 +14718,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14714,8 +14730,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14726,8 +14742,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14738,8 +14754,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14750,8 +14766,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14762,8 +14778,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14774,8 +14790,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14786,8 +14802,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14798,8 +14814,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14810,8 +14826,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14822,8 +14838,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14834,8 +14850,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14846,8 +14862,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14858,8 +14874,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14870,8 +14886,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14882,8 +14898,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14894,8 +14910,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14906,8 +14922,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14918,8 +14934,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14930,8 +14946,8 @@
       "attribute": "    #[tokio::test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -14942,8 +14958,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/conversations.rs",
-      "status": "planned",
+      "target": "host/src/application/threads.rs",
+      "status": "migrated-pending-unified-validation",
       "ownershipDecision": "host-conversation"
     },
     {
@@ -15920,8 +15936,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown/coordinator.rs",
-      "status": "planned"
+      "target": "host/src/shutdown/service_entry_tests.rs",
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown/coordinator.rs:283:stalled_worker_reports_failure_and_late_completion_never_reopens_the_gate",
@@ -15931,8 +15947,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown/coordinator.rs",
-      "status": "planned"
+      "target": "host/src/shutdown/service_entry_tests.rs",
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown/coordinator.rs:316:destructive_actions_are_exclusive_and_release_after_failure",
@@ -15941,9 +15957,10 @@
       "name": "destructive_actions_are_exclusive_and_release_after_failure",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown/coordinator.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/desktop_shutdown/coordinator.rs",
+      "status": "retained",
+      "ownershipReason": "GUI-only maintenance action and quit barrier; shared teardown assertions moved to Host."
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown/coordinator.rs:344:an_expired_budget_can_never_publish_cleanup_success",
@@ -15953,8 +15970,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown/coordinator.rs",
-      "status": "planned"
+      "target": "host/src/shutdown/service_entry_tests.rs",
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown/coordinator.rs:378:a_budget_below_the_disconnect_notice_cap_expires_the_remote_publish",
@@ -15964,8 +15981,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown/coordinator.rs",
-      "status": "planned"
+      "target": "host/src/shutdown/service_entry_tests.rs",
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown/coordinator.rs:428:a_stop_with_a_budget_reaches_the_runtime_builder_and_finishes",
@@ -15975,8 +15992,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown/coordinator.rs",
-      "status": "planned"
+      "target": "host/src/shutdown/service_entry_tests.rs",
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown/coordinator.rs:457:a_quit_cannot_start_a_second_stop",
@@ -15985,9 +16002,10 @@
       "name": "a_quit_cannot_start_a_second_stop",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown/coordinator.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/desktop_shutdown/coordinator.rs",
+      "status": "retained",
+      "ownershipReason": "GUI-only maintenance action and quit barrier; shared teardown assertions moved to Host."
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown/coordinator.rs:490:a_success_after_the_deadline_is_rewritten_into_a_failure",
@@ -16009,8 +16027,8 @@
       "attribute": "    #[test]",
       "ignored": false,
       "plannedOwner": "future-host",
-      "target": "host/src/desktop_shutdown/coordinator.rs",
-      "status": "planned"
+      "target": "host/src/shutdown/service_entry_tests.rs",
+      "status": "migrated-pending-unified-validation"
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown.rs:376:ownership_requires_positive_terminal_evidence_and_preserves_active_or_queued_work",
@@ -18624,9 +18642,10 @@
       "name": "a_host_without_a_resolvable_cli_still_starts_logging",
       "attribute": "    #[test]",
       "ignored": false,
-      "plannedOwner": "future-host",
-      "target": "host/src/host_environment.rs",
-      "status": "planned"
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/host_environment.rs",
+      "status": "retained",
+      "ownershipReason": "Native GUI supervision, status serialization, quit/dialog/event-loop or GUI CLI-discovery/logging entry integration; shared Agent ownership/shutdown/environment services are Host-owned."
     },
     {
       "key": "desktop/src-tauri/src/instance.rs:81:distinct_future_homes_isolate_lock_namespace_and_storage_without_moving_legacy_data",

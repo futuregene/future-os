@@ -1,9 +1,7 @@
 //! Entry-owned Agent channel runtime. Shared connection policy, integration
 //! tests, requests and exact-run ownership live in future-host.
+#[cfg(all(feature = "gui", not(test)))]
 pub(crate) use future_host::agent_client::raw_agent_addr;
-#[cfg(test)]
-pub(crate) use future_host::agent_client::reset_test_connection;
-use future_host::agent_client::AgentClient;
 
 pub(crate) fn install_channel_runtime() {
     static INITIALIZED: std::sync::Once = std::sync::Once::new();
@@ -11,11 +9,6 @@ pub(crate) fn install_channel_runtime() {
         future_host::agent_client::configure_channel_runtime(agent_channel_runtime())
             .expect("entry configures the Agent channel runtime once");
     });
-}
-
-pub async fn connect_agent() -> Result<AgentClient, crate::AppError> {
-    install_channel_runtime();
-    future_host::agent_client::connect_agent().await
 }
 
 /// Status/login probes are entry calls too: they can precede any business

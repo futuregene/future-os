@@ -51,7 +51,7 @@ Desktop 在默认本地端点没有外部 Agent 且成功取得实例锁时，�
 | [GUI supervisor](../../desktop/src-tauri/src/agent_supervisor.rs) | 探测、启动并管理 `future agent` 子进程；退出前重置 Windows 权限并 kill | 改为内置句柄与外部连接两种模式，共用完整停机流程 |
 | [GUI 启动](../../desktop/src-tauri/src/lib.rs)与[宿主锁](../../desktop/src-tauri/src/instance.rs) | setup 启动后台工作，Tauri build 后取得 GUI/headless 锁 | 依赖 Agent 的工作要延后到宿主锁与兼容性检查之后 |
 | [业务连接](../../desktop/src-tauri/src/agent_bridge/client.rs) | 缓存 Channel，检查业务连通性；兼容性另由状态接口报告 | 所有业务请求和自动重连都必须受兼容性与实例身份约束 |
-| [headless Agent 管理](../../desktop/src-tauri/src/headless/agent.rs)与[TUI supervisor](../../tui/src/agent_supervisor.rs) | 各自管理外部子进程，现有 Agent 可被复用 | headless 接入共享内置宿主；TUI 保留独立宿主并复用握手与冲突诊断 |
+| [headless Agent 管理](../../cli/src/headless/agent.rs)与[TUI supervisor](../../tui/src/agent_supervisor.rs) | 各自管理外部子进程，现有 Agent 可被复用 | headless 接入共享内置宿主；TUI 保留独立宿主并复用握手与冲突诊断 |
 | [SQLite worker](../../agent/src/session/database/mod.rs)、[会话 Manager](../../agent/src/session/manager/mod.rs)、[事件 writer](../../agent/src/rpc/broadcaster/journal_writer.rs) | Agent SQLite 主存储，有序写入、终态事务、后台维护和析构等待 | 需要明确 drain、停止、join 和超时结果，不能靠进程死亡代替正常完成 |
 | [RPC shutdown](../../agent/src/rpc/commands/session_lifecycle.rs)、[会话调度](../../agent/src/rpc/session.rs) | shutdown 拒绝新 prompt；完成任务后 scheduler 可继续出队 | 新增宿主停机控制，原子关闭接受与出队，持久化排队取消 |
 | [RPC 服务](../../agent/src/grpc/mod.rs)与[全局 broadcaster](../../agent/src/rpc/mod.rs) | 生产服务永久等待；全局控制面事件存在进程级静态对象 | 服务需要显式 shutdown，并结束全局与会话订阅 |

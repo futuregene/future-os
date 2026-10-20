@@ -1,0 +1,90 @@
+{
+  "status": "implementation-compiled-runtime-validation-pending",
+  "baseCommit": "ba2ccec3",
+  "movedOriginalHostDeclarations": 115,
+  "operationsMoved": 58,
+  "canonicalScriptedRpcFixture": "host/src/test_support/command_agent.rs",
+  "baselineInventory": {
+    "declarations": 2193,
+    "identityFieldsUnchanged": true,
+    "sourceDigestsUnchanged": true,
+    "unassignedOrPlanned": 0,
+    "statusCounts": {
+      "migrated-local-pass": 1584,
+      "retained": 428,
+      "migrated-pending-unified-validation": 168,
+      "migrated-ci-pass": 3,
+      "migrated-existing-ignore": 10
+    }
+  },
+  "checks": [
+    {
+      "command": "cargo check -p future-host -p future-cli -p futureos --all-targets --offline --locked",
+      "result": "passed",
+      "seconds": 8.68
+    },
+    {
+      "command": "cargo clippy -p future-host -p future-cli -p futureos --all-targets --offline --locked -- -D warnings",
+      "result": "passed",
+      "seconds": 19.66
+    },
+    {
+      "command": "cargo fmt -p future-host -p future-cli -p futureos",
+      "result": "passed"
+    },
+    {
+      "command": "env RUSTC_WRAPPER= python3 scripts/ci/host-boundaries.py",
+      "result": "passed",
+      "resolution": {
+        "checked": {
+          "future-cli": {
+            "forbidden": [],
+            "packages": 395
+          },
+          "future-host": {
+            "forbidden": [],
+            "packages": 370
+          }
+        },
+        "desktopGuiFeatures": [
+          "default",
+          "gui"
+        ],
+        "executedTests": 0,
+        "target": "aarch64-apple-darwin"
+      }
+    },
+    {
+      "command": "python3 scripts/docs/check-docs.py",
+      "result": "passed",
+      "documents": 295,
+      "pendingBilingualPairs": 0
+    },
+    {
+      "command": "cargo clippy -p future-host --all-targets --offline --locked -- -D warnings",
+      "result": "passed",
+      "seconds": 14.41,
+      "scope": "independent of Desktop/Tauri/npm"
+    }
+  ],
+  "testsExecutedThisBatch": 0,
+  "previousCandidateWindows": {
+    "candidate": "5c56a8853704f620b246fa05c75950a60d9265ce",
+    "run": 39382550090,
+    "job": 118494802144,
+    "result": "success",
+    "passed": 1562,
+    "failed": 0,
+    "originalIgnored": 10,
+    "seconds": 1014.49,
+    "originalCwdObservationCase": "agent_bridge::import::tests::import_one_spawns_cwd_write_back_and_logs_its_failure passed",
+    "limitation": "Does not validate current CLI/application/packaging changes; run has native build gate failures."
+  },
+  "pending": [
+    "Unified runtime tests and native Windows entry execution",
+    "Actual signed artifacts/install/update/uninstall",
+    "Matched performance",
+    "Frozen-candidate manual acceptance and user confirmation"
+  ],
+  "nativeEntryCoverage": "Linux complete CLI suite owns terminal/Remote tests once; embedded lifecycle gate runs migrated headless unit and Remote process fixtures on macOS/Windows."
+}

@@ -3,7 +3,7 @@
 > [中文](headless-package-development.zh-CN.md)
 >
 > Design date: 2026-10-20. Source baseline: `904eab2b`, including Remote extraction merged through PR #1235.
-> Status: in progress. Source/dependency baselines are captured and shared-host extraction is starting; phases 0–6 are incomplete.
+> Status: in progress. Source/dependency baselines are captured and shared backend and unified entry are connected, with unified acceptance pending; phases 0–6 are incomplete.
 
 Extract the application host without a GUI from the Desktop crate and start it in the foreground with `future headless`. Introduce `future-host`, a Rust library without GUI dependencies, for the application backend shared by Desktop GUI and headless. Desktop and CLI own their entry points and interaction. Preserve current functionality, data, pairing, approval, sandbox and shutdown behavior.
 
@@ -275,10 +275,10 @@ Current phase status:
 | Phase | Actual status |
 |---|---|
 | 0 | Source/dependency baseline and named inventory captured; mixed-module ownership reviewed per test; matched build/runtime measurements open |
-| 1 | Ordinary GUI-free crate, task registry, presentation outlet and consumer dependencies established; complete lifecycle/config boundary still open |
+| 1 | Ordinary GUI-free crate, lifecycle/config, task registry, presentation outlet and consumers connected; independent/combined boundaries checked; final runtime acceptance open |
 | 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, task/conversation, OAuth/account and maintenance scheduler moved; Remote host/Peer moved with local core execution; cross-platform revalidation, stop coordination state moved; shared service teardown moved; CLI maintenance bootstrap and unified startup boundary connected; bulk validation remains |
 | 3 | `future headless` connected; CLI owns terminal/signals/Agent runtime; old entry removed; bulk changes await unified validation |
-| 4 | 1597 original test declarations moved (1584 executed locally on macOS, ten retain original ignores and three locally unavailable cases passed Linux CI); this candidate's cross-platform CI, real CLI process migration and remaining core coverage open |
+| 4 | All 2193 baseline declarations assigned: Host 1712, CLI 53, retained entries 428; the latest 168 moves await unified execution; cross-platform/final-candidate acceptance open |
 | 5 | Host CI group and affected propagation added; builds, release artifacts, signing/install/update/uninstall still open |
 | 6 | Not started; no frozen final candidate, matched performance, artifact acceptance or confirmed manual results |
 
@@ -518,3 +518,14 @@ CLI calls `future-host` directly and owns foreground/Agent/cleanup runtimes, ter
 Linux musl, deb/portable and CLI-only distributions use the same `future`. Compatibility make aliases build/install CLI. Windows upgrade retains executable backup/rollback and uninstall handling while retiring the old entry; installer, macOS app and Windows/Linux payload probes now exercise `headless --help` and reject the retired binary. Actual signing, upgrade and release artifact acceptance remains open.
 
 Following the user's latest direction, per-batch tests are deferred to unified validation after implementation. Earlier 11 CLI and 13 Remote process passes cover intermediate source only, excluding subsequent unit migration, Windows fixtures and release changes. Previous candidate `5c56a885` CI [39382550090](https://github.com/futuregene/future-os/actions/runs/39382550090) failed all three native build jobs because the old Desktop `cli_tool::tests` selector matched zero cases. The current script leaves shared cases to complete native Host suites once and retains real entry probes plus zero-test failure enforcement. That CI does not contain this section's changes. Matched performance, artifacts and manual acceptance remain pending.
+
+
+### 2026-10-20 Shared application operations and ownership closure
+
+The 58 conversation/history, run/tool query, atomic approval persistence/injection, review and skill operations now live in `host/src/application/`. Desktop retains matching IPC signatures and shared DTO references. Conversation deletion uses the existing presentation event for GUI terminal closure; CLI retains the same shared stop/delete sequence with no presentation sink. The persistent-script real-loopback RPC fixture moved once to Host and Desktop reuses it.
+
+This batch moves 115 original declarations: 104 application cases, three RPC fixture cases, two skill cases and six shutdown coordinator cases. Actual-source review retains 19 previously provisional GUI status/quit-confirmation/maintenance-barrier/entry-logging cases in Desktop, with per-case reasons. All 2193 baseline key/source/line/name/attribute/ignored fields and source digests remain unchanged; no declaration remains unassigned/planned. This closes ownership, not execution acceptance. Cumulative moved counts are Host 1712 and CLI 53; 428 retain entry ownership.
+
+[Bulk static evidence](../testing/headless-host-application-2026-10-20.json) records combined Host/CLI/GUI all-target check, all-target Clippy with warnings denied, formatting and actual merged-feature dependency closure passing. This batch executes zero tests; runtime revalidation remains consolidated. Prior candidate `5c56a885` Windows Host CI completed with 1562 passed, zero failures and ten original ignores, including the original cwd write-back case; it does not validate this batch or new Windows CLI fixtures.
+
+Phases 1–3 have their shared implementation and entries connected; phase 4 ownership is closed with unified execution pending. Phase 5 artifacts/signing/install/update and phase 6 matched performance/final manual acceptance remain open.

@@ -413,3 +413,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "service_entry_tests.rs"]
+mod entry_tests;
