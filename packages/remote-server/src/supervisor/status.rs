@@ -246,8 +246,31 @@ impl Supervisor {
             web_lan_url: runtime.and_then(|state| state.web_lan_url.clone()),
             agent_available: self.host.agent_available(),
             warning_code: self.web_warning(&guard, web_enabled, &mut retry_web),
+            cleared_invitations: Vec::new(),
         };
         StatusProjection { status, retry_web }
+    }
+
+    /// The pair ids whose invitation this desktop is showing right now.
+    ///
+    /// The per-slot rule [`pending_invitation`] applies, collected: an
+    /// unconfirmed runtime still holding an unexpired code. Every one of them
+    /// may be in front of a phone — the popup, a page re-opened on the code, a
+    /// scan already under way — so any housekeeping that frees cap slots has to
+    /// leave them alone.
+    pub(crate) fn shown_invitations(&self) -> Vec<String> {
+        let now = unix_timestamp() as i64;
+        self.state
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|state| {
+                !state.pairing_confirmed.load(Ordering::Acquire)
+                    && state.pairing_code.is_some()
+                    && state.pairing_code_expires_at.is_some_and(|exp| exp > now)
+            })
+            .map(|state| state.pair_id.clone())
+            .collect()
     }
 
     /// The local browser listener is one listener for the whole process, owned by

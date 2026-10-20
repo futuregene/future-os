@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
+pub(crate) use future_remote_server::services::Invitation;
 pub(crate) use future_remote_server::PairingCreds;
 
 #[derive(Debug, Deserialize)]
@@ -303,34 +304,55 @@ pub fn remove_slot(pair_id: &str) -> Result<(), crate::AppError> {
 /// `keep_existing` is forwarded verbatim to the platform, where `false` replaces
 /// every device this desktop holds and `true` adds one beside them. The wording
 /// matters: this function has no opinion, because the platform owns the cap.
+///
+/// `shown` names the pair ids whose invitation this desktop is displaying. They
+/// matter only when the mint is refused for the cap (see
+/// [`clear_stale_invitations`]): filling that cap with invitations no phone can
+/// claim is this desktop's own doing, and `shown` is what keeps the cure from
+/// killing a code someone is holding.
 pub async fn create_pairing(
     keep_existing: bool,
-) -> Result<(PairingCreds, String, Option<i64>), crate::AppError> {
+    shown: &[String],
+) -> Result<Invitation, crate::AppError> {
     // A self-hosted relay replaces the platform in exactly one place: whatever
     // mints the pair id, the invitation and the bridge credential. Everything
     // the invitation carries about the endpoints is the relay's, not ours.
     if let Some(base) = crate::remote::relay::endpoint() {
-        return create_pairing_via_relay(&base, keep_existing).await;
+        let (creds, code, expires_at) = create_pairing_via_relay(&base, keep_existing).await?;
+        return Ok(Invitation {
+            creds,
+            code,
+            expires_at,
+            cleared: Vec::new(),
+        });
     }
+    let desktop_id = crate::device_identity::device_id()?;
     let key_pair = nkeys::KeyPair::new_user();
     let nkey_seed = key_pair
         .seed()
         .map_err(|error| crate::AppError::Message(format!("generate desktop NKey: {error}")))?;
-    let desktop_id = crate::device_identity::device_id()?;
+    let (response, cleared) = match mint_pair_code(&desktop_id, &key_pair, keep_existing).await {
+        Ok(response) => (response, Vec::new()),
+        // The cap is the platform's rule and this desktop cannot raise it. What
+        // it *can* do is stop spending its own allowance on invitations it lost
+        // track of: an `add` whose answer never arrived minted a row no phone
+        // has ever seen a code for, and that row keeps the slot for minutes.
+        // Clearing those is attempted only now — the refusal already happened,
+        // so nothing is revoked while a mint could still have succeeded — and if
+        // it frees nothing the platform's own answer is passed through verbatim.
+        Err(error) if refused_for_the_cap(&error) => {
+            let cleared = clear_stale_invitations(&desktop_id, shown).await;
+            if cleared.is_empty() {
+                return Err(error);
+            }
+            (
+                mint_pair_code(&desktop_id, &key_pair, keep_existing).await?,
+                cleared,
+            )
+        }
+        Err(error) => return Err(error),
+    };
     let platform = crate::future_platform::current_platform_url();
-    let response = http_client()?
-        .post(format!("{platform}/client/v1/remote/pair/code"))
-        .bearer_auth(crate::future_login::future_api_key()?)
-        .json(&json!({
-            "desktop_id": desktop_id,
-            "desktop_public_key": key_pair.public_key(),
-            "desktop_name": "FutureOS GUI",
-            "keep_existing": keep_existing,
-        }))
-        .send()
-        .await
-        .map_err(|error| transport_or_message("create pairing code", error))?;
-    let response: CreatePairCodeResponse = parse_response(response, "create pairing code").await?;
     // The platform hands a desktop it already knows the same `pair_id` for a
     // fresh invitation, and this invitation replaces that binding. A revoke still
     // queued from the unpair that preceded it is therefore obsolete: delivering it
@@ -372,7 +394,186 @@ pub async fn create_pairing(
             "secret",
             identity.secret.as_deref().expect("new invitation secret"),
         );
-    Ok((creds, invitation.into(), code_expires_at))
+    Ok(Invitation {
+        creds,
+        code: invitation.into(),
+        expires_at: code_expires_at,
+        cleared,
+    })
+}
+
+/// Ask the platform for an invitation code.
+///
+/// Split out because the cap refusal is answered by retrying this exact call
+/// once the allowance has been made room in; the retry must be the same request
+/// in every other respect.
+async fn mint_pair_code(
+    desktop_id: &str,
+    key_pair: &nkeys::KeyPair,
+    keep_existing: bool,
+) -> Result<CreatePairCodeResponse, crate::AppError> {
+    let platform = crate::future_platform::current_platform_url();
+    let response = http_client()?
+        .post(format!("{platform}/client/v1/remote/pair/code"))
+        .bearer_auth(crate::future_login::future_api_key()?)
+        .json(&json!({
+            "desktop_id": desktop_id,
+            "desktop_public_key": key_pair.public_key(),
+            "desktop_name": "FutureOS GUI",
+            "keep_existing": keep_existing,
+        }))
+        .send()
+        .await
+        .map_err(|error| transport_or_message("create pairing code", error))?;
+    parse_response(response, "create pairing code").await
+}
+
+/// Whether the platform refused a mint because this desktop already holds its
+/// allowance of devices.
+///
+/// Only this machine code: another 409 is a different refusal, and revoking
+/// invitations to "cure" it would delete codes to solve the wrong problem.
+fn refused_for_the_cap(error: &crate::AppError) -> bool {
+    matches!(
+        error,
+        crate::AppError::Remote {
+            code: Some(code),
+            ..
+        } if code == "pairing_limit_reached"
+    )
+}
+
+/// How long an unclaimed invitation must have existed before this desktop may
+/// forget it to make room for a new one.
+///
+/// Measured rather than assumed: across the nine pairings this account ever
+/// claimed, mint → claim ran 2.4 s at the fastest and 18.0 s at the slowest
+/// (median 8.5 s). The floor sits an order of magnitude above that slowest
+/// case, because getting it wrong deletes a code somebody is holding, while the
+/// only cost of being slow is that the sweep frees nothing and the platform's
+/// own refusal stands.
+const STALE_INVITATION_FLOOR_SECS: i64 = 180;
+
+/// One pairing row the platform holds for this account.
+#[derive(Debug, serde::Deserialize)]
+struct PlatformDevice {
+    pair_id: String,
+    #[serde(default)]
+    desktop_id: String,
+    #[serde(default)]
+    status: String,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    activated_at: Option<String>,
+    #[serde(default)]
+    client_device_id: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct DevicesResponse {
+    #[serde(default)]
+    devices: Vec<PlatformDevice>,
+}
+
+/// Forget the invitations this desktop minted and never heard back about.
+///
+/// An `add` whose answer was lost — a dropped connection, a Desktop that exited
+/// mid-request — still left a row on the platform, and that row counts against
+/// the per-desktop cap until its nonce expires even though no phone has ever
+/// seen its code. Nothing local records those rows, so the platform's own list
+/// is the only place to find them.
+///
+/// A platform fault is reported and yields "cleared nothing": housekeeping must
+/// not fail the pairing that needs the room.
+async fn clear_stale_invitations(desktop_id: &str, shown: &[String]) -> Vec<String> {
+    let devices = match list_devices().await {
+        Ok(devices) => devices,
+        Err(error) => {
+            eprintln!("remote: could not list invitations to clear: {error}");
+            return Vec::new();
+        }
+    };
+    let now = chrono::Utc::now();
+    let mut cleared = Vec::new();
+    for device in devices {
+        if !is_sweepable(&device, desktop_id, shown, now) {
+            continue;
+        }
+        match delete_device(&device.pair_id).await {
+            Ok(()) => cleared.push(device.pair_id),
+            Err(error) => {
+                eprintln!("remote: could not clear a stale invitation: {error}");
+            }
+        }
+    }
+    if !cleared.is_empty() {
+        eprintln!(
+            "remote: cleared {} stale invitation(s) to make room for a device",
+            cleared.len()
+        );
+    }
+    cleared
+}
+
+async fn list_devices() -> Result<Vec<PlatformDevice>, crate::AppError> {
+    let platform = crate::future_platform::current_platform_url();
+    let response = http_client()?
+        .get(format!("{platform}/client/v1/remote/devices"))
+        .bearer_auth(crate::future_login::future_api_key()?)
+        .send()
+        .await
+        .map_err(|error| transport_or_message("list remote devices", error))?;
+    let response: DevicesResponse = parse_response(response, "list remote devices").await?;
+    Ok(response.devices)
+}
+
+/// Revoke one pairing with account permission.
+async fn delete_device(pair_id: &str) -> Result<(), crate::AppError> {
+    let platform = crate::future_platform::current_platform_url();
+    let response = http_client()?
+        .delete(format!("{platform}/client/v1/remote/devices/{pair_id}"))
+        .bearer_auth(crate::future_login::future_api_key()?)
+        .send()
+        .await
+        .map_err(|error| transport_or_message("clear a stale invitation", error))?;
+    if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(());
+    }
+    Err(response_error(response, "clear a stale invitation").await)
+}
+
+/// Whether `device` is an invitation this desktop may forget.
+///
+/// Every clause is a refusal, and each answers a way this goes wrong: another
+/// desktop's rows are not this desktop's to delete and are usually in use; a
+/// claimed one is somebody's device, not an invitation; a `shown` code may be
+/// under a phone right now; and an invitation younger than the measured scan
+/// ceiling is not stale whatever else it says.
+fn is_sweepable(
+    device: &PlatformDevice,
+    desktop_id: &str,
+    shown: &[String],
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    if device.desktop_id != desktop_id
+        || device.status != "pending"
+        || device.activated_at.is_some()
+        || device.client_device_id.is_some()
+        || shown.iter().any(|pair| pair == &device.pair_id)
+    {
+        return false;
+    }
+    let Some(created_at) = device.created_at.as_deref() else {
+        return false;
+    };
+    // A timestamp that cannot be read is left alone: guessing "old enough" is
+    // how a live code gets revoked.
+    chrono::DateTime::parse_from_rfc3339(created_at)
+        .map(|created| {
+            (now - created.with_timezone(&chrono::Utc)).num_seconds() >= STALE_INVITATION_FLOOR_SECS
+        })
+        .unwrap_or(false)
 }
 
 /// Mint an invitation against a self-hosted relay.
@@ -836,7 +1037,13 @@ mod http_tests {
         sign_in(platform.url());
         let code = platform.respond_pair_code("nats://127.0.0.1:4222");
 
-        let (creds, returned_code, code_expires_at) = create_pairing(false).await.unwrap();
+        let Invitation {
+            creds,
+            code: returned_code,
+            expires_at: code_expires_at,
+            cleared,
+        } = create_pairing(false, &[]).await.unwrap();
+        assert!(cleared.is_empty(), "an ordinary mint clears nothing");
         let invitation = reqwest::Url::parse(&returned_code).unwrap();
         let fields: std::collections::HashMap<_, _> = invitation.query_pairs().collect();
         assert_eq!(fields["code"], code);
@@ -882,7 +1089,7 @@ mod http_tests {
         save_creds(&fixture_creds()).unwrap();
         platform.respond_pair_code("nats://127.0.0.1:4222");
 
-        let (creds, _, _) = create_pairing(false).await.unwrap();
+        let Invitation { creds, .. } = create_pairing(false, &[]).await.unwrap();
         assert_eq!(creds.desktop_id, "desktop_test");
     }
 
@@ -896,8 +1103,8 @@ mod http_tests {
         sign_in(platform.url());
         platform.respond_pair_code("nats://127.0.0.1:4222");
         platform.respond_pair_code("nats://127.0.0.1:4222");
-        create_pairing(true).await.unwrap();
-        create_pairing(false).await.unwrap();
+        create_pairing(true, &[]).await.unwrap();
+        create_pairing(false, &[]).await.unwrap();
 
         let bodies: Vec<Value> = platform
             .requests()
@@ -918,12 +1125,192 @@ mod http_tests {
         );
     }
 
+    /// One row as `GET /client/v1/remote/devices` returns it.
+    fn device_row(
+        pair_id: &str,
+        desktop_id: &str,
+        status: &str,
+        age_secs: i64,
+        claimed: bool,
+    ) -> Value {
+        let created = chrono::Utc::now() - chrono::Duration::seconds(age_secs);
+        let stamp = created.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        json!({
+            "pair_id": pair_id,
+            "desktop_id": desktop_id,
+            "status": status,
+            "created_at": stamp,
+            "activated_at": claimed.then(|| stamp.clone()),
+            "client_device_id": claimed.then(|| "dev_claimed".to_string()),
+        })
+    }
+
+    /// Script the per-desktop cap refusal the platform answers with.
+    fn refuse_for_the_cap(platform: &MockPlatform) {
+        platform.push(
+            "/client/v1/remote/pair/code",
+            409,
+            json!({
+                "error": "pairing_limit_reached",
+                "message": "This desktop already holds 5 devices. Unpair one of them before adding another.",
+            }),
+        );
+    }
+
+    /// The cap counts invitations no phone ever claimed, and an `add` whose
+    /// answer was lost leaves one behind. When the platform refuses for that
+    /// reason the desktop clears its own abandoned invitations — and only
+    /// those — then asks again.
+    #[tokio::test]
+    async fn a_full_desktop_clears_its_own_unclaimed_invitations_and_mints() {
+        let _home = HomeGuard::new("pairing-sweep-mint");
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        let desktop = crate::device_identity::device_id().unwrap();
+        refuse_for_the_cap(&platform);
+        platform.respond_pair_code("nats://127.0.0.1:4222");
+        platform.push(
+            "/client/v1/remote/devices",
+            200,
+            json!({ "devices": [
+                // An `add` whose answer never arrived: nothing can claim these.
+                device_row("pair_stale_a", &desktop, "pending", 600, false),
+                device_row("pair_stale_b", &desktop, "pending", 900, false),
+                // Younger than any scan could take — a phone may be reading it.
+                device_row("pair_fresh", &desktop, "pending", 30, false),
+                // Somebody's device, not an invitation.
+                device_row("pair_claimed", &desktop, "active", 600, true),
+                // Another machine's row, none of this desktop's business.
+                device_row("pair_elsewhere", "desktop_other", "pending", 600, false),
+            ]}),
+        );
+        for pair in ["pair_stale_a", "pair_stale_b"] {
+            platform.push(
+                &format!("/client/v1/remote/devices/{pair}"),
+                200,
+                json!({ "revoked": true }),
+            );
+        }
+
+        let invitation = create_pairing(true, &[]).await.unwrap();
+        assert_eq!(
+            invitation.cleared,
+            vec!["pair_stale_a".to_string(), "pair_stale_b".to_string()],
+            "only the abandoned invitations go"
+        );
+        let link = reqwest::Url::parse(&invitation.code).unwrap();
+        let fields: std::collections::HashMap<_, _> = link.query_pairs().collect();
+        assert_eq!(fields["v"], "2");
+
+        let requests = platform.requests();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|(_, path, _)| path.ends_with("/pair/code"))
+                .count(),
+            2,
+            "the mint is asked again once the room is made"
+        );
+        assert_eq!(
+            requests[1].1, "/client/v1/remote/devices",
+            "the list is read after the refusal, not before"
+        );
+        let deleted: Vec<&str> = requests
+            .iter()
+            .filter(|(method, _, _)| method == "DELETE")
+            .map(|(_, path, _)| path.as_str())
+            .collect();
+        assert_eq!(
+            deleted,
+            vec![
+                "/client/v1/remote/devices/pair_stale_a",
+                "/client/v1/remote/devices/pair_stale_b",
+            ],
+            "a fresh invitation, a claimed device and another desktop all survive"
+        );
+    }
+
+    /// The code this desktop is showing may be under a phone right now. Making
+    /// room must never take it, however old it is.
+    #[tokio::test]
+    async fn a_full_desktop_never_clears_the_invitation_it_is_showing() {
+        let _home = HomeGuard::new("pairing-sweep-shown");
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        let desktop = crate::device_identity::device_id().unwrap();
+        refuse_for_the_cap(&platform);
+        platform.respond_pair_code("nats://127.0.0.1:4222");
+        platform.push(
+            "/client/v1/remote/devices",
+            200,
+            json!({ "devices": [
+                // The oldest row here, and still on screen: past the age floor,
+                // so only the explicit exclusion can save it.
+                device_row("pair_on_screen", &desktop, "pending", 240, false),
+                device_row("pair_abandoned", &desktop, "pending", 300, false),
+            ]}),
+        );
+        platform.push(
+            "/client/v1/remote/devices/pair_abandoned",
+            200,
+            json!({ "revoked": true }),
+        );
+
+        let invitation = create_pairing(true, &["pair_on_screen".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(invitation.cleared, vec!["pair_abandoned".to_string()]);
+        assert!(
+            !platform
+                .requests()
+                .iter()
+                .any(|(_, path, _)| path.ends_with("/pair_on_screen")),
+            "the invitation on screen must survive the sweep"
+        );
+    }
+
+    /// With nothing to clear, the platform's refusal is the answer — machine
+    /// code and wording untouched, because that is what the UI classifies on
+    /// and what sends the user to unpair a device.
+    #[tokio::test]
+    async fn a_refusal_with_nothing_to_clear_passes_through_unchanged() {
+        let _home = HomeGuard::new("pairing-sweep-empty");
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        refuse_for_the_cap(&platform);
+        platform.respond_pair_code("nats://127.0.0.1:4222");
+        platform.push("/client/v1/remote/devices", 200, json!({ "devices": [] }));
+
+        let error = create_pairing(true, &[]).await.map(|_| ()).unwrap_err();
+        match error {
+            crate::AppError::Remote {
+                status,
+                code,
+                message,
+            } => {
+                assert_eq!(status, 409);
+                assert_eq!(code.as_deref(), Some("pairing_limit_reached"));
+                assert!(message.contains("Unpair one of them"), "{message}");
+            }
+            other => panic!("expected the platform refusal, got {other:?}"),
+        }
+        assert_eq!(
+            platform
+                .requests()
+                .iter()
+                .filter(|(_, path, _)| path.ends_with("/pair/code"))
+                .count(),
+            1,
+            "nothing was freed, so the mint is not retried"
+        );
+    }
+
     #[tokio::test]
     async fn create_pairing_maps_network_and_server_failures() {
         let _home = HomeGuard::new("pairing-create-errors");
         // Nothing listening → transport failure.
         sign_in("http://127.0.0.1:9");
-        let error = create_pairing(false).await.unwrap_err();
+        let error = create_pairing(false, &[]).await.map(|_| ()).unwrap_err();
         assert!(matches!(error, crate::AppError::RemoteTransport(_)));
         assert_eq!(error_code(&error), Some("network"));
 
@@ -935,7 +1322,7 @@ mod http_tests {
             500,
             json!({ "error": "boom", "message": "server exploded" }),
         );
-        let error = create_pairing(false).await.unwrap_err();
+        let error = create_pairing(false, &[]).await.map(|_| ()).unwrap_err();
         assert_eq!(error_code(&error), Some("server"));
         match error {
             crate::AppError::Remote {
@@ -967,7 +1354,7 @@ mod http_tests {
                 "nats_ws_url": "ws://127.0.0.1:4222",
             }),
         );
-        let error = create_pairing(false).await.unwrap_err();
+        let error = create_pairing(false, &[]).await.map(|_| ()).unwrap_err();
         assert!(error.to_string().contains("invalid JWT"));
     }
 
@@ -981,7 +1368,7 @@ mod http_tests {
             200,
             json!({ "unexpected": 1 }),
         );
-        let error = create_pairing(false).await.unwrap_err();
+        let error = create_pairing(false, &[]).await.map(|_| ()).unwrap_err();
         assert!(error
             .to_string()
             .contains("Failed to parse create pairing code"));
@@ -1111,7 +1498,8 @@ mod http_tests {
 
         // No error/message fields → synthesized message, no code.
         platform.push("/client/v1/remote/pair/code", 500, json!({}));
-        let (status, code, message) = remote_error_parts(create_pairing(false).await.unwrap_err());
+        let (status, code, message) =
+            remote_error_parts(create_pairing(false, &[]).await.map(|_| ()).unwrap_err());
         assert_eq!(status, 500);
         assert!(code.is_none());
         assert!(message.contains("HTTP 500"));
@@ -1122,7 +1510,8 @@ mod http_tests {
             500,
             json!({ "error": "  ", "message": " " }),
         );
-        let (status, code, message) = remote_error_parts(create_pairing(false).await.unwrap_err());
+        let (status, code, message) =
+            remote_error_parts(create_pairing(false, &[]).await.map(|_| ()).unwrap_err());
         assert_eq!(status, 500);
         assert!(code.is_none());
         assert!(message.contains("HTTP 500"));
@@ -1155,7 +1544,7 @@ mod http_tests {
                 "nats_ws_url": "ws://127.0.0.1:4222",
             }),
         );
-        let error = create_pairing(false).await.unwrap_err();
+        let error = create_pairing(false, &[]).await.map(|_| ()).unwrap_err();
         assert!(
             error.to_string().contains("pairing_expiry_required"),
             "got {error}"

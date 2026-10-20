@@ -227,7 +227,15 @@ impl Supervisor {
     ) -> Result<RemoteStatus, crate::Error> {
         self.spawn_revoke_cleanup();
         let keep_existing = !self.host.load_slots().is_empty();
-        let (creds, code, expires_at) = self.host.invite(keep_existing).await?;
+        let Invitation {
+            creds,
+            code,
+            expires_at,
+            cleared,
+        } = self
+            .host
+            .invite(keep_existing, &self.shown_invitations())
+            .await?;
         if self
             .access
             .commit(epoch, || {
@@ -254,7 +262,13 @@ impl Supervisor {
                 pairing_code_expires_at: expires_at,
             };
             match self.start_slot(plan, epoch, true, false).await {
-                Ok(()) => return Ok(self.status_focused(Some(&added))),
+                Ok(()) => {
+                    let mut status = self.status_focused(Some(&added));
+                    // Carried out by this one answer: the codes that had to go so
+                    // this one could exist are news, not state.
+                    status.cleared_invitations = cleared;
+                    return Ok(status);
+                }
                 Err(error) if add_retryable(attempt, &error) => {
                     // Only a broker that is not answering yet is worth the next
                     // attempt. A refused credential or a local fault (disk, NKey)
@@ -311,11 +325,17 @@ impl Supervisor {
             // Nothing left to serve: mint one invitation, exactly as a
             // single-device install always did. Replacing is right here because
             // there is nothing to keep.
-            let (creds, code, exp) = self.host.invite(false).await?;
+            let Invitation {
+                creds,
+                code,
+                expires_at,
+                ..
+            // Nothing is on screen yet: this invitation is the one starting.
+            } = self.host.invite(false, &[]).await?;
             plans.push(SlotPlan {
                 creds,
                 pairing_code: Some(code),
-                pairing_code_expires_at: exp,
+                pairing_code_expires_at: expires_at,
             });
         }
         Ok(plans)
