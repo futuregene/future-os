@@ -139,6 +139,19 @@ fn apply_channel_environment_default_for(is_release: bool) -> Result<(), crate::
     Ok(())
 }
 
+/// The stored FutureGene API key, or an error when signed out. Mirrors the CLI's
+/// precedence trivially: the GUI only ever writes the key to the `future` entry.
+pub fn future_api_key() -> Result<String, crate::Error> {
+    crate::auth_store::read()?
+        .get(crate::auth_store::FUTURE_PROVIDER_ID)
+        .and_then(|entry| entry.get("key"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_string)
+        .ok_or(crate::Error::NotSignedIn)
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

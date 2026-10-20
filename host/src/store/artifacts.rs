@@ -33,7 +33,7 @@ sql_record!(pub(super) ARTIFACT_COLUMNS, artifact_from_row -> ArtifactRecord {
     content_storage, summary, created_at, updated_at, deleted_at,
 });
 
-pub fn list_artifacts(thread_id: &str) -> Result<Vec<ArtifactRecord>, crate::AppError> {
+pub fn list_artifacts(thread_id: &str) -> Result<Vec<ArtifactRecord>, crate::Error> {
     let thread = loaded(get_thread(thread_id)?, "Thread")?;
     let conn = connect()?;
     // Newest touch first: a row now folds every write/edit of one file (see
@@ -54,10 +54,10 @@ pub fn list_artifacts(thread_id: &str) -> Result<Vec<ArtifactRecord>, crate::App
         )
         .expect("invariant: fixed-arity string/int binding cannot fail");
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+        .map_err(crate::Error::from)
 }
 
-pub fn create_artifact(input: CreateArtifactInput) -> Result<ArtifactRecord, crate::AppError> {
+pub fn create_artifact(input: CreateArtifactInput) -> Result<ArtifactRecord, crate::Error> {
     let title = input.title.trim();
     if title.is_empty() {
         return Err("artifact title cannot be empty.".to_string().into());
@@ -94,7 +94,7 @@ pub fn create_artifact(input: CreateArtifactInput) -> Result<ArtifactRecord, cra
 
 pub fn import_attachment_artifact(
     input: ImportAttachmentArtifactInput,
-) -> Result<ArtifactRecord, crate::AppError> {
+) -> Result<ArtifactRecord, crate::Error> {
     let thread = loaded(get_thread(&input.thread_id)?, "Thread")?;
     if thread.mode != "chat" {
         return Err(
@@ -142,7 +142,7 @@ pub fn import_attachment_artifact(
 /// must show one row carrying its latest state — not one row per touch. Row
 /// identity is enforced by `idx_artifacts_thread_path`. Path-less (inline)
 /// artifacts have no such identity and stay keyed by (run_id, title).
-pub fn ensure_artifact(input: EnsureArtifactInput) -> Result<(), crate::AppError> {
+pub fn ensure_artifact(input: EnsureArtifactInput) -> Result<(), crate::Error> {
     // BEGIN IMMEDIATE so the lookup and the write are one atomic transaction;
     // concurrent agent events for the same artifact would otherwise both miss
     // the existing row and insert duplicates.
@@ -271,7 +271,7 @@ fn unique_attachment_path(dir: &Path, now: i64, file_name: &str) -> PathBuf {
     candidate
 }
 
-pub fn get_artifact(id: &str) -> Result<Option<ArtifactRecord>, crate::AppError> {
+pub fn get_artifact(id: &str) -> Result<Option<ArtifactRecord>, crate::Error> {
     let conn = connect()?;
     conn.query_row(
         &format!("SELECT {ARTIFACT_COLUMNS} FROM artifacts WHERE id = ?1"),
@@ -279,10 +279,10 @@ pub fn get_artifact(id: &str) -> Result<Option<ArtifactRecord>, crate::AppError>
         artifact_from_row,
     )
     .optional()
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
-pub fn delete_artifact(id: &str) -> Result<ArtifactRecord, crate::AppError> {
+pub fn delete_artifact(id: &str) -> Result<ArtifactRecord, crate::Error> {
     let now = now_millis();
     const SQL: &str = "UPDATE artifacts
          SET deleted_at = ?1, updated_at = ?1

@@ -107,7 +107,7 @@ const RUN_SNAPSHOT_STATUS: &str = "n/a";
 
 pub fn create_review_snapshot(
     input: CreateReviewSnapshotInput,
-) -> Result<ReviewSnapshotRecord, crate::AppError> {
+) -> Result<ReviewSnapshotRecord, crate::Error> {
     let conn = connect()?;
     let now = now_millis();
     let id = create_id("rsnap");
@@ -153,7 +153,7 @@ pub fn create_review_snapshot(
 pub fn get_review_snapshot(
     run_id: &str,
     phase: &str,
-) -> Result<Option<ReviewSnapshotRecord>, crate::AppError> {
+) -> Result<Option<ReviewSnapshotRecord>, crate::Error> {
     let conn = connect()?;
     conn.query_row(
         &format!(
@@ -163,7 +163,7 @@ pub fn get_review_snapshot(
         review_snapshot_from_row,
     )
     .optional()
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
 /// Create-or-replace the single `run_snapshot` changeset for a Run, along with
@@ -179,7 +179,7 @@ pub fn get_review_snapshot(
 /// about.
 pub fn upsert_run_changeset(
     input: UpsertRunChangesetInput,
-) -> Result<Option<ReviewChangesetRecord>, crate::AppError> {
+) -> Result<Option<ReviewChangesetRecord>, crate::Error> {
     let mut conn = connect()?;
     let now = now_millis();
     let tx = conn.transaction()?;
@@ -295,7 +295,7 @@ pub fn upsert_run_changeset(
     )?))
 }
 
-pub fn get_run_changeset(run_id: &str) -> Result<Option<ReviewChangesetRecord>, crate::AppError> {
+pub fn get_run_changeset(run_id: &str) -> Result<Option<ReviewChangesetRecord>, crate::Error> {
     let conn = connect()?;
     conn.query_row(
         &format!(
@@ -306,14 +306,14 @@ pub fn get_run_changeset(run_id: &str) -> Result<Option<ReviewChangesetRecord>, 
         review_changeset_from_row,
     )
     .optional()
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
 /// The `run_snapshot` changeset of the Thread's latest *ended* Run (§2.2):
 /// strictly the most recent ended Run, never skipping a no-change Run.
 pub fn get_last_run_changeset(
     thread_id: &str,
-) -> Result<Option<ReviewChangesetRecord>, crate::AppError> {
+) -> Result<Option<ReviewChangesetRecord>, crate::Error> {
     // Columns qualified with `c.` because the JOIN onto `runs` makes several
     // names (id, thread_id, status, created_at, updated_at) ambiguous.
     let cols = qualify_columns("c", REVIEW_CHANGESET_COLUMNS);
@@ -330,13 +330,13 @@ pub fn get_last_run_changeset(
         review_changeset_from_row,
     )
     .optional()
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
 /// Mark a Run's changeset (and any concurrently-overlapping peer Runs in the
 /// same Workspace) as `overlapped` (§12.5). Overlap is derived purely from the
 /// snapshot time windows; no extra in-memory state.
-pub fn mark_run_overlapped(workspace_id: &str, run_id: &str) -> Result<(), crate::AppError> {
+pub fn mark_run_overlapped(workspace_id: &str, run_id: &str) -> Result<(), crate::Error> {
     let mut conn = connect()?;
     let now = now_millis();
     // BEGIN IMMEDIATE so the window reads, the peer scan, and the overlap updates
@@ -433,7 +433,7 @@ pub(super) fn delete_run_review_in(
 pub fn prune_thread_changesets(
     thread_id: &str,
     keep: usize,
-) -> Result<Vec<(String, String)>, crate::AppError> {
+) -> Result<Vec<(String, String)>, crate::Error> {
     // One transaction end-to-end: the ordering read and every per-run cascade
     // see a single consistent snapshot, and an interrupted prune can't leave a
     // half-deleted run behind.
@@ -474,14 +474,14 @@ pub fn prune_thread_changesets(
 /// `after`-present case is deliberately *not* excluded — the old query's
 /// `NOT EXISTS(after)` dropped it, leaving such Runs permanently
 /// changeset-less.
-pub fn list_unmaterialized_runs() -> Result<Vec<(String, String, String)>, crate::AppError> {
+pub fn list_unmaterialized_runs() -> Result<Vec<(String, String, String)>, crate::Error> {
     let conn = connect()?;
     list_unmaterialized_runs_in(&conn)
 }
 
 fn list_unmaterialized_runs_in(
     conn: &rusqlite::Connection,
-) -> Result<Vec<(String, String, String)>, crate::AppError> {
+) -> Result<Vec<(String, String, String)>, crate::Error> {
     const SQL: &str = "SELECT s.run_id, s.thread_id, s.workspace_id
          FROM review_snapshots s
          WHERE s.phase = 'before' AND s.status != 'failed'
@@ -498,12 +498,12 @@ fn list_unmaterialized_runs_in(
         ))
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+        .map_err(crate::Error::from)
 }
 
 /// All non-failed snapshots that pin a commit, for the startup consistency check.
 /// Returns `(snapshot_id, workspace_id, commit_id)` (§8.4).
-pub fn list_snapshots_with_commits() -> Result<Vec<(String, String, String)>, crate::AppError> {
+pub fn list_snapshots_with_commits() -> Result<Vec<(String, String, String)>, crate::Error> {
     let conn = connect()?;
     let mut stmt = conn.prepare(
         "SELECT id, workspace_id, commit_id
@@ -518,12 +518,12 @@ pub fn list_snapshots_with_commits() -> Result<Vec<(String, String, String)>, cr
         ))
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+        .map_err(crate::Error::from)
 }
 
 /// Mark a snapshot failed (e.g. its commit went missing), so the derived
 /// `snapshotStatus` becomes `unavailable` (§8.4).
-pub fn mark_snapshot_failed(snapshot_id: &str, reason: &str) -> Result<(), crate::AppError> {
+pub fn mark_snapshot_failed(snapshot_id: &str, reason: &str) -> Result<(), crate::Error> {
     let conn = connect()?;
     conn.execute(
         "UPDATE review_snapshots SET status = 'failed', error_message = ?2 WHERE id = ?1",

@@ -43,7 +43,7 @@ sql_record!(pub(super) APPROVAL_REQUEST_COLUMNS, approval_request_from_row -> Ap
     decision_scope, decision_source,
 });
 
-pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), crate::AppError> {
+pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), crate::Error> {
     // BEGIN IMMEDIATE so the existence check and the insert are one atomic
     // write — the agent can stream concurrent events for the same tool call, and
     // a plain check-then-insert would let two of them both insert a duplicate.
@@ -103,9 +103,7 @@ pub fn ensure_approval_request(input: EnsureApprovalRequestInput) -> Result<(), 
     Ok(())
 }
 
-pub fn list_approval_requests(
-    thread_id: &str,
-) -> Result<Vec<ApprovalRequestRecord>, crate::AppError> {
+pub fn list_approval_requests(thread_id: &str) -> Result<Vec<ApprovalRequestRecord>, crate::Error> {
     let conn = connect()?;
     let mut stmt = conn.prepare(&format!(
         "SELECT {APPROVAL_REQUEST_COLUMNS}
@@ -115,13 +113,13 @@ pub fn list_approval_requests(
     ))?;
     let rows = stmt.query_map(params![thread_id], approval_request_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+        .map_err(crate::Error::from)
 }
 
 /// Every still-pending approval across all threads. Used by the sidebar badge
 /// (which counts approvals outside the open thread) and by startup/watchdog
 /// reconciliation against the Agent's authoritative pending set.
-pub fn list_pending_approval_requests() -> Result<Vec<ApprovalRequestRecord>, crate::AppError> {
+pub fn list_pending_approval_requests() -> Result<Vec<ApprovalRequestRecord>, crate::Error> {
     let conn = connect()?;
     let mut stmt = conn.prepare(&format!(
         "SELECT {APPROVAL_REQUEST_COLUMNS}
@@ -131,12 +129,12 @@ pub fn list_pending_approval_requests() -> Result<Vec<ApprovalRequestRecord>, cr
     ))?;
     let rows = stmt.query_map([], approval_request_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+        .map_err(crate::Error::from)
 }
 
 pub fn decide_approval_request(
     input: DecideApprovalRequestInput,
-) -> Result<ApprovalRequestRecord, crate::AppError> {
+) -> Result<ApprovalRequestRecord, crate::Error> {
     let status = match input.status.as_str() {
         "approved" | "rejected" | "cancelled" => input.status,
         _ => {
@@ -172,7 +170,7 @@ pub fn decide_approval_request(
 
 pub fn list_review_file_changes(
     changeset_id: &str,
-) -> Result<Vec<ReviewFileChangeRecord>, crate::AppError> {
+) -> Result<Vec<ReviewFileChangeRecord>, crate::Error> {
     let conn = connect()?;
     let mut stmt = conn.prepare(&format!(
         "SELECT {REVIEW_FILE_CHANGE_COLUMNS}
@@ -182,7 +180,7 @@ pub fn list_review_file_changes(
     ))?;
     let rows = stmt.query_map(params![changeset_id], review_file_change_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+        .map_err(crate::Error::from)
 }
 
 #[cfg(test)]

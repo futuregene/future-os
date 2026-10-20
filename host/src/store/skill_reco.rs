@@ -51,7 +51,7 @@ fn local_day() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
-pub fn skill_reco_today() -> Result<SkillRecoToday, crate::AppError> {
+pub fn skill_reco_today() -> Result<SkillRecoToday, crate::Error> {
     let conn = connect()?;
     let day = local_day();
     let mut statement =
@@ -74,7 +74,7 @@ pub fn skill_reco_today() -> Result<SkillRecoToday, crate::AppError> {
 
 /// Record one shown recommendation. Called only when a card is actually
 /// displayed — a call that recommended nothing must not consume the budget.
-pub fn record_skill_reco(skill_id: &str, message_hash: &str) -> Result<(), crate::AppError> {
+pub fn record_skill_reco(skill_id: &str, message_hash: &str) -> Result<(), crate::Error> {
     let mut conn = connect()?;
     let tx = conn.transaction()?;
     tx.execute(

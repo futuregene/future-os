@@ -18,7 +18,7 @@ use crate::store::util::qualify_columns;
 
 pub fn resolve_markdown_references(
     input: ResolveMarkdownReferencesInput,
-) -> Result<Vec<ResolvedMarkdownReference>, crate::AppError> {
+) -> Result<Vec<ResolvedMarkdownReference>, crate::Error> {
     let workspace_id = input.workspace_id.trim().to_string();
     if workspace_id.is_empty() {
         return Err("workspace id is required to resolve markdown references."
@@ -109,7 +109,7 @@ fn missing_reference(
 fn failed_reference(
     target_type: String,
     target_id: String,
-    error: crate::AppError,
+    error: crate::Error,
 ) -> ResolvedMarkdownReference {
     ResolvedMarkdownReference {
         target_type,
@@ -124,7 +124,7 @@ fn get_artifact_in_workspace(
     conn: &Connection,
     workspace_id: &str,
     id: &str,
-) -> Result<Option<ArtifactRecord>, crate::AppError> {
+) -> Result<Option<ArtifactRecord>, crate::Error> {
     conn.query_row(
         &format!(
             "SELECT {ARTIFACT_COLUMNS}
@@ -135,7 +135,7 @@ fn get_artifact_in_workspace(
         artifact_from_row,
     )
     .optional()
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
 /// A local-file link (a plain markdown path link), rendered by the frontend as
@@ -165,7 +165,7 @@ fn resolve_file_reference(
     conn: &Connection,
     workspace_id: &str,
     raw_path: &str,
-) -> Result<ResolvedFile, crate::AppError> {
+) -> Result<ResolvedFile, crate::Error> {
     let raw = raw_path.trim();
 
     let workspace_path: Option<String> = conn
@@ -214,7 +214,7 @@ fn get_run_in_workspace(
     conn: &Connection,
     workspace_id: &str,
     id: &str,
-) -> Result<Option<RunRecord>, crate::AppError> {
+) -> Result<Option<RunRecord>, crate::Error> {
     let cols = qualified_run_columns(conn, "r")?;
     conn.query_row(
         &format!(
@@ -226,14 +226,14 @@ fn get_run_in_workspace(
         run_from_row,
     )
     .optional()
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
 fn get_approval_request_in_workspace(
     conn: &Connection,
     workspace_id: &str,
     id: &str,
-) -> Result<Option<ApprovalRequestRecord>, crate::AppError> {
+) -> Result<Option<ApprovalRequestRecord>, crate::Error> {
     let cols = qualify_columns("a", APPROVAL_REQUEST_COLUMNS);
     conn.query_row(
         &format!(
@@ -245,14 +245,14 @@ fn get_approval_request_in_workspace(
         approval_request_from_row,
     )
     .optional()
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
 fn get_review_changeset_in_workspace(
     conn: &Connection,
     workspace_id: &str,
     id: &str,
-) -> Result<Option<ReviewChangesetRecord>, crate::AppError> {
+) -> Result<Option<ReviewChangesetRecord>, crate::Error> {
     // Columns qualified with `c.` because the JOIN onto `threads` makes several
     // names (id, thread_id, created_at, updated_at) ambiguous. Use the shared
     // column list so this stays in sync with `review_changeset_from_row`.
@@ -267,7 +267,7 @@ fn get_review_changeset_in_workspace(
         review_changeset_from_row,
     )
     .optional()
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
 #[cfg(test)]

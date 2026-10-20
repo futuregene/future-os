@@ -1,6 +1,6 @@
 use rusqlite::{params, OptionalExtension};
 
-pub fn thread_source(thread_id: &str) -> Result<Option<(String, String)>, crate::AppError> {
+pub fn thread_source(thread_id: &str) -> Result<Option<(String, String)>, crate::Error> {
     let conn = super::db::connect()?;
     Ok(conn
         .query_row(
@@ -18,7 +18,7 @@ pub fn record_thread_source(
     session_id: &str,
     database_id: &str,
     generation: &str,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     if database_id.is_empty() || generation.is_empty() {
         return Err("Agent database identity is missing.".into());
     }
@@ -52,11 +52,13 @@ pub fn record_thread_source(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent_bridge::test_support::{seed_thread, seed_workspace, TestHome};
+    use crate::auth_store::test_support::HomeGuard as TestHome;
+    use crate::store::test_support::{seed_thread, seed_workspace};
 
     #[test]
     fn ownership_is_stable_across_restore_and_rejects_foreign_sources() {
         let home = TestHome::new("source-ownership");
+        crate::store::initialize_app_store().expect("init store");
         let workspace = seed_workspace(home.path(), "source");
         let thread = seed_thread(&workspace.id, Some("session"));
         record_thread_source(&thread.id, "session", "database-a", "restore-1").unwrap();

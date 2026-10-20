@@ -156,6 +156,11 @@ pub mod test_support {
     use std::path::PathBuf;
     use std::sync::MutexGuard;
 
+    fn cleanup_host() {
+        crate::runtime::cancel_test_tasks();
+        crate::store::close_pool();
+    }
+
     pub struct HomeGuard {
         previous: Option<String>,
         previous_future_home: Option<std::ffi::OsString>,
@@ -166,7 +171,7 @@ pub mod test_support {
 
     impl HomeGuard {
         pub fn new(label: &str) -> Self {
-            Self::with_cleanup(label, crate::runtime::cancel_test_tasks)
+            Self::with_cleanup(label, cleanup_host)
         }
 
         /// Entry fixtures drain their remaining services and close database pools
@@ -248,7 +253,7 @@ pub mod test_support {
             previous_future_home: std::env::var_os("FUTURE_HOME"),
             dir: dir.clone(),
             _lock: lock,
-            cleanup: crate::runtime::cancel_test_tasks,
+            cleanup: cleanup_host,
         };
         guard.restore();
         assert!(
@@ -279,7 +284,7 @@ pub mod test_support {
             previous_future_home: Some(std::ffi::OsString::from("/opt/pre-existing-future-home")),
             dir: dir.clone(),
             _lock: lock,
-            cleanup: crate::runtime::cancel_test_tasks,
+            cleanup: cleanup_host,
         };
         // While the fixture is live the variable is removed, so the code under
         // test resolves the fixture's HOME-based root.
@@ -298,6 +303,24 @@ pub mod test_support {
         // environment exactly as this test found it instead of re-setting it.
         guard.previous_future_home = None;
         std::env::remove_var("FUTURE_HOME");
+    }
+    #[test]
+    fn home_guard_removes_its_directory_even_with_a_live_pooled_connection() {
+        // Regression: the guard used to delete its temp home while the
+        // connection pool still held the database open. Windows cannot unlink
+        // an open file, so the delete failed silently and every run leaked its
+        // home directory (~19k dirs / 33 GB accumulated before this was found),
+        // which eventually filled the disk and surfaced as spurious SQLite
+        // `DatabaseBusy`/`StorageFull` failures in unrelated tests.
+        let dir = {
+            let guard = HomeGuard::new("leak-regression");
+            let dir = guard.path().to_path_buf();
+            // Leave a pooled connection to this home's database open across the
+            // guard's drop: that handle is what used to make the delete fail.
+            crate::store::initialize_app_store().expect("store");
+            dir
+        };
+        assert!(!dir.exists(), "guard must remove {} on drop", dir.display());
     }
 }
 

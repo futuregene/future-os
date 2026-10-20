@@ -58,7 +58,7 @@ pub struct UnverifiedRun {
 /// whose last write is at or after `since_ms`, oldest first. The bound is what
 /// keeps the repair pass from re-reading the whole run history on every start;
 /// `session_id` resolution mirrors [`list_active_runs`].
-pub fn list_unverified_settled_runs(since_ms: i64) -> Result<Vec<UnverifiedRun>, crate::AppError> {
+pub fn list_unverified_settled_runs(since_ms: i64) -> Result<Vec<UnverifiedRun>, crate::Error> {
     let conn = connect()?;
     let mut stmt = conn.prepare(&format!(
         "SELECT runs.id, runs.thread_id, runs.started_at,
@@ -78,7 +78,7 @@ pub fn list_unverified_settled_runs(since_ms: i64) -> Result<Vec<UnverifiedRun>,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+        .map_err(crate::Error::from)
 }
 
 /// CAS an unverified row back to `running` because the Agent's ledger still owns
@@ -90,7 +90,7 @@ pub fn list_unverified_settled_runs(since_ms: i64) -> Result<Vec<UnverifiedRun>,
 /// Returns whether a row changed; the guard is a compare-and-set over the
 /// unverified terminal shapes, so a row another writer already moved is left
 /// alone. The caller owns the UI notification (see `desktop/CLAUDE.md` #11).
-pub fn revive_unverified_run(run_id: &str) -> Result<bool, crate::AppError> {
+pub fn revive_unverified_run(run_id: &str) -> Result<bool, crate::Error> {
     let now = now_millis();
     let conn = connect()?;
     let affected = conn.execute(
@@ -119,7 +119,7 @@ pub fn settle_unverified_run_from_agent(
     agent_state: &str,
     error: Option<&str>,
     ended_at: Option<i64>,
-) -> Result<bool, crate::AppError> {
+) -> Result<bool, crate::Error> {
     let Some((status, error_type, default_message)) = agent_terminal_settlement(agent_state) else {
         return Ok(false);
     };
@@ -150,7 +150,7 @@ pub fn settle_unverified_run_from_agent(
 
 /// Returns runs that were interrupted by a previous process crash and
 /// need re-examination against the agent's actual state.
-pub fn list_interrupted_runs() -> Result<Vec<InterruptedRun>, crate::AppError> {
+pub fn list_interrupted_runs() -> Result<Vec<InterruptedRun>, crate::Error> {
     let conn = connect()?;
     let mut stmt = conn.prepare(
         "SELECT r.id, r.thread_id,
@@ -168,7 +168,7 @@ pub fn list_interrupted_runs() -> Result<Vec<InterruptedRun>, crate::AppError> {
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+        .map_err(crate::Error::from)
 }
 
 /// Every run that has not reached a terminal state (`running` /
@@ -176,7 +176,7 @@ pub fn list_interrupted_runs() -> Result<Vec<InterruptedRun>, crate::AppError> {
 /// find rows whose owning pipeline or collector never settled them and
 /// reconcile each against the agent's authoritative state. `session_id`
 /// resolution mirrors [`list_interrupted_runs`].
-pub fn list_active_runs() -> Result<Vec<ActiveRun>, crate::AppError> {
+pub fn list_active_runs() -> Result<Vec<ActiveRun>, crate::Error> {
     let conn = connect()?;
     let mut stmt = conn.prepare(&format!(
         "SELECT r.id, r.thread_id, r.created_at,
@@ -195,7 +195,7 @@ pub fn list_active_runs() -> Result<Vec<ActiveRun>, crate::AppError> {
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+        .map_err(crate::Error::from)
 }
 
 /// Reset a run back to "running", clearing interrupted/error markers — but only
@@ -205,7 +205,7 @@ pub fn list_active_runs() -> Result<Vec<ActiveRun>, crate::AppError> {
 /// that another path settled (a terminal state that is NOT the interrupted
 /// marker) is left untouched and the caller skips spawning a collector for it.
 /// This honors the "no unguarded status writer" rule (see desktop/CLAUDE.md #11).
-pub fn reanimate_run(run_id: &str) -> Result<bool, crate::AppError> {
+pub fn reanimate_run(run_id: &str) -> Result<bool, crate::Error> {
     let now = now_millis();
     let conn = connect()?;
     let affected = conn.execute(
@@ -230,7 +230,7 @@ pub fn settle_interrupted_run_from_agent(
     run_id: &str,
     agent_state: &str,
     error: Option<&str>,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     let Some((status, error_type, default_message)) = agent_terminal_settlement(agent_state) else {
         return Ok(());
     };
@@ -272,97 +272,13 @@ fn agent_terminal_settlement(
 use super::util::{count_workspace_files, loaded, now_millis};
 use super::{get_thread, get_workspace};
 
-/// Inspect missing Agent bindings without deleting conversation history.
-/// An incomplete restore or a different Agent database is indistinguishable
-/// from an offline deletion. Only an explicit deletion event or user action
-/// authorizes removing the local conversation and its recovery copies.
-pub async fn reconcile_orphan_sessions() -> Result<usize, crate::AppError> {
-    // The bundled agent may still be booting when this pass runs; retry
-    // briefly before concluding it is down.
-    let mut live_sessions: Option<HashSet<String>> = None;
-    for _ in 0..3 {
-        match crate::agent_bridge::list_agent_session_ids().await {
-            Ok(ids) => {
-                live_sessions = Some(ids);
-                break;
-            }
-            Err(crate::AppError::AgentUnavailable(_)) => {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            }
-            Err(error) => {
-                eprintln!("FutureOS: orphan-session reconcile skipped: {error}");
-                return Ok(0);
-            }
-        }
-    }
-    let Some(live_sessions) = live_sessions else {
-        eprintln!("FutureOS: orphan-session reconcile skipped: agent unreachable");
-        return Ok(0);
-    };
-
-    let orphans = {
-        let conn = connect()?;
-        orphan_thread_ids(&conn, &live_sessions)?
-    };
-    let bindings: Vec<(String, String)> = {
-        let conn = connect()?;
-        let mut statement = conn.prepare("SELECT id,agent_session_id FROM threads WHERE status!='deleted' AND COALESCE(agent_session_id,'')!=''")?;
-        let rows = statement
-            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?;
-        rows
-    };
-    let mut removed = 0;
-    for batch in bindings.chunks(future_rpc::session_deletion::MAX_DELETE_SESSIONS) {
-        let ids = batch.iter().map(|(_, session)| session.clone()).collect();
-        let presence = match crate::agent_bridge::session_presence(ids).await {
-            Ok(presence) => presence,
-            Err(error) => {
-                eprintln!("FutureOS: durable session reconcile deferred: {error}");
-                break;
-            }
-        };
-        for (thread, session) in batch {
-            let status = presence
-                .sessions
-                .iter()
-                .find(|item| item.session_id == *session)
-                .map(|item| item.status.as_str());
-            match status {
-                Some("present") => {
-                    if let Err(error) = super::record_thread_source(
-                        thread,
-                        session,
-                        &presence.database_id,
-                        &presence.restore_generation,
-                    ) {
-                        eprintln!("FutureOS: conversation source binding retained: {error}");
-                    }
-                }
-                Some("deleted")
-                    if super::thread_source(thread)?
-                        .is_some_and(|source| source.0 == presence.database_id) =>
-                {
-                    removed +=
-                        usize::from(crate::agent_bridge::reconcile_deleted_session(session)?);
-                }
-                _ => {}
-            }
-        }
-    }
-    if !orphans.is_empty() && removed == 0 {
-        eprintln!("FutureOS: {} conversation source(s) are missing; preserving local history for recovery", orphans.len());
-    }
-    Ok(removed)
-}
-
 /// Decide which active threads have lost their agent base data. Split out from
 /// the deletion so the (subtle) detection rules can be unit-tested against an
 /// in-memory DB and a fixture session set.
 fn orphan_thread_ids(
     conn: &Connection,
     live_sessions: &HashSet<String>,
-) -> Result<Vec<String>, crate::AppError> {
+) -> Result<Vec<String>, crate::Error> {
     // Thread ids that have produced base data (a completed run) at least once.
     let threads_with_base: HashSet<String> = {
         let mut stmt =
@@ -405,60 +321,12 @@ fn orphan_thread_ids(
 /// hundred milliseconds while it is very much alive.
 const EMPTY_CONVERSATION_GRACE_MS: i64 = 10 * 60 * 1000;
 
-/// Sweep conversations the GUI mirrors for a session that has no message at all.
-///
-/// Sessions are announced when they are *created*, so builds that imported every
-/// announcement ended up with a row for sessions nobody had prompted yet: an
-/// empty conversation in every list, plus the throw-away temp workspace the
-/// mirror allocated for it. Import no longer does that; this heals the rows that
-/// are already stored, so an existing list converges without hand deletion.
-///
-/// Only threads that never produced a run are candidates — a thread with runs
-/// always had something to show — and only when the Agent itself answers that
-/// the session holds no message. An unreachable Agent, an unreadable journal, or
-/// a partially read one all leave the row alone (see
-/// [`crate::agent_bridge::session_has_messages`]), and a thread created within
-/// [`EMPTY_CONVERSATION_GRACE_MS`] is skipped so a conversation being started
-/// right now is never caught mid-bind. Returns the number of threads deleted.
-pub async fn reconcile_empty_conversations() -> Result<usize, crate::AppError> {
-    let candidates = {
-        let conn = connect()?;
-        empty_thread_candidates(&conn, now_millis() - EMPTY_CONVERSATION_GRACE_MS)?
-    };
-    let mut removed = 0;
-    for (thread_id, session_id) in candidates {
-        if super::has_legacy_history(&thread_id)? {
-            continue;
-        }
-        match crate::agent_bridge::session_has_messages(&session_id).await {
-            Ok(true) => {}
-            Ok(false) => {
-                // The Agent keeps the session: this drops only the local
-                // projection, without queuing an Agent delete or tombstoning
-                // the id the next discovery pass has to re-import.
-                crate::store::forget_thread_mirror(&thread_id)?;
-                removed += 1;
-            }
-            Err(crate::AppError::AgentUnavailable(error)) => {
-                // Nothing left in this pass can be judged while the Agent is
-                // away; the next one re-runs it.
-                eprintln!("FutureOS: empty-conversation reconcile stopped: {error}");
-                break;
-            }
-            Err(error) => {
-                eprintln!("FutureOS: empty-conversation probe failed for {session_id}: {error}")
-            }
-        }
-    }
-    Ok(removed)
-}
-
 /// The `(thread, agent session)` pairs worth probing for emptiness: threads
 /// bound to a session that never produced a run and are past the bind grace.
 fn empty_thread_candidates(
     conn: &Connection,
     created_before: i64,
-) -> Result<Vec<(String, String)>, crate::AppError> {
+) -> Result<Vec<(String, String)>, crate::Error> {
     let mut stmt = conn.prepare(
         "SELECT id, agent_session_id FROM threads
           WHERE status != 'deleted'
@@ -470,17 +338,17 @@ fn empty_thread_candidates(
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+        .map_err(crate::Error::from)
 }
 
 /// Preserve unowned image directories unless an explicit delete authorized cleanup.
 /// A restored app.db may be older than the files beside it.
-pub fn reconcile_orphan_images() -> Result<usize, crate::AppError> {
+pub fn reconcile_orphan_images() -> Result<usize, crate::Error> {
     reclaim_orphan_subdirs(crate::store::app_images_root()?, "images", live_thread_ids)
 }
 
 /// Retain unowned chat workspaces for recovery; retry explicitly requested cleanup.
-pub fn reconcile_orphan_chat_workspaces() -> Result<usize, crate::AppError> {
+pub fn reconcile_orphan_chat_workspaces() -> Result<usize, crate::Error> {
     reclaim_orphan_subdirs(
         crate::store::chat_workspaces_root()?,
         "chat",
@@ -489,7 +357,7 @@ pub fn reconcile_orphan_chat_workspaces() -> Result<usize, crate::AppError> {
 }
 
 /// Retain unowned review repositories; retry explicitly requested cleanup.
-pub fn reconcile_orphan_review_repos() -> Result<usize, crate::AppError> {
+pub fn reconcile_orphan_review_repos() -> Result<usize, crate::Error> {
     reclaim_orphan_subdirs(
         crate::store::review_repos_root()?,
         "review",
@@ -536,7 +404,7 @@ fn live_workspace_ids(conn: &Connection) -> rusqlite::Result<HashSet<String>> {
 /// Subdirectories of `root` whose name is not in `live`. Shared by the image /
 /// chat-workspace / review reclaimers so they scan identically. Split out so the
 /// rule can be unit-tested against an in-memory DB and a temp dir.
-fn orphan_subdirs(root: &Path, live: &HashSet<String>) -> Result<Vec<PathBuf>, crate::AppError> {
+fn orphan_subdirs(root: &Path, live: &HashSet<String>) -> Result<Vec<PathBuf>, crate::Error> {
     let mut orphans = Vec::new();
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
@@ -559,7 +427,7 @@ fn reclaim_orphan_subdirs(
     root: PathBuf,
     kind: &str,
     live_ids: fn(&Connection) -> rusqlite::Result<HashSet<String>>,
-) -> Result<usize, crate::AppError> {
+) -> Result<usize, crate::Error> {
     if !root.exists() {
         return Ok(0);
     }
@@ -604,13 +472,11 @@ fn reclaim_orphan_subdirs(
 
 /// Test shim preserving the original `orphan_image_dirs` name/signature.
 #[cfg(test)]
-fn orphan_image_dirs(conn: &Connection, root: &Path) -> Result<Vec<PathBuf>, crate::AppError> {
+fn orphan_image_dirs(conn: &Connection, root: &Path) -> Result<Vec<PathBuf>, crate::Error> {
     orphan_subdirs(root, &live_thread_ids(conn)?)
 }
 
-pub fn get_thread_cleanup_summary(
-    thread_id: &str,
-) -> Result<ThreadCleanupSummary, crate::AppError> {
+pub fn get_thread_cleanup_summary(thread_id: &str) -> Result<ThreadCleanupSummary, crate::Error> {
     let thread = loaded(get_thread(thread_id)?, "Thread")?;
     let workspace = loaded(get_workspace(&thread.workspace_id)?, "Thread workspace")?;
     let conn = connect()?;
@@ -642,7 +508,7 @@ pub fn get_thread_cleanup_summary(
 
 /// Hide terminal runs from the Runs panel while retaining their local metadata
 /// and Agent-owned event history for transcript inspection and deep links.
-pub fn archive_finished_runs(thread_id: &str) -> Result<usize, crate::AppError> {
+pub fn archive_finished_runs(thread_id: &str) -> Result<usize, crate::Error> {
     let mut conn = connect()?;
     if !super::runs::run_archive_supported(&conn)? {
         return Err(
@@ -664,6 +530,35 @@ pub fn archive_finished_runs(thread_id: &str) -> Result<usize, crate::AppError> 
     )?;
     tx.commit()?;
     Ok(archived_runs)
+}
+
+/// Snapshot the local bindings before querying the Agent. Missing catalogue
+/// sources alone never authorize deleting history.
+pub struct SessionReconcileCandidates {
+    pub missing_sources: usize,
+    pub bindings: Vec<(String, String)>,
+}
+pub fn session_reconcile_candidates(
+    live_sessions: &HashSet<String>,
+) -> Result<SessionReconcileCandidates, crate::Error> {
+    let missing_sources = {
+        let conn = connect()?;
+        orphan_thread_ids(&conn, live_sessions)?.len()
+    };
+    let conn = connect()?;
+    let mut statement = conn.prepare("SELECT id,agent_session_id FROM threads WHERE status!='deleted' AND COALESCE(agent_session_id,'')!=''")?;
+    let bindings = statement
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(SessionReconcileCandidates {
+        missing_sources,
+        bindings,
+    })
+}
+/// Old, unrun projections eligible for an authoritative Agent emptiness probe.
+pub fn empty_conversation_candidates() -> Result<Vec<(String, String)>, crate::Error> {
+    let conn = connect()?;
+    empty_thread_candidates(&conn, now_millis() - EMPTY_CONVERSATION_GRACE_MS)
 }
 
 #[cfg(test)]
@@ -1092,30 +987,6 @@ mod tests {
 
     use crate::store::db::test_support::guarded_conn;
 
-    /// Full-graph fixture: ws1 (temporary, files on disk) with threads and
-    /// runs in assorted states. `sessions`: (thread, agent_session_id).
-    fn seed_full(conn: &Connection) {
-        conn.execute_batch(
-            "INSERT INTO workspaces (
-                 id, name, kind, path, cleanup_status, created_at, updated_at
-             ) VALUES ('ws1', 'WS', 'temporary', '/tmp/ws1', 'active', 1, 1);
-             INSERT INTO threads (
-                 id, workspace_id, mode, title, agent_session_id, created_at, updated_at
-             ) VALUES
-                 ('t_sess', 'ws1', 'chat', 'T', 'sess_live', 1, 1),
-                 ('t_blank', 'ws1', 'chat', 'T', '  ', 1, 1),
-                 ('t_none', 'ws1', 'chat', 'T', NULL, 1, 1);
-             INSERT INTO runs (
-                 id, thread_id, status, error_type, created_at, updated_at
-             ) VALUES
-                 ('r_int', 't_sess', 'cancelled', 'interrupted', 1, 1),
-                 ('r_run', 't_blank', 'running', NULL, 2, 2),
-                 ('r_wait', 't_none', 'waiting_approval', NULL, 3, 3),
-                 ('r_done', 't_none', 'completed', NULL, 4, 4);",
-        )
-        .expect("seed full graph");
-    }
-
     #[test]
     fn interrupted_and_active_run_listings_resolve_session_ids() {
         let (_home, conn) = guarded_conn("cleanup_lists");
@@ -1137,26 +1008,6 @@ mod tests {
         // Blank session id falls back to the thread id.
         assert_eq!(active[0].session_id, "t_blank");
         assert_eq!(active[1].session_id, "t_none");
-    }
-
-    #[tokio::test]
-    async fn orphaned_runs_remain_discoverable_and_can_be_terminated_without_guessing_a_session() {
-        let (_home, conn) = guarded_conn("orphan_run_abort");
-        seed_full(&conn);
-        conn.execute_batch("PRAGMA foreign_keys=OFF; DELETE FROM threads WHERE id='t_blank'; PRAGMA foreign_keys=ON;").unwrap();
-        drop(conn);
-        assert!(list_active_runs()
-            .unwrap()
-            .iter()
-            .any(|run| run.run_id == "r_run"));
-        let cancelled = crate::agent_bridge::abort_run("t_blank".into(), "r_run".into())
-            .await
-            .unwrap();
-        assert_eq!(cancelled.status, "cancelled");
-        assert!(!list_active_runs()
-            .unwrap()
-            .iter()
-            .any(|run| run.run_id == "r_run"));
     }
 
     #[test]
@@ -1422,220 +1273,9 @@ mod tests {
 
     // ── reconcile_orphan_sessions against the shared mock agent ─────────────
 
-    use crate::commands::agent_mock::{
-        ensure_mock_agent, mock_agent_lock, script_mock_agent, MockScript,
-    };
-
-    #[tokio::test]
-    async fn reconcile_preserves_history_when_an_agent_database_is_missing() {
-        let _lock = mock_agent_lock();
-        ensure_mock_agent();
-        script_mock_agent(MockScript {
-            down: false,
-            fail_list_session_ids: false,
-            session_ids: vec!["sess_live".to_string()],
-            ..Default::default()
-        });
-
-        let (_home, conn) = guarded_conn("reconcile_ok");
-        seed_full(&conn);
-        drop(conn);
-
-        // Absence from the Agent catalogue can mean a partial restore; even
-        // completed conversations and their run records must survive.
-        let deleted = reconcile_orphan_sessions().await.expect("reconcile");
-        assert_eq!(deleted, 0);
-        assert!(crate::store::get_thread("t_none").expect("get").is_some());
-        assert!(crate::store::get_thread("t_sess").expect("get").is_some());
-
-        script_mock_agent(MockScript::default());
-    }
-
-    #[tokio::test]
-    async fn reconcile_skips_when_enumeration_fails() {
-        let _lock = mock_agent_lock();
-        ensure_mock_agent();
-        script_mock_agent(MockScript {
-            down: false,
-            fail_list_session_ids: true,
-            session_ids: vec![],
-            ..Default::default()
-        });
-
-        let (_home, conn) = guarded_conn("reconcile_fail");
-        seed_full(&conn);
-        drop(conn);
-
-        let deleted = reconcile_orphan_sessions().await.expect("reconcile");
-        assert_eq!(deleted, 0, "a failed enumeration deletes nothing");
-        assert!(crate::store::get_thread("t_none").expect("get").is_some());
-
-        script_mock_agent(MockScript::default());
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn reconcile_skips_when_the_agent_is_unreachable() {
-        let _lock = mock_agent_lock();
-        ensure_mock_agent();
-        // Down mode: every RPC answers Unavailable, so connect (or the first
-        // command on the latched channel) surfaces AgentUnavailable and the
-        // pass retries, then skips.
-        script_mock_agent(MockScript {
-            down: true,
-            ..Default::default()
-        });
-
-        let (_home, conn) = guarded_conn("reconcile_down");
-        seed_full(&conn);
-        drop(conn);
-
-        let deleted = reconcile_orphan_sessions().await.expect("reconcile");
-        assert_eq!(deleted, 0, "an unreachable agent deletes nothing");
-        assert!(crate::store::get_thread("t_none").expect("get").is_some());
-
-        script_mock_agent(MockScript::default());
-    }
+    use super::super::test_support::{seed_full, seed_message_less_threads};
 
     // ── reconcile_empty_conversations against the shared mock agent ─────────
-
-    /// A thread mirrored for an agent session that never produced a run — the
-    /// shape older builds left behind for sessions announced at creation and
-    /// never prompted.
-    fn seed_message_less_threads(conn: &Connection, threads: &[(&str, &str, i64)]) {
-        conn.execute_batch(
-            "INSERT INTO workspaces (
-                 id, name, kind, path, cleanup_status, created_at, updated_at
-             ) VALUES ('ws_empty', 'WS', 'temporary', '/tmp/ws-empty', 'active', 1, 1);",
-        )
-        .expect("seed workspace");
-        for (id, session_id, created_at) in threads {
-            conn.execute(
-                "INSERT INTO threads (
-                     id, workspace_id, mode, title, agent_session_id, created_at, updated_at
-                 ) VALUES (?1, 'ws_empty', 'chat', 'T', ?2, ?3, ?3)",
-                rusqlite::params![id, session_id, created_at],
-            )
-            .expect("seed thread");
-        }
-    }
-
-    fn script_entries(page: serde_json::Value) -> MockScript {
-        MockScript {
-            data: std::collections::HashMap::from([(
-                "get_session_entries".to_string(),
-                page.to_string(),
-            )]),
-            ..Default::default()
-        }
-    }
-
-    #[tokio::test]
-    async fn reconcile_empty_conversations_removes_a_session_without_messages() {
-        let _lock = mock_agent_lock();
-        ensure_mock_agent();
-        script_mock_agent(script_entries(
-            serde_json::json!({"entries": [], "hasMore": false}),
-        ));
-
-        let (_home, conn) = guarded_conn("reconcile_empty");
-        seed_message_less_threads(&conn, &[("t_empty", "sess_empty", 1)]);
-        drop(conn);
-
-        assert_eq!(reconcile_empty_conversations().await.expect("reconcile"), 1);
-        assert!(crate::store::get_thread("t_empty").expect("get").is_none());
-        assert!(
-            !crate::store::is_agent_session_tombstoned("sess_empty").expect("tombstone"),
-            "the sweep owns no Agent session: it stays importable"
-        );
-        assert!(
-            crate::store::pending_agent_session_deletes()
-                .expect("outbox")
-                .is_empty(),
-            "an empty mirror is not a user delete"
-        );
-
-        script_mock_agent(MockScript::default());
-    }
-
-    #[tokio::test]
-    async fn reconcile_empty_conversations_keeps_a_session_with_a_message() {
-        let _lock = mock_agent_lock();
-        ensure_mock_agent();
-        script_mock_agent(script_entries(serde_json::json!({"entries": [
-            {"id":"u1","role":"user","kind":"user","blocks":[],"createdAtMs":1000}
-        ]})));
-
-        let (_home, conn) = guarded_conn("reconcile_empty_msg");
-        seed_message_less_threads(&conn, &[("t_full", "sess_full", 1)]);
-        drop(conn);
-
-        assert_eq!(reconcile_empty_conversations().await.expect("reconcile"), 0);
-        assert!(crate::store::get_thread("t_full").expect("get").is_some());
-
-        script_mock_agent(MockScript::default());
-    }
-
-    /// A page that stops mid-journal proves nothing about the entries it left
-    /// out, so the row must survive.
-    #[tokio::test]
-    async fn reconcile_empty_conversations_keeps_a_partial_page() {
-        let _lock = mock_agent_lock();
-        ensure_mock_agent();
-        script_mock_agent(script_entries(
-            serde_json::json!({"entries": [], "hasMore": true}),
-        ));
-
-        let (_home, conn) = guarded_conn("reconcile_empty_more");
-        seed_message_less_threads(&conn, &[("t_more", "sess_more", 1)]);
-        drop(conn);
-
-        assert_eq!(reconcile_empty_conversations().await.expect("reconcile"), 0);
-        assert!(crate::store::get_thread("t_more").expect("get").is_some());
-
-        script_mock_agent(MockScript::default());
-    }
-
-    /// An unreadable journal is not an empty one: the pass keeps the row.
-    #[tokio::test]
-    async fn reconcile_empty_conversations_keeps_rows_it_cannot_read() {
-        let _lock = mock_agent_lock();
-        ensure_mock_agent();
-        script_mock_agent(MockScript {
-            errors: std::collections::HashMap::from([(
-                "get_session_entries".to_string(),
-                "journal unreadable".to_string(),
-            )]),
-            ..Default::default()
-        });
-
-        let (_home, conn) = guarded_conn("reconcile_empty_err");
-        seed_message_less_threads(&conn, &[("t_err", "sess_err", 1)]);
-        drop(conn);
-
-        assert_eq!(reconcile_empty_conversations().await.expect("reconcile"), 0);
-        assert!(crate::store::get_thread("t_err").expect("get").is_some());
-
-        script_mock_agent(MockScript::default());
-    }
-
-    #[tokio::test]
-    async fn reconcile_empty_conversations_skips_when_the_agent_is_unreachable() {
-        let _lock = mock_agent_lock();
-        ensure_mock_agent();
-        script_mock_agent(MockScript {
-            down: true,
-            ..Default::default()
-        });
-
-        let (_home, conn) = guarded_conn("reconcile_empty_down");
-        seed_message_less_threads(&conn, &[("t_down", "sess_down", 1)]);
-        drop(conn);
-
-        assert_eq!(reconcile_empty_conversations().await.expect("reconcile"), 0);
-        assert!(crate::store::get_thread("t_down").expect("get").is_some());
-
-        script_mock_agent(MockScript::default());
-    }
 
     /// Only a session-bound thread with no run at all, past the bind grace, is
     /// worth probing: a thread that produced a run has something to show, an

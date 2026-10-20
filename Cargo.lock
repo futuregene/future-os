@@ -1982,6 +1982,7 @@ dependencies = [
 name = "future-host"
 version = "0.0.0"
 dependencies = [
+ "chrono",
  "future-agent",
  "future-app-settings",
  "future-app-workspaces",
@@ -1989,11 +1990,16 @@ dependencies = [
  "future-remote-server",
  "future-rpc",
  "futures",
+ "fuzzy-matcher",
+ "ignore",
+ "rand 0.8.7",
  "reqwest 0.13.4",
  "rusqlite",
  "rustls",
  "serde",
  "serde_json",
+ "sha2",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
 ]

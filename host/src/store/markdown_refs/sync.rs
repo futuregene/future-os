@@ -17,7 +17,7 @@ pub fn sync_message_markdown_references(
     message_id: &str,
     thread_id: &str,
     content: &str,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     let references = extract_markdown_references(content);
     const DELETE_SQL: &str = "DELETE FROM object_references
          WHERE source_type = 'message' AND source_id = ?1";
@@ -54,7 +54,7 @@ fn resolve_reference_target_metadata(
     conn: &Connection,
     reference: &MarkdownObjectReference,
     workspace_id: &str,
-) -> Result<Option<ReferenceMetadata>, crate::AppError> {
+) -> Result<Option<ReferenceMetadata>, crate::Error> {
     match reference.target_type.as_str() {
         "artifact" => conn
             .query_row(
@@ -74,7 +74,7 @@ fn resolve_reference_target_metadata(
                 },
             )
             .optional()
-            .map_err(crate::AppError::from),
+            .map_err(crate::Error::from),
         // `file` references a workspace file by path (resolved against disk at
         // render time, not the `artifacts` table). Denormalize purely from the
         // path string — no DB row is required for the reference to be valid.
@@ -109,7 +109,7 @@ fn resolve_reference_target_metadata(
                 },
             )
             .optional()
-            .map_err(crate::AppError::from),
+            .map_err(crate::Error::from),
         // Tool calls no longer live in a GUI table (the `tool_calls` table was
         // dropped with the journal-era pipeline; the Agent run-events journal
         // is their source of truth), so there is nothing to denormalize from.
@@ -137,7 +137,7 @@ fn resolve_reference_target_metadata(
                 },
             )
             .optional()
-            .map_err(crate::AppError::from),
+            .map_err(crate::Error::from),
         "review" => conn
             .query_row(
                 "SELECT title, status, summary, files_changed, additions, deletions
@@ -159,7 +159,7 @@ fn resolve_reference_target_metadata(
                 },
             )
             .optional()
-            .map_err(crate::AppError::from),
+            .map_err(crate::Error::from),
         _ => Ok(None),
     }
 }
@@ -170,7 +170,7 @@ fn upsert_reference_target(
     metadata: ReferenceMetadata,
     workspace_id: &str,
     now: i64,
-) -> Result<String, crate::AppError> {
+) -> Result<String, crate::Error> {
     let existing_id: Option<String> = conn
         .query_row(
             "SELECT id

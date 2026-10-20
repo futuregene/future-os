@@ -50,7 +50,7 @@ struct WalkedFile {
 /// cleaned temporary workspace), yields an empty list rather than an error.
 pub fn search_workspace_files(
     input: WorkspaceFileSearchInput,
-) -> Result<Vec<WorkspaceFileResult>, crate::AppError> {
+) -> Result<Vec<WorkspaceFileResult>, crate::Error> {
     let conn = connect()?;
     let workspace_path: Option<String> = conn
         .query_row(
@@ -59,7 +59,7 @@ pub fn search_workspace_files(
             |row| row.get(0),
         )
         .optional()
-        .map_err(crate::AppError::from)?;
+        .map_err(crate::Error::from)?;
 
     let Some(root) = workspace_path else {
         return Ok(Vec::new());

@@ -22,7 +22,7 @@ pub(super) fn qualify_columns(alias: &str, columns: &str) -> String {
         .join(", ")
 }
 
-pub(super) fn normalize_mode(mode: &str) -> Result<String, crate::AppError> {
+pub(super) fn normalize_mode(mode: &str) -> Result<String, crate::Error> {
     match mode {
         "chat" | "workspace" => Ok(mode.to_string()),
         _ => Err("mode must be either 'chat' or 'workspace'."
@@ -34,14 +34,14 @@ pub(super) fn normalize_mode(mode: &str) -> Result<String, crate::AppError> {
 /// `~`/`~/…` expansion, shared with `future workspace add` through
 /// `future-app-workspaces` (the same rule, so a path a user types means the same
 /// directory in both writers).
-pub(super) fn expand_tilde(path: &str) -> Result<PathBuf, crate::AppError> {
+pub(super) fn expand_tilde(path: &str) -> Result<PathBuf, crate::Error> {
     Ok(app_workspaces::expand_tilde(path)?)
 }
 
 /// Extended-length (`\\?\`) prefix removal, shared with the CLI's workspace
 /// writes: a stored workspace path is handed to shells and to the UI, so it is
 /// always the spelling those tools print.
-pub(crate) fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+pub fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
     app_workspaces::strip_verbatim_prefix(path)
 }
 
@@ -89,11 +89,11 @@ pub fn take_catalog_dirty() -> bool {
 /// Collapses the `get_X(&id)?.ok_or_else(|| "X could not be loaded.".into())`
 /// boilerplate that follows almost every insert/update read-back. `what` names
 /// the row (e.g. `"Created thread"`), yielding `"<what> could not be loaded."`.
-pub(super) fn loaded<T>(opt: Option<T>, what: &str) -> Result<T, crate::AppError> {
+pub(super) fn loaded<T>(opt: Option<T>, what: &str) -> Result<T, crate::Error> {
     opt.ok_or_else(|| format!("{what} could not be loaded.").into())
 }
 
-pub(super) fn count_workspace_files(path: &str) -> Result<i64, crate::AppError> {
+pub(super) fn count_workspace_files(path: &str) -> Result<i64, crate::Error> {
     let root = PathBuf::from(path);
     if !root.exists() {
         return Ok(0);
@@ -110,7 +110,7 @@ pub(super) fn count_workspace_files(path: &str) -> Result<i64, crate::AppError> 
 /// directory twice (real symlinked dirs are never pushed — entries report
 /// symlinks by their own type — so the canonical-dedup guard is otherwise
 /// unreachable from the public entry point).
-fn count_files_under(mut stack: Vec<PathBuf>) -> Result<i64, crate::AppError> {
+fn count_files_under(mut stack: Vec<PathBuf>) -> Result<i64, crate::Error> {
     let mut count = 0_i64;
     let mut visited_dirs = HashSet::new();
     while let Some(dir) = stack.pop() {

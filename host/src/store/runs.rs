@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -77,11 +77,11 @@ sql_record!(pub(super) RUN_COLUMNS, run_from_row -> RunRecord {
 /// be applied. Keep the result shape stable so normal run reads still work.
 pub(super) const RUN_COLUMNS_WITHOUT_ARCHIVE: &str = "id, thread_id, trigger_message_id, status, model_provider, model_id, started_at, ended_at, error_message, error_type, NULL AS archived_at, created_at, updated_at";
 
-pub(super) fn run_archive_supported(conn: &rusqlite::Connection) -> Result<bool, crate::AppError> {
+pub(super) fn run_archive_supported(conn: &rusqlite::Connection) -> Result<bool, crate::Error> {
     column_exists(conn, "runs", "archived_at")
 }
 
-pub(super) fn run_columns(conn: &rusqlite::Connection) -> Result<&'static str, crate::AppError> {
+pub(super) fn run_columns(conn: &rusqlite::Connection) -> Result<&'static str, crate::Error> {
     Ok(if run_archive_supported(conn)? {
         RUN_COLUMNS
     } else {
@@ -92,7 +92,7 @@ pub(super) fn run_columns(conn: &rusqlite::Connection) -> Result<&'static str, c
 pub(super) fn qualified_run_columns(
     conn: &rusqlite::Connection,
     alias: &str,
-) -> Result<String, crate::AppError> {
+) -> Result<String, crate::Error> {
     if run_archive_supported(conn)? {
         return Ok(super::util::qualify_columns(alias, RUN_COLUMNS));
     }
@@ -107,7 +107,7 @@ pub(super) fn qualified_run_columns(
 // is now reconstructed from run events (`project_tool_calls`).
 // TOOL_OUTPUT_COLUMNS & tool_output_from_row removed — table dropped
 
-pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::AppError> {
+pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::Error> {
     let id = input
         .id
         .filter(|id| !id.trim().is_empty())
@@ -147,7 +147,7 @@ pub fn create_run(input: CreateRunInput) -> Result<RunRecord, crate::AppError> {
 /// `cleanup::orphan_thread_ids`). Deduplicated. Powers the quit guard: whether to
 /// warn before exit, and which sessions to abort on force-quit. On startup the
 /// Agent watchdog reconciles these rows rather than guessing that they died.
-pub fn active_run_sessions() -> Result<Vec<String>, crate::AppError> {
+pub fn active_run_sessions() -> Result<Vec<String>, crate::Error> {
     let conn = connect()?;
     let mut stmt = conn.prepare(&format!(
         "SELECT DISTINCT COALESCE(NULLIF(TRIM(t.agent_session_id), ''), t.id)
@@ -157,14 +157,14 @@ pub fn active_run_sessions() -> Result<Vec<String>, crate::AppError> {
     ))?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+        .map_err(crate::Error::from)
 }
 
 /// Whether this thread still owes a turn: any run row that has not reached a
 /// terminal state is either executing or queued behind one (the goal plane
 /// steering a worker, a user's follow-up message). A conversation is settled —
 /// and only then auto-titled — while this is false.
-pub fn has_active_run(thread_id: &str) -> Result<bool, crate::AppError> {
+pub fn has_active_run(thread_id: &str) -> Result<bool, crate::Error> {
     let conn = connect()?;
     let active = conn.query_row(
         &format!(
@@ -179,7 +179,7 @@ pub fn has_active_run(thread_id: &str) -> Result<bool, crate::AppError> {
     Ok(active)
 }
 
-pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
+pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::Error> {
     let conn = connect()?;
     let columns = run_columns(&conn)?;
     let mut stmt = conn.prepare(&format!(
@@ -190,7 +190,7 @@ pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
     ))?;
     let rows = stmt.query_map(params![thread_id], run_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+        .map_err(crate::Error::from)
 }
 
 /// Mark the point at which the Agent has durably accepted the prompt. The
@@ -199,7 +199,7 @@ pub fn list_runs(thread_id: &str) -> Result<Vec<RunRecord>, crate::AppError> {
 pub fn mark_remote_prompt_accepted(
     run_id: &str,
     trigger_message_id: &str,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     if trigger_message_id.trim().is_empty() {
         return Err("remote command id cannot be empty".to_string().into());
     }
@@ -224,7 +224,7 @@ pub fn mark_remote_prompt_accepted(
 /// corresponding user message and acknowledged the prompt.
 pub fn find_run_by_trigger_message_id(
     trigger_message_id: &str,
-) -> Result<Option<RunRecord>, crate::AppError> {
+) -> Result<Option<RunRecord>, crate::Error> {
     if trigger_message_id.trim().is_empty() {
         return Ok(None);
     }
@@ -243,13 +243,13 @@ pub fn find_run_by_trigger_message_id(
         run_from_row,
     )
     .optional()
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
 /// The thread's single most recent run (same ordering/tiebreak as
 /// [`latest_run_infos`]). Used by initial loads and pushed terminal
 /// reconciliation without transferring the thread's entire run history.
-pub fn latest_run(thread_id: &str) -> Result<Option<RunRecord>, crate::AppError> {
+pub fn latest_run(thread_id: &str) -> Result<Option<RunRecord>, crate::Error> {
     let conn = connect()?;
     let columns = run_columns(&conn)?;
     conn.query_row(
@@ -264,7 +264,7 @@ pub fn latest_run(thread_id: &str) -> Result<Option<RunRecord>, crate::AppError>
         run_from_row,
     )
     .optional()
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
 /// The single latest run's identity and status for each of `thread_ids`.
@@ -279,7 +279,7 @@ pub struct LatestRunInfo {
     pub ended_at: Option<i64>,
 }
 
-pub fn latest_run_infos(thread_ids: &[String]) -> Result<Vec<LatestRunInfo>, crate::AppError> {
+pub fn latest_run_infos(thread_ids: &[String]) -> Result<Vec<LatestRunInfo>, crate::Error> {
     if thread_ids.is_empty() {
         return Ok(vec![]);
     }
@@ -310,7 +310,7 @@ pub fn latest_run_infos(thread_ids: &[String]) -> Result<Vec<LatestRunInfo>, cra
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+        .map_err(crate::Error::from)
 }
 
 /// Cancel the still-open approvals of a single run, stamping them with `note`.
@@ -343,7 +343,7 @@ pub(super) fn cancel_children_of_runs(
 /// `abort_run`/`fail_run_if_active` (which sets `cancelled`/`failed`) is never
 /// clobbered by a late read-then-write. Returns whether a row changed; the
 /// `cancelled` cascade runs only when it did.
-pub fn update_run_status_if_active(input: UpdateRunStatusInput) -> Result<bool, crate::AppError> {
+pub fn update_run_status_if_active(input: UpdateRunStatusInput) -> Result<bool, crate::Error> {
     let now = now_millis();
     let mut conn = connect()?;
     let tx = conn.transaction()?;
@@ -405,7 +405,7 @@ pub fn fail_run_if_active(
     run_id: &str,
     error_message: &str,
     error_type: &str,
-) -> Result<bool, crate::AppError> {
+) -> Result<bool, crate::Error> {
     let now = now_millis();
     let conn = connect()?;
     let affected = conn.execute(
@@ -440,7 +440,7 @@ fn emit_run_status_update(run_id: &str, status: &str) {
     }
 }
 
-pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppError> {
+pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, crate::Error> {
     Ok(read_run_events(run_id))
 }
 
@@ -453,11 +453,11 @@ pub fn list_run_events(run_id: &str) -> Result<Vec<RunEventRecord>, crate::AppEr
 pub fn list_run_events_since(
     run_id: &str,
     since_sequence: i64,
-) -> Result<Vec<RunEventRecord>, crate::AppError> {
+) -> Result<Vec<RunEventRecord>, crate::Error> {
     if since_sequence < 0 {
         return Ok(read_run_events(run_id));
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     {
         let buf = RUN_EVENT_BUFFER.lock().unwrap_or_else(unpoison);
         if let Some(events) = buf.get(run_id) {
@@ -479,7 +479,7 @@ pub fn list_run_events_since(
 /// Test-only in-memory event buffer. Production keeps no GUI-side event copy —
 /// the Agent journal is the source of truth — so this buffer exists purely as
 /// a fixture for the compatibility-reader tests below.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static RUN_EVENT_BUFFER: std::sync::LazyLock<
     std::sync::Mutex<HashMap<String, Vec<RunEventRecord>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
@@ -488,7 +488,7 @@ static RUN_EVENT_BUFFER: std::sync::LazyLock<
 // The compatibility reader must stay covered against real on-disk logs, so
 // tests retain a writer that produces them: a single background thread
 // holding one open BufWriter per run, coalescing bursts into one flush.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 enum WriterMsg {
     Event(RunEventRecord),
     /// Flush and close the run's writer, then ack. Sent before the run's log
@@ -501,11 +501,11 @@ enum WriterMsg {
     },
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 static DISK_WRITER: std::sync::LazyLock<std::sync::mpsc::Sender<WriterMsg>> =
     std::sync::LazyLock::new(spawn_disk_writer);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn spawn_disk_writer() -> std::sync::mpsc::Sender<WriterMsg> {
     let (tx, rx) = std::sync::mpsc::channel::<WriterMsg>();
     std::thread::Builder::new()
@@ -528,7 +528,7 @@ fn spawn_disk_writer() -> std::sync::mpsc::Sender<WriterMsg> {
     tx
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn write_event(
     writers: &mut HashMap<String, std::io::BufWriter<std::fs::File>>,
     record: &RunEventRecord,
@@ -557,7 +557,7 @@ fn write_event(
 /// Flush + close the run's writer on the disk-writer thread and wait for the
 /// ack (bounded), so a following disk read sees the complete log and a
 /// following delete doesn't hit an open handle.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn close_disk_writer(run_id: &str) {
     let (ack_tx, ack_rx) = std::sync::mpsc::channel();
     if DISK_WRITER
@@ -573,8 +573,8 @@ fn close_disk_writer(run_id: &str) {
 
 /// Force the async disk writer to flush a run's log — synchronization point
 /// for tests that assert on the log file's existence.
-#[cfg(test)]
-pub(crate) fn flush_run_event_log_for_test(run_id: &str) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn flush_run_event_log_for_test(run_id: &str) {
     close_disk_writer(run_id);
 }
 
@@ -583,7 +583,7 @@ fn run_events_dir() -> Option<PathBuf> {
     let dir = app_dir().ok()?.join("run_events");
     // Production never writes this legacy directory. Unit tests retain a
     // fixture writer so pre-journal logs remain covered by the fallback reader.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     std::fs::create_dir_all(&dir).ok()?;
     Some(dir)
 }
@@ -604,7 +604,7 @@ fn run_events_path(run_id: &str) -> Option<PathBuf> {
 /// Queue one event for the run's JSONL log (best-effort; a dead writer thread
 /// just means that event won't survive a restart — same contract as the old
 /// synchronous write, whose errors were also dropped).
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 fn persist_event_to_disk(record: RunEventRecord) {
     let _ = DISK_WRITER.send(WriterMsg::Event(record));
 }
@@ -627,7 +627,7 @@ fn read_events_from_disk(run_id: &str) -> Vec<RunEventRecord> {
 /// A run's events, in append order: the in-memory buffer while the run is
 /// active, else the persisted log (survives restart / post-settle eviction).
 fn read_run_events(run_id: &str) -> Vec<RunEventRecord> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     {
         let buf = RUN_EVENT_BUFFER.lock().unwrap_or_else(unpoison);
         if let Some(events) = buf.get(run_id) {
@@ -637,8 +637,8 @@ fn read_run_events(run_id: &str) -> Vec<RunEventRecord> {
     read_events_from_disk(run_id)
 }
 
-#[cfg(test)]
-pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, crate::AppError> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, crate::Error> {
     // Re-delivery guard: a run's events arrive in strictly increasing sequence
     // from its single writer, so a sequence at/below the buffered high-water
     // mark is a replay overlap or a cross-writer race duplicate — return the
@@ -683,7 +683,7 @@ pub fn append_run_event(input: AppendRunEventInput) -> Result<RunEventRecord, cr
 /// projection cache survives (settled events are immutable, so later polls
 /// reuse it). The buffer itself is test-only; in production this is a no-op.
 pub fn clear_run_event_buffer(_run_id: &str) {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     if let Ok(mut buf) = RUN_EVENT_BUFFER.lock() {
         buf.remove(_run_id);
     }
@@ -1127,7 +1127,7 @@ fn shell_command_from_input(input: Option<&str>) -> Option<String> {
 pub fn get_tool_call_input(
     run_id: &str,
     tool_call_id: &str,
-) -> Result<Option<String>, crate::AppError> {
+) -> Result<Option<String>, crate::Error> {
     {
         let mut cache = TOOL_PROJECTION_CACHE.lock().unwrap_or_else(unpoison);
         if let Some(mut state) = cache.remove(run_id) {

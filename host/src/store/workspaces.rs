@@ -17,7 +17,7 @@ fn workspace_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkspaceReco
     workspaces::from_row(row)
 }
 
-pub fn list_workspaces() -> Result<Vec<WorkspaceRecord>, crate::AppError> {
+pub fn list_workspaces() -> Result<Vec<WorkspaceRecord>, crate::Error> {
     let conn = connect()?;
     Ok(workspaces::list(&conn)?)
 }
@@ -27,7 +27,7 @@ pub fn list_workspaces() -> Result<Vec<WorkspaceRecord>, crate::AppError> {
 /// otherwise, the name defaulting to the directory's own name, and one
 /// directory meaning one workspace however it is spelled — are
 /// `future_app_workspaces::create`, shared with `future workspace add`.
-pub fn create_workspace(input: CreateWorkspaceInput) -> Result<WorkspaceRecord, crate::AppError> {
+pub fn create_workspace(input: CreateWorkspaceInput) -> Result<WorkspaceRecord, crate::Error> {
     let mut conn = connect()?;
     let workspace = workspaces::create(
         &mut conn,
@@ -50,7 +50,7 @@ pub(super) fn get_or_create_user_workspace_in(
     name: String,
     path: PathBuf,
     description: Option<String>,
-) -> Result<WorkspaceRecord, crate::AppError> {
+) -> Result<WorkspaceRecord, crate::Error> {
     Ok(workspaces::find_or_create_user(
         conn,
         name,
@@ -67,7 +67,7 @@ pub(super) fn get_or_create_user_workspace_in(
 pub fn file_session_workspace(
     session_id: &str,
     cwd: &str,
-) -> Result<Option<workspaces::CwdFiling>, crate::AppError> {
+) -> Result<Option<workspaces::CwdFiling>, crate::Error> {
     let mut conn = connect()?;
     let filing = workspaces::file_session_for_cwd(&mut conn, session_id, cwd, now_millis())?;
     if matches!(
@@ -84,7 +84,7 @@ pub fn file_session_workspace(
 pub fn get_or_create_chat_workspace(
     thread_id: &str,
     title: Option<String>,
-) -> Result<WorkspaceRecord, crate::AppError> {
+) -> Result<WorkspaceRecord, crate::Error> {
     let conn = connect()?;
     get_or_create_chat_workspace_in(&conn, thread_id, title)
 }
@@ -95,7 +95,7 @@ pub(super) fn get_or_create_chat_workspace_in(
     conn: &Connection,
     thread_id: &str,
     title: Option<String>,
-) -> Result<WorkspaceRecord, crate::AppError> {
+) -> Result<WorkspaceRecord, crate::Error> {
     let existing = conn
         .query_row(
             &format!(
@@ -137,7 +137,7 @@ pub(super) fn get_or_create_chat_workspace_in(
 /// for now). Like [`super::pin_thread`], this is an ordering flag and not
 /// activity: `updated_at`/`last_opened_at` are left alone, so unpinning returns
 /// the group to its recency position instead of jumping it to the front.
-pub fn pin_workspace(input: PinWorkspaceInput) -> Result<WorkspaceRecord, crate::AppError> {
+pub fn pin_workspace(input: PinWorkspaceInput) -> Result<WorkspaceRecord, crate::Error> {
     let pinned = if input.pinned { 1 } else { 0 };
     let conn = connect()?;
     let updated = conn.execute(
@@ -155,7 +155,7 @@ pub fn pin_workspace(input: PinWorkspaceInput) -> Result<WorkspaceRecord, crate:
     Ok(workspace)
 }
 
-pub fn rename_workspace(input: RenameWorkspaceInput) -> Result<WorkspaceRecord, crate::AppError> {
+pub fn rename_workspace(input: RenameWorkspaceInput) -> Result<WorkspaceRecord, crate::Error> {
     let name = input.name.trim();
     if name.is_empty() {
         return Err("Workspace name cannot be empty.".to_string().into());
@@ -182,7 +182,7 @@ pub fn rename_workspace(input: RenameWorkspaceInput) -> Result<WorkspaceRecord, 
 /// and GUI-managed scratch/review dirs are reclaimed by the startup reconcilers
 /// (keyed by thread/workspace id), not by removing `workspace.path`. The agent
 /// JSONLs and those physical dirs are cleaned by the command layer.
-pub fn delete_workspace(workspace_id: &str) -> Result<WorkspaceRecord, crate::AppError> {
+pub fn delete_workspace(workspace_id: &str) -> Result<WorkspaceRecord, crate::Error> {
     let mut conn = connect()?;
     let workspace = loaded(get_workspace_in(&conn, workspace_id)?, "Workspace")?;
     let tx = conn.transaction()?;
@@ -259,7 +259,7 @@ pub(super) fn delete_workspace_in(conn: &Connection, workspace_id: &str) -> rusq
 /// soft-deleted state (`deleted_at IS NOT NULL`), along with all their scoped
 /// rows. `delete_workspace` now hard-deletes, so this only reclaims pre-existing
 /// rows. Runs once at startup. Returns the number purged.
-pub fn purge_soft_deleted_workspaces() -> Result<usize, crate::AppError> {
+pub fn purge_soft_deleted_workspaces() -> Result<usize, crate::Error> {
     let mut conn = connect()?;
     let ids: Vec<String> = {
         let mut stmt = conn.prepare("SELECT id FROM workspaces WHERE deleted_at IS NOT NULL")?;
@@ -277,7 +277,7 @@ pub fn purge_soft_deleted_workspaces() -> Result<usize, crate::AppError> {
     Ok(ids.len())
 }
 
-pub fn get_workspace(workspace_id: &str) -> Result<Option<WorkspaceRecord>, crate::AppError> {
+pub fn get_workspace(workspace_id: &str) -> Result<Option<WorkspaceRecord>, crate::Error> {
     let conn = connect()?;
     get_workspace_in(&conn, workspace_id)
 }
@@ -285,14 +285,14 @@ pub fn get_workspace(workspace_id: &str) -> Result<Option<WorkspaceRecord>, crat
 pub(super) fn get_workspace_in(
     conn: &Connection,
     workspace_id: &str,
-) -> Result<Option<WorkspaceRecord>, crate::AppError> {
+) -> Result<Option<WorkspaceRecord>, crate::Error> {
     conn.query_row(
         &format!("SELECT {WORKSPACE_COLUMNS} FROM workspaces WHERE id = ?1"),
         params![workspace_id],
         workspace_from_row,
     )
     .optional()
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
 #[cfg(test)]

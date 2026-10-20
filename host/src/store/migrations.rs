@@ -6,7 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
 use super::util::{create_id, now_millis};
-use crate::AppError;
+use crate::Error;
 
 const CONTRACT_SQL: &str = include_str!("app_schema_contract.sql");
 
@@ -26,7 +26,7 @@ fn checksum(version: i64) -> String {
 }
 
 /// Runs before WAL configuration or any schema write, including on pooled opens.
-pub(super) fn admit(conn: &Connection) -> Result<i64, AppError> {
+pub(super) fn admit(conn: &Connection) -> Result<i64, Error> {
     future_app_settings::validate_database_header(conn)?;
     let version = conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))?;
     if version != 0 {
@@ -115,7 +115,7 @@ pub(super) fn admit(conn: &Connection) -> Result<i64, AppError> {
     Ok(0)
 }
 
-pub(super) fn initialize(conn: &Connection) -> Result<(), AppError> {
+pub(super) fn initialize(conn: &Connection) -> Result<(), Error> {
     let version = admit(conn)?;
     if version == future_app_settings::APP_DB_SCHEMA_VERSION {
         validate_core(conn)?;
@@ -156,7 +156,7 @@ pub(super) fn initialize(conn: &Connection) -> Result<(), AppError> {
         }
         Ok(())
     })();
-    result.map_err(|error: AppError| {
+    result.map_err(|error: Error| {
         match backup {
             Some(path) => format!("Desktop database upgrade failed: {error}. Pre-upgrade snapshot: {}. Keep both databases; restart to retry the remaining migration steps.",path.display()).into(),
             None => error,
@@ -178,7 +178,7 @@ fn column_names(conn: &Connection, table: &str) -> rusqlite::Result<HashSet<Stri
 
 /// Validate required structure, never interpret a missing source table as empty.
 /// Row-level orphans are left addressable for explicit cancellation and recovery.
-fn validate_core(conn: &Connection) -> Result<(), AppError> {
+fn validate_core(conn: &Connection) -> Result<(), Error> {
     let fresh = Connection::open_in_memory()?;
     fresh.execute_batch(super::schema::SCHEMA)?;
     let actual_tables = table_names(conn)?;
@@ -226,7 +226,7 @@ fn validate_core(conn: &Connection) -> Result<(), AppError> {
 
 /// VACUUM INTO creates a coherent SQLite snapshot, including committed WAL data.
 /// Never copy just app.db or overwrite a previous snapshot on an upgrade retry.
-fn snapshot_before_upgrade(conn: &Connection) -> Result<Option<PathBuf>, AppError> {
+fn snapshot_before_upgrade(conn: &Connection) -> Result<Option<PathBuf>, Error> {
     if table_names(conn)?.is_empty() {
         return Ok(None);
     }
@@ -238,7 +238,7 @@ fn snapshot_before_upgrade(conn: &Connection) -> Result<Option<PathBuf>, AppErro
         .ok_or("Desktop database has no parent directory")?
         .join("backups");
     let path = future_agent::session::create_database_snapshot(conn, &directory, "app-before-schema-upgrade")
-        .map_err(|error| AppError::from(format!("Cannot create a verified Desktop pre-upgrade snapshot: {error}; migration was not started.")))?;
+        .map_err(|error| Error::from(format!("Cannot create a verified Desktop pre-upgrade snapshot: {error}; migration was not started.")))?;
     eprintln!(
         "FutureOS: preserved Desktop pre-upgrade snapshot at {}",
         path.display()

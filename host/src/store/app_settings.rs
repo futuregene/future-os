@@ -17,7 +17,7 @@ pub use future_app_settings::{AppSettings, UpdateAppSettingsInput};
 /// Atomically install the Desktop-wide device identity. The caller supplies a
 /// legacy or freshly generated candidate, but SQLite decides the winner when
 /// multiple Desktop processes start for the first time concurrently.
-pub fn get_or_create_device_id(candidate: &str) -> Result<String, crate::AppError> {
+pub fn get_or_create_device_id(candidate: &str) -> Result<String, crate::Error> {
     let candidate = candidate.trim();
     if candidate.is_empty() {
         return Err("device id cannot be empty".to_string().into());
@@ -40,30 +40,28 @@ pub fn get_or_create_device_id(candidate: &str) -> Result<String, crate::AppErro
     Ok(candidate.to_string())
 }
 
-pub(super) fn read_device_id(conn: &Connection) -> Result<Option<String>, crate::AppError> {
+pub(super) fn read_device_id(conn: &Connection) -> Result<Option<String>, crate::Error> {
     Ok(future_app_settings::read_value(conn, KEY_DEVICE_ID)?)
 }
 
 pub(super) fn restore_device_id(
     conn: &Connection,
     device_id: Option<&str>,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     if let Some(device_id) = device_id {
         future_app_settings::write_value(conn, KEY_DEVICE_ID, device_id, now_millis())?;
     }
     Ok(())
 }
 
-pub fn get_app_settings() -> Result<AppSettings, crate::AppError> {
+pub fn get_app_settings() -> Result<AppSettings, crate::Error> {
     let conn = connect()?;
     Ok(future_app_settings::read(&conn)?)
 }
 
-pub fn update_app_settings(
-    mut input: UpdateAppSettingsInput,
-) -> Result<AppSettings, crate::AppError> {
+pub fn update_app_settings(mut input: UpdateAppSettingsInput) -> Result<AppSettings, crate::Error> {
     if input.approval_tier.as_deref() == Some("auto")
-        && crate::future_login::future_api_key().is_err()
+        && crate::future_platform::future_api_key().is_err()
     {
         input.approval_tier = Some("sandbox".to_string());
     }

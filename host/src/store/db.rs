@@ -20,15 +20,15 @@ use super::util::now_millis;
 /// `~/.future/app/` — the directory the desktop app owns. The location is
 /// defined once in `future-app-settings`, which the CLI also reads, so a
 /// `future desktop settings` call reaches the same database.
-pub(super) fn app_dir() -> Result<PathBuf, crate::AppError> {
+pub(super) fn app_dir() -> Result<PathBuf, crate::Error> {
     Ok(future_app_settings::app_dir()?)
 }
 
-pub(super) fn db_path() -> Result<PathBuf, crate::AppError> {
+pub(super) fn db_path() -> Result<PathBuf, crate::Error> {
     Ok(future_app_settings::app_db_path()?)
 }
 
-pub fn chat_workspace_path(id: &str) -> Result<PathBuf, crate::AppError> {
+pub fn chat_workspace_path(id: &str) -> Result<PathBuf, crate::Error> {
     Ok(chat_workspaces_root()?.join(id))
 }
 
@@ -38,12 +38,12 @@ pub fn chat_workspace_path(id: &str) -> Result<PathBuf, crate::AppError> {
 /// threads).  Reclaimed by `reconcile_orphan_chat_workspaces` and by
 /// `clear_all_data`.  User workspaces live at their own user-chosen paths
 /// (never under here), so this reclamation can never touch them.
-pub(super) fn chat_workspaces_root() -> Result<PathBuf, crate::AppError> {
+pub(super) fn chat_workspaces_root() -> Result<PathBuf, crate::Error> {
     Ok(future_dir()?.join("workspaces").join("chat"))
 }
 
 /// `$HOME/.future/` — the FutureOS root on disk.
-pub fn future_dir() -> Result<PathBuf, crate::AppError> {
+pub fn future_dir() -> Result<PathBuf, crate::Error> {
     app_dir()?
         .parent()
         .map(PathBuf::from)
@@ -53,7 +53,7 @@ pub fn future_dir() -> Result<PathBuf, crate::AppError> {
 /// Root of the per-workspace shadow-review git repos (`~/.future/app/review`).
 /// Each `<workspace_id>` subdir is the shadow repo shared by that workspace's
 /// runs; reclaimed by `reconcile_orphan_review_repos` and by `clear_all_data`.
-pub(super) fn review_repos_root() -> Result<PathBuf, crate::AppError> {
+pub(super) fn review_repos_root() -> Result<PathBuf, crate::Error> {
     Ok(app_dir()?.join("review"))
 }
 
@@ -61,7 +61,7 @@ pub(super) fn review_repos_root() -> Result<PathBuf, crate::AppError> {
 /// plus originals that have no stable desktop path (pastes and mobile uploads),
 /// keyed by stable asset-root id. Reclaimed by `reconcile_orphan_images` and
 /// `clear_all_data`.
-pub fn app_images_root() -> Result<PathBuf, crate::AppError> {
+pub fn app_images_root() -> Result<PathBuf, crate::Error> {
     Ok(app_dir()?.join("images"))
 }
 
@@ -73,24 +73,24 @@ pub fn app_images_root() -> Result<PathBuf, crate::AppError> {
 /// session and the host's path, and pruned by age and count (see
 /// `remote_peer::transfer::prune_preview_cache`). Nothing here is authoritative —
 /// deleting the whole directory costs a re-download and nothing else.
-pub fn remote_previews_dir() -> Result<PathBuf, crate::AppError> {
+pub fn remote_previews_dir() -> Result<PathBuf, crate::Error> {
     Ok(app_dir()?.join("remote-previews"))
 }
 
 /// Attachment-root directory: `~/.future/app/images/<asset_root_id>` (with
 /// `thumb/` and `origin/` subdirs). A normal thread owns its own root; fork
 /// descendants retain the same root through `threads.asset_root_id`.
-pub fn thread_images_dir(asset_root_id: &str) -> Result<PathBuf, crate::AppError> {
+pub fn thread_images_dir(asset_root_id: &str) -> Result<PathBuf, crate::Error> {
     Ok(app_images_root()?.join(asset_root_id))
 }
 
-pub(super) fn ensure_app_dirs() -> Result<(), crate::AppError> {
+pub(super) fn ensure_app_dirs() -> Result<(), crate::Error> {
     // `app_dir()` holds app.db itself; it must exist before `connect()` opens
     // the database. The chat-workspace root moved out from under `app/`, so
     // creating it no longer implicitly creates `app/` — create both explicitly
     // (a fresh install has neither).
     fs::create_dir_all(app_dir()?)?;
-    fs::create_dir_all(chat_workspaces_root()?).map_err(crate::AppError::from)
+    fs::create_dir_all(chat_workspaces_root()?).map_err(crate::Error::from)
 }
 
 /// Maximum idle connections kept warm in the pool. WAL allows one writer plus
@@ -109,7 +109,7 @@ static POOL: std::sync::LazyLock<std::sync::Mutex<(std::path::PathBuf, Vec<Conne
 /// A connection checked out from [`POOL`]; returns to the pool on drop.
 /// Derefs to [`Connection`], so existing call sites (queries, prepared
 /// statements, `transaction()` via `DerefMut`) work unchanged.
-pub(super) struct PooledConnection {
+pub struct PooledConnection {
     conn: Option<Connection>,
     /// Path this connection was opened for. This must travel with the
     /// connection: tests temporarily switch HOME, and background tasks can
@@ -165,15 +165,15 @@ PRAGMA journal_mode = WAL;";
 /// *before* deleting its temporary home: otherwise `remove_dir_all` fails
 /// silently and every run leaks its home directory, eventually filling the
 /// disk (which surfaces as spurious SQLite `DatabaseBusy`/`StorageFull`).
-#[cfg(test)]
-pub(crate) fn close_pool() {
+#[cfg(any(test, feature = "test-support"))]
+pub fn close_pool() {
     if let Ok(mut pool) = POOL.lock() {
         pool.1.clear();
         pool.0 = std::path::PathBuf::new();
     }
 }
 
-pub(super) fn connect() -> Result<PooledConnection, crate::AppError> {
+pub(super) fn connect() -> Result<PooledConnection, crate::Error> {
     let path = db_path()?;
     future_rpc::home::ensure_restore_complete(&future_dir()?)?;
     if let Ok(mut pool) = POOL.lock() {
@@ -202,7 +202,7 @@ pub(super) fn connect() -> Result<PooledConnection, crate::AppError> {
     })
 }
 
-pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
+pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::Error> {
     conn.execute_batch(SCHEMA)?;
     super::legacy_history::preserve_legacy_history(conn)?;
     apply_approval_assessments_migration(conn)?;
@@ -300,7 +300,7 @@ pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::AppError> {
 }
 
 /// Install deletion indexes and record the migration in one transaction.
-fn apply_session_delete_indexes_migration(conn: &Connection) -> Result<(), crate::AppError> {
+fn apply_session_delete_indexes_migration(conn: &Connection) -> Result<(), crate::Error> {
     let applied: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
         [SESSION_DELETE_INDEXES_MIGRATION_VERSION],
@@ -327,7 +327,7 @@ fn apply_session_delete_indexes_migration(conn: &Connection) -> Result<(), crate
 /// rows become ordinary local threads and can mint a fresh Agent session if
 /// the user continues them. Normalize the surviving id before adding the
 /// unique index so whitespace variants cannot bypass the invariant.
-fn apply_agent_session_binding_migration(conn: &Connection) -> Result<(), crate::AppError> {
+fn apply_agent_session_binding_migration(conn: &Connection) -> Result<(), crate::Error> {
     let applied = conn
         .query_row(
             "SELECT 1 FROM schema_migrations WHERE version = ?1",
@@ -373,7 +373,7 @@ fn apply_agent_session_binding_migration(conn: &Connection) -> Result<(), crate:
             "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
             params![AGENT_SESSION_BINDING_MIGRATION_VERSION, now_millis()],
         )?;
-        Ok::<(), crate::AppError>(())
+        Ok::<(), crate::Error>(())
     })();
     match result {
         Ok(()) => conn.execute_batch("COMMIT")?,
@@ -389,14 +389,14 @@ fn apply_agent_session_binding_migration(conn: &Connection) -> Result<(), crate:
 /// database already has each column from `SCHEMA`, so it records the migration
 /// without re-running its `ALTER`; an upgraded database executes the `ALTER`
 /// and records both steps in one SQLite transaction.
-pub(super) fn apply_versioned_migrations(conn: &Connection) -> Result<(), crate::AppError> {
+pub(super) fn apply_versioned_migrations(conn: &Connection) -> Result<(), crate::Error> {
     apply_migrations(conn, VERSIONED_MIGRATIONS)
 }
 
 fn apply_migrations(
     conn: &Connection,
     migrations: &[(&str, &str, &str, &str)],
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     for (version, table, column, sql) in migrations {
         let applied = conn
             .query_row(
@@ -418,7 +418,7 @@ fn apply_migrations(
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
                 params![version, now_millis()],
             )?;
-            Ok::<(), crate::AppError>(())
+            Ok::<(), crate::Error>(())
         })();
         match result {
             Ok(()) => conn.execute_batch("COMMIT")?,
@@ -435,7 +435,7 @@ fn apply_migrations(
 /// Desktop builds. Before this column existed, every run with a non-empty
 /// trigger id had already been exposed as an acknowledgement, so those rows
 /// are backfilled once. Fresh rows remain NULL until Agent acceptance.
-fn apply_remote_prompt_receipt_migration(conn: &Connection) -> Result<(), crate::AppError> {
+fn apply_remote_prompt_receipt_migration(conn: &Connection) -> Result<(), crate::Error> {
     let applied = conn
         .query_row(
             "SELECT 1 FROM schema_migrations WHERE version = ?1",
@@ -464,7 +464,7 @@ fn apply_remote_prompt_receipt_migration(conn: &Connection) -> Result<(), crate:
             "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
             params![REMOTE_PROMPT_RECEIPT_MIGRATION_VERSION, now_millis()],
         )?;
-        Ok::<(), crate::AppError>(())
+        Ok::<(), crate::Error>(())
     })();
     match result {
         Ok(()) => conn.execute_batch("COMMIT")?,
@@ -494,7 +494,7 @@ fn apply_remote_prompt_receipt_migration(conn: &Connection) -> Result<(), crate:
 ///
 /// Rows with a NULL `thread_id` or NULL `path` are left alone: neither has a file
 /// identity to collapse, and the partial unique index excludes them as well.
-fn dedupe_file_artifacts(conn: &Connection) -> Result<(), crate::AppError> {
+fn dedupe_file_artifacts(conn: &Connection) -> Result<(), crate::Error> {
     const SCOPE: &str = "deleted_at IS NULL AND thread_id IS NOT NULL AND path IS NOT NULL";
     const SURVIVOR: &str = "SELECT k.id
            FROM artifacts k
@@ -531,13 +531,13 @@ pub(super) fn column_exists(
     conn: &Connection,
     table: &str,
     column: &str,
-) -> Result<bool, crate::AppError> {
+) -> Result<bool, crate::Error> {
     let sql = format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'");
     let count: i64 = conn.query_row(&sql, [], |row| row.get(0))?;
     Ok(count > 0)
 }
 
-pub fn get_run(id: &str) -> Result<Option<RunRecord>, crate::AppError> {
+pub fn get_run(id: &str) -> Result<Option<RunRecord>, crate::Error> {
     let conn = connect()?;
     let columns = super::runs::run_columns(&conn)?;
     conn.query_row(
@@ -546,21 +546,21 @@ pub fn get_run(id: &str) -> Result<Option<RunRecord>, crate::AppError> {
         run_from_row,
     )
     .optional()
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
 // get_run_event removed — run_events table dropped
 
-pub(super) fn run_thread_id(conn: &Connection, run_id: &str) -> Result<String, crate::AppError> {
+pub(super) fn run_thread_id(conn: &Connection, run_id: &str) -> Result<String, crate::Error> {
     conn.query_row(
         "SELECT thread_id FROM runs WHERE id = ?1",
         params![run_id],
         |row| row.get(0),
     )
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
-pub fn get_approval_request(id: &str) -> Result<Option<ApprovalRequestRecord>, crate::AppError> {
+pub fn get_approval_request(id: &str) -> Result<Option<ApprovalRequestRecord>, crate::Error> {
     let conn = connect()?;
     conn.query_row(
         &format!("SELECT {APPROVAL_REQUEST_COLUMNS} FROM approval_requests WHERE id = ?1"),
@@ -568,10 +568,10 @@ pub fn get_approval_request(id: &str) -> Result<Option<ApprovalRequestRecord>, c
         approval_request_from_row,
     )
     .optional()
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) mod test_support {
     //! Shared fixtures for store tests: an in-memory database with the full
     //! schema applied, and a fake-HOME-guarded `connect()` (serialized on the
@@ -579,7 +579,7 @@ pub(crate) mod test_support {
     use rusqlite::Connection;
 
     /// In-memory database with the full schema applied (no HOME needed).
-    pub(crate) fn memory_conn() -> Connection {
+    pub fn memory_conn() -> Connection {
         let conn = Connection::open_in_memory().expect("open in-memory database");
         super::apply_schema(&conn).expect("apply schema");
         conn
@@ -1528,7 +1528,7 @@ mod tests {
     /// next startup skips the migration forever.
     #[test]
     fn a_marker_insert_that_is_refused_is_reported_and_rolled_back() {
-        type MigrationCase = (&'static str, fn(&Connection) -> Result<(), crate::AppError>);
+        type MigrationCase = (&'static str, fn(&Connection) -> Result<(), crate::Error>);
         let cases: [MigrationCase; 3] = [
             ("v1.2.2-auto-approval", apply_approval_assessments_migration),
             (
@@ -1660,7 +1660,7 @@ mod tests {
 }
 
 /// Required, transactional migration shared with fresh-install schema tests.
-fn apply_approval_assessments_migration(conn: &Connection) -> Result<(), crate::AppError> {
+fn apply_approval_assessments_migration(conn: &Connection) -> Result<(), crate::Error> {
     const VERSION: &str = "v1.2.2-auto-approval";
     if conn
         .query_row(
@@ -1680,7 +1680,7 @@ fn apply_approval_assessments_migration(conn: &Connection) -> Result<(), crate::
             "INSERT INTO schema_migrations (version, applied_at) VALUES (?1, ?2)",
             params![VERSION, now_millis()],
         )?;
-        Ok::<(), crate::AppError>(())
+        Ok::<(), crate::Error>(())
     })();
     match result {
         Ok(()) => conn.execute_batch("COMMIT")?,

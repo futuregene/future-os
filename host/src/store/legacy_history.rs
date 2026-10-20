@@ -16,7 +16,7 @@ fn table_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
     )
 }
 
-pub(super) fn preserve_legacy_history(conn: &Connection) -> Result<(), crate::AppError> {
+pub(super) fn preserve_legacy_history(conn: &Connection) -> Result<(), crate::Error> {
     let applied: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=?1)",
         [VERSION],
@@ -39,7 +39,7 @@ pub(super) fn preserve_legacy_history(conn: &Connection) -> Result<(), crate::Ap
     fresh.execute_batch(super::schema::SCHEMA)?;
     let foreign_keys: bool = conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
     conn.pragma_update(None, "foreign_keys", false)?;
-    let result = (|| -> Result<(), crate::AppError> {
+    let result = (|| -> Result<(), crate::Error> {
         let tx =
             rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
         for table in TABLES {
@@ -122,7 +122,7 @@ pub(super) fn preserve_legacy_history(conn: &Connection) -> Result<(), crate::Ap
     Ok(())
 }
 
-pub fn legacy_session_id(thread_id: &str) -> Result<Option<String>, crate::AppError> {
+pub fn legacy_session_id(thread_id: &str) -> Result<Option<String>, crate::Error> {
     let conn = connect()?;
     Ok(conn
         .query_row(
@@ -133,7 +133,7 @@ pub fn legacy_session_id(thread_id: &str) -> Result<Option<String>, crate::AppEr
         .optional()?)
 }
 
-pub fn has_legacy_history(thread_id: &str) -> Result<bool, crate::AppError> {
+pub fn has_legacy_history(thread_id: &str) -> Result<bool, crate::Error> {
     let conn = connect()?;
     if !table_exists(&conn, "legacy_messages")? {
         return Ok(false);
@@ -145,7 +145,7 @@ pub fn has_legacy_history(thread_id: &str) -> Result<bool, crate::AppError> {
     )?)
 }
 
-pub fn legacy_history_entries(thread_id: &str) -> Result<Vec<Value>, crate::AppError> {
+pub fn legacy_history_entries(thread_id: &str) -> Result<Vec<Value>, crate::Error> {
     let conn = connect()?;
     read_entries(&conn, thread_id).map_err(Into::into)
 }
@@ -203,7 +203,7 @@ pub fn legacy_history_page(
     thread_id: &str,
     before: i64,
     limit: i64,
-) -> Result<Value, crate::AppError> {
+) -> Result<Value, crate::Error> {
     let conn = connect()?;
     let total: i64 = conn.query_row(
         "SELECT count(*) FROM legacy_messages WHERE thread_id=?1",
@@ -221,7 +221,7 @@ pub fn legacy_history_page(
     Ok(json!({"entries":entries,"hasMore":start>0,"nextOffset":start}))
 }
 
-pub fn legacy_history_source_key(thread_id: &str) -> Result<String, crate::AppError> {
+pub fn legacy_history_source_key(thread_id: &str) -> Result<String, crate::Error> {
     let conn = connect()?;
     let identity: Option<String> = if table_exists(&conn, "app_database_identity")? {
         conn.query_row("SELECT database_id || ':' || restore_generation FROM app_database_identity WHERE id='main'",[],|row|row.get(0)).optional()?

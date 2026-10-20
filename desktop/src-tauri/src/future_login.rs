@@ -495,19 +495,6 @@ fn error_message_from_body(body: Option<Value>) -> Option<String> {
         .map(str::to_string)
 }
 
-/// The stored FutureGene API key, or an error when signed out. Mirrors the CLI's
-/// precedence trivially: the GUI only ever writes the key to the `future` entry.
-pub(crate) fn future_api_key() -> Result<String, AppError> {
-    crate::auth_store::read()?
-        .get(crate::auth_store::FUTURE_PROVIDER_ID)
-        .and_then(|entry| entry.get("key"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|key| !key.is_empty())
-        .map(str::to_string)
-        .ok_or(AppError::NotSignedIn)
-}
-
 /// Fetch the signed-in account profile (`GET {platform}/client/v1/account/profile`,
 /// Bearer the stored `future` key) — mirrors the CLI's `future account profile`
 /// (`cli/src/commands/account.ts`). Errors when signed out or on a failed request.
@@ -605,6 +592,8 @@ fn append_login_platform(url: String) -> String {
         Err(_) => url,
     }
 }
+
+pub(crate) use future_host::future_platform::future_api_key;
 
 #[cfg(test)]
 mod tests {

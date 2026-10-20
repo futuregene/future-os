@@ -30,14 +30,14 @@ pub(super) fn enqueue_agent_session_delete_in(
 /// A tombstone is an admission fence for GUI import/discovery.  It remains
 /// until the Agent acknowledges deletion, so a temporarily offline Agent can
 /// never cause a locally deleted session to reappear in the sidebar.
-pub fn is_agent_session_tombstoned(session_id: &str) -> Result<bool, crate::AppError> {
+pub fn is_agent_session_tombstoned(session_id: &str) -> Result<bool, crate::Error> {
     const SQL: &str = "SELECT EXISTS(SELECT 1 FROM agent_delete_outbox WHERE session_id = ?1)";
     let conn = connect()?;
     Ok(conn.query_row(SQL, [session_id], |row| row.get(0))?)
 }
 
-#[cfg(test)]
-pub fn pending_agent_session_deletes() -> Result<Vec<String>, crate::AppError> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn pending_agent_session_deletes() -> Result<Vec<String>, crate::Error> {
     Ok(pending_agent_session_deletes_with_sources()?
         .into_iter()
         .map(|(session, _)| session)
@@ -45,7 +45,7 @@ pub fn pending_agent_session_deletes() -> Result<Vec<String>, crate::AppError> {
 }
 
 pub fn pending_agent_session_deletes_with_sources(
-) -> Result<Vec<(String, Option<String>)>, crate::AppError> {
+) -> Result<Vec<(String, Option<String>)>, crate::Error> {
     let conn = connect()?;
     let mut stmt = conn
         .prepare("SELECT o.session_id,s.database_id FROM agent_delete_outbox o LEFT JOIN agent_delete_sources s ON s.session_id=o.session_id ORDER BY o.requested_at,o.session_id")?;
@@ -55,12 +55,12 @@ pub fn pending_agent_session_deletes_with_sources(
 }
 
 #[cfg(test)]
-fn acknowledge_agent_session_delete(session_id: &str) -> Result<(), crate::AppError> {
+fn acknowledge_agent_session_delete(session_id: &str) -> Result<(), crate::Error> {
     settle_agent_session_deletes(&[(session_id.to_owned(), None)])
 }
 
 #[cfg(test)]
-fn note_agent_session_delete_failure(session_id: &str, error: &str) -> Result<(), crate::AppError> {
+fn note_agent_session_delete_failure(session_id: &str, error: &str) -> Result<(), crate::Error> {
     settle_agent_session_deletes(&[(session_id.to_owned(), Some(error.to_owned()))])
 }
 
@@ -68,7 +68,7 @@ fn note_agent_session_delete_failure(session_id: &str, error: &str) -> Result<()
 /// All outcomes from one Agent batch share one local durability boundary.
 pub fn settle_agent_session_deletes(
     outcomes: &[(String, Option<String>)],
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     let mut conn = connect()?;
     let tx = conn.transaction()?;
     for (session_id, error) in outcomes {

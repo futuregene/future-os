@@ -99,8 +99,7 @@ pub(crate) fn future_home_root() -> std::path::PathBuf {
 }
 
 pub(crate) use future_host::events::{
-    emit_approvals_updated, emit_remote_activity, emit_review_updated, emit_thread_runtime_updated,
-    emit_threads_updated,
+    emit_remote_activity, emit_review_updated, emit_thread_runtime_updated, emit_threads_updated,
 };
 #[cfg(feature = "gui")]
 pub(crate) use gui::APP_HANDLE;

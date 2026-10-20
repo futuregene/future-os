@@ -42,7 +42,7 @@ sql_record!(pub(super) THREAD_COLUMNS, thread_from_row -> ThreadRecord {
     created_at, updated_at, archived_at, deleted_at,
 });
 
-pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::AppError> {
+pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::Error> {
     let conn = connect()?;
     let mut stmt = conn.prepare(&format!(
         "SELECT {THREAD_COLUMNS}
@@ -52,10 +52,10 @@ pub fn list_threads() -> Result<Vec<ThreadRecord>, crate::AppError> {
     ))?;
     let rows = stmt.query_map([], thread_from_row)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(crate::AppError::from)
+        .map_err(crate::Error::from)
 }
 
-pub fn get_recent_thread() -> Result<Option<ThreadRecord>, crate::AppError> {
+pub fn get_recent_thread() -> Result<Option<ThreadRecord>, crate::Error> {
     let conn = connect()?;
     conn.query_row(
         &format!(
@@ -69,14 +69,14 @@ pub fn get_recent_thread() -> Result<Option<ThreadRecord>, crate::AppError> {
         thread_from_row,
     )
     .optional()
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
 /// Find an active thread by its `agent_session_id` (used to map a remote
 /// (phone) session id back to the GUI thread that owns it).
 pub fn find_thread_by_agent_session(
     session_id: &str,
-) -> Result<Option<ThreadRecord>, crate::AppError> {
+) -> Result<Option<ThreadRecord>, crate::Error> {
     let conn = connect()?;
     conn.query_row(
         &format!(
@@ -87,10 +87,10 @@ pub fn find_thread_by_agent_session(
         thread_from_row,
     )
     .optional()
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
-pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::AppError> {
+pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Error> {
     let mode = normalize_mode(&input.mode)?;
     let now = now_millis();
     let thread_id = create_id("thread");
@@ -172,7 +172,7 @@ pub fn create_thread(input: CreateThreadInput) -> Result<ThreadRecord, crate::Ap
 /// of creating a duplicate thread/workspace pair.
 pub fn get_or_create_thread_for_agent_session(
     mut input: CreateThreadInput,
-) -> Result<(ThreadRecord, bool), crate::AppError> {
+) -> Result<(ThreadRecord, bool), crate::Error> {
     let session_id = input
         .agent_session_id
         .as_deref()
@@ -194,7 +194,7 @@ pub fn get_or_create_thread_for_agent_session(
     }
 }
 
-pub fn get_thread(thread_id: &str) -> Result<Option<ThreadRecord>, crate::AppError> {
+pub fn get_thread(thread_id: &str) -> Result<Option<ThreadRecord>, crate::Error> {
     let conn = connect()?;
     get_thread_in(&conn, thread_id)
 }
@@ -205,7 +205,7 @@ pub fn get_thread(thread_id: &str) -> Result<Option<ThreadRecord>, crate::AppErr
 pub fn inherit_thread_asset_root(
     thread_id: &str,
     parent_thread_id: &str,
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     let conn = connect()?;
     if conn.execute(
         "UPDATE threads
@@ -222,7 +222,7 @@ pub fn inherit_thread_asset_root(
     Ok(())
 }
 
-pub fn thread_asset_root_id(thread_id: &str) -> Result<String, crate::AppError> {
+pub fn thread_asset_root_id(thread_id: &str) -> Result<String, crate::Error> {
     let conn = connect()?;
     conn.query_row(
         "SELECT COALESCE(NULLIF(asset_root_id, ''), id) FROM threads WHERE id = ?1",
@@ -244,7 +244,7 @@ pub fn thread_asset_root_id(thread_id: &str) -> Result<String, crate::AppError> 
 /// that was never seeded (a name someone already chose is never whitelisted)
 /// and still wears exactly `title` (an import must not whitelist a title that
 /// changed under it). Returns whether this call seeded the row.
-pub fn seed_thread_auto_title(thread_id: &str, title: &str) -> Result<bool, crate::AppError> {
+pub fn seed_thread_auto_title(thread_id: &str, title: &str) -> Result<bool, crate::Error> {
     let title = title.trim();
     if title.is_empty() {
         return Ok(false);
@@ -263,7 +263,7 @@ pub fn seed_thread_auto_title(thread_id: &str, title: &str) -> Result<bool, crat
 /// message implies). The replacement title is machine-derived like the one it
 /// replaces, so the thread stays auto-titleable. A thread that was never
 /// seeded stays unseeded — healing must not turn auto-titling on.
-pub fn reseed_thread_auto_title(thread_id: &str, title: &str) -> Result<bool, crate::AppError> {
+pub fn reseed_thread_auto_title(thread_id: &str, title: &str) -> Result<bool, crate::Error> {
     let title = title.trim();
     if title.is_empty() {
         return Ok(false);
@@ -280,14 +280,14 @@ pub fn reseed_thread_auto_title(thread_id: &str, title: &str) -> Result<bool, cr
 pub(super) fn get_thread_in(
     conn: &Connection,
     thread_id: &str,
-) -> Result<Option<ThreadRecord>, crate::AppError> {
+) -> Result<Option<ThreadRecord>, crate::Error> {
     conn.query_row(
         &format!("SELECT {THREAD_COLUMNS} FROM threads WHERE id = ?1"),
         params![thread_id],
         thread_from_row,
     )
     .optional()
-    .map_err(crate::AppError::from)
+    .map_err(crate::Error::from)
 }
 
 /// Rename a thread.
@@ -298,7 +298,7 @@ pub(super) fn get_thread_in(
 /// from `rename_session` mirroring the agent's own name, or from another
 /// client's rename the importer synced back). Only the importer's healing pass
 /// re-seeds, via `reseed_thread_auto_title`.
-pub fn rename_thread(input: RenameThreadInput) -> Result<ThreadRecord, crate::AppError> {
+pub fn rename_thread(input: RenameThreadInput) -> Result<ThreadRecord, crate::Error> {
     let title = input.title.trim();
     if title.is_empty() {
         return Err("title cannot be empty.".to_string().into());
@@ -320,7 +320,7 @@ pub(super) fn sync_thread_title_in(
     conn: &Connection,
     thread_id: &str,
     title: &str,
-) -> Result<bool, crate::AppError> {
+) -> Result<bool, crate::Error> {
     let title = title.trim();
     if title.is_empty() {
         return Ok(false);
@@ -340,12 +340,12 @@ pub(super) fn sync_thread_title_in(
 /// renames never reach the GUI DB. Unlike `rename_thread` this is not a user
 /// edit: `updated_at` is untouched so the sidebar order is undisturbed, and
 /// matching titles are a no-op. Returns whether the title changed.
-pub fn sync_thread_title(thread_id: &str, title: &str) -> Result<bool, crate::AppError> {
+pub fn sync_thread_title(thread_id: &str, title: &str) -> Result<bool, crate::Error> {
     let conn = connect()?;
     sync_thread_title_in(&conn, thread_id, title)
 }
 
-pub fn update_thread_model(input: UpdateThreadModelInput) -> Result<ThreadRecord, crate::AppError> {
+pub fn update_thread_model(input: UpdateThreadModelInput) -> Result<ThreadRecord, crate::Error> {
     // Model is now managed by the agent (set_model RPC). The GUI cache
     // (agentStateCache) handles reads; DB write is a no-op.
     loaded(get_thread(&input.thread_id)?, "Thread")
@@ -353,7 +353,7 @@ pub fn update_thread_model(input: UpdateThreadModelInput) -> Result<ThreadRecord
 
 pub fn update_thread_thinking_level(
     input: UpdateThreadThinkingLevelInput,
-) -> Result<ThreadRecord, crate::AppError> {
+) -> Result<ThreadRecord, crate::Error> {
     // Thinking level is now managed by the agent (set_thinking_level RPC).
     loaded(get_thread(&input.thread_id)?, "Thread")
 }
@@ -364,7 +364,7 @@ pub fn update_thread_thinking_level(
 /// caller may idempotently repeat the same bind, but it may never replace a
 /// non-empty identity: doing so would make the UI thread point at a different
 /// transcript and strand the original history.
-pub fn bind_thread_session_id(thread_id: &str, session_id: &str) -> Result<(), crate::AppError> {
+pub fn bind_thread_session_id(thread_id: &str, session_id: &str) -> Result<(), crate::Error> {
     let session_id = session_id.trim();
     if session_id.is_empty() {
         return Err("agentSessionId cannot be empty.".to_string().into());
@@ -395,7 +395,7 @@ pub fn bind_thread_session_id(thread_id: &str, session_id: &str) -> Result<(), c
 pub fn sync_thread_parent_session(
     session_id: &str,
     parent_session_id: &str,
-) -> Result<bool, crate::AppError> {
+) -> Result<bool, crate::Error> {
     let parent = parent_session_id.trim();
     let parent = (!parent.is_empty() && parent != session_id).then_some(parent);
     let conn = connect()?;
@@ -413,7 +413,7 @@ pub fn sync_thread_parent_session(
 /// Record that a thread was opened without treating the visit as message
 /// activity. `last_opened_at` chooses the startup thread, but deliberately
 /// does not affect the sidebar's conversation order.
-pub fn mark_thread_opened(thread_id: &str) -> Result<(), crate::AppError> {
+pub fn mark_thread_opened(thread_id: &str) -> Result<(), crate::Error> {
     let now = now_millis();
     const SQL: &str = "UPDATE threads SET last_opened_at = ?1
          WHERE id = ?2 AND status != 'deleted'";
@@ -429,7 +429,7 @@ pub(super) fn mark_thread_message_activity_in(
     conn: &Connection,
     thread_id: &str,
     timestamp: i64,
-) -> Result<bool, crate::AppError> {
+) -> Result<bool, crate::Error> {
     const SQL: &str = "UPDATE threads SET last_message_at = ?1
          WHERE id = ?2 AND status != 'deleted'
            AND (last_message_at IS NULL OR last_message_at < ?1)";
@@ -438,10 +438,7 @@ pub(super) fn mark_thread_message_activity_in(
 
 /// Advance the shared desktop/mobile catalog on assistant output as well as
 /// user prompts. Opening, renaming and replay receipt time are not activity.
-pub fn record_thread_message_activity(
-    thread_id: &str,
-    timestamp: i64,
-) -> Result<(), crate::AppError> {
+pub fn record_thread_message_activity(thread_id: &str, timestamp: i64) -> Result<(), crate::Error> {
     let conn = connect()?;
     if mark_thread_message_activity_in(&conn, thread_id, timestamp)? {
         mark_catalog_dirty();
@@ -450,7 +447,7 @@ pub fn record_thread_message_activity(
 }
 
 /// Move a thread to a different workspace (e.g. when cwd changes).
-pub fn pin_thread(input: PinThreadInput) -> Result<ThreadRecord, crate::AppError> {
+pub fn pin_thread(input: PinThreadInput) -> Result<ThreadRecord, crate::Error> {
     // `updated_at` is deliberately untouched: pinning is an ordering flag, not
     // an activity event. If it stamped `updated_at`, unpinning a thread would
     // push it to the top of the recency sort (it just became "most recently
@@ -468,7 +465,7 @@ pub fn pin_thread(input: PinThreadInput) -> Result<ThreadRecord, crate::AppError
 pub(super) fn update_thread_status(
     thread_id: &str,
     status: &str,
-) -> Result<ThreadRecord, crate::AppError> {
+) -> Result<ThreadRecord, crate::Error> {
     let now = now_millis();
     let archived_at = if status == "archived" {
         Some(now)
@@ -484,11 +481,11 @@ pub(super) fn update_thread_status(
     loaded(get_thread(thread_id)?, "Thread")
 }
 
-pub fn archive_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
+pub fn archive_thread(thread_id: &str) -> Result<ThreadRecord, crate::Error> {
     update_thread_status(thread_id, "archived")
 }
 
-pub fn restore_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
+pub fn restore_thread(thread_id: &str) -> Result<ThreadRecord, crate::Error> {
     update_thread_status(thread_id, "active")
 }
 
@@ -560,7 +557,7 @@ pub(super) fn delete_thread_children_in(
 /// (the orphan sweep and an externally deleted session both come through here).
 /// A user deleting a conversation wants the whole conversation gone: that is
 /// [`delete_thread_tree`].
-pub fn delete_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
+pub fn delete_thread(thread_id: &str) -> Result<ThreadRecord, crate::Error> {
     delete_thread_inner(thread_id, false, false)
 }
 
@@ -571,7 +568,7 @@ pub fn delete_thread(thread_id: &str) -> Result<ThreadRecord, crate::AppError> {
 pub fn delete_thread_tree(
     thread_id: &str,
     delete_files: bool,
-) -> Result<ThreadRecord, crate::AppError> {
+) -> Result<ThreadRecord, crate::Error> {
     delete_thread_inner(thread_id, delete_files, true)
 }
 
@@ -579,7 +576,7 @@ pub fn delete_thread_tree(
 /// every descendant, resolved through the Agent lineage. Loaded before anything
 /// is deleted, so a caller can release each one's resources (shells, active
 /// runs) first. Errors when the thread does not exist.
-pub fn thread_delete_closure(thread_id: &str) -> Result<Vec<ThreadRecord>, crate::AppError> {
+pub fn thread_delete_closure(thread_id: &str) -> Result<Vec<ThreadRecord>, crate::Error> {
     let conn = connect()?;
     let ids = thread_delete_ids_in(&conn, thread_id)?;
     let mut threads = Vec::with_capacity(ids.len());
@@ -600,10 +597,7 @@ pub fn thread_delete_closure(thread_id: &str) -> Result<Vec<ThreadRecord>, crate
 /// archived or legacy soft-deleted child would leave a mirror behind. `UNION`
 /// (not `UNION ALL`) dedupes, which also makes a malformed lineage cycle
 /// terminate instead of recursing forever.
-fn thread_delete_ids_in(
-    conn: &Connection,
-    thread_id: &str,
-) -> Result<Vec<String>, crate::AppError> {
+fn thread_delete_ids_in(conn: &Connection, thread_id: &str) -> Result<Vec<String>, crate::Error> {
     const SQL: &str = "WITH RECURSIVE subtree(id, session_key) AS (
              SELECT id, COALESCE(NULLIF(TRIM(agent_session_id), ''), id)
                FROM threads WHERE id = ?1
@@ -625,7 +619,7 @@ pub(crate) fn delete_thread_inner(
     thread_id: &str,
     delete_files: bool,
     cascade_children: bool,
-) -> Result<ThreadRecord, crate::AppError> {
+) -> Result<ThreadRecord, crate::Error> {
     let mut conn = connect()?;
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let deleted = delete_thread_tree_in(&tx, thread_id, cascade_children)?;
@@ -646,7 +640,7 @@ fn delete_thread_tree_in(
     conn: &Connection,
     thread_id: &str,
     cascade_children: bool,
-) -> Result<DeletedThreadTree, crate::AppError> {
+) -> Result<DeletedThreadTree, crate::Error> {
     let now = now_millis();
     let root = loaded(get_thread_in(conn, thread_id)?, "Thread")?;
     let targets = if cascade_children {
@@ -682,7 +676,7 @@ fn delete_thread_tree_in(
 fn remove_deleted_chat_files(
     conn: &Connection,
     targets: &[ThreadRecord],
-) -> Result<(), crate::AppError> {
+) -> Result<(), crate::Error> {
     for thread in targets.iter().filter(|thread| thread.mode == "chat") {
         let dir = super::db::chat_workspace_path(&thread.id)?;
         if dir.exists() {
@@ -703,7 +697,7 @@ fn remove_deleted_chat_files(
 pub fn delete_thread_trees(
     thread_ids: &[String],
     delete_files: bool,
-) -> Result<super::records::BatchDeleteResult, crate::AppError> {
+) -> Result<super::records::BatchDeleteResult, crate::Error> {
     let mut conn = connect()?;
     let mut result = super::records::BatchDeleteResult {
         deleted_count: 0,
@@ -725,7 +719,7 @@ pub fn delete_thread_trees(
                 let savepoint = tx.savepoint()?;
                 let tree = delete_thread_tree_in(&savepoint, thread_id, true)?;
                 savepoint.commit()?;
-                Ok::<_, crate::AppError>(tree)
+                Ok::<_, crate::Error>(tree)
             })();
             match tree {
                 Ok(tree) => {
@@ -801,7 +795,7 @@ fn delete_thread_rows_in(
 /// neither — the session stays, its owner may still prompt it, and the import
 /// that mirrors it again once it has a message must not be fenced out. Only the
 /// local rows go, with the same bookkeeping as a delete.
-pub fn forget_thread_mirror(thread_id: &str) -> Result<(), crate::AppError> {
+pub fn forget_thread_mirror(thread_id: &str) -> Result<(), crate::Error> {
     let mut conn = connect()?;
     let root = loaded(get_thread_in(&conn, thread_id)?, "Thread")?;
     let now = now_millis();
@@ -824,7 +818,7 @@ pub fn forget_thread_mirror(thread_id: &str) -> Result<(), crate::AppError> {
 #[cfg(test)]
 pub fn batch_delete_threads(
     input: &super::records::BatchDeleteThreadsInput,
-) -> Result<super::records::BatchDeleteResult, crate::AppError> {
+) -> Result<super::records::BatchDeleteResult, crate::Error> {
     delete_thread_trees(&input.thread_ids, input.delete_files)
 }
 
@@ -833,7 +827,7 @@ pub fn batch_delete_threads(
 /// child rows. `delete_thread` now hard-deletes, so no new such rows are
 /// created; this reclaims pre-existing ones (their temp workspaces were already
 /// flagged at soft-delete time). Runs once at startup. Returns the count purged.
-pub fn purge_soft_deleted_threads() -> Result<usize, crate::AppError> {
+pub fn purge_soft_deleted_threads() -> Result<usize, crate::Error> {
     let mut conn = connect()?;
     let ids: Vec<String> = {
         let mut stmt = conn.prepare("SELECT id FROM threads WHERE status = 'deleted'")?;

@@ -16,7 +16,7 @@ pub struct ApprovalAssessmentRecord {
     pub created_at: i64,
 }
 
-pub fn record_approval_assessment(run_id: &str, value: &Value) -> Result<(), crate::AppError> {
+pub fn record_approval_assessment(run_id: &str, value: &Value) -> Result<(), crate::Error> {
     let field = |key| {
         value
             .get(key)
@@ -68,7 +68,7 @@ pub fn record_approval_assessment(run_id: &str, value: &Value) -> Result<(), cra
 
 pub fn list_approval_assessments(
     run_id: &str,
-) -> Result<Vec<ApprovalAssessmentRecord>, crate::AppError> {
+) -> Result<Vec<ApprovalAssessmentRecord>, crate::Error> {
     let conn = connect()?;
     let mut stmt = conn.prepare("SELECT id,run_id,tool_call_id,status,payload,created_at FROM approval_assessments WHERE run_id=?1 ORDER BY created_at,id")?;
     let rows = stmt.query_map([run_id], |r| {

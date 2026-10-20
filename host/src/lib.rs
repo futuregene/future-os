@@ -30,3 +30,7 @@ pub fn install_rustls_provider() {
 #[cfg(any(test, feature = "test-support"))]
 #[doc(hidden)]
 pub static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub mod agent_events;
+pub mod store;
+pub(crate) use events::{emit_approvals_updated, emit_thread_runtime_updated};

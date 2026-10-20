@@ -30,3 +30,12 @@ future-agent = { path = "../agent" }
 future-rpc = { path = "../packages/rpc" }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+
+chrono = "0.4"
+sha2 = "0.10"
+ignore = "0.4"
+fuzzy-matcher = "0.3"
+rand = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
