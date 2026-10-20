@@ -880,6 +880,23 @@ mod gui {
                             // No native About dialog — open the in-app Settings page.
                             let _ = app.emit("open-settings", ());
                         }
+                        menu::MENU_NEW_CONVERSATION | menu::MENU_SETTINGS => {
+                            // The window runs the *command*, by id — the same command
+                            // the palette, the rail's button and a keystroke reach,
+                            // through the same `useCommand` handler. The menu names no
+                            // key (see `menu.rs`), so a rebinding cannot leave a stale
+                            // label behind, and the item works on whatever key the
+                            // command has today.
+                            //
+                            // A window that is not up yet has no handler registered,
+                            // and `runCommand` on the other side is then a no-op.
+                            let command = if event.id().as_ref() == menu::MENU_NEW_CONVERSATION {
+                                "chat.new"
+                            } else {
+                                "settings.open"
+                            };
+                            let _ = app.emit("menu-command", command);
+                        }
                         menu::MENU_RESTART_WEBVIEW => {
                             // Reload a hung/crashed webview in place (native reload,
                             // so it recovers even when the JS context is dead)

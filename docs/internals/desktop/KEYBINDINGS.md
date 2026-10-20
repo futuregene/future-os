@@ -1,9 +1,9 @@
 # Keyboard shortcuts
 
-Status: **implemented (P0 + P1)**. One command table, one dispatcher, one settings
-page, user-editable bindings stored per machine. Not yet: the command palette and
-the `⌘/` cheat sheet (P2), the macOS menu items and a per-command "also inside the
-terminal" switch (P3).
+Status: **implemented (P0–P2)**. One command table, one dispatcher, one settings
+page, one command palette, one cheat sheet, user-editable bindings stored per
+machine, and macOS menu items that carry no accelerators. Not yet: a per-command
+"also inside the terminal" switch, and a `leader`-key model.
 
 This document is the reasoning; the code is small enough to read next to it.
 
@@ -270,6 +270,22 @@ keys, which is the one thing a cheat sheet in an app with editable keys cannot b
 A command the user unbound has no key, so it has no row; a multi-key command shows
 as its range (`1 … 9`).
 
+## The macOS menu
+
+`desktop/src-tauri/src/menu.rs` builds the menu bar, and two of its items are this
+document's business: **File → New Conversation** and **File → Settings…**.
+
+**Neither carries an accelerator, on purpose.** Both are commands in the table
+(`chat.new`, `settings.open`), and the user may rebind them. An accelerator written
+into the menu keeps printing the old key after a rebinding — a menu item that says
+`⌘N` while `⌘N` opens nothing is worse than one that names no key. So the item
+emits the **command id** (`menu-command`), and the window runs it through the same
+`runCommand` the dispatcher and the palette use (`AppShell`'s `menu-command`
+listener). One handler per command, whichever way it was asked for.
+
+An id this build does not know is ignored rather than guessed at, and a window
+that is not up yet has no handler, so the event is a no-op there.
+
 ## Where each command is registered
 
 The shell registers the commands that are its own (navigation, panels, settings).
@@ -410,9 +426,6 @@ written on.
 
 ## Going further (not implemented)
 
-* macOS menu items for Settings and New Conversation. They must emit events and
-  carry **no** accelerators: an accelerator in the menu would keep printing the
-  old key after a rebinding.
 * A per-command "also works inside the terminal" switch, default off, for users
   who want `⌘N` while the terminal has focus on macOS. Deliberately not in v1:
   `Ctrl` is the accelerator on Windows and Linux, so taking keys from the shell
