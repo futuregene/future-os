@@ -11,7 +11,6 @@ import { setRemotePeerLabel } from "../remote-peer/remotePeerClient";
 import { RemotePeerSettings } from "../remote-peer/RemotePeerSettings";
 import { RemoteClientSection } from "../remote-peer/RemotePeersView";
 import { RemoteTasksView } from "../remote-peer/RemoteTasksView";
-import { RemoteHostSettingsPage } from "./RemoteHostSettingsPage";
 import { RemoteHostSection } from "./RemoteView";
 
 /**
@@ -33,24 +32,24 @@ import { RemoteHostSection } from "./RemoteView";
  * used without the other. That independence is why each is a section that
  * carries its own state, rather than one merged control surface.
  *
- * A machine's tasks and its settings are **pages of this window** — they replace
+ * A machine's settings and tasks are **pages of this window** — they replace
  * this page rather than opening a window of their own, because the user is still
  * working in this one and leaving it (its size, position and place) is a bigger
  * move than the errand deserves. Each carries a back control at the top left,
  * which is where a reader looks for one.
+ *
+ * This machine's own direction has no page of that kind. Its switch is the whole
+ * preference — "remote desktop on" and "come back on next launch" are one state
+ * — so there is nothing left to configure beside the connections themselves.
  */
 export function RemoteHubView({
-  autoConnect,
   leftPanelExpanded,
   onOpenRemoteSession,
   onReconnectRemoteAll,
-  onToggleAutoConnect,
   onToggleLeftPanel,
   onRefreshRemote,
   remoteStatus,
 }: {
-  /** This machine's auto-connect preference for its paired devices. */
-  autoConnect: boolean;
   leftPanelExpanded: boolean;
   /** Open one of a paired computer's conversations, by its session id. */
   onOpenRemoteSession: (desktopId: string, sessionId: string) => void;
@@ -61,7 +60,6 @@ export function RemoteHubView({
    * for the machines it is supposed to keep live — so this page only asks for it.
    */
   onReconnectRemoteAll: () => Promise<void>;
-  onToggleAutoConnect: (value: boolean) => void;
   onToggleLeftPanel: () => void;
   onRefreshRemote: () => Promise<void>;
   remoteStatus: RemoteStatus | null;
@@ -74,15 +72,6 @@ export function RemoteHubView({
   /** The machine whose tasks are open, if any. They need the whole column. */
   const [tasksFor, setTasksFor] = useState<RemotePeer | null>(null);
   /**
-   * Whether this direction's own settings page is open.
-   *
-   * It replaces this page, like a remote machine's settings do, because the hub
-   * is a list: the one preference this direction has is configuration, not list
-   * content. The paired clients themselves stay on the list — a client's page
-   * would only repeat its row.
-   */
-  const [hostSettingsOpen, setHostSettingsOpen] = useState(false);
-  /**
    * Bumped whenever something outside the machine list changed it — a rename on
    * a machine's settings page — so the list re-reads when the user comes back
    * instead of showing what it read when the page was first opened.
@@ -92,16 +81,6 @@ export function RemoteHubView({
   /** A rename that could not be stored locally: said out loud, not swallowed. */
   function reportLabelFailure(error: unknown) {
     emitFutureEvent("toast", { message: errorMessage(error), tone: "error" });
-  }
-
-  if (hostSettingsOpen) {
-    return (
-      <RemoteHostSettingsPage
-        autoConnect={autoConnect}
-        onBack={() => setHostSettingsOpen(false)}
-        onToggleAutoConnect={onToggleAutoConnect}
-      />
-    );
   }
 
   if (tasksFor) {
@@ -151,7 +130,6 @@ export function RemoteHubView({
           title={t("hostTitle")}
         >
           <RemoteHostSection
-            onOpenSettings={() => setHostSettingsOpen(true)}
             onRefreshRemote={onRefreshRemote}
             remoteStatus={remoteStatus}
           />

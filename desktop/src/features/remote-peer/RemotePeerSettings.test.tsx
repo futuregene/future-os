@@ -612,7 +612,7 @@ it("writes the skill-suggestion switch's own key", async () => {
 
 it("writes the auto-connect switch's own key", async () => {
   const view = await mount();
-  const toggle = view.switchFor("Auto-connect on launch")!;
+  const toggle = view.switchFor("Keep the remote desktop on after a restart")!;
   expect(toggle).not.toBeUndefined();
 
   await act(async () => toggle.click());
