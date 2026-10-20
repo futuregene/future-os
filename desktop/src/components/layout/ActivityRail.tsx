@@ -849,7 +849,12 @@ export function ActivityRail({
                     )
                   : null}
                 <div className="mb-2 flex shrink-0 items-center gap-1">
-                  {onChangeDeviceFilter && remotePeers.length > 0
+                  {/* The search field takes the whole row while it is open: the
+                      two were sharing it half-and-half, which squeezed the
+                      device picker down to its glyph and the field down to a
+                      few characters. Search still filters within the selected
+                      device; closing it brings the picker back. */}
+                  {onChangeDeviceFilter && remotePeers.length > 0 && !searchOpen
                     ? (
                         <div className="min-w-0 flex-1">
                           <DeviceSelector
