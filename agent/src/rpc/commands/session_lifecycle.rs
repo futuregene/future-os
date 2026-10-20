@@ -5,6 +5,73 @@ use std::sync::Arc;
 
 use crate::rpc::{AppState, RpcCommand, RpcResponse, ServerSession, SseBroadcaster};
 
+/// Longest parent chain a session may sit under, counted in edges from a root:
+/// 0 is a root, 1 is a sub-session of a root. A session already at the limit
+/// cannot become anyone's parent, which is what stops a sub-session from
+/// starting its own.
+///
+/// One jump, not a tree. Every hop re-summarises the hop below it, so the
+/// session that asked for the work can no longer check the answer against what
+/// it asked for; past one jump delegation stops being verifiable and becomes
+/// work that merely appears to have been done. Each level also multiplies the
+/// spend and moves anything waiting on an approval one level further from
+/// whoever could answer it.
+///
+/// A user can move a session out of this chain deliberately (`future session
+/// set <id> --parent ""`); the guard only stops an agent from extending it on
+/// its own.
+pub(crate) const MAX_SUBSESSION_DEPTH: u32 = 1;
+
+/// How deep `id` sits in the parent chain, in edges from a root.
+///
+/// The live sessions are consulted first: a session created with a parent has
+/// one long before it first persists anything, and reading only the store would
+/// miss it. The walk stops one step past the limit — enough for any caller to
+/// compare against it — so a corrupt or cyclic chain cannot loop here.
+pub(crate) fn subsession_depth(state: &AppState, id: &str) -> u32 {
+    let mut depth = 0;
+    let mut cursor = id.to_owned();
+    while depth <= MAX_SUBSESSION_DEPTH {
+        // The map's read lock is released at the end of this statement, so the
+        // store lookup below never runs while every session is blocked on it.
+        let live = state
+            .sessions
+            .read()
+            .get(&cursor)
+            .map(|session| session.read().parent_session_id.clone());
+        let parent = match live {
+            Some(parent) => parent,
+            None => state
+                .session_manager
+                .parent_session_id(&cursor)
+                .ok()
+                .flatten()
+                .unwrap_or_default(),
+        };
+        if parent.is_empty() {
+            break;
+        }
+        depth += 1;
+        cursor = parent;
+    }
+    depth
+}
+
+/// The failure message for a parent that would put a session past the limit,
+/// or `None` when `parent` may take one.
+///
+/// `parent` need not exist: whether the caller wants an unknown parent rejected
+/// is the caller's check, not this one's.
+pub(crate) fn reject_deep_parent(state: &AppState, parent: &str) -> Option<String> {
+    let depth = subsession_depth(state, parent);
+    (depth >= MAX_SUBSESSION_DEPTH).then(|| {
+        format!(
+            "a session that already has a parent cannot be one: {parent} sits at \
+             depth {depth} of {MAX_SUBSESSION_DEPTH}"
+        )
+    })
+}
+
 pub(crate) fn cmd_storage_health(state: &AppState, id: &str) -> String {
     match state.session_manager.storage_health() {
         Ok(data) => RpcResponse::ok(id, "get_storage_health", data),
@@ -532,6 +599,12 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
     // typed created_by field.
     new_sess.created_by = "tui".to_string();
     if !cmd.parent_session.is_empty() {
+        // Lineage is also what stops a sub-session from starting its own: the
+        // refusal happens here rather than only in the prompt, because a prompt
+        // can be talked around and this cannot.
+        if let Some(error) = reject_deep_parent(state, &cmd.parent_session) {
+            return RpcResponse::build_fail(id, "new_session", &error);
+        }
         new_sess.parent_session_id = cmd.parent_session.clone();
     }
 

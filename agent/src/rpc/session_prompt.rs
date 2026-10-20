@@ -1586,6 +1586,11 @@ impl ServerSession {
             // failed to survive.
             append_prompt: self.append_system_prompt.clone(),
             custom_prompt: self.custom_system_prompt.clone(),
+            // A session with a parent already sits in a lineage, and the agent
+            // refuses a deeper chain (`reject_deep_parent`). Reading the field
+            // rather than walking the chain keeps this O(1) on every run and
+            // matches the guard: both answer "may this session start one?".
+            is_subsession: !self.parent_session_id.is_empty(),
             ..Default::default()
         });
         (prompt, context_files)

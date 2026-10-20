@@ -82,7 +82,7 @@ pub fn global_skill_dirs() -> Vec<String> {
 /// instead, so an instance running with `FUTURE_HOME`
 /// discovers the skills that live in its own root. The shared `~/.agents/skills`
 /// scope deliberately stays on the real user home.
-fn expand_tilde(dir: &str) -> PathBuf {
+pub(crate) fn expand_tilde(dir: &str) -> PathBuf {
     let Some(rest) = dir.strip_prefix('~') else {
         return PathBuf::from(dir);
     };

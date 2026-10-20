@@ -875,6 +875,34 @@ fn set_parent_session_persists_to_disk_session_info() {
         .is_empty());
 }
 
+/// `set_parent_session` enforces the same one-jump limit as `new_session`: it
+/// is the other door into a lineage, and an agent could otherwise reach it after
+/// creating a child and use it to skip the check.
+#[test]
+fn set_parent_session_refuses_a_parent_that_already_has_one() {
+    let state = make_app_state();
+    let mut child = make_cmd_for("new_session", "lineage-child");
+    child.parent_session = "lineage-root".to_string();
+    assert_eq!(
+        parse_response(&handle_command_internal(&state, child))["success"],
+        true
+    );
+
+    let mut cmd = make_cmd("set_parent_session");
+    cmd.parent_session = "lineage-child".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], false, "{resp}");
+    assert_eq!(
+        state
+            .get_session("default")
+            .unwrap()
+            .read()
+            .parent_session_id,
+        "",
+        "a refused parent must not be recorded"
+    );
+}
+
 #[test]
 fn set_parent_session_rejects_self_and_unknown_parent() {
     let state = make_app_state();
