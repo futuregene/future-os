@@ -274,11 +274,11 @@ Current phase status:
 
 | Phase | Actual status |
 |---|---|
-| 0 | Source/dependency baseline and named inventory captured; matched build/runtime measurements and remaining ownership review open |
+| 0 | Source/dependency baseline and named inventory captured; mixed-module ownership reviewed per test; matched build/runtime measurements open |
 | 1 | Ordinary GUI-free crate, task registry, presentation outlet and consumer dependencies established; complete lifecycle/config boundary still open |
-| 2 | Store, credentials/platform, identity/lock, review and utility backend moved; Agent owner, bridge, Remote, maintenance and stop coordination remain |
+| 2 | Store, credentials/platform, identity/lock, review, files, Agent client and request ownership moved; Agent owner, complete bridge, Remote, maintenance and stop coordination remain |
 | 3 | Not implemented; the product entry is still `futureos-headless` |
-| 4 | 427 declarations moved; interim CI pending; real CLI process test migration and remaining core coverage open |
+| 4 | 465 original test declarations moved; interim CI has failures and unvalidated batches; real CLI process test migration and remaining core coverage open |
 | 5 | Host CI group and affected propagation added; builds, release artifacts, signing/install/update/uninstall still open |
 | 6 | Not started; no frozen final candidate, matched performance, artifact acceptance or confirmed manual results |
 
@@ -325,3 +325,5 @@ The host already has its own Linux test group. CI additionally runs host fmt, Cl
 The headless process group in CI `39358154196` failed `a_reconnect_with_a_pre_v2_slot_forgets_it`. A due credential worker could run before the initial generation was published, see no active state and exit; supervision then reported a dead critical task before the intended broker refusal. Remote Server now gates that worker with a one-shot installation notification. Publication starts renewal; cancelled installation drops the notification alongside candidate cleanup. Original test assertions, deadlines, platform conditions and wire behavior are unchanged.
 
 The user explicitly requested local verification after repair and before the next CI run. The original failing case passes (one test, 7.62 seconds); the complete real-process integration file passes (13 tests, zero failed or ignored, 189.97 seconds), recorded in the [repair evidence](../testing/headless-remote-start-repair-2026-10-20.json). The first sandbox attempt failed to bind loopback with EPERM; the authorized unsandboxed rerun uses isolated Future homes and temporary ports. Remote, legacy headless and combined GUI/CLI Clippy `--all-targets`, formatting, dependency boundaries and documentation checks pass. Native macOS results do not substitute for Linux/Windows CI, final CLI test migration, releases or manual acceptance. These local timings are provenance, not a matched performance comparison.
+
+The Agent's original failed test and new real-SQLite regression were subsequently run locally: each passes one test with zero failures. Before pushing, `origin/main` at `2e282c65` (invitation retries) was merged, and the complete headless process file rerun on merge `1d32b73a`: 13 passed, zero failed or ignored, 189.16 seconds. Remote/GUI/CLI Clippy, legacy headless Clippy, formatting, Desktop type-check/ESLint and dependency boundaries pass again. Existing npm dependencies with the identical lockfile were temporarily linked for checks; links were removed afterward. The user explicitly chose CI for native Windows verification; only the macOS Rust target is installed locally, so Windows is not claimed as passed. Results and log digests are in the same repair evidence.
