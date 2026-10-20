@@ -11,6 +11,7 @@
   "disconnect": "Disconnect",
   "pairAndStart": "Pair & start",
   "preparingPairingHint": "Establishing a secure connection. The QR code will appear when it is ready.",
+  "pairingCodeExpired": "That pairing code expired. Add the device again.",
   "pairedAs": "Paired as {{pairId}}",
   "connectedAs": "Connected as {{pairId}}",
   "reconnectingAs": "Reconnecting…",
