@@ -415,5 +415,28 @@
     "Matched Windows compilation benchmark was skipped, not passed; suite command durations include compilation and are not matched baseline performance.",
     "Task/login/scheduler changes postdate this candidate; do not reuse these results as their full acceptance.",
     "No final CLI/release/manual acceptance or overall goal completion."
-  ]
+  ],
+  "nextCandidatePreparation": {
+    "syncedCommit": "bebaa39eeeeeedd72d7303c2511aecc1042b8aab",
+    "originMain": "a9011babfef126abf682742fbbce824bbfeb6885",
+    "upstreamChanges": "Rust cache restore/save policy and flaky CLI documentation only; no Rust/TS product source changes. Preserve upstream read-only PR caches and main cache warming.",
+    "checks": [
+      "Workflow YAML parse PASS",
+      "Strict 295-doc check PASS",
+      "Scoped fmt PASS",
+      "Host/GUI/CLI Clippy --all-targets PASS",
+      "Original headless Clippy --all-targets PASS",
+      "Standalone Host Rustdoc -D warnings PASS",
+      "Actual combined GUI dependency graph: Host 370 / CLI 395, forbidden closures empty"
+    ],
+    "sameSourceLocalRuntimeEvidence": "docs/testing/headless-host-maintenance-2026-10-20.json",
+    "rustSourceTreeSha256": "e8aa41233958f37039c77b0f9d913ec096b869ea391f99c9816792e5cc859114",
+    "hashScope": "sorted host/src + desktop/src-tauri/src Rust path + NUL + contents + NUL; product source unchanged by upstream merge.",
+    "checkLogs": {
+      "headless-synced-clippy-2026-10-20.log": "5a3485945484b1d293fae344dc03cfd17b55008870c1e7c834520ef18a7d330b",
+      "headless-synced-headless-clippy-2026-10-20.log": "e1e7e6417824175ab32559bb8b9f003eae30275dd5f5c8942c1c3b66b2b5d2dd",
+      "headless-synced-rustdoc-2026-10-20.log": "eccd9a09f7a420d089d60571090b540b500aaded63e7efd368f0579c33cf4047"
+    },
+    "limits": "Same-source runtime results precede documentation/cache-only sync. Subsequent complete CI still required; not a final release/manual candidate."
+  }
 }

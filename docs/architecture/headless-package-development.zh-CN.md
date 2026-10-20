@@ -433,3 +433,5 @@ CI `39371045462`（候选 `0f9cc395`）的 macOS Host 分组为 933 通过、1 �
 ### 2026-10-20 候选 0f9cc395 的完整 CI 归档
 
 CI `39371045462` 已完成，整体为 failure。Windows 独立 Host 分组、构建/联合依赖检查及 13 组非零原生门禁均通过，实际 artifact summary 的 commit 已核对为同一候选；首次下载 EOF 后重试成功，不以读取异常计为通过。Linux headless 全组也通过。实际失败为 macOS shell activity 轮询与 Linux GUI readiness 入口，已分别提交本地复验修复，仍待新候选 CI。完整分组、Windows 平台/命令/耗时与日志摘要见[本轮 CI 证据](../testing/headless-ci-39371045462-2026-10-20.json)。性能比较 job 为 skipped，不记为通过；后续任务/登录/调度迁移不能借用本轮旧候选结果验收。
+
+推送前已合入远程主干 `a9011bab`（合并提交 `bebaa39e`），仅上游 Rust 缓存恢复/保存策略及 flaky CLI 说明变化，没有 Rust/TS 产品源码变化。保留主干缓存预热与 PR 只读规则；合并后 YAML、文档、fmt、Host/GUI/CLI 与旧 headless Clippy `--all-targets`、严格 Host Rustdoc 再次通过。源树摘要与验证日志摘要追加于同一 CI 证据，新候选仍需完整 CI 复验。
