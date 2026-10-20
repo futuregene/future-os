@@ -463,6 +463,46 @@ export function useSessionCatalog(
     [refreshSessions, refreshWorkspaces],
   );
 
+  /**
+   * Forget the mirrored catalogue because control of that machine moved.
+   *
+   * Another paired device drives it now: the host refuses this client every
+   * read (`superseded`) and sends it no snapshot, so what is held here is the
+   * conversation list of a machine somebody else is using — rows the reader can
+   * neither open nor act on. They are dropped rather than kept greyed out,
+   * because "this device is not the one driving that machine" is already the
+   * picker's and the badge's statement; the list must not contradict it.
+   *
+   * The epoch survives, and the revisions do not. A revision never moves while
+   * the host withholds a catalogue from a standby device, so a gate left holding
+   * the last applied revision would reject the very first snapshot after control
+   * returns as a duplicate — and reject it for as long as nothing else changed.
+   * Keeping the epoch is what lets that snapshot be authenticated at all.
+   *
+   * Not `reset`: that one describes a pairing the phone no longer has and takes
+   * the models and settings with it. Here the machine is still paired, and is
+   * still answering: only what it stopped being allowed to say goes.
+   */
+  const forgetCatalogue = useCallback(() => {
+    versionGate.current = new CatalogVersionGate();
+    versionGate.current.authenticate(authenticatedEpoch.current);
+    // Late answers to reads issued under the old control must not land in the
+    // emptied catalogue.
+    catalogEpoch.current += 1;
+    markSync("sessions", "idle");
+    markSync("workspaces", "idle");
+    setSessions([]);
+    sessionsRef.current = [];
+    setWorkspacesLocal([]);
+    setUnreadSessions(new Set());
+    setTitleOverrides({});
+    titleOverridesRef.current = {};
+    // A run whose state was last seen here would otherwise be compared against
+    // whatever this machine says about that session when control comes back.
+    lastStatusRef.current = {};
+    liveRuns.current.clear();
+  }, [markSync, setTitleOverrides]);
+
   /** Drop catalogue state (unpair / credentials cleared). */
   const applyWorkspaces = useCallback(
     (list: RemoteWorkspace[], version?: SnapshotVersion) => {
@@ -710,6 +750,7 @@ export function useSessionCatalog(
     setTitleOverrides,
     applySessionSnapshot,
     applySessionActivity,
+    forgetCatalogue,
     observeRunEvent,
     refreshSessions,
     noteCatalogRevisions,

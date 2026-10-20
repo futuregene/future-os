@@ -108,9 +108,8 @@ futureos --relay https://relay.example.com           # GUI
 future headless --relay https://relay.example.com  # 无 GUI 服务器
 ```
 
-地址会记在 `<future home>/relay.json`，对之后创建的邀请生效；`--relay ""` 清除
-它。私有 CA 用 `--relay-ca /path/to/ca.pem`（或环境变量 `FUTURE_RELAY_CA`）追加。
-容器或测试里也可以用环境变量 `FUTURE_RELAY_URL` 直接指定（优先级高于文件，空值表示官方中继）。
+地址只对**本次启动**生效，不写任何文件。所以下次不带这个参数启动就回到官方平台——一次调试用的自建中继不会悄悄变成这台机器的长期选择。`--relay ""` 等同于不写这个参数。私有 CA 用 `--relay-ca /path/to/ca.pem`（或环境变量 `FUTURE_RELAY_CA`）追加。
+容器或测试里也可以用环境变量 `FUTURE_RELAY_URL` 直接指定（优先级高于参数，空值表示官方中继）。
 
 自建模式下：
 
@@ -135,9 +134,16 @@ future remote devices remove --all     # 全部设备，各自交给自己的签
 ```
 
 全程不涉及 FutureOS 登录：中继没有账号，`add` 也只是去问运行中的 Desktop。
-中继使用私有 CA 时这些命令也不需要额外参数——它们读的就是 Desktop 用的那份
-`FUTURE_RELAY_CA` / `relay.json` 的 `ca`；而且这份 CA 只作用于属于它的那个中继，
-指向别处的旧设备不会凭空获得这份信任。
+中继使用私有 CA 时这些命令也不需要额外参数——用 `FUTURE_RELAY_CA` 指定即可，它只作用于这次请求。设置同样不跨次保留：自建中继靠每次启动的 `--relay` 选择，不带就是官方平台。
+
+终端是另一个进程，所以当它需要自己判断（`future remote enable` 会先确认这台机器能
+不能在不依赖账号的情况下提供服务）时，用同样的方式指定中继：
+
+```bash
+FUTURE_RELAY_URL=https://relay.example.com future remote enable
+```
+
+只去问运行中 Desktop 的命令不需要额外提示：Desktop 知道自己是用哪个中继启动的。
 
 ## 4. 官方中继与自建中继共存
 

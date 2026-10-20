@@ -821,6 +821,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       label: entry.label,
       ...(entry.icon ? { icon: entry.icon } : {}),
       active: false,
+      holder: entry.connection.presence?.holder ?? null,
       status: machineStatusOf(entry),
       ...(entry.connection.presence?.control ? { control: entry.connection.presence.control } : {}),
     }));

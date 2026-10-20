@@ -35,6 +35,44 @@ pub(super) fn add_connect_pause(attempt: u8) -> std::time::Duration {
 pub(super) fn add_retryable(attempt: u8, error: &crate::Error) -> bool {
     attempt < ADD_CONNECT_ATTEMPTS && pairing::error_code(error) == Some("network")
 }
+/// What a reconnect must do with one device, decided from the pairing book alone.
+///
+/// Split out of [`Supervisor::restart_slot`] so the three decisions are assertable
+/// without a child process, a broker and a platform. The end-to-end tests that
+/// drove them through a real Desktop could not be: a fixture's device starts with
+/// an already-expired credential (the only way a live refusal is classified
+/// *reconnectable* — `health.rs` treats a rejection of a still-valid, refreshed
+/// credential as terminal), and an expired credential makes the device's own
+/// renewal worker due immediately. Whether the run then reached `Ready` before
+/// that first generation was rebuilt was a race between the fixture's timer and
+/// the child's startup, which is why it failed on the CI runner and passed on a
+/// laptop.
+#[derive(Debug)]
+pub(super) enum SlotRecovery {
+    /// The book no longer holds the device: stop its runtime and keep nothing.
+    Stop,
+    /// A credential that cannot be upgraded in place (pre-v2, or no signed peer
+    /// identity): forget the device rather than serve it forever.
+    Forget,
+    /// Refresh this credential and rebuild the generation from it.
+    ///
+    /// Boxed because the credential is ~300 bytes and the other two variants carry
+    /// nothing: the decision is built once per reconnect, so the allocation is
+    /// free next to the round trip it precedes, while an unboxed payload would
+    /// make every `let` in this file move that much.
+    Refresh(Box<PairingCreds>),
+}
+
+pub(super) fn recovery_plan(slots: &[PairingCreds], pair_id: &str) -> SlotRecovery {
+    match slots.iter().find(|slot| slot.pair_id == pair_id) {
+        None => SlotRecovery::Stop,
+        Some(creds) if creds.handshake_version != 2 || creds.secure.is_none() => {
+            SlotRecovery::Forget
+        }
+        Some(creds) => SlotRecovery::Refresh(Box::new(creds.clone())),
+    }
+}
+
 impl Supervisor {
     pub async fn start(self: &Arc<Self>) -> Result<RemoteStatus, crate::Error> {
         self.start_with(true).await
@@ -624,20 +662,18 @@ impl Supervisor {
     }
 
     async fn restart_slot(self: &Arc<Self>, pair_id: &str) -> Result<RemoteStatus, crate::Error> {
-        let Some(creds) = self
-            .host
-            .load_slots()
-            .into_iter()
-            .find(|slot| slot.pair_id == pair_id)
-        else {
+        let creds = match recovery_plan(&self.host.load_slots(), pair_id) {
             // The device is gone; the runtime must not outlive its credential.
-            self.stop_slot(pair_id);
-            return Ok(self.empty());
+            SlotRecovery::Stop => {
+                self.stop_slot(pair_id);
+                return Ok(self.empty());
+            }
+            SlotRecovery::Forget => {
+                self.forget_slot(pair_id)?;
+                return Ok(self.empty());
+            }
+            SlotRecovery::Refresh(creds) => *creds,
         };
-        if creds.handshake_version != 2 || creds.secure.is_none() {
-            self.forget_slot(pair_id)?;
-            return Ok(self.empty());
-        }
         let creds = match self.host.refresh(creds).await {
             Ok(creds) => creds,
             Err(error) if pairing::is_invalid_or_revoked_error(&error) => {

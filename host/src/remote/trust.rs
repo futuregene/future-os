@@ -35,8 +35,8 @@ const BUNDLE_FILE: &str = "relay-root-certs.pem";
 /// its own platform load, i.e. today's behaviour.
 ///
 /// A self-hosted relay may present a private CA (the common case for a
-/// homelab or an internal deployment). `FUTURE_RELAY_CA` / the relay settings
-/// name that CA, and the bundle then carries the platform store *plus* it.
+/// homelab or an internal deployment). `FUTURE_RELAY_CA` / `--relay-ca` name
+/// that CA, and the bundle then carries the platform store *plus* it.
 /// That is a deliberate, operator-supplied addition to the trust set, not a
 /// relaxation: the extra root is only ever used for the relay the operator
 /// configured, and nothing about verification changes for anyone else.

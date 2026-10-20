@@ -38,6 +38,7 @@ let connectionOptions: {
   credentialsRef: { current: RemoteCredentials | null };
   resetConversation?: () => void;
   applySessionStreaming?: (sessionId: string, streaming: boolean) => void;
+  controlChanged?: (control: "active" | "standby") => void;
 } = { handleEvent: jest.fn(), credentialsRef: { current: null } };
 
 const mockCatalog = {
@@ -55,6 +56,7 @@ const mockCatalog = {
   refreshSettings: jest.fn(async () => {}),
   refreshWorkspaces: jest.fn(async () => {}),
   noteCatalogRevisions: jest.fn(),
+  forgetCatalogue: jest.fn(),
   observeRunEvent: jest.fn(),
   rename: jest.fn(),
   generateTitle: jest.fn(),
@@ -319,6 +321,25 @@ test("resetting a conversation off the back of a connection event does not ask t
   expect(mockCatalog.refreshSessions).not.toHaveBeenCalled();
 });
 
+test("control moving off this machine drops its conversations, and moving back reads them again", () => {
+  mount();
+  expect(connectionOptions.controlChanged).toBeDefined();
+
+  // Another device took the machine: the host refuses this client every read and
+  // sends it no snapshot, so the conversations mirrored here are somebody else's
+  // to see and come out of the merged list at once.
+  act(() => connectionOptions.controlChanged!("standby"));
+  expect(mockCatalog.forgetCatalogue).toHaveBeenCalledTimes(1);
+  expect(mockCatalog.refreshSessions).not.toHaveBeenCalled();
+
+  // Control came back. The catalogue was emptied, and a machine sends no
+  // snapshot while it is in standby, so the empty list would read as "no
+  // conversations" until this side asks for it.
+  act(() => connectionOptions.controlChanged!("active"));
+  expect(mockCatalog.refreshSessions).toHaveBeenCalledTimes(1);
+  expect(mockCatalog.refreshWorkspaces).toHaveBeenCalledTimes(1);
+});
+
 test("the open conversation's title comes from this machine's catalogue", () => {
   mockCatalog.sessions = [
     { sessionId: "s1", threadId: "t1", title: "The open one", streaming: false },
@@ -327,6 +348,30 @@ test("the open conversation's title comes from this machine's catalogue", () => 
   expect(runtime.current.selectedTitle).toBe("");
   act(() => conversationOptions.setSelectedSessionId!("s1"));
   expect(runtime.current.selectedTitle).toBe("The open one");
+});
+
+test("a taken-over machine's conversation keeps its name when the catalogue goes", () => {
+  mockCatalog.sessions = [
+    { sessionId: "s1", threadId: "t1", title: "Deploy notes", streaming: false },
+  ];
+  mount();
+  act(() => conversationOptions.setSelectedSessionId!("s1"));
+  expect(runtime.current.selectedTitle).toBe("Deploy notes");
+
+  // Control moved: the rows go, the conversation the user is reading stays
+  // (with its standby notice). Renaming it to "unnamed" under them would be a
+  // second, unrelated change.
+  mockCatalog.sessions = [];
+  rerender();
+  expect(runtime.current.selectedTitle).toBe("Deploy notes");
+
+  // Another conversation is named by the catalogue that is in force.
+  mockCatalog.sessions = [
+    { sessionId: "s2", threadId: "t2", title: "Other", streaming: false },
+  ];
+  rerender();
+  act(() => conversationOptions.setSelectedSessionId!("s2"));
+  expect(runtime.current.selectedTitle).toBe("Other");
 });
 
 test("only the desktop being read, in front, tells its machine which conversation to detail", () => {

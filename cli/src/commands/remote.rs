@@ -73,9 +73,6 @@ const PENDING_REVOKES_FILE: &str = "remote_pending_revokes.json";
 /// The lock the Desktop holds for the lifetime of the process; holding it is
 /// exactly "a Desktop owns this data directory" (`instance.rs`).
 const DESKTOP_LOCK_FILE: &str = "desktop.lock";
-/// The self-hosted relay this installation points at, and the CA it needs
-/// (`relay.rs`'s `SETTINGS_FILE`).
-const RELAY_SETTINGS_FILE: &str = "relay.json";
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -517,6 +514,10 @@ fn switch_advice(running: bool) -> &'static str {
 /// "signed in" for this purpose. Everything else mints its credential from the
 /// platform: without a login the switch can be turned on and nothing can
 /// connect, which is exactly the state this check exists to prevent.
+///
+/// The relay is chosen per launch and never written down (`relay.rs`), so this
+/// process only knows about one it was told: `FUTURE_RELAY_URL`, which is how a
+/// terminal on a relay machine says the same thing the Desktop's `--relay` said.
 fn signed_in() -> bool {
     future_host::remote::relay::endpoint().is_some()
         || future_host::future_platform::future_api_key().is_ok()
@@ -526,7 +527,8 @@ fn signed_in() -> bool {
 fn login_advice() -> &'static str {
     "Not signed in to Future OS. The remote desktop serves through your account, so sign in \
      first: `future auth login`, then run this again. (A self-hosted relay needs no account: \
-     `future headless --relay <url>`.)"
+     start the Desktop with `futureos --relay <url>`, and export FUTURE_RELAY_URL=<url> here so \
+     this command knows the machine serves through a relay rather than an account.)"
 }
 
 // ── list ────────────────────────────────────────────────────────────────────
@@ -2079,76 +2081,16 @@ fn client_trusting(ca: Option<&Path>) -> Result<reqwest::Client, String> {
 
 /// The extra TLS root for this pairing's relay, if one is configured.
 ///
-/// The Desktop applies the same two sources (`FUTURE_RELAY_CA`, then
-/// `relay.json`'s `ca`) to its own NATS client, and this command must agree with
-/// it or its requests never leave the machine on a private-CA relay.
-///
-/// The *environment* variable is an operator naming one CA for this invocation,
-/// so it applies to whatever relay the pairing names. The *persisted* CA belongs
-/// to the relay this installation currently points at, so it is used only for a
-/// pairing on that same origin — a device left over from a previous relay must
-/// not inherit that trust just because it is still in the book.
+/// The Desktop applies the same source (`FUTURE_RELAY_CA`, or the `--relay-ca`
+/// its launch was given) to its own NATS client, and this command must agree
+/// with it or its requests never leave the machine on a private-CA relay. Since
+/// the Desktop no longer remembers a relay, neither does this command: a CA is
+/// named per invocation, and it applies to whatever relay the pairing names.
 fn relay_ca_for(device: &Device) -> Option<PathBuf> {
-    let base = device.control_url.as_deref()?;
-    if let Ok(from_env) = std::env::var("FUTURE_RELAY_CA") {
-        let path = from_env.trim();
-        if !path.is_empty() {
-            return Some(PathBuf::from(path));
-        }
-    }
-    let settings = relay_settings();
-    let ca = settings.ca?;
-    let configured = settings.url?;
-    (origin(&configured) == origin(base)).then(|| PathBuf::from(ca))
-}
-
-/// `~/.future/relay.json` as this command needs it: the relay now in use, and
-/// the CA that relay needs.
-#[derive(Debug, Default)]
-struct RelaySettings {
-    url: Option<String>,
-    ca: Option<String>,
-}
-
-fn relay_settings() -> RelaySettings {
-    // The environment wins over the file, exactly as the Desktop resolves it.
-    let from_env = std::env::var("FUTURE_RELAY_URL").ok();
-    let env_url = from_env
-        .as_deref()
-        .map(str::trim)
-        .filter(|url| !url.is_empty())
-        .map(|url| url.trim_end_matches('/').to_string());
-    let document = future_dir()
-        .ok()
-        .map(|future| future.join(RELAY_SETTINGS_FILE))
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-        .unwrap_or(Value::Null);
-    let field = |name: &str| {
-        document
-            .get(name)
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string)
-    };
-    RelaySettings {
-        url: env_url.or_else(|| field("url")),
-        ca: field("ca"),
-    }
-}
-
-/// `scheme://host[:port]` — what "the same relay" means. An unparsable URL is its
-/// own origin, so a typo can only ever match itself.
-fn origin(url: &str) -> String {
-    match reqwest::Url::parse(url) {
-        Ok(parsed) => match (parsed.host_str(), parsed.port()) {
-            (Some(host), Some(port)) => format!("{}://{host}:{port}", parsed.scheme()),
-            (Some(host), None) => format!("{}://{host}", parsed.scheme()),
-            (None, _) => url.trim_end_matches('/').to_string(),
-        },
-        Err(_) => url.trim_end_matches('/').to_string(),
-    }
+    device.control_url.as_deref()?;
+    let path = std::env::var("FUTURE_RELAY_CA").ok()?;
+    let path = path.trim();
+    (!path.is_empty()).then(|| PathBuf::from(path))
 }
 
 // ── use ─────────────────────────────────────────────────────────────────────
@@ -2390,14 +2332,13 @@ mod tests {
         .unwrap();
     }
 
-    /// Put this machine in self-hosted relay mode, where there is no account.
-    fn use_relay(home: &Home, url: &str) {
-        std::fs::create_dir_all(home.future()).unwrap();
-        std::fs::write(
-            home.future().join(RELAY_SETTINGS_FILE),
-            json!({ "url": url }).to_string(),
-        )
-        .unwrap();
+    /// Put this process in self-hosted relay mode, where there is no account.
+    ///
+    /// The relay is not stored anywhere (`relay.rs`), so a terminal names it the
+    /// only way another process can: the environment variable the Desktop
+    /// honours too. Keep the guard alive for the test's duration.
+    fn use_relay(url: &str) -> EnvGuard {
+        EnvGuard::set(&[("FUTURE_RELAY_URL", std::ffi::OsString::from(url))])
     }
 
     #[tokio::test]
@@ -3209,8 +3150,8 @@ mod tests {
     #[tokio::test]
     async fn enable_needs_no_account_in_relay_mode() {
         let _guard = crate::test_env::lock_env().await;
-        let home = Home::new();
-        use_relay(&home, "https://relay.example.com");
+        let _home = Home::new();
+        let _relay = use_relay("https://relay.example.com");
         crate::commands::desktop::store("autoConnectRemote", "false").unwrap();
 
         let (code, _, stderr) = run(&["remote", "enable"]).await;
@@ -3854,77 +3795,46 @@ mod tests {
         }
     }
 
-    /// The persisted CA belongs to the relay this installation points at, so it
-    /// is used for a pairing on that origin and nowhere else.
+    /// The CA is an operator naming one per invocation, so it applies to
+    /// whatever relay the pairing names. Nothing is remembered between runs:
+    /// a leftover `relay.json` from an older build does not bring one back.
     #[tokio::test]
-    async fn the_persisted_relay_ca_applies_only_to_its_own_relay() {
+    async fn the_environment_ca_applies_to_any_relay() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
         std::fs::create_dir_all(home.future()).unwrap();
         std::fs::write(
-            home.future().join(RELAY_SETTINGS_FILE),
+            home.future().join("relay.json"),
             json!({ "url": "https://relay.example.com", "ca": "/etc/relay-ca.pem" }).to_string(),
         )
         .unwrap();
-
-        assert_eq!(
-            relay_ca_for(&relay_device("pair_A", "https://relay.example.com")),
-            Some(PathBuf::from("/etc/relay-ca.pem"))
-        );
-        // Same relay, spelled with a trailing slash and an explicit port default.
-        assert_eq!(
-            relay_ca_for(&relay_device("pair_A", "https://relay.example.com/")),
-            Some(PathBuf::from("/etc/relay-ca.pem"))
-        );
-        // A device left over from another relay does not inherit that trust.
-        assert_eq!(
-            relay_ca_for(&relay_device("pair_B", "https://old.example.net")),
-            None
-        );
-        assert_eq!(
-            relay_ca_for(&relay_device("pair_C", "http://relay.example.com")),
-            None,
-            "a different scheme is a different origin"
-        );
-        assert_eq!(
-            relay_ca_for(&relay_device("pair_D", "https://relay.example.com:8443")),
-            None,
-            "a different port is a different origin"
-        );
-    }
-
-    /// The environment variable is the operator naming one CA for this
-    /// invocation, so it applies to whatever relay the pairing names.
-    #[tokio::test]
-    async fn the_environment_ca_applies_to_any_relay() {
-        let _guard = crate::test_env::lock_env().await;
-        let _home = Home::new();
         let _ca = EnvGuard::set(&[("FUTURE_RELAY_CA", std::ffi::OsString::from("/env/ca.pem"))]);
         assert_eq!(
             relay_ca_for(&relay_device("pair_A", "https://anywhere.example")),
             Some(PathBuf::from("/env/ca.pem"))
         );
-        // The environment also wins over the file, as it does in the Desktop.
         assert_eq!(
             relay_ca_for(&relay_device("pair_A", "https://relay.example.com")),
             Some(PathBuf::from("/env/ca.pem"))
         );
     }
 
-    /// Nothing configured means the default trust store — not an error.
+    /// Nothing configured means the default trust store — not an error, and not
+    /// a CA read out of a file the Desktop no longer writes.
     #[tokio::test]
     async fn no_relay_ca_means_the_platform_trust_store() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
         std::fs::create_dir_all(home.future()).unwrap();
         std::fs::write(
-            home.future().join(RELAY_SETTINGS_FILE),
-            json!({ "url": "https://relay.example.com" }).to_string(),
+            home.future().join("relay.json"),
+            json!({ "url": "https://relay.example.com", "ca": "/etc/relay-ca.pem" }).to_string(),
         )
         .unwrap();
         assert_eq!(
             relay_ca_for(&relay_device("pair_A", "https://relay.example.com")),
-            None
+            None,
+            "a remembered file is not a configured CA"
         );
         // A platform pairing has no relay at all.
         let platform_device = Device {
@@ -4096,7 +4006,7 @@ mod tests {
             }),
         );
         // Relay mode: no account at all, and no auth.json anywhere.
-        use_relay(&home, "https://relay.example.com");
+        let _relay = use_relay("https://relay.example.com");
         assert!(!auth_file().exists());
 
         let (code, stdout, stderr) = run(&["remote", "devices", "add", "--json"]).await;

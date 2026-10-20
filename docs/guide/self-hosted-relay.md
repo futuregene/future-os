@@ -119,10 +119,12 @@ futureos --relay https://relay.example.com           # GUI
 future headless --relay https://relay.example.com  # server, no GUI
 ```
 
-The address is remembered in `<future home>/relay.json` and applies to
-invitations created afterwards. `--relay ""` clears it. A private CA is added
+The address applies to **this launch only**. Nothing is written down, so the
+next launch without the flag is back on the Future platform — a debugging run
+against a self-hosted relay cannot silently become this machine's permanent
+choice. `--relay ""` is the same as leaving the flag out. A private CA is added
 with `--relay-ca /path/to/ca.pem` (or `FUTURE_RELAY_CA`). A container or a test
-can also set `FUTURE_RELAY_URL`, which wins over the file (an empty value means
+can also set `FUTURE_RELAY_URL`, which wins over the flag (an empty value means
 the official relay).
 
 In relay mode:
@@ -153,9 +155,20 @@ future remote devices remove --all     # every device, each at its own issuer
 
 No FutureOS login is involved: the relay has no accounts, and `add` only asks the
 running Desktop. A relay behind a private CA needs no flag for these commands —
-they read the same `FUTURE_RELAY_CA` / `relay.json` `ca` the Desktop uses. That
-CA is applied only to a pairing on the relay it belongs to, so an old device
-pointing at a different relay is not granted that trust.
+name it with `FUTURE_RELAY_CA` and it is applied to that relay's requests.
+Nothing is remembered between runs: a self-hosted relay is chosen per launch
+with `--relay`, and a launch without it uses the Future platform.
+
+A terminal on a relay machine is a separate process, so it names the relay
+the same way when it has to decide something itself (`future remote enable`
+checks whether this machine can serve without an account):
+
+```bash
+FUTURE_RELAY_URL=https://relay.example.com future remote enable
+```
+
+The commands that only ask the running Desktop need no hint: the Desktop knows
+which relay it was launched with.
 
 ## 4. Run the official relay and a self-hosted one together
 

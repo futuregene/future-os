@@ -923,16 +923,32 @@ mod gui {
 
     /// Start the window. Mobile enters through [`run`] as well.
     pub fn run_with() -> Result<(), AppError> {
+        // Arm the stall watchdog before the first thing that can block. A launch
+        // wedged in the kernel cannot be interrupted, but it can be *named*: the
+        // report lands in the host log (and stderr) once the budget expires,
+        // instead of the failure being a silent blank window.
+        let startup = future_host::startup::global();
+        startup.arm(
+            crate::host_environment::report,
+            future_host::startup::STALL_AFTER,
+            future_host::startup::STALL_REPEAT,
+        );
         // The combined Agent/Desktop dependency graph may include multiple
         // rustls providers. Select ring and hydrate tool environment before
         // Tauri starts threads or creates any HTTP clients.
-        crate::host_environment::initialize()?;
+        startup.enter("host environment");
+        if let Err(error) = crate::host_environment::initialize() {
+            startup.failed();
+            return Err(error);
+        }
+        startup.enter("window");
         let mut context = tauri::generate_context!();
         context.config_mut().identifier = instance::gui_identifier(&context.config().identifier)?;
         // The `setup` hook and the invoke handler stay with the real runtime: the
         // hook publishes the process-global `AppHandle<Wry>`, and the commands
         // behind the handler take that same concrete handle. Appending them after
         // `gui_builder` is equivalent — `Builder` keeps these in separate fields.
+        startup.enter("window build");
         let app = gui_builder::<tauri::Wry>()
             .setup(|app| {
                 let _ = APP_HANDLE.set(app.handle().clone());
@@ -1139,12 +1155,21 @@ mod gui {
             .build(context)
             .map_err(|error| AppError::from(format!("Could not start Desktop: {error}")))?;
 
-        initialize_process_state(&app)?;
+        // A failure here ends the process, and a launch from Finder/Dock has no
+        // terminal to show it on. Route it through the host log (started above)
+        // so the next launch can say what happened instead of leaving a window
+        // that appeared and vanished.
+        if let Err(error) = initialize_process_state(&app) {
+            crate::host_environment::report(&format!("startup failed: {error}"));
+            startup.failed();
+            return Err(error);
+        }
         // Keep the Windows console attached until startup errors can be reported.
         #[cfg(target_os = "windows")]
         unsafe {
             let _ = windows::Win32::System::Console::FreeConsole();
         }
+        startup.enter("event loop");
         app.run(dispatch_run_event);
         Ok(())
     }
@@ -1153,22 +1178,38 @@ mod gui {
     /// host log, the app store and the terminal listener. Split out of
     /// [`run_with`] and generic over both the runtime and the manager so a test
     /// can drive it with `tauri::test::mock_app()` — the same shape as
-    /// [`start_backend_background`]. Behaviour for the real runtime is unchanged:
-    /// this is the same statement sequence `run_with` ran, with the same `?` on
-    /// the same `Result`s, and `&app` stays borrowed only for `manage`.
+    /// [`start_backend_background`]. `&app` stays borrowed only for `manage`.
+    ///
+    /// Only the lock and the app store are fatal: the lock because a second
+    /// writer must never share the data directory, the store because no command
+    /// can answer without it. The host log and the terminal listener degrade
+    /// instead — a read-only install must still open a window.
     fn initialize_process_state<R: tauri::Runtime, M: tauri::Manager<R>>(
         app: &M,
     ) -> Result<(), AppError> {
+        let startup = future_host::startup::global();
         // Build initializes the single-instance plugin first, so a second GUI
         // still activates the existing window. Acquire the shared GUI/headless
         // lock before entering the event loop: returning an error from `setup`
         // makes Tauri panic (and abort on macOS's non-unwinding callback).
+        startup.enter("desktop data lock");
         let guard = instance::InstanceGuard::acquire()?;
         tauri::Manager::manage(app, guard);
-        crate::host_environment::start_logging()?;
+        // Logging first, and never fatal: the log is the only place a later
+        // startup failure is diagnosable from, and a read-only install or a full
+        // disk must not turn "no log" into "no window".
+        startup.enter("host log");
+        if let Err(error) = crate::host_environment::start_logging() {
+            crate::host_environment::report(&format!("host log unavailable: {error}"));
+        }
         crate::runtime::set(tauri::async_runtime::handle().inner().clone());
         agent_bridge::install_channel_runtime();
+        // Only the part commands need is on the launch path. Converging legacy
+        // rows and orphaned directories walks the data tree, so it runs once the
+        // event loop is live (see `start_backend_background`).
+        startup.enter("app store");
         store::initialize_app_store()?;
+        startup.enter("terminal server");
         if let Err(error) = terminal::server::bind() {
             eprintln!("FutureOS terminal server bind failed: {error}");
         }
@@ -1191,6 +1232,7 @@ mod gui {
             // macOS and can leave the detached start task without a live
             // connection. `Ready` is emitted once the process runtime is live.
             tauri::RunEvent::Ready => {
+                future_host::startup::global().enter("agent");
                 let handle = app_handle.clone();
                 crate::runtime::spawn_native(move || {
                     if let Err(error) = agent_supervisor::start_agent_supervision(&handle) {
@@ -1239,6 +1281,11 @@ mod gui {
     /// does its real work on the shared runtime, so the mock changes nothing about
     /// what is started. Behaviour for the real runtime is unchanged.
     fn start_backend_background<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+        // Leftover convergence (legacy soft-deleted rows, orphaned image/chat/
+        // review directories) is hygiene, not startup: it walks the data tree
+        // and no command depends on it. Running it here keeps a large or slow
+        // data directory from delaying the first frame.
+        crate::runtime::spawn_native(store::reconcile_after_startup);
         // Independent fixed-interval maintenance: app updates (24h),
         // Future balance (1h), and Future models (24h). Missed ticks while
         // suspended are skipped; each task runs at most once after resume.

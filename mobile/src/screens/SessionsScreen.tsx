@@ -830,6 +830,18 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     const machine = machines.find(item => item.desktopId === scopedPeerId);
     const status = machine?.status ?? "offline";
     if (status === "connected") {
+      // A machine another device drives holds no list of this phone's: its rows
+      // went when control left, because the host refuses this client every read
+      // and sends it no snapshot. So the page asks for the one thing that
+      // changes that, instead of reading "no conversations" over a machine full
+      // of them.
+      if (machine?.control === "standby")
+        return (
+          <StandbyScreen
+            holder={machine.holder ?? null}
+            onTakeControl={() => remote.catalogs.takeControlFor(scopedPeerId)}
+          />
+        );
       // Answering and simply empty: the ordinary copy for this tab, whose own
       // actions are already addressed to the machine the list is showing.
       return tab === "workspace"

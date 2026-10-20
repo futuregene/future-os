@@ -117,6 +117,7 @@ export function useDesktopRuntime({
     refreshWorkspaces,
     applySessionSnapshot,
     applySessionActivity,
+    forgetCatalogue,
     setWorkspaces,
     setCatalogEpoch,
     noteCatalogRevisions,
@@ -201,6 +202,27 @@ export function useDesktopRuntime({
     setDraftWorkspaceId("");
   }, []);
 
+  /**
+   * Control of this machine moved, so its catalogue is not this phone's any
+   * more — or is again.
+   *
+   * A machine another device drives refuses this client every read and is sent
+   * no snapshot, so the conversations mirrored here are the ones of a machine
+   * somebody else is using: they come out of the merged list at once instead of
+   * lingering as rows that cannot be opened. When control returns, the same
+   * emptiness would read as "no conversations": the host sends no snapshot to a
+   * standby device, so this side reads the catalogue itself rather than waiting
+   * for a push that will not come.
+   */
+  const controlChanged = useCallback((control: "active" | "standby") => {
+    if (control === "standby") {
+      forgetCatalogue();
+      return;
+    }
+    void refreshSessions();
+    void refreshWorkspaces();
+  }, [forgetCatalogue, refreshSessions, refreshWorkspaces]);
+
   const connection = useDesktopConnection({
     desktopId,
     clientRef,
@@ -219,6 +241,7 @@ export function useDesktopRuntime({
     refreshSettings,
     refreshWorkspaces,
     noteCatalogRevisions,
+    controlChanged,
     closeConversation,
     resetConversation,
     resetCatalog,
@@ -306,8 +329,32 @@ export function useDesktopRuntime({
     setVisibleSession(selectedForVisibility);
   }, [selectedForVisibility, setVisibleSession]);
 
-  const selectedTitle =
-    sessions.find(session => session.sessionId === selectedSessionId)?.title ?? "";
+  /**
+   * The open conversation's title, which outlives the row it came from.
+   *
+   * A machine taken over drops its catalogue (see `controlChanged`), and the
+   * conversation stays on screen — it has its own standby notice, and its
+   * transcript is still the user's to read. Losing the row must not rename the
+   * conversation to "unnamed" under them, so the last title seen for the open
+   * session is kept until the catalogue comes back or another session opens.
+   */
+  const [lastTitle, setLastTitle] = useState<{ sessionId: string; title: string }>({
+    sessionId: "",
+    title: "",
+  });
+  const selectedTitleRow = sessions.find(session => session.sessionId === selectedSessionId);
+  // Adjusted during render rather than in an effect (the same pattern the
+  // sessions screen uses for state derived from props): the title has to be
+  // remembered before the row that carried it goes, or the conversation is
+  // renamed for one frame.
+  if (
+    selectedSessionId
+    && selectedTitleRow?.title
+    && (lastTitle.sessionId !== selectedSessionId || lastTitle.title !== selectedTitleRow.title)
+  )
+    setLastTitle({ sessionId: selectedSessionId, title: selectedTitleRow.title });
+  const selectedTitle = selectedTitleRow?.title
+    || (lastTitle.sessionId === selectedSessionId ? lastTitle.title : "");
 
   const [desktopSettingsRevision, setDesktopSettingsRevision] = useState(0);
   const [skillsRevision, setSkillsRevision] = useState(0);

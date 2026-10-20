@@ -581,6 +581,66 @@ describe("RemoteProvider over several desktops", () => {
     expect(remote.catalogs.machines[0]!.label).toBe("Office");
   });
 
+  test("a machine another device takes over drops out of the merged list at once", async () => {
+    await mount();
+    await settle();
+    const office = clientFor("desktop_2");
+    act(() => {
+      clientFor("desktop_1").callbacks.onPresence?.(onlinePresence("desktop_1") as never);
+      office.callbacks.onPresence?.(onlinePresence("desktop_2") as never);
+    });
+    await settle();
+    expect(remote.catalogs.catalogs.map((entry) => entry.desktopId)).toContain("desktop_2");
+
+    act(() => {
+      office.callbacks.onPresence?.({
+        ...onlinePresence("desktop_2"),
+        control: "standby",
+        holder: { pairId: "pair-other", name: "Lab iPad" },
+      } as never);
+    });
+    await settle();
+
+    // The host refuses a standby device every read and sends it no snapshot, so
+    // the conversations it mirrored are the list of a machine somebody else is
+    // using. They are not rows this phone may draw.
+    const rowsOf = (desktopId: string) =>
+      remote.catalogs.catalogs.find((entry) => entry.desktopId === desktopId)?.sessions ?? [];
+    expect(rowsOf("desktop_2")).toEqual([]);
+    // The machine itself still stands: the picker and the badge have to show it.
+    expect(remote.catalogs.machines.map((machine) => machine.desktopId)).toEqual(["desktop_2"]);
+    expect(remote.catalogs.machines[0]!.control).toBe("standby");
+    expect(remote.catalogs.machines[0]!.holder).toEqual({
+      pairId: "pair-other",
+      name: "Lab iPad",
+    });
+
+    // Taking it back reads the catalogue again rather than leaving an empty
+    // machine: what was dropped cannot come back by itself.
+    await act(async () => { await remote.catalogs.takeControlFor("desktop_2"); });
+    await settle();
+    expect(remote.catalogs.machines[0]!.control).toBe("active");
+    expect(rowsOf("desktop_2").map((session) => session.sessionId)).toEqual(["b-1"]);
+  });
+
+  test("a control packet empties the machine's rows without waiting for a heartbeat", async () => {
+    await mount();
+    await settle();
+    const office = clientFor("desktop_2");
+    act(() => { office.callbacks.onPresence?.(onlinePresence("desktop_2") as never); });
+    await settle();
+    expect(remote.catalogs.catalogs.map((entry) => entry.desktopId)).toContain("desktop_2");
+
+    // `state.control` is the host saying it as it happens; the heartbeat repeats
+    // it three seconds later. The list must not wait for the repeat.
+    act(() => { office.callbacks.onControl?.("standby" as never); });
+    await settle();
+    expect(
+      remote.catalogs.catalogs.find((entry) => entry.desktopId === "desktop_2")?.sessions ?? [],
+    ).toEqual([]);
+    expect(remote.catalogs.machines[0]!.control).toBe("standby");
+  });
+
   test("a takeover answer moves the row out of standby without waiting for a heartbeat", async () => {
     await mount();
     await settle();

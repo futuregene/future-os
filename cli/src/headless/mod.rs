@@ -99,9 +99,13 @@ pub fn run(options: Options) -> Result<(), String> {
     future_host::remote::relay::apply_launch_settings(
         options.relay.as_deref(),
         options.relay_ca.as_deref(),
-    )
-    .map_err(|e| e.to_string())?;
-    future_host::environment::start_logging().map_err(|e| e.to_string())?;
+    );
+    // A read-only install or a full disk must not stop a headless host: the
+    // terminal still reports what happens, and the log is a convenience, not a
+    // prerequisite.
+    if let Err(error) = future_host::environment::start_logging() {
+        future_host::environment::report(&format!("host log unavailable: {error}"));
+    }
     // Say where diagnostics land before any Agent work starts — after the data
     // root is final, because hydration above can still change it. The Agent logs
     // each startup phase to that file as well as this terminal, and on a host
@@ -179,6 +183,9 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
         require_terminal()?;
     }
     future_host::store::initialize_app_store()?;
+    // Leftover convergence walks the data tree and no command depends on it, so
+    // it must not sit between the operator and the Agent starting.
+    std::thread::spawn(future_host::store::reconcile_after_startup);
     ensure_agent_running(agent).await?;
     install_channel_runtime();
     let account_key = if let Some(url) = relay.as_deref() {

@@ -85,6 +85,18 @@ export interface DesktopConnectionOptions {
    * client applied means a pushed snapshot was lost.
    */
   noteCatalogRevisions?(version: CatalogRevisions | undefined): void;
+  /**
+   * Control of this machine moved, as the host itself says.
+   *
+   * Not a transport fault and not a conversation fact: a machine another device
+   * drives refuses this client every read and is sent no snapshot, so the
+   * catalogue it mirrored describes a control the phone no longer has. What to
+   * do about that is the runtime's judgement (`useDesktopRuntime` forgets the
+   * catalogue, and reads it again when control returns); the connection only
+   * reports the move — from the heartbeat, or from the host's immediate
+   * `state.control` packet.
+   */
+  controlChanged?(control: "active" | "standby"): void;
   closeConversation(): void;
   resetConversation(): void;
   resetCatalog(): void;
@@ -162,6 +174,7 @@ export function useDesktopConnection({
   refreshSettings,
   refreshWorkspaces,
   noteCatalogRevisions,
+  controlChanged,
   closeConversation,
   resetConversation,
   resetCatalog,
@@ -230,6 +243,33 @@ export function useDesktopConnection({
       next.online && now - lastPresenceReceiptRef.current < PRESENCE_RECEIPT_STALE_MS,
     );
   }, []);
+
+  /**
+   * Record control moving, from whichever packet said so first.
+   *
+   * The host announces a takeover on `state.control` as it happens and repeats
+   * the fact on every heartbeat. Both roads lead here, so a displaced device
+   * gives up the machine's conversations in the same tick it lost them, and a
+   * device handed the machine back reads them again without waiting for its own
+   * next tick — instead of the phone drawing rows it can no longer open.
+   */
+  const noteControl = useCallback((control: "active" | "standby") => {
+    const current = latestPresenceRef.current;
+    if (current && current.control === control) return;
+    if (current) {
+      // The packet names no holder; the next heartbeat does. Until then the
+      // page says the machine is taken over without naming who has it, which
+      // is the honest reading rather than the previous holder's name.
+      const next = {
+        ...current,
+        control,
+        holder: control === "active" ? null : current.holder ?? null,
+      };
+      latestPresenceRef.current = next;
+      setPresence(next);
+    }
+    controlChanged?.(control);
+  }, [controlChanged]);
 
   const recoverState = useCallback(
     (client: RemoteClient) => {
@@ -361,12 +401,30 @@ export function useDesktopConnection({
           if (agentRecovered && connectionReadyRef.current)
             void recoverState(client).catch(recordError);
           lastPresenceReceiptRef.current = Date.now();
+          // A heartbeat repeats control, so only a change is news. Until the
+          // first presence of a connection there has been no word on control,
+          // and the machine is read as `active` — the same default an older
+          // desktop's absent field gets, and the only control a catalogue can
+          // have been read under. A first presence that says `standby` is
+          // therefore a move: the rows mirrored before the transport dropped
+          // belong to a machine somebody else has taken.
+          const previousPresence = latestPresenceRef.current;
           latestPresenceRef.current = nextPresence;
           setPresence(nextPresence);
+          if (
+            nextPresence.control !== undefined
+            && nextPresence.control !== (previousPresence ? previousPresence.control : "active")
+          )
+            controlChanged?.(nextPresence.control);
           if (connectionReadyRef.current) {
             // Only past the ready barrier: a pull issued against a
             // half-built connection would race the handshake it depends on.
-            noteCatalogRevisions?.(nextPresence.catalogVersion);
+            //
+            // A standby machine advertises revisions towards a catalogue it
+            // never sent this client — there is nothing to heal towards — so a
+            // pull would only earn a `superseded` per heartbeat.
+            if (nextPresence.control !== "standby")
+              noteCatalogRevisions?.(nextPresence.catalogVersion);
             updateDesktopOnline(nextPresence, lastPresenceReceiptRef.current);
           } else {
             setDesktopOnline(false);
@@ -374,6 +432,12 @@ export function useDesktopConnection({
         },
         onSessions: (sessionList, version) => {
           if (access !== accessRef.current) return;
+          // A snapshot published just before control moved can still be in
+          // flight when the other device's takeover lands. The machine has no
+          // catalogue for this client any more, so neither that packet nor the
+          // next one is applied — the rows would otherwise reappear behind the
+          // standby state that just emptied them.
+          if (latestPresenceRef.current?.control === "standby") return;
           const list: RemoteSession[] = sessionList.map((session) => ({
             ...session,
           }));
@@ -388,13 +452,23 @@ export function useDesktopConnection({
           }
         },
         onSessionActivity: (activity, version) => {
-          if (access === accessRef.current) applySessionActivity(activity, version);
+          if (access !== accessRef.current) return;
+          if (latestPresenceRef.current?.control === "standby") return;
+          applySessionActivity(activity, version);
         },
         onWorkspaces: (list, version) => {
-          if (access === accessRef.current) setWorkspaces(list, version);
+          if (access !== accessRef.current) return;
+          if (latestPresenceRef.current?.control === "standby") return;
+          setWorkspaces(list, version);
         },
         onFeatures: (features) => {
           if (access === accessRef.current) setCapabilities(new Set(features));
+        },
+        // The host's immediate word on control, ahead of the heartbeat that
+        // repeats it. `noteControl` records it and reports it once, from
+        // whichever packet said it first.
+        onControl: (control) => {
+          if (access === accessRef.current) noteControl(control);
         },
         onConnectionState: (state: ConnectionState) => {
           if (access !== accessRef.current) return;
@@ -450,9 +524,11 @@ export function useDesktopConnection({
       applySessionSnapshot,
       applySessionStreaming,
       closeConversation,
+      controlChanged,
       desktopId,
       handleEvent,
       noteCatalogRevisions,
+      noteControl,
       reconcileSession,
       recordError,
       stopClient,
@@ -542,15 +618,14 @@ export function useDesktopConnection({
   }, [clientRef]);
 
   const noteControlActive = useCallback(() => {
-    const current = latestPresenceRef.current;
     // Nothing to amend before the handshake has described this pairing: the
     // connection's own presence will be the first word on control.
-    if (!current || !connectionReadyRef.current) return;
-    if (current.control === "active" && current.holder == null) return;
-    const next = { ...current, control: "active" as const, holder: null };
-    latestPresenceRef.current = next;
-    setPresence(next);
-  }, []);
+    if (!latestPresenceRef.current || !connectionReadyRef.current) return;
+    // Through the same road as a packet: the takeover answer is one more way of
+    // being told control moved, and the catalogue that was dropped when it left
+    // has to be read again whichever way it comes back.
+    noteControl("active");
+  }, [noteControl]);
 
   const notifyUnpair = useCallback(async () => {
     const client = clientRef.current;
