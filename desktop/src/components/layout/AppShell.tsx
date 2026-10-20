@@ -1,3 +1,4 @@
+import type { PaletteCommand, PaletteTarget } from "../../features/palette/paletteItems";
 import type { DeviceFilter, MergedConversation, RemoteCatalog, RemoteWorkspaceTarget } from "../../features/remote-peer/mergeConversations";
 import type { RemotePeer, RemoteWorkspaceRow } from "../../features/remote-peer/remotePeerClient";
 import type { SettingsTab } from "../../features/settings/SettingsDialog";
@@ -13,8 +14,11 @@ import { saveComposerDraft } from "../../features/agent/composerDraft";
 import { NewConversation } from "../../features/agent/NewConversation";
 import { sessionMentionOptions } from "../../features/agent/sessionMention";
 import { useSkillRecommendation } from "../../features/agent/useSkillRecommendation";
+import { COMMANDS } from "../../features/keyboard/catalog";
 import { useCommand } from "../../features/keyboard/commands";
 import { useShortcutDispatcher } from "../../features/keyboard/useDispatcher";
+import { CommandPalette } from "../../features/palette/CommandPalette";
+import { ShortcutCheatSheet } from "../../features/palette/ShortcutCheatSheet";
 import { peerStatus } from "../../features/remote-peer/peerStatus";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
@@ -148,6 +152,10 @@ function ReadyAppShell({
   initialProviders: ProvidersView;
 }) {
   const { t } = useTranslation("layout");
+  // The command names live in the shortcuts namespace — the same strings the
+  // settings page shows, so the palette cannot rename a command the settings page
+  // calls something else.
+  const { t: tShortcuts } = useTranslation("shortcuts");
   // The remote peer's own namespace: its strings describe another machine, and
   // folding them into `layout` would put them where no other remote string is.
   const { t: tRemotePeer } = useTranslation("remotePeer");
@@ -210,6 +218,8 @@ function ReadyAppShell({
   /** The host whose create-workspace form is open, if any. */
   const [remoteWorkspaceHost, setRemoteWorkspaceHost] = useState<RemotePeer | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [cheatSheetOpen, setCheatSheetOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
 
   const { hasUpdate, cachedStatus, markSeen: markUpdateSeen } = useUpdateChecker();
@@ -1075,6 +1085,82 @@ function ReadyAppShell({
   useCommand("section.skill", () => handleSectionChange("skill"), shortcutsLive);
   useCommand("section.tasks", () => handleSectionChange("tasks"), shortcutsLive);
   useCommand("section.remote", () => handleSectionChange("remote"), shortcutsLive);
+  useCommand("palette.open", () => setPaletteOpen(true), shortcutsLive);
+  useCommand("shortcuts.help", () => setCheatSheetOpen(true), shortcutsLive);
+
+  /**
+   * What the command palette offers.
+   *
+   * Built here rather than inside the dialog because only the shell knows which
+   * conversations, workspaces and machines exist. Two rules shape it:
+   *
+   * - **A command with no handler is not listed**, but that question is answered
+   *   by the palette at the moment it opens (`hasCommandHandler`), not here: the
+   *   handlers this shell registers are installed by an effect, so a list built
+   *   during the first render would be a list of nothing.
+   * - **The palette's own two commands are left out.** Nothing is more confusing
+   *   than a "command palette" entry inside the command palette.
+   */
+  const paletteCommands = useMemo<PaletteCommand[]>(
+    () => COMMANDS
+      .filter(spec => spec.category !== "palette")
+      .map(spec => ({
+        category: spec.category,
+        id: spec.id,
+        label: tShortcuts(`commands.${spec.id}`),
+      })),
+    [tShortcuts],
+  );
+
+  const paletteTargets = useMemo<PaletteTarget[]>(() => {
+    const workspaceNames = new Map(workspaces.map(workspace => [workspace.id, workspace.name]));
+    const peerNames = new Map(remotePeers.map(peer => [peer.desktopId, peer.name]));
+    const local: PaletteTarget[] = threads
+      .filter(thread => thread.status !== "deleted")
+      .map(thread => ({
+        key: `local:${thread.id}`,
+        kind: "conversation",
+        run: () => handleSelectThread(thread),
+        subtitle: thread.mode === "chat"
+          ? t("activityRail.chat")
+          : workspaceNames.get(thread.workspaceId) ?? undefined,
+        title: thread.title,
+      }));
+    const remote: PaletteTarget[] = remoteCatalogs.flatMap(catalog => catalog.sessions.map(session => ({
+      key: `remote:${catalog.desktopId}:${session.sessionId}`,
+      kind: "conversation" as const,
+      run: () => openRemoteSession(catalog.desktopId, session.sessionId),
+      subtitle: [peerNames.get(catalog.desktopId), session.workspaceName ?? undefined]
+        .filter(Boolean)
+        .join(" · ") || undefined,
+      title: session.title,
+    })));
+    const workspaceTargets: PaletteTarget[] = workspaces
+      .filter(workspace => workspace.kind === "user")
+      .map(workspace => ({
+        key: `workspace:${workspace.id}`,
+        kind: "workspace",
+        run: () => handleSelectWorkspace(
+          workspace,
+          threads
+            .filter(thread => thread.workspaceId === workspace.id && thread.status === "active")
+            .sort((left, right) => right.updatedAt - left.updatedAt),
+        ),
+        subtitle: workspace.path,
+        title: workspace.name,
+      }));
+    return [...local, ...remote, ...workspaceTargets];
+    // The handlers are stable in what they do (they read current state through
+    // setters and refs), and listing them would rebuild this list — and with it
+    // every row's identity — on every render of a shell that re-renders on every
+    // poll tick and every streaming push.
+    // eslint-disable-next-line react/exhaustive-deps
+  }, [
+    remoteCatalogs,
+    remotePeers,
+    threads,
+    workspaces,
+  ]);
 
   const activityRailProps = {
     active: section,
@@ -1488,6 +1574,16 @@ function ReadyAppShell({
             />
           )
         : null}
+      <CommandPalette
+        commands={paletteCommands}
+        onClose={() => setPaletteOpen(false)}
+        open={paletteOpen}
+        targets={paletteTargets}
+      />
+      <ShortcutCheatSheet
+        onClose={() => setCheatSheetOpen(false)}
+        open={cheatSheetOpen}
+      />
       <SettingsDialog
         appSettings={appSettings}
         cachedUpdateStatus={cachedStatus}

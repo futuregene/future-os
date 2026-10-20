@@ -233,6 +233,43 @@ design revision is worth recording here: that proposal reused `mod+alt+↓/↑` 
 since moved to `mod+[` / `mod+]`, so the panel reuses those — the panel's "next"
 and the rail's "next" are the same command on the same key.
 
+## Finding a key: the palette and the cheat sheet
+
+Two entries exist to find the others, both global and both rebindable:
+
+| Action | Default | What it answers |
+| --- | --- | --- |
+| Jump to a command or conversation (`palette.open`) | `mod+k` | *do this* / *go there* |
+| Show all shortcuts (`shortcuts.help`) | `mod+/` | *what can I press* |
+
+**The palette is not a second `mod+shift+f`.** `mod+shift+f` filters the rail's
+list in place — it narrows what is already on screen; the palette navigates,
+anywhere, from anywhere. Both stay.
+
+What it lists (`features/palette/paletteItems.ts` decides, the dialog renders):
+
+* **commands** whose handler is registered right now, in the table's order. One
+  with no handler is not a row at all: the palette promises to do what it says,
+  the same rule the dispatcher applies to a key with no owner. Availability is
+  decided when the dialog *opens*, not when the shell last rendered — handlers are
+  installed by effects, so a list captured on a first render would be empty;
+* **conversations** — this machine's and the paired machines' — and
+  **workspaces**, each as its own section, never ranked against the commands: a
+  chat called "terminal notes" must not outrank the command named "terminal".
+
+Matching is a substring, ranked prefix → word-start → anywhere, and inside one
+rank the caller's order survives (`matchRank`). The rows are walked with `↑`/`↓`,
+run with `↩`, dismissed with `Esc` or with the palette's own key, which the dialog
+reads from the live binding (`paletteToggle.ts`) because while it is open it *is*
+the overlay the dispatcher stands down behind.
+
+**The cheat sheet lists the live keys, not the defaults.** It reads the same
+store the dispatcher does (`useShortcutOverrides`), so a rebinding shows up in it
+while it is open — a card printed from `catalog.ts` would be a card of the old
+keys, which is the one thing a cheat sheet in an app with editable keys cannot be.
+A command the user unbound has no key, so it has no row; a multi-key command shows
+as its range (`1 … 9`).
+
 ## Where each command is registered
 
 The shell registers the commands that are its own (navigation, panels, settings).
@@ -334,6 +371,9 @@ different risk.
 | `features/keyboard/scopes.test.tsx` | scopes ranked by layer, two holders of one scope, release independent |
 | `features/keyboard/modeKeymap.test.tsx` | a mode's key fires only inside it, one key in two scopes each staying its own, a bare key not taking a text field |
 | `features/settings/ShortcutsPage.test.tsx` | recording, refusal (modifier / reserved / conflict), cancel, unbind, restore, search |
+| `features/palette/paletteItems.test.ts` | matching and ranking, commands kept apart from conversations, empty sections dropped |
+| `features/palette/CommandPalette.test.tsx` | listing only what can run, filtering, arrows/`↩`, dismissal by its own key |
+| `features/palette/ShortcutCheatSheet.test.tsx` | live keys, a rebinding followed while open, an unbound command absent |
 | `ThreadSearch*`, `Composer.focus`, `AgentThread`, `ActivityRail.nav`, `AppShell` | each view's own command, through the dispatcher |
 
 ### What was actually verified by hand, and what was not
@@ -368,16 +408,14 @@ written on.
 > being committed twice (`keyPolicy.ts`). When it is done, the two outcomes belong
 > in this section.
 
-## Going further (P2 / P3, not implemented)
+## Going further (not implemented)
 
-* Command palette on `mod+k`: commands + conversations + workspaces in one entry.
-  `mod+shift+f` stays what it is — a filter for the list — so the two do not
-  compete. (In progress.)
-* `mod+/`: a cheat sheet listing the *live* bindings, including overrides.
 * macOS menu items for Settings and New Conversation. They must emit events and
   carry **no** accelerators: an accelerator in the menu would keep printing the
   old key after a rebinding.
 * A per-command "also works inside the terminal" switch, default off, for users
-  who want `⌘N` while the terminal has focus on macOS.
+  who want `⌘N` while the terminal has focus on macOS. Deliberately not in v1:
+  `Ctrl` is the accelerator on Windows and Linux, so taking keys from the shell
+  costs it readline.
 * A `leader`-key model (opencode style). The data model leaves room; v1 has no
   timeout, no HUD and no chords.

@@ -1,0 +1,15 @@
+{
+  "ariaLabel": "命令面板",
+  "placeholder": "输入命令或对话名",
+  "noMatches": "没有匹配「{{query}}」的内容",
+  "sections": {
+    "commands": "命令",
+    "conversations": "对话",
+    "workspaces": "工作区"
+  },
+  "footer": {
+    "move": "↑↓ 移动",
+    "run": "↩ 执行",
+    "close": "Esc 关闭"
+  }
+}

@@ -27,7 +27,7 @@ import type { ShortcutScope } from "./scopes";
 import { formatBinding, parseBinding } from "../../lib/keybinding";
 
 /** Groups the settings page lists commands under. */
-export type CommandCategory = "chat" | "navigation" | "panels" | "terminal" | "settings" | "vibe";
+export type CommandCategory = "chat" | "navigation" | "panels" | "terminal" | "vibe" | "palette" | "settings";
 
 export type { ShortcutScope };
 
@@ -50,6 +50,9 @@ export type CommandId
     | "section.remote"
     | "settings.open"
     | "terminal.toggle"
+    // Search and help: the two entries that exist to *find* the others.
+    | "palette.open"
+    | "shortcuts.help"
     // The full-screen panel of pinned conversations ("Vibe"). Scoped: in it the
     // grid answers the bare keys, and a key it binds may shadow a global one.
     | "vibe.toggle"
@@ -179,6 +182,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "panel.left", category: "panels", defaultBinding: "mod+b", inTerminal: false },
   { id: "panel.right", category: "panels", defaultBinding: "mod+shift+b", inTerminal: false },
   { id: "terminal.toggle", category: "terminal", defaultBinding: "mod+j", inTerminal: true },
+  { id: "palette.open", category: "palette", defaultBinding: "mod+k", inTerminal: false },
+  { id: "shortcuts.help", category: "palette", defaultBinding: "mod+slash", inTerminal: false },
   { id: "settings.open", category: "settings", defaultBinding: "mod+comma", inTerminal: false },
 
   // ---- Vibe panel (full-screen grid of pinned conversations) ----------------
@@ -255,11 +260,15 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "vibe.add", category: "vibe", defaultBinding: "mod+shift+e", inTerminal: false, scope: "vibe" },
   { id: "vibe.remove", category: "vibe", defaultBinding: "mod+shift+backspace", inTerminal: false, scope: "vibe" },
   { id: "vibe.fullscreen", category: "vibe", defaultBinding: "mod+ctrl+f", inTerminal: false },
-  { id: "vibe.help", category: "vibe", defaultBinding: "mod+slash", inTerminal: false },
+  // The cheat sheet from inside the panel. It shares `mod+/` with the global
+  // `shortcuts.help` on purpose: the panel binds it in its own scope, so inside
+  // the panel it is the panel's key and outside it is the app's. One feature, two
+  // owners — which is what a scope is for, and why the two may share a key.
+  { id: "vibe.help", category: "vibe", defaultBinding: "mod+slash", inTerminal: false, scope: "vibe" },
 ];
 
 /** Settings page section order. */
-export const CATEGORIES: readonly CommandCategory[] = ["chat", "navigation", "panels", "terminal", "vibe", "settings"];
+export const CATEGORIES: readonly CommandCategory[] = ["chat", "navigation", "panels", "terminal", "vibe", "palette", "settings"];
 
 const BY_ID = new Map<string, CommandSpec>(COMMANDS.map(spec => [spec.id, spec]));
 

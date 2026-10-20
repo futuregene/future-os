@@ -5,7 +5,8 @@
     "panels": "Panels",
     "terminal": "Terminal",
     "settings": "Settings",
-    "vibe": "Vibe panel"
+    "vibe": "Vibe panel",
+    "palette": "Search and help"
   },
   "commands": {
     "chat": {
@@ -91,6 +92,12 @@
         "close": "Leave the input layer",
         "send": "Send the dictation"
       }
+    },
+    "palette": {
+      "open": "Jump to a command or conversation"
+    },
+    "shortcuts": {
+      "help": "Show all keyboard shortcuts"
     }
   },
   "page": {
@@ -127,5 +134,10 @@
     "approve": "Approve a request",
     "transcript": "Jump to the previous / next question",
     "menu": "Move within an open menu"
+  },
+  "cheatSheet": {
+    "ariaLabel": "All keyboard shortcuts",
+    "title": "Keyboard shortcuts",
+    "hint": "These are the keys in effect now"
   }
 }

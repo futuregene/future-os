@@ -6,7 +6,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { hasCommandHandler } from "../../features/keyboard/commands";
-import { resetAllCommandBindings } from "../../features/keyboard/shortcuts";
+import { resetAllCommandBindings, setCommandBinding } from "../../features/keyboard/shortcuts";
 import { forgetHostCatalogue, warmHostCatalogue } from "../../features/remote-peer/remoteHostCatalog";
 import { defaultAgentModelId } from "../../integrations/agent/agentClient";
 import { AppShell } from "./AppShell";
@@ -57,7 +57,9 @@ const children = vi.hoisted(() => ({
   remoteComposer: null as unknown,
   remoteConversationView: null as unknown,
   remoteHub: null as unknown,
+  commandPalette: null as unknown,
   settingsDialog: null as unknown,
+  shortcutCheatSheet: null as unknown,
   skillsView: null as unknown,
   tasksView: null as unknown,
   terminalPanel: null as unknown,
@@ -181,6 +183,24 @@ vi.mock("../../features/remote-peer/RemoteFilesPanel", async () => {
       // expanded one is the panel itself. The shell's test reads which it asked
       // for from the props it recorded.
       return createElement("div", { "data-child": "remote-files", "data-expanded": String(props.expanded) });
+    },
+  };
+});
+vi.mock("../../features/palette/CommandPalette", async () => {
+  const { createElement } = await import("react");
+  return {
+    CommandPalette: (props: { open: boolean }) => {
+      children.commandPalette = props;
+      return props.open ? createElement("div", { "data-child": "command-palette" }) : null;
+    },
+  };
+});
+vi.mock("../../features/palette/ShortcutCheatSheet", async () => {
+  const { createElement } = await import("react");
+  return {
+    ShortcutCheatSheet: (props: { open: boolean }) => {
+      children.shortcutCheatSheet = props;
+      return props.open ? createElement("div", { "data-child": "shortcut-cheat-sheet" }) : null;
     },
   };
 });
@@ -2771,6 +2791,62 @@ describe("app shell keyboard commands", () => {
     expect(panelExpanded()).toBe(false);
     press({ ctrlKey: true, shiftKey: true, key: "b" });
     expect(panelExpanded()).toBe(true);
+    view.unmount();
+  });
+
+  it("opens the command palette on mod+k, and closes it again", () => {
+    const view = mount(<AppShell />);
+    press({ code: "KeyK", ctrlKey: true, key: "k" });
+    expect(view.container.querySelector("[data-child=\"command-palette\"]")).not.toBeNull();
+    expect((children.commandPalette as { open: boolean }).open).toBe(true);
+
+    act(() => (children.commandPalette as { onClose: () => void }).onClose());
+    expect(view.container.querySelector("[data-child=\"command-palette\"]")).toBeNull();
+    view.unmount();
+  });
+
+  it("offers the commands whose handlers are live, and the conversations and workspaces", () => {
+    const view = mount(<AppShell />);
+    press({ code: "KeyK", ctrlKey: true, key: "k" });
+    const props = children.commandPalette as {
+      commands: Array<{ id: string; label: string }>;
+      targets: Array<{ kind: string; title: string }>;
+    };
+    // A shell command and a rail command: the rail is mounted, so its row order
+    // commands are live too.
+    expect(props.commands.map(command => command.id)).toEqual(expect.arrayContaining(["chat.new", "panel.left", "thread.next"]));
+    // … while the palette's own two entries are left out: a command palette entry
+    // inside the command palette is noise.
+    expect(props.commands.map(command => command.id)).not.toContain("palette.open");
+    expect(props.commands.map(command => command.id)).not.toContain("shortcuts.help");
+
+    expect(props.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "conversation", title: expect.any(String) }),
+      expect.objectContaining({ kind: "workspace" }),
+    ]));
+    view.unmount();
+  });
+
+  it("opens the cheat sheet on mod+/, and closes it again", () => {
+    const view = mount(<AppShell />);
+    press({ code: "Slash", ctrlKey: true, key: "/" });
+    expect(view.container.querySelector("[data-child=\"shortcut-cheat-sheet\"]")).not.toBeNull();
+
+    act(() => (children.shortcutCheatSheet as { onClose: () => void }).onClose());
+    expect(view.container.querySelector("[data-child=\"shortcut-cheat-sheet\"]")).toBeNull();
+    view.unmount();
+  });
+
+  it("follows a rebinding of the palette's own key", () => {
+    // The palette is an ordinary command: a user who moves it off ⌘K must find it
+    // on the new key and nowhere else.
+    act(() => setCommandBinding("palette.open", "mod+shift+p"));
+    const view = mount(<AppShell />);
+    press({ code: "KeyK", ctrlKey: true, key: "k" });
+    expect(view.container.querySelector("[data-child=\"command-palette\"]")).toBeNull();
+
+    press({ code: "KeyP", ctrlKey: true, key: "P", shiftKey: true });
+    expect(view.container.querySelector("[data-child=\"command-palette\"]")).not.toBeNull();
     view.unmount();
   });
 

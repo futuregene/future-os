@@ -1,0 +1,15 @@
+{
+  "ariaLabel": "Command palette",
+  "placeholder": "Type a command or a conversation",
+  "noMatches": "Nothing matches “{{query}}”",
+  "sections": {
+    "commands": "Commands",
+    "conversations": "Conversations",
+    "workspaces": "Workspaces"
+  },
+  "footer": {
+    "move": "↑↓ move",
+    "run": "↩ run",
+    "close": "Esc close"
+  }
+}
