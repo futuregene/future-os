@@ -322,7 +322,7 @@ impl FutureAgent for MockAgent {
 
 // This driver belongs only to the test harness. Production services require an
 // entry-provided runtime and never construct one as a fallback.
-fn install_channel_runtime() {
+pub(crate) fn install_channel_runtime() {
     static INSTALLED: OnceLock<()> = OnceLock::new();
     INSTALLED.get_or_init(|| {
         if crate::agent_client::agent_channel_runtime().is_ok() {
@@ -343,10 +343,7 @@ fn install_channel_runtime() {
 }
 
 fn cleanup_host() {
-    crate::runtime::cancel_test_tasks();
-    crate::agent_bridge::cancel_all_observers();
-    crate::request_scope::reset_for_test();
-    crate::tasks::reset_for_test();
+    crate::auth_store::test_support::cleanup_host();
 }
 
 fn ensure_mock_server() {

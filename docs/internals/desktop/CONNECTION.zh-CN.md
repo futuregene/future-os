@@ -357,7 +357,7 @@ NATS Core 是至多一次投递。已有实时事件必须由权威日志回放�
 | 连接健康没有覆盖业务健康 | 心跳在线、连接 ready 不证明 Agent 可用或当前时间线已同步 | 第 6 节：传输、对端、Agent 与数据同步分开建模 |
 | 恢复入口重复且内容不一致 | 初次连接、onReconnected、前台及请求失败路径各自触发刷新；例如 onReconnected 不刷新 settings | 第 6 节：统一恢复协调与数据域恢复清单 |
 
-源码入口：[手机连接](../../../mobile/src/remote/client.ts)、[手机侧生命周期](../../../mobile/src/remote/useDesktopConnection.ts)、[应用级生命周期](../../../mobile/src/remote/useAppLifecycle.ts)、[单台 Desktop 的运行时](../../../mobile/src/remote/useDesktopRuntime.ts)、[配对与选择](../../../mobile/src/remote/usePairedDesktops.ts)、[手机配对 HTTP](../../../mobile/src/remote/pairing.ts)、[目录状态](../../../mobile/src/remote/useSessionCatalog.ts)、[Desktop 监督](../../../desktop/src-tauri/src/remote/mod.rs)、[Desktop 命令及握手](../../../desktop/src-tauri/src/remote/commands.rs)。服务端跨仓库入口为 `future-server/platform/service/src/routes/remote.rs`。
+源码入口：[手机连接](../../../mobile/src/remote/client.ts)、[手机侧生命周期](../../../mobile/src/remote/useDesktopConnection.ts)、[应用级生命周期](../../../mobile/src/remote/useAppLifecycle.ts)、[单台 Desktop 的运行时](../../../mobile/src/remote/useDesktopRuntime.ts)、[配对与选择](../../../mobile/src/remote/usePairedDesktops.ts)、[手机配对 HTTP](../../../mobile/src/remote/pairing.ts)、[目录状态](../../../mobile/src/remote/useSessionCatalog.ts)、[Desktop 监督](../../../desktop/src-tauri/src/remote/mod.rs)、[Desktop 命令及握手](../../../host/src/remote/commands.rs)。服务端跨仓库入口为 `future-server/platform/service/src/routes/remote.rs`。
 
 **风险判断与本次优先级：** 现有证据不要求推翻扫码流程或改变业务授权。应优先修复主动停止后迟到结果可能重新安装连接的竞态，因为它直接关系到用户能否可靠关闭入口；该风险来自源码交错分析，尚未完成运行复现，不能表述为已证实可被利用的安全漏洞。旧连接提前失效已模拟复现，握手互相覆盖、请求无期限及旧状态回写需要一并按客户端契约修复，主要影响连接连续性和状态准确性。服务端事务与领取响应丢失主要是失败时的一致性和体验问题，本次接受重新扫码并暂缓改造。云端撤销窗口涉及授权失效时效，应单独记录和验证，不与 Desktop 本地关闭入口的即时性混为一谈。
 

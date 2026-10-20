@@ -156,8 +156,13 @@ pub mod test_support {
     use std::path::PathBuf;
     use std::sync::MutexGuard;
 
-    fn cleanup_host() {
+    pub(crate) fn cleanup_host() {
         crate::runtime::cancel_test_tasks();
+        crate::agent_bridge::cancel_all_observers();
+        crate::request_scope::reset_for_test();
+        crate::tasks::reset_for_test();
+        crate::remote_peer::runtime::reset_after_shutdown_for_test();
+        crate::remote::reset_after_shutdown_for_test();
         crate::store::close_pool();
     }
 
@@ -177,6 +182,7 @@ pub mod test_support {
         /// Entry fixtures drain their remaining services and close database pools
         /// before replacing HOME. The guard owns the shared environment lock.
         pub fn with_cleanup(label: &str, cleanup: fn()) -> Self {
+            crate::remote::enable_fixture_mode();
             let lock = crate::TEST_HOME_LOCK
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());

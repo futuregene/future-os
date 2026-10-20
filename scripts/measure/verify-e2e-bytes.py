@@ -44,7 +44,7 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-DESKTOP = ROOT / "desktop" / "src-tauri"
+HOST = ROOT / "host"
 PROTO = ROOT / "packages" / "rpc" / "proto"
 SOCKET = Path.home() / ".future" / "run" / "agent.sock"
 AGENT_DB = Path.home() / ".future" / "agent" / "agent.db"
@@ -222,7 +222,7 @@ def run_test(test: str, env_extra: dict) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["cargo", "test", "--lib", test, "--", "--exact", "--ignored",
          "--nocapture", "--test-threads=1"],
-        cwd=DESKTOP, env={**os.environ, **env_extra},
+        cwd=HOST, env={**os.environ, **env_extra},
         capture_output=True, text=True)
 
 

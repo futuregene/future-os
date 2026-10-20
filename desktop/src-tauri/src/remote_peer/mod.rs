@@ -1,50 +1,16 @@
-//! Remote-host **client**: this desktop connecting *out* to another desktop's
-//! FutureOS, the way a phone does.
-//!
-//! Two roles live in this crate and must stay separate:
-//!
-//! | | `remote` (+`remote_host`) | `remote_peer` (here) |
-//! |---|---|---|
-//! | role | host: phones pair *into* this machine | client: this machine pairs *out* |
-//! | credential file | `~/.future/remote_pairings.json` (`remote_pairing.json` when it predates multi-device) | `~/.future/remote_peers.json` |
-//! | owns | the bridge, phone commands, host catalog | this desktop's view of a remote host |
-//!
-//! **The remote host's sessions are not this machine's sessions.** They are
-//! never written to the desktop store (`~/.future/app/app.db`) and never read
-//! from the local agent: the remote agent is the only authority for its own
-//! transcript, and a local row would be a second copy of it. The client keeps
-//! its own snapshot of the remote catalogue and a bounded timeline cache —
-//! both projections, both disposable.
-//!
-//! The wire protocol is the same one the phone speaks (Remote v2): the shared
-//! `packages/remote-crypto` crate provides Noise (`XXpsk0` for the initial
-//! pairing, `IK` for every reconnect) and the AEAD record layer, and the
-//! JSON command/reply shapes are the ones `remote_host::business` serves.
-//! Nothing about the protocol is desktop-specific, so a desktop pairs with any
-//! host the phone can pair with.
-
-pub(crate) mod creds;
-mod host;
-pub(crate) use future_remote_protocol::invitation as link;
-pub(crate) mod platform;
-pub(crate) mod runtime;
-#[cfg(test)]
-pub(crate) mod session;
-pub(crate) mod transfer;
-
-// Only the GUI command layer consumes these; a headless build (no `gui`
-// feature) has no caller, and an unconditional re-export there is an unused
-// import — which CI's `--no-default-features` clippy pass turns into an error.
-#[cfg(feature = "gui")]
-pub use future_remote_client::{PeerEvent, PeerSummary};
+//! Desktop entry forwarding to the shared Remote application services.
+pub(crate) use future_host::remote_peer::*;
 
 #[cfg(test)]
-mod multi_host_tests;
-#[cfg(test)]
-pub(crate) mod runtime_tests;
-#[cfg(test)]
-pub(crate) mod testing;
-#[cfg(test)]
-mod tests;
-#[cfg(test)]
-mod transfer_tests;
+pub(crate) mod testing {
+    use crate::auth_store::test_support::HomeGuard;
+    pub(crate) use future_host::remote_peer::testing::*;
+
+    pub(crate) async fn fixture(label: &str) -> (HomeGuard, Fixture) {
+        let home = HomeGuard::new(label);
+        crate::agent_bridge::install_channel_runtime();
+        crate::runtime::install_test_runtime();
+        let fixture = future_host::remote_peer::testing::fixture_in_home(home.shared()).await;
+        (home, fixture)
+    }
+}

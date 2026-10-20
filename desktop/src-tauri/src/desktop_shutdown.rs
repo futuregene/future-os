@@ -13,6 +13,7 @@ pub(crate) use coordinator::{begin_quit, claim_action};
 pub(crate) use coordinator::{snapshot, StopSnapshot};
 static STOP_FAILURE: Mutex<Option<String>> = Mutex::new(None);
 
+#[cfg(any(feature = "gui", test))]
 pub(crate) use future_host::request_scope::is_stopping;
 use future_host::request_scope::{
     active_callers, clear_owned_runs, close_admission, stop_owned_runs,

@@ -11,9 +11,15 @@ path = "src/lib.rs"
 [features]
 default = []
 # Helpers used by real application integration tests; no GUI/test framework.
-test-support = []
+test-support = ["future-remote-server/test-support", "future-remote-client/test-support"]
 
 [dependencies]
+future-remote-crypto = { path = "../packages/remote-crypto" }
+future-remote-protocol = { path = "../packages/remote-protocol" }
+async-nats = "0.49"
+base64 = "0.22"
+flate2 = "1"
+rustls-native-certs = "0.8"
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -46,6 +52,8 @@ tonic.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 [dev-dependencies]
+future-remote-server = { path = "../packages/remote-server", features = ["test-support"] }
+future-remote-client = { path = "../packages/remote-client", features = ["test-support"] }
 tokio = { workspace = true, features = ["test-util"] }
 libc = "0.2"
 tempfile = "3"

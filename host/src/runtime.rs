@@ -173,6 +173,14 @@ pub fn spawn_native(job: impl FnOnce() + Send + 'static) {
     });
 }
 
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub fn install_test_runtime() {
+    static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> =
+        std::sync::LazyLock::new(|| tokio::runtime::Runtime::new().expect("fixture host runtime"));
+    set(RUNTIME.handle().clone());
+}
+
 #[cfg(test)]
 mod tests {
     use crate::TEST_HOME_LOCK as TEST_LOCK;

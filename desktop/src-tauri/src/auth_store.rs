@@ -7,6 +7,9 @@ pub(crate) mod test_support {
         _inner: future_host::auth_store::test_support::HomeGuard,
     }
     impl HomeGuard {
+        pub(crate) fn shared(&self) -> &future_host::auth_store::test_support::HomeGuard {
+            &self._inner
+        }
         pub(crate) fn new(label: &str) -> Self {
             Self {
                 _inner: future_host::auth_store::test_support::HomeGuard::with_cleanup(

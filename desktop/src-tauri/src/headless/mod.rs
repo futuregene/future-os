@@ -147,7 +147,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     eprintln!("FutureOS headless Desktop - foreground mode. Press Ctrl+C to stop.");
     // Fail on corrupt credentials rather than silently replacing the account.
     crate::auth_store::read()?;
-    let paired = crate::remote_host::pairing::load_creds_checked()?.is_some();
+    let paired = crate::remote::pairing::load_creds_checked()?.is_some();
     // A self-hosted relay is the whole answer to "which account": it has none.
     // The login gate exists because the Future platform mints the invitation,
     // and with `--relay` it no longer does.
@@ -268,7 +268,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
                 shown_invitation = Some(link);
             }
         }
-        let paired = crate::remote_host::pairing::load_creds_checked()?.is_some();
+        let paired = crate::remote::pairing::load_creds_checked()?.is_some();
         if paired && !was_paired && status.phase == remote::RemotePhase::Ready {
             eprintln!("Phone pairing saved. Remote access is open; connect with the paired FutureOS app. Ctrl+C closes this entry.");
             was_paired = true;
@@ -645,31 +645,7 @@ pub fn pairing_link(status: &remote::RemoteStatus) -> Option<String> {
 /// for a code the window was showing and the phone could scan. Whether the Agent
 /// is ready changes what a paired device can do, not whether the invitation
 /// works.
-pub fn invitation_link(status: &remote::RemoteStatus) -> Option<String> {
-    let code = status.pairing_code.as_ref()?;
-    if status
-        .pairing_code_expires_at
-        .is_none_or(|expiry| expiry <= unix_seconds())
-    {
-        return None;
-    }
-    // Desktop owns the complete v2 invitation, including the local-only PSK.
-    // Do not wrap it in another `code` parameter or reconstruct a v1 invite.
-    let url = reqwest::Url::parse(code).ok()?;
-    // v3 is the same invitation, minted by a self-hosted relay instead of the
-    // platform: the QR still carries the Noise static key and the one-time
-    // secret, and the phone still verifies them. Only the claim endpoint moved.
-    if url.scheme() != "futureos"
-        || url.host_str() != Some("remote")
-        || url.path() != "/pair"
-        || !url
-            .query_pairs()
-            .any(|(key, value)| key == "v" && matches!(&*value, "2" | "3"))
-    {
-        return None;
-    }
-    Some(code.clone())
-}
+pub use future_host::remote::invitation_link;
 
 fn unix_seconds() -> i64 {
     std::time::SystemTime::now()

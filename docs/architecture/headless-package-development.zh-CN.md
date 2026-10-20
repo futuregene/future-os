@@ -276,9 +276,9 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 |---|---|
 | 0 | 已固定源码/依赖基线与按名清单，混合模块归属已逐项审查；同条件构建/运行测量未完成 |
 | 1 | 已建立无 GUI 普通库、任务注册、展示出口和消费者依赖；完整生命周期/配置边界未完成 |
-| 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端/托管与请求归属已迁入；完整业务桥、任务/会话、登录账户与维护调度已迁入；Remote、CLI 维护引导和停止协调未迁入 |
+| 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端/托管与请求归属已迁入；完整业务桥、任务/会话、登录账户与维护调度已迁入；Remote 宿主/Peer 已迁入并完成本地核心执行，跨平台复验待完成；CLI 维护引导和停止协调未迁入 |
 | 3 | 尚未实现；产品入口仍是 `futureos-headless` |
-| 4 | 已迁移 1046 个原测试声明（1044 个本地 macOS 执行通过，2 个保留原忽略声明）；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
+| 4 | 已迁移 1571 个原测试声明（1558 个本地 macOS 执行通过、10 个保留原忽略声明、2 个真实中继待 CI、1 个平台专用待 CI）；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
 | 5 | 已加宿主 CI 分组和 affected 传播；构建、发行物、签名/安装/升级/卸载未完成 |
 | 6 | 尚未开始；无最终冻结候选、同条件性能、产物验收或确认的人工结果 |
 
@@ -461,3 +461,13 @@ CI `39371045462` 已完成，整体为 failure。Windows 独立 Host 分组、�
 候选 `20faf463` 的 CI [39376582909](https://github.com/futuregene/future-os/actions/runs/39376582909) 已完成且失败：Linux GUI 的恢复状态轮询在两个读取之间受到共享状态变化影响，分别读到 ready 与 incompatible。Windows 原生构建、三个平台 Host、Linux headless 及其他独立分组通过；两个汇总 gate 因 GUI 失败而失败，匹配 Windows 编译测量为 skipped。不能将此运行接受为自动化通过。
 
 原测试现持有既有 HomeGuard，并使用真实 loopback Agent RPC 夹具；保留状态、版本和错误的原比较，另要求 ready。当前 Remote 迁移工作树中本地相关 16 项全部通过，未声称确定性本地失败复现。详见[证据](../testing/headless-recovery-poll-isolation-2026-10-20.json)。该修复仍需 Linux CI 复验；Remote 迁移、新 CLI、发行与人工验收继续进行。
+
+### 2026-10-20 Remote 应用宿主与 Peer 迁移
+
+Remote 应用适配、RemoteHost 业务、Remote Peer 及平台适配迁入 Host；Desktop 保留薄入口和 GUI 测试清理。协议、加密和监督状态机继续复用已有 Remote 包，监督器和 RemoteHost Store 内部状态没有为迁移公开。邀请生成与本地 Remote 控制通道共享同一实现，既有 scheme、origin/TLS、数据路径和退出归属规则保留。验证 Web 资源移至 `host/web/index.html`，与原 53919 字节内容逐字节相同，Host 不需要 Desktop 或 npm 才能编译。
+
+本批 525 个原测试声明和 3 个上游新增配对声明按名关联。完整本地 Host 运行 1564 通过、0 失败、10 个原 ignore、2 个真实 NATS 用例明确留给 CI；其中本批原声明实际通过 514 个，上游新增通过 3 个，另 8 个原 ignore、2 个真实中继用例及 1 个非 macOS 沙箱用例分别保留待验状态。第一次完整执行暴露传输恢复夹具没有持有 HOME 锁，另一个夹具清理可能取消其共享任务；补入原 HomeGuard 后完整复测通过，未改断言或延长期限。
+
+Linux Host CI 将使用独立子进程中继，在同一次核心测试执行中运行两个真实中继用例；只清理自身子进程。本地未启动 NATS。中继 URL 读取与测量夹具的临时写入使用同一锁，防止误读。Host/GUI/CLI 与旧 headless 的 Clippy `--all-targets`、fmt、严格 Rustdoc、联合依赖边界及脚本语法已通过；该批跨平台 CI、新 CLI 入口、发布、同条件性能和人工验收仍未完成，见[验证记录](../testing/headless-host-remote-2026-10-20.json)。
+
+本批进程复测发现 Cargo dev feature 合并会让真实 headless 子进程误用测试恢复配置；现由 HomeGuard 显式启用夹具配置，单纯启用 test-support 不改变 TLS、恢复、撤销清理、HTTP 期限和平台监听规则。未改原断言或期限。修复后 GUI 接线 52 项再次通过，旧 headless CLI 和拒绝/重连真实进程组各 13 项全部通过（共 26 项）。这些仍不是新 CLI 入口验收。

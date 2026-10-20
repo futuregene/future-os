@@ -3,6 +3,7 @@
 
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
 mod agent_bridge;
+#[cfg(feature = "gui")]
 mod agent_events;
 mod agent_host;
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
@@ -11,15 +12,15 @@ mod agent_providers;
 mod agent_supervisor;
 mod approval_rules;
 mod auth_store;
-#[cfg(any(feature = "gui", test))]
+#[cfg(feature = "gui")]
 mod build_info;
 mod cli_tool;
 mod commands;
+#[cfg(feature = "gui")]
 mod config_io;
 #[cfg(feature = "gui")]
 mod conversations;
 mod desktop_shutdown;
-mod device_identity;
 mod error;
 mod future_login;
 mod future_platform;
@@ -48,9 +49,7 @@ mod macos_power;
 #[cfg(all(feature = "gui", target_os = "macos"))]
 mod menu;
 mod remote;
-mod remote_host;
 mod remote_peer;
-mod remote_platform;
 mod runtime;
 mod scheduler;
 #[cfg_attr(not(feature = "gui"), allow(unused_imports))]
@@ -70,9 +69,6 @@ mod windows_power;
 use commands::*;
 use error::AppError;
 
-#[cfg(test)]
-pub(crate) use future_host::home_dir;
-
 /// Process-wide lock for tests that mutate the global `HOME` env var
 /// (`auth_store` and the shadow-review smoke test). `HOME` is process-global, so
 /// those tests must run one at a time or they clobber each other's paths.
@@ -83,8 +79,7 @@ fn install_rustls_provider() {
     future_host::install_rustls_provider();
 }
 
-pub(crate) use future_host::future_home_root;
-
+#[cfg(feature = "gui")]
 pub(crate) use future_host::events::{emit_remote_activity, emit_threads_updated};
 #[cfg(feature = "gui")]
 pub(crate) use gui::APP_HANDLE;

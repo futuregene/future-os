@@ -1,10 +1,8 @@
 //! GUI/legacy entry wiring for the common host task registry.
-pub(crate) use future_host::runtime::{
-    cancel_all_tasks, freeze_tasks, set, spawn_native, TaskHandle,
-};
+pub(crate) use future_host::runtime::{cancel_all_tasks, freeze_tasks, set, TaskHandle};
 
 #[cfg(feature = "gui")]
-pub(crate) use future_host::runtime::{record_cleanup_error, tasks_frozen};
+pub(crate) use future_host::runtime::{record_cleanup_error, spawn_native, tasks_frozen};
 
 #[track_caller]
 pub(crate) fn spawn<F>(future: F) -> TaskHandle

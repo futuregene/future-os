@@ -1,7 +1,9 @@
 //! Desktop task notification adapter; execution and persistence live in Host.
 #[cfg(test)]
 pub(crate) use future_host::tasks::reset_for_test;
-pub(crate) use future_host::tasks::{accept_revision, start_headless, stop_admission, wake};
+#[cfg(all(test, feature = "gui"))]
+pub(crate) use future_host::tasks::wake;
+pub(crate) use future_host::tasks::{start_headless, stop_admission};
 
 #[cfg(feature = "gui")]
 pub fn start<R: tauri::Runtime>(app: tauri::AppHandle<R>) {

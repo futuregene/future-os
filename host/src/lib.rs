@@ -67,3 +67,8 @@ pub mod future_login;
 pub mod scheduler;
 
 pub mod workspaces;
+
+pub mod remote;
+mod remote_host;
+pub mod remote_peer;
+mod remote_platform;

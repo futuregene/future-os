@@ -1,0 +1,150 @@
+{
+  "version": 1,
+  "date": "2026-10-20",
+  "baseCommit": "20faf463607adfebc20a175aad4a2465dbf8c6cb",
+  "scope": "Stage 2 Remote application host extraction; lifecycle and CLI entry are not complete.",
+  "ownership": {
+    "moved": [
+      "remote",
+      "remote_host",
+      "remote_peer",
+      "remote_platform"
+    ],
+    "desktop": "Thin entry forwarding and GUI fixture cleanup only; no backend copy.",
+    "private": "RemoteHost store and supervisor state remain private. Shared Remote packages retain protocol/state machines.",
+    "resource": {
+      "path": "host/web/index.html",
+      "bytes": 53919,
+      "sha256": "91aa75a7425ff6d836105a19dbd510365ded0b5f8671b30811a63a2e38d9fa89",
+      "identicalTo": "20faf463607adfebc20a175aad4a2465dbf8c6cb:desktop/web/index.html"
+    }
+  },
+  "inventory": {
+    "baselineDeclarationsMoved": 525,
+    "baselineLocalPass": 514,
+    "originalIgnored": 8,
+    "ciBrokerPending": 2,
+    "platformPending": 1,
+    "upstreamDeclarationsMoved": 3,
+    "upstreamLocalPass": 3,
+    "cumulativeBaselineMoved": 1571,
+    "cumulativeBaselineLocalPass": 1558,
+    "cumulativeOriginalIgnored": 10
+  },
+  "local": {
+    "host": {
+      "command": "cargo test -p future-host --lib --offline --locked -- --skip remote::verify_e2e::multi_device",
+      "results": [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1575 filtered out; finished in 2.08s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1575 filtered out; finished in 6.54s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1575 filtered out; finished in 4.63s",
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 1575 filtered out; finished in 2.77s",
+        "test result: ok. 1564 passed; 0 failed; 10 ignored; 0 measured; 2 filtered out; finished in 376.54s"
+      ],
+      "logSha256": "52dc7455fcdb57b83eefd6c198d857ad5d6d1e4f16cfded1d2633ead2cd0d004",
+      "complete": true,
+      "sourceContext": "Full core run before explicit fixture-only configuration repair. Host unit cfg remains fixture mode; subsequent GUI and actual production-child process runs validate both branches."
+    },
+    "entry": {
+      "command": "cargo test -p futureos --lib --offline --locked -- commands::remote::tests:: commands::remote_peer::tests:: remote::tests:: agent_supervisor::",
+      "results": [
+        "test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 465 filtered out; finished in 36.76s"
+      ],
+      "complete": true,
+      "logSha256": "16416c311702cff3815d00f29ec447ffde800b2e3560883ecfdb73709ddb0f4f"
+    },
+    "combinedClippy": {
+      "status": "pass",
+      "logSha256": "fdcc4f5589442ddd62e33ffa16c2cdc2bfe27dd120cd7c3f2685ebbf6a9c0b66",
+      "tail": [
+        "    Checking futureos v0.0.0 (/Volumes/ZHITAI/Workspace/future-os/.worktrees/headless-unified/desktop/src-tauri)",
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 8.55s"
+      ]
+    },
+    "legacyClippy": {
+      "status": "pass",
+      "logSha256": "a642ff133e3cc3b26e2a209e9c258a124089a4a89e252e4245c59fff1201e11d",
+      "tail": [
+        "    Checking futureos v0.0.0 (/Volumes/ZHITAI/Workspace/future-os/.worktrees/headless-unified/desktop/src-tauri)",
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.70s"
+      ]
+    },
+    "rustdoc": {
+      "status": "pass",
+      "logSha256": "e7ed11a8d512a9047ac59f4a005601fdb1eb06f1d57142bb90313a3b2c4f7e16",
+      "tail": [
+        "    Finished `dev` profile [unoptimized + debuginfo] target(s) in 4.43s",
+        "   Generated /Volumes/ZHITAI/Workspace/future-os/target/doc/future_host/index.html"
+      ]
+    },
+    "docs": {
+      "status": "pass",
+      "logSha256": "f7f604927c886d8035fa2dc2bcfb79415462dc49792fbb6d2a7423a86057f151",
+      "tail": [
+        "Checked 295 docs: placement, bilingual pairing, local/wiki links, script paths and fences OK (0 pairs pending bilingualization)."
+      ]
+    },
+    "process": {
+      "command": "cargo test -p futureos --no-default-features --features headless --test headless_cli --test remote_start_refusal --offline --locked",
+      "results": [
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.56s",
+        "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 68.34s"
+      ],
+      "complete": true,
+      "logSha256": "debbe87f48a73f831b805f658179757ff1f94384b15ca532f71608025b4cbd84"
+    }
+  },
+  "repairs": [
+    {
+      "case": "remote_host::files::flow_tests::transfer_loop_subscribe_failure_records_and_recovers",
+      "before": "Full Host suite: 1563 passed; 1 failed; 10 ignored; 2 filtered; 377.73s. Recovered subscription deadline expired.",
+      "fix": "Hold existing HomeGuard for the full shared task registry fixture, preventing another HOME reset from cancelling its recovered transfer loop. Original assertions and deadlines unchanged."
+    },
+    {
+      "case": "remote::verify_e2e::multi_device",
+      "fix": "Read the broker environment under the same driver-env mutex used by temporary writers; release before taking HOME. Only compiled locally; actual real broker acceptance pending CI."
+    },
+    {
+      "case": "Real headless process behavior with Cargo dev feature unification",
+      "before": "Legacy headless CLI group passed 13. Remote refusal/reconnect process group failed; test-support runtime options disabled production recovery and revoke cleanup in actual headless children. One wait remained live; only its confirmed child was terminated to obtain failure evidence.",
+      "fix": "Fixture behavior is explicitly enabled by HomeGuard in test processes. Exposing test-support alone no longer changes recovery, loopback TLS options, HTTP timeout or test-platform listener rules.",
+      "validation": "GUI 52 passed again; real legacy headless CLI 13 and refusal/reconnect 13 passed. No assertion/timeout/filter changes.",
+      "red": {
+        "results": [
+          "test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 4.57s",
+          "test result: FAILED. 4 passed; 9 failed; 0 ignored; 0 measured; 0 filtered out; finished in 152.96s"
+        ],
+        "logSha256": "750ae6122743c919d79efd641886845c9b5314e17f2a875851146718e754e47b"
+      }
+    }
+  ],
+  "ci": {
+    "wrapper": "scripts/ci/host-tests.py --with-broker",
+    "execution": "Linux Host core suite once with isolated nats-server; no local NATS execution.",
+    "cleanup": "Only the wrapper-owned child, readiness 20s, terminate 5s then kill 5s.",
+    "status": "not-run-for-this-extraction"
+  },
+  "boundaries": {
+    "checked": {
+      "future-cli": {
+        "forbidden": [],
+        "packages": 395
+      },
+      "future-host": {
+        "forbidden": [],
+        "packages": 370
+      }
+    },
+    "desktopGuiFeatures": [
+      "default",
+      "gui"
+    ],
+    "executedTests": 0,
+    "target": "aarch64-apple-darwin"
+  },
+  "limits": [
+    "Legacy futureos-headless remains the product process entry.",
+    "Local logs and elapsed times are not matched performance comparisons.",
+    "Cross-platform extraction acceptance, release artifacts, final CLI process tests and manual results remain pending."
+  ]
+}
