@@ -432,7 +432,17 @@ fn flush_event_batch(
             let refused = format!("event batch commit failed: {error:#}");
             let mut retry = Vec::new();
             let mut storage_failed = false;
-            for item in pending.drain(..) {
+            // Replies are held until the batch's outcome is decided: a durable
+            // caller must not observe its failure before the journal health
+            // that explains it is published, or it can read the health as
+            // healthy while holding the error of the batch that made it
+            // unhealthy.
+            struct Deferred {
+                reply: std::sync::mpsc::SyncSender<Result<(), AppendFailure>>,
+                outcome: Result<(), AppendFailure>,
+            }
+            let mut replies: Vec<Deferred> = Vec::new();
+            for mut item in pending.drain(..) {
                 let event_id = item
                     .event
                     .get("event_id")
@@ -450,7 +460,10 @@ fn flush_event_batch(
                         #[cfg(test)]
                         commits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         if let Some(reply) = item.reply {
-                            let _ = reply.send(Ok(()));
+                            replies.push(Deferred {
+                                reply,
+                                outcome: Ok(()),
+                            });
                         }
                     }
                     Err(error) if is_event_rejected(&error) => {
@@ -462,31 +475,37 @@ fn flush_event_batch(
                             "dropping an event this journal refuses; events after it still land"
                         );
                         if let Some(reply) = item.reply {
-                            let _ = reply.send(Err(AppendFailure::Rejected(format!(
-                                "event batch commit failed: {error:#}"
-                            ))));
+                            replies.push(Deferred {
+                                reply,
+                                outcome: Err(AppendFailure::Rejected(format!(
+                                    "event batch commit failed: {error:#}"
+                                ))),
+                            });
                         }
                     }
                     // Still a storage problem: keep it for the next attempt.
                     Err(error) => {
-                        // Publish health before acknowledging failure to a durable
-                        // caller. All failed events may have replies, leaving no
-                        // pending items; that still makes this flush unsuccessful.
-                        if !storage_failed {
-                            health.fail(refused.clone());
-                            storage_failed = true;
-                        }
-                        if let Some(reply) = item.reply {
-                            let _ = reply.send(Err(AppendFailure::Unavailable(format!(
-                                "event batch commit failed: {error:#}"
-                            ))));
-                        } else {
-                            retry.push(item);
+                        storage_failed = true;
+                        let unavailable = AppendFailure::Unavailable(format!(
+                            "event batch commit failed: {error:#}"
+                        ));
+                        match item.reply.take() {
+                            Some(reply) => replies.push(Deferred {
+                                reply,
+                                outcome: Err(unavailable),
+                            }),
+                            None => retry.push(item),
                         }
                     }
                 }
             }
             *pending = retry;
+            if storage_failed {
+                health.fail(refused);
+            }
+            for Deferred { reply, outcome } in replies {
+                let _ = reply.send(outcome);
+            }
             !storage_failed
         }
         Err(error) => {
