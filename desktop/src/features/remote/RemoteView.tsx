@@ -18,11 +18,11 @@ import {
   unpairRemoteDevice,
 } from "./remoteClient";
 import {
+  addDeviceErrorText,
   deviceLabel,
   deviceState,
   formatCountdown,
   formatPairId,
-  isLimitError,
 } from "./remoteHostFormat";
 
 /**
@@ -212,7 +212,7 @@ export function RemoteHostSection({
     }
     catch (err) {
       console.error("remote add device failed:", err);
-      setError(isLimitError(err) ? t("error.limitReached") : t("error.generic"));
+      setError(addDeviceErrorText(err, t));
     }
     finally {
       setBusy(false);
