@@ -1,6 +1,8 @@
 //! Desktop entry adapters. All Agent application services live in future-host.
 mod client;
 pub use client::connect_agent;
+#[cfg(feature = "gui")]
+pub(crate) use client::get_agent_readiness;
 #[cfg(test)]
 pub(crate) use client::reset_test_connection;
 pub(crate) use client::{install_channel_runtime, raw_agent_addr};

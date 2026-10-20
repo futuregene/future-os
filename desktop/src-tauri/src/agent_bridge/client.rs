@@ -18,6 +18,15 @@ pub async fn connect_agent() -> Result<AgentClient, crate::AppError> {
     future_host::agent_client::connect_agent().await
 }
 
+/// Status/login probes are entry calls too: they can precede any business
+/// command. Install the entry-owned channel driver before using shared policy.
+#[cfg(feature = "gui")]
+pub(crate) async fn get_agent_readiness(
+) -> Result<Option<future_rpc::payloads_ext::AgentReadinessPayload>, crate::AppError> {
+    install_channel_runtime();
+    future_host::agent_client::get_agent_readiness().await
+}
+
 /// Process-lifetime runtime that owns the shared agent channel. tonic spawns
 /// the h2 connection's driver task on whatever runtime first touches the
 /// channel, and several startup callers (session import, run reanimation)

@@ -407,3 +407,9 @@ CI `39366079089` 在候选 `8bc9e614` 的 Linux headless 库测试中阻塞：�
 CI `39371045462`（候选 `0f9cc395`）的 macOS Host 分组为 933 通过、1 失败：真实 shell 取消夹具在启动期间对 activity 快照直接 unwrap，遇到 API 按契约返回的短锁/revision 并发 Unknown。生产快照仍拒绝把 Unknown 当空闲。仅修正测试轮询：重试这一种既有错误；其他错误或非自有 Agent 立即失败，仍须在原 3 秒内观察到 `commands > 0`，然后保留停止少于 5 秒、shell RPC 被取消和元数据清除的全部断言。
 
 原失败用例本地通过（0.16 秒）；全部 Agent 托管真实生命周期 22 项通过（10.30 秒），Host Clippy `--all-targets` 与 fmt 通过，见[轮询修复证据](../testing/headless-activity-poll-2026-10-20.json)。同一 CI 候选的 Linux Desktop headless 分组已完整通过，其他分组仍在运行，且 macOS 失败尚待后续候选复验，不计为整轮通过。
+
+### 2026-10-20 Desktop readiness 探测接线修复
+
+同一 CI `39371045462` 的 Linux GUI 库测试为 1122 通过、1 失败、10 原有忽略：自有 Agent 启动后 status 得到 unavailable，原断言要求 ready。本地原用例精确复现。业务桥整组迁移的 glob 转发绕过了 Desktop readiness 入口原有的 channel runtime 安装；现恢复薄接线，在共享客户端探测前安装入口拥有的通道驱动，Host 生产代码仍无 runtime 回退。
+
+原 ready/版本/退出/停止断言不变，整组 9 个真实 GUI supervisor 夹具本地通过（0.08 秒），详见[readiness 接线证据](../testing/headless-readiness-entry-2026-10-20.json)。这是实际入口接线修复，不以修改测试断言或状态映射获得通过；Linux 和 Windows 仍待后续完整 CI 复验。
