@@ -222,7 +222,7 @@ pub fn home_dir() -> PathBuf {
 }
 
 /// The configured FutureOS home override, when this process has one — set by
-/// `future agent --home DIR` (see [`future_home`]). `None` means the state root
+/// `FUTURE_HOME` (see [`future_home`]). `None` means the state root
 /// is the default `~/.future`.
 pub fn future_home_override() -> Option<PathBuf> {
     future_rpc::home::future_home_override()

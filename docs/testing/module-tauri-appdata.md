@@ -257,7 +257,7 @@ loosened. Grouped by file:
 
 `src/auth_store.rs`
 * `test_support::home_guard_restores_a_previously_set_future_home` — the
-  `Some(value)` arm of the `FUTURE_HOME` restore (`future agent --home`),
+  `Some(value)` arm of the `FUTURE_HOME` restore,
   including the "cleared while the fixture is live" contract.
 
 `src/store/approval_assessments.rs`

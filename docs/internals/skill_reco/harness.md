@@ -241,7 +241,7 @@ AGENT_SKILL_RECO=.../agent/src/skill_reco/mod.rs \
 real credential and a live gateway, so it costs money):
 
 ```bash
-future agent --home /tmp/reco-test --verbose --log-file    # isolated; never the agent you use
+FUTURE_HOME=/tmp/reco-test future agent --verbose --log-file    # isolated; never the agent you use
 python3 suggest-skill-tests.py              # 35 checks, 5 suites; ~33 calls ≈¥0.04
 python3 suggest-skill-tests.py --only A,B,D # the three free suites (no network)
 python3 order-sensitivity.py --runs 8       # order sensitivity vs run-to-run noise
