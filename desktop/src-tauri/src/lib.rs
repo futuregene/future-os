@@ -1603,6 +1603,10 @@ mod gui {
         /// (`Timeout` → `break`), and a dropped sender (`Disconnected` → return).
         #[test]
         fn runtime_update_drain_loop_covers_every_receive_exit() {
+            // Resetting the shared task/admission registry also clears owned
+            // runs. Hold the same process-state lock as the real RPC shutdown
+            // fixtures for the entire drain, including its final reset.
+            let _home = crate::auth_store::test_support::HomeGuard::new("runtime-update-drain");
             crate::desktop_shutdown::reset_for_test();
             crate::runtime::cancel_test_tasks();
             let (tx, rx) = std::sync::mpsc::channel::<ThreadRuntimeUpdate>();

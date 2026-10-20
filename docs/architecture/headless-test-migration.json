@@ -16089,7 +16089,12 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/desktop_shutdown.rs",
-      "status": "planned"
+      "status": "planned",
+      "latestRepairValidation": {
+        "evidence": "docs/testing/headless-shutdown-fixture-isolation-2026-10-20.json",
+        "status": "local-pass",
+        "assertions": "All original assertions retained; shared global-reset fixture now holds existing HOME lock."
+      }
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown.rs:590:closing_admission_rejects_new_commands_without_losing_active_guards",
@@ -16111,7 +16116,12 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/desktop_shutdown.rs",
-      "status": "planned"
+      "status": "planned",
+      "latestRepairValidation": {
+        "evidence": "docs/testing/headless-shutdown-fixture-isolation-2026-10-20.json",
+        "status": "local-pass",
+        "assertions": "All original assertions retained; shared global-reset fixture now holds existing HOME lock."
+      }
     },
     {
       "key": "desktop/src-tauri/src/desktop_shutdown.rs:672:quit_admission_guard_closes_admission_and_restores_the_flag",
@@ -19026,7 +19036,12 @@
       "plannedOwner": "futureos",
       "target": "desktop/src-tauri/src/lib.rs",
       "status": "retained",
-      "ownershipDecision": "gui-entry"
+      "ownershipDecision": "gui-entry",
+      "latestRepairValidation": {
+        "evidence": "docs/testing/headless-shutdown-fixture-isolation-2026-10-20.json",
+        "status": "local-pass",
+        "assertions": "All original assertions retained; shared global-reset fixture now holds existing HOME lock."
+      }
     },
     {
       "key": "desktop/src-tauri/src/lib.rs:1689:streaming_monitor_loop_enters_and_sleeps",
@@ -35427,6 +35442,66 @@
       "plannedOwner": "future-cli",
       "target": "cli/src/headless/mod.rs",
       "status": "planned"
+    },
+    {
+      "source": "desktop/src-tauri/src/commands/remote.rs",
+      "line": 233,
+      "name": "remote_start_remembers_the_switch_on",
+      "introducedBy": "c53191cf50738702308294d467d7113f128995f0",
+      "observedMain": "c53191cf50738702308294d467d7113f128995f0",
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/commands/remote.rs",
+      "status": "retained",
+      "ownershipDecision": "gui-entry"
+    },
+    {
+      "source": "desktop/src-tauri/src/commands/remote.rs",
+      "line": 261,
+      "name": "a_start_that_is_still_retrying_is_remembered_as_on",
+      "introducedBy": "c53191cf50738702308294d467d7113f128995f0",
+      "observedMain": "c53191cf50738702308294d467d7113f128995f0",
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/commands/remote.rs",
+      "status": "retained",
+      "ownershipDecision": "gui-entry"
+    },
+    {
+      "source": "desktop/src-tauri/src/commands/remote.rs",
+      "line": 295,
+      "name": "only_a_stopped_failed_or_revoked_start_is_off",
+      "introducedBy": "c53191cf50738702308294d467d7113f128995f0",
+      "observedMain": "c53191cf50738702308294d467d7113f128995f0",
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/commands/remote.rs",
+      "status": "retained",
+      "ownershipDecision": "gui-entry"
+    },
+    {
+      "source": "desktop/src-tauri/src/commands/remote.rs",
+      "line": 308,
+      "name": "remote_stop_remembers_the_switch_off",
+      "introducedBy": "c53191cf50738702308294d467d7113f128995f0",
+      "observedMain": "c53191cf50738702308294d467d7113f128995f0",
+      "plannedOwner": "futureos",
+      "target": "desktop/src-tauri/src/commands/remote.rs",
+      "status": "retained",
+      "ownershipDecision": "gui-entry"
+    }
+  ],
+  "upstreamAmendments": [
+    {
+      "introducedBy": "c53191cf50738702308294d467d7113f128995f0",
+      "source": "desktop/src-tauri/src/store/app_settings.rs",
+      "target": "host/src/store/app_settings.rs",
+      "name": "defaults_apply_on_a_fresh_database",
+      "change": "Preserve upstream default autoConnectRemote=true assertion after rename-aware merge; original baseline entry and source digest remain immutable."
+    },
+    {
+      "introducedBy": "c53191cf50738702308294d467d7113f128995f0",
+      "source": "cli/src/commands/desktop.rs",
+      "target": "cli/src/commands/desktop.rs",
+      "name": "the_flat_listing_reports_defaults_and_never_creates_the_database",
+      "change": "Preserve upstream flat listing default autoConnectRemote=true assertion."
     }
   ]
 }

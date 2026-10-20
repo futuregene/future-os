@@ -449,3 +449,9 @@ CI `39371045462` 已完成，整体为 failure。Windows 独立 Host 分组、�
 中间 CI `39374836837` 的 macOS Host 为 1029 通过、1 失败、2 个原忽略：空闲等待用例要求在真实 5 秒内精确发完 25 次 RPC，runner 到第 24 次后到达总时限。生产仍保持 5 秒总预算、最多 25 次与 200ms 间隔；私有共享循环只把等待 future 作为计时接缝。原用例仍执行真实 RPC、保留精确 25 次与非 idle 断言，改用受控 Tokio 时钟，新增逻辑耗时恰好 5 秒断言。另一个未应答真实 RPC 的生产总时限用例未变并通过。
 
 [证据](../testing/headless-idle-retry-clock-2026-10-20.json)记录失败日志、精确用例通过、完整 Host 1047 通过/2 个原忽略，以及联合/旧 headless Clippy、fmt、Rustdoc 和依赖边界通过。旧候选 Windows Host 已通过，但 Windows 构建和 Linux GUI 快照仍运行；整轮不接受为通过。远程主干随后新增的 Remote 开关持久化提交需合入后再验证，以上结果不拼接为合并后候选的完整验收。
+
+### 2026-10-20 Linux GUI 退出夹具隔离与主干同步
+
+同轮 Linux GUI 为 1025 通过、2 失败、8 个原忽略。未持有共享 HOME 锁的 GUI runtime-update drain 测试会重置全局退出状态，清空另一真实 RPC 用例的归属表。两个原用例并发在本地复现同样的 `owned_count 0 != 1`；只为全局重置夹具补齐 `HomeGuard`，所有产品逻辑与原断言不变。退出协调与 GUI 更新两组并发 26 项通过。[隔离证据](../testing/headless-shutdown-fixture-isolation-2026-10-20.json)保留红/绿日志摘要。
+
+远程主干 `c53191cf` 已由 `0bf843e0` 合入，保留 Remote 开关偏好和新默认值。重命名感知合并将原 Desktop Store 的默认值断言正确落在 Host；新增 4 个上游 GUI 用例单独登记，2193 项原基线不变。合并后 Host 1047 通过/2 个原忽略、共享设置包 20 通过、GUI Remote 17 通过、CLI 设置 10 通过；Desktop/Mobile type-check 与 ESLint、受影响 Clippy `--all-targets` 通过。[同步证据](../testing/headless-remote-switch-sync-2026-10-20.json)区分源码版本。暂不 dispatch 下一轮，避免 CI 并发规则取消仍在运行的 Windows 原生构建；失败的旧运行不计为通过。
