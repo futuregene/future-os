@@ -10,6 +10,7 @@ pub use error::Error;
 pub mod approval_rules;
 mod git_diff_parse;
 mod proc;
+pub use proc::NoWindow;
 pub mod run_error;
 
 pub mod runtime;

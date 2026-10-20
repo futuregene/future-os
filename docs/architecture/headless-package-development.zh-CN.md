@@ -305,3 +305,7 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 已验证连接选择/缓存、readiness、实例隔离、逐命令截止时间及 prompt 归属现归 `host/src/agent_client.rs`。宿主接收连接 runtime handle，不创建 runtime、不调用 `block_on`。过渡 Desktop/headless 入口保留原有独立单 worker 连接 runtime，在调用共享服务前明确注入，保持资源上限及连接跨临时调用者 runtime 存活的行为，不新增第二份连接缓存或归属表。
 
 迁入 1 个纯 RPC 错误分类测试。真实 loopback、调用者 runtime 销毁、readiness、实例变更测试在统一 RPC 夹具迁入前仍留入口，原断言不变。[静态证据](../testing/headless-host-agent-client-2026-10-20.json)包含宿主、GUI/CLI 联合和旧 headless 的 Clippy。溯源说明归位后完整文档检查通过。修复提交 `df56f5f2` 已启动完整 CI [39358154196](https://github.com/futuregene/future-os/actions/runs/39358154196)，该运行不含本批客户端迁移，也不是最终验收。
+
+### 2026-10-20 Windows 适配编译修复
+
+CI `39358154196` 的 Agent 与宿主测试分组通过，证明该候选的日志竞态修复复验通过。Windows Desktop 编译失败是移除旧 `proc` 转发时遗漏终端进程树清理的 Windows 专用 import，导致 `NoWindow` 缺失并触发 E0432/E0599；编译提前停止后，原生证据上传也因没有文件失败。现从宿主根部只导出原 trait，Windows 终端适配直接导入，不改变进程标志或终止范围。[证据](../testing/headless-host-windows-repair-2026-10-20.json)记录具体失败 job。Windows 验收仍待下一次 CI，不跳过失败步骤。
