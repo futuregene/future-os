@@ -25,7 +25,7 @@ import type { CommandId, CommandSpec } from "./catalog";
 import { useSyncExternalStore } from "react";
 import { formatBinding, parseBinding, serializeBinding } from "../../lib/keybinding";
 import { isMacOS } from "../../lib/platform";
-import { COMMANDS, commandSpec, defaultBinding } from "./catalog";
+import { COMMANDS, commandSpec, defaultBindings, defaultBindingTexts, scopeOf } from "./catalog";
 
 const STORAGE_KEY = "future.shortcuts.v1";
 
@@ -120,14 +120,30 @@ export function useShortcutOverrides(): ShortcutOverrides {
   return useSyncExternalStore(subscribeShortcuts, snapshot, snapshot).overrides;
 }
 
-/** The text a command resolves to, or `null` when it is bound to nothing. */
+/**
+ * The texts a command resolves to, or `[]` when it is bound to nothing.
+ *
+ * Normally one; a command with several defaults (`vibe.cell`, the digits) has one
+ * entry per key until the user overrides it, and a single entry after.
+ */
+export function resolvedBindingTexts(
+  id: CommandId,
+  overrides: ShortcutOverrides = state.overrides,
+): readonly string[] {
+  if (id in overrides) {
+    const text = overrides[id];
+    return text === null || text === undefined ? [] : [text];
+  }
+  const spec = commandSpec(id);
+  return spec ? defaultBindingTexts(spec) : [];
+}
+
+/** The first text a command resolves to, or `null` when it is bound to nothing. */
 export function resolvedBindingText(
   id: CommandId,
   overrides: ShortcutOverrides = state.overrides,
 ): string | null {
-  if (id in overrides)
-    return overrides[id] ?? null;
-  return commandSpec(id)?.defaultBinding ?? null;
+  return resolvedBindingTexts(id, overrides)[0] ?? null;
 }
 
 /** The parsed binding a command resolves to, or `null` when it is bound to nothing. */
@@ -139,14 +155,42 @@ export function resolvedBinding(
   return text ? parseBinding(text) : null;
 }
 
-/** Every command's live binding, keyed by id — what the dispatcher matches against. */
-export function resolvedBindings(
+/** Every parsed key a command answers to. */
+export function resolvedBindingList(
+  id: CommandId,
   overrides: ShortcutOverrides = state.overrides,
-): Map<CommandId, KeyBinding | null> {
-  return new Map(COMMANDS.map(spec => [spec.id, resolvedBinding(spec.id, overrides)]));
+): KeyBinding[] {
+  return resolvedBindingTexts(id, overrides)
+    .map(text => parseBinding(text))
+    .filter((binding): binding is KeyBinding => binding !== null);
 }
 
-/** The command a binding text would collide with, other than `except`. */
+/** Whether a command carries more than one default key (`vibe.cell`). */
+export function isMultiKeyCommand(id: CommandId): boolean {
+  const spec = commandSpec(id);
+  return Boolean(spec && spec.bindings && spec.bindings.length > 1);
+}
+
+/**
+ * Every command's live keys, keyed by id — what the dispatcher matches against.
+ *
+ * Keyed by id (not by text) because a command may answer to several keys, and
+ * because the dispatcher's first question is "which scope does this command
+ * belong to", which is a property of the command.
+ */
+export function resolvedBindings(
+  overrides: ShortcutOverrides = state.overrides,
+): Map<CommandId, KeyBinding[]> {
+  return new Map(COMMANDS.map(spec => [spec.id, resolvedBindingList(spec.id, overrides)]));
+}
+
+/**
+ * The command a binding text would collide with, other than `except`.
+ *
+ * **Only within the same scope.** A global key and a mode's key may be the same
+ * key: that is how a mode takes over `←` or `⌘[` while it is open, and the whole
+ * point of scopes. Two commands in one scope still cannot share a key.
+ */
 export function conflictingCommand(
   text: string,
   except: CommandId,
@@ -156,15 +200,16 @@ export function conflictingCommand(
   if (!candidate)
     return null;
   const canonical = serializeBinding(candidate);
+  const exceptSpec = commandSpec(except);
+  const scope = exceptSpec ? scopeOf(exceptSpec) : "global";
   for (const spec of COMMANDS) {
-    if (spec.id === except)
+    if (spec.id === except || scopeOf(spec) !== scope)
       continue;
-    const current = resolvedBindingText(spec.id, overrides);
-    if (!current)
-      continue;
-    const parsed = parseBinding(current);
-    if (parsed && serializeBinding(parsed) === canonical)
-      return spec;
+    for (const current of resolvedBindingTexts(spec.id, overrides)) {
+      const parsed = parseBinding(current);
+      if (parsed && serializeBinding(parsed) === canonical)
+        return spec;
+    }
   }
   return null;
 }
@@ -182,7 +227,7 @@ export function setCommandBinding(id: CommandId, text: string | null): void {
   const canonical = binding ? serializeBinding(binding) : null;
   if (canonical === null)
     overrides[id] = null;
-  else if (spec && canonical === serializeBinding(defaultBinding(spec)))
+  else if (spec && defaultBindings(spec).some(binding => serializeBinding(binding) === canonical))
     delete overrides[id];
   else
     overrides[id] = canonical;
@@ -203,14 +248,23 @@ export function resetAllCommandBindings(): void {
   publish({});
 }
 
-/** A command's live binding in the platform's notation (`""` when unbound). */
+/**
+ * A command's live binding in the platform's notation (`""` when unbound).
+ *
+ * A command that answers to several keys shows them all — `1 … 9` reads as the
+ * one key list it is, and a tooltip that named only `1` would be wrong.
+ */
 export function bindingLabel(
   id: CommandId,
   overrides: ShortcutOverrides = state.overrides,
   isMac: boolean = isMacOS,
 ): string {
-  const binding = resolvedBinding(id, overrides);
-  return binding ? formatBinding(binding, isMac) : "";
+  const labels = resolvedBindingList(id, overrides).map(binding => formatBinding(binding, isMac));
+  if (labels.length === 0)
+    return "";
+  if (labels.length <= 2)
+    return labels.join(" / ");
+  return `${labels[0]} … ${labels[labels.length - 1]}`;
 }
 
 /** `bindingLabel`, subscribed: a tooltip follows a rebinding without a reload. */

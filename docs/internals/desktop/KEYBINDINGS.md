@@ -148,6 +148,73 @@ Details that matter:
 * **Both are unclaimed when there is nowhere to go** (one stop, or a section with
   no list), so the keys are never swallowed for a no-op.
 
+## Modes: a keymap that exists only while a mode is on
+
+A global keymap is right for the things that are always true. A **mode** needs the
+opposite: while it is on, a key should mean what the mode says, and it must be
+allowed to sit on a key the global keymap already uses. `scopes.ts` is that.
+
+| Scope | Active | Holds |
+| --- | --- | --- |
+| `global` | always | everything above: new conversation, navigation, panels, terminal, settings |
+| `vibe` | the panel is open | layout, device filter, add/remove, attention queue, overlay full screen |
+| `vibeGrid` | the grid has the keyboard (no cell zoomed) | the direction keys, `↩`, `1`–`9` |
+| `vibeZoom` | one cell fills the screen | `Esc` back out, the side panel's two keys |
+
+Resolution is **innermost scope first**, then outwards, then `global`. So:
+
+* a mode's key **shadows** a global one while the mode is on, and the global
+  meaning is back the moment it closes — no conflict, by construction;
+* two commands may share a key **in different scopes**, and the recorder only
+  refuses a collision **within one scope** (`conflictingCommand` is scope-aware);
+* a bare key (`←`, `↩`, `Esc`, a digit) is only ever assignable in a non-global
+  scope, and the dispatcher runs one **only when its scope is active and the caret
+  is not in a text field** — the zoomed cell has a composer, so `↩` there still
+  sends. `Shift` alone does not make a chord: `Shift+Enter` is a newline.
+
+The panel's own keys (all rebindable; `vibe.cell` is the one exception, see
+below). `mod` is `⌘` on macOS and `Ctrl` elsewhere:
+
+| Action | Default | Scope |
+| --- | --- | --- |
+| Open or close the panel | `mod+shift+v` | global |
+| Move the selection | `← ↑ → ↓` | vibeGrid |
+| Zoom into the selected cell | `↩` | vibeGrid |
+| Leave the zoomed cell | `Esc` | vibeZoom |
+| Previous / next conversation in the zoomed cell | `←` / `→` | vibeZoom |
+| Go to a numbered cell | `1`–`9` | vibeGrid |
+| Previous / next cell | `mod+[` / `mod+]` | (reuses `thread.previous`/`next`; the panel registers them, the rail does not) |
+| Cycle the grid layout | `mod+shift+g` | vibe |
+| More / fewer columns, automatic | `mod+=` / `mod+-` / `mod+0` | vibe |
+| Move the selected cell earlier / later | `mod+alt+←` / `mod+alt+→` | vibe |
+| Side panel: show/hide, pin | `mod+\` / `mod+shift+\` | vibeZoom |
+| Switch machine filter | `mod+shift+d` | vibe |
+| Jump to the next cell that needs you | `mod+shift+a` | vibe |
+| Add a conversation to the panel | `mod+shift+e` | vibe |
+| Remove the selected conversation | `mod+shift+backspace` | vibe |
+| Overlay (app-wide) full screen | `mod+ctrl+f` | global |
+| All shortcuts | `mod+/` | global |
+
+Two notes on this table:
+
+* **`mod+[` / `mod+]` are the same commands as the rail's**, not a second pair. A
+  command's *meaning* comes from whichever view owns it: inside the panel the
+  panel registers `thread.next` as "next cell", outside it the rail registers it
+  as "next conversation". The registry keeps one handler per command, so the two
+  cannot both be live.
+* **`1`–`9` is one command with nine bindings** (`vibe.cell`), because a cell is
+  chosen by the digit printed on it. The settings page shows them as a read-only
+  key list: recording a single key for a nine-key command would ask a question the
+  page cannot answer. `vibe.cell`'s handler receives the matched binding and reads
+  the digit from it (`runCommand(id, binding)`).
+
+The panel's design and its grid/order model live with the feature
+(`docs/internals/desktop/VIBE.md`, written by that task); this file owns only its
+keys. One design revision is worth recording here: that proposal reused
+`mod+alt+↓/↑` for "next cell" because the rail's fine move was there at the time.
+The fine move has since moved to `mod+[` / `mod+]`, so the panel reuses those —
+the pane's "next" and the rail's "next" are the same command on the same key.
+
 ## Where each command is registered
 
 The shell registers the commands that are its own (navigation, panels, settings).
@@ -186,9 +253,10 @@ Why localStorage rather than `~/.future/app/app.db`:
 Moving the document to the backend's `app_settings` later means changing
 `read()`/`write()` there and nothing else.
 
-## Defaults (v1)
+## Defaults (v1, global keymap)
 
-`mod` is `⌘` on macOS and `Ctrl` on Windows/Linux.
+`mod` is `⌘` on macOS and `Ctrl` on Windows/Linux. The Vibe panel's keys are a
+separate keymap — see *Modes* below.
 
 | Command | Default | |
 | --- | --- | --- |
@@ -245,6 +313,8 @@ different risk.
 | `features/keyboard/dispatch.test.ts` | the rule order (IME, AltGr, repeat, overlay, terminal, no handler), with no DOM |
 | `features/keyboard/shortcuts.test.ts` | differences-only storage, reset, portable `mod`, unreadable stored values |
 | `features/keyboard/useDispatcher.test.tsx` | the real window listener: handled keys consumed, rebinding effective on the next press, the shell's keys untouched inside the terminal |
+| `features/keyboard/scopes.test.tsx` | scopes ranked by layer, two holders of one scope, release independent |
+| `features/keyboard/modeKeymap.test.tsx` | a mode's key fires only inside it, one key in two scopes each staying its own, a bare key not taking a text field |
 | `features/settings/ShortcutsPage.test.tsx` | recording, refusal (modifier / reserved / conflict), cancel, unbind, restore, search |
 | `ThreadSearch*`, `Composer.focus`, `AgentThread`, `ActivityRail.nav`, `AppShell` | each view's own command, through the dispatcher |
 

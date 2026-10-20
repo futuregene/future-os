@@ -327,13 +327,23 @@ export type BindingProblem = "needsModifier" | "reserved";
 /**
  * Judge a binding the user is about to assign.
  *
- * `needsModifier` keeps bare keys out of the table (see the module comment);
- * `reserved` refuses the combinations the OS and the platform's text editing
- * own. Conflicts with another command are the caller's business — only it knows
- * which commands exist.
+ * `needsModifier` keeps bare keys out of the **global** keymap (see the module
+ * comment); `reserved` refuses the combinations the OS and the platform's text
+ * editing own. Conflicts with another command are the caller's business — only it
+ * knows which commands exist.
+ *
+ * `allowBare` is for a mode's own keymap: inside a scope, `←` or `↩` means what
+ * the mode says, and the mode is only on when the thing those keys would
+ * otherwise be typing into is not what has the caret. The dispatcher still
+ * refuses to run such a command outside its scope and refuses it over a text
+ * field — this flag only lets it be *recorded*.
  */
-export function bindingProblem(binding: KeyBinding, isMac: boolean): BindingProblem | null {
-  if (!binding.mod && !binding.ctrl && !binding.alt)
+export function bindingProblem(
+  binding: KeyBinding,
+  isMac: boolean,
+  options: { allowBare?: boolean } = {},
+): BindingProblem | null {
+  if (!binding.mod && !binding.ctrl && !binding.alt && !options.allowBare)
     return "needsModifier";
   const text = serializeBinding(binding);
   for (const entry of RESERVED_BINDINGS) {

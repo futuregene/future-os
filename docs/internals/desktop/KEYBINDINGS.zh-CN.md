@@ -119,6 +119,65 @@ desktop/src/features/settings/
 * **无处可去时两条命令都不注册**（只有一个停靠点，或该分区没有列表），按键不会被
   空动作吞掉。
 
+## 模式：只在模式打开时存在的键位表
+
+全局键位表适合「永远成立」的事。**模式**需要相反的性质：它打开时，一个键应该按这个模式
+的意思来，而且允许占用全局键位表已经用了的键。`scopes.ts` 就是这一层。
+
+| 作用域 | 何时生效 | 承载什么 |
+| --- | --- | --- |
+| `global` | 始终 | 上面全部：新建对话、导航、面板、终端、设置 |
+| `vibe` | 面板打开 | 布局、设备筛选、增删、待处理队列、应用内全屏 |
+| `vibeGrid` | 网格持有键盘（没有格子被放大） | 方向键、`↩`、`1`–`9` |
+| `vibeZoom` | 单个格子铺满屏幕 | `Esc` 退出、右栏两个键 |
+
+解析顺序是**最内层作用域优先**，由内向外，最后才是 `global`。因此：
+
+* 模式内的键在模式打开时**覆盖**同键的全局命令，模式一关就还回去——按构造就不存在
+  冲突；
+* 两条命令可以**在不同作用域**共用同一个键，录制器只在**同一作用域内**报冲突
+  （`conflictingCommand` 是作用域感知的）；
+* 裸键（`←`、`↩`、`Esc`、数字）只能在非全局作用域里分配，且分发器只在**该作用域生效、
+  且光标不在文本框里**时才执行它——放大后的格子里有输入框，那里 `↩` 仍然是发送。
+  `Shift` 单独不算修饰键：`Shift+Enter` 是换行。
+
+面板自己的键位（都可改，`vibe.cell` 是唯一例外，见下）。`mod` 在 macOS 是 `⌘`，
+其他平台是 `Ctrl`：
+
+| 动作 | 默认 | 作用域 |
+| --- | --- | --- |
+| 打开 / 关闭面板 | `mod+shift+v` | global |
+| 移动选中 | `← ↑ → ↓` | vibeGrid |
+| 放大选中的格子 | `↩` | vibeGrid |
+| 退出放大 | `Esc` | vibeZoom |
+| 放大视图里的上一个 / 下一个对话 | `←` / `→` | vibeZoom |
+| 跳到编号格子 | `1`–`9` | vibeGrid |
+| 上一个 / 下一个格子 | `mod+[` / `mod+]` | （复用 `thread.previous`/`next`；面板注册，左栏此时不在） |
+| 循环网格布局 | `mod+shift+g` | vibe |
+| 增减列 / 恢复自动 | `mod+=` / `mod+-` / `mod+0` | vibe |
+| 选中格前移 / 后移 | `mod+alt+←` / `mod+alt+→` | vibe |
+| 右栏 显示隐藏 / 固定 | `mod+\` / `mod+shift+\` | vibeZoom |
+| 切换机器筛选 | `mod+shift+d` | vibe |
+| 跳到下一个需要你处理的格子 | `mod+shift+a` | vibe |
+| 把会话加进面板 | `mod+shift+e` | vibe |
+| 把选中会话移出面板 | `mod+shift+backspace` | vibe |
+| 应用内全屏 | `mod+ctrl+f` | global |
+| 查看全部快捷键 | `mod+/` | global |
+
+关于这张表的两点：
+
+* **`mod+[` / `mod+]` 与左栏是同一对命令**，不是第二套。命令的**含义**来自当前拥有它
+  的视图：在面板里由面板把它注册成「下一个格子」，在面板外由左栏注册成「下一个对话」。
+  注册表一条命令只保留一个处理者，所以两者不可能同时生效。
+* **`1`–`9` 是「一条命令九个绑定」**（`vibe.cell`），因为格子是按印在上面的数字选的。
+  设置页把它显示为只读键位列表：给一条九键命令录制单个键，等于问页面一个它答不出的
+  问题。`vibe.cell` 的处理者会收到命中的绑定，从里面取数字（`runCommand(id, binding)`）。
+
+面板本身的设计与网格/顺序模型跟功能走（`docs/internals/desktop/VIBE.md`，由那个任务
+编写）；本文只负责它的键位。有一处设计修订值得记在这里：那份方案当时把「下一个格子」
+放在 `mod+alt+↓/↑`，因为左栏的细调那时还在那里。细调后来挪到了 `mod+[` / `mod+]`，
+所以面板复用它们——面板的「下一个」和左栏的「下一个」是同一条命令、同一组键。
+
 ## 每条命令注册在哪
 
 外壳注册属于自己的命令（导航、面板、设置）。属于某个视图的，由该视图在挂载期间
@@ -153,9 +212,10 @@ desktop/src/features/settings/
 `features/keyboard/shortcuts.ts` 是唯一读写这个键的文件。将来要把这份文档搬到后端的
 `app_settings`，只需改那里的 `read()`/`write()`。
 
-## 默认键位（v1）
+## 默认键位（v1，全局键位表）
 
-`mod` 在 macOS 是 `⌘`，在 Windows/Linux 是 `Ctrl`。
+`mod` 在 macOS 是 `⌘`，在 Windows/Linux 是 `Ctrl`。Vibe 面板的键位属于另一张表，
+见下面的「模式」。
 
 | 命令 | 默认 | |
 | --- | --- | --- |
@@ -208,6 +268,8 @@ desktop/src/features/settings/
 | `features/keyboard/dispatch.test.ts` | 规则顺序（输入法、AltGr、连按、弹层、终端、无处理者），不依赖 DOM |
 | `features/keyboard/shortcuts.test.ts` | 只存差异、重置、可移植的 `mod`、无法解析的留存值 |
 | `features/keyboard/useDispatcher.test.tsx` | 真实 window 监听：处理的键被消费、改键下一次按键即生效、终端内不碰 shell 的键 |
+| `features/keyboard/scopes.test.tsx` | 作用域按层级排序、两个持有者共享一个作用域、释放互不影响 |
+| `features/keyboard/modeKeymap.test.tsx` | 模式键只在模式内触发、同键两个作用域各归各、裸键不抢文本框 |
 | `features/settings/ShortcutsPage.test.tsx` | 录制、拒绝（缺修饰键 / 保留 / 冲突）、取消、解绑、恢复、搜索 |
 | `ThreadSearch*`、`Composer.focus`、`AgentThread`、`ActivityRail.nav`、`AppShell` | 各视图自己的命令，走真实分发链路 |
 

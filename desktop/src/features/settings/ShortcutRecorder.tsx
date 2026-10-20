@@ -18,6 +18,7 @@ import { Button } from "../../components/ui/Button";
 import { formatBinding, isModifierKey } from "../../lib/keybinding";
 import { useKeyboardOwner } from "../../lib/keyboardOwners";
 import { isMacOS } from "../../lib/platform";
+import { commandSpec, scopeOf } from "../keyboard/catalog";
 import { resolvedBinding, setCommandBinding, useShortcutOverrides } from "../keyboard/shortcuts";
 import { heldModifiers, interpretPress, refusalText } from "./shortcutRecorderRules";
 
@@ -67,7 +68,8 @@ export function ShortcutRecorder({
         setRefusal(null);
         return;
       }
-      const result = interpretPress(event, command, isMac);
+      const spec = commandSpec(command);
+      const result = interpretPress(event, command, isMac, Boolean(spec && scopeOf(spec) !== "global"));
       if (result === null) {
         setHeld(heldModifiers(event, isMac));
         return;

@@ -1,27 +1,36 @@
 // @vitest-environment jsdom
 import type { CommandId } from "./catalog";
 import type { DispatchContext, ShortcutEvent } from "./dispatch";
+import type { ShortcutScope } from "./scopes";
 import { describe, expect, it, vi } from "vitest";
-import { parseBinding, serializeBinding } from "../../lib/keybinding";
-import { dispatchShortcut } from "./dispatch";
+import { parseBinding } from "../../lib/keybinding";
+import { dispatchShortcut, isBareBinding } from "./dispatch";
 
 /**
  * A context built from binding *text* rather than parsed bindings, so a case can
  * say `{ "chat.new": "mod+n" }` and keep reading like the catalog it mirrors.
  */
-function context(overrides: Omit<Partial<DispatchContext>, "bindings"> & { bindings?: Record<string, string | null> } = {}): DispatchContext {
+function context(
+  overrides: Omit<Partial<DispatchContext>, "bindings"> & {
+    bindings?: Record<string, string | readonly string[] | null>;
+    scopes?: readonly ShortcutScope[];
+  } = {},
+): DispatchContext {
   const { bindings, ...rest } = overrides;
-  const resolved = new Map<CommandId, ReturnType<typeof parseBinding>>();
-  const source = bindings ?? {};
-  for (const [id, text] of Object.entries(source))
-    resolved.set(id as CommandId, text === null ? null : parseBinding(text));
+  const resolved = new Map<CommandId, ReturnType<typeof parseBinding>[]>();
+  for (const [id, text] of Object.entries(bindings ?? {})) {
+    const texts = text === null ? [] : typeof text === "string" ? [text] : text;
+    resolved.set(id as CommandId, texts.map(one => parseBinding(one)!).filter(Boolean));
+  }
   return {
-    isMac: false,
-    bindings: resolved,
+    bindings: resolved as DispatchContext["bindings"],
+    editable: false,
     hasHandler: () => true,
-    hasOpenOverlay: () => false,
     hasKeyboardOwner: () => false,
+    hasOpenOverlay: () => false,
     inTerminal: false,
+    isMac: false,
+    scopes: ["global"],
     ...rest,
   };
 }
@@ -41,7 +50,7 @@ function event(key: string, overrides: Partial<ShortcutEvent> = {}): ShortcutEve
 
 describe("dispatchShortcut", () => {
   it("runs the command whose binding matches", () => {
-    expect(dispatchShortcut(event("n", { code: "KeyN", ctrlKey: true }), context({ bindings: { "chat.new": "mod+n" } }))).toBe("chat.new");
+    expect(dispatchShortcut(event("n", { code: "KeyN", ctrlKey: true }), context({ bindings: { "chat.new": "mod+n" } }))?.id).toBe("chat.new");
   });
 
   it("leaves a key nobody bound alone", () => {
@@ -51,11 +60,11 @@ describe("dispatchShortcut", () => {
   it("leaves a bound key alone while nothing owns the command", () => {
     // No conversation open means no find bar, and `⌘F` must stay the platform's
     // own rather than being swallowed for nothing.
-    const id = dispatchShortcut(
+    const hit = dispatchShortcut(
       event("f", { code: "KeyF", ctrlKey: true }),
       context({ bindings: { "thread.find": "mod+f" }, hasHandler: () => false }),
     );
-    expect(id).toBeNull();
+    expect(hit).toBeNull();
   });
 
   it("stands down while an IME composes", () => {
@@ -67,11 +76,11 @@ describe("dispatchShortcut", () => {
   });
 
   it("treats AltGr as typing, not as Ctrl+Alt", () => {
-    const id = dispatchShortcut(
+    const hit = dispatchShortcut(
       event("7", { code: "Digit7", ctrlKey: true, altKey: true, getModifierState: key => key === "AltGraph" }),
       context({ bindings: { "chat.new": "ctrl+alt+7" } }),
     );
-    expect(id).toBeNull();
+    expect(hit).toBeNull();
   });
 
   it("stands down behind a modal or a floating menu", () => {
@@ -86,40 +95,39 @@ describe("dispatchShortcut", () => {
     const held = event("n", { code: "KeyN", ctrlKey: true, repeat: true });
     expect(dispatchShortcut(held, context({ bindings }))).toBeNull();
     const walk = event("]", { code: "BracketRight", ctrlKey: true, repeat: true });
-    expect(dispatchShortcut(walk, context({ bindings }))).toBe("thread.next");
+    expect(dispatchShortcut(walk, context({ bindings }))?.id).toBe("thread.next");
   });
 
   it("leaves the shell's own keys alone inside the terminal", () => {
     const bindings = { "panel.left": "mod+b", "terminal.toggle": "mod+j" };
     const pressCtrlB = event("b", { code: "KeyB", ctrlKey: true });
     // Outside the terminal the app owns Ctrl+B …
-    expect(dispatchShortcut(pressCtrlB, context({ bindings }))).toBe("panel.left");
+    expect(dispatchShortcut(pressCtrlB, context({ bindings }))?.id).toBe("panel.left");
     // … inside it, `Ctrl+B` is readline's "back one character".
     expect(dispatchShortcut(pressCtrlB, context({ bindings, inTerminal: true }))).toBeNull();
     // The terminal's own toggle is the one command that may pass.
-    expect(dispatchShortcut(event("j", { code: "KeyJ", ctrlKey: true }), context({ bindings, inTerminal: true }))).toBe("terminal.toggle");
+    expect(dispatchShortcut(event("j", { code: "KeyJ", ctrlKey: true }), context({ bindings, inTerminal: true }))?.id).toBe("terminal.toggle");
   });
 
   it("respects a platform's accelerator", () => {
     const bindings = { "chat.new": "mod+n" };
     // ⌘N on macOS, Ctrl+N elsewhere; neither is the other's key.
-    expect(dispatchShortcut(event("n", { code: "KeyN", metaKey: true }), context({ bindings, isMac: true }))).toBe("chat.new");
+    expect(dispatchShortcut(event("n", { code: "KeyN", metaKey: true }), context({ bindings, isMac: true }))?.id).toBe("chat.new");
     expect(dispatchShortcut(event("n", { code: "KeyN", ctrlKey: true }), context({ bindings, isMac: true }))).toBeNull();
     expect(dispatchShortcut(event("n", { code: "KeyN", metaKey: true }), context({ bindings, isMac: false }))).toBeNull();
   });
 
   it("leaves an event an earlier handler consumed", () => {
-    const id = dispatchShortcut(
+    const hit = dispatchShortcut(
       event("n", { code: "KeyN", ctrlKey: true, defaultPrevented: true }),
       context({ bindings: { "chat.new": "mod+n" } }),
     );
-    expect(id).toBeNull();
+    expect(hit).toBeNull();
   });
 
   it("runs a rebinding", () => {
     const bindings = { "chat.new": "ctrl+shift+k" };
-    expect(serializeBinding(parseBinding(bindings["chat.new"])!)).toBe("ctrl+shift+KeyK");
-    expect(dispatchShortcut(event("k", { code: "KeyK", ctrlKey: true, shiftKey: true }), context({ bindings }))).toBe("chat.new");
+    expect(dispatchShortcut(event("k", { code: "KeyK", ctrlKey: true, shiftKey: true }), context({ bindings }))?.id).toBe("chat.new");
     // The old default is free again.
     expect(dispatchShortcut(event("n", { code: "KeyN", ctrlKey: true }), context({ bindings }))).toBeNull();
   });
@@ -129,9 +137,81 @@ describe("dispatchShortcut", () => {
     expect(dispatchShortcut(event("n", { code: "KeyN", ctrlKey: true }), context({ bindings }))).toBeNull();
   });
 
-  it("never runs a command without a matching binding", () => {
+  it("never asks about a handler before a binding matches", () => {
     const hasHandler = vi.fn(() => true);
     dispatchShortcut(event("x", { code: "KeyX" }), context({ bindings: { "chat.new": "mod+n" }, hasHandler }));
     expect(hasHandler).not.toHaveBeenCalled();
+  });
+});
+
+describe("scopes", () => {
+  const gridBindings = {
+    "vibe.open": "enter",
+    "vibe.focus.down": "arrowdown",
+  };
+
+  it("does not fire a mode's key while the mode is off", () => {
+    expect(dispatchShortcut(event("Enter", { code: "Enter" }), context({ bindings: gridBindings }))).toBeNull();
+  });
+
+  it("fires it while the mode's scope is active", () => {
+    const hit = dispatchShortcut(
+      event("Enter", { code: "Enter" }),
+      context({ bindings: gridBindings, scopes: ["vibeGrid", "vibe", "global"] }),
+    );
+    expect(hit?.id).toBe("vibe.open");
+  });
+
+  it("lets a mode shadow a global key, and gives it back when the mode closes", () => {
+    // Inside the zoomed cell ⌘[ is "hide the side panel"; outside it the same key
+    // is the rail's "previous conversation". One key, two scopes, no conflict.
+    const bindings = {
+      "thread.previous": "mod+bracketleft",
+      "vibe.panel.hide": "mod+bracketleft",
+    };
+    const press = event("[", { code: "BracketLeft", ctrlKey: true });
+    expect(dispatchShortcut(press, context({ bindings, scopes: ["global"] }))?.id).toBe("thread.previous");
+    expect(dispatchShortcut(press, context({ bindings, scopes: ["vibeZoom", "vibe", "global"] }))?.id).toBe("vibe.panel.hide");
+    // The innermost scope wins when both are on.
+    expect(dispatchShortcut(press, context({ bindings, scopes: ["vibe", "global"] }))?.id).toBe("thread.previous");
+  });
+
+  it("never runs a bare global key", () => {
+    // `bindingProblem` refuses to record one, and this is the other half: even if
+    // a table carried it, a modifier-less global command does not fire.
+    expect(dispatchShortcut(event("ArrowDown", { code: "ArrowDown" }), context({ bindings: { "thread.next": "arrowdown" } }))).toBeNull();
+  });
+
+  it("leaves a bare mode key to the text field that has the caret", () => {
+    // The zoomed cell has a composer: `↩` there sends, it does not zoom.
+    const bindings = { "vibe.open": "enter" };
+    const scopes = ["vibeGrid", "vibe", "global"] as const;
+    expect(dispatchShortcut(event("Enter", { code: "Enter" }), context({ bindings, editable: true, scopes }))).toBeNull();
+    expect(dispatchShortcut(event("Enter", { code: "Enter" }), context({ bindings, editable: false, scopes }))?.id).toBe("vibe.open");
+  });
+});
+
+describe("several keys on one command", () => {
+  it("reports which key matched", () => {
+    const bindings = { "vibe.cell": ["1", "2", "3"] };
+    const scopes = ["vibeGrid", "vibe", "global"] as const;
+    const third = dispatchShortcut(
+      event("3", { code: "Digit3" }),
+      context({ bindings, scopes }),
+    );
+    expect(third?.id).toBe("vibe.cell");
+    // The handler needs the digit: nine bindings, one command.
+    expect(third?.binding.code).toBe("Digit3");
+  });
+});
+
+describe("isBareBinding", () => {
+  it("is true without a real modifier, Shift included", () => {
+    expect(isBareBinding(parseBinding("arrowdown")!)).toBe(true);
+    // Shift alone does not make a chord: it is how a capital letter is typed, and
+    // `Shift+Enter` is a newline in the composer.
+    expect(isBareBinding(parseBinding("shift+enter")!)).toBe(true);
+    expect(isBareBinding(parseBinding("mod+k")!)).toBe(false);
+    expect(isBareBinding(parseBinding("alt+k")!)).toBe(false);
   });
 });

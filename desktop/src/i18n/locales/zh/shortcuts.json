@@ -4,7 +4,8 @@
     "navigation": "导航",
     "panels": "面板",
     "terminal": "终端",
-    "settings": "设置"
+    "settings": "设置",
+    "vibe": "Vibe 面板"
   },
   "commands": {
     "chat": {
@@ -42,6 +43,42 @@
     "group": {
       "previous": "上一个工作区或对话",
       "next": "下一个工作区或对话"
+    },
+    "vibe": {
+      "toggle": "打开或关闭 Vibe 面板",
+      "focus": {
+        "up": "移到上方格",
+        "down": "移到下方格",
+        "left": "移到左侧格",
+        "right": "移到右侧格"
+      },
+      "open": "放大选中的会话",
+      "back": "退出放大",
+      "zoom": {
+        "previous": "放大视图里的上一个对话",
+        "next": "放大视图里的下一个对话"
+      },
+      "cell": "跳到指定编号的格子",
+      "columns": {
+        "cycle": "循环网格布局",
+        "more": "增加一列",
+        "fewer": "减少一列",
+        "auto": "恢复自动布局"
+      },
+      "move": {
+        "left": "把这格往前挪",
+        "right": "把这格往后挪"
+      },
+      "panel": {
+        "hide": "显示或隐藏右栏",
+        "pin": "为这个会话固定右栏"
+      },
+      "device": "切换面板显示哪台机器",
+      "attention": "跳到下一个需要你处理的会话",
+      "add": "把一个会话加进面板",
+      "remove": "把选中的会话移出面板",
+      "fullscreen": "切换系统全屏",
+      "help": "查看全部快捷键"
     }
   },
   "page": {
@@ -52,7 +89,10 @@
     "resetAll": "全部恢复默认",
     "unbound": "未设置",
     "terminalBlocked": "终端获得焦点时不生效：这个组合属于 shell",
-    "levels": "{{coarse}} 在不同工作区与对话之间切换；{{fine}} 逐个对话移动；对话内部 {{questions}} 在提问之间跳转。修改后立即生效。"
+    "levels": "{{coarse}} 在不同工作区与对话之间切换；{{fine}} 逐个对话移动；对话内部 {{questions}} 在提问之间跳转。修改后立即生效。",
+    "scopedGlobal": "任何地方都生效。",
+    "scopedVibe": "只在 Vibe 面板打开时生效；此时这些键可以覆盖上面的同名键。",
+    "multiKey": "这组按键暂时固定。"
   },
   "recorder": {
     "prompt": "按下新的组合键…",

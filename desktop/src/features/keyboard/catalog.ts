@@ -1,3 +1,4 @@
+import type { KeyBinding } from "../../lib/keybinding";
 /**
  * The app's commands, as one table.
  *
@@ -7,20 +8,28 @@
  * from drifting apart. A component registers the *handler*; the metadata lives
  * here.
  *
- * Two rules for this file:
+ * Three rules for this file:
  *
- * - **Only `mod`-style bindings by default.** `mod` is `⌘` on macOS and `Ctrl`
- *   elsewhere (see `lib/keybinding`), so one default serves all three platforms.
+ * - **Only `mod`-style bindings in the global scope.** `mod` is `⌘` on macOS and
+ *   `Ctrl` elsewhere (see `lib/keybinding`), so one default serves all three
+ *   platforms. A bare key (an arrow, `↩`, a digit) is only ever assigned inside a
+ *   scope*, where it means what the mode says and where the text field it would
+ *   otherwise be typing into is not on screen.
  * - **`inTerminal` is opt-in and rare.** `Ctrl` is the accelerator on Windows and
  *   Linux, and the terminal is a shell: `Ctrl+B` is "back one character" there.
  *   A command that is not marked runs nowhere inside the terminal, whatever its
  *   binding says, so the shell keeps its line editing.
+ * - **A scope is a keymap that exists only while its mode is on** (`scopes.ts`).
+ *   Inside it a key may sit on one the global keymap already uses — that is the
+ *   point of the mode — and the global meaning comes back when the mode closes.
  */
-import type { KeyBinding } from "../../lib/keybinding";
+import type { ShortcutScope } from "./scopes";
 import { formatBinding, parseBinding } from "../../lib/keybinding";
 
 /** Groups the settings page lists commands under. */
-export type CommandCategory = "chat" | "navigation" | "panels" | "terminal" | "settings";
+export type CommandCategory = "chat" | "navigation" | "panels" | "terminal" | "settings" | "vibe";
+
+export type { ShortcutScope };
 
 export type CommandId
   = | "chat.new"
@@ -40,7 +49,33 @@ export type CommandId
     | "section.tasks"
     | "section.remote"
     | "settings.open"
-    | "terminal.toggle";
+    | "terminal.toggle"
+    // The full-screen panel of pinned conversations ("Vibe"). Scoped: in it the
+    // grid answers the bare keys, and a key it binds may shadow a global one.
+    | "vibe.toggle"
+    | "vibe.focus.up"
+    | "vibe.focus.down"
+    | "vibe.focus.left"
+    | "vibe.focus.right"
+    | "vibe.open"
+    | "vibe.back"
+    | "vibe.zoom.previous"
+    | "vibe.zoom.next"
+    | "vibe.cell"
+    | "vibe.columns.cycle"
+    | "vibe.columns.more"
+    | "vibe.columns.fewer"
+    | "vibe.columns.auto"
+    | "vibe.move.left"
+    | "vibe.move.right"
+    | "vibe.panel.hide"
+    | "vibe.panel.pin"
+    | "vibe.device"
+    | "vibe.attention"
+    | "vibe.add"
+    | "vibe.remove"
+    | "vibe.fullscreen"
+    | "vibe.help";
 
 export interface CommandSpec {
   id: CommandId;
@@ -58,6 +93,22 @@ export interface CommandSpec {
   inTerminal: boolean;
   /** Whether holding the key repeats the command (walking a list). */
   repeat?: boolean;
+  /**
+   * The keymap this command belongs to. `global` (the default) is always on.
+   *
+   * A scoped command is matched only while its scope is active, and is matched
+   * **before** the global keymap — so inside the mode it may take a key the app
+   * uses outside it.
+   */
+  scope?: ShortcutScope;
+  /**
+   * The command answers to several keys, and `defaultBinding` is the first.
+   *
+   * Only the direct-selection commands need this (`1`–`9` land on a cell), and
+   * they are not editable in v1: recording one key for a nine-key command would
+   * mean recording nine. The settings page shows them as a read-only key list.
+   */
+  bindings?: readonly string[];
 }
 
 /**
@@ -97,10 +148,59 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "panel.right", category: "panels", defaultBinding: "mod+shift+b", inTerminal: false },
   { id: "terminal.toggle", category: "terminal", defaultBinding: "mod+j", inTerminal: true },
   { id: "settings.open", category: "settings", defaultBinding: "mod+comma", inTerminal: false },
+
+  // ---- Vibe panel (full-screen grid of pinned conversations) ----------------
+  //
+  // `vibe` is held while the panel is on, `vibeGrid` while the grid has the
+  // keyboard (no cell zoomed), `vibeZoom` while one cell is filling the screen.
+  // The three layers are the design's own: a direction key must have exactly one
+  // owner, and the panel's owner is whichever layer is on top.
+  //
+  // The panel reuses `thread.previous` / `thread.next` for "previous/next cell"
+  // rather than adding a second pair: inside a mode a command means what the
+  // mode's owner makes it mean, which is what the registry already does — the
+  // rail is not mounted to own them there.
+  { id: "vibe.toggle", category: "vibe", defaultBinding: "mod+shift+v", inTerminal: false },
+  { id: "vibe.focus.up", category: "vibe", defaultBinding: "arrowup", inTerminal: false, repeat: true, scope: "vibeGrid" },
+  { id: "vibe.focus.down", category: "vibe", defaultBinding: "arrowdown", inTerminal: false, repeat: true, scope: "vibeGrid" },
+  { id: "vibe.focus.left", category: "vibe", defaultBinding: "arrowleft", inTerminal: false, repeat: true, scope: "vibeGrid" },
+  { id: "vibe.focus.right", category: "vibe", defaultBinding: "arrowright", inTerminal: false, repeat: true, scope: "vibeGrid" },
+  { id: "vibe.open", category: "vibe", defaultBinding: "enter", inTerminal: false, scope: "vibeGrid" },
+  { id: "vibe.back", category: "vibe", defaultBinding: "escape", inTerminal: false, scope: "vibeZoom" },
+  // Inside a zoomed cell the bare arrows switch conversations — the grid's own
+  // arrows are not live there, and the caret rule keeps them off a text field.
+  // Distinct commands from the grid's because a command has one binding set: the
+  // grid moves a selection ring, this changes what the cell shows.
+  { id: "vibe.zoom.previous", category: "vibe", defaultBinding: "arrowleft", inTerminal: false, repeat: true, scope: "vibeZoom" },
+  { id: "vibe.zoom.next", category: "vibe", defaultBinding: "arrowright", inTerminal: false, repeat: true, scope: "vibeZoom" },
+  // Direct selection: nine bindings on one command, because a cell is chosen by
+  // the digit printed on it, not by nine separate commands.
+  {
+    id: "vibe.cell",
+    category: "vibe",
+    defaultBinding: "1",
+    bindings: ["1", "2", "3", "4", "5", "6", "7", "8", "9"],
+    inTerminal: false,
+    scope: "vibeGrid",
+  },
+  { id: "vibe.columns.cycle", category: "vibe", defaultBinding: "mod+shift+g", inTerminal: false, scope: "vibe" },
+  { id: "vibe.columns.more", category: "vibe", defaultBinding: "mod+equal", inTerminal: false, scope: "vibe" },
+  { id: "vibe.columns.fewer", category: "vibe", defaultBinding: "mod+minus", inTerminal: false, scope: "vibe" },
+  { id: "vibe.columns.auto", category: "vibe", defaultBinding: "mod+0", inTerminal: false, scope: "vibe" },
+  { id: "vibe.move.left", category: "vibe", defaultBinding: "mod+alt+arrowleft", inTerminal: false, scope: "vibe" },
+  { id: "vibe.move.right", category: "vibe", defaultBinding: "mod+alt+arrowright", inTerminal: false, scope: "vibe" },
+  { id: "vibe.panel.hide", category: "vibe", defaultBinding: "mod+backslash", inTerminal: false, scope: "vibeZoom" },
+  { id: "vibe.panel.pin", category: "vibe", defaultBinding: "mod+shift+backslash", inTerminal: false, scope: "vibeZoom" },
+  { id: "vibe.device", category: "vibe", defaultBinding: "mod+shift+d", inTerminal: false, scope: "vibe" },
+  { id: "vibe.attention", category: "vibe", defaultBinding: "mod+shift+a", inTerminal: false, scope: "vibe" },
+  { id: "vibe.add", category: "vibe", defaultBinding: "mod+shift+e", inTerminal: false, scope: "vibe" },
+  { id: "vibe.remove", category: "vibe", defaultBinding: "mod+shift+backspace", inTerminal: false, scope: "vibe" },
+  { id: "vibe.fullscreen", category: "vibe", defaultBinding: "mod+ctrl+f", inTerminal: false },
+  { id: "vibe.help", category: "vibe", defaultBinding: "mod+slash", inTerminal: false },
 ];
 
 /** Settings page section order. */
-export const CATEGORIES: readonly CommandCategory[] = ["chat", "navigation", "panels", "terminal", "settings"];
+export const CATEGORIES: readonly CommandCategory[] = ["chat", "navigation", "panels", "terminal", "vibe", "settings"];
 
 const BY_ID = new Map<string, CommandSpec>(COMMANDS.map(spec => [spec.id, spec]));
 
@@ -114,14 +214,31 @@ export function isCommandId(value: string): value is CommandId {
   return BY_ID.has(value);
 }
 
-/** A command's default binding, parsed. */
+/** The keymap a command belongs to. */
+export function scopeOf(spec: CommandSpec): ShortcutScope {
+  return spec.scope ?? "global";
+}
+
+/** Every default text a command answers to (`1`–`9` for direct selection). */
+export function defaultBindingTexts(spec: CommandSpec): readonly string[] {
+  return spec.bindings ?? [spec.defaultBinding];
+}
+
+/** A command's default bindings, parsed. */
+export function defaultBindings(spec: CommandSpec): KeyBinding[] {
+  return defaultBindingTexts(spec).map((text) => {
+    const binding = parseBinding(text);
+    // The defaults are literals in this file and a test parses every one of
+    // them; a null here means the table itself was broken by an edit.
+    if (!binding)
+      throw new Error(`Invalid default binding for ${spec.id}: ${text}`);
+    return binding;
+  });
+}
+
+/** The first default binding, parsed. */
 export function defaultBinding(spec: CommandSpec): KeyBinding {
-  const binding = parseBinding(spec.defaultBinding);
-  // The defaults are literals in this file and a test parses every one of them;
-  // a null here means the table itself was broken by an edit.
-  if (!binding)
-    throw new Error(`Invalid default binding for ${spec.id}: ${spec.defaultBinding}`);
-  return binding;
+  return defaultBindings(spec)[0]!;
 }
 
 /** A command's default binding, in the platform's notation. */

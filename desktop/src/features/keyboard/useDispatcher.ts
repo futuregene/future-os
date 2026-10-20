@@ -13,6 +13,7 @@
  */
 import { useEffect } from "react";
 import { hasOpenOverlay } from "../../components/ui/overlayStack";
+import { isEditableTarget } from "../../lib/editableTarget";
 import { hasKeyboardOwner } from "../../lib/keyboardOwners";
 import { isMacOS } from "../../lib/platform";
 import { hasCommandHandler, runCommand } from "./commands";
@@ -28,22 +29,24 @@ function eventInTerminal(target: EventTarget | null): boolean {
  *
  * The resolved bindings are recomputed when the user changes one, which is what
  * makes a rebinding take effect on the next key press instead of at the next
- * launch.
+ * launch. The active scopes are read per press (they change with focus and with
+ * the panel opening, not with a render this component owns).
  */
 export function useShortcutDispatcher(): void {
   const overrides = useShortcutOverrides();
   useEffect(() => {
     const bindings = resolvedBindings(overrides);
     const onKeyDown = (event: KeyboardEvent) => {
-      const id = dispatchShortcut(event, {
+      const hit = dispatchShortcut(event, {
+        editable: isEditableTarget(event.target),
+        hasHandler: hasCommandHandler,
+        hasKeyboardOwner,
+        hasOpenOverlay,
+        inTerminal: eventInTerminal(event.target),
         isMac: isMacOS,
         bindings,
-        hasHandler: hasCommandHandler,
-        hasOpenOverlay,
-        hasKeyboardOwner,
-        inTerminal: eventInTerminal(event.target),
       });
-      if (!id)
+      if (!hit)
         return;
       // Ours now: stop the page's own behaviour (find-in-page, and whatever the
       // focused view would have done with the key) and stop the event reaching
@@ -51,7 +54,7 @@ export function useShortcutDispatcher(): void {
       // focused when it was pressed.
       event.preventDefault();
       event.stopPropagation();
-      runCommand(id);
+      runCommand(hit.id, hit.binding);
     };
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);

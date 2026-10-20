@@ -141,6 +141,26 @@ describe("keyboard shortcut settings", () => {
     expect(container.textContent).not.toContain("New conversation");
   });
 
+  it("lists the Vibe panel's keys, and says they only work while it is open", () => {
+    // A mode's keys are part of the table like any other, so a reader can see the
+    // whole keyboard — including the ones that would be unusable outside it.
+    expect(container.textContent).toContain("Vibe panel");
+    expect(container.textContent).toContain("Open or close the Vibe panel");
+    expect(bindingButton("Open or close the Vibe panel").textContent).toBe("Ctrl+Shift+V");
+    // The panel's own keys are bare, so the row says when they apply instead of
+    // pretending they work everywhere.
+    expect(container.textContent).toContain("Only while the Vibe panel is open");
+    expect(bindingButton("Leave the zoomed conversation").textContent).toBe("Esc");
+  });
+
+  it("shows the direct-selection keys as a fixed list instead of a recorder", () => {
+    // `1`–`9` is one command with nine keys: recording a single key would ask a
+    // question the page cannot answer, so it is shown, not edited.
+    const cellRow = row("Go to the numbered cell");
+    expect(cellRow.querySelector("button[aria-pressed]")).toBeNull();
+    expect(cellRow.textContent).toContain("1 … 9");
+  });
+
   it("says when nothing matches", () => {
     const search = container.querySelector<HTMLInputElement>("input[aria-label=\"Search commands\"]")!;
     const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;

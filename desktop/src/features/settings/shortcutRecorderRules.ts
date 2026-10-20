@@ -37,6 +37,12 @@ export function interpretPress(
   event: RecorderKeyEvent,
   command: CommandId,
   isMac: boolean,
+  /**
+   * Whether this command lives in a mode's keymap (`scopeOf(spec) !== "global"`).
+   * A mode owns bare keys — its scope is only on when the mode is — so they are
+   * recording-worthy there and refused everywhere else.
+   */
+  allowBare = false,
 ): { binding: string } | RecorderRefusal | null {
   if (isModifierKey(event))
     return null;
@@ -47,7 +53,7 @@ export function interpretPress(
   const binding = bindingFromEvent(event, isMac);
   if (!binding)
     return { problem: "unsupported" };
-  const problem = bindingProblem(binding, isMac);
+  const problem = bindingProblem(binding, isMac, { allowBare });
   if (problem)
     return { problem };
   const text = serializeBinding(binding);
