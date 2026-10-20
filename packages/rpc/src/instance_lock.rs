@@ -231,13 +231,17 @@ mod tests {
     /// nest the per-host home inside the shared one.
     #[test]
     fn suggested_home_is_a_per_host_sibling_of_the_current_home() {
-        let lock = std::path::Path::new("/nfs/home/.future/agent/agent-instance.lock");
-        let home = std::path::Path::new("/nfs/home/.future");
+        let home = if cfg!(windows) {
+            Path::new(r"C:\nfs\home\.future")
+        } else {
+            Path::new("/nfs/home/.future")
+        };
+        let lock = home.join("agent").join("agent-instance.lock");
         let owner = serde_json::json!({"pid": 4242, "host": "intel080"});
-        let message = lock_conflict_message_from(lock, home, Some(&owner), Some("login01"));
+        let message = lock_conflict_message_from(&lock, home, Some(&owner), Some("login01"));
         if cfg!(windows) {
             assert!(
-                message.contains("set FUTURE_HOME=\\nfs\\home\\.future-%COMPUTERNAME%"),
+                message.contains(r"set FUTURE_HOME=C:\nfs\home\.future-%COMPUTERNAME%"),
                 "{message}"
             );
         } else {
