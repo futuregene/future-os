@@ -145,6 +145,7 @@ CI helper scripts (invoked from the workflow files).
 - `check-packaged-entrypoints.py` — extracts actual deb/NSIS, portable and CLI
   archives, probes isolated early entry points and exact CLI versions, and verifies
   packaged Linux static binaries in the old-glibc headless check; keeps JSON/log evidence.
+- `headless-measurement.py` and `headless-linker-probe.py` — optional Linux CI-only paired observations against baseline `904eab2b`: empty-target and warm CLI/GUI builds, direct linker intervals, real Store test sample, raw sizes and isolated startup samples. Dispatch CI with scope `headless-measurement`; optionally pin `measurement_candidate` to a full SHA. No packaging/signing/install. Raw logs/report state order/cache limitations; unexecuted tooling establishes no speedup.
 - `check-headless-linux.sh` — verifies the release binary is statically linked, then
   starts it in a clean, networkless Linux image with an old glibc (the portable-bundle baseline).
 - `install-apt-packages.sh` — installs CI-only Ubuntu packages with a fast failover from

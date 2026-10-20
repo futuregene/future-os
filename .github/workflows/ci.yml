@@ -51,10 +51,16 @@ on:
           - all
           - remote
           - remote-compile-measurement
+          - headless-measurement
           - windows-update
           - desktop-rust
           - headless-cli
           - agent-lifecycle
+      measurement_candidate:
+        description: Full candidate SHA for optional Headless measurement; empty uses this workflow revision.
+        required: false
+        type: string
+        default: ''
 
 # Re-pushing a branch cancels its stale run; release tags are unaffected
 # (this workflow never triggers on tags anyway).
@@ -345,6 +351,49 @@ jobs:
           name: remote-windows-compilation-${{ github.sha }}
           path: measurement/
           if-no-files-found: error
+
+  # Optional evidence only. Raw binaries and real Store samples; no packaging,
+  # signing or product installation. Run after the user's manual-test handoff.
+  # A separate tools checkout can observe an already frozen full candidate SHA.
+  headless-measurement:
+    name: Matched Headless build and startup observation
+    if: github.event_name == 'workflow_dispatch' && inputs.scope == 'headless-measurement'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: measurement-tools
+      - uses: actions/checkout@v7
+        with:
+          ref: 904eab2b1ebc8b7c963ddfb15dd9468c420e3f35
+          path: baseline
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.measurement_candidate || github.sha }}
+          path: candidate
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Setup pinned Rust toolchain
+        run: node candidate/scripts/ci/setup-rust.mjs
+      - name: Install native build dependencies
+        run: |
+          bash candidate/scripts/ci/install-apt-packages.sh \
+            build-essential binutils mold pkg-config \
+            libayatana-appindicator3-dev libgtk-3-dev librsvg2-dev libwebkit2gtk-4.1-dev
+      - name: Observe matched empty-target builds and real persistence sample
+        run: |
+          python3 measurement-tools/scripts/ci/headless-measurement.py \
+            --baseline baseline --candidate candidate --output measurement
+      - name: Upload raw measurement evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: headless-measurement-${{ github.sha }}
+          path: measurement/
+          if-no-files-found: error
+          retention-days: 30
 
   # One Remote runner batches package checks and real interoperability, sharing
   # the Cargo target and npm install without spawning a runner for every package.

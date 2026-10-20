@@ -130,6 +130,7 @@ CI 辅助脚本（由工作流文件调用）。
 - `check-packaged-entrypoints.py` — 解包真实 deb/NSIS、portable 和 CLI 压缩包，
   使用隔离目录验证早期入口与精确 CLI 版本，并对包内 Linux 静态程序执行旧 glibc
   headless 检查；保留 JSON 和日志证据。
+- `headless-measurement.py`、`headless-linker-probe.py` — 仅 Linux CI 可选匹配测量，对照基线 `904eab2b`，记录空 target/缓存后 CLI 与 GUI 编译、直接 linker 时间、真实 Store 测试样本、原始大小及隔离启动样本。手动运行 CI 的 `headless-measurement` scope，可用 `measurement_candidate` 指定完整 SHA。不打包、签名或安装；原始日志和报告明确执行顺序/缓存限制，未执行工具不代表性能改善。
 - `check-headless-linux.sh` — 校验发布二进制为静态链接，然后在无网络、旧 glibc 的
   干净 Linux 镜像中启动它（便携包基线）。
 - `install-apt-packages.sh` — 安装仅 CI 使用的 Ubuntu 软件包；Azure runner 镜像
