@@ -63,6 +63,11 @@ No additional `--pair --qr` options are needed. Desktop guides you according to 
 saved login and pairing state. Pairing does not end the command or return a shell
 prompt: the process continues serving the phone.
 
+If the remote desktop switch is off — turned off in the window's Remote page or
+with `future remote disable` — the entry starts idle instead of serving: it stays
+up as the machine's control endpoint, and `future remote enable` starts serving
+without a restart (section 3.2).
+
 ### Step one: platform authorization
 
 Without a valid login, the terminal displays **PLATFORM LOGIN**, a QR code, an
@@ -184,6 +189,38 @@ future remote devices use <id|#>       # choose the one in control
 Desktop process — they are not in the pairing book. A machine with no device at
 all prints an invitation as the Desktop starts, which is also the recovery path
 after `remove --all`.
+
+### 3.2 The remote desktop switch
+
+A machine serves its paired devices only while its remote desktop switch is on.
+It is one preference, shared by the window's Remote page, `futureos-headless` and
+the CLI, and it decides both "serve now" and "serve again at the next launch":
+
+```bash
+future remote status               # is it on now? what is the stored switch?
+future remote enable               # turn it on now, and keep it on
+future remote disable              # turn it off now, and keep it off
+```
+
+- `status` prints the two halves under their own labels — the live state
+  (`phase`, which devices are connected, what is in control) and the stored
+  `autoConnectRemote` — because a machine can be "on" as a preference and "off"
+  as a process. `--json` prints one document whose `state` is the word to test
+  (`off`, `unknown`, `on`, `connecting`, `serving`, `degraded`, `failed`,
+  `revoked`); see `future remote status --help`.
+- With a Desktop running (window or headless), `enable`/`disable` take effect at
+  once: the request goes to that process, which starts or gracefully stops the
+  bridge. Nothing is restarted, and a connected device is told the machine went
+  away when the switch goes off.
+- With none running there is no bridge to move, so only the switch is stored for
+  the next start. `disable` exits 0 — off is the state that was asked for —
+  while `enable` exits 1 and says nothing is serving yet.
+- A headless entry with the switch off starts (or stays) idle instead of exiting:
+  it is the machine's control endpoint, so `future remote enable` turns it back on
+  without a restart. A stop while the switch is *on* is still a fault and still
+  ends the entry.
+- Switching off keeps every pairing. `future remote devices remove` is what
+  unpairs.
 
 ## 4. Ctrl+C, SSH disconnects and restarting
 

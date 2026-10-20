@@ -287,6 +287,8 @@ pub const REMOTE_HELP: &str = r#"future remote — manage the devices paired to 
 
 Usage:
   future remote status [--json]                      Whether the remote desktop is on, and who is connected
+  future remote enable [--json]                      Turn it on now (no restart), and keep it on
+  future remote disable [--json]                     Turn it off now (no restart), and keep it off
   future remote devices [list] [--json]              Every paired device, and the one in control
   future remote devices add [--json]                 Pair a new device: print its invitation
   future remote devices remove <id|#> [--yes]        Unpair one device; the others stay paired
@@ -298,6 +300,10 @@ machine is serving its devices right now (runtime state, which only a running
 Desktop knows), and the stored autoConnectRemote switch that decides whether it
 serves again after a restart. Run `future remote status --help` for its fields,
 its --json document and its exit codes.
+
+enable and disable are that switch, from a terminal: they take effect at once
+when a Desktop is running (the window, or futureos-headless) and are stored for
+the next launch either way, so neither needs a restart.
 
 Every action takes --json and prints the same document `future remote devices
 --json` prints (except `add`, which prints the invitation: pairId, link,
@@ -339,6 +345,8 @@ Run `future remote devices --help` for the ids remove and use accept."#;
 /// The one-line usage every `future remote` argument error repeats.
 pub const REMOTE_USAGE: &str = r#"Usage:
   future remote status [--json]
+  future remote enable [--json]
+  future remote disable [--json]
   future remote devices [list] [--json]
   future remote devices add [--json]
   future remote devices remove <id|#> [--yes] [--json]
@@ -398,6 +406,55 @@ Exit codes:
 
 Test `state`, not the exit code:
   future remote status --json | jq -e '.state == "serving"'"#;
+
+/// `future remote enable --help` output.
+pub const REMOTE_ENABLE_HELP: &str = r#"future remote enable — turn the remote desktop on, now
+
+Usage:
+  future remote enable [--json]
+
+Turns on the same switch the window's Remote page has, and stores it: the
+machine keeps serving its paired devices at the next launch.
+
+With a Desktop running (the window, or futureos-headless) it takes effect
+immediately — the request goes to that process, which starts the bridge, so
+nothing has to be restarted. With none running there is no bridge to start: the
+switch is stored, the command says so, and it exits 1 because the machine is not
+serving yet.
+
+Enabling does not pair anything. A machine with no device comes up on and empty,
+which is a valid state; pair the first one with `future remote devices add`.
+
+--json prints the same document `future remote status --json` prints.
+
+Exit codes:
+  0  the machine is serving (or connecting, or retrying)
+  1  it is not: no Desktop was running to start it, the running Desktop did not
+     answer, or the start came up failed or revoked. The report says which, and
+     whether the switch was stored anyway."#;
+
+/// `future remote disable --help` output.
+pub const REMOTE_DISABLE_HELP: &str = r#"future remote disable — turn the remote desktop off, now
+
+Usage:
+  future remote disable [--json]
+
+Turns off the same switch the window's Remote page has, and stores it: the
+machine does not serve again at the next launch.
+
+With a Desktop running it takes effect immediately — the bridge is stopped, and a
+connected device is told the machine went away, so nothing has to be restarted. A
+headless entry keeps running (it is the machine's control endpoint) and waits to
+be enabled again. With none running there is nothing to stop: the switch is
+stored, and that is the whole answer.
+
+Paired devices are kept. Disabling serves nobody; it does not unpair anything —
+`future remote devices remove` does that.
+
+--json prints the same document `future remote status --json` prints.
+
+Exit code:
+  0  the remote desktop is off"#;
 
 /// `future remote devices add --help` output.
 pub const REMOTE_ADD_HELP: &str = r#"future remote devices add — pair a new device

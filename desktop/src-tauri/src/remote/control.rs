@@ -82,6 +82,12 @@ const OP_REMOVE_DEVICE: &str = "remove-device";
 /// on disk: `future remote devices` can always say what is paired, but only the
 /// Desktop that owns the data directory can say whether it is serving.
 const OP_STATUS: &str = "status";
+/// Turn the switch on: the same `remote::enable()` the window's Remote page
+/// calls, reached from a terminal.
+const OP_ENABLE: &str = "enable";
+/// Turn the switch off: the same graceful stop the window's switch performs,
+/// which also stops the Desktop serving (and persists the switch).
+const OP_DISABLE: &str = "disable";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -522,6 +528,22 @@ fn perform(
             // projection, so a terminal sees exactly what the window's Remote
             // page sees.
             OP_STATUS => Ok(crate::remote::status()),
+            // The switch, from a terminal. It is deliberately the same pair of
+            // calls the window's switch makes: one machine, one meaning of
+            // "on", and the preference is stored by the same rule — an enable
+            // that came up failed is not remembered as on.
+            OP_ENABLE => {
+                let status = crate::remote::enable().await?;
+                if crate::remote::is_on(status.phase) {
+                    crate::remote::remember_switch(true);
+                }
+                Ok(status)
+            }
+            OP_DISABLE => {
+                let status = crate::remote::stop_gracefully("user_disconnect").await;
+                crate::remote::remember_switch(false);
+                Ok(status)
+            }
             other => Err(crate::AppError::Message(format!(
                 "this Desktop does not know the `{other}` request; update the FutureOS Desktop \
                  or the `future` CLI so the two match"
@@ -545,7 +567,7 @@ pub(crate) async fn answer(
     let removal = match request.op.as_str() {
         OP_ADD_DEVICE => false,
         OP_REMOVE_DEVICE => true,
-        OP_STATUS => {
+        OP_STATUS | OP_ENABLE | OP_DISABLE => {
             return match result.await {
                 Ok(status) => Reply::of_snapshot(&status),
                 Err(error) => Reply::of_error(error.to_string()),
@@ -778,6 +800,36 @@ mod tests {
             "the invitation: {wire}"
         );
         assert!(!wire.contains("pairingCode"), "{wire}");
+    }
+
+    /// The switch is reachable from a terminal: both operations reach the
+    /// supervisor's own calls instead of being refused as unknown, and the answer
+    /// is the resulting state.
+    #[tokio::test]
+    async fn the_switch_operations_are_recognized_by_this_desktop() {
+        for op in [OP_ENABLE, OP_DISABLE] {
+            let request = Request {
+                op: op.into(),
+                reply: "/tmp/unused".into(),
+                pair_id: None,
+            };
+            let performed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let flag = performed.clone();
+            let reply = answer(&request, async move {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(status(RemotePhase::Stopped, None))
+            })
+            .await;
+            assert!(
+                performed.load(std::sync::atomic::Ordering::SeqCst),
+                "{op} must reach the operation"
+            );
+            assert_eq!(reply.error, None, "{op}: {reply:?}");
+            assert_eq!(
+                reply.status.map(|status| status.phase),
+                Some("stopped".into())
+            );
+        }
     }
 
     #[test]

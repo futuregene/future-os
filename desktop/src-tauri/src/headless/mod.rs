@@ -25,7 +25,12 @@ Login uses your phone/computer browser; phone pairing uses the FutureOS app.
 First-time setup requires an interactive terminal. No background service is installed.
 
 Pair a device, drop one, or choose which one is in control with `future remote
-devices` — from any terminal, while this entry is running.";
+devices` — from any terminal, while this entry is running.
+
+The entry serves the machine's remote desktop, and the remote desktop switch is
+shared with the window's Remote page: with the switch off, it starts (and stays)
+idle instead of exiting, so `future remote enable` turns it back on without a
+restart.";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Launch {
@@ -206,8 +211,24 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
         crate::agent_bridge::reconcile_pending_approvals().await;
     });
 
-    eprintln!("Preparing the remote connection...");
-    let mut status = remote::start(remote::RemoteStartInput {}).await?;
+    // The switch is the user's decision and this entry point obeys it: a machine
+    // whose remote desktop was turned off (in the window, or with `future remote
+    // disable`) must not come back serving just because a server restarted. A
+    // fresh install defaults to on, so the ordinary launch is unchanged.
+    let switch_on = crate::store::get_app_settings()
+        .map(|settings| settings.auto_connect_remote)
+        .unwrap_or(true);
+    let mut status = if switch_on {
+        eprintln!("Preparing the remote connection...");
+        remote::start(remote::RemoteStartInput {}).await?
+    } else {
+        eprintln!(
+            "The remote desktop switch is off, so this entry serves nothing yet. It stays up as \
+             the machine's control endpoint: turn the switch on with `future remote enable` \
+             (no restart needed), or in the window's Remote page."
+        );
+        remote::status()
+    };
     // `future remote devices add` asks this process for an invitation: only a
     // process that can serve the new pairing may mint one, and a server has no
     // window to print it in — the terminal that asked does. Started after the
@@ -218,6 +239,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     let mut invitation_expiry = None;
     let mut previous_state = String::new();
     let mut was_paired = false;
+    let mut said_idle = false;
     loop {
         agent.check_running()?;
         // Logout/account/environment changes never leave an old account's
@@ -246,10 +268,35 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
         }
         if matches!(
             status.phase,
-            remote::RemotePhase::Failed
-                | remote::RemotePhase::Revoked
-                | remote::RemotePhase::Stopped
+            remote::RemotePhase::Failed | remote::RemotePhase::Revoked
         ) {
+            return Err(format!("Remote connection stopped ({:?}). Check platform login/network, then restart; use `future remote devices` to pair or drop a device.", status.reason).into());
+        }
+        // A stop is only a fault while the switch says on. Turning the switch off
+        // is the user's decision: a server told to stop serving stays up and keeps
+        // answering control requests — that is what lets `future remote enable`
+        // turn it back on without a restart — instead of exiting as if it broke.
+        let switch_on = crate::store::get_app_settings()
+            .map(|settings| settings.auto_connect_remote)
+            .unwrap_or(true);
+        let idle = matches!(status.phase, remote::RemotePhase::Stopped) && !switch_on;
+        if idle {
+            // An invitation minted before the switch went off is not something to
+            // wait for, expire over, or exit on.
+            invitation_expiry = None;
+            shown_invitation = None;
+            was_paired = false;
+            if !said_idle {
+                eprintln!(
+                    "Remote desktop is off (the switch is off). Turn it on with `future remote \
+                     enable` — this entry keeps running and serves again without a restart."
+                );
+                said_idle = true;
+            }
+        } else {
+            said_idle = false;
+        }
+        if matches!(status.phase, remote::RemotePhase::Stopped) && switch_on {
             return Err(format!("Remote connection stopped ({:?}). Check platform login/network, then restart; use `future remote devices` to pair or drop a device.", status.reason).into());
         }
         invitation_expiry = status.pairing_code_expires_at.or(invitation_expiry);

@@ -51,6 +51,10 @@ Windows PowerShell：
 无需额外指定 `--pair --qr`。程序会按当前登录与配对状态引导下一步；配对成功后也不会
 结束命令或返回 shell 提示符，而是继续处理手机请求。
 
+如果远程桌面开关是关闭的（在窗口的 Remote 页面关掉，或用 `future remote disable`），
+本进程启动后处于空转而不是服务：它仍作为这台机器的控制端点留在前台，
+`future remote enable` 可以直接叫它开始服务，不需要重启（见 3.2）。
+
 ### 第一步：平台登录授权
 
 没有有效登录时，终端显示 **PLATFORM LOGIN**、二维码、授权网址和用户码。
@@ -143,6 +147,29 @@ future remote devices use <id|序号>        # 指定哪一台在控
 
 "当前连上了没有""设备自称什么名字"只在运行的 Desktop 进程里，不在配对文件中；
 一台设备都没有时，Desktop 启动就会打印一张邀请，这也是 `remove --all` 之后的恢复方式。
+
+### 3.2 远程桌面开关
+
+机器只有在远程桌面开关打开时才服务已配对设备。这是**一个**偏好值，窗口的 Remote 页面、
+`futureos-headless` 和 CLI 共用它，同时决定"现在是否服务"和"下次启动是否恢复服务"：
+
+```bash
+future remote status               # 现在开着吗？存下来的开关是什么？
+future remote enable               # 现在打开，并且以后保持打开
+future remote disable              # 现在关闭，并且以后保持关闭
+```
+
+- `status` 把两半分开展示：运行态（`phase`、哪些设备连着、谁在控）和存下来的
+  `autoConnectRemote`——因为"偏好是开"和"进程在服务"本来就是两件事。`--json` 打印一份
+  文档，脚本判据看 `state`（`off`、`unknown`、`on`、`connecting`、`serving`、
+  `degraded`、`failed`、`revoked`），详见 `future remote status --help`。
+- Desktop 正在运行时，`enable`/`disable` **立刻生效**：请求交给该进程，由它启动或优雅
+  停掉桥，不需要重启；关掉时还会告诉已连接的设备"这台机器下线了"。
+- 没有 Desktop 运行时，没有桥可动，只把开关存下来给下次启动用。`disable` 退出码 0
+  （"关"本来就是这次要的结果），`enable` 退出码 1 并明说此刻还没有任何东西在服务。
+- 开关关闭时，无头进程启动后会（或继续）**空转等待**而不是退出：它就是这台机器的控制端点，
+  所以 `future remote enable` 能把它直接叫回来，不用重启。开关是**开**时的停止仍按故障处理。
+- 关闭开关不会解绑任何设备；解绑用 `future remote devices remove`。
 
 ## 4. Ctrl+C、SSH 断开与再次启动
 
