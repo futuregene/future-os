@@ -49,3 +49,6 @@ pub mod request_scope;
 pub mod agent_client;
 
 pub mod files;
+
+pub mod agent_host;
+pub mod environment;

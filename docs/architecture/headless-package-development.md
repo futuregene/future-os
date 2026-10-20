@@ -276,9 +276,9 @@ Current phase status:
 |---|---|
 | 0 | Source/dependency baseline and named inventory captured; mixed-module ownership reviewed per test; matched build/runtime measurements open |
 | 1 | Ordinary GUI-free crate, task registry, presentation outlet and consumer dependencies established; complete lifecycle/config boundary still open |
-| 2 | Store, credentials/platform, identity/lock, review, files, Agent client and request ownership moved; Agent owner, complete bridge, Remote, maintenance and stop coordination remain |
+| 2 | Store, credentials/platform, identity/lock, review, files, Agent client/owner and request ownership moved; complete bridge, Remote, maintenance and stop coordination remain |
 | 3 | Not implemented; the product entry is still `futureos-headless` |
-| 4 | 476 original test declarations moved; interim CI has failures and unvalidated batches; real CLI process test migration and remaining core coverage open |
+| 4 | 498 original test declarations moved; interim CI has failures and unvalidated batches; real CLI process test migration and remaining core coverage open |
 | 5 | Host CI group and affected propagation added; builds, release artifacts, signing/install/update/uninstall still open |
 | 6 | Not started; no frozen final candidate, matched performance, artifact acceptance or confirmed manual results |
 
@@ -333,3 +333,9 @@ The Agent's original failed test and new real-SQLite regression were subsequentl
 The original scripted FutureAgent real-loopback gRPC server and temporary SQLite fixture move once to `host/src/test_support/agent.rs`, without copying protocol, scripts or schema. Desktop injects only its existing observer/task cleanup; cleanup-before-HOME publication, database retries and close-before-remove ordering remain. The fixture driver compiles only for test/test-support. Production clients still require entry-provided runtimes, with no runtime fallback added.
 
 Seven cached-channel/instance-fence/readiness/caller-runtime-drop tests and four fixture/real-database tests move to the host, preserving names, assertions and behavior. Host-only, combined GUI/CLI and original headless Clippy `--all-targets` plus formatting pass; see [migration evidence](../testing/headless-host-rpc-fixture-2026-10-20.json). No tests execute locally for this batch. It postdates CI candidate `5da65cce` (run `39361847974`), whose results cannot validate this batch. Agent ownership and full stop coordination still need migration.
+
+### 2026-10-20 Agent ownership and entry-owned runtimes
+
+Agent state, discovery/compatibility policy, scoped service lease, preparation, readiness, cancellation, bounded stop and cleanup move to `host/src/agent_host.rs`. Desktop retains only its native execution driver: construct the probe runtime, drive shared selection, then drop the probe. After the host obtains the existing Agent service permission and prepares it, the entry constructs and drives the Agent runtime. Runtime teardown retains the original one-second bound and precedes leaving the borrowed service scope, where existing Agent cleanup decides whether to release or retain its singleton lease. Two workers, 32 blocking threads, a 2 MiB stack and original start/stop deadlines remain. The production host service constructs no runtime and calls no `block_on`; internal state locks and Agent storage remain private.
+
+Twenty-two original declarations move with real RPC, database import, FIFO blocking, process/shell exit and embedded/external Agent ownership assertions. The isolated refusal-before-start case closes shared admission directly; Desktop full-coordinator tests retain entry wiring coverage. Shared logging retains `app/logs/desktop.log` and the same mirror; CLI discovery reporting remains in the entry. Host-only, combined GUI/CLI and original headless Clippy `--all-targets` plus formatting pass; see [verification](../testing/headless-host-agent-owner-2026-10-20.json). This batch has not executed tests and postdates the current CI candidate. Compilation and cross-platform host results for the previous candidate cannot substitute for lifecycle acceptance. Complete business bridge, Remote hosting, scheduling and coordinated exit remain open.

@@ -122,6 +122,7 @@ fn host_fixture() {
         return;
     };
     let root = future_rpc::home::future_home();
+    test_driver::install();
     let host = AgentHost::default();
     if case == "cancel-probe" {
         let endpoint = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

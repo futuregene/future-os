@@ -12,6 +12,7 @@ mod agent_providers;
 mod agent_supervisor;
 mod approval_rules;
 mod auth_store;
+#[cfg(any(feature = "gui", test))]
 mod build_info;
 mod cli_tool;
 mod commands;

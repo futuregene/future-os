@@ -21,33 +21,14 @@ pub(crate) fn initialize() -> Result<(), crate::AppError> {
 /// Separate host log prevents attachment/restart from opening an external
 /// Agent's log. Call after acquiring the Desktop lock; it lives until exit.
 pub(crate) fn start_logging() -> Result<(), crate::AppError> {
-    future_agent::logfile::init(&log_file_path(), future_agent::logfile::DEFAULT_MAX_LINES)?;
-    report(&format!(
-        "host starting version={} pid={} mode={} log={}",
-        crate::build_info::VERSION,
-        std::process::id(),
-        std::env::var("FUTURE_DESKTOP_AGENT_MODE").unwrap_or_else(|_| "auto".into()),
-        log_file_path().display()
-    ));
+    future_host::environment::start_logging()?;
     if let Err(error) = crate::cli_tool::resolve() {
         report(&error.to_string());
     }
     Ok(())
 }
 
-/// Where this host and its embedded Agent write their log. Available before
-/// [`start_logging`] runs, so an entry point can name it even when startup
-/// fails early or the host is killed before any diagnostics exist.
-pub(crate) fn log_file_path() -> std::path::PathBuf {
-    future_rpc::home::future_home().join("app/logs/desktop.log")
-}
-
-pub(crate) fn report(message: &str) {
-    eprintln!("FutureOS: {message}");
-    if let Some(mirror) = future_agent::logfile::get() {
-        mirror.write_stripped(&format!("FutureOS: {message}\n"));
-    }
-}
+pub(crate) use future_host::environment::{log_file_path, report};
 
 #[cfg(test)]
 mod tests {

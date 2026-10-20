@@ -276,9 +276,9 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 |---|---|
 | 0 | 已固定源码/依赖基线与按名清单，混合模块归属已逐项审查；同条件构建/运行测量未完成 |
 | 1 | 已建立无 GUI 普通库、任务注册、展示出口和消费者依赖；完整生命周期/配置边界未完成 |
-| 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端与请求归属已迁入；Agent 托管、完整业务桥、Remote、维护和停止协调未迁入 |
+| 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端/托管与请求归属已迁入；完整业务桥、Remote、维护和停止协调未迁入 |
 | 3 | 尚未实现；产品入口仍是 `futureos-headless` |
-| 4 | 已迁移 476 个原测试声明；中间 CI 含失败和待验证批次，真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
+| 4 | 已迁移 498 个原测试声明；中间 CI 含失败和待验证批次，真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
 | 5 | 已加宿主 CI 分组和 affected 传播；构建、发行物、签名/安装/升级/卸载未完成 |
 | 6 | 尚未开始；无最终冻结候选、同条件性能、产物验收或确认的人工结果 |
 
@@ -333,3 +333,9 @@ CI `39358154196` 的 headless 进程组失败于 `a_reconnect_with_a_pre_v2_slot
 原 scripted FutureAgent 的真实 loopback gRPC 服务和临时 SQLite 夹具迁入 `host/src/test_support/agent.rs`，不复制协议、脚本或 schema。Desktop 只注入原有观察器/任务清理，保留清理后发布 HOME、数据库重试以及关闭连接后删目录的顺序。夹具专用驱动仅在 test/test-support 编译；生产客户端仍要求入口注入 runtime，没有增加生产回退。
 
 7 个连接/实例 fencing/readiness/调用方 runtime 结束测试和 4 个夹具/真实数据库测试迁入宿主，保留原名称、断言及测试行为。宿主单包、GUI/CLI 组合和原 headless Clippy `--all-targets`、fmt 通过，见[迁移证据](../testing/headless-host-rpc-fixture-2026-10-20.json)。本批未本地执行测试，晚于 CI 候选 `5da65cce`（运行 `39361847974`），不能使用该轮结果声称本批通过。Agent 托管与完整停止协调仍需继续迁移。
+
+### 2026-10-20 Agent 托管与入口 runtime 归属
+
+Agent 的状态、发现/兼容性决策、服务锁作用域、准备、readiness、取消、停止与有界清理迁入 `host/src/agent_host.rs`。Desktop 仅保留原生执行驱动：创建 probe runtime，驱动共享选择 future 并销毁 probe；共享库取得原有 Agent 服务许可并准备服务后，入口创建并驱动 Agent runtime。入口先按原 1 秒上限销毁 runtime，再退出共享服务的借用作用域，最后由 Agent 原有清理验证决定释放或保留实例锁。保留 2 个 worker、32 个 blocking thread、2 MiB stack 和原有启动/停止期限。共享生产服务没有 runtime 构造或 `block_on`，不公开内部状态锁或 Agent 数据库。
+
+22 个原声明及真实 RPC、数据库导入、FIFO 阻塞、进程/Shell 退出、内置/外部 Agent 归属断言一并迁入独立宿主测试。停止前拒绝启动的库用例直接关闭共享 admission；Desktop 的完整退出协调测试继续验证入口接线。日志路径和镜像也迁入宿主，仍是 `app/logs/desktop.log`，CLI 发现报告留在入口。宿主单包、GUI/CLI 组合、旧 headless Clippy `--all-targets` 和 fmt 通过，详见[验证记录](../testing/headless-host-agent-owner-2026-10-20.json)。本批尚未执行测试且晚于当前 CI 候选，不能用编译或上一候选的跨平台宿主成功替代生命周期验收。完整业务桥、Remote 宿主、调度及整体退出协调仍未完成。

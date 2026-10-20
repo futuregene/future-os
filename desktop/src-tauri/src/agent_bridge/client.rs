@@ -1,8 +1,8 @@
-//! Entry-owned Agent channel runtime plus the remaining connection integration
-//! tests. Shared gates, requests and exact-run ownership live in future-host.
+//! Entry-owned Agent channel runtime. Shared connection policy, integration
+//! tests, requests and exact-run ownership live in future-host.
+pub(crate) use future_host::agent_client::raw_agent_addr;
 #[cfg(test)]
 pub(crate) use future_host::agent_client::reset_test_connection;
-pub(crate) use future_host::agent_client::{map_connection_error, raw_agent_addr};
 pub use future_host::agent_client::{map_rpc_error, AgentClient};
 pub use future_host::agent_commands::*;
 

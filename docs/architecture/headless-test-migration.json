@@ -5338,7 +5338,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host/tests.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host/tests.rs:66:embedded_startup_and_restart_keep_the_agent_in_the_desktop_process",
@@ -5349,7 +5352,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host/tests.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host/tests.rs:70:an_attached_host_does_not_stop_the_external_owner",
@@ -5360,7 +5366,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host/tests.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host/tests.rs:75:occupied_endpoint_lease_rejects_startup_before_database_initialization",
@@ -5371,7 +5380,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host/tests.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host/tests.rs:81:cancellation_during_import_preserves_committed_sessions_and_allows_resume",
@@ -5382,7 +5394,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host/tests.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host/tests.rs:86:held_lock_rejects_startup_before_database_initialization",
@@ -5393,7 +5408,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host/tests.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host/tests.rs:91:a_stalled_client_fails_stop_without_releasing_the_lock_or_restarting",
@@ -5404,7 +5422,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host/tests.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host/tests.rs:96:a_cli_shell_is_cancelled_by_the_embedded_owner",
@@ -5415,7 +5436,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host/tests.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host/tests.rs:100:concurrent_starts_share_one_service_and_stop_is_idempotent",
@@ -5426,7 +5450,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host/tests.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host/tests.rs:104:stopping_during_startup_never_publishes_a_ready_service",
@@ -5437,7 +5464,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host/tests.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host/tests.rs:109:cancelling_an_external_probe_stops_cleanly_and_allows_a_fresh_start",
@@ -5448,7 +5478,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host/tests.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host/tests.rs:114:cli_prompt_and_queued_follow_up_are_persisted_as_cancelled_on_exit",
@@ -5459,7 +5492,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host/tests.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host/tests.rs:119:host_fixture",
@@ -5470,7 +5506,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host/tests.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host.rs:390:a_stopping_desktop_refuses_a_start_before_any_worker_exists",
@@ -5481,7 +5520,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host.rs:395:a_ready_host_accepts_a_repeated_start_without_a_second_worker",
@@ -5492,7 +5534,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host.rs:400:a_start_that_never_becomes_ready_fails_at_the_startup_deadline",
@@ -5503,7 +5548,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host.rs:406:a_worker_that_cannot_finish_fails_the_stop_at_the_cleanup_deadline",
@@ -5514,7 +5562,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host.rs:412:a_stop_during_the_external_environment_check_never_publishes_ready",
@@ -5525,7 +5576,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host.rs:418:a_stop_before_prepare_is_reported_as_a_clean_cancellation",
@@ -5536,7 +5590,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host.rs:424:a_prepare_that_sees_a_moved_home_is_a_real_failure",
@@ -5547,7 +5604,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host.rs:527:host_fixture",
@@ -5558,7 +5618,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_host.rs:729:a_fresh_host_is_idle_unowned_and_reports_no_activity",
@@ -5569,7 +5632,10 @@
       "ignored": false,
       "plannedOwner": "future-host",
       "target": "host/src/agent_host.rs",
-      "status": "planned"
+      "status": "migrated-not-executed",
+      "validationEvidence": [
+        "docs/testing/headless-host-agent-owner-2026-10-20.json"
+      ]
     },
     {
       "key": "desktop/src-tauri/src/agent_providers/tests.rs:75:custom_provider_model_serde_defaults_context_window_and_max_tokens",
