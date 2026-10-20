@@ -114,6 +114,14 @@ export type CatalogRow =
      */
     desktopId?: string;
     /**
+     * Which stretch of the recency page a row belongs to.
+     *
+     * Only that page sets it: its two stretches are drawn by one row renderer,
+     * and the screenshot scenario addresses rows by it (how many the window
+     * draws). The other two pages have no such split.
+     */
+    section?: "active" | "earlier";
+    /**
      * Whether a heading above this row already names its machine.
      *
      * A workspace group's heading carries the machine's glyph, so drawing it

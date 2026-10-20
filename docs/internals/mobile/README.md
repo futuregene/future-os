@@ -45,8 +45,12 @@ development and distribution maintenance.
   "earlier", each ordered by the last reply; a pin keeps its marker but not its
   place, and a fork is a row of its own (the page draws no tree). A row's second
   line names its workspace (or says "chat"), with the age on the right (just now
-  / minutes / hours / yesterday / days / a date). A search flattens the page and
-  drops its captions.
+  / minutes / hours / yesterday / days / a date). A search flattens the page,
+  drops its captions, and ignores the window below. "Earlier" draws twenty rows
+  at a time, with a "show N more" row under them opening the next stretch; the
+  caption counts the whole stretch rather than the drawn part, so "Earlier 47"
+  with twenty rows and "show 27 more" agree. Active is never windowed — that is
+  what the reader came for — and a caption is drawn only over rows that exist.
 - The session list's header is two rows: a desktop picker (a chosen machine shows
   its own glyph and name, the name on up to two lines, and the row takes a line
   of its own at the reader's largest text size), the list-actions menu `⋯`

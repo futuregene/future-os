@@ -39,7 +39,7 @@ import type { RemoteSession } from "../remote/types";
 import { layout, radius, spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 import { formatRelativeTime } from "./relativeTime";
-import { recentRows } from "./recentRows";
+import { RECENT_PAGE_SIZE, recentRows } from "./recentRows";
 import type { MergedSessionRow } from "../remote/mergeSessions";
 import { catalogRows, mergedRows as sessionTreeMergedRows, type CatalogRow } from "./sessionTree";
 import { listTargets, selectableTargets, type SessionTarget } from "./sessionSelection";
@@ -247,8 +247,25 @@ export function SessionList({
       };
     });
   }, [merged, remote.sessions, activeDesktopId]);
+  /**
+   * How many finished conversations the recency page draws.
+   *
+   * A window, opened further by the footer under the rows: a reader with a few
+   * hundred conversations should not scroll past all of them to reach the bottom
+   * of a page whose point is the last few. It starts over when the page does —
+   * coming back to "the recent ones" means the recent ones, not wherever the
+   * window was left.
+   */
+  const [recentLimit, setRecentLimit] = useState(RECENT_PAGE_SIZE);
+  const recent = useMemo(
+    () => (tab === "recent" ? recentRows(recentSource, query, recentLimit) : null),
+    [tab, recentSource, query, recentLimit],
+  );
   const rows = useMemo(() => {
-    if (tab === "recent") return recentRows(recentSource, query);
+    // `recent` is this page's own rows, computed above under the same conditions
+    // — narrowed on `tab` here so the two tree builders keep their own two-page
+    // contract.
+    if (tab === "recent") return recent ? recent.rows : [];
     return merged !== undefined
       ? sessionTreeMergedRows(merged, query, activeDesktopId, tab, collapsed, expanded)
       : catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query);
@@ -261,7 +278,7 @@ export function SessionList({
     expanded,
     query,
     activeDesktopId,
-    recentSource,
+    recent,
   ]);
   /**
    * Whether a row's own machine has to be named on it.
@@ -714,7 +731,13 @@ export function SessionList({
       />
     ) : null;
     return (
-      <View style={[styles.row, { paddingLeft: depthInset(item.depth) }, pressedSessionId === session.sessionId && styles.rowPressed]}>
+      <View
+        style={[styles.row, { paddingLeft: depthInset(item.depth) }, pressedSessionId === session.sessionId && styles.rowPressed]}
+        // The recency page's rows are addressed by key in the screenshot
+        // scenario, which asserts how many of them the window draws and where
+        // the footer under them sits.
+        {...(tab === "recent" ? { testID: `recent-row:${item.section ?? "earlier"}:${item.key}` } : {})}
+      >
         {selecting
           ? selectable
             ? (
@@ -1102,6 +1125,21 @@ export function SessionList({
               <>{empty}</>
             )
           }
+          ListFooterComponent={recent && recent.more > 0 ? (
+            // The window's edge. It says how much is held back rather than
+            // opening silently on scroll: the page is meant to be short, and a
+            // reader who wants the rest asks for it.
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("sessions.showMore")}
+              onPress={() => setRecentLimit(current => current + RECENT_PAGE_SIZE)}
+              style={({ pressed }) => [styles.showMore, pressed && styles.pressed]}
+            >
+              <Text style={styles.showMoreLabel}>
+                {t("sessions.showMoreCount", { count: recent.more })}
+              </Text>
+            </Pressable>
+          ) : null}
         />
       </Animated.View>
     </View>
@@ -1242,6 +1280,19 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     borderRadius: radius.md,
   },
   title: { flex: 1, color: theme.colors.ink, fontSize: theme.font(15), lineHeight: theme.leading(22) },
+  // The recency page's window edge: a full-width row under the last drawn
+  // conversation, so it reads as "there is more" rather than as a toolbar.
+  showMore: {
+    minHeight: layout.touchTarget,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: spacing.xs,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.lineSoft,
+    backgroundColor: theme.colors.surfaceSubtle,
+  },
+  showMoreLabel: { color: theme.colors.accent, fontSize: theme.font(14), fontWeight: "600" },
   // The recency row: title and age on one line, where it lives under them.
   recentBody: { flexDirection: "column", alignItems: "stretch", gap: 2 },
   recentTop: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
