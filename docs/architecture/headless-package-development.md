@@ -548,3 +548,10 @@ Portable prefixes lack ownership manifests, so the installer preserves pre-exist
 
 
 Later observations confirmed Linux Host, CLI/TUI (including actual migrated process fixtures), GUI, Agent, Remote and frontend/Mobile groups passed, plus macOS Host. The run remains incomplete and is not accepted as passing. Linux's static gate failed on GUI-only imports in the old no-GUI Desktop configuration, matching the dedicated local reproduction; actual GUI conditions now resolve the imports and no-GUI Clippy passes without warning exemptions. Still-running Windows/macOS jobs remain unclassified. See [release wiring evidence](../testing/headless-release-wiring-2026-10-20.json) for fixes, pending payload execution and limitations.
+
+
+### 2026-10-20 User-adjusted acceptance order
+
+The latest user direction changes the sequence: complete implementation and automated acceptance, freeze one full candidate, prepare runnable builds and perform Desktop GUI, future CLI/headless and Mobile manual tests, then perform actual release packaging, signing and install/upgrade acceptance. Existing automated installer regressions must still be repaired and pass; this ordering change does not waive failures or weaken assertions. Do not start release packaging/signing or real install/upgrade flows before manual testing. Final completion still requires those deferred artifact/install gates and user confirmation.
+
+Source changes during manual testing require affected automation and manual results to be revalidated against the new same candidate. Matched measurements, dependency boundaries, old data/pairing, exit/external-Agent ownership and exclusion checks remain required.
