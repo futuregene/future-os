@@ -123,6 +123,16 @@ mod runtime_tests {
     /// not cascade into every later lock.
     fn install_state(state: RemoteState) {
         let pair_id = state.pair_id.clone();
+        // The book entry a real running bridge always has behind it; without it
+        // the fixture is a device the machine does not have (`project_status`
+        // deliberately refuses to present one). A test that saved its own
+        // credentials for this device — an expiring one, say — keeps them.
+        if !pairing::load_slots()
+            .iter()
+            .any(|slot| slot.pair_id == pair_id)
+        {
+            crate::remote::test_support::save_fixture_slot(&pair_id, &state.nats_url);
+        }
         let previous = SUPERVISOR
             .state
             .lock()
@@ -345,6 +355,70 @@ mod runtime_tests {
         let stopped = stop();
         assert!(!matches!(stopped.phase, RemotePhase::Ready));
         assert!(SUPERVISOR.state.lock().unwrap().is_none());
+    }
+
+    /// A device unpaired from another process — `future remote devices remove`,
+    /// the window on a machine whose CLI already edited the book — stops being a
+    /// device this machine has, even while this supervisor still holds its bridge.
+    ///
+    /// Without this the Remote page kept listing the device the user had just
+    /// removed, as the one *in control* (the control pointer does not clear from
+    /// another process's edit either), and the phone kept talking to a machine
+    /// that had already forgotten it until its credential came up for renewal.
+    #[tokio::test]
+    async fn a_device_removed_from_the_book_leaves_the_list_with_its_bridge_still_up() {
+        let _home = HomeGuard::new("remote-orphan-runtime");
+        let nats = FakeNats::start().await;
+        let state = fake_state(&nats, "pair_orphan").await;
+        install_state(state);
+        assert!(
+            status()
+                .devices
+                .iter()
+                .any(|device| device.pair_id == "pair_orphan"),
+            "the fixture must start out as a device this machine has"
+        );
+
+        // Exactly what the terminal's `remove` writes — the bridge is torn down a
+        // moment later, here or on the next start.
+        pairing::remove_slot("pair_orphan").unwrap();
+
+        let current = status();
+        assert!(
+            current.devices.is_empty(),
+            "a device the book no longer lists must not be presented as one: {current:?}"
+        );
+        assert!(current.pair_id.is_empty(), "{current:?}");
+        assert!(
+            matches!(current.phase, RemotePhase::Enabled),
+            "the machine is still on, it just serves nothing: {current:?}"
+        );
+        stop();
+    }
+
+    /// The exception the rule above must not break: an invitation nobody has
+    /// claimed yet is deliberately *not* in the book — it becomes a device at the
+    /// handshake — so its runtime is the only place its QR code can be shown from.
+    #[tokio::test]
+    async fn an_unclaimed_invitation_stays_listed_because_it_is_not_in_the_book_yet() {
+        let _home = HomeGuard::new("remote-orphan-invitation");
+        let nats = FakeNats::start().await;
+        let mut state = fake_state(&nats, "pair_invited").await;
+        state.pairing_code = Some("code-orphan".to_string());
+        state.pairing_code_expires_at = Some(now_secs() + 600);
+        state.pairing_confirmed = Arc::new(AtomicBool::new(false));
+        install_state(state);
+        pairing::remove_slot("pair_invited").unwrap();
+
+        let current = status();
+        let device = current
+            .devices
+            .iter()
+            .find(|device| device.pair_id == "pair_invited")
+            .unwrap_or_else(|| panic!("an unclaimed invitation must stay listed: {current:?}"));
+        assert_eq!(device.pairing_code.as_deref(), Some("code-orphan"));
+        assert!(!device.connected, "an invitation is not a connected device");
+        stop();
     }
 
     #[tokio::test]
@@ -3558,6 +3632,15 @@ mod slot_tests {
         /// check, because the first one is legitimately still there.
         fn install_into(state: crate::remote::RemoteState) -> Slot {
             let pair_id = state.pair_id.clone();
+            // A real slot always has its credential in the book; one that does
+            // not is a removal in progress, not a device. Credentials a test
+            // saved itself are left exactly as they are.
+            if !crate::remote::pairing::load_slots()
+                .iter()
+                .any(|slot| slot.pair_id == pair_id)
+            {
+                crate::remote::test_support::save_fixture_slot(&pair_id, &state.nats_url);
+            }
             SUPERVISOR
                 .state
                 .lock()

@@ -297,15 +297,18 @@ Every action takes --json and prints the same document `future remote devices
 expiresAt).
 
 A device is a phone or another computer that paired with this machine's remote
-desktop — the Remote page in the window, or futureos-headless. The list, remove
-and use read and write the pairing book the Desktop itself reads
+desktop — the Remote page in the window, or futureos-headless. The list and use
+read and write the pairing book the Desktop itself reads
 (~/.future/remote_pairings.json), so they need no running Desktop; a self-hosted
 relay needs no account either.
 
-add is the exception: an invitation is only usable while the bridge for that
-pairing is connected, so the request goes to the running Desktop (the window, or
-futureos-headless) and the answer carries the invitation. A machine with no
-device at all prints one as the Desktop starts.
+add and remove are the exceptions, because the Desktop is what actually serves a
+device. An invitation is only usable while the bridge for that pairing is
+connected, and a removal only takes effect *now* if that bridge is stopped — so
+both ask the running Desktop (the window, or futureos-headless) and carry its
+answer back. With no Desktop running, remove edits the book itself, which is what
+the next start reads. A machine with no device at all prints an invitation as the
+Desktop starts.
 
 Self-hosted relays work the same way, and a machine may hold an official device
 and a self-hosted one at the same time: `list` names each device's endpoint, and
@@ -403,8 +406,12 @@ read an answer from a redirected stdin: a prompt nobody saw must not become
 "yes".
 
 The device is revoked before the local slot is dropped — at the Future platform,
-or by deleting its room at the relay that minted it. That order is why a Desktop
-that is running stops serving it at its next credential refresh instead of never.
+or by deleting its room at the relay that minted it. A running Desktop is asked to
+do it first, which is the only way it stops being served *now*: the phone holds a
+bearer credential that stays valid until it lapses, so editing the book alone
+leaves the old bridge reading and answering it for minutes. With no Desktop
+running (or one too old to know the request) the book is edited here, and the
+device is served until its next credential refresh.
 A revoke that cannot be delivered is queued in remote_pending_revokes.json for
 the next Desktop to retry; the local removal still happens, because that is what
 decides access to this machine.
