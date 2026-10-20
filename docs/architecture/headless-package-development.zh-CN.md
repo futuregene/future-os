@@ -573,3 +573,10 @@ CI [39385601564](https://github.com/futuregene/future-os/actions/runs/3938560156
 `ce282283` 的 CI 39389611663 在 Windows 原生生命周期夹具暴露登录 HTTP 响应失败与 Python 控制台 QR 编码异常。夹具显式恢复阻塞模式、完整读取请求头后回应，并保留有界超时和原业务断言；CI 转发显式 UTF-8，避免编码异常截断后续真实测试。Windows 仍需 PR CI 复验，不把尚在运行的整轮判为通过。
 
 保留可追踪计划、2193 项原测试迁移清单和验证证据；清理本会话已应用 stash、临时日志/迁移脚本及依赖链接。可选 `headless-measurement` CI 入口保留用于计划要求的匹配测量：独立空 target、相同 runner/工具链/命令、原始 Cargo/linker 时间、真实 Store 样本、大小和启动样本，明确顺序/页缓存与样本限制。尚未执行，不宣称性能改善。实际打包、签名和安装升级仍为后置验收；PR 及自动合并不代表整体 Goal 完成。
+
+
+### 2026-10-20 同提交重跑后修复原生夹具
+
+按用户要求，提交 `9250e100a16205cea3f773109ab3bf6ccd9388d7` 的 CI 39395390467 仅重跑失败项（attempt 2），没有先推修复。整轮已结束：Linux Agent 通过，Windows 仍失败在首次配对终端用例，输出只有 `ESC[6n`。因此不能将 Windows 失败当作并发偶发问题。
+
+修复提交 `6642c3fe` 保留真实进程与原断言：ConPTY 夹具通过共享输入锁应答光标查询，支持跨读取分片，不绕过终端或首次配对；Agent 测试在有界期限内观察活动 run 后再取消，避免预先取消与快照锁竞争造成偶发失败。产品退出/鉴权逻辑未改变。随后合入远程 `eaf859f6` 的 Remote 在线状态/即时解绑与协议覆盖，冲突保留新行为及统一 CLI/Host 归属。相关 Rust all-target Clippy、fmt、Desktop/Mobile typecheck、相关 ESLint、协议生成、文档及联合依赖边界检查通过；本地未运行单元/NATS 测试，Windows 修复等待新 PR CI。详见[修复证据](../testing/headless-pr1259-retry-repair-2026-10-20.json)。
