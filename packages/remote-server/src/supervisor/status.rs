@@ -5,7 +5,9 @@ pub struct StatusProjection {
     pub status: RemoteStatus,
     pub retry_web: Option<String>,
 }
-fn connected(state: &RemoteState) -> bool {
+/// Whether the bridge is up and serving: the transport half of a device's
+/// row. The client half is [`ClientLink`].
+pub(super) fn connected(state: &RemoteState) -> bool {
     state.client.connection_state() == async_nats::connection::State::Connected
         && !state.nats_health.is_terminal()
         && !state.cmd_task.is_finished()
@@ -113,6 +115,10 @@ impl Supervisor {
             .client_identity(pair_id)
             .and_then(|slot| slot.lock().unwrap().clone());
         let (pairing_code, pairing_code_expires_at) = pending_invitation(state, pair_id);
+        // Is the device's client at the other end? Read per pairing and without
+        // the bridge in the way: a client whose bridge is rebuilding is still
+        // sitting there, and the two facts are reported separately.
+        let present = self.client_link(pair_id).present();
         RemoteDevice {
             pair_id: pair_id.to_string(),
             phase,
@@ -121,10 +127,30 @@ impl Supervisor {
             // invitation on screen. Reporting otherwise would tell the user a
             // device is in the room.
             connected: is_connected && pairing_code.is_none(),
+            // An invitation has nobody behind it yet: the row is a code, and
+            // "present" would say somebody answered it.
+            present: present && pairing_code.is_none(),
             client,
             pairing_code,
             pairing_code_expires_at,
             desktop_id,
+        }
+    }
+
+    /// What a machine with the remote desktop on and no device to serve reports.
+    ///
+    /// Reached two ways: the switch was turned on for a machine with nothing
+    /// paired (`stopped_status`'s own arm), and every device left the book while
+    /// this process was still holding their bridges. Both are "on, serving
+    /// nothing" — and neither is `Stopped`, which says the user turned the remote
+    /// desktop off (a headless entry treats it as terminal and exits).
+    fn serving_nothing_status(&self, prefer: Option<&str>) -> RemoteStatus {
+        RemoteStatus {
+            phase: RemotePhase::Enabled,
+            // A request that named a device is still about that device; there is
+            // no row for it to point at, but the caller asked by name.
+            pair_id: prefer.unwrap_or_default().to_string(),
+            ..crate::types::empty(self.host.agent_available())
         }
     }
 
@@ -166,6 +192,19 @@ impl Supervisor {
             if devices.iter().any(|device| &device.pair_id == pair_id) {
                 continue;
             }
+            // A runtime whose credential is not in the book is not a device this
+            // machine has: another process removed it (the CLI, the window) and
+            // this supervisor is still tearing its bridge down. Listing it would
+            // describe a device the user has just unpaired as still paired — and
+            // as the one in control, because the control pointer does not clear
+            // from another process's edit either.
+            //
+            // The exception is the invitation: a device nobody has claimed yet is
+            // deliberately *not* in the book (it becomes one at the handshake), so
+            // its runtime is the only place the code can be shown from.
+            if pending_invitation(Some(state), pair_id).0.is_none() {
+                continue;
+            }
             devices.push(self.device_row(
                 pair_id,
                 state.desktop_id.clone(),
@@ -188,10 +227,18 @@ impl Supervisor {
         {
             Some(focus) => focus.clone(),
             None => {
+                // Nothing is left to describe: the map holds runtimes whose device
+                // the book no longer lists, which is a removal being torn down, not
+                // a machine that stopped. Reporting `Stopped` here would be wrong
+                // twice over — the switch was never turned off, and a headless
+                // entry reads `Stopped` as terminal and quits while it still has
+                // bridges (and the devices behind them) to shut down. With no
+                // device the machine is on and serving nothing, the same state as
+                // one that never paired a device at all.
                 return StatusProjection {
-                    status: self.stopped_status(prefer, false),
+                    status: self.serving_nothing_status(prefer),
                     retry_web: None,
-                }
+                };
             }
         };
         let runtime = guard.get(&focus.pair_id);

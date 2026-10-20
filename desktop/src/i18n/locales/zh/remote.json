@@ -61,7 +61,7 @@
   "devicePaired": "已配对设备",
   "takeover": "让这台控制",
   "addDevice": "添加设备",
-  "addDeviceHint": "再配对一台手机或电脑。同一时刻只有一台控制这台机器，连上的那台即接管。",
+  "addDeviceHint": "再配对一台手机或电脑。同一时刻只有一台设备控制这台机器；控制的那台断开时，机器交给仍在线的设备。",
   "unpairDeviceConfirmTitle": "解除这台设备？",
   "unpairDeviceConfirmDesc": "{{name}} 将无法再连接这台电脑。其它设备保持配对。",
   "back": "返回",

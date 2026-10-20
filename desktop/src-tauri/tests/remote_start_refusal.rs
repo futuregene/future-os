@@ -957,6 +957,87 @@ fn a_device_request_is_answered_by_the_running_headless_desktop() {
     child.interrupt();
 }
 
+/// A removal request is answered by the process that owns the bridge, and the
+/// answer comes only after the device is really gone.
+///
+/// This is the half a terminal cannot do for itself: editing the book leaves the
+/// running bridge serving the device until its credential lapses, which is the
+/// "unpaired, but the phone still talks to it" report this operation exists to
+/// end. The observable here is the book the *child* deleted and the reply it
+/// wrote — not anything the test did to the files.
+#[test]
+fn a_removal_request_is_answered_after_the_desktop_stopped_serving_the_device() {
+    let broker = Broker::start(BrokerMode::Live {
+        error_after: Duration::from_secs(300),
+    });
+    let platform = Platform::start(
+        vec![TokenReply::Credential {
+            nats_url: broker.url.clone(),
+            exp_offset: 600,
+        }],
+        None,
+    );
+    let home = isolated_home("control-remove");
+    write_auth(&home, &platform.url);
+    write_pairing(&home, &broker.url, true);
+    let book = home.join(".future/remote_pairing.json");
+    assert!(
+        book.is_file(),
+        "the fixture must start with a paired device"
+    );
+    let answer = home.join("answer.json");
+    let requests = home.join(".future/run/remote-control");
+    std::fs::create_dir_all(&requests).expect("create the control directory");
+    std::fs::write(
+        requests.join("0001.request.json"),
+        json!({
+            "op": "remove-device",
+            "pairId": "pair_fixture",
+            "reply": answer.display().to_string(),
+        })
+        .to_string(),
+    )
+    .expect("write the request");
+
+    let mut child = ChildRun::spawn(home.clone());
+    assert!(
+        child.wait_for("Remote: Ready", READY_BUDGET),
+        "the Desktop must be serving before it can be asked to stop; transcript:\n{}",
+        child.text()
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !answer.is_file() {
+        assert!(
+            Instant::now() < deadline,
+            "no answer within 30s; transcript:\n{}",
+            child.text()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let reply: Value = serde_json::from_slice(&std::fs::read(&answer).expect("read the answer"))
+        .expect("the answer is JSON");
+    assert_eq!(reply["removed"], true, "{reply}");
+    assert_eq!(reply["pairId"], "pair_fixture", "{reply}");
+    assert!(reply.get("error").is_none(), "{reply}");
+    // The child wrote this: `unpair_slot` removed the last slot, and an empty
+    // book leaves no credential file behind (`write_pairing` starts from the
+    // single-pairing shape, which goes with it).
+    for path in [&book, &home.join(".future/remote_pairings.json")] {
+        assert!(
+            !path.exists(),
+            "the Desktop must have forgotten the device itself ({}): transcript:\n{}",
+            path.display(),
+            child.text()
+        );
+    }
+    assert!(
+        !requests.join("0001.request.json").exists(),
+        "the served request must be removed"
+    );
+    child.interrupt();
+}
+
 /// A live broker drives `GenerationWatch`: a healthy tick runs, then the broker rejects
 /// the *live* connection. The bridge JWT is already expired, so `NatsHealth` records
 /// `reconnect_required` (not the terminal `service_config_error`), and the watcher calls
@@ -1359,6 +1440,12 @@ fn a_reconnect_for_a_device_the_book_no_longer_holds_stops_that_runtime() {
 /// cannot be upgraded in place, so the reconnect forgets the device (`start.rs:534-535`)
 /// and stops its runtime. The book file being *removed* is the arm's own effect: a
 /// "legacy" slot that were merely skipped would stay on disk and be retried forever.
+///
+/// Readiness is the bridge's own fact here, not a status line — see the note in test 3:
+/// this fixture's credential is expired, so its renewal is due at once and can pre-empt
+/// the interval-paced `Remote: Ready` printout on a loaded runner. What the test needs
+/// before it rewrites the book is that the v2 generation has connected and the child has
+/// saved that book, which the broker's connect counter and the file itself can say.
 #[test]
 fn a_reconnect_with_a_pre_v2_slot_forgets_it() {
     let broker = Broker::start(BrokerMode::Live {
@@ -1379,9 +1466,21 @@ fn a_reconnect_with_a_pre_v2_slot_forgets_it() {
     write_pairing(&home, &broker.url, true);
 
     let mut child = ChildRun::spawn(home.clone());
+    let deadline = Instant::now() + READY_BUDGET;
+    while Instant::now() < deadline
+        && (broker.connects.load(Ordering::Acquire) == 0
+            || !home.join(".future/remote_pairings.json").exists())
+    {
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert!(
-        child.wait_for("Remote: Ready", READY_BUDGET),
+        broker.connects.load(Ordering::Acquire) >= 1,
         "the v2 generation must be live first; transcript:\n{}",
+        child.text()
+    );
+    assert!(
+        home.join(".future/remote_pairings.json").exists(),
+        "the child must have saved the book before it is rewritten; transcript:\n{}",
         child.text()
     );
     let mut legacy = pairing_slot("pair_fixture", "desktop_fixture", &broker.url, false);

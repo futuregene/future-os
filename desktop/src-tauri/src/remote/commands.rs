@@ -4675,6 +4675,96 @@ mod bridge_tests {
         assert!(reply["data"].get("workspaces").is_none(), "{reply}");
         bridge.stop().await;
     }
+
+    /// Proving presence is not commanding the machine: a standby device's beat
+    /// is answered instead of refused `superseded`, and its pairing reads as
+    /// present. Without this a standby device that sits idle would look gone —
+    /// which is the same row a client that really left gets.
+    #[tokio::test]
+    async fn a_standby_device_may_say_it_is_still_there() {
+        let _home = HomeGuard::new("cmd-client-presence-standby");
+        let bridge = Bridge::start().await;
+        bridge.activate();
+        let controller = format!("pair_{}", unique("ctl"));
+        SUPERVISOR.remember_device(&controller);
+        SUPERVISOR.restore_active(Some(controller.clone()));
+        assert!(
+            !SUPERVISOR.in_control(&bridge.pair_id),
+            "the fixture must actually be the standby one"
+        );
+
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "client_presence" }))
+            .await;
+
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert!(
+            SUPERVISOR.client_link(&bridge.pair_id).present(),
+            "a beat is proof the client is there"
+        );
+        SUPERVISOR.forget_device(&controller);
+        bridge.stop().await;
+    }
+
+    /// Going off screen stops the device reading as present, but keeps the
+    /// machine it holds: a suspended app is coming back, and taking its machine
+    /// away every time it is backgrounded would be a different product decision.
+    #[tokio::test]
+    async fn a_backgrounded_client_stops_being_present_without_losing_the_machine() {
+        let _home = HomeGuard::new("cmd-client-background");
+        let bridge = Bridge::start().await;
+        bridge.activate();
+        SUPERVISOR.client_link(&bridge.pair_id).observe();
+        assert_eq!(
+            SUPERVISOR.active_pair().as_deref(),
+            Some(bridge.pair_id.as_str())
+        );
+
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "client_disconnect",
+                "reason": "background"
+            }))
+            .await;
+
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert!(!SUPERVISOR.client_link(&bridge.pair_id).present());
+        assert_eq!(
+            SUPERVISOR.active_pair().as_deref(),
+            Some(bridge.pair_id.as_str()),
+            "the machine it was holding is still its own"
+        );
+        bridge.stop().await;
+    }
+
+    /// The user's own disconnect gives up the machine: the pointer it held is
+    /// released, which is what stops the page drawing "in control" over a
+    /// client that has gone.
+    #[tokio::test]
+    async fn a_user_disconnect_gives_the_machine_up() {
+        let _home = HomeGuard::new("cmd-client-leaves");
+        let bridge = Bridge::start().await;
+        bridge.activate();
+        SUPERVISOR.client_link(&bridge.pair_id).observe();
+
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "client_disconnect",
+                "reason": "disconnected"
+            }))
+            .await;
+
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert!(!SUPERVISOR.client_link(&bridge.pair_id).present());
+        assert_eq!(
+            SUPERVISOR.active_pair(),
+            None,
+            "the device that left does not keep the machine"
+        );
+        bridge.stop().await;
+    }
 }
 
 #[cfg(test)]

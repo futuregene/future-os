@@ -9,6 +9,7 @@ struct MemoryRuntime {
     activity: Arc<AtomicBool>,
     lean: Arc<AtomicBool>,
     identity: Arc<Mutex<Option<crate::types::ClientIdentity>>>,
+    link: Arc<crate::supervisor::ClientLink>,
     gzip: bool,
 }
 impl HandshakeHost for MemoryRuntime {
@@ -26,6 +27,10 @@ impl CommandRuntime for MemoryRuntime {
     fn client_identity(&self, _: &str) -> Option<Arc<Mutex<Option<crate::types::ClientIdentity>>>> {
         Some(self.identity.clone())
     }
+    fn client_link(&self, _: &str) -> Option<Arc<crate::supervisor::ClientLink>> {
+        Some(self.link.clone())
+    }
+    fn client_left(&self, _: &str) {}
     fn coalesce_events(&self, _: &str) -> Arc<AtomicBool> {
         self.coalesce.clone()
     }
@@ -37,6 +42,9 @@ impl CommandRuntime for MemoryRuntime {
     }
     fn in_control(&self, _: &str) -> bool {
         true
+    }
+    fn alone_and_unowned(&self, _: &str) -> bool {
+        false
     }
     fn held_by_another(&self, _: &str) -> bool {
         false

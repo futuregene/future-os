@@ -38,6 +38,14 @@ impl CommandRuntime for Context {
     fn client_identity(&self, pair: &str) -> Option<Arc<Mutex<Option<ClientIdentity>>>> {
         self.server.upgrade()?.client_identity(pair)
     }
+    fn client_link(&self, pair: &str) -> Option<Arc<ClientLink>> {
+        Some(self.server.upgrade()?.client_link(pair))
+    }
+    fn client_left(&self, pair: &str) {
+        if let Some(server) = self.server.upgrade() {
+            server.client_left(pair);
+        }
+    }
     fn coalesce_events(&self, pair: &str) -> Arc<AtomicBool> {
         self.server
             .upgrade()
@@ -60,6 +68,11 @@ impl CommandRuntime for Context {
         self.server
             .upgrade()
             .is_some_and(|server| server.in_control(pair))
+    }
+    fn alone_and_unowned(&self, pair: &str) -> bool {
+        self.server
+            .upgrade()
+            .is_some_and(|server| server.alone_and_unowned(pair))
     }
     fn held_by_another(&self, pair: &str) -> bool {
         self.server

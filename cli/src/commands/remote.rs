@@ -17,10 +17,16 @@
 //! it the honest thing for this command to read and edit, and it means those
 //! actions need nothing running.
 //!
-//! `add` cannot work that way. An invitation is only usable while the bridge for
-//! its pairing is connected, so it has to be minted by the process that serves
-//! the machine — the window, or `futureos-headless`. That request goes to the
-//! running Desktop as a file and comes back as one (see [`request_invitation`]).
+//! `add` and `remove` cannot work that way while a Desktop is running. An
+//! invitation is only usable while the bridge for its pairing is connected, so it
+//! has to be minted by the process that serves the machine — the window, or
+//! `futureos-headless`. A removal is the mirror image: the bridge is what a device
+//! talks to, and only that process can stop it. A credential is a bearer JWT, valid
+//! until it lapses, so a book edited behind a running Desktop leaves the device
+//! served for minutes after the user was told it was unpaired. Both requests go to
+//! the Desktop as a file and come back as one (see [`request_desktop`]); with no
+//! Desktop running, `remove` edits the book itself, which is what the next start
+//! reads.
 //!
 //! The document is parsed and rewritten as a [`serde_json::Value`] rather than a
 //! mirrored struct: the fields this command does not understand (the NKey seed,
@@ -29,12 +35,13 @@
 //!
 //! # What a running Desktop does with an edit
 //!
-//! - **Remove** is effective immediately in the only sense that matters: the
-//!   device is revoked at the platform (or its relay room is deleted) *before*
-//!   the local slot is dropped, so even a Desktop that still holds the old
-//!   credential in memory cannot keep serving it — its next credential refresh
-//!   is refused and it forgets the device itself. Revoking first is also why a
-//!   lost local write is harmless: the credential is already dead.
+//! - **Remove** is asked of the Desktop first, and its answer is what makes the
+//!   removal immediate: the supervisor revokes the credential, forgets the slot and
+//!   stops serving that device now. Without it (no Desktop, or one too old to know
+//!   the request) this command edits the book, which the next start reads — and the
+//!   device keeps being served until its credential comes up for renewal, because
+//!   the phone's JWT outlives the edit. Either way the revoke is ordered before the
+//!   local slot is dropped, so a lost write cannot resurrect the device.
 //! - **Use** is persisted for the next start. Control is an in-memory pointer in
 //!   the running process (a device taking over must move it too), so a running
 //!   Desktop keeps its current controller until it restarts.
@@ -802,13 +809,18 @@ fn control_directory() -> Result<PathBuf, String> {
 /// means the Desktop running for this data directory predates device requests —
 /// it was started before the update and keeps serving from its old code until it
 /// is restarted. A request that disappeared was claimed by a Desktop that then
-/// failed or was killed mid-request.
-fn timeout_message(timeout: Duration, request_still_there: &dyn Fn() -> bool) -> String {
+/// failed or was killed mid-request. `unchanged` says what the silence left
+/// behind, which is not the same sentence for an addition and a removal.
+fn timeout_message(
+    timeout: Duration,
+    request_still_there: &dyn Fn() -> bool,
+    unchanged: &str,
+) -> String {
     if request_still_there() {
         format!(
             "No Desktop picked the request up within {}s — the one running for {} is probably an \
              older build that predates device requests (it was started before the update). \
-             Restart it with the current version and try again; nothing was paired.",
+             Restart it with the current version and try again; {unchanged}.",
             timeout.as_secs(),
             "this data directory",
         )
@@ -821,20 +833,29 @@ fn timeout_message(timeout: Duration, request_still_there: &dyn Fn() -> bool) ->
     }
 }
 
-/// Ask the running Desktop for an invitation and return its answer.
+/// Ask the running Desktop to perform one device operation and return its answer.
+///
+/// `op` is the Desktop's own name for the operation (`add-device`,
+/// `remove-device`); `pair_id` names the device for the operations about one.
+/// `unchanged` completes the sentence about what the silence left behind: a
+/// timeout that claimed "nothing was paired" after a removal would be a lie.
 ///
 /// The reply path is a temporary file this process created for itself, so two
-/// terminals asking at once cannot read each other's invitation. Whether the
-/// request was answered or not, both files are gone when this returns: a request
-/// left behind would be served by the *next* Desktop into a file nobody reads.
-async fn request_invitation() -> Result<Value, String> {
+/// terminals asking at once cannot read each other's answer. Whether the request
+/// was answered or not, both files are gone when this returns: a request left
+/// behind would be served by the *next* Desktop into a file nobody reads.
+async fn request_desktop(
+    op: &str,
+    pair_id: Option<&str>,
+    unchanged: &str,
+) -> Result<Value, String> {
     let directory = control_directory()?;
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis())
         .unwrap_or_default();
     let answer = std::env::temp_dir().join(format!(
-        "future-remote-add-{started}-{}.json",
+        "future-remote-{op}-{started}-{}.json",
         std::process::id()
     ));
     let _ = std::fs::remove_file(&answer);
@@ -843,14 +864,42 @@ async fn request_invitation() -> Result<Value, String> {
         "{started:013}-{}{REQUEST_SUFFIX}",
         std::process::id()
     ));
-    write_json(
-        &request,
-        &json!({ "op": "add-device", "reply": answer.display().to_string() }),
-    )?;
-    let outcome = wait_for_answer(&answer, &|| request.exists(), &desktop_running).await;
+    let mut body = json!({ "op": op, "reply": answer.display().to_string() });
+    if let Some(pair_id) = pair_id {
+        body["pairId"] = json!(pair_id);
+    }
+    write_json(&request, &body)?;
+    let outcome = wait_for_answer(&answer, &|| request.exists(), &desktop_running, unchanged).await;
     let _ = std::fs::remove_file(&answer);
     let _ = std::fs::remove_file(&request);
     outcome
+}
+
+/// Ask the Desktop for an invitation.
+async fn request_invitation() -> Result<Value, String> {
+    request_desktop("add-device", None, "nothing was paired").await
+}
+
+/// Ask the Desktop to drop one device and stop serving it.
+///
+/// `Ok(true)` means it performed the removal (and wrote the book); `Ok(false)`
+/// means it answered without doing so. `Err` is the reason it could not be
+/// asked at all — an older Desktop, a Desktop that exited — and the caller
+/// falls back to editing the book.
+async fn ask_desktop_to_remove(device: &Device) -> Result<bool, String> {
+    let reply = request_desktop(
+        "remove-device",
+        Some(&device.pair_id),
+        "nothing was removed",
+    )
+    .await?;
+    if let Some(error) = reply.get("error").and_then(Value::as_str) {
+        return Err(error.to_string());
+    }
+    Ok(reply
+        .get("removed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false))
 }
 
 /// Wait for the Desktop's answer, ending early if the Desktop stops.
@@ -864,6 +913,7 @@ async fn wait_for_answer(
     answer: &Path,
     request_still_there: &dyn Fn() -> bool,
     still_running: &dyn Fn() -> bool,
+    unchanged: &str,
 ) -> Result<Value, String> {
     let deadline = Instant::now() + REPLY_TIMEOUT;
     loop {
@@ -876,14 +926,17 @@ async fn wait_for_answer(
             return Ok(value);
         }
         if Instant::now() >= deadline {
-            return Err(timeout_message(REPLY_TIMEOUT, request_still_there));
+            return Err(timeout_message(
+                REPLY_TIMEOUT,
+                request_still_there,
+                unchanged,
+            ));
         }
         if !still_running() {
-            return Err(
+            return Err(format!(
                 "The Desktop stopped before it answered. Start it again (the window, or \
-                 futureos-headless) and re-run this; nothing was paired."
-                    .to_string(),
-            );
+                 futureos-headless) and re-run this; {unchanged}."
+            ));
         }
         tokio::time::sleep(REPLY_POLL).await;
     }
@@ -956,16 +1009,41 @@ async fn remove(args: &[String], out: &Output) -> Result<(), String> {
         out.log_err("Cancelled. Nothing was changed.");
         return Ok(());
     }
-    // Revoke before forgetting locally: a device whose slot write is lost can
-    // still only reconnect with a credential the platform has just refused,
-    // and the Desktop retires such a slot on its next start.
-    let warning = revoke(&device).await;
-    book.remove(index);
-    book.save()?;
-    if let Some(warning) = &warning {
-        out.log_err(warning);
-    }
     let running = desktop_running();
+    // A running Desktop owns the bridge for this device. Asking it to drop the
+    // device is what makes the removal take effect *now* — `unpair_slot` stops
+    // serving it and tells it so — instead of at its next credential refresh,
+    // which can be minutes away: the phone holds a bearer JWT, and until it
+    // lapses nothing on the platform side can make the machine stop reading what
+    // it publishes. No Desktop (or one too old to know the request) falls back to
+    // editing the book, which is still authoritative for the next start.
+    if running {
+        match ask_desktop_to_remove(&device).await {
+            // It wrote the book itself, so this process's copy is stale.
+            Ok(true) => book = Book::load()?,
+            Ok(false) => (),
+            Err(reason) => out.log_err(&format!(
+                "note: the running Desktop did not remove it ({reason}); removing it here, so \
+                 it stops being served at its next credential refresh."
+            )),
+        }
+    }
+    let still_listed = book
+        .devices
+        .iter()
+        .any(|paired| normalized(&paired.pair_id) == normalized(&device.pair_id));
+    if still_listed {
+        // Revoke before forgetting locally: a device whose slot write is lost can
+        // still only reconnect with a credential the platform has just refused,
+        // and the Desktop retires such a slot on its next start.
+        let warning = revoke(&device).await;
+        let index = book.position(&device.pair_id)?;
+        book.remove(index);
+        book.save()?;
+        if let Some(warning) = &warning {
+            out.log_err(warning);
+        }
+    }
     if json_flag {
         out.log(
             serde_json::to_string_pretty(&document(&book, running))
@@ -984,9 +1062,11 @@ async fn remove(args: &[String], out: &Output) -> Result<(), String> {
         }
     ));
     if running {
-        out.log(
-            "A Desktop is running; it stops serving this device on its next credential refresh.",
-        );
+        out.log(if still_listed {
+            "A Desktop is running; it stops serving this device on its next credential refresh."
+        } else {
+            "A Desktop is running and has stopped serving it now."
+        });
     }
     Ok(())
 }
@@ -1017,7 +1097,28 @@ async fn remove_all(
         return Ok(());
     }
     let mut warnings = Vec::new();
-    for device in &devices {
+    let running = desktop_running();
+    // Same reason as `remove`: the Desktop owns the bridges, so it is asked to
+    // drop each device and takes effect now. Anything it did not handle is
+    // revoked and dropped here — the book is authoritative either way.
+    let mut stopped_by_desktop = 0usize;
+    if running {
+        for device in &devices {
+            match ask_desktop_to_remove(device).await {
+                Ok(true) => stopped_by_desktop += 1,
+                Ok(false) => (),
+                Err(reason) => out.log_err(&format!(
+                    "note: the running Desktop did not remove {} ({reason}); removing it here.",
+                    display_pair_id(&device.pair_id)
+                )),
+            }
+        }
+        // Whatever it removed is gone from the book it wrote; this process's copy
+        // only has the devices left to handle.
+        book = Book::load()?;
+    }
+    let untouched = book.devices.clone();
+    for device in &untouched {
         if let Some(warning) = revoke(device).await {
             warnings.push(warning);
         }
@@ -1031,7 +1132,6 @@ async fn remove_all(
     for warning in &warnings {
         out.log_err(warning);
     }
-    let running = desktop_running();
     if json_flag {
         out.log(
             serde_json::to_string_pretty(&document(&book, running))
@@ -1046,7 +1146,11 @@ async fn remove_all(
     ));
     out.log("Run `future remote devices add` to pair the first one back.");
     if running {
-        out.log("A Desktop is running; it stops serving them at their next credential refresh.");
+        out.log(if stopped_by_desktop == count {
+            "A Desktop is running and has stopped serving them now."
+        } else {
+            "A Desktop is running; it stops serving the rest at their next credential refresh."
+        });
     }
     Ok(())
 }
@@ -1795,6 +1899,103 @@ mod tests {
         assert_eq!(home.read(BOOK_FILE), before);
     }
 
+    /// A running Desktop is asked to drop the device, and its answer is what the
+    /// terminal reports. This is the fix for "unpaired, but the phone still
+    /// connects": editing the book alone leaves the bridge serving a device whose
+    /// bearer credential stays valid for minutes.
+    #[tokio::test]
+    async fn remove_asks_the_running_desktop_to_stop_serving_the_device() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+        let seen = answer_removals(&home, 1);
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "remove", "AAAA", "--yes"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("Unpaired AAAA"), "{stdout}");
+        assert!(stdout.contains("1 device remains paired."), "{stdout}");
+        assert!(
+            stdout.contains("stopped serving it now"),
+            "the removal was immediate, and the answer says so: {stdout}"
+        );
+        assert!(
+            !stdout.contains("next credential refresh"),
+            "the slow path is not what happened: {stdout}"
+        );
+        // The Desktop owns the revoke as well: no second attempt from here, and
+        // nothing to queue.
+        assert!(stderr.is_empty(), "{stderr}");
+        assert!(!home.exists(PENDING_REVOKES_FILE));
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1, "one request, one answer");
+        assert_eq!(seen[0]["op"], "remove-device");
+        assert_eq!(seen[0]["pairId"], "pair_AAAA");
+        // The other device is untouched, and it now controls by being alone.
+        let value: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+        assert_eq!(value["slots"].as_array().unwrap().len(), 1);
+        assert_eq!(value["slots"][0]["pairId"], "pair_BBBB");
+    }
+
+    /// A Desktop that cannot perform the removal — an older build, one that
+    /// exited — is not a failure of the command: the book is still authoritative
+    /// for the next start, so the device is revoked and dropped here. What the
+    /// user is told changes, because what happened did.
+    #[tokio::test]
+    async fn a_desktop_that_cannot_remove_falls_back_to_editing_the_book() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+        let seen = answer_requests(
+            &home,
+            json!({ "error": "this Desktop does not know the `remove-device` request; update it" }),
+        );
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "remove", "AAAA", "--yes"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("Unpaired AAAA"), "{stdout}");
+        assert!(
+            stdout.contains("next credential refresh"),
+            "the slow path has to be named as slow: {stdout}"
+        );
+        assert!(
+            stderr.contains("did not remove it"),
+            "and the reason it was slow is the Desktop's own: {stderr}"
+        );
+
+        assert_eq!(seen.lock().unwrap()[0]["op"], "remove-device");
+        let value: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+        assert_eq!(value["slots"].as_array().unwrap().len(), 1);
+        assert_eq!(value["slots"][0]["pairId"], "pair_BBBB");
+    }
+
+    /// `--all` asks once per device, and says all of them stopped now.
+    #[tokio::test]
+    async fn remove_all_asks_the_running_desktop_for_each_device() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+        let seen = answer_removals(&home, 2);
+
+        let (code, stdout, stderr) = run(&["remote", "devices", "remove", "--all", "--yes"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("No devices remain paired to this machine."),
+            "{stdout}"
+        );
+        assert!(stdout.contains("stopped serving them now"), "{stdout}");
+        assert!(!home.exists(BOOK_FILE), "the empty book leaves no file");
+        let seen = seen.lock().unwrap();
+        let ids: Vec<&str> = seen
+            .iter()
+            .map(|request| request["pairId"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(ids, ["pair_AAAA", "pair_BBBB"], "{seen:?}");
+    }
+
     #[tokio::test]
     async fn an_undeliverable_platform_revoke_is_queued_for_the_next_desktop() {
         let _guard = crate::test_env::lock_env().await;
@@ -1977,6 +2178,68 @@ mod tests {
                     return;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        });
+        seen
+    }
+
+    /// Answer `remove-device` requests the way the running Desktop does: drop the
+    /// device from the book, then reply `removed`.
+    ///
+    /// The order matters to the command under test — it re-reads the book after
+    /// the answer to decide whether it still has to do the work here, so a fake
+    /// that only wrote a reply would send every removal down the fallback path
+    /// and test nothing.
+    fn answer_removals(home: &Home, count: usize) -> std::sync::Arc<std::sync::Mutex<Vec<Value>>> {
+        let directory = home.future().join("run").join(CONTROL_DIRECTORY);
+        std::fs::create_dir_all(&directory).unwrap();
+        let worked = home.future().join(BOOK_FILE);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = seen.clone();
+        tokio::spawn(async move {
+            let mut answered = 0;
+            while answered < count {
+                let mut entries: Vec<_> = std::fs::read_dir(&directory)
+                    .map(|entries| entries.filter_map(Result::ok).collect())
+                    .unwrap_or_default();
+                entries.sort_by_key(|entry| entry.file_name());
+                let Some(entry) = entries.into_iter().find(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .ends_with(REQUEST_SUFFIX)
+                }) else {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                    continue;
+                };
+                let request: Value =
+                    serde_json::from_str(&std::fs::read_to_string(entry.path()).unwrap()).unwrap();
+                let pair_id = request["pairId"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("a removal names its device: {request}"))
+                    .to_string();
+                if let Ok(text) = std::fs::read_to_string(&worked) {
+                    let mut value: Value = serde_json::from_str(&text).unwrap();
+                    if let Some(slots) = value["slots"].as_array_mut() {
+                        slots.retain(|slot| slot["pairId"] != json!(pair_id));
+                    }
+                    if value["active"] == json!(pair_id) {
+                        value["active"] = Value::Null;
+                    }
+                    if value["slots"].as_array().is_some_and(Vec::is_empty) {
+                        let _ = std::fs::remove_file(&worked);
+                    } else {
+                        std::fs::write(&worked, value.to_string()).unwrap();
+                    }
+                }
+                std::fs::write(
+                    request["reply"].as_str().expect("a reply path"),
+                    json!({ "pairId": pair_id, "removed": true }).to_string(),
+                )
+                .unwrap();
+                recorded.lock().unwrap().push(request);
+                let _ = std::fs::remove_file(entry.path());
+                answered += 1;
             }
         });
         seen
@@ -2284,7 +2547,7 @@ mod tests {
         // The Desktop's lock is released on drop; the probe is the same
         // `desktop_running` the command uses, injected so the wait can be cut short.
         drop(_desktop);
-        let error = wait_for_answer(&answer, &|| true, &|| false)
+        let error = wait_for_answer(&answer, &|| true, &|| false, "nothing was paired")
             .await
             .expect_err("a Desktop that stopped must not look like a slow one");
         assert!(error.contains("stopped before it answered"), "{error}");
@@ -2301,7 +2564,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let answer = home.path().join("never-written.json");
 
-        let unclaimed = wait_for_answer(&answer, &|| true, &|| true)
+        let unclaimed = wait_for_answer(&answer, &|| true, &|| true, "nothing was paired")
             .await
             .expect_err("an unclaimed request times out");
         assert!(
@@ -2315,7 +2578,7 @@ mod tests {
         // another device" cannot be the explanation for this one.
         assert!(!unclaimed.contains("busy pairing"), "{unclaimed}");
 
-        let claimed = wait_for_answer(&answer, &|| false, &|| true)
+        let claimed = wait_for_answer(&answer, &|| false, &|| true, "nothing was paired")
             .await
             .expect_err("a claimed request that never answers times out");
         assert!(

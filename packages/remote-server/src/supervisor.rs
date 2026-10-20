@@ -27,10 +27,12 @@ pub use publisher::PublisherTiming;
 pub use status::StatusProjection;
 
 mod context;
+mod link;
 mod runtime;
 mod shutdown;
 mod start;
 mod transport;
+pub use link::{ClientLink, CLIENT_PRESENCE_BEAT, CLIENT_PRESENCE_FEATURE, CLIENT_PRESENCE_LEASE};
 pub use runtime::{RuntimeOptions, TaskExecutor, ValidationSurface};
 pub use shutdown::{
     abort_generation, power_transition, send_mobile_disconnect_notice, PowerEvent, PowerTransition,
@@ -263,6 +265,16 @@ impl Supervisor {
             .map(|shared| shared.client_identity.clone())
     }
 
+    /// Whether the client on `pair_id` is still there, and the record that
+    /// answers it.
+    ///
+    /// An unknown pairing gets a fresh link rather than reporting somebody
+    /// else's client as present: presence belongs to the pairing it was proved
+    /// on, exactly like the identity above.
+    pub fn client_link(&self, pair_id: &str) -> Arc<link::ClientLink> {
+        self.shared_or_insert(pair_id).client_link
+    }
+
     /// The live-lane capabilities declared for `pair_id`. Always off for a
     /// connection that has not declared them: capability is never inherited
     /// from whoever connected before.
@@ -302,6 +314,7 @@ impl Supervisor {
                 catalog_activity: Arc::new(AtomicBool::new(false)),
                 lean_events: Arc::new(AtomicBool::new(false)),
                 client_identity: Arc::new(Mutex::new(None)),
+                client_link: Arc::new(link::ClientLink::default()),
                 next_generation_id: Arc::new(AtomicU64::new(1)),
                 handshake: Arc::new(Mutex::new(None)),
                 invitation: None,
@@ -518,6 +531,64 @@ impl Supervisor {
         }
     }
 
+    /// The client on `pair_id` said it is leaving (`client_disconnect`).
+    ///
+    /// The machine stops treating it as the one in front of it: a pointer it
+    /// held is released. If exactly one *other* device is actually present, the
+    /// machine goes to it — that device was waiting behind a controller that has
+    /// gone, and handing it over is what "the connected one takes over" means now
+    /// that the departed one is not connected. Several others is no promotion:
+    /// choosing one for them would decide who is sitting in front of the computer,
+    /// which is their own call (their row offers "let this control").
+    ///
+    /// Releasing only touches the in-memory pointer, like
+    /// [`Supervisor::disconnect_device`]: the book keeps naming the device, so it
+    /// takes the machine back by reconnecting once nobody else holds it.
+    pub fn client_left(self: &Arc<Self>, pair_id: &str) {
+        self.client_link(pair_id).depart();
+        self.release_control(pair_id);
+        let present = self.present_devices_except(pair_id);
+        if let [only] = present.as_slice() {
+            self.claim_control_soon(only);
+            self.publish_control(only, "active");
+        }
+    }
+
+    /// Nobody holds the machine, and `pair_id`'s client is the only one here.
+    ///
+    /// The one case a *reconnect* may take control: a device that disconnected
+    /// (and so gave the machine up, see [`Supervisor::client_left`]) is coming
+    /// back as the only client in front of the computer. Without this it would
+    /// return as a standby and need its user to ask for the machine it alone is
+    /// using — which is the same trap the first-handshake rule avoids for a
+    /// fresh pairing.
+    ///
+    /// Deliberately narrow. A pointer names somebody ⇒ not this; another client
+    /// is present ⇒ not this (choosing between them is their own decision, the
+    /// rule every other promotion path follows). Two devices reconnecting at
+    /// the same instant can both see the machine unowned; one of them wins and
+    /// the other's next handshake is a plain reconnect, so the pair cannot
+    /// evict each other in a loop.
+    pub fn alone_and_unowned(&self, pair_id: &str) -> bool {
+        self.active_pair().is_none() && self.present_devices_except(pair_id).is_empty()
+    }
+
+    /// The devices whose clients are actually there right now, minus `except`.
+    fn present_devices_except(&self, except: &str) -> Vec<String> {
+        // `state` first, then `bridge_shared` through `client_link` — the same
+        // order the status projection takes them in.
+        let states = self.state.lock().unwrap();
+        states
+            .iter()
+            .filter(|(pair_id, state)| {
+                pair_id.as_str() != except
+                    && status::connected(state)
+                    && self.client_link(pair_id).present()
+            })
+            .map(|(pair_id, _)| pair_id.clone())
+            .collect()
+    }
+
     pub fn cancel_tasks(&self) {
         let tasks = std::mem::take(&mut *self.tasks.lock().unwrap());
         for task in &tasks {
@@ -558,6 +629,14 @@ pub struct BridgeRuntimeShared {
     /// invitation does start a new runtime, which is right — a different device
     /// may claim it.
     pub client_identity: Arc<Mutex<Option<ClientIdentity>>>,
+    /// Whether the device's client is still at the other end (see
+    /// [`link::ClientLink`]).
+    ///
+    /// Spans generations for the same reason as the identity above: a credential
+    /// refresh reconnects the *same* client, which is here either way, while a
+    /// new invitation starts a new runtime — and an empty room until somebody
+    /// claims it.
+    pub client_link: Arc<link::ClientLink>,
     pub bridge_instance_id: String,
     pub drop_counters: Arc<DropCounters>,
     pub next_generation_id: Arc<AtomicU64>,
@@ -641,6 +720,7 @@ impl Supervisor {
             catalog_activity: Arc::new(AtomicBool::new(false)),
             lean_events: Arc::new(AtomicBool::new(false)),
             client_identity: Arc::new(Mutex::new(None)),
+            client_link: Arc::new(link::ClientLink::default()),
             next_generation_id: Arc::new(AtomicU64::new(1)),
             handshake: Arc::new(Mutex::new(None)),
             invitation,

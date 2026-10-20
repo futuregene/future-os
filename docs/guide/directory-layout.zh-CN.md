@@ -47,7 +47,7 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 ├── windows-capabilities.json  # Windows 沙箱 ACL 清理元数据
 ├── run/
 │   ├── agent.sock             # Unix IPC 端点（Windows 不使用）
-│   └── remote-control/        # 瞬态配对请求（`future remote devices add`）
+│   └── remote-control/        # 瞬态设备请求（`future remote devices add|remove`）
 └── bin/                       # CLI / agent 链接：`future`、`future-agent`（见下）
 ```
 
@@ -195,7 +195,7 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
 这里没有数据，只有「运行中的进程」和「终端」互相找到对方的方式。
 
 - `agent.sock` —— Agent 的 Unix IPC 端点（Windows 用命名管道；指定 `--grpc-addr` 时走 TCP）。见上文的端点章节。
-- `remote-control/` —— `future remote devices add` 用来向运行中的 Desktop 请求配对邀请的请求/回复文件。请求里写的是发起进程自己在系统临时目录建好的回复路径，所以这个目录除了「即将被打印出来的邀请」之外没有别的秘密，也从不进入备份：被恢复的请求只指向一个早已退出的读者。超过两分钟的请求会被 Desktop 删除而不是执行。见 [desktop-headless.zh-CN.md](desktop-headless.zh-CN.md) §3.1。
+- `remote-control/` —— `future remote devices add|remove` 用来请求运行中的 Desktop 签发邀请、或停止服务某台设备的请求/回复文件。请求里写的是发起进程自己在系统临时目录建好的回复路径，所以这个目录除了「即将被打印出来的邀请」之外没有别的秘密，也从不进入备份：被恢复的请求只指向一个早已退出的读者。超过两分钟的请求会被 Desktop 删除而不是执行。见 [desktop-headless.zh-CN.md](desktop-headless.zh-CN.md) §3.1。
 
 ## `~/.future/workspaces/chat/` — 聊天工作区
 
