@@ -206,6 +206,15 @@ would cancel the code the user was just handed), and minting on a machine whose
 book was just emptied (`remove --all`) first stops the bridges that outlived their
 credentials.
 
+Adding is two round trips, and the second one is the one that fails on a bad
+day: the platform mints the code, then this machine has to connect the bridge
+that will serve it. A broker that is not answering yet gets *the same* invitation
+retried (three attempts, sub-second backoff) rather than a second code — minting
+again would leave a row on the platform that counts towards the cap, while the
+user is looking at the first — and a failure that outlasts the budget is returned
+with its class (`network`, `service_authorization`, `account_authorization`), so
+the window can name the next step instead of "try again later".
+
 Valid login and pairing are reused; no proactive re-pairing on every launch or
 disconnect. The invitation is printed as a QR code with its complete link, with
 automatic fallback to the link alone on narrow terminals — which is why no flag

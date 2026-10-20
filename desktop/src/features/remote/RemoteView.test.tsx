@@ -554,4 +554,45 @@ describe("adding a connection", () => {
       consoleError.mockRestore();
     }
   });
+
+  /// The bridge is started *after* the code is minted, so an add can fail on a
+  /// machine whose remote desktop is already on — the broker was not reachable
+  /// when the invitation's bridge went up. That is a different next step
+  /// (check the network, retry) from "something went wrong", and saying so is
+  /// the whole point: the raw message names NATS, which no user can act on.
+  it("tells a broker that could not be reached apart from an unknown failure", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await mount({
+        remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control] }),
+      });
+      addRemoteDevice.mockRejectedValue(new Error("Failed to connect to NATS: IO error: Connection refused"));
+      await act(async () => buttonByText("Add a device")!.click());
+      await flush();
+      expect(container.textContent).toContain("Network unavailable. Check your connection and try again later. (NW001)");
+      expect(container.textContent).not.toContain("LC999");
+      expect(container.textContent).not.toContain("Failed to connect to NATS");
+      expect(addDialog()).toBeNull();
+    }
+    finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("asks for a sign-in again when the account is what refused the invitation", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await mount({
+        remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control] }),
+      });
+      addRemoteDevice.mockRejectedValue(new Error("Not signed in to FutureOS."));
+      await act(async () => buttonByText("Add a device")!.click());
+      await flush();
+      expect(container.textContent).toContain("Your FutureOS sign-in has expired. Sign in again.");
+      expect(addDialog()).toBeNull();
+    }
+    finally {
+      consoleError.mockRestore();
+    }
+  });
 });
