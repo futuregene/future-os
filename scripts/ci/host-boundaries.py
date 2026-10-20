@@ -10,12 +10,12 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--target', help='Target triple; defaults to the rustc host')
 args = parser.parse_args()
 host_triple = next(line.split(': ', 1)[1] for line in subprocess.check_output(
-    ['rustc', '-vV'], cwd=ROOT, text=True).splitlines() if line.startswith('host: '))
+    ['rustc', '-vV'], cwd=ROOT, text=True, encoding='utf-8').splitlines() if line.startswith('host: '))
 target = args.target or host_triple
 metadata = json.loads(subprocess.check_output([
     'cargo', 'metadata', '--offline', '--locked', '--format-version', '1',
     '--filter-platform', target,
-], cwd=ROOT, text=True))
+], cwd=ROOT, text=True, encoding='utf-8'))
 packages = {package['id']: package for package in metadata['packages']}
 nodes = {node['id']: node for node in metadata['resolve']['nodes']}
 

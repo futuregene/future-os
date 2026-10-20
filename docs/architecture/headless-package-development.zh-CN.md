@@ -278,7 +278,7 @@ CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建
 | 1 | 已建立无 GUI 普通库、任务注册、展示出口和消费者依赖；完整生命周期/配置边界未完成 |
 | 2 | Store、凭据/平台、身份/锁、review、文件、Agent 客户端/托管与请求归属已迁入；完整业务桥、Remote、维护和停止协调未迁入 |
 | 3 | 尚未实现；产品入口仍是 `futureos-headless` |
-| 4 | 已迁移 498 个原测试声明；中间 CI 含失败和待验证批次，真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
+| 4 | 已迁移 498 个原测试声明并在本地 macOS 执行通过；该候选跨平台 CI、真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
 | 5 | 已加宿主 CI 分组和 affected 传播；构建、发行物、签名/安装/升级/卸载未完成 |
 | 6 | 尚未开始；无最终冻结候选、同条件性能、产物验收或确认的人工结果 |
 
@@ -339,3 +339,9 @@ CI `39358154196` 的 headless 进程组失败于 `a_reconnect_with_a_pre_v2_slot
 Agent 的状态、发现/兼容性决策、服务锁作用域、准备、readiness、取消、停止与有界清理迁入 `host/src/agent_host.rs`。Desktop 仅保留原生执行驱动：创建 probe runtime，驱动共享选择 future 并销毁 probe；共享库取得原有 Agent 服务许可并准备服务后，入口创建并驱动 Agent runtime。入口先按原 1 秒上限销毁 runtime，再退出共享服务的借用作用域，最后由 Agent 原有清理验证决定释放或保留实例锁。保留 2 个 worker、32 个 blocking thread、2 MiB stack 和原有启动/停止期限。共享生产服务没有 runtime 构造或 `block_on`，不公开内部状态锁或 Agent 数据库。
 
 22 个原声明及真实 RPC、数据库导入、FIFO 阻塞、进程/Shell 退出、内置/外部 Agent 归属断言一并迁入独立宿主测试。停止前拒绝启动的库用例直接关闭共享 admission；Desktop 的完整退出协调测试继续验证入口接线。日志路径和镜像也迁入宿主，仍是 `app/logs/desktop.log`，CLI 发现报告留在入口。宿主单包、GUI/CLI 组合、旧 headless Clippy `--all-targets` 和 fmt 通过，详见[验证记录](../testing/headless-host-agent-owner-2026-10-20.json)。本批尚未执行测试且晚于当前 CI 候选，不能用编译或上一候选的跨平台宿主成功替代生命周期验收。完整业务桥、Remote 宿主、调度及整体退出协调仍未完成。
+
+### 2026-10-20 Windows 依赖图编码修复与独立宿主本地执行
+
+CI `39361847974` 的 Windows Desktop 编译通过，原缺失 trait 已修复；新增依赖图步骤却按 Windows 默认编码解码 Cargo UTF-8 JSON，产生 `UnicodeDecodeError`，导致后续原生生命周期和产物步骤未运行。脚本现在对 rustc/Cargo 输出显式指定 UTF-8，所有 GUI 依赖断言保持不变。本地真实 metadata 可复现 cp1252 解码错误；强制默认编码为 cp1252 后运行修复脚本，实际依赖遍历及全部断言通过，见[编码修复证据](../testing/headless-host-boundary-encoding-2026-10-20.json)。Windows 原生验证依用户安排继续由 CI 执行。
+
+按本地先测再开下一轮 CI 的安排，在 `caa99a78` 的共享宿主源码上运行独立 `cargo test -p future-host`：500 项通过、0 失败、0 忽略，10.31 秒；原有一个 `record_macro` 文档示例仍为 ignored，未新增跳过。无需 Desktop 或 npm 环境；500 项包含 498 个迁移原声明和 2 个新增事件出口测试，按实际输出逐项关联迁移清单，状态 `migrated-local-pass` 仅表示本地 macOS 通过。真实旧 headless 入口文件另有 13 项通过（7.51 秒），Remote 进程文件也有 13 项通过（184.80 秒），两份真实入口文件共 26 项通过、0 失败、0 忽略。详见[本地执行记录](../testing/headless-host-local-2026-10-20.json)。这不是最终 `future headless` CLI 入口验收，也不代表跨平台或性能验收完成。
