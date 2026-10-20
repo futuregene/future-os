@@ -364,43 +364,8 @@ pub(crate) fn prepare_path() -> Result<(), crate::AppError> {
 /// Restores a process-global environment variable when it is dropped, including
 /// while the test that replaced it is unwinding.
 ///
-/// `cargo test` runs every test of one target in ONE process, so a value left
-/// behind by a panicking assertion is inherited by unrelated tests: replacing
-/// `PATH` with a fixture directory and panicking before the restore made 25
-/// later tests in `commands::*`/`git_review::*` fail with `NotFound` while
-/// spawning `git` (FLAKES.md item 27, measured in `docs/testing/flaky-tauri.md`).
-/// Holding a `Mutex` is not a substitute — a lock prevents a race between tests,
-/// it does not restore a leaked value — so a global-state test needs both.
-///
-/// ```text
-/// let _path = EnvGuard::set("PATH", directory.as_os_str());
-/// ```
 #[cfg(test)]
-#[must_use = "the previous value is restored when the guard is dropped; bind it to a variable"]
-pub(crate) struct EnvGuard {
-    key: &'static str,
-    saved: Option<std::ffi::OsString>,
-}
-
-#[cfg(test)]
-impl EnvGuard {
-    /// Replaces the variable `key` and remembers what to put back on drop.
-    pub(crate) fn set(key: &'static str, value: &std::ffi::OsStr) -> Self {
-        let saved = std::env::var_os(key);
-        std::env::set_var(key, value);
-        Self { key, saved }
-    }
-}
-
-#[cfg(test)]
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        match self.saved.take() {
-            Some(value) => std::env::set_var(self.key, value),
-            None => std::env::remove_var(self.key),
-        }
-    }
-}
+pub(crate) use future_host::test_support::EnvGuard;
 
 #[cfg(test)]
 mod tests {

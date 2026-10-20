@@ -263,3 +263,21 @@ Agent 事件投影和失效通知也随原 Remote sink 迁入宿主，与 GUI �
 ### 2026-10-20 宿主 CI 归属
 
 CI 新增独立的 `future-host` Rust 测试分组。宿主源码及共享构建/schema/Remote 输入选中该归属；宿主变更也选中 CLI、GUI、原生生命周期消费者，不仅因 Rust 宿主迁移就选中 Mobile 或前端单元套件。现有 Desktop 静态检查阶段增加联合 GUI feature 的依赖边界验证。实施分支使用完整 workflow dispatch 验收，不创建 PR、不在本地运行测试；具体 CI run 完成前均记为待验证。
+
+### 2026-10-20 身份、实例锁与 review 后端
+
+稳定安装身份、Future home 解析及现有 `app/desktop.lock` 实现迁入共享宿主，包含默认目录兼容和 GUI single-instance 命名空间派生。Git/shadow review 及真实文件系统/Git 测试也随之迁入，保持用户仓库只读、原有私有 review 目录、归属和保留策略。Desktop 保留导入适配；删除已无调用者的解析器/子进程薄转发。复用的测试环境 guard 随调用者迁移；CLI 发现仍作为入口能力留于 Desktop。
+
+本批迁移 75 个原测试声明。原测试名保持可追踪；清单累计记录 427 个已迁入声明、9 个过渡协调用例及仍需审查的 412 个混合模块用例。宿主单包、GUI/CLI 联合和原 headless 的 Clippy `--all-targets`、fmt、依赖边界通过。[证据](../testing/headless-host-identity-review-2026-10-20.json)也记录提交 `b5bd2f53` 上的中间 CI [39356975686](https://github.com/futuregene/future-os/actions/runs/39356975686)：快照仍待完成，宿主 job 正在运行，且不含本批改动，不能作为 CI 通过、运行或最终候选验收。
+
+当前阶段状态：
+
+| 阶段 | 实际状态 |
+|---|---|
+| 0 | 已固定源码/依赖基线与按名清单；同条件构建/运行测量及剩余归属审查未完成 |
+| 1 | 已建立无 GUI 普通库、任务注册、展示出口和消费者依赖；完整生命周期/配置边界未完成 |
+| 2 | Store、凭据/平台、身份/锁、review 及工具已迁入；Agent 托管、业务桥、Remote、维护和停止协调未迁入 |
+| 3 | 尚未实现；产品入口仍是 `futureos-headless` |
+| 4 | 已迁移 427 个声明；中间 CI 待完成，真实 CLI 进程测试迁移及剩余核心覆盖未完成 |
+| 5 | 已加宿主 CI 分组和 affected 传播；构建、发行物、签名/安装/升级/卸载未完成 |
+| 6 | 尚未开始；无最终冻结候选、同条件性能、产物验收或确认的人工结果 |

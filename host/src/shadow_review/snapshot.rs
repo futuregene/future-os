@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::store::{self, CreateReviewSnapshotInput, ReviewSnapshotRecord};
-use crate::AppError;
+use crate::Error;
 
 use super::policy::{self, Disposition, Limits};
 use super::repository::ShadowRepo;
@@ -26,7 +26,7 @@ pub fn capture(
     run_id: &str,
     phase: &str,
     limits: &Limits,
-) -> Result<CaptureOutcome, AppError> {
+) -> Result<CaptureOutcome, Error> {
     let tag = format!("{run_id}.{phase}");
     let temp_index = repo.prepare_temp_index(&tag)?;
 
@@ -136,7 +136,7 @@ pub fn record_failure(
     run_id: &str,
     phase: &str,
     error: &str,
-) -> Result<ReviewSnapshotRecord, AppError> {
+) -> Result<ReviewSnapshotRecord, Error> {
     store::create_review_snapshot(CreateReviewSnapshotInput {
         workspace_id: repo.workspace_id.clone(),
         thread_id: thread_id.to_string(),
@@ -151,7 +151,7 @@ pub fn record_failure(
 /// The changed candidate set: modified/deleted tracked files plus untracked
 /// files, deduped (§5.2). Uses the temp index's stat cache so unchanged files
 /// are never opened.
-fn candidate_paths(repo: &ShadowRepo, index: &Path) -> Result<Vec<String>, AppError> {
+fn candidate_paths(repo: &ShadowRepo, index: &Path) -> Result<Vec<String>, Error> {
     let mut set: Vec<String> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -180,7 +180,7 @@ fn filter_ignored(
     repo: &ShadowRepo,
     index: &Path,
     paths: &[String],
-) -> Result<(Vec<String>, usize), AppError> {
+) -> Result<(Vec<String>, usize), Error> {
     if paths.is_empty() {
         return Ok((Vec::new(), 0));
     }
@@ -220,7 +220,7 @@ struct StageOutcome {
 /// Stage only the given candidate paths (`--all` so deletions are recorded).
 /// If an untracked path becomes ignored after candidate discovery, drop it and
 /// retry once so one expected exclusion cannot fail the entire snapshot.
-fn stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<StageOutcome, AppError> {
+fn stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<StageOutcome, Error> {
     let (paths, ignored) = filter_ignored(repo, index, paths)?;
     if paths.is_empty() {
         return Ok(StageOutcome { paths, ignored });
@@ -247,7 +247,7 @@ fn stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<StageOutco
     }
 }
 
-fn try_stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<(), AppError> {
+fn try_stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<(), Error> {
     let stdin = paths.join("\0").into_bytes();
     let add_args: &[&str] = &[
         "add",
@@ -273,7 +273,7 @@ fn try_stage(repo: &ShadowRepo, index: &Path, paths: &[String]) -> Result<(), Ap
 }
 
 /// When capturing `after`, reuse the `before` commit if the trees match.
-fn reuse_commit(run_id: &str, phase: &str, tree_id: &str) -> Result<Option<String>, AppError> {
+fn reuse_commit(run_id: &str, phase: &str, tree_id: &str) -> Result<Option<String>, Error> {
     if phase != "after" {
         return Ok(None);
     }
@@ -560,7 +560,7 @@ mod tests {
         let index = s.repo.prepare_temp_index("filter-ignored-spawn").unwrap();
         // A `PATH` with no `git` in it: the spawn itself fails.
         let empty = tempfile::tempdir().unwrap();
-        let _path = crate::cli_tool::EnvGuard::set("PATH", empty.path().as_os_str());
+        let _path = crate::test_support::EnvGuard::set("PATH", empty.path().as_os_str());
 
         let error = filter_ignored(&s.repo, &index, &["keep.txt".to_string()])
             .expect_err("a git that cannot be spawned must be reported")

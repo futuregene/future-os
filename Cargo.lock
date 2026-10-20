@@ -1983,6 +1983,7 @@ name = "future-host"
 version = "0.0.0"
 dependencies = [
  "chrono",
+ "fs2",
  "future-agent",
  "future-app-settings",
  "future-app-workspaces",
@@ -1992,6 +1993,8 @@ dependencies = [
  "futures",
  "fuzzy-matcher",
  "ignore",
+ "libc",
+ "nkeys",
  "rand 0.8.7",
  "reqwest 0.13.4",
  "rusqlite",

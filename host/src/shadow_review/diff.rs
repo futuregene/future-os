@@ -6,7 +6,7 @@ use std::collections::HashMap;
 
 use crate::git_diff_parse::{normalize_numstat_path, parse_numstat, split_unified_patch_by_path};
 use crate::store::InsertReviewFileChangeInput;
-use crate::AppError;
+use crate::Error;
 
 use super::policy::Limits;
 use super::repository::ShadowRepo;
@@ -28,7 +28,7 @@ pub fn materialize(
     before_commit: &str,
     after_commit: &str,
     limits: &Limits,
-) -> Result<MaterializedDiff, AppError> {
+) -> Result<MaterializedDiff, Error> {
     let entries = name_status(repo, before_commit, after_commit)?;
     let stats = numstat(repo, before_commit, after_commit)?;
     let patches = split_unified_patch_by_path(&unified_patch(repo, before_commit, after_commit)?);
@@ -130,7 +130,7 @@ struct FileEntry {
 }
 
 /// `--name-status -z`: authoritative file list, change types and rename pairs.
-fn name_status(repo: &ShadowRepo, before: &str, after: &str) -> Result<Vec<FileEntry>, AppError> {
+fn name_status(repo: &ShadowRepo, before: &str, after: &str) -> Result<Vec<FileEntry>, Error> {
     let args: &[&str] = &[
         "-c",
         "core.quotePath=false",
@@ -191,7 +191,7 @@ fn numstat(
     repo: &ShadowRepo,
     before: &str,
     after: &str,
-) -> Result<HashMap<String, (i64, i64, bool)>, AppError> {
+) -> Result<HashMap<String, (i64, i64, bool)>, Error> {
     let args: &[&str] = &[
         // Keep paths literal so they key against the `-z` name-status paths.
         "-c",
@@ -219,7 +219,7 @@ fn numstat(
         .collect())
 }
 
-fn unified_patch(repo: &ShadowRepo, before: &str, after: &str) -> Result<String, AppError> {
+fn unified_patch(repo: &ShadowRepo, before: &str, after: &str) -> Result<String, Error> {
     let args: &[&str] = &[
         "-c",
         "core.quotePath=false",

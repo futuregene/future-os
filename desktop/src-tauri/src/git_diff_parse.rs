@@ -1,2 +1,0 @@
-//! Desktop adapter imports the shared host implementation.
-pub(crate) use future_host::git_diff_parse::*;

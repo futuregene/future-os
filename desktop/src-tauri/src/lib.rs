@@ -22,7 +22,6 @@ mod device_identity;
 mod error;
 mod future_login;
 mod future_platform;
-mod git_diff_parse;
 mod git_review;
 pub mod headless;
 mod host_environment;
@@ -46,7 +45,6 @@ mod linux_power;
 mod macos_power;
 #[cfg(all(feature = "gui", target_os = "macos"))]
 mod menu;
-mod proc;
 mod remote;
 mod remote_host;
 mod remote_peer;
@@ -83,20 +81,7 @@ fn install_rustls_provider() {
     future_host::install_rustls_provider();
 }
 
-/// FutureOS home root (`<home>/agent`, `<home>/tasks`, …), normally `~/.future`.
-///
-/// `FUTURE_HOME` replaces the whole root (matching the agent); otherwise the
-/// desktop app dir's parent is used, so the tasks store and the GUI store can
-/// never disagree about which home they belong to.
-pub(crate) fn future_home_root() -> std::path::PathBuf {
-    if let Some(override_dir) = future_rpc::home::future_home_override() {
-        return override_dir;
-    }
-    future_app_settings::app_dir()
-        .ok()
-        .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
-        .unwrap_or_else(|| std::env::temp_dir().join(".future"))
-}
+pub(crate) use future_host::future_home_root;
 
 pub(crate) use future_host::events::{
     emit_remote_activity, emit_review_updated, emit_thread_runtime_updated, emit_threads_updated,

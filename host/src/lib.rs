@@ -8,8 +8,8 @@ mod error;
 pub use error::Error;
 
 pub mod approval_rules;
-pub mod git_diff_parse;
-pub mod proc;
+mod git_diff_parse;
+mod proc;
 pub mod run_error;
 
 pub mod runtime;
@@ -21,7 +21,7 @@ pub mod build_info;
 pub mod future_platform;
 mod home;
 pub mod skills;
-pub use home::home_dir;
+pub use home::{future_home_root, home_dir};
 
 pub fn install_rustls_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -34,3 +34,10 @@ pub static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub mod agent_events;
 pub mod store;
 pub(crate) use events::{emit_approvals_updated, emit_thread_runtime_updated};
+
+pub mod device_identity;
+pub mod git_review;
+pub mod instance;
+pub mod shadow_review;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;

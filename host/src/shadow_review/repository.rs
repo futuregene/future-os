@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
-use crate::AppError;
+use crate::Error;
 
-fn review_root() -> Result<PathBuf, AppError> {
+fn review_root() -> Result<PathBuf, Error> {
     let app_dir = crate::store::app_data_path()?.app_dir;
     Ok(PathBuf::from(app_dir).join("review"))
 }
@@ -35,8 +35,8 @@ fn workspace_lock(workspace_id: &str) -> Arc<Mutex<()>> {
 /// lock guards storage integrity only, not semantic attribution (§12.5).
 pub fn with_workspace_lock<T>(
     workspace_id: &str,
-    f: impl FnOnce() -> Result<T, AppError>,
-) -> Result<T, AppError> {
+    f: impl FnOnce() -> Result<T, Error>,
+) -> Result<T, Error> {
     let lock = workspace_lock(workspace_id);
     let _guard = lock.lock().unwrap_or_else(|poison| poison.into_inner());
     f()
@@ -59,7 +59,7 @@ impl ShadowRepo {
         workspace_id: &str,
         workspace_path: &Path,
         is_git_workspace: bool,
-    ) -> Result<Self, AppError> {
+    ) -> Result<Self, Error> {
         let root = review_root()?.join(workspace_id);
         let indexes = root.join("indexes");
         let locks = root.join("locks");
@@ -84,7 +84,7 @@ impl ShadowRepo {
 
     /// A handle for GIT_DIR-only operations (ref deletion, gc, commit existence)
     /// that don't need the work tree or initialization. Used by maintenance.
-    pub fn open_bare(workspace_id: &str) -> Result<Self, AppError> {
+    pub fn open_bare(workspace_id: &str) -> Result<Self, Error> {
         let root = review_root()?.join(workspace_id);
         Ok(Self {
             workspace_id: workspace_id.to_string(),
@@ -121,7 +121,7 @@ impl ShadowRepo {
         args: &[&str],
         index: Option<&Path>,
         stdin: Option<&[u8]>,
-    ) -> Result<Output, AppError> {
+    ) -> Result<Output, Error> {
         use std::io::Write;
 
         let mut cmd = self.base_command(index);
@@ -149,7 +149,7 @@ impl ShadowRepo {
     }
 
     /// Run a shadow git command, returning trimmed stdout on success.
-    pub fn git(&self, args: &[&str], index: Option<&Path>) -> Result<String, AppError> {
+    pub fn git(&self, args: &[&str], index: Option<&Path>) -> Result<String, Error> {
         let output = self.run(args, index, None)?;
         check_status(args, &output)?;
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -157,7 +157,7 @@ impl ShadowRepo {
 
     /// Run a shadow git command, returning raw stdout bytes on success
     /// (binary-safe — used for diff output).
-    pub fn git_bytes(&self, args: &[&str], index: Option<&Path>) -> Result<Vec<u8>, AppError> {
+    pub fn git_bytes(&self, args: &[&str], index: Option<&Path>) -> Result<Vec<u8>, Error> {
         let output = self.run(args, index, None)?;
         check_status(args, &output)?;
         Ok(output.stdout)
@@ -166,7 +166,7 @@ impl ShadowRepo {
     // ── tree / commit / ref ─────────────────────────────────────────────────
 
     /// `commit-tree` a snapshot tree with the FutureOS Snapshot identity (§5.3).
-    pub fn commit_tree(&self, tree_id: &str, message: &str) -> Result<String, AppError> {
+    pub fn commit_tree(&self, tree_id: &str, message: &str) -> Result<String, Error> {
         let mut cmd = self.base_command(None);
         cmd.env("GIT_AUTHOR_NAME", "FutureOS Snapshot")
             .env("GIT_AUTHOR_EMAIL", "snapshot@futureos.local")
@@ -182,7 +182,7 @@ impl ShadowRepo {
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
     }
 
-    pub fn update_ref(&self, name: &str, commit: &str) -> Result<(), AppError> {
+    pub fn update_ref(&self, name: &str, commit: &str) -> Result<(), Error> {
         self.git(&["update-ref", name, commit], None)?;
         Ok(())
     }
@@ -203,7 +203,7 @@ impl ShadowRepo {
     }
 
     /// Delete a ref (no-op if it doesn't exist).
-    pub fn delete_ref(&self, name: &str) -> Result<(), AppError> {
+    pub fn delete_ref(&self, name: &str) -> Result<(), Error> {
         // `update-ref -d` errors if the ref is already gone — tolerate it.
         let _ = self.run(&["update-ref", "-d", name], None, None)?;
         Ok(())
@@ -220,7 +220,7 @@ impl ShadowRepo {
     /// Copy the persisted shadow index to an isolated temp index and return its
     /// path. When no persisted index exists yet (first snapshot), the temp path
     /// is returned uncreated — git creates it on first write.
-    pub fn prepare_temp_index(&self, tag: &str) -> Result<PathBuf, AppError> {
+    pub fn prepare_temp_index(&self, tag: &str) -> Result<PathBuf, Error> {
         let temp = self.git_dir.join(format!("index.tmp.{tag}"));
         let _ = fs::remove_file(&temp);
         if self.index_path.exists() {
@@ -230,7 +230,7 @@ impl ShadowRepo {
     }
 
     /// Atomically promote a temp index to the persisted index (same filesystem).
-    pub fn commit_temp_index(&self, temp: &Path) -> Result<(), AppError> {
+    pub fn commit_temp_index(&self, temp: &Path) -> Result<(), Error> {
         if temp.exists() {
             fs::rename(temp, &self.index_path)?;
         }
@@ -240,7 +240,7 @@ impl ShadowRepo {
     /// Merge extra lines into the shadow repo's `info/exclude` (§5.5 boundary 1
     /// and oversized-untracked handling). `base` is the real repo's
     /// `info/exclude` content (empty for non-git Workspaces).
-    pub fn write_info_exclude(&self, lines: &[String]) -> Result<(), AppError> {
+    pub fn write_info_exclude(&self, lines: &[String]) -> Result<(), Error> {
         let info = self.git_dir.join("info");
         fs::create_dir_all(&info)?;
         let body = lines.join("\n");
@@ -269,7 +269,7 @@ impl ShadowRepo {
 
     // ── initialization ──────────────────────────────────────────────────────
 
-    fn ensure_initialized(&self) -> Result<(), AppError> {
+    fn ensure_initialized(&self) -> Result<(), Error> {
         if self.git_dir.join("HEAD").exists() {
             return Ok(());
         }
@@ -282,7 +282,7 @@ impl ShadowRepo {
         Ok(())
     }
 
-    fn git_init(&self) -> Result<(), AppError> {
+    fn git_init(&self) -> Result<(), Error> {
         let output = self
             .base_command(None)
             .args(["init", "--quiet"])
@@ -297,7 +297,7 @@ impl ShadowRepo {
     /// NUL as an exclude file"), while an empty file behaves the same
     /// everywhere. Lives inside the shadow git dir, which `ensure_initialized`
     /// creates before this runs.
-    fn ensure_empty_excludes_file(&self) -> Result<PathBuf, AppError> {
+    fn ensure_empty_excludes_file(&self) -> Result<PathBuf, Error> {
         let path = self.git_dir.join("empty-excludes");
         if !path.exists() {
             fs::write(&path, b"")?;
@@ -305,7 +305,7 @@ impl ShadowRepo {
         Ok(path)
     }
 
-    fn configure(&self) -> Result<(), AppError> {
+    fn configure(&self) -> Result<(), Error> {
         // §5.2: autocrlf/symlinks are correctness; the rest are large-repo perf.
         // Forward slashes in the excludes path: unquoted backslashes are
         // escape characters in git config syntax, and git accepts `/` paths
@@ -333,7 +333,7 @@ impl ShadowRepo {
     /// Share the real repo's object DB (alternates) and seed the shadow index
     /// from its index, so a huge repo's first snapshot avoids a full re-hash
     /// (§5.2). Best-effort: any failure just falls back to a full snapshot.
-    fn seed_from_real_repo(&self) -> Result<(), AppError> {
+    fn seed_from_real_repo(&self) -> Result<(), Error> {
         let common =
             match self.real_git(&["rev-parse", "--path-format=absolute", "--git-common-dir"]) {
                 Ok(value) => value.trim().to_string(),
@@ -373,7 +373,7 @@ impl ShadowRepo {
 
     /// Run git against the user's *real* repo (no GIT_DIR override), used only
     /// for read-only seeding lookups.
-    fn real_git(&self, args: &[&str]) -> Result<String, AppError> {
+    fn real_git(&self, args: &[&str]) -> Result<String, Error> {
         use crate::proc::NoWindow;
         let output = Command::new("git")
             .no_window()
@@ -387,7 +387,7 @@ impl ShadowRepo {
     }
 }
 
-fn check_status(args: &[&str], output: &Output) -> Result<(), AppError> {
+fn check_status(args: &[&str], output: &Output) -> Result<(), Error> {
     if output.status.success() {
         Ok(())
     } else {
@@ -460,7 +460,7 @@ mod tests {
         assert!(Arc::ptr_eq(&a, &b), "same id reuses the same lock");
         let other = workspace_lock("ws-lock-2");
         assert!(!Arc::ptr_eq(&a, &other));
-        with_workspace_lock("ws-lock", || Ok::<_, AppError>(42)).unwrap();
+        with_workspace_lock("ws-lock", || Ok::<_, Error>(42)).unwrap();
     }
 
     #[test]

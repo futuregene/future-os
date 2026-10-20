@@ -263,3 +263,21 @@ Agent event projection and invalidation also move to the host with their existin
 ### 2026-10-20 Host CI ownership
 
 CI now reports `future-host` tests as a separate Rust matrix group. Host source and shared build/schema/Remote inputs select this owner; host changes also select CLI, GUI and native lifecycle consumers without selecting Mobile or frontend unit suites merely because Rust host code moved. Combined GUI feature dependency validation runs with the existing Desktop quality pass. Full workflow dispatch on this implementation branch is the automation path; no PR is created and no local tests run. CI results remain pending until a concrete run completes.
+
+### 2026-10-20 Identity, instance lock and review backend
+
+Stable installation identity, Future home resolution and the existing `app/desktop.lock` implementation move to the shared host, including default-root compatibility and GUI single-instance namespace derivation. Git/shadow review and its real filesystem/Git tests also move, keeping the user's repository read-only and retaining the existing private review directory and attribution/retention policy. Desktop keeps import adapters; now-unused parser/process facades are removed. The reusable test environment guard moves with its users; CLI discovery remains in Desktop as an entry capability.
+
+75 original test declarations move in this batch. All original test names remain traceable; the inventory currently records 427 moved declarations in total, 9 intermediate coordination cases and 412 mixed-module cases still requiring review. Native host-only, combined GUI/CLI and original headless Clippy `--all-targets`, fmt and dependency checks pass. [Evidence](../testing/headless-host-identity-review-2026-10-20.json) also records interim CI run [39356975686](https://github.com/futuregene/future-os/actions/runs/39356975686) on `b5bd2f53`: its snapshot is pending, its host job is running, and it does not include this batch. No passing CI, runtime or final-candidate claim is made.
+
+Current phase status:
+
+| Phase | Actual status |
+|---|---|
+| 0 | Source/dependency baseline and named inventory captured; matched build/runtime measurements and remaining ownership review open |
+| 1 | Ordinary GUI-free crate, task registry, presentation outlet and consumer dependencies established; complete lifecycle/config boundary still open |
+| 2 | Store, credentials/platform, identity/lock, review and utility backend moved; Agent owner, bridge, Remote, maintenance and stop coordination remain |
+| 3 | Not implemented; the product entry is still `futureos-headless` |
+| 4 | 427 declarations moved; interim CI pending; real CLI process test migration and remaining core coverage open |
+| 5 | Host CI group and affected propagation added; builds, release artifacts, signing/install/update/uninstall still open |
+| 6 | Not started; no frozen final candidate, matched performance, artifact acceptance or confirmed manual results |

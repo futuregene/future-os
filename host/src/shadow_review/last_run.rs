@@ -9,7 +9,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::store;
-use crate::{git_review, AppError};
+use crate::{git_review, Error};
 
 /// The "last-run changes" payload for a Thread (§10.3).
 #[derive(Debug, Serialize)]
@@ -26,7 +26,7 @@ pub struct LastRunReviewData {
 /// Assemble the last-run payload from a resolved `run_snapshot` changeset.
 pub fn build_last_run_review(
     changeset: store::ReviewChangesetRecord,
-) -> Result<LastRunReviewData, AppError> {
+) -> Result<LastRunReviewData, Error> {
     let files = store::list_review_file_changes(&changeset.id)?;
     let run = changeset
         .run_id

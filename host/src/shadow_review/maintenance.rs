@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::store::{self, UpsertRunChangesetInput};
-use crate::AppError;
+use crate::Error;
 
 use super::diff::materialize;
 use super::policy::Limits;
@@ -24,7 +24,7 @@ pub fn enforce_retention(thread_id: &str) {
     }
 }
 
-fn try_enforce_retention(thread_id: &str) -> Result<(), AppError> {
+fn try_enforce_retention(thread_id: &str) -> Result<(), Error> {
     let pruned = store::prune_thread_changesets(thread_id, RETENTION_KEEP)?;
     if pruned.is_empty() {
         return Ok(());
@@ -61,7 +61,7 @@ fn verify_consistency() {
     }
 }
 
-fn try_verify_consistency() -> Result<(), AppError> {
+fn try_verify_consistency() -> Result<(), Error> {
     let mut repos: HashMap<String, Option<ShadowRepo>> = HashMap::new();
     for (snapshot_id, workspace_id, commit_id) in store::list_snapshots_with_commits()? {
         repos
@@ -88,7 +88,7 @@ fn recover_interrupted_runs() {
     }
 }
 
-fn try_recover_interrupted_runs() -> Result<(), AppError> {
+fn try_recover_interrupted_runs() -> Result<(), Error> {
     for (run_id, thread_id, workspace_id) in store::list_unmaterialized_runs()? {
         match recover_one(&run_id, &thread_id, &workspace_id) {
             Ok(()) => {}
@@ -100,7 +100,7 @@ fn try_recover_interrupted_runs() -> Result<(), AppError> {
     Ok(())
 }
 
-fn recover_one(run_id: &str, thread_id: &str, workspace_id: &str) -> Result<(), AppError> {
+fn recover_one(run_id: &str, thread_id: &str, workspace_id: &str) -> Result<(), Error> {
     let Some(before) = store::get_review_snapshot(run_id, "before")? else {
         return Ok(());
     };
