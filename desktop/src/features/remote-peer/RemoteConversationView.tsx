@@ -3,11 +3,12 @@ import type { ActivityTargetResolver } from "../agent/AgentActivityList";
 import type { RemotePeer } from "./remotePeerClient";
 import type { RemoteLiveReply } from "./remoteRunStreams";
 import type { RemoteApproval } from "./useRemoteApprovals";
-import { ArrowDown, Check, Folder, History, ReceiptText, X } from "lucide-react";
+import { ArrowDown, Check, History, ReceiptText, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
 import { MachineBadge } from "../../components/layout/MachineBadge";
+import { WorkspaceBadge } from "../../components/layout/WorkspaceBadge";
 import { Button } from "../../components/ui/Button";
 import { IconButton } from "../../components/ui/IconButton";
 import { startWindowDrag } from "../../lib/windowDrag";
@@ -349,26 +350,10 @@ export function RemoteConversationView({
                     label={peer ? peerBadgeText(peer, peer.desktopId) : desktopId}
                     title={peer?.name ?? peer?.desktopId ?? desktopId}
                   />
-                  {/* Which workspace on that machine. The same qualifier the machine
-                badge is and the same vocabulary the rail's workspace headings
-                use (a folder and the workspace's own name), so a reader who
-                came from a heading can see the conversation stayed in it — the
-                phone already says this under its title, and the desktop said
-                nothing. Capped like the machine badge: a long name must not
-                squeeze the conversation's own title, which is what the header
-                is for. */}
-                  {workspaceName
-                    ? (
-                        <span
-                          className="ml-2 inline-flex min-w-0 shrink-0 items-center gap-1 text-xs font-normal text-ink-muted"
-                          data-testid="remote-thread-workspace"
-                          title={workspaceName}
-                        >
-                          <Folder aria-hidden className="size-3.5 shrink-0" />
-                          <span className="max-w-40 truncate">{workspaceName}</span>
-                        </span>
-                      )
-                    : null}
+                  {/* Which workspace on that machine: the same qualifier, in the
+                same vocabulary the rail's workspace headings use, so a reader
+                who came from a heading can see the conversation stayed in it. */}
+                  {workspaceName ? <WorkspaceBadge name={workspaceName} /> : null}
                 </div>
               </div>
               {/* The conversation's own account book, in the same place and the same

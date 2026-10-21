@@ -1,6 +1,8 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useSyncExternalStore } from "react";
 
+import { invokeCommand } from "../integrations/tauri/invoke";
+
 /**
  * App appearance: two independent axes.
  *
@@ -140,6 +142,44 @@ function applyPalette(palette: ThemePalette): void {
   }
 }
 
+/** The six-digit hex a palette token is written as (see `theme/palettes.json`). */
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+
+/**
+ * Hand the rendered surface/ink colors to the native window frame.
+ *
+ * Windows draws the title bar itself (DWM), so it does not follow the page: the
+ * backend pins the caption to `--color-surface` and the title text to
+ * `--color-ink` on request, and each palette overrides those variables. The
+ * computed values are the only place the winning palette is known, so this
+ * reads them after the class/attribute change instead of sending a light/dark
+ * flag. macOS and Linux ignore the command; outside a Tauri webview the call
+ * throws or rejects, which is not worth reporting.
+ */
+function syncWindowCaptionColors(): void {
+  if (typeof document === "undefined" || typeof window === "undefined")
+    return;
+  let caption: string;
+  let text: string;
+  try {
+    const styles = window.getComputedStyle(document.documentElement);
+    caption = styles.getPropertyValue("--color-surface").trim();
+    text = styles.getPropertyValue("--color-ink").trim();
+  }
+  catch {
+    // No layout engine (a non-DOM test runner); nothing to paint.
+    return;
+  }
+  if (!HEX_COLOR.test(caption) || !HEX_COLOR.test(text))
+    return;
+  try {
+    void invokeCommand("set_window_caption_colors", { caption, text }).catch(() => {});
+  }
+  catch {
+    // Not running inside Tauri.
+  }
+}
+
 let mode: ThemeMode = readStoredThemeMode();
 let resolved: ResolvedTheme = resolveTheme(mode);
 let palette: ThemePalette = readStoredThemePalette();
@@ -160,6 +200,7 @@ function handleSystemChange(): void {
     return;
   resolved = next;
   applyResolvedTheme(resolved);
+  syncWindowCaptionColors();
   emitChange();
 }
 
@@ -207,6 +248,7 @@ export function setThemeMode(next: ThemeMode): void {
   if (nextResolved !== resolved) {
     resolved = nextResolved;
     applyResolvedTheme(resolved);
+    syncWindowCaptionColors();
   }
   emitChange();
 }
@@ -220,6 +262,7 @@ export function setThemePalette(next: ThemePalette): void {
     // Persistence is best-effort; the change still applies for this session.
   }
   applyPalette(palette);
+  syncWindowCaptionColors();
   emitChange();
 }
 
@@ -249,3 +292,4 @@ export function useThemePalette(): ThemePalette {
 ensureSystemListener();
 applyResolvedTheme(resolved);
 applyPalette(palette);
+syncWindowCaptionColors();

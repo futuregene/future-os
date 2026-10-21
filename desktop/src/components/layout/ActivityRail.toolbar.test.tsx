@@ -173,6 +173,20 @@ describe("the rail's rows above the list", () => {
   });
 
   /**
+   * The switch's order is the reader's, not a constant.
+   *
+   * Exchanging the two segments is only worth offering if it survives a restart,
+   * and the rail is what has to read the stored order back and draw it — the
+   * hook alone remembering it would still show the default here.
+   */
+  it("draws the switch in the order the reader left it", async () => {
+    localStorage.setItem("future.activityRail.viewOrder", JSON.stringify(["recent", "workspace"]));
+    const { container } = await render(props());
+    const tabs = [...container.querySelectorAll<HTMLButtonElement>("[data-testid='rail-view-switch'] button")];
+    expect(tabs.map(tab => tab.getAttribute("data-testid"))).toEqual(["rail-view-recent", "rail-view-workspace"]);
+  });
+
+  /**
    * The search is one glyph until it is clicked.
    *
    * The rail is a narrow column and the list is the point; a field drawn all the

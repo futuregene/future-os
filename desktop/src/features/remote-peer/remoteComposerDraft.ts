@@ -1,10 +1,16 @@
 import type { RemoteUpload } from "./remotePeerClient";
+import type { RemoteReferenceMap } from "./remoteSessionReference";
 
 /**
  * Per-conversation remote-composer draft: the *unsent* input a remote
- * conversation carries between visits — text and pending uploads. Stored in
- * `localStorage`, keyed by both desktop and session, so it survives app
- * restarts and is scoped to a specific host+conversation pair.
+ * conversation carries between visits — text, pending uploads, and the
+ * conversations its `#` tokens point at. Stored in `localStorage`, keyed by
+ * both desktop and session, so it survives app restarts and is scoped to a
+ * specific host+conversation pair.
+ *
+ * The reference map is part of the draft because the token alone does not
+ * carry the id: reopening a draft with `#Plan` in it and no map would leave
+ * plain text where a link was meant (the phone keeps its map the same way).
  *
  * The shape is intentionally open for growth: bump `DRAFT_VERSION` only on a
  * breaking change (a stored draft with a mismatched version is ignored, never
@@ -17,6 +23,8 @@ export interface RemoteComposerDraft {
   text?: string;
   /** Pending uploads waiting to be attached to the next message. */
   uploads?: RemoteUpload[];
+  /** The `#` tokens in `text` and the conversation each one stands for. */
+  references?: RemoteReferenceMap;
 }
 
 const DRAFT_VERSION = 1;
