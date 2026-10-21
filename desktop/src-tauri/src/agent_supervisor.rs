@@ -39,7 +39,7 @@ pub fn ensure_agent_running<R: tauri::Runtime>(
 }
 pub async fn ensure_agent_ready_for_login<R: tauri::Runtime>(app: tauri::AppHandle<R>) -> bool {
     if !matches!(
-        tokio::task::spawn_blocking(move || ensure_agent_running(&app)).await,
+        future_host::runtime::run_blocking(move || ensure_agent_running(&app)).await,
         Ok(Ok(()))
     ) {
         return false;

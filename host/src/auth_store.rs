@@ -156,7 +156,8 @@ pub mod test_support {
     use std::path::PathBuf;
     use std::sync::MutexGuard;
 
-    pub(crate) fn cleanup_host() {
+    /// Drain the shared Host state before an entry fixture changes HOME.
+    pub fn cleanup_host() {
         crate::shutdown::reset_for_test();
         crate::shutdown::clear_failure_for_test();
         crate::runtime::cancel_test_tasks();
@@ -165,6 +166,7 @@ pub mod test_support {
         crate::tasks::reset_for_test();
         crate::remote_peer::runtime::reset_after_shutdown_for_test();
         crate::remote::reset_after_shutdown_for_test();
+        crate::store::reset_run_event_writer_for_test();
         crate::store::close_pool();
     }
 

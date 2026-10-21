@@ -4,7 +4,7 @@ use futures::StreamExt;
 use std::time::Duration;
 
 pub fn install_disconnect_notifier() {
-    tauri::async_runtime::spawn(async {
+    crate::runtime::spawn(async {
         loop {
             if let Err(error) = listen().await {
                 eprintln!("remote: Linux power notification listener unavailable: {error}");
