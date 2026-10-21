@@ -599,21 +599,31 @@ records who measured it, when, on which machine and which model.
 | Data | P0 | Later |
 | --- | --- | --- |
 | Membership | none — it is the pin | — |
-| Order, per-conversation column preference, column override | `localStorage` (`future.vibe.order`, `future.vibe.prefs`) | `app.db` tables + a versioned migration (`CLAUDE.md` §7) |
+| Order, per-conversation column preference, column override | `localStorage` (`future.vibe.order`, `future.vibe.prefs`) | stays there — see below |
 | Keys | the existing shortcut store (`KEYBINDINGS.md` §Storage) | same |
 
 The panel's view preferences follow the same rule as the theme, font size and
 panel widths: per machine, read on the render path, in `localStorage`.
 
-**Why the order is not in `app.db` yet, stated precisely** so the next person does not
-start in the wrong crate: the desktop's database and its migration chain live in
-`host/src/store/` (the desktop's `src-tauri/src/store.rs` is a re-export of
-`future_host::store`), and the settings document's schema lives in
-`packages/app-settings/` — both **outside `desktop/`**. Moving the order there is a
-schema change with a versioned migration, a fresh-install fixture and a bilingual
-`ER.md` update; it is a task of its own, not a line in this one. Until then the
-`localStorage` keys are the only ones the panel reads, and `vibePreferences.ts` is the
-only file that touches them.
+**Why the order stays out of `app.db` — evaluated, and decided against.** The question was
+whether the panel's order, its per-conversation column choice and its column override should
+move from `localStorage` into the application database. They should not:
+
+* **There is no second client to sync with.** The panel exists only on the desktop; the phone
+  has no equivalent surface, and cross-device sync of a grid layout is not a requirement. A
+  database table would buy durability the webview's storage already has, and nothing else.
+* **It would leave this feature's boundary for no gain.** The desktop's database and its
+  migration chain live in `host/src/store/` (the desktop's `src-tauri/src/store.rs` is a
+  re-export of `future_host::store`), and the settings document's schema lives in
+  `packages/app-settings/` — both **outside `desktop/`**. A move is a schema change with a
+  versioned migration, a fresh-install fixture and a bilingual `ER.md` update.
+* **These are view preferences, not data.** Per machine, read on the render path — the same
+  rule the theme, the font size and the panel widths already follow. `vibePreferences.ts` is
+  the only file that touches the keys, so a future move would change two functions, not a
+  call graph.
+
+Recorded as **closed**, not deferred: the entry that used to sit in the P2 table is gone, and
+this paragraph is where a reader who wonders why should land.
 
 ## 13. Where the code goes
 
@@ -661,8 +671,9 @@ What P0 landed, and what it deliberately left:
 | --- | --- |
 | **P0 — done** | the panel and its grid; scale-respecting cell rendering for local conversations; membership = pin; order = `createdAt` + drag/keyboard reordering; the three layers and the single-editor invariant; the input layer with dictation, the target bar and the three state meanings; `⌘⇧V`, arrows, `⏎`, `Esc`, `1`–`9`; explicit "still running" refusal |
 | **P1 — done** | the menu (`Menu`, one column, `←`/`→` adjust a value in place) · the attention queue (§9.5) · the machine filter, a host's conversations as cells, the add dialog and removal across machines · the input layer's controls moved into the menu with the values left read-only on screen (§5.6) · the send queue (§5.4) |
-| **P2 — in progress** | **done:** `h`/`j`/`k`/`l` beside the arrows · the reading layer's second column with its three per-conversation states (§6) · scrolling a cell from the keyboard · the key checklist and read-only readout ([`VIBE-REMOTE-KEYS.md`](VIBE-REMOTE-KEYS.md), matrix still empty) · **remaining:** the block cursor of §6, order in `app.db`, and the measurement pass itself |
-| **P2 — later** | order in `app.db`; layout presets; a "learn this button" diagnostics page (the read-only readout is the first half); optional text size on the volume buttons |
+| **P2 — in progress** | **done:** `h`/`j`/`k`/`l` beside the arrows · the reading layer's second column with its three per-conversation states (§6) · scrolling a cell from the keyboard · the key checklist and read-only readout ([`VIBE-REMOTE-KEYS.md`](VIBE-REMOTE-KEYS.md), matrix still empty) · **remaining:** the block cursor of §6, and the measurement pass itself |
+| **P2 — later** | layout presets; a "learn this button" diagnostics page (the read-only readout is the first half); optional text size on the volume buttons |
+| **Not doing** | the order in `app.db` — evaluated and closed, see §12 |
 
 ## 15. Open questions
 
