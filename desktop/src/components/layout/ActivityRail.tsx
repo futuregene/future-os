@@ -1194,19 +1194,19 @@ export function ActivityRail({
                       </div>
                     )
                   : null}
-                {/* Two rows, and each has one job.
+                {/* Two rows, and each has one job — in this order.
 
-                    The first answers "which list" — only the switch, nothing else.
-                    The second is how that list is narrowed: the machine whose rows
-                    these are, and the search. Neither row offers a create action or
-                    a batch: those act on something *inside* the list, so they live
-                    on the heading they act on (a workspace, the chats section),
-                    which is also the only place a reader can see what they mean. */}
-                <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-view-band">
-                  <div className="min-w-0 flex-1">
-                    <RailViewSwitch onChange={setRailView} view={railView} />
-                  </div>
-                </div>
+                    The first narrows the list: the machine whose rows these are,
+                    and the search. It sits *above* the switch, directly over the
+                    list it filters, which is where it has always been; putting it
+                    under the switch read as if the filter belonged to whichever
+                    list happened to be selected.
+
+                    The second answers "which list" — only the switch, nothing
+                    else. Neither row offers a create action or a batch: those act
+                    on something *inside* the list, so they live on the heading
+                    they act on (a workspace, the chats section), which is also the
+                    only place a reader can see what they mean. */}
                 {showListTools
                   ? (
                       <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-list-tools">
@@ -1242,6 +1242,11 @@ export function ActivityRail({
                       </div>
                     )
                   : null}
+                <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-view-band">
+                  <div className="min-w-0 flex-1">
+                    <RailViewSwitch onChange={setRailView} view={railView} />
+                  </div>
+                </div>
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="group relative -mx-2 flex min-h-0 flex-1">
                     <div
