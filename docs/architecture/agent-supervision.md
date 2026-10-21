@@ -13,8 +13,8 @@ Three entry points can bring an Agent up today: `future agent`, `future headless
 
 | Entry | Runs the Agent in-process | Launches an external Agent | Locks held |
 |---|---|---|---|
-| `future agent` | Itself | — | `agent/agent-instance.lock` (service lock) + the socket's `.owner.lock` (endpoint lease) |
-| `future headless` | Yes, when it gets the service lock | No | `app/desktop.lock` (host lock) + the service lock, conditionally |
+| `future agent` | Itself | — | `~/.future/agent/agent-instance.lock` (service lock) + the socket's `.owner.lock` (endpoint lease) |
+| `future headless` | Yes, when it gets the service lock | No | `~/.future/app/desktop.lock` (host lock) + the service lock, conditionally |
 | `future tui` | No | Yes: a `future agent --grpc-addr auto` child | Neither |
 
 All three funnel through [`select_agent`](../../packages/rpc/src/connection.rs): handshake an external service first; only on failure plus a confirmed-absent local endpoint (`NotFound`/`ConnectionRefused`) plus a passing [`check_instance_lock`](../../packages/rpc/src/connection.rs) does it issue a `LocalStartPermit`, and the real arbitration is the `try_write()` inside [`AgentService::with_instance`](../../agent/src/service/mod.rs).
@@ -217,7 +217,7 @@ So the accurate statement is: **the conversation does not end and history is not
 | Condition | Today | What this design must do |
 |---|---|---|
 | Someone runs the continuation pass in the restarted session | **Only Desktop does** ([lib.rs](../../desktop/src-tauri/src/lib.rs)); headless runs only `reconcile_interrupted_runs` (settle/reattach, no prompt), and the TUI has nothing | The Agent triggers it itself once Ready, so no host needs to be present (see §9.2) |
-| The interruption must leave a resumable state | A graceful stop goes through `cancel_all` → terminal marker → `interruptedRun` null → `plan_resume` says `Terminal` → **no resume**; only an abnormal death (`kill -9` / crash / OOM) leaves `interrupted` | On a graceful exit, choose the settling mode from the active-subscription count (below) |
+| The interruption must leave a resumable state | A graceful stop goes through `cancel_all` → terminal marker → `interruptedRun` null → `plan_resume` says `Terminal` → **no resume**; only an abnormal death (`kill -9` / crash / OOM) leaves `interrupted` | On a graceful exit, mark the run by its cause: `agent_shutdown` → resumable, `user_cancelled` → not (see premise 1 below) |
 | The conversation must have a thread + run row in `app.db` | Run rows come from a host-submitted prompt or from import (discovery every 60s) | A box running only a TUI, with no host, has no candidate at all; the first self-healed launch should import once |
 | The remaining product gates | Newest run, not `waiting_approval`, within 7 days, `autoResumeInterrupted` (on by default — it spends the user's credits) | Unchanged |
 
@@ -232,7 +232,7 @@ The first draft used **who is still watching** (the active-subscription count): 
 
 Use the cause instead ([§9.2](#92-where-it-belongs-the-tui-a-host-or-the-agent), premise 1): **why it ended** decides whether to resume, **not who was watching**. The subscription count is only for P2's idle exit; the two questions must not share one yardstick.
 
-`autoResumeInterrupted` (becoming a key in `agent/settings.json`) remains the consent gate for "send prompts on my behalf".
+`autoResumeInterrupted` (becoming a key in `~/.future/agent/settings.json`) remains the consent gate for "send prompts on my behalf".
 
 ### 9.2 Where it belongs: the TUI, a host, or the Agent
 
@@ -283,7 +283,7 @@ Adopted, because it is the only one of the three locations that **de-duplicates 
 | Responsibility | Owner | Why |
 |---|---|---|
 | Decide **and** submit the continuation prompt, atomically, triggered by the Agent itself once Ready | **The Agent** | It alone has the journal, the live runs, the approvals and the lock; it is also the only thing running on a bare `future agent` |
-| Consent switch | **`~/.future/agent/settings.json`** (new key, e.g. `resumeInterruptedOnStart`) | The Agent must not read `app.db`: a bare `future agent` may have none, and that is app-owned storage (see "the switch moves" below) |
+| Consent switch | **`~/.future/agent/settings.json`** (new key, e.g. `resumeInterruptedOnStart`) | The Agent must not read `app.db`: a bare `future agent` may have none, and that is app-owned storage (see premise 2 below) |
 | The `resume:<run id>`-style link and row display | A host keeps it, as a **consumer** | It already maintains those rows |
 | The old one-shot pass (`resume_interrupted_runs_at_launch`) | **Retired** | Keeping both is exactly the double-submit window above |
 
@@ -303,13 +303,18 @@ Abort therefore needs a cause:
 
 This makes step 4 of the user's scenario (a normal stop) work. The residual risk is "the user stops a runaway task by closing the Agent, and the next start continues it again"; the guardrails below plus cancelling the resumed run bound it.
 
-#### Premise 2: the switch moves
+#### Premise 2: the switch follows the executor (not a cost of D9)
 
-`autoResumeInterrupted` lives in `app.db` ([future-app-settings](../../packages/app-settings/src/lib.rs)). The Agent must not depend on it: a bare `future agent` may have no `app.db`, and that storage belongs to the app. So:
+It is tempting to read this as a cost specific to D9; placing the mechanism in headless or the TUI runs into the same question.
 
-- the switch goes into `agent/settings.json` (beside `compaction` / `retry` / `maxTurns`, [config/mod.rs](../../agent/src/config/mod.rs));
-- the Desktop settings page writes that key; when both exist, **the Agent's value wins** (it is the executor);
-- the old `app.db` value is mapped once, so an upgrade does not silently reset the user's choice.
+There is really one fact: **consent has to live wherever the executor can read it.**
+
+- Trigger in a client → the client executes, so a switch in `app.db` is entirely reasonable (headless already calls `initialize_app_store` at startup).
+- Trigger in the Agent (D9) → the Agent executes, and **`future-agent` does not depend on `future-app-settings` at all** ([agent/Cargo.toml](../../agent/Cargo.toml)); a bare `future agent` may have no `app.db`.
+
+So this is not a mark against the choice but a direct consequence of it. And the shape already exists: `set_default_model` is exactly a **sessionless RPC → read `settings.json` → change a field → save** ([providers.rs](../../agent/src/rpc/commands/providers.rs)). A `get/set_resume_policy` pair has the same shape, and the Desktop settings page calls it the way it calls that one today.
+
+Only two small things remain: a field in `~/.future/agent/settings.json` (beside `compaction` / `retry` / `maxTurns`), and a one-time map from the old `app.db` value so an upgrade does not silently reset the user's choice.
 
 #### Premise 3: guardrails (without them it is unbounded spending)
 
@@ -422,7 +427,7 @@ D10 ahead of the original "send a prompt" shape: do the "tail is a tool result" 
 | A distinct lock-conflict exit code (e.g. 75) so the parent can read "lost the election" | `agent/src/cli.rs` |
 | `CancelCause` threaded from abort to the terminal record (D8's premise) | `agent/src/rpc/session.rs`, `agent/src/runtime/`, `agent/src/session/entry.rs` |
 | Agent-triggered continuation (§9.2): decide and submit atomically after Ready, with guardrails | `agent/src/service/startup.rs`, `agent/src/rpc/`, `agent/src/config/mod.rs` |
-| The switch in `agent/settings.json` plus a one-time map from the old `app.db` value | `agent/src/config/mod.rs`, `packages/app-settings`, the Desktop settings page |
+| The switch in `~/.future/agent/settings.json` plus a one-time map from the old `app.db` value | `agent/src/config/mod.rs`, `packages/app-settings`, the Desktop settings page |
 | A user-message-free resume acceptance path + the request-only directive + the assistant-tail guard (D10) | `agent/src/rpc/session_prompt.rs`, `agent/src/agent/run_loop.rs`, `agent/src/session/entry.rs` |
 | An "unknown" placeholder tool result when a crashed tail lacks one | `agent/src/agent/run_loop.rs` (beside the existing cancel path) |
 | `run_started` carries `auto_resume_of`; clients render "continuing automatically" | `agent/src/session/entry.rs`, `tui/`, `desktop/`, `mobile/`, `packages/thread-projection/` |
@@ -458,7 +463,7 @@ Questions the user must answer, ordered by blast radius:
 1. **D6: should the TUI start the Agent in-process?** It affects the TUI's crash isolation, memory and cold start; the gain is one policy for all three entries.
 2. **P2: should the Agent outlive the TUI?** Option A (dies with its starter; others restart it, which interrupts the current turn though the conversation is continued — see §9.1) versus B (detached + idle exit).
 3. **D7: after the user stops it explicitly, should other clients bring it back automatically?** Recommendation: no (respect "stop means stop"), but it needs confirmation.
-4. **Continuation can spend money with no client present**: now that the switch moves to `agent/settings.json`, should its default be on or off? (Today's `autoResumeInterrupted` is on)
+4. **Continuation can spend money with no client present**: now that the switch lives in `~/.future/agent/settings.json`, should its default be on or off? (Today's `autoResumeInterrupted` is on)
 5. **Should continuation cover non-interactive sources?** (channels / goal / CLI / sub-sessions). Suggested default: resume only sessions identifiable as "the conversation in front of the user"; the rest needs an extra marker.
 6. **Go-ahead for P1.** The design is approved, but all three entries' startup paths change; D8/D9/D10's items (the cause, Agent-triggered continuation, the switch following the executor, the user-message-free resume) should ride in P1 — otherwise self-healing leaves conversations half way.
 
