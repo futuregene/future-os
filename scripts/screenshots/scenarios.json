@@ -34,6 +34,32 @@
           }
         ]
       },
+      "hash-session-menu": {
+        "note": "The composer's `#` menu: one list, newest activity first — a chat leads its workspace neighbours when it was used more recently, so there is no chats-first section — and each row names the workspace it lives in. The conversation being composed in is not offered.",
+        "steps": [
+          {
+            "wait": 1800
+          },
+          {
+            "eval": "(() => { const ed = document.querySelector('[contenteditable=\"true\"][role=\"textbox\"]'); if (!ed) throw new Error('no composer'); ed.focus(); return 'focused'; })()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "type": "#"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const rows = [...document.querySelectorAll('[data-menu-index]')]; if (rows.length < 6) throw new Error('the menu did not list the conversations: ' + rows.length); const title = row => ((row.querySelector('.flex-1') || {}).textContent || '').trim(); const ws = row => { const el = row.querySelector('[data-session-workspace]'); return el ? el.textContent.trim() : null; }; const titles = rows.map(title); const labels = rows.map(ws); const expected = ['基金申报书的创新点怎么写', '只看风险偏好那一段', '把结论改成中文表格', '表格加上样本量一列', '帮我把这段英文摘要改通顺']; for (let i = 0; i < expected.length; i += 1) { if (titles[i] !== expected[i]) throw new Error('row ' + i + ' is ' + JSON.stringify(titles[i]) + ', expected ' + JSON.stringify(expected[i]) + ' in ' + JSON.stringify(titles.slice(0, 6))); } if (labels[0] !== null) throw new Error('a chat names a workspace: ' + JSON.stringify(labels[0])); if (labels[1] !== '多巴胺与决策') throw new Error('the conversation does not name its workspace: ' + JSON.stringify(labels[1])); if (titles.includes('整理两篇文献的结论对比表')) throw new Error('the conversation being composed in is offered as a reference to itself'); return { titles: titles.slice(0, 5), labels: labels.slice(0, 5) }; })()"
+          },
+          {
+            "shot": "d-hash-session-menu.png"
+          }
+        ]
+      },
       "rail-pin-menu": {
         "steps": [
           {
@@ -2181,6 +2207,537 @@
             "shot": "d-remote-multi-device-waiting.png"
           }
         ]
+      },
+      "vibe-grid": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_fig,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 2600
+          },
+          {
+            "eval": "(() => {\n  const cells = [...document.querySelectorAll(\"[data-vibe-cell]\")];\n  const grid = document.querySelector(\".grid\");\n  return JSON.stringify({\n    cells: cells.length,\n    titles: cells.map(c => c.querySelector(\"header span:nth-child(2)\") ? c.querySelector(\"header span:nth-child(2)\").textContent : null),\n    editors: document.querySelectorAll('[contenteditable=\"true\"]').length,\n    cols: grid ? getComputedStyle(grid).gridTemplateColumns : null,\n    rows: grid ? getComputedStyle(grid).gridTemplateRows : null,\n  });\n})()"
+          },
+          {
+            "shot": "d-vibe-grid.png"
+          }
+        ]
+      },
+      "vibe-input": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_fig,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 2600
+          },
+          {
+            "key": "ArrowDown"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "eval": "(() => {\n  const cells = [...document.querySelectorAll(\"[data-vibe-cell]\")];\n  const ed = document.querySelector('[contenteditable=\"true\"]');\n  const bar = document.querySelector(\"[data-vibe-target]\");\n  return JSON.stringify({\n    cells: cells.length,\n    editors: document.querySelectorAll('[contenteditable=\"true\"]').length,\n    activeIsEditor: document.activeElement === ed,\n    hint: document.body.innerText.split(\"\\n\").filter(l => /发送|收起|菜单|Escape|Esc|↩/.test(l)).slice(-6),\n    target: bar ? bar.textContent : null,\n    layerHint: [...document.querySelectorAll(\"kbd\")].map(k => k.textContent).slice(0, 8),\n  });\n})()"
+          },
+          {
+            "shot": "d-vibe-input.png"
+          }
+        ]
+      },
+      "vibe-menu": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_fig,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 2600
+          },
+          {
+            "key": "ContextMenu"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "key": "ArrowRight"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => {const m = document.querySelector('[role=\"menu\"]');const row = m?.querySelector('[data-vibe-menu-row=\"layout\"]');const grid = document.querySelector('.grid');return JSON.stringify({open: !!m,rows: m ? m.querySelectorAll('[data-vibe-menu-row]').length : 0,value: row ? row.textContent : null,cols: grid ? getComputedStyle(grid).gridTemplateColumns.split(' ').length : null,editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-menu.png"
+          },
+          {
+            "key": "Escape"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "JSON.stringify({ open: !!document.querySelector('[role=\"menu\"]') })"
+          }
+        ]
+      },
+      "vibe-attention": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_fig,th_longformer,th_sc&unread=th_data&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 2600
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const badge = document.querySelector('[data-vibe-attention]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,focused: root ? root.getAttribute('data-vibe-focused') : null,badge: badge ? badge.textContent : null,reasons: [...document.querySelectorAll('[data-vibe-attention-reason]')]  .map(e => e.getAttribute('data-vibe-attention-reason')),cells: document.querySelectorAll('[data-vibe-cell]').length,editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-grid-attention.png"
+          },
+          {
+            "eval": "(() => {const mac = /Mac/i.test(navigator.platform || navigator.userAgent);window.dispatchEvent(new KeyboardEvent('keydown', {key: 'a', code: 'KeyA', shiftKey: true,metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true }));return mac ? 'meta+shift+a' : 'ctrl+shift+a';})()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const badge = document.querySelector('[data-vibe-attention]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,focused: root ? root.getAttribute('data-vibe-focused') : null,badge: badge ? badge.textContent : null,reasons: [...document.querySelectorAll('[data-vibe-attention-reason]')]  .map(e => e.getAttribute('data-vibe-attention-reason')),cells: document.querySelectorAll('[data-vibe-cell]').length,editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-attention.png"
+          }
+        ]
+      },
+      "vibe-devices": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,cells: [...document.querySelectorAll('[data-vibe-cell]')].map(c => c.getAttribute('data-vibe-cell-kind')),device: document.querySelector('[data-vibe-device]')?.textContent ?? null,editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-devices.png"
+          },
+          {
+            "key": "ContextMenu"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => {const row = document.querySelector('[data-vibe-menu-row=\"device\"]');if (!row) return 'missing';row.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));return document.querySelector('[aria-current=\"true\"]')?.getAttribute('data-vibe-menu-row') ?? null;})()"
+          },
+          {
+            "wait": 200
+          },
+          {
+            "wait": 300
+          },
+          {
+            "key": "ArrowRight"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "key": "ArrowRight"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,cells: [...document.querySelectorAll('[data-vibe-cell]')].map(c => c.getAttribute('data-vibe-cell-kind')),device: document.querySelector('[data-vibe-device]')?.textContent ?? null,editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-device-filter.png"
+          },
+          {
+            "key": "Escape"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "key": "ContextMenu"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "document.querySelector('[data-vibe-menu-row=\"add\"]')?.click(); 'clicked'"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "JSON.stringify({dialogs: document.querySelectorAll('[role=\"dialog\"]').length,machines: [...document.querySelectorAll('[data-add-machine]')].map(m => m.getAttribute('data-add-machine')),choices: [...document.querySelectorAll('[data-add-choice]')].map(c => c.getAttribute('data-add-choice')).slice(0, 6),})"
+          },
+          {
+            "shot": "d-vibe-add.png"
+          }
+        ]
+      },
+      "vibe-settings": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "key": "Escape"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => {const line = document.querySelector('[data-vibe-settings]');const root = document.querySelector('[data-vibe-layer]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,line: line ? line.textContent : null,model: line ? line.getAttribute('data-vibe-model') : null,approval: line ? line.getAttribute('data-vibe-approval') : null,composerControls: document.querySelectorAll('[data-vibe-target] [data-composer-controls]').length,approvalDropdown: [...document.querySelectorAll('button')].some(b => (b.getAttribute('title') || '') === 'Approval'),editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-settings-read.png"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 800
+          },
+          {
+            "eval": "(() => {const line = document.querySelector('[data-vibe-settings]');const root = document.querySelector('[data-vibe-layer]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,line: line ? line.textContent : null,model: line ? line.getAttribute('data-vibe-model') : null,approval: line ? line.getAttribute('data-vibe-approval') : null,composerControls: document.querySelectorAll('[data-vibe-target] [data-composer-controls]').length,approvalDropdown: [...document.querySelectorAll('button')].some(b => (b.getAttribute('title') || '') === 'Approval'),editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-settings-input.png"
+          },
+          {
+            "eval": "document.querySelector('[data-vibe-menu-row=\"approval\"]'); window.dispatchEvent(new KeyboardEvent('keydown', {key: 'ContextMenu', code: 'ContextMenu', bubbles: true, cancelable: true})); 'opened'"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "JSON.stringify({rows: [...document.querySelectorAll('[data-vibe-menu-row]')].map(r => r.getAttribute('data-vibe-menu-row'))})"
+          },
+          {
+            "shot": "d-vibe-settings-menu.png"
+          }
+        ]
+      },
+      "vibe-queue": {
+        "url": "http://localhost:5299/shot/?streaming=th_review&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const queued = document.querySelector('[data-vibe-queued]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,queued: queued ? queued.textContent : null,editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 800
+          },
+          {
+            "eval": "(() => {const ed = document.querySelector('[contenteditable=\"true\"]');if (!ed) return 'no editor';ed.focus();ed.textContent = '顺便把这批数据也清洗一下';const node = ed.firstChild; const r = document.createRange();r.setStart(node, node.textContent.length); r.collapse(true);const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);ed.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: ed.textContent}));return 'typed';})()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const queued = document.querySelector('[data-vibe-queued]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,queued: queued ? queued.textContent : null,editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-queue.png"
+          }
+        ]
+      },
+      "vibe-keyprobe": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "(() => {const panel = document.querySelector('[data-vibe-key-probe]');if (!panel) return JSON.stringify({open: false});return JSON.stringify({open: true,lines: [...panel.querySelectorAll('div.font-mono > div')].map(l => l.textContent),});})()"
+          },
+          {
+            "eval": "(() => {for (let i = 0; i < 3; i++)  window.dispatchEvent(new KeyboardEvent('keydown', {key: 'k', code: 'KeyK', altKey: true, shiftKey: true, bubbles: true, cancelable: true}));return 'gesture';})()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => {const panel = document.querySelector('[data-vibe-key-probe]');if (!panel) return JSON.stringify({open: false});return JSON.stringify({open: true,lines: [...panel.querySelectorAll('div.font-mono > div')].map(l => l.textContent),});})()"
+          },
+          {
+            "eval": "(function(){const c='ArrowUp';window.dispatchEvent(new KeyboardEvent('keydown',{key:c,code:c,bubbles:true,cancelable:true}));return 'ArrowUp';})()"
+          },
+          {
+            "wait": 200
+          },
+          {
+            "eval": "(function(){const c='Home';window.dispatchEvent(new KeyboardEvent('keydown',{key:c,code:c,bubbles:true,cancelable:true}));return 'Home';})()"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "eval": "(() => {const panel = document.querySelector('[data-vibe-key-probe]');if (!panel) return JSON.stringify({open: false});return JSON.stringify({open: true,lines: [...panel.querySelectorAll('div.font-mono > div')].map(l => l.textContent),});})()"
+          },
+          {
+            "eval": "JSON.stringify({focused: document.querySelector('[data-vibe-layer]')?.getAttribute('data-vibe-focused') ?? null, probe: !!document.querySelector('[data-vibe-key-probe]')})"
+          },
+          {
+            "eval": "(function(){window.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',code:'ArrowRight',bubbles:true,cancelable:true}));return 'right';})()"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "eval": "JSON.stringify({focused: document.querySelector('[data-vibe-layer]')?.getAttribute('data-vibe-focused') ?? null, probe: !!document.querySelector('[data-vibe-key-probe]')})"
+          },
+          {
+            "shot": "d-vibe-keyprobe.png"
+          }
+        ]
+      },
+      "vibe-column": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "(() => {const col = document.querySelector('[data-vibe-panel-column]');const root = document.querySelector('[data-vibe-layer]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!col,width: col ? Math.round(col.getBoundingClientRect().width) : null,tabs: col ? [...col.querySelectorAll('button')].map(b => b.textContent.trim()).filter(Boolean).slice(0, 6) : [],editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 800
+          },
+          {
+            "key": "Escape"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => {const col = document.querySelector('[data-vibe-panel-column]');const root = document.querySelector('[data-vibe-layer]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!col,width: col ? Math.round(col.getBoundingClientRect().width) : null,tabs: col ? [...col.querySelectorAll('button')].map(b => b.textContent.trim()).filter(Boolean).slice(0, 6) : [],editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-column.png"
+          },
+          {
+            "eval": "(function(){const mac=/Mac/i.test(navigator.platform||navigator.userAgent);window.dispatchEvent(new KeyboardEvent('keydown',{key:'\\\\\\\\',code:'Backslash',metaKey:mac,ctrlKey:!mac,bubbles:true,cancelable:true}));return 'hide';})()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => {const col = document.querySelector('[data-vibe-panel-column]');const root = document.querySelector('[data-vibe-layer]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!col,width: col ? Math.round(col.getBoundingClientRect().width) : null,tabs: col ? [...col.querySelectorAll('button')].map(b => b.textContent.trim()).filter(Boolean).slice(0, 6) : [],editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-column-hidden.png"
+          }
+        ]
+      },
+      "vibe-bar": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "(() => {const bar = document.querySelector('header');const label = bar ? bar.querySelector('span') : null;return JSON.stringify({pad: bar ? getComputedStyle(bar).paddingLeft : null,labelLeft: label ? Math.round(label.getBoundingClientRect().left) : null,drag: bar ? bar.getAttribute('data-vibe-drag') : null,fullscreenButton: !!document.querySelector('[aria-label=\"切换全屏\"], [aria-label=\"Toggle full screen\"]'),});})()"
+          },
+          {
+            "eval": "document.querySelector('[data-vibe-layer]')?.getAttribute('data-vibe-layer')"
+          },
+          {
+            "shot": "d-vibe-bar.png"
+          }
+        ]
+      },
+      "vibe-usability": {
+        "url": "http://localhost:5299/shot/?pinned=th_review,th_data&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "key": "2"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "eval": "(() => {const s = document.querySelector('[data-vibe-transcript-for=\"local:th_review\"] [data-chat-scroll]');if (!s) return 'no transcript';return JSON.stringify({top: Math.round(s.scrollTop), height: s.scrollHeight, view: s.clientHeight,pad: getComputedStyle(s).paddingTop + '/' + getComputedStyle(s).paddingBottom});})()"
+          },
+          {
+            "eval": "(function(k){window.dispatchEvent(new KeyboardEvent('keydown',{key:k,code:k,bubbles:true,cancelable:true}));return k;})('PageUp')"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(function(k){window.dispatchEvent(new KeyboardEvent('keydown',{key:k,code:k,bubbles:true,cancelable:true}));return k;})('PageUp')"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => {const s = document.querySelector('[data-vibe-transcript-for=\"local:th_review\"] [data-chat-scroll]');if (!s) return 'no transcript';return JSON.stringify({top: Math.round(s.scrollTop), height: s.scrollHeight, view: s.clientHeight,pad: getComputedStyle(s).paddingTop + '/' + getComputedStyle(s).paddingBottom});})()"
+          },
+          {
+            "shot": "d-vibe-scroll-cell.png"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "key": "Escape"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => {const s = document.querySelector('[data-vibe-transcript-for=\"local:th_review\"] [data-chat-scroll]');if (!s) return 'no transcript';return JSON.stringify({layer: document.querySelector('[data-vibe-layer]')?.getAttribute('data-vibe-layer'),pad: getComputedStyle(s).paddingTop + '/' + getComputedStyle(s).paddingBottom,roomy: !!s.querySelector('.space-y-8'),tight: !!s.querySelector('.space-y-5'),});})()"
+          },
+          {
+            "shot": "d-vibe-reading-room.png"
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const prefs = JSON.parse(localStorage.getItem('future.vibe.prefs') || '{}');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!document.querySelector('[data-vibe-panel-column]'),panelDefault: prefs.panelDefault ?? null,entry: Object.entries(prefs.panel || {}).map(([k, v]) => k + '=' + v),});})()"
+          },
+          {
+            "eval": "(() => {const mac = /Mac/i.test(navigator.platform || navigator.userAgent);window.dispatchEvent(new KeyboardEvent('keydown', {key: '\\\\', code: 'Backslash',metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true}));return mac ? 'meta+backslash' : 'ctrl+backslash';})()"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const prefs = JSON.parse(localStorage.getItem('future.vibe.prefs') || '{}');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!document.querySelector('[data-vibe-panel-column]'),panelDefault: prefs.panelDefault ?? null,entry: Object.entries(prefs.panel || {}).map(([k, v]) => k + '=' + v),});})()"
+          },
+          {
+            "key": "ArrowRight"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const prefs = JSON.parse(localStorage.getItem('future.vibe.prefs') || '{}');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!document.querySelector('[data-vibe-panel-column]'),panelDefault: prefs.panelDefault ?? null,entry: Object.entries(prefs.panel || {}).map(([k, v]) => k + '=' + v),});})()"
+          },
+          {
+            "shot": "d-vibe-column-stays-closed.png"
+          }
+        ]
+      },
+      "vibe-add-tile": {
+        "url": "http://localhost:5299/shot/?pinned=th_data&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "JSON.stringify({cells: [...document.querySelectorAll('[data-vibe-cell]')].length, tile: !!document.querySelector('[data-vibe-add-slot]'), cols: document.querySelector('.grid') ? getComputedStyle(document.querySelector('.grid')).gridTemplateColumns : null})"
+          },
+          {
+            "eval": "(() => {const tile = document.querySelector('[data-vibe-add-slot]');const grid = document.querySelector('.grid');return JSON.stringify({tile: !!tile,tileText: tile ? tile.textContent : null,cells: document.querySelectorAll('[data-vibe-cell]').length,columns: grid ? getComputedStyle(grid).gridTemplateColumns.split(' ').length : null,tileColumn: tile ? getComputedStyle(tile).gridColumnStart : null,});})()"
+          },
+          {
+            "shot": "d-vibe-add-tile.png"
+          },
+          {
+            "eval": "(function(){window.dispatchEvent(new KeyboardEvent('keydown',{key:'4',code:'Digit4',bubbles:true,cancelable:true}));return document.querySelector('[data-vibe-focused]')?.getAttribute('data-vibe-focused');})()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => {const tile = document.querySelector('[data-vibe-add-slot]');const grid = document.querySelector('.grid');return JSON.stringify({tile: !!tile,tileText: tile ? tile.textContent : null,cells: document.querySelectorAll('[data-vibe-cell]').length,columns: grid ? getComputedStyle(grid).gridTemplateColumns.split(' ').length : null,tileColumn: tile ? getComputedStyle(tile).gridColumnStart : null,});})()"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "JSON.stringify({rows: [...document.querySelectorAll('[data-vibe-menu-row]')].map(r => r.getAttribute('data-vibe-menu-row')), title: document.querySelector('[role=\"menu\"] [aria-label], [role=menu]')?.getAttribute('aria-label') ?? null})"
+          },
+          {
+            "shot": "d-vibe-add-menu.png"
+          }
+        ]
+      },
+      "vibe-pages": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_fig,th_longformer,th_ablation,th_sc,th_temp,th_chat1,th_chat2,th_chat3,th_review_a,th_review_b,th_review_b1&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "JSON.stringify((() => ({cells: document.querySelectorAll('[data-vibe-cell]').length,page: document.querySelector('[data-vibe-page]')?.textContent ?? null,}))())"
+          },
+          {
+            "shot": "d-vibe-page-one.png"
+          },
+          {
+            "eval": "(function(){const mac=/Mac/i.test(navigator.platform||navigator.userAgent);window.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',code:'ArrowRight',altKey:true,bubbles:true,cancelable:true}));return 'next page';})()"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "JSON.stringify((() => ({cells: document.querySelectorAll('[data-vibe-cell]').length,page: document.querySelector('[data-vibe-page]')?.textContent ?? null,}))())"
+          },
+          {
+            "shot": "d-vibe-page-two.png"
+          }
+        ]
+      },
+      "rail-recent": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "最近"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "var list=document.querySelector('[data-testid=\"recent-rows\"]');if(!list) throw new Error('the recent view is not drawn');var secs=[...list.querySelectorAll('[data-recent-section]')].map(s=>s.getAttribute('data-recent-section'));if(JSON.stringify(secs)!==JSON.stringify(['active','earlier'])) throw new Error('stretches: '+JSON.stringify(secs));var counts=[...list.querySelectorAll('[data-recent-count]')].map(n=>Number(n.getAttribute('data-recent-count')));if(counts[0]!==3||counts[1]!==14) throw new Error('caption counts: '+JSON.stringify(counts));var rows=[...list.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));if(rows.length!==17) throw new Error('rows drawn: '+rows.length);'a11y: two stretches, 3 active over 14 earlier'"
+          },
+          {
+            "eval": "var rows=[...document.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));var sc=rows.indexOf('local::th_sc'), lf=rows.indexOf('local::th_longformer');if(sc<0||lf<0) throw new Error('the two running rows are missing: '+JSON.stringify(rows));if(sc>lf) throw new Error('the active stretch is not ordered by start time: th_sc at '+sc+', longformer at '+lf);if(rows.length>0 && rows.indexOf('desktop_studio::rs_forest')!==0)  throw new Error('a host run in flight is not the first row: '+rows[0]);'a11y: active ordered by creation, runs of both machines are in it'"
+          },
+          {
+            "eval": "var rows=[...document.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));var order=['local::th_review','local::th_chat1','local::th_review_a','local::th_review_b'];var idx=order.map(k=>rows.indexOf(k));if(idx.some(i=>i<0)) throw new Error('a finished row is missing: '+JSON.stringify(rows));if(idx[0]<3) throw new Error('the pinned conversation was lifted into the active stretch');for(var i=1;i<idx.length;i++) if(idx[i]<idx[i-1])  throw new Error('the earlier stretch is not ordered by last reply: '+JSON.stringify(idx));var pinnedHeadings=[...document.querySelectorAll('[data-testid=\"recent-rows\"] *')].filter(e=>e.children.length===0&&(e.textContent||'').trim()==='置顶');if(pinnedHeadings.length) throw new Error('the recent view drew a pinned section');'a11y: earlier by reply, pin is a marker'"
+          },
+          {
+            "shot": "d-rail-recent.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",
@@ -2197,6 +2754,50 @@
       "mobile": true
     },
     "scenarios": {
+      "hash-session-menu": {
+        "note": "The composer's `#` picker: conversations from every workspace in one list, newest activity first (even when that pulls a chat above a workspace's own conversations), and the workspace named on each row.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').focus()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "type": "#"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => { const header = [...document.querySelectorAll('*')].find(el => el.children.length === 0 && (el.textContent || '').trim() === '引用会话'); if (!header) throw new Error('the picker did not open'); const panel = header.parentElement.parentElement; const rows = [...panel.querySelectorAll('[role=\"button\"]')].filter(el => (el.getAttribute('aria-label') || '') !== '关闭技能候选'); const labels = rows.map(el => el.getAttribute('aria-label') || ''); const texts = rows.map(el => (el.innerText || '').trim()); const expected = ['跑通 Longformer 的 baseline', '把这份问卷数据清洗一下', '只看风险偏好那一段']; for (let i = 0; i < expected.length; i += 1) { if (labels[i] !== expected[i]) throw new Error('row ' + i + ' is ' + JSON.stringify(labels[i]) + ', expected ' + JSON.stringify(expected[i]) + ' in ' + JSON.stringify(labels.slice(0, 5))); } if (!texts[0].includes('稀疏注意力复现')) throw new Error('a workspace conversation names no workspace: ' + JSON.stringify(texts[0])); if (!texts[0].startsWith('跑通 Longformer 的 baseline')) throw new Error('the row is not titled: ' + JSON.stringify(texts[0])); if (texts.some(text => text.includes('临时会话'))) throw new Error('a chat names a workspace: ' + JSON.stringify(texts)); if (labels.includes('整理两篇文献的结论对比表')) throw new Error('the conversation being composed in is offered as a reference to itself'); return { labels: labels.slice(0, 6), texts: texts.slice(0, 3) }; })()"
+          },
+          {
+            "shot": "m-hash-session-menu.png"
+          }
+        ]
+      },
       "list": {
         "steps": [
           {
@@ -2204,6 +2805,12 @@
           },
           {
             "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "对话"
           },
           {
             "wait": 1500
@@ -4582,6 +5189,57 @@
             "tap": "稍后再说"
           },
           {
+            "wait": 1500
+          },
+          {
+            "eval": "var heads=['活跃','更早'];var titles=['把清洗脚本写到 ~/clean.py','再跑一遍 marker 富集','跑通 Longformer 的 baseline','整理两篇文献的结论对比表','把这份问卷数据清洗一下','只看风险偏好那一段','把结论改成中文表格','找一下这批细胞的 marker 基因','基金申报书的创新点怎么写','解释一下 p 值的常见误用'];var seen=[...document.querySelectorAll('div')].filter(d=>d.children.length===0&&d.textContent.trim()).map(d=>d.textContent.trim()).filter(s=>titles.indexOf(s)>=0||heads.indexOf(s)>=0).filter((s,i,a)=>a.indexOf(s)===i);var expected=['活跃','把清洗脚本写到 ~/clean.py','再跑一遍 marker 富集','跑通 Longformer 的 baseline','更早','整理两篇文献的结论对比表','把这份问卷数据清洗一下','只看风险偏好那一段','把结论改成中文表格','找一下这批细胞的 marker 基因','基金申报书的创新点怎么写','解释一下 p 值的常见误用'];if(JSON.stringify(seen)!==JSON.stringify(expected)) throw new Error('recency order wrong: '+JSON.stringify(seen));'a11y: order ok'"
+          },
+          {
+            "eval": "var active=document.querySelector('[data-testid=\"recent-section:sessions.activeSection\"]');var earlier=document.querySelector('[data-testid=\"recent-section:sessions.earlierSection\"]');if(!active||!earlier) throw new Error('section captions missing');var txt=e=>[...e.querySelectorAll('div')].filter(d=>d.children.length===0).map(d=>d.textContent.trim()).filter(Boolean);var a=txt(active), e=txt(earlier);if(a[0]!=='活跃'||a[1]!=='3') throw new Error('active caption: '+JSON.stringify(a));if(e[0]!=='更早'||e[1]!=='7') throw new Error('earlier caption: '+JSON.stringify(e));'a11y: counts ok'"
+          },
+          {
+            "eval": "var rows=[...document.querySelectorAll('[data-testid^=\"recent-row:active:\"]')].map(r=>r.getAttribute('data-testid').split(':').slice(2).join(':'));var want=['sess_dopamine_approve','sess_sc_marker_run','sess_sparse_baseline'];if(JSON.stringify(rows)!==JSON.stringify(want)) throw new Error('active order is not by creation: '+JSON.stringify(rows));'a11y: active by creation'"
+          },
+          {
+            "shot": "m-recent.png"
+          },
+          {
+            "tap": "会话列表操作"
+          },
+          {
+            "wait": 800
+          },
+          {
+            "tap": "多选会话"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "var rows=document.querySelectorAll('[data-testid^=\"recent-row:\"]').length;var boxes=document.querySelectorAll('[role=checkbox]').length;if(boxes!==rows) throw new Error('the batch does not offer every drawn row: '+boxes+' of '+rows);var pinned=[...document.querySelectorAll('[role=checkbox]')].filter(c=>c.getAttribute('aria-label')==='整理两篇文献的结论对比表');if(pinned.length!==1) throw new Error('the pinned row has no checkbox on the recency page: '+pinned.length);pinned[0].click(); 'a11y: pinned ticked'"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "var body=[...document.querySelectorAll('div')].find(d=>d.children.length===0 && (d.textContent||'').trim()==='已选 1 项');if(!body) throw new Error('the tick on the pinned row did not count');'a11y: 1 selected'"
+          },
+          {
+            "shot": "m-recent-selection.png"
+          }
+        ]
+      },
+      "recent-window": {
+        "url": "http://localhost:8099/?recent=1&recentMany=1",
+        "_comment": "A phone with a few dozen finished conversations: the recency page draws one window of them and offers the rest. The assertions are about counts and document order, not about text being present somewhere on the page.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
             "wait": 1200
           },
           {
@@ -4591,13 +5249,31 @@
             "wait": 900
           },
           {
-            "eval": "var titles=['再跑一遍 marker 富集','跑通 Longformer 的 baseline','把清洗脚本写到 ~/clean.py','整理两篇文献的结论对比表','把这份问卷数据清洗一下','只看风险偏好那一段','把结论改成中文表格','找一下这批细胞的 marker 基因','基金申报书的创新点怎么写','解释一下 p 值的常见误用'];var heads=['活跃','更早'];var leaves=[...document.querySelectorAll('div')].filter(d=>d.children.length===0&&d.textContent.trim());var seen=leaves.map(d=>d.textContent.trim()).filter(s=>titles.indexOf(s)>=0||heads.indexOf(s)>=0).filter((s,i,a)=>a.indexOf(s)===i);var expected=['活跃','再跑一遍 marker 富集','跑通 Longformer 的 baseline','把清洗脚本写到 ~/clean.py','更早','整理两篇文献的结论对比表','把这份问卷数据清洗一下','只看风险偏好那一段','把结论改成中文表格','找一下这批细胞的 marker 基因','基金申报书的创新点怎么写','解释一下 p 值的常见误用'];if(JSON.stringify(seen)!==JSON.stringify(expected)) throw new Error('recency order wrong: '+JSON.stringify(seen));'a11y: order ok'"
+            "eval": "var cap=document.querySelector('[data-testid=\"recent-section:sessions.earlierSection\"]');if(!cap) throw new Error('no earlier caption');var total=parseInt((cap.textContent||'').replace(/[^0-9]/g,''),10);var drawn=[...document.querySelectorAll('[data-testid^=\"recent-row:earlier:\"]')];if(drawn.length!==20) throw new Error('the window is not one page of rows: '+drawn.length);var more=[...document.querySelectorAll('[role=button]')].find(b=>b.getAttribute('aria-label')==='显示更多');if(!more) throw new Error('the window has no way to open');if(!(cap.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING)) throw new Error('the footer is not after the earlier caption');var last=drawn[drawn.length-1];if(!(last.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING)) throw new Error('the footer is not under the last drawn row');var held=parseInt((more.textContent||'').replace(/[^0-9]/g,''),10);if(held!==total-drawn.length) throw new Error('the footer offers '+held+' of '+(total-drawn.length)+' held back');if(total<=20) throw new Error('the fixture has no rows to hold back');'window: '+drawn.length+' of '+total+', footer under the rows'"
           },
           {
-            "eval": "var active=document.querySelector('[data-testid=\"recent-section:sessions.activeSection\"]');var earlier=document.querySelector('[data-testid=\"recent-section:sessions.earlierSection\"]');if(!active||!earlier) throw new Error('section captions missing');var txt=e=>[...e.querySelectorAll('div')].filter(d=>d.children.length===0).map(d=>d.textContent.trim()).filter(Boolean);var a=txt(active), e=txt(earlier);if(a[0]!=='活跃'||a[1]!=='3') throw new Error('active caption: '+JSON.stringify(a));if(e[0]!=='更早'||e[1]!=='7') throw new Error('earlier caption: '+JSON.stringify(e));'a11y: counts ok'"
+            "shot": "m-recent-window.png"
           },
           {
-            "shot": "m-recent.png"
+            "eval": "var more=[...document.querySelectorAll('[role=button]')].find(b=>b.getAttribute('aria-label')==='显示更多');if(!more) throw new Error('no footer to press');more.click(); 'pressed'"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "var cap=document.querySelector('[data-testid=\"recent-section:sessions.earlierSection\"]');var total=parseInt((cap.textContent||'').replace(/[^0-9]/g,''),10);var drawn=[...document.querySelectorAll('[data-testid^=\"recent-row:earlier:\"]')];var want=Math.min(20*2, total);if(drawn.length!==want) throw new Error('after 2 press(es) the window holds '+drawn.length+', not '+want);var more=[...document.querySelectorAll('[role=button]')].find(b=>b.getAttribute('aria-label')==='显示更多');var held=more?parseInt((more.textContent||'').replace(/[^0-9]/g,''),10):0;if(drawn.length<total){ if(!more) throw new Error('rows are held back with no way to open them'); if(held!==total-drawn.length) throw new Error('the footer offers '+held+' of '+(total-drawn.length)); }else if(more) throw new Error('the footer still offers rows it has drawn');'window: '+drawn.length+' of '+total"
+          },
+          {
+            "eval": "var more=[...document.querySelectorAll('[role=button]')].find(b=>b.getAttribute('aria-label')==='显示更多');if(!more) throw new Error('no footer to press');more.click(); 'pressed'"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "var cap=document.querySelector('[data-testid=\"recent-section:sessions.earlierSection\"]');var total=parseInt((cap.textContent||'').replace(/[^0-9]/g,''),10);var drawn=[...document.querySelectorAll('[data-testid^=\"recent-row:earlier:\"]')];var want=Math.min(20*3, total);if(drawn.length!==want) throw new Error('after 3 press(es) the window holds '+drawn.length+', not '+want);var more=[...document.querySelectorAll('[role=button]')].find(b=>b.getAttribute('aria-label')==='显示更多');var held=more?parseInt((more.textContent||'').replace(/[^0-9]/g,''),10):0;if(drawn.length<total){ if(!more) throw new Error('rows are held back with no way to open them'); if(held!==total-drawn.length) throw new Error('the footer offers '+held+' of '+(total-drawn.length)); }else if(more) throw new Error('the footer still offers rows it has drawn');'window: '+drawn.length+' of '+total"
+          },
+          {
+            "shot": "m-recent-window-open.png"
           }
         ]
       }

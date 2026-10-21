@@ -884,6 +884,23 @@ mod gui {
                             // No native About dialog — open the in-app Settings page.
                             let _ = app.emit("open-settings", ());
                         }
+                        menu::MENU_NEW_CONVERSATION | menu::MENU_SETTINGS => {
+                            // The window runs the *command*, by id — the same command
+                            // the palette, the rail's button and a keystroke reach,
+                            // through the same `useCommand` handler. The menu names no
+                            // key (see `menu.rs`), so a rebinding cannot leave a stale
+                            // label behind, and the item works on whatever key the
+                            // command has today.
+                            //
+                            // A window that is not up yet has no handler registered,
+                            // and `runCommand` on the other side is then a no-op.
+                            let command = if event.id().as_ref() == menu::MENU_NEW_CONVERSATION {
+                                "chat.new"
+                            } else {
+                                "settings.open"
+                            };
+                            let _ = app.emit("menu-command", command);
+                        }
                         menu::MENU_RESTART_WEBVIEW => {
                             // Reload a hung/crashed webview in place (native reload,
                             // so it recovers even when the JS context is dead)
@@ -1359,6 +1376,12 @@ mod gui {
             // shape once before approvals so an Agent run that survived
             // the GUI restart is reanimated instead of staying hidden.
             agent_bridge::reconcile_interrupted_runs().await;
+            // A conversation whose run this process's predecessor cut short
+            // (the embedded Agent dies with the app) is continued here, before
+            // the watchdog's first pass settles that row as interrupted: the
+            // Agent's own `interruptedRun` marker is the evidence, and the user
+            // reopening the app is what asks for the work to go on.
+            agent_bridge::resume_interrupted_runs_at_launch(store::now_millis()).await;
             agent_bridge::reconcile_pending_approvals().await;
         });
         // Shadow-review maintenance (consistency check + crash recovery) runs

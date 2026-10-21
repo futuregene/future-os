@@ -17,6 +17,14 @@ interface MessageListProps {
   onRetry?: (message: AgentMessage, source: AgentMessage) => void;
   workspaceId?: string | null;
   workspacePath?: string | null;
+  /**
+   * The gap between turns.
+   *
+   * `default` is the main window's rhythm. `roomy` is the Vibe panel's reading layer,
+   * which is read from further away and has no composer band competing for the eye — the
+   * panel asks for it so a long conversation does not read as a solid column.
+   */
+  spacing?: "default" | "roomy";
 }
 
 /**
@@ -27,7 +35,7 @@ interface MessageListProps {
  * shows its controls: a lost `pointerleave` is corrected by the next row's
  * `pointerover`, and leaving the list clears it outright.
  */
-export function MessageList({ messages, onContinue, onFork, onRetry, workspaceId, workspacePath }: MessageListProps) {
+export function MessageList({ messages, onContinue, onFork, onRetry, workspaceId, workspacePath, spacing = "default" }: MessageListProps) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const hideTimerRef = useRef<number | null>(null);
 
@@ -71,7 +79,7 @@ export function MessageList({ messages, onContinue, onFork, onRetry, workspaceId
     : null;
 
   return (
-    <div className="space-y-5" onPointerLeave={handleListLeave}>
+    <div className={spacing === "roomy" ? "space-y-8" : "space-y-5"} onPointerLeave={handleListLeave}>
       {messages.map((message, index) => {
         const isLast = index === messages.length - 1;
         const recoverySource = isLast ? lastUserMessage : null;

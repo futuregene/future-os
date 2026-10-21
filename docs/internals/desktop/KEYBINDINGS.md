@@ -1,9 +1,9 @@
 # Keyboard shortcuts
 
-Status: **implemented (P0 + P1)**. One command table, one dispatcher, one settings
-page, user-editable bindings stored per machine. Not yet: the command palette and
-the `⌘/` cheat sheet (P2), the macOS menu items and a per-command "also inside the
-terminal" switch (P3).
+Status: **implemented (P0–P2)**. One command table, one dispatcher, one settings
+page, one command palette, one cheat sheet, user-editable bindings stored per
+machine, and macOS menu items that carry no accelerators. Not yet: a per-command
+"also inside the terminal" switch, and a `leader`-key model.
 
 This document is the reasoning; the code is small enough to read next to it.
 
@@ -160,7 +160,7 @@ allowed to sit on a key the global keymap already uses. `scopes.ts` is that.
 | `vibe` | the panel is open | layout, device filter, add/remove, attention queue, overlay full screen |
 | `vibeGrid` | the grid has the keyboard (no cell zoomed) | the direction keys, `↩`, `1`–`9` |
 | `vibeZoom` | one cell fills the screen | `Esc` back out, the block cursor, the side panel's two keys |
-| `vibeInput` | the input layer: the caret is in a dictation editor | `⏎` send, `Esc` back — the one layer that runs **over** an editor |
+| `vibeInput` | the input layer: the caret is in a dictation editor | `Esc` back and the menu — the one layer that runs **over** an editor. Sending is **not** here: see below |
 
 Resolution is **innermost scope first**, then outwards, then `global`. So:
 
@@ -181,18 +181,21 @@ below). `mod` is `⌘` on macOS and `Ctrl` elsewhere:
 | Action | Default | Scope |
 | --- | --- | --- |
 | Open or close the panel | `mod+shift+v` | global |
-| Move the selection | `← ↑ → ↓` | vibeGrid |
+| Move the selection | `← ↑ → ↓`, or `h j k l` | vibeGrid |
 | Enter the selected cell → its **input layer** | `↩` | vibeGrid |
 | Close the panel | `Esc` / `Back` | vibeGrid |
 | Leave the zoomed cell | `Esc` / `Back` | vibeZoom |
-| Previous / next conversation in the zoomed cell | `←` / `→` | vibeZoom |
-| Previous / next message block | `↑` / `↓` | vibeZoom |
+| Previous / next conversation in the zoomed cell | `←` / `→`, or `h` / `l` | vibeZoom |
+| Scroll the conversation up / down | `↑` / `↓`, or `PageUp` / `PageDown` | vibeZoom |
+| Scroll the selected cell (without zooming in) | `PageUp` / `PageDown` | vibeGrid |
 | Open the input layer | `↩` | vibeZoom |
-| Send the dictation (empty draft: close) | `↩` | vibeInput |
+| Send the dictation (empty draft: close; a run in flight: queue it) | `↩` — the composer's own fixed key, not a command | vibeInput |
 | Leave the input layer | `Esc` / `Back` | vibeInput |
+| Take a queued sentence back into the box | `mod+shift+x` / the menu's cancel row | vibeInput / vibe |
 | The layer's menu | `mod+shift+k` / `Menu` | vibe |
 | Jump to the live end of the conversation | `Home` | vibe |
-| Go to a numbered cell | `1`–`9` | vibeGrid |
+| Go to a numbered cell, or the add tile | `1`–`9` | vibeGrid |
+| Previous / next page of the grid (registered only past twelve pinned) | `alt+←` / `alt+→` | vibeGrid |
 | Previous / next cell | `mod+[` / `mod+]` | (reuses `thread.previous`/`next`; the panel registers them, the rail does not) |
 | Cycle the grid layout | `mod+shift+g` | vibe |
 | More / fewer columns, automatic | `mod+=` / `mod+-` / `mod+0` | vibe |
@@ -205,8 +208,15 @@ below). `mod` is `⌘` on macOS and `Ctrl` elsewhere:
 | Overlay (app-wide) full screen | `mod+ctrl+f` | global |
 | All shortcuts | `mod+/` | global |
 
-Two notes on this table:
+Three notes on this table:
 
+* **`⏎` sending is not a command.** It is the composer's own fixed key
+  (`MentionEditor.onSubmit`, listed under `FIXED_KEYS`), and it already stands down
+  while an input method composes. The dispatcher listens in the capture phase, so a
+  `vibe.input.send` command would run *before* the editor's submit and the same
+  press would have two owners — the one way to reliably send a message twice. The
+  panel's contribution is only what the editor had no answer for: an empty draft
+  closes the layer. Same key, one owner.
 * **`Menu`, `Back` and `Home` are the remote control's buttons, not a keyboard's.**
   They are `aliases` on their command: they keep working after the reader rebinds
   the chord and after clearing it, the settings page shows them read only, and they
@@ -220,6 +230,12 @@ Two notes on this table:
   panel registers `thread.next` as "next cell", outside it the rail registers it
   as "next conversation". The registry keeps one handler per command, so the two
   cannot both be live.
+* **`h`/`j`/`k`/`l` are second bindings on the four movement commands**, not four more
+  commands: the movement is the same movement. They are listed read-only in the settings
+  page (like `vibe.cell`), because a rebindable pair would let a reader shadow them
+  without seeing what they shadowed. They never fire over an editor — a modifier-less
+  keystroke belongs to the field that has the caret — so typing `h` in a dictation is
+  an `h`.
 * **`1`–`9` is one command with nine bindings** (`vibe.cell`), because a cell is
   chosen by the digit printed on it. The settings page shows them as a read-only
   key list: recording a single key for a nine-key command would ask a question the
@@ -232,6 +248,74 @@ design revision is worth recording here: that proposal reused `mod+alt+↓/↑` 
 "next cell" because the rail's fine move was there at the time. The fine move has
 since moved to `mod+[` / `mod+]`, so the panel reuses those — the panel's "next"
 and the rail's "next" are the same command on the same key.
+
+## Finding a key: the palette and the cheat sheet
+
+Three entries exist around finding and changing the others, all global and all
+rebindable:
+
+| Action | Default | What it answers |
+| --- | --- | --- |
+| Jump to a command or conversation (`palette.open`) | `mod+k` | *do this* / *go there* |
+| Show all shortcuts (`shortcuts.help`) | `mod+/` | *what can I press* |
+| Keyboard shortcut settings (`shortcuts.settings`) | `mod+shift+,` | *change one* |
+
+`settings.open` keeps `mod+,` and keeps opening Settings on its **first** page:
+`mod+shift+,` is an addition, not a move, so the page a reader sees when they open
+settings is unchanged. The cheat sheet's header carries the one button it needs —
+*Edit shortcuts* — and that button **runs the `shortcuts.settings` command** rather
+than opening Settings itself, so there is one path to that page (`runCommand`),
+rebindable and reachable from the palette and the macOS menu like any other.
+
+It is also findable by words its label does not contain: the palette matches
+`keywords.<id>` as well as the label (`shortcuts.json`), so "keybind", "hotkey" and
+"rebind" reach the shortcut settings row. An alias only ever *finds* a row — a
+label match always ranks above one — so adding keywords cannot push the command
+someone searched for by name down the list.
+
+**The palette is not a second `mod+shift+f`.** `mod+shift+f` filters the rail's
+list in place — it narrows what is already on screen; the palette navigates,
+anywhere, from anywhere. Both stay.
+
+What it lists (`features/palette/paletteItems.ts` decides, the dialog renders):
+
+* **commands** whose handler is registered right now, in the table's order. One
+  with no handler is not a row at all: the palette promises to do what it says,
+  the same rule the dispatcher applies to a key with no owner. Availability is
+  decided when the dialog *opens*, not when the shell last rendered — handlers are
+  installed by effects, so a list captured on a first render would be empty;
+* **conversations** — this machine's and the paired machines' — and
+  **workspaces**, each as its own section, never ranked against the commands: a
+  chat called "terminal notes" must not outrank the command named "terminal".
+
+Matching is a substring, ranked prefix → word-start → anywhere, and inside one
+rank the caller's order survives (`matchRank`). The rows are walked with `↑`/`↓`,
+run with `↩`, dismissed with `Esc` or with the palette's own key, which the dialog
+reads from the live binding (`paletteToggle.ts`) because while it is open it *is*
+the overlay the dispatcher stands down behind.
+
+**The cheat sheet lists the live keys, not the defaults.** It reads the same
+store the dispatcher does (`useShortcutOverrides`), so a rebinding shows up in it
+while it is open — a card printed from `catalog.ts` would be a card of the old
+keys, which is the one thing a cheat sheet in an app with editable keys cannot be.
+A command the user unbound has no key, so it has no row; a multi-key command shows
+as its range (`1 … 9`).
+
+## The macOS menu
+
+`desktop/src-tauri/src/menu.rs` builds the menu bar, and two of its items are this
+document's business: **File → New Conversation** and **File → Settings…**.
+
+**Neither carries an accelerator, on purpose.** Both are commands in the table
+(`chat.new`, `settings.open`), and the user may rebind them. An accelerator written
+into the menu keeps printing the old key after a rebinding — a menu item that says
+`⌘N` while `⌘N` opens nothing is worse than one that names no key. So the item
+emits the **command id** (`menu-command`), and the window runs it through the same
+`runCommand` the dispatcher and the palette use (`AppShell`'s `menu-command`
+listener). One handler per command, whichever way it was asked for.
+
+An id this build does not know is ignored rather than guessed at, and a window
+that is not up yet has no handler, so the event is a no-op there.
 
 ## Where each command is registered
 
@@ -334,22 +418,48 @@ different risk.
 | `features/keyboard/scopes.test.tsx` | scopes ranked by layer, two holders of one scope, release independent |
 | `features/keyboard/modeKeymap.test.tsx` | a mode's key fires only inside it, one key in two scopes each staying its own, a bare key not taking a text field |
 | `features/settings/ShortcutsPage.test.tsx` | recording, refusal (modifier / reserved / conflict), cancel, unbind, restore, search |
+| `features/palette/paletteItems.test.ts` | matching and ranking, commands kept apart from conversations, empty sections dropped |
+| `features/palette/CommandPalette.test.tsx` | listing only what can run, filtering, arrows/`↩`, dismissal by its own key |
+| `features/palette/ShortcutCheatSheet.test.tsx` | live keys, a rebinding followed while open, an unbound command absent |
 | `ThreadSearch*`, `Composer.focus`, `AgentThread`, `ActivityRail.nav`, `AppShell` | each view's own command, through the dispatcher |
 
-Verified by hand as well as by tests: on Linux with a Chinese IME, a modified key
-pressed mid-composition does not fire a command; inside the terminal, `Ctrl+B`,
-`Ctrl+F`, `Ctrl+A`, `Ctrl+K` and `Ctrl+[` (ESC) still reach the shell.
+### What was actually verified by hand, and what was not
 
-## Going further (P2 / P3, not implemented)
+Every rule above is covered by the automated tests in the table. One rule was
+also checked against a running app by hand, and the one that was not is called
+out below — a reader deciding whether to trust a rule needs to know which kind of
+evidence stands behind it, and "covered by tests" is not the same claim as "seen
+working on the engine a release ships".
 
-* Command palette on `mod+k`: commands + conversations + workspaces in one entry.
-  `mod+shift+f` stays what it is — a filter for the list — so the two do not
-  compete.
-* `mod+/`: a cheat sheet listing the *live* bindings, including overrides.
-* macOS menu items for Settings and New Conversation. They must emit events and
-  carry **no** accelerators: an accelerator in the menu would keep printing the
-  old key after a rebinding.
+**Verified by hand — the terminal keeps the shell's keys.** In the **real
+Chromium webview with a Linux user agent** (a headless session driving the real
+app over CDP): with the terminal focused, `Ctrl+[` delivered `0x1b` (ESC) to the
+pseudo-terminal and `Ctrl+]` delivered `0x1d`, and neither was taken by the app.
+This is Chromium, not WebKitGTK — the engine a packaged Linux build actually runs.
+
+**Not verified by hand — Linux + WebKitGTK + a Chinese IME.** The rule "a key
+pressed mid-composition does not fire a command" is covered at the logic level
+only: `dispatchShortcut` has cases for `isComposing`, `keyCode 229` and
+`key: "Unidentified"`, the three shapes those engines report
+(`dispatch.test.ts`). It has **not** been exercised against WebKitGTK with
+ibus-libpinyin, the combination that produced the original terminal bug this rule
+descends from (`embedded-terminal.md`). Neither a Linux desktop nor a container
+able to run a WebKitGTK webview with an IME was available on the machine this was
+written on.
+
+> **TODO.** To close it, on a Linux desktop with `ibus-libpinyin` (or any IME
+> that composes CJK): run the app, open a conversation, start composing a word,
+> then press a modified key a command is bound to (e.g. `Ctrl+B`). Expected: no
+> command runs and the preedit box stays. Repeat inside the embedded terminal,
+> where the expectation is the same and the stale failure mode is the composition
+> being committed twice (`keyPolicy.ts`). When it is done, the two outcomes belong
+> in this section.
+
+## Going further (not implemented)
+
 * A per-command "also works inside the terminal" switch, default off, for users
-  who want `⌘N` while the terminal has focus on macOS.
+  who want `⌘N` while the terminal has focus on macOS. Deliberately not in v1:
+  `Ctrl` is the accelerator on Windows and Linux, so taking keys from the shell
+  costs it readline.
 * A `leader`-key model (opencode style). The data model leaves room; v1 has no
   timeout, no HUD and no chords.

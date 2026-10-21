@@ -8,6 +8,16 @@ use serde_json::{json, Value};
 
 /// Retain only the fields needed for visibility, pairing and run annotations.
 /// In particular, do not duplicate text, reasoning, arguments or attachments.
+///
+/// `compaction` keeps its whole `content` because that object *is* the
+/// checkpoint the projection turns into the divider's identity and counts
+/// (`checkpointId`, `tokensBefore`, `tokensAfter`, `trigger`, `phase`). Blanking
+/// it — as every other kind's body is blanked — left `payload.checkpoint` as the
+/// empty string those rows were projected from, which the client cannot read a
+/// field off: a body-less compaction row then served a divider with no numbers
+/// and no checkpoint identity. The entry it copies is bounded and rare, and a
+/// partial copy would make an indexed page disagree with the direct projection
+/// of the same journal.
 fn entry_shape(value: &Value) -> Value {
     let kind = value["type"].as_str().unwrap_or("");
     let mut result = json!({
@@ -41,7 +51,9 @@ fn entry_shape(value: &Value) -> Value {
     }
     if matches!(
         kind,
-        "session_info" | "model_change" | "run_started" | "run_terminal"
+        // Kinds whose `content` is what the projection emits: the session
+        // snapshot, a marker's terminal state, and a checkpoint's metadata.
+        "session_info" | "model_change" | "run_started" | "run_terminal" | "compaction"
     ) {
         if let Some(content) = value.get("content") {
             result["content"] = content.clone();

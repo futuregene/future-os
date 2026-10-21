@@ -194,6 +194,8 @@ export function SettingsDialog({
                     onToggleAutoTitleFirstTurn={value => onChangeSettings({ autoTitleFirstTurn: value })}
                     bellOnComplete={appSettings.bellOnComplete}
                     onToggleBellOnComplete={value => onChangeSettings({ bellOnComplete: value })}
+                    autoResumeInterrupted={appSettings.autoResumeInterrupted}
+                    onToggleAutoResumeInterrupted={value => onChangeSettings({ autoResumeInterrupted: value })}
                   />
                 )
               : null}

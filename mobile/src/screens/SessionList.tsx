@@ -39,7 +39,7 @@ import type { RemoteSession } from "../remote/types";
 import { layout, radius, spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 import { formatRelativeTime } from "./relativeTime";
-import { recentRows } from "./recentRows";
+import { RECENT_PAGE_SIZE, recentRows } from "./recentRows";
 import type { MergedSessionRow } from "../remote/mergeSessions";
 import { catalogRows, mergedRows as sessionTreeMergedRows, type CatalogRow } from "./sessionTree";
 import { listTargets, selectableTargets, type SessionTarget } from "./sessionSelection";
@@ -247,8 +247,25 @@ export function SessionList({
       };
     });
   }, [merged, remote.sessions, activeDesktopId]);
+  /**
+   * How many finished conversations the recency page draws.
+   *
+   * A window, opened further by the footer under the rows: a reader with a few
+   * hundred conversations should not scroll past all of them to reach the bottom
+   * of a page whose point is the last few. It starts over when the page does —
+   * coming back to "the recent ones" means the recent ones, not wherever the
+   * window was left.
+   */
+  const [recentLimit, setRecentLimit] = useState(RECENT_PAGE_SIZE);
+  const recent = useMemo(
+    () => (tab === "recent" ? recentRows(recentSource, query, recentLimit) : null),
+    [tab, recentSource, query, recentLimit],
+  );
   const rows = useMemo(() => {
-    if (tab === "recent") return recentRows(recentSource, query);
+    // `recent` is this page's own rows, computed above under the same conditions
+    // — narrowed on `tab` here so the two tree builders keep their own two-page
+    // contract.
+    if (tab === "recent") return recent ? recent.rows : [];
     return merged !== undefined
       ? sessionTreeMergedRows(merged, query, activeDesktopId, tab, collapsed, expanded)
       : catalogRows(remote.sessions, remote.workspaces, tab, collapsed, expanded, query);
@@ -261,7 +278,7 @@ export function SessionList({
     expanded,
     query,
     activeDesktopId,
-    recentSource,
+    recent,
   ]);
   /**
    * Whether a row's own machine has to be named on it.
@@ -298,12 +315,21 @@ export function SessionList({
     () => listTargets(merged, remote.sessions),
     [merged, remote.sessions],
   );
-  // What a batch may hold: conversations that are not pinned shortcuts, on a
-  // machine that can take the command. Pinned sessions are promoted above the
-  // groups (and, on the workspace tab, out of their own workspace), so they
-  // carry no checkbox while selecting and select-all never sweeps them up. A
-  // machine that cannot answer is left out for the same reason its menu items
-  // are: a checkbox would promise a delete it would refuse.
+  /**
+   * Whether a pinned conversation is a shortcut on this page rather than an
+   * ordinary row.
+   *
+   * True on the two tree pages, where a pin lifts the row above the groups (and,
+   * on the workspace page, out of its own workspace) — so it keeps no checkbox
+   * and a group's "select all" never sweeps it up. False on the recency page,
+   * which ignores pinning for its order and only draws the marker: there a
+   * pinned conversation is a row like any other, and leaving it unselectable put
+   * one row of that list beyond the batch for no reason the reader could see.
+   */
+  const pinnedAreShortcuts = tab !== "recent";
+  // What a batch may hold: the rows above, on a machine that can take the
+  // command. A machine that cannot answer is left out because a checkbox would
+  // promise a delete it would refuse.
   //
   // Computed every render rather than memoized: it reads the machines through
   // `commandsFor`, whose answer can change while that callback's identity stays
@@ -312,7 +338,7 @@ export function SessionList({
   const selectableRows = rows.filter(
     (row): row is SessionRow =>
       row.kind === "session"
-      && !row.session.pinned
+      && (!pinnedAreShortcuts || !row.session.pinned)
       && commandsFor(row.desktopId ?? null) !== null,
   );
   /**
@@ -329,7 +355,7 @@ export function SessionList({
    * conversations; the desktop rail's own "select conversations" is offered
    * throughout.
    */
-  const batchTargets = selectableTargets(allSessions, commandsFor);
+  const batchTargets = selectableTargets(allSessions, commandsFor, pinnedAreShortcuts);
   /** The conversations the batch holds, folded away or not. */
   const targets = allSessions.filter(target => selected.has(target.key));
   const allSelected =
@@ -692,11 +718,12 @@ export function SessionList({
     }
     const session = item.session;
     const checked = selected.has(item.key);
-    // A pinned session is a shortcut outside the tab's own groups: it keeps no
-    // checkbox and cannot join the batch, so select-all never includes it. Nor
-    // can a conversation on a machine that cannot answer the delete: a checkbox
-    // would promise a removal that machine would refuse.
-    const selectable = !session.pinned && commands !== null;
+    // A pinned session is a shortcut on the tree pages — no checkbox, no place
+    // in a batch — but an ordinary row on the recency page (see
+    // `pinnedAreShortcuts`). Nor can a conversation on a machine that cannot
+    // answer the delete: a checkbox would promise a removal that machine would
+    // refuse.
+    const selectable = (!pinnedAreShortcuts || !session.pinned) && commands !== null;
     const status = effectiveRunStatus(session.status, session.streaming);
     const running = status === "running" || status === "queued";
     const unread = remote.unreadSessions.has(session.sessionId);
@@ -714,7 +741,13 @@ export function SessionList({
       />
     ) : null;
     return (
-      <View style={[styles.row, { paddingLeft: depthInset(item.depth) }, pressedSessionId === session.sessionId && styles.rowPressed]}>
+      <View
+        style={[styles.row, { paddingLeft: depthInset(item.depth) }, pressedSessionId === session.sessionId && styles.rowPressed]}
+        // The recency page's rows are addressed by key in the screenshot
+        // scenario, which asserts how many of them the window draws and where
+        // the footer under them sits.
+        {...(tab === "recent" ? { testID: `recent-row:${item.section ?? "earlier"}:${item.key}` } : {})}
+      >
         {selecting
           ? selectable
             ? (
@@ -1102,6 +1135,21 @@ export function SessionList({
               <>{empty}</>
             )
           }
+          ListFooterComponent={recent && recent.more > 0 ? (
+            // The window's edge. It says how much is held back rather than
+            // opening silently on scroll: the page is meant to be short, and a
+            // reader who wants the rest asks for it.
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={t("sessions.showMore")}
+              onPress={() => setRecentLimit(current => current + RECENT_PAGE_SIZE)}
+              style={({ pressed }) => [styles.showMore, pressed && styles.pressed]}
+            >
+              <Text style={styles.showMoreLabel}>
+                {t("sessions.showMoreCount", { count: recent.more })}
+              </Text>
+            </Pressable>
+          ) : null}
         />
       </Animated.View>
     </View>
@@ -1242,6 +1290,19 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     borderRadius: radius.md,
   },
   title: { flex: 1, color: theme.colors.ink, fontSize: theme.font(15), lineHeight: theme.leading(22) },
+  // The recency page's window edge: a full-width row under the last drawn
+  // conversation, so it reads as "there is more" rather than as a toolbar.
+  showMore: {
+    minHeight: layout.touchTarget,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: spacing.xs,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.lineSoft,
+    backgroundColor: theme.colors.surfaceSubtle,
+  },
+  showMoreLabel: { color: theme.colors.accent, fontSize: theme.font(14), fontWeight: "600" },
   // The recency row: title and age on one line, where it lives under them.
   recentBody: { flexDirection: "column", alignItems: "stretch", gap: 2 },
   recentTop: { flexDirection: "row", alignItems: "center", gap: spacing.sm },

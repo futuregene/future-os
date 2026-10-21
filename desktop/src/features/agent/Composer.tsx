@@ -123,6 +123,46 @@ interface ComposerProps {
    * around the whole card so the highlight isn't cut off at the composer's edge.
    */
   onDragStateChange?: (state: ComposerDragState) => void;
+  /**
+   * The panel's input layer: what its send key means when the draft is empty.
+   *
+   * The panel puts send on `⏎` — a remote control has no other key for it — and
+   * that key is already the composer's own (`MentionEditor.onSubmit`, a fixed key
+   * that stands down while an input method composes). So the panel does not add a
+   * send command; it adds a meaning for the one case the editor had no answer
+   * for: an empty draft closes the layer instead of doing nothing. Present only in
+   * the input layer.
+   */
+  onEmptySubmit?: () => void;
+  /**
+   * Whether `@` / `/` / `#` may open their menus. Off in the panel's input layer:
+   * a dictated sentence arrives as one run, and a popup over the transcript would
+   * also take the next utterance's keys (`VIBE.md` §5.3).
+   */
+  triggers?: boolean;
+  /**
+   * How much of the control row to draw.
+   *
+   * `full` is the interactive row — model, thinking level, approval tier, attach —
+   * which is what every other composer in the app has and keeps. `none` is the
+   * panel's input layer: from a sofa those four are noise in the middle of a
+   * sentence, so they move into the panel's menu (`VIBE.md` §5.6) and what stays on
+   * screen is a read-only line the panel draws itself.
+   */
+  controls?: "full" | "none";
+  /**
+   * What a send means while this conversation's run is still in flight.
+   *
+   * The panel's answer is "keep it": the draft is handed over, cleared from the box,
+   * and the panel queues it — one per conversation, handed back to the box when the
+   * run ends, never sent by itself (`VIBE.md` §5.4). Returning `false` refuses the
+   * hand-over (something is already queued) and the text **stays in the editor**,
+   * which is the difference between "not now" and "lost".
+   *
+   * Absent everywhere else: there, a send during a run is simply not a send, and no
+   * message is taken away from the reader.
+   */
+  onQueue?: (payload: ComposerSendPayload) => boolean;
 }
 
 function ComposerImpl({
@@ -149,6 +189,10 @@ function ComposerImpl({
   sessionMentions,
   draftKey,
   onDragStateChange,
+  onEmptySubmit,
+  triggers = true,
+  controls = "full",
+  onQueue,
 }: ComposerProps) {
   const { t, i18n } = useTranslation("agent");
   // The editor is non-controlled (see MentionEditor); we only mirror its empty
@@ -341,9 +385,39 @@ function ComposerImpl({
     // abort button then), while context compaction is running, and while an
     // async send is in flight. The editor intentionally remains enabled so the
     // next message can still be drafted during either operation.
+    if (!trimmed && attachments.length === 0) {
+      // Nothing to send. In the panel's input layer that is still an action: the
+      // layer closes (`VIBE.md` §5.2). A key that silently does nothing is a key
+      // the reader stops trusting, and a remote control has no second way in.
+      if (!disabled)
+        onEmptySubmit?.();
+      return;
+    }
+    // The conversation is still running: keep what was said instead of dropping it.
+    // The panel queues it and gives it back to this box when the run ends — it is
+    // never sent by itself, because a dictated sentence gets one last look.
+    if (onQueue && !disabled && !compactionPending && sending && !sendPending) {
+      const submittedDraftKey = draftKeyRef.current;
+      const submittedAttachments = attachmentsRef.current;
+      const taken = onQueue({ attachments: submittedAttachments, content: trimmed });
+      if (taken) {
+        // Handed over: the text now lives in the panel's queue, so this box gives it
+        // up the same way a delivered message does.
+        editorRef.current?.clear();
+        lastTextRef.current = "";
+        const remaining = attachmentsRef.current.filter(item => !submittedAttachments.includes(item));
+        attachmentsRef.current = remaining;
+        setAttachments(remaining);
+        setAttachError(null);
+        if (remaining.length === 0 && submittedDraftKey)
+          clearComposerDraft(submittedDraftKey);
+      }
+      // Refused (one is already queued): the text stays here, exactly where the reader
+      // can see it and decide.
+      return;
+    }
     if (
-      (!trimmed && attachments.length === 0)
-      || disabled
+      disabled
       || sendPending
       || sending
       || compactionPending
@@ -621,7 +695,8 @@ function ComposerImpl({
         // instead). `disabled` restores the caret afterwards — the autofocus
         // effect above keys off it.
         disabled={disabled || recommendPending}
-        placeholder={placeholder ?? t("composer.placeholder")}
+        placeholder={placeholder ?? t(triggers ? "composer.placeholder" : "composer.placeholderPlain")}
+        triggers={triggers}
         onSubmit={submitValue}
         onEmptyChange={setInputEmpty}
         onChange={saveDraft}
@@ -632,26 +707,30 @@ function ComposerImpl({
       {attachError
         ? <div className="px-1 pb-1 text-xs text-warning">{attachError}</div>
         : null}
-      <ComposerControls
-        disabled={disabled}
-        modelId={modelId}
-        modelOptions={modelOptions}
-        modelsEmptyReason={modelsEmptyReason}
-        onModelChange={onModelChange}
-        thinkingLevel={thinkingLevel}
-        onThinkingLevelChange={onThinkingLevelChange}
-        approvalTier={approvalTier}
-        futureSessionStatus={futureSessionStatus}
-        onChangeApprovalTier={onChangeApprovalTier}
-        sending={sending}
-        onAbort={onAbort}
-        handleAttachFiles={handleAttachFiles}
-        inputEmpty={inputEmpty}
-        attachmentCount={attachments.length}
-        sendPending={sendPending}
-        recommendPending={recommendPending}
-        compactionPending={Boolean(compactionPending)}
-      />
+      {controls === "none"
+        ? null
+        : (
+            <ComposerControls
+              disabled={disabled}
+              modelId={modelId}
+              modelOptions={modelOptions}
+              modelsEmptyReason={modelsEmptyReason}
+              onModelChange={onModelChange}
+              thinkingLevel={thinkingLevel}
+              onThinkingLevelChange={onThinkingLevelChange}
+              approvalTier={approvalTier}
+              futureSessionStatus={futureSessionStatus}
+              onChangeApprovalTier={onChangeApprovalTier}
+              sending={sending}
+              onAbort={onAbort}
+              handleAttachFiles={handleAttachFiles}
+              inputEmpty={inputEmpty}
+              attachmentCount={attachments.length}
+              sendPending={sendPending}
+              recommendPending={recommendPending}
+              compactionPending={Boolean(compactionPending)}
+            />
+          )}
     </form>
   );
 }

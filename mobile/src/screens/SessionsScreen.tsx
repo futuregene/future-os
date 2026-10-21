@@ -66,9 +66,16 @@ interface SessionRow {
   desktopId: string | null;
 }
 
-// Persist the selected tab across screen transitions (SessionsScreen is
-// unmounted when entering a chat and remounted when returning).
-let lastTab: Tab = "chat";
+/**
+ * The page the list opens on, and the one it returns to.
+ *
+ * The recency page, because the first question a phone answers is "what was I
+ * doing": it holds the runs still going, then everything by how recently it
+ * moved — where the two tree pages need the reader to know which workspace a
+ * conversation lives in first. Kept for the life of the app, so coming back out
+ * of a conversation lands where the reader left the list.
+ */
+let lastTab: Tab = "recent";
 
 /**
  * The "every desktop" scope, as one shared object.
@@ -923,10 +930,14 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
    * cannot offer a selection the list would refuse to make. It is the list's
    * *catalogue* rather than its drawn rows: a folded group's conversations are
    * still selectable, which is why the list answers this question the same way.
+   * The page matters as much as on the list: pinned conversations are shortcuts
+   * only on the tree pages, so a catalogue of nothing but pins can be selected
+   * from the recency page and not from the other two.
    */
   const canSelect = selectableTargets(
     listTargets(showMerged ? mergedRows : undefined, remote.sessions),
     commandsFor,
+    tab !== "recent",
   ).length > 0;
 
   return (

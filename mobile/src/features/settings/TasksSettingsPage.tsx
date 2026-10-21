@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/Button";
@@ -537,6 +537,12 @@ function TaskForm({
   const { t } = useTranslation();
   const remote = useRemoteControls();
   const models = useDesktopResource(remote.listSettingsModels, 0, desktopOnline);
+  // Provider id → display name (same source the Models page groups by), so a
+  // model chip can say which vendor it runs on.
+  const providers = useDesktopResource(remote.listProviders, 0, desktopOnline);
+  const providerNames = useMemo(() => new Map(
+    [...providers.data?.builtin ?? [], ...providers.data?.custom ?? []].map(provider => [provider.id, provider.name]),
+  ), [providers.data]);
   const [draft, setDraft] = useState<Draft>(() => detail ? draftFrom(detail) : newDraft());
   const [confirmDelete, setConfirmDelete] = useState(false);
   // Which of the editor's two pages is on screen: an existing task opens on
@@ -754,15 +760,24 @@ function TaskForm({
                         />
                       )
                     : null}
-                  {enabledModels.map(model => (
-                    <Choice
-                      disabled={busy}
-                      key={modelKey(model)}
-                      label={model.label || model.id}
-                      onPress={() => patch({ modelId: modelKey(model) })}
-                      selected={draft.modelId === modelKey(model)}
-                    />
-                  ))}
+                  {enabledModels.map(model => {
+                    // The vendor goes on every chip: two providers often expose
+                    // the same model name, and a chip that only says the name
+                    // cannot tell them apart. A providerless model has no
+                    // vendor to add, so it stays the bare id.
+                    const label = model.provider
+                      ? `${model.label || model.id} · ${providerNames.get(model.provider) ?? model.provider}`
+                      : (model.label || model.id);
+                    return (
+                      <Choice
+                        disabled={busy}
+                        key={modelKey(model)}
+                        label={label}
+                        onPress={() => patch({ modelId: modelKey(model) })}
+                        selected={draft.modelId === modelKey(model)}
+                      />
+                    );
+                  })}
                 </View>
               </SettingsField>
 

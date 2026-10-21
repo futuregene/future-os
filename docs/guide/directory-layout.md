@@ -218,8 +218,10 @@ Owned by the Tauri desktop app (see `desktop/`):
   process exits, so a launch with no flag always means the Future platform. A
   file left by an older build is inert and safe to delete; each pairing records
   the relay that issued it in `remote_pairings.json` (`controlUrl`), so official
-  and self-hosted pairings coexist. See
-  [self-hosted-relay.md](self-hosted-relay.md).
+  and self-hosted pairings coexist. This is the *client's* leftover file: a
+  `relay.json` inside a `future relay init --dir` directory is a different file
+  — the relay server's own settings, still written and read by
+  `future relay serve`. See [self-hosted-relay.md](self-hosted-relay.md).
 - `relay-root-certs.pem` — PEM snapshot of the platform trust anchors, used
   only as the trust store for the remote bridge's TLS connection to the relay.
   Rewritten on every connect, and safe to delete: the next connect rebuilds it.

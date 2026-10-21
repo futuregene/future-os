@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::history::PROJECTION_VERSION;
 use crate::session::{Manager, Session};
 
 fn assert_projection(manager: &Manager, id: &str) {
@@ -35,11 +36,12 @@ fn ordinary_appends_and_metadata_changes_do_not_rewrite_the_historical_prefix() 
     // A new exchange must not decode shapes from the already indexed prefix.
     // Re-arm the stamp after installing the decoding sentinel: this fixture
     // exercises a healthy index, while real out-of-band mutations must rebuild.
-    manager.test_execute(
+    manager.test_execute(&format!(
         "UPDATE history_shapes SET payload='off-page-invalid-shape' WHERE position=1;
          INSERT OR REPLACE INTO history_index_state(session_id,projection_version)
-         SELECT id,1 FROM sessions;",
-    );
+         SELECT id,{} FROM sessions;",
+        PROJECTION_VERSION
+    ));
     manager.test_execute(
         "CREATE TEMP TRIGGER forbid_prefix_reinsertion BEFORE INSERT ON history_display
         WHEN NEW.ordinal<99 BEGIN SELECT RAISE(ABORT,'historical prefix was rewritten'); END;",

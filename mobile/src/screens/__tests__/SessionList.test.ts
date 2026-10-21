@@ -17,6 +17,7 @@ import { DialogSurface } from "../../components/DialogSurface";
 import { RenameModal } from "../../features/chat/components/RenameModal";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
 import { SessionList, type SessionListHandle } from "../SessionList";
+import { RECENT_PAGE_SIZE } from "../recentRows";
 import { currentAppAlert, finishAppAlert } from "../../components/appAlerts";
 import { ActionMenu } from "../../components/ActionMenu";
 import type { DesktopCommands } from "../../remote/desktopCommands";
@@ -489,6 +490,89 @@ test("the recency page puts a run in flight above the rest, newest first", () =>
   renderChatTab();
 });
 
+test("the recency page windows the finished rows and opens the window on request", () => {
+  const now = Date.now();
+  const minute = 60_000;
+  // Forty finished conversations, plus one in flight.
+  mockRemote.sessions = [
+    { sessionId: "busy", threadId: "tb", title: "Busy", streaming: true, lastMessageAt: now - 20_000 },
+    ...Array.from({ length: 40 }, (_, index) => ({
+      sessionId: `idle-${index}`,
+      threadId: `t${index}`,
+      title: `Idle ${index}`,
+      streaming: false,
+      lastMessageAt: now - (index + 1) * minute - 30_000,
+    })),
+  ];
+  const mount = () => act(() => tree.update(createElement(SessionList, {
+    tab: "recent",
+    empty: null,
+    onMenu,
+    onTabChange,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+  })));
+  mount();
+  const drawn = () => recentPage().filter(key => !key.startsWith("#"));
+  // One window of finished rows, and a footer that says how many are held back.
+  expect(drawn()).toHaveLength(RECENT_PAGE_SIZE + 1);
+  expect(drawn()[0]).toBe("busy");
+  expect(button("sessions.showMore")).toBeDefined();
+  expect(tree.root.findAll(node => node.props.children === "sessions.showMoreCount:20").length)
+    .toBeGreaterThan(0);
+
+  act(() => button("sessions.showMore").props.onPress());
+  expect(drawn()).toHaveLength(40 + 1);
+  // Nothing left to offer, so the footer goes with it.
+  expect(button("sessions.showMore")).toBeUndefined();
+
+  // Back to the fixture every other test starts from.
+  mockRemote.sessions = [
+    { sessionId: "s1", threadId: "t1", title: "First", streaming: false },
+    { sessionId: "s2", threadId: "t2", title: "Second", streaming: false },
+    { sessionId: "child", threadId: "tc", title: "Child", parentSessionId: "s1", streaming: false },
+  ];
+  renderChatTab();
+});
+
+test("a pinned conversation carries a checkbox on the recency page", () => {
+  // The tree pages lift a pin above their groups, so a batch leaves it out; the
+  // recency page has no such section and draws it as an ordinary row — which is
+  // what makes it part of the list the reader is ticking through.
+  mockRemote.sessions = [
+    { sessionId: "pinned", threadId: "tp", title: "Pinned plan", pinned: true, streaming: false },
+    { sessionId: "plain", threadId: "tq", title: "Plain plan", streaming: false },
+  ];
+  const mount = (tab: "chat" | "recent") => act(() => tree.update(createElement(SessionList, {
+    tab,
+    empty: null,
+    onMenu,
+    onTabChange,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+  })));
+  mount("chat");
+  enterSelection();
+  // On the chat page the pin is a shortcut: no checkbox at all.
+  expect(button("Pinned plan")).toBeUndefined();
+  expect(button("Plain plan")).toBeDefined();
+
+  mount("recent");
+  expect(button("Pinned plan")).toBeDefined();
+  act(() => button("Pinned plan").props.onPress());
+  act(() => button("sessions.selectVisible").props.onPress());
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:2").length)
+    .toBeGreaterThan(0);
+
+  // Back to the fixture every other test starts from.
+  mockRemote.sessions = [
+    { sessionId: "s1", threadId: "t1", title: "First", streaming: false },
+    { sessionId: "s2", threadId: "t2", title: "Second", streaming: false },
+    { sessionId: "child", threadId: "tc", title: "Child", parentSessionId: "s1", streaming: false },
+  ];
+  renderChatTab();
+});
+
 test("search finds a collapsed child without changing folds", () => {
   expect(button("sessions.actions:Child")).toBeUndefined();
   enterSearch();
@@ -521,7 +605,7 @@ test("the tab row is the list's whole width, with the page tools in the header",
   expect(onTabChange).toHaveBeenCalledWith("workspace");
 });
 
-test("a horizontal swipe pages the list, and closes the row into a loop", () => {
+test("a horizontal swipe pages the list, and the row closes into a loop", () => {
   const fromConversations = swipeHarness("chat");
   // Conversations is the middle page: dragging right leaves it ...
   expect(fromConversations.drag(120, 4)).toBe(true);
@@ -533,9 +617,14 @@ test("a horizontal swipe pages the list, and closes the row into a loop", () => 
   act(() => fromConversations.rendered.unmount());
 
   const fromRecent = swipeHarness("recent");
-  // The recency page is the last one, so a drag left has nothing behind it.
+  // The rightmost page: dragging left wraps to the workspaces page. It still
+  // moves one page at a time in the other direction — reaching conversations
+  // from here is one drag right, not through the workspaces page.
   expect(fromRecent.drag(-120, 4)).toBe(true);
-  expect(fromRecent.tabChange).not.toHaveBeenCalled();
+  expect(fromRecent.tabChange).toHaveBeenCalledWith("workspace");
+  fromRecent.tabChange.mockClear();
+  expect(fromRecent.drag(120, 4)).toBe(true);
+  expect(fromRecent.tabChange).toHaveBeenCalledWith("chat");
   act(() => fromRecent.rendered.unmount());
 
   const fromWorkspaces = swipeHarness("workspace");

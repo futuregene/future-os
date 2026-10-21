@@ -519,12 +519,14 @@ test("typing # opens the conversation picker and picking one writes the referenc
     act(() => tree.root.findByType(TextInput).props.onFocus());
     act(() => tree.root.findByType(TextInput).props.onChangeText("#"));
     const picker = tree.root.findByType(SessionPicker);
-    // Filed by mode: the chat is its own group, the workspace conversation under
-    // its workspace — and the conversation being composed in (s1) is not offered.
-    expect(picker.props.groups.map((group: { workspace: { name: string } | null }) => group.workspace?.name ?? null))
-      .toEqual([null, "Payments"]);
-    expect(picker.props.groups.flatMap((group: { sessions: { sessionId: string }[] }) => group.sessions.map(item => item.sessionId)))
-      .toEqual(["s3", "s2"]);
+    // One recency-ordered list: the chat and the workspace conversation in the
+    // order they were last used (both undated here, so the id breaks the tie),
+    // each naming its workspace — and the conversation being composed in (s1)
+    // is not offered.
+    expect(picker.props.sessions.map((option: { workspace: { name: string } | null }) => option.workspace?.name ?? null))
+      .toEqual(["Payments", null]);
+    expect(picker.props.sessions.map((option: { sessionId: string }) => option.sessionId))
+      .toEqual(["s2", "s3"]);
     act(() => picker.props.onSelect({ sessionId: "s2", title: "Fix the flaky test" }));
     // The draft shows the compact token, the way the desktop's pill reads.
     expect(tree.root.findByType(TextInput).props.value)
@@ -569,8 +571,8 @@ test("the / menu offers the conversation reference, which opens the # menu", () 
     act(() => picker.props.onActionSelect(action));
     expect(tree.root.findByType(TextInput).props.value).toBe("#");
     expect(tree.root.findAllByType(SkillPicker)).toHaveLength(0);
-    expect(tree.root.findByType(SessionPicker).props.groups.flatMap(
-      (group: { sessions: { sessionId: string }[] }) => group.sessions.map(item => item.sessionId),
+    expect(tree.root.findByType(SessionPicker).props.sessions.map(
+      (option: { sessionId: string }) => option.sessionId,
     )).toEqual(["s2"]);
   } finally {
     act(() => tree.unmount());

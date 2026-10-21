@@ -5,7 +5,8 @@
     "panels": "Panels",
     "terminal": "Terminal",
     "settings": "Settings",
-    "vibe": "Vibe panel"
+    "vibe": "Vibe panel",
+    "palette": "Search and help"
   },
   "commands": {
     "chat": {
@@ -57,7 +58,11 @@
       "close": "Close the Vibe panel",
       "zoom": {
         "previous": "Previous conversation in the zoomed cell",
-        "next": "Next conversation in the zoomed cell"
+        "next": "Next conversation in the zoomed cell",
+        "scroll": {
+          "up": "Scroll up",
+          "down": "Scroll down"
+        }
       },
       "cell": "Go to the numbered cell",
       "columns": {
@@ -90,7 +95,25 @@
         "open": "Start the input layer (type or dictate)",
         "close": "Leave the input layer",
         "send": "Send the dictation"
+      },
+      "queue": {
+        "cancel": "Take the queued message back into the box"
+      },
+      "scroll": {
+        "up": "Scroll this conversation up",
+        "down": "Scroll this conversation down"
+      },
+      "page": {
+        "previous": "Previous page of the grid",
+        "next": "Next page of the grid"
       }
+    },
+    "palette": {
+      "open": "Jump to a command or conversation"
+    },
+    "shortcuts": {
+      "help": "Show all keyboard shortcuts",
+      "settings": "Keyboard shortcut settings"
     }
   },
   "page": {
@@ -127,5 +150,21 @@
     "approve": "Approve a request",
     "transcript": "Jump to the previous / next question",
     "menu": "Move within an open menu"
+  },
+  "cheatSheet": {
+    "ariaLabel": "All keyboard shortcuts",
+    "title": "Keyboard shortcuts",
+    "hint": "These are the keys in effect now",
+    "edit": "Edit shortcuts"
+  },
+  "keywords": {
+    "shortcuts.settings": [
+      "keybind",
+      "keybinding",
+      "hotkey",
+      "keys",
+      "rebind",
+      "shortcut settings"
+    ]
   }
 }

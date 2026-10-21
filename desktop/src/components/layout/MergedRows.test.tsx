@@ -228,6 +228,9 @@ it("renders a local row through the rail's renderer, with its tree place", async
     0,
     false,
     false,
+    // No age: the tree view draws no second column, and the row is asked for one
+    // only in the recent view.
+    undefined,
   );
   await view.unmount();
 });
@@ -251,6 +254,7 @@ it("tells a local row inside a workspace that it is compact", async () => {
     0,
     false,
     true,
+    undefined,
   );
   await view.unmount();
 });

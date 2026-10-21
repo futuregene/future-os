@@ -13,6 +13,13 @@ const mocks = vi.hoisted(() => ({
   invokeCommand: vi.fn(),
   openDialog: vi.fn(),
   tauriEvents: {} as Record<string, Array<(payload: unknown) => void>>,
+  providerNames: { future: "Future 平台", openai: "OpenAI" } as Record<string, string>,
+}));
+
+// The model picker names each option's vendor; the map is stubbed so the
+// rendered option text is assertable without the providers IPC.
+vi.mock("../../integrations/agent/useProviderNames", () => ({
+  useProviderNames: () => mocks.providerNames,
 }));
 
 vi.mock("../../integrations/tauri/invoke", () => ({ invokeCommand: mocks.invokeCommand }));
@@ -98,6 +105,7 @@ beforeEach(() => {
   mocks.invokeCommand.mockReset();
   mocks.openDialog.mockReset();
   mocks.tauriEvents = {};
+  mocks.providerNames = { future: "Future 平台", openai: "OpenAI" };
 });
 
 /**
@@ -873,8 +881,20 @@ describe("tasksView", () => {
     expect(model.options[0]!.disabled).toBe(true);
     expect([...thinking.options].filter(option => option.value === "")).toHaveLength(1);
     expect(thinking.options[0]!.textContent).toBe("Choose a thinking level");
-    // Exactly the enabled models are offered.
+    // Exactly the enabled models are offered, each naming its vendor: two
+    // providers often expose the same model name, so a name-only picker
+    // cannot tell them apart.
     expect([...model.options].slice(1).map(option => option.value)).toEqual(["future/gpt-5"]);
+    expect(model.options[1]!.textContent).toBe("GPT-5 · Future 平台");
+  });
+
+  /** A provider the name map does not know falls back to its raw id. */
+  it("falls back to the provider id when no display name is known", async () => {
+    mocks.providerNames = {};
+    const { container } = await renderView([]);
+    await click(buttonByText(container, "New scheduled task"));
+    const model = field(container, "Model") as HTMLSelectElement;
+    expect(model.options[1]!.textContent).toBe("GPT-5 · future");
   });
 
   it("disables the thinking picker for a model that cannot think", async () => {

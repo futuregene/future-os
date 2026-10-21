@@ -18,6 +18,10 @@
     "large": "Large",
     "xlarge": "Extra large"
   },
+  "finalAnswerOnly": {
+    "title": "Show only the final answer",
+    "description": "Once an answer settles, fold its reasoning, tool calls and notes into one row and keep the final answer. Work is still shown while it streams; “Show process” opens it again."
+  },
   "approvalTier": {
     "title": "Approval mode",
     "manual": "Manual",
@@ -308,5 +312,9 @@
     "followCopyName": "Copy account name",
     "followCopied": "Copied",
     "followReadArticle": "Read an article"
+  },
+  "autoResumeInterrupted": {
+    "title": "Continue interrupted conversations",
+    "description": "Closing FutureOS stops the conversations that were running (the agent runs inside the app). When on, the next launch continues them by itself; when off, they stay interrupted until you continue them."
   }
 }

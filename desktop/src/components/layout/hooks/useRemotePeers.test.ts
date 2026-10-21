@@ -23,17 +23,25 @@ const connectRemotePeer = vi.fn<(desktopId: string) => Promise<RemotePeer>>();
 // that omitted them would take the whole refresh down with it.
 const listRemoteModels = vi.fn(async () => []);
 const getRemoteDesktopSettings = vi.fn(async () => ({ skillRecommend: false }));
-vi.mock("../../../features/remote-peer/remotePeerClient", () => ({
-  connectAllRemotePeers: () => connectAllRemotePeers(),
-  connectRemotePeer: (...args: Parameters<typeof connectRemotePeer>) => connectRemotePeer(...args),
-  fetchRemoteSessions: (...args: Parameters<typeof fetchRemoteSessions>) => fetchRemoteSessions(...args),
-  getRemoteDesktopSettings: () => getRemoteDesktopSettings(),
-  listRemoteAvailableSkills: () => Promise.resolve([]),
-  listRemoteInstalledSkills: () => Promise.resolve([]),
-  listRemoteModels: () => listRemoteModels(),
-  listRemotePeers: () => listRemotePeers(),
-  listRemoteWorkspaces: () => Promise.resolve([]),
-}));
+vi.mock("../../../features/remote-peer/remotePeerClient", async (importOriginal) => {
+  // The real parser rides along: a pushed snapshot and a polled one reach the
+  // list through one field list, and these tests are what prove a field the host
+  // sends is not dropped on the push path. Everything that would reach the
+  // backend is stubbed.
+  const actual = await importOriginal<typeof import("../../../features/remote-peer/remotePeerClient")>();
+  return {
+    ...actual,
+    connectAllRemotePeers: () => connectAllRemotePeers(),
+    connectRemotePeer: (...args: Parameters<typeof connectRemotePeer>) => connectRemotePeer(...args),
+    fetchRemoteSessions: (...args: Parameters<typeof fetchRemoteSessions>) => fetchRemoteSessions(...args),
+    getRemoteDesktopSettings: () => getRemoteDesktopSettings(),
+    listRemoteAvailableSkills: () => Promise.resolve([]),
+    listRemoteInstalledSkills: () => Promise.resolve([]),
+    listRemoteModels: () => listRemoteModels(),
+    listRemotePeers: () => listRemotePeers(),
+    listRemoteWorkspaces: () => Promise.resolve([]),
+  };
+});
 
 let listeners: Array<(event: { payload: unknown }) => void> = [];
 vi.mock("@tauri-apps/api/event", () => ({

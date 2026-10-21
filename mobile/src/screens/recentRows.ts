@@ -20,10 +20,31 @@ import type { CatalogRow } from "./sessionTree";
  * blocked on a question is the one place a reader is being waited on, and it
  * is *not* streaming, so a page that read `streaming` alone would file it under
  * "earlier" and make them hunt for it.
+ *
+ * The two stretches are ordered by different clocks, on purpose. "Earlier" is
+ * ordered by the last reply, which is the question that page answers. "Active"
+ * is ordered by when each conversation *started*: a streaming run rewrites the
+ * last-reply stamp about once a second, so ranking the running ones by it made
+ * rows swap places under the reader's thumb while a handful of runs took turns
+ * producing output. A start time does not move, so a row keeps its place for the
+ * whole run and a row joining or leaving the stretch is the only thing that
+ * shifts the others.
  */
 
 /** Run states that mean "this conversation is not done yet". */
 const ACTIVE_STATUSES = new Set(["running", "queued", "waiting_approval"]);
+
+/**
+ * How many finished conversations the page draws before it stops and offers the
+ * rest.
+ *
+ * A reader with a few hundred conversations should not have to scroll past all
+ * of them to reach the bottom of a page whose point is "the last few things".
+ * So the finished stretch is a window, and the window opens further on request.
+ * The active stretch is never windowed: it is bounded by what is actually
+ * running, and it is the part the reader came to see.
+ */
+export const RECENT_PAGE_SIZE = 20;
 
 /** Whether a run is still in flight, by the same rule the rows' icons use. */
 export function isActiveSession(row: MergedSessionRow): boolean {
@@ -31,15 +52,40 @@ export function isActiveSession(row: MergedSessionRow): boolean {
   return status !== undefined && ACTIVE_STATUSES.has(status);
 }
 
-/** Newest reply first; a row with no stamp sorts below every dated row. */
-function byRecency(a: MergedSessionRow, b: MergedSessionRow): number {
-  const at = a.lastMessageAt ?? Number.NEGATIVE_INFINITY;
-  const bt = b.lastMessageAt ?? Number.NEGATIVE_INFINITY;
-  if (at !== bt) return bt - at;
+/** Newest first on one stamp; a row without it sorts below every dated row. */
+function byStamp(
+  at: number | null,
+  bt: number | null,
+  a: MergedSessionRow,
+  b: MergedSessionRow,
+): number {
+  const left = at ?? Number.NEGATIVE_INFINITY;
+  const right = bt ?? Number.NEGATIVE_INFINITY;
+  if (left !== right) return right - left;
   return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
 }
 
-function sessionRow(row: MergedSessionRow): CatalogRow {
+/** Newest reply first — the "earlier" stretch's order. */
+const byRecency = (a: MergedSessionRow, b: MergedSessionRow): number =>
+  byStamp(a.lastMessageAt, b.lastMessageAt, a, b);
+
+/**
+ * Newest conversation first — the "active" stretch's order.
+ *
+ * Its own start time, not its activity. A desktop older than that field sends
+ * none, and there the last-reply stamp is the closest thing to a stable order
+ * available: a run's stamp moves, but a client with no other key must still
+ * draw the rows somehow, and recency is what every other page uses.
+ */
+const byCreation = (a: MergedSessionRow, b: MergedSessionRow): number =>
+  byStamp(
+    a.session.createdAt ?? a.lastMessageAt,
+    b.session.createdAt ?? b.lastMessageAt,
+    a,
+    b,
+  );
+
+function sessionRow(row: MergedSessionRow, section: "active" | "earlier"): CatalogRow {
   return {
     kind: "session",
     key: row.key,
@@ -48,45 +94,68 @@ function sessionRow(row: MergedSessionRow): CatalogRow {
     depth: 0,
     hasChildren: false,
     foldId: row.key,
+    section,
     ...(row.desktopId ? { desktopId: row.desktopId } : {}),
   };
 }
 
+export interface RecentPage {
+  rows: CatalogRow[];
+  /** Finished conversations the window is holding back; 0 when it holds them all. */
+  more: number;
+}
+
 /**
- * The page's rows.
+ * The page's rows, with the finished stretch windowed to `limit`.
  *
  * A search flattens it, as on the other two pages: captions are about *where a
  * conversation sits* in the page's order, and a filtered list has no order to
- * caption. A caption with nothing under it is never drawn either.
+ * caption. A search also ignores the window — the thing being looked for may be
+ * the two-hundredth conversation, and a result list that said "not found" while
+ * holding it would be wrong.
+ *
+ * A caption counts its whole stretch, not the window, so "Earlier 42" stays true
+ * whether twenty or all of them are drawn; `more` is what the footer under them
+ * offers.
  */
 export function recentRows(
   rows: readonly MergedSessionRow[],
   query: string,
-): CatalogRow[] {
+  limit: number = RECENT_PAGE_SIZE,
+): RecentPage {
   const search = query.trim().toLocaleLowerCase();
   const matches = (row: MergedSessionRow): boolean =>
     !search
     || row.session.title.toLocaleLowerCase().includes(search)
     || (row.session.workspaceName ?? "").toLocaleLowerCase().includes(search);
   const listed = rows.filter(matches);
-  const active = listed.filter(isActiveSession).sort(byRecency);
+  const active = listed.filter(isActiveSession).sort(byCreation);
   const earlier = listed.filter(row => !isActiveSession(row)).sort(byRecency);
-  if (search) return [...active, ...earlier].map(sessionRow);
+  if (search)
+    return {
+      rows: [
+        ...active.map(row => sessionRow(row, "active")),
+        ...earlier.map(row => sessionRow(row, "earlier")),
+      ],
+      more: 0,
+    };
+  const shown = limit < 0 ? earlier : earlier.slice(0, Math.max(0, limit));
   const out: CatalogRow[] = [];
-  for (const [titleKey, section] of [
-    ["sessions.activeSection", active],
-    ["sessions.earlierSection", earlier],
-  ] as const) {
+  const section = (
+    titleKey: "sessions.activeSection" | "sessions.earlierSection",
+    kind: "active" | "earlier",
+    all: readonly MergedSessionRow[],
+    drawn: readonly MergedSessionRow[],
+  ) => {
     // An empty stretch is not a section: a caption over nothing reads as a list
-    // that failed to load its rows.
-    if (section.length === 0) continue;
-    out.push({
-      kind: "section",
-      key: `recent:${titleKey}`,
-      titleKey,
-      count: section.length,
-    });
-    out.push(...section.map(sessionRow));
-  }
-  return out;
+    // that failed to load its rows. A window that has not opened yet is not one
+    // either — the caption counts the whole stretch, so a caption over no rows
+    // would claim conversations it does not show.
+    if (drawn.length === 0) return;
+    out.push({ kind: "section", key: `recent:${titleKey}`, titleKey, count: all.length });
+    out.push(...drawn.map(row => sessionRow(row, kind)));
+  };
+  section("sessions.activeSection", "active", active, active);
+  section("sessions.earlierSection", "earlier", earlier, shown);
+  return { rows: out, more: earlier.length - shown.length };
 }

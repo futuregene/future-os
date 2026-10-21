@@ -178,7 +178,9 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
   可选的 `ca` PEM 路径）。现在自建中继按**每次启动**选择（`--relay` / `--relay-ca`），
   进程退出即忘，因此不带参数启动永远是官方平台。老版本留下的这个文件不再起作用，
   可以安全删除；每个配对会把签发它的中继记进 `remote_pairings.json` 的 `controlUrl`，
-  所以官方配对与自建配对仍可共存。见
+  所以官方配对与自建配对仍可共存。这是**客户端**的遗留文件；`future relay init --dir`
+  目录里的 `relay.json` 是另一回事——那是中继服务端自己的配置，仍由
+  `future relay serve` 写入和读取。见
   [self-hosted-relay.zh-CN.md](self-hosted-relay.zh-CN.md)。
 - `relay-root-certs.pem` — 平台信任根的 PEM 快照，仅作为远程桥连接中转的 TLS 信任库。
   每次连接都会重写，可以安全删除：下次连接会重建。见

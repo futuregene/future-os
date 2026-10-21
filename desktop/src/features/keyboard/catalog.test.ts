@@ -59,8 +59,6 @@ describe("command catalog", () => {
       .sort();
     expect(bare).toEqual([
       "vibe.back",
-      "vibe.block.next",
-      "vibe.block.previous",
       "vibe.cell",
       "vibe.close",
       "vibe.focus.down",
@@ -70,10 +68,13 @@ describe("command catalog", () => {
       "vibe.home",
       "vibe.input.close",
       "vibe.input.open",
-      "vibe.input.send",
       "vibe.open",
+      "vibe.scroll.down",
+      "vibe.scroll.up",
       "vibe.zoom.next",
       "vibe.zoom.previous",
+      "vibe.zoom.scroll.down",
+      "vibe.zoom.scroll.up",
     ]);
     for (const id of bare)
       expect(scopeOf(COMMANDS.find(spec => spec.id === id)!), id).not.toBe("global");
@@ -82,10 +83,12 @@ describe("command catalog", () => {
   it("runs over the editor only in the layer that operates it", () => {
     // A bare key is the text field's — except in the input layer, where `↩`
     // sending *is* how the field is operated. Nothing else may do it.
+    // `⏎` sending is *not* on this list: that key is the composer's own
+    // (`FIXED_KEYS`), routed through `MentionEditor.onSubmit` rather than the
+    // command table, so the two owners never share one press.
     expect(COMMANDS.filter(spec => spec.overEditable).map(spec => spec.id).sort()).toEqual([
       "vibe.home",
       "vibe.input.close",
-      "vibe.input.send",
       "vibe.menu",
     ]);
     for (const spec of COMMANDS.filter(one => one.overEditable)) {
@@ -122,14 +125,16 @@ describe("command catalog", () => {
       "group.previous",
       "thread.next",
       "thread.previous",
-      "vibe.block.next",
-      "vibe.block.previous",
       "vibe.focus.down",
       "vibe.focus.left",
       "vibe.focus.right",
       "vibe.focus.up",
+      "vibe.scroll.down",
+      "vibe.scroll.up",
       "vibe.zoom.next",
       "vibe.zoom.previous",
+      "vibe.zoom.scroll.down",
+      "vibe.zoom.scroll.up",
     ]);
   });
 

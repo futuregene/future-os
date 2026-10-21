@@ -985,7 +985,7 @@ impl Observed {
         if !self.running {
             return Some(if on {
                 "Nothing is serving yet: no Desktop is running for this machine. The switch is \
-                 stored, and the next start — the window, or futureos-headless — serves the \
+                 stored, and the next start — the window, or `future headless` — serves the \
                  paired devices."
                     .to_string()
             } else {

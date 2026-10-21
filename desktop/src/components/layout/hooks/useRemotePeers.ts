@@ -10,6 +10,7 @@ import {
   connectRemotePeer,
   fetchRemoteSessions,
   listRemotePeers,
+  normalizeRemoteSessionRows,
 } from "../../../features/remote-peer/remotePeerClient";
 
 /** How often the peer list is refreshed. */
@@ -529,36 +530,10 @@ function handleCatalog(
       return;
     const next: RemoteCatalog = {
       desktopId,
-      // Reuse the existing parser by going through the backend-shaped payload.
-      // We normalise here to the same shape `fetchRemoteSessions` would return,
-      // so the merged list sees no difference between push and poll.
-      sessions: raw.flatMap((entry): RemoteSessionRow[] => {
-        if (typeof entry !== "object" || entry === null)
-          return [];
-        const row = entry as Record<string, unknown>;
-        const sessionId = row.sessionId;
-        if (typeof sessionId !== "string" || !sessionId)
-          return [];
-        return [{
-          sessionId,
-          ...(typeof row.threadId === "string" && row.threadId ? { threadId: row.threadId } : {}),
-          title: typeof row.title === "string" && row.title ? row.title : sessionId,
-          mode: row.mode === "workspace" ? "workspace" : "chat",
-          ...(typeof row.workspaceId === "string" ? { workspaceId: row.workspaceId } : {}),
-          ...(typeof row.workspaceName === "string" && row.workspaceName
-            ? { workspaceName: row.workspaceName }
-            : {}),
-          ...(typeof row.workspacePinned === "boolean" ? { workspacePinned: row.workspacePinned } : {}),
-          ...(typeof row.workspaceOrderedAt === "number" ? { workspaceOrderedAt: row.workspaceOrderedAt } : {}),
-          ...(typeof row.parentSessionId === "string" && row.parentSessionId
-            ? { parentSessionId: row.parentSessionId }
-            : {}),
-          pinned: row.pinned === true,
-          streaming: row.streaming === true,
-          ...(typeof row.status === "string" ? { status: row.status } : {}),
-          lastMessageAt: typeof row.lastMessageAt === "number" ? row.lastMessageAt : null,
-        }];
-      }),
+      // The same parser the poll uses: the merged list must see no difference
+      // between a pushed snapshot and a polled one, and one field list is what
+      // keeps a host field from reaching one path and not the other.
+      sessions: normalizeRemoteSessionRows(obj.sessions),
     };
     setCatalogs(current => current.map(catalog => (catalog.desktopId === desktopId ? next : catalog)));
   }

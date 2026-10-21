@@ -560,7 +560,12 @@ its source icon; the device selector narrows it to one machine. The ordering key
 for **rows** is the one the local list already used —
 `pinned DESC, COALESCE(last_message_at, updated_at, created_at) DESC` — which is
 why the `state.sessions` snapshot gained an optional `lastMessageAt` (older
-clients ignore it). **A remote row's value is the host's own and is written only
+clients ignore it). The same snapshot also carries an optional `createdAt`
+(`threads.created_at`) for a different question: a run rewrites `lastMessageAt`
+about once a second, so a client that lists the *running* conversations by it
+reshuffles them under the reader's thumb — the mobile list ranks that stretch by
+when each conversation started instead, and falls back to recency on a host that
+does not send the field. **A remote row's value is the host's own and is written only
 by the host** — the snapshot when the list's structure moves, the `state.activity`
 packet when only the value did. A client that stamped a clock of its own on the
 row (the desktop's live-event handler once used `Date.now()`) put two clocks in
@@ -1159,7 +1164,7 @@ conflated with the immediacy of the Desktop's local entry close.
 | Desktop sleep/wake | power events integrated on macOS/Windows/Linux; recovery depends on the startup, credential, and sync chains |
 | NATS restart, long unreachable | retries exist; authorization-config faults and over-budget critical-task faults stop auto-recovery |
 | Platform HTTP fault, NATS still normal | existing chains may keep serving while credentials are valid; startup/renewal affected, phone requests lack bounded cancellation |
-| Desktop normal exit, process rebuild | remote disconnects; the owned sidecar exits, conversations end. Reopening can only recover the entry per the user's connection policy; old tasks are not auto-resumed |
+| Desktop normal exit, process rebuild | remote disconnects; the owned sidecar exits, conversations end. Reopening can only recover the entry per the user's connection policy; old *remote* tasks are not auto-resumed, while a local conversation the exit interrupted continues on the next launch per [ER](ER.md) (the `autoResumeInterrupted` setting turns that off) |
 | Agent unavailable, Desktop heartbeat normal | may show connected while business fails; needs separately published Agent availability |
 | Claim succeeded but response lost | self-recovery not guaranteed; currently the invitation may have to be regenerated |
 | User active disconnect/unbind | must stop, not self-recover; current cancel, late-result, and revocation compensation still need completion per the target contract |
