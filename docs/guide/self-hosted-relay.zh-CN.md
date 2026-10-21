@@ -241,7 +241,7 @@ nats-server -c /tmp/relay/nats.conf
 future relay serve --config /tmp/relay/relay.json
 
 RELAY_E2E_RELAY_URL=http://127.0.0.1:8099 \
-  cargo test -p futureos --lib remote::relay_e2e -- --ignored --nocapture
+  cargo test -p future-host --lib remote::relay_e2e -- --ignored --nocapture
 ```
 
 该测试跑的是真实链路：`remote::start()` 经中继生成 v3 邀请，client 角色认领并用
