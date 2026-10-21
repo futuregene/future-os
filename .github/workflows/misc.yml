@@ -27,6 +27,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 # Stress samples intentionally have no concurrency cancellation. A second
 # dispatch is an independent observation, even for the same ref/suite.

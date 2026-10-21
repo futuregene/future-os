@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Host's single core suite in CI, optionally with an isolated real broker."""
+"""Run the selected Host suite in CI, optionally with an isolated real broker."""
 
 import argparse
 import os
@@ -17,10 +17,15 @@ ROOT = Path(__file__).resolve().parents[2]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--with-broker", action="store_true")
+    parser.add_argument("--suite", choices=("all", "remote", "core"), default="all")
     args = parser.parse_args()
     if os.environ.get("GITHUB_ACTIONS") != "true":
         parser.error("Host automated acceptance runs in CI; do not start local NATS tests")
     command = ["cargo", "test", "--locked", "--no-fail-fast", "-p", "future-host"]
+    if args.suite == "remote":
+        command.extend(["--", "remote"])
+    elif args.suite == "core":
+        command.extend(["--", "--skip", "remote"])
     if not args.with_broker:
         return subprocess.call(command, cwd=ROOT)
 

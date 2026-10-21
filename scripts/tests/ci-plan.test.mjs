@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFileSync } from 'node:fs';
-import { affected, catalog, manualPlan } from '../ci/affected.mjs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { timedCommand } from '../ci/timed-command.mjs';
+import { affected, catalog, manualPlan, rustTestGroups } from '../ci/affected.mjs';
 import { checkResult } from '../ci/ci-result.mjs';
 
 // Exercise the real manifests so newly introduced path dependencies participate.
@@ -127,7 +130,8 @@ test('specialty tooling and docs do not schedule regular suites', () => {
 
 test('manual and planner changes select every regular project, excluding interop', () => {
   for (const result of [affected([], projects, true), plan('scripts/ci/affected.mjs'),
-    plan('.github/workflows/typescript-ci.yml')]) {
+    plan('.github/workflows/typescript-ci.yml'), plan('scripts/ci/job-timings.mjs'),
+    plan('scripts/ci/timed-command.mjs')]) {
     assert.equal(rust(result).length, projects.rust.length - 1);
     assert.equal(ts(result).length, projects.typescript.length - 1);
     assert.ok(result.android && result.ios);
@@ -197,5 +201,43 @@ test('specialty workflows are manual and expose every migrated suite', () => {
   for (const suite of ['generated', 'remote-interop', 'windows-update', 'macos-notarization',
     'flaky-stress', 'agent-lifecycle', 'remote-compile-measurement', 'headless-measurement', 'full-regression']) {
     assert.ok(workflow.includes(`inputs.suite == '${suite}'`), suite);
+  }
+});
+
+test('Host tests always expand to exactly remote/core while checks stay crate scoped', () => {
+  for (const result of [manualPlan('future-host', projects), plan('host/src/remote_peer/runtime.rs'),
+    plan('host/src/store.rs'), plan('host/src/test_support/timing.rs')]) {
+    const hostChecks = result.rust.filter(group => group.packages.includes('future-host'));
+    assert.deepEqual(hostChecks, [{ name: 'host', packages: ['future-host'], desktop: false }]);
+    const tests = rustTestGroups(result.rust).filter(group => group.hostSuite);
+    assert.deepEqual(tests.map(group => [group.name, group.hostSuite, group.packages]), [
+      ['host-remote', 'remote', ['future-host']], ['host-core', 'core', ['future-host']],
+    ]);
+    assert.deepEqual(rustTestGroups(result.rust).filter(group => !group.hostSuite),
+      result.rust.filter(group => group.name !== 'host'));
+  }
+});
+
+test('timing capture retains command failures and does not invent durations from test output', async () => {
+  const previous = process.env.RUNNER_TEMP;
+  const directory = mkdtempSync(join(tmpdir(), 'future-ci-timing-'));
+  process.env.RUNNER_TEMP = directory;
+  try {
+    const result = await timedCommand(process.execPath, ['-e',
+      'console.log("test result: FAILED. 0 passed; 1 failed; finished in 0.25s"); process.exitCode = 7;']);
+    assert.equal(result.status, 7);
+    assert.equal(result.signal, null);
+    const rows = readFileSync(join(directory, 'ci-timings', 'commands.jsonl'), 'utf8')
+      .trim().split('\n').map(JSON.parse);
+    const command = rows.find(row => row.kind === 'command');
+    assert.equal(command.status, 7);
+    assert.ok(Number.isFinite(command.wall_seconds) && command.wall_seconds >= 0);
+    assert.equal(rows.filter(row => row.kind === 'native_summary').length, 1);
+    assert.match(rows.find(row => row.kind === 'native_summary').line, /finished in 0\.25s/);
+    await assert.rejects(timedCommand(join(directory, 'missing-command'), []), { code: 'ENOENT' });
+  } finally {
+    if (previous === undefined) delete process.env.RUNNER_TEMP;
+    else process.env.RUNNER_TEMP = previous;
+    rmSync(directory, { recursive: true, force: true });
   }
 });

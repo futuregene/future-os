@@ -266,16 +266,6 @@ async fn a_failed_connection_is_remembered_against_its_host() {
     teardown(&fx.pair_id).await;
 }
 
-#[tokio::test]
-async fn connecting_an_unknown_host_is_an_error_not_an_invention() {
-    let (_home, fx) = start("peer-rt-unknown").await;
-    let error = connect("desktop_nobody")
-        .await
-        .expect_err("an unpaired host cannot connect");
-    assert!(error.to_string().contains("peer_not_paired"), "{error}");
-    teardown(&fx.pair_id).await;
-}
-
 /// `ensure_connected` is the path every command takes, so its two arms both
 /// matter: reuse a live connection, open one when there is none.
 #[tokio::test]
@@ -445,18 +435,6 @@ async fn unpairing_reports_a_revoke_that_could_not_be_delivered() {
     // Locally gone regardless.
     assert!(creds::load().expect("book").find(&desktop_id).is_none());
 
-    teardown(&fx.pair_id).await;
-}
-
-/// An unpair whose host is unknown is not an error the UI has to handle: the
-/// user's intent (that host should be gone) is already satisfied.
-#[tokio::test]
-async fn unpairing_an_unknown_host_is_a_no_op() {
-    let (_home, fx) = start("peer-rt-unpair-unknown").await;
-    let error = unpair("desktop_nobody")
-        .await
-        .expect_err("there is nothing to revoke");
-    assert!(error.to_string().contains("peer_not_paired"), "{error}");
     teardown(&fx.pair_id).await;
 }
 
@@ -631,18 +609,6 @@ async fn a_run_scoped_page_repeats_its_run_on_every_chunk() {
         "the last chunk is the run's own bytes, not a refusal"
     );
 
-    teardown(&fx.pair_id).await;
-}
-
-/// A catalogue read against an unpaired host fails rather than opening a
-/// connection as a side effect of a background poll.
-#[tokio::test]
-async fn a_catalogue_read_for_an_unpaired_host_fails() {
-    let (_home, fx) = start("peer-rt-catalog-unknown").await;
-    let error = sessions("desktop_nobody")
-        .await
-        .expect_err("an unpaired host has no catalogue");
-    assert!(error.to_string().contains("peer_not_paired"), "{error}");
     teardown(&fx.pair_id).await;
 }
 

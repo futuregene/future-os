@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   crates:
@@ -27,7 +28,9 @@ jobs:
         include: ${{ fromJSON(inputs.projects) }}
     env:
       CI_PACKAGES: ${{ toJSON(matrix.packages) }}
+      CI_HOST_SUITE: ${{ matrix.hostSuite }}
       CARGO_PROFILE_TEST_DEBUG: '1'
+      CI_TIMING_JOB: ${{ inputs.mode == 'check' && format('Rust check / {0}', matrix.name) || format('Rust {0} test / {1}', inputs.os == 'ubuntu-latest' && 'Linux' || inputs.os == 'windows-latest' && 'Windows' || 'macOS', matrix.name) }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -65,18 +68,33 @@ jobs:
       - name: Tests
         if: inputs.mode == 'test'
         env:
-          FUTURE_HOST_FIXTURE_TIMINGS: ${{ runner.os == 'Windows' && contains(matrix.packages, 'future-host') && format('{0}/host-fixture-timings.jsonl', runner.temp) || '' }}
+          FUTURE_HOST_FIXTURE_TIMINGS: ${{ format('{0}/ci-timings/host-fixture-timings.jsonl', runner.temp) }}
         run: node scripts/ci/rust-checks.mjs test
-      - name: Summarize Host fixture timings
-        if: always() && inputs.mode == 'test' && runner.os == 'Windows' && contains(matrix.packages, 'future-host')
-        run: node scripts/ci/host-test-timings.mjs "${{ runner.temp }}/host-fixture-timings.jsonl"
-      - name: Upload Host fixture timings
-        if: always() && inputs.mode == 'test' && runner.os == 'Windows' && contains(matrix.packages, 'future-host')
-        uses: actions/upload-artifact@v7
-        with:
-          name: host-windows-fixture-timings
-          path: ${{ runner.temp }}/host-fixture-timings.jsonl
-          if-no-files-found: error
       - name: clippy
         if: inputs.mode == 'check'
         run: node scripts/ci/rust-checks.mjs clippy
+      - name: Summarize Host fixture timings
+        continue-on-error: true
+        if: always() && inputs.mode == 'test'
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/ci-timings/host-fixture-timings.jsonl" ]; then
+            node scripts/ci/host-test-timings.mjs "$RUNNER_TEMP/ci-timings/host-fixture-timings.jsonl"
+          fi
+      - name: Collect job timings
+        continue-on-error: true
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/job-timings.mjs
+      - name: Upload CI timings
+        continue-on-error: true
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: timings-rust-${{ runner.os }}-${{ inputs.mode }}-${{ matrix.name }}
+          path: |
+            ${{ runner.temp }}/ci-timings/
+            target/cargo-timings/cargo-timing.html
+          retention-days: 3
+          if-no-files-found: warn

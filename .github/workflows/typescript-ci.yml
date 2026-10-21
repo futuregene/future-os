@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   packages:
@@ -24,6 +25,7 @@ jobs:
         include: ${{ fromJSON(inputs.projects) }}
     env:
       CI_DIRECTORY: ${{ matrix.directory }}
+      CI_TIMING_JOB: ${{ format('TypeScript {0} / {1}', inputs.mode, matrix.name) }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -43,3 +45,18 @@ jobs:
       - name: ESLint and applicable Stylelint
         if: inputs.mode == 'check'
         run: node scripts/ci/typescript-checks.mjs lint
+      - name: Collect job timings
+        continue-on-error: true
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/job-timings.mjs
+      - name: Upload CI timings
+        continue-on-error: true
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: timings-typescript-${{ inputs.mode }}-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/ci-timings/
+          retention-days: 3
+          if-no-files-found: warn

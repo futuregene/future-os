@@ -37,11 +37,30 @@ Tests 使用相同的包选择和 profile 执行测试，不再先跑一次独�
 Rust 测试命令使用 `--no-fail-fast`：任一测试目标失败仍使 job 失败，但 Cargo 会继续执行
 其他选中的测试目标，让一轮 CI 收集它们的失败，避免每次只暴露第一个失败目标。
 
-Windows Host 测试 job 在 summary 和 `host-windows-fixture-timings` JSONL artifact 中
-记录夹具的共享锁等待、前置清理、HOME/数据库初始化、主体存活时间、清理与环境/文件恢复。
-计时不修改测试命令、断言或期限。嵌套 Home/Mock 夹具和并发锁等待存在重叠，
-累计秒数不能彼此相加，也不代表 job 墙钟时间；不使用这些夹具的测试不在计时范围内，
-主体存活时间包含嵌套初始化和销毁。其他 job 不启用该记录器。
+所有常规 Rust、TypeScript、Android/iOS job 使用相同的计时采集方式，在 summary
+展示 GitHub 已有的 step 时间戳，覆盖工具链、缓存、依赖安装、Build、Tests 和检查。
+每个 job 上传 `timings-*` artifact，**保留 3 天**；`job.json` 包含提交、平台、运行轮次、
+step 状态和耗时。快照不包含后续 artifact 上传、post-job 缓存保存与排队时间；
+GitHub 时间戳精度为秒。取消过早或 runner 故障时，最后的上传可能无法执行。
+
+Rust/TS 的 `commands.jsonl` 另外记录每条命令的单调时钟耗时、退出状态和选择范围。
+Rust Build 的 `cargo test --no-run --timings` 生成 Cargo 编译明细 HTML；
+JSONL 保留 Rust 测试框架原生的目标标题、通过/失败/忽略数量和执行耗时汇总。
+原生输出按各自 stdout/stderr 流记录，子进程也可能输出汇总；不能仅凭相邻行推断对应关系，
+也不能把日志到达间隔当成单个测试或内部模块的耗时。TS/原生测试的进一步明细继续看各自
+测试框架日志与已有报告，未给所有测试强行增加内部阶段埋点。
+
+所有平台的 Rust 测试 job 都启用同一个 Host 夹具记录器；使用 Host 测试辅助的
+Desktop/CLI 目标也会产生 `host-fixture-timings.jsonl`。记录共享锁等待、前置清理、
+HOME/数据库初始化、主体存活时间、清理与环境/文件恢复；summary 按夹具及测试模块
+分别汇总，并列出最慢作用域。嵌套 Home/Mock 夹具和并发锁等待存在重叠，累计秒数
+不能相加，也不代表 job 墙钟时间；不使用这些夹具的测试不在内部阶段计时范围内。
+主体存活时间包含嵌套初始化和销毁。
+
+计时不修改断言、期限或测试调度。job 时间戳在工作结束后读取；命令与原生汇总只写
+少量条目；Host 每次夹具完成后追加一行，不逐事件记录，写入耗时不算进夹具 wall_ms。
+未进行独立的开销基准，不能承诺具体百分比。计时元数据采集错误只警告，
+原构建/测试退出状态仍决定 CI 结果。
 
 ## 范围检测与依赖图
 
@@ -157,9 +176,21 @@ TS 项目各自拥有一个 Linux build/test runner 和一个独立 Linux lint r
 | libraries | rpc、app-settings、app-workspaces、channel、goal、tasks |
 | remote | remote-crypto、remote-protocol、remote-client、remote-server |
 | agent | agent |
-| host | host |
+| host-remote / host-core（测试）；host（检查） | host |
 | tui-cli | tui、cli |
 | desktop | futureos |
+
+Host 在三个平台都只分 `host-remote`、`host-core` 两个测试 job。前者匹配完整测试名
+中的 `remote`（包含 remote、remote_host、remote_peer 及其他模块内相关用例），后者
+使用同一匹配串的反向筛选。两组互补，文档测试也遵循相同筛选，原有 ignored 状态不变，
+不是省略 Remote 覆盖。新增不含该串的测试默认进 core。
+两组各自预编译同样的 Host 测试目标；这会增加总编译用量，避免依赖构建产物跨 runner 搬运。
+Rust check 仍只检查 Host 一次。affected 继续按 crate/依赖决定是否选择 Host，
+选中后两组都跑，包括仅改 Host 测试的情况；尚未引入源码模块级的依赖推断。
+
+`remote_peer` 中 5 个只验证 Client 行为的测试已迁至 Client 的独立实例/内存凭据夹具，
+名称与原断言保留；归属见 [迁移清单](../architecture/remote-test-migration.json)。
+真实宿主凭据持久化、Store、文件和退出集成继续留在 Host。
 
 Desktop 的 Clippy 额外检查 CLI/GUI 组合特性解析；Remote client/server 的 Clippy
 覆盖 `test-support`；Linux Host 使用隔离 broker，其他平台执行 Host 自有套件。

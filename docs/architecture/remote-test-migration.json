@@ -743,7 +743,14 @@
             "a_zero_capacity_backlog_still_holds_one"
           ]
         },
-        "application-integration": "desktop/src-tauri/src/remote_peer/runtime.rs"
+        "application-integration": "desktop/src-tauri/src/remote_peer/runtime.rs",
+        "client-runtime-ownership": {
+          "path": "packages/remote-client/src/runtime_ownership_tests.rs",
+          "cases": [
+            "a_catalogue_reply_that_is_not_an_object_is_refused",
+            "disconnect_aborts_the_supervisor"
+          ]
+        }
       }
     },
     {
@@ -836,19 +843,16 @@
             "an_empty_book_lists_nothing",
             "a_paired_host_is_listed_before_it_is_ever_connected",
             "a_failed_connection_is_remembered_against_its_host",
-            "connecting_an_unknown_host_is_an_error_not_an_invention",
             "ensure_connected_reuses_a_live_connection_and_opens_one_when_missing",
             "an_expired_grant_is_renewed_before_connecting",
             "a_revoked_grant_is_reported_rather_than_retried",
             "disconnect_drops_the_connection_but_keeps_the_pairing",
             "unpairing_removes_the_host_locally_and_revokes_it_remotely",
             "unpairing_reports_a_revoke_that_could_not_be_delivered",
-            "unpairing_an_unknown_host_is_a_no_op",
             "labels_round_trip_through_the_list_and_are_clearable",
             "catalogue_reads_are_stamped_with_the_host_and_its_pair",
             "a_page_larger_than_one_reply_arrives_intact",
             "a_run_scoped_page_repeats_its_run_on_every_chunk",
-            "a_catalogue_read_for_an_unpaired_host_fails",
             "a_command_connects_on_demand_and_returns_the_payload",
             "a_command_the_host_does_not_implement_surfaces_its_error",
             "a_session_command_routes_on_its_own_session",
@@ -881,6 +885,14 @@
             "a_forged_push_is_dropped_without_disturbing_the_stream",
             "a_command_that_is_not_an_object_is_sent_as_is",
             "a_connection_that_vanishes_between_connect_and_request_is_reported"
+          ]
+        },
+        "client-runtime-ownership": {
+          "path": "packages/remote-client/src/runtime_ownership_tests.rs",
+          "cases": [
+            "connecting_an_unknown_host_is_an_error_not_an_invention",
+            "unpairing_an_unknown_host_is_a_no_op",
+            "a_catalogue_read_for_an_unpaired_host_fails"
           ]
         }
       },

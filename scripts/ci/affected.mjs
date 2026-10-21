@@ -71,6 +71,7 @@ export function affected(files, projects, force = false) {
     // A workflow helper changes the execution semantics; validate every regular suite.
     if (['.github/workflows/ci.yml', '.github/workflows/rust-ci.yml', '.github/workflows/typescript-ci.yml', 'scripts/ci/affected.mjs',
       'scripts/ci/rust-checks.mjs', 'scripts/ci/typescript-checks.mjs', 'scripts/ci/ci-result.mjs',
+      'scripts/ci/job-timings.mjs', 'scripts/ci/timed-command.mjs', 'scripts/ci/host-test-timings.mjs',
       'scripts/tests/ci-plan.test.mjs'].includes(file)) {
       for (const language of Object.keys(selected)) all(language, file);
       continue;
@@ -144,6 +145,13 @@ export function affected(files, projects, force = false) {
   };
 }
 
+// Keep crate selection/checks unchanged; only Host's test execution is split.
+export function rustTestGroups(groups) {
+  return groups.flatMap(group => group.name === 'host'
+    ? ['remote', 'core'].map(suite => ({ ...group, name: `host-${suite}`, hostSuite: suite }))
+    : [group]);
+}
+
 // Explicit manual selections do not expand to consumers. PR/push planning
 // continues to use changed files and the reverse dependency graph above.
 export function manualPlan(selection, projects) {
@@ -179,9 +187,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const plan = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' && process.env.MANUAL_PROJECTS?.trim()
     ? manualPlan(process.env.MANUAL_PROJECTS, projects)
     : affected(json(process.argv[2]), projects, process.env.FORCE_ALL === 'true');
+  plan.rust_tests = rustTestGroups(plan.rust);
   console.log(JSON.stringify(plan, null, 2));
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT,
-    ['rust', 'typescript', 'android', 'ios'].map(key => `${key}=${JSON.stringify(plan[key])}\n`).join(''));
+    ['rust', 'rust_tests', 'typescript', 'android', 'ios'].map(key => `${key}=${JSON.stringify(plan[key])}\n`).join(''));
   if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY,
     `## Affected CI plan\n\n\`\`\`json\n${JSON.stringify(plan, null, 2)}\n\`\`\`\n`);
 }

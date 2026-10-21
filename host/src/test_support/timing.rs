@@ -54,6 +54,7 @@ impl FixtureTiming {
         let Some(recording) = self.0.take() else {
             return;
         };
+        let wall_ms = recording.started.elapsed().as_secs_f64() * 1_000.0;
         let result = (|| -> std::io::Result<()> {
             let mut file = std::fs::OpenOptions::new()
                 .create(true)
@@ -70,7 +71,7 @@ impl FixtureTiming {
                 "label": recording.label,
                 "test": recording.test,
                 "phases_ms": recording.phases_ms,
-                "wall_ms": recording.started.elapsed().as_secs_f64() * 1_000.0,
+                "wall_ms": wall_ms,
             });
             writeln!(file, "{row}")
         })();

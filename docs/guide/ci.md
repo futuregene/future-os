@@ -44,14 +44,38 @@ Rust test invocations use `--no-fail-fast`: a failed target still fails its job,
 but Cargo continues through the other selected test targets so one run exposes
 all their failures instead of revealing them one target at a time.
 
-The Windows Host test job records opt-in fixture timings in the job summary and
-`host-windows-fixture-timings` JSONL artifact: shared-lock wait, pre-cleanup,
-home/database setup, body lifetime, cleanup and environment/file restoration.
-This instrumentation does not alter test commands, assertions or deadlines.
-Nested Home/Mock scopes and concurrent lock waits overlap: their cumulative
-seconds must not be added together or treated as job wall time. Tests without
-these fixtures are outside the measurement; body lifetime includes nested setup
-and teardown. Other jobs do not enable the recorder.
+All regular Rust, TypeScript and Android/iOS jobs collect GitHub's existing step
+timestamps for toolchain/cache setup, dependencies, Build, Tests and checks.
+Each job publishes a `timings-*` artifact with **3-day retention**. Its `job.json`
+includes the commit, platform, attempt, step status and elapsed seconds. The
+snapshot excludes later uploads, post-job cache saves and queue time; GitHub
+step timestamps have second precision. Early cancellation or runner loss may
+prevent the final upload.
+
+Rust/TS `commands.jsonl` also records monotonic command duration, exit status and
+selection. Rust Build uses `cargo test --no-run --timings` for Cargo's compilation
+HTML. JSONL preserves native Rust target headings and test-result summaries,
+including reported elapsed time and pass/fail/ignore counts. stdout/stderr are
+separate streams and children may print summaries too: adjacent rows alone do
+not establish attribution. Output arrival intervals are not individual-test or
+internal-module durations. Further TS/native details remain in framework logs
+and existing reports; internal phase hooks are not added to every test.
+
+Every Rust test platform enables the same Host fixture recorder, including
+Desktop/CLI targets using Host test support. `host-fixture-timings.jsonl` records
+shared-lock wait, pre-cleanup, home/database setup, body lifetime, cleanup and
+environment/file restoration. Summaries group by fixture and Rust module and
+list the slowest scopes. Nested fixtures and concurrent lock waits overlap:
+cumulative seconds must not be added or treated as job wall time. Tests without
+these fixtures have no internal phase breakdown; body lifetime includes nested
+setup and teardown.
+
+Instrumentation changes no assertions, deadlines or scheduling. Job metadata is
+read after the work; command/native-summary records are sparse; each completed
+Host fixture appends one row rather than logging every event. Fixture wall_ms
+excludes the reporting write. No separate overhead benchmark has been run, so
+no specific percentage is claimed. Metadata collection failures warn without
+replacing the build/test exit status.
 
 ## Selection and dependency graph
 
@@ -175,9 +199,25 @@ crate groups or packages nested below them.
 | libraries | rpc, app-settings, app-workspaces, channel, goal, tasks |
 | remote | remote-crypto, remote-protocol, remote-client, remote-server |
 | agent | agent |
-| host | host |
+| host-remote / host-core (tests); host (checks) | host |
 | tui-cli | tui, cli |
 | desktop | futureos |
+
+Host has exactly two test jobs on each platform: `host-remote` and `host-core`.
+Remote matches `remote` anywhere in the full test name, covering remote,
+remote_host, remote_peer and related cases in other modules. Core applies the
+complementary filter. Documentation tests follow the same filters and original
+ignored states remain unchanged. New names without that substring default to
+core. Both jobs compile the same Host test targets separately: total compilation
+work increases, without transferring build artifacts between runners. Rust
+checks still check Host once. Affected selection remains crate/dependency based:
+whenever Host is selected, including Host test-only changes, both suites run.
+There is no inferred Rust source-module dependency graph.
+
+Five application-independent remote_peer cases now use Client instances and
+memory credentials, retaining their names and assertions. Ownership is recorded
+in the [migration inventory](../architecture/remote-test-migration.json). Real
+host credential persistence, Store, files and shutdown integration stay in Host.
 
 Desktop Clippy also checks the combined CLI/GUI feature resolution.
 Remote client/server Clippy covers `test-support`. Linux Host tests use an

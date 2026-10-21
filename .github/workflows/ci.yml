@@ -20,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 # PRs cancel stale runs. Main runs serialize so their cache-save steps finish.
 concurrency:
@@ -33,6 +34,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       rust: ${{ steps.plan.outputs.rust }}
+      rust_tests: ${{ steps.plan.outputs.rust_tests }}
       typescript: ${{ steps.plan.outputs.typescript }}
       android: ${{ steps.plan.outputs.android }}
       ios: ${{ steps.plan.outputs.ios }}
@@ -87,7 +89,7 @@ jobs:
     with:
       os: ubuntu-latest
       mode: test
-      projects: ${{ needs.affected.outputs.rust }}
+      projects: ${{ needs.affected.outputs.rust_tests }}
 
   rust-windows-test:
     name: Rust Windows test
@@ -97,7 +99,7 @@ jobs:
     with:
       os: windows-latest
       mode: test
-      projects: ${{ needs.affected.outputs.rust }}
+      projects: ${{ needs.affected.outputs.rust_tests }}
 
   rust-macos-test:
     name: Rust macOS test
@@ -107,7 +109,7 @@ jobs:
     with:
       os: macos-latest
       mode: test
-      projects: ${{ needs.affected.outputs.rust }}
+      projects: ${{ needs.affected.outputs.rust_tests }}
 
   rust-check:
     name: Rust check
@@ -145,6 +147,7 @@ jobs:
     timeout-minutes: 60
     env:
       CI: '1'
+      CI_TIMING_JOB: 'Android test'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -179,6 +182,21 @@ jobs:
             mobile/android/**/build/reports/tests/
             mobile/modules/**/android/build/reports/tests/
           if-no-files-found: ignore
+      - name: Collect job timings
+        continue-on-error: true
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/job-timings.mjs
+      - name: Upload CI timings
+        continue-on-error: true
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: timings-android
+          path: ${{ runner.temp }}/ci-timings/
+          retention-days: 3
+          if-no-files-found: warn
 
   ios-test:
     name: iOS test
@@ -188,6 +206,7 @@ jobs:
     timeout-minutes: 90
     env:
       CI: '1'
+      CI_TIMING_JOB: 'iOS test'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -206,6 +225,21 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/ios-build" CODE_SIGNING_ALLOWED=NO build
       - name: Native ShareInbox tests
         run: python3 scripts/tests/test-mobile-ios-share.py
+      - name: Collect job timings
+        continue-on-error: true
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/job-timings.mjs
+      - name: Upload CI timings
+        continue-on-error: true
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: timings-ios
+          path: ${{ runner.temp }}/ci-timings/
+          retention-days: 3
+          if-no-files-found: warn
 
   ci-result:
     name: CI result

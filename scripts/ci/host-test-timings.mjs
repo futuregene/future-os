@@ -31,6 +31,22 @@ for (const fixture of [...new Set(records.map(row => row.fixture))].sort()) {
   lines.push(`| ${escape(fixture)} | ${rows.length} | ${phases.map(phase =>
     seconds(rows.reduce((sum, row) => sum + (row.phases_ms[phase] ?? 0), 0))).join(' | ')} |`);
 }
+lines.push('', '### Module / fixture breakdown', '',
+  'Module is the first Rust test path component. Each fixture kind is reported separately because nested scopes overlap.', '',
+  `| Module | Fixture | Scopes | ${phases.join(' | ')} |`,
+  `|---|---|---:|${phases.map(() => '---:').join('|')}|`);
+const groups = new Map();
+for (const row of records) {
+  const module = row.test.split('::')[0];
+  const key = JSON.stringify([module, row.fixture]);
+  if (!groups.has(key)) groups.set(key, { module, fixture: row.fixture, rows: [] });
+  groups.get(key).rows.push(row);
+}
+for (const { module, fixture, rows } of [...groups.values()].sort((a, b) =>
+  a.module.localeCompare(b.module) || a.fixture.localeCompare(b.fixture))) {
+  lines.push(`| ${escape(module)} | ${escape(fixture)} | ${rows.length} | ${phases.map(phase =>
+    seconds(rows.reduce((sum, row) => sum + (row.phases_ms[phase] ?? 0), 0))).join(' | ')} |`);
+}
 for (const phase of ['lock_wait', 'store_setup', 'body', 'cleanup', 'restore']) {
   lines.push('', `### Slowest fixture scopes: ${phase}`, '', '| Test | Fixture / label | Seconds |', '|---|---|---:|');
   for (const row of [...records].sort((a, b) =>
