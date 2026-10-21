@@ -14,7 +14,7 @@
 │[39m  [38;5;245m/permission <all|workspace|none>  set the tool permission level[39m             [38;5;245m│
 │[39m  [38;5;245m/provider-key <id>                set or clear a provider API key[39m           [38;5;245m│
 │[39m  [38;5;245m/providers                        providers, API keys, model sync[39m           [38;5;245m│
-│[39m  [38;5;245m/reject                           reject pending tool execution[39m             [38;5;245m│
+│[39m  [38;5;245m/reject [id]                      deny the pending approval (front of the qu│
 │[39m  [38;5;245m/reload                           reload skills and context[39m                 [38;5;245m│
 │[39m  [38;5;245m/sandbox                          show and set the approval mode[39m            [38;5;245m│
 │[39m  [38;5;245m/scoped-models                    configure model enable/disable list[39m       [38;5;245m│

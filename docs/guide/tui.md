@@ -114,8 +114,8 @@ model as an ordinary prompt.
 | `/shell <cmd>` | Run one command through the agent and show its output |
 | `/stop` | Stop the current generation |
 | `/cancel <run-id>` | Cancel a queued run |
-| `/approve <request-id>` | Approve a pending tool execution |
-| `/reject <request-id>` | Reject a pending tool execution |
+| `/approve [id]` | Allow the pending approval (front of the queue, or by id) |
+| `/reject [id]` | Deny the pending approval (front of the queue, or by id) |
 | `/editor` | Edit the current draft in `$VISUAL` / `$EDITOR` |
 | `/cancel-input` | Abort a pending `/provider-key` prompt |
 
@@ -146,6 +146,29 @@ explains itself and sends no request. `/delete --yes` removes the session file
 and then starts a fresh session. `/worktree` is deliberately read-and-add only —
 it runs `git worktree list`/`status`/`rev-parse` and `git worktree add`, and
 refuses `remove`/`prune`/`reset`/`clean`/`checkout`/`gc`/`reflog` outright.
+
+## Approvals
+
+When the agent wants to run something the approval gate does not clear (a
+shell command outside the allowlist, a write outside the workspace, …), it
+parks the run and asks. The request appears as a card in the transcript and
+as one prompt line above the input:
+
+```
+Approve: Approve shell command  [1/y] allow · [2/n] deny · esc denies
+```
+
+While the input line is empty, `1` (or `y`) allows the request and `2` (or
+`n`), or `escape`, denies it. More than one pending request shows a count and
+the keys act on the oldest. Typing a draft disables the shortcut keys — the
+editor keeps every keystroke — but the prompt line stays visible, and the
+queued message is delivered after the approval resolves either way.
+
+The `/approve` and `/reject` commands are the scriptable path: bare they act
+on the front of the queue, with an id on a specific request. Another client
+(the desktop, the phone) answering first is announced in the transcript and
+the prompt line disappears; a reconnect rebuilds the queue from the agent's
+state, so a dropped connection cannot strand a parked run.
 
 ## Pop-up menus and the pager
 

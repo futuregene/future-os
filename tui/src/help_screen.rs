@@ -101,8 +101,8 @@ const COMMANDS: [HelpEntry; 44] = [
         desc: "agent version and instance info",
     },
     HelpEntry {
-        key: "/approve",
-        desc: "approve pending tool execution",
+        key: "/approve [id]",
+        desc: "allow the pending approval (front of the queue, or by id)",
     },
     HelpEntry {
         key: "/autocompact [on|off]",
@@ -201,8 +201,8 @@ const COMMANDS: [HelpEntry; 44] = [
         desc: "providers, API keys, model sync",
     },
     HelpEntry {
-        key: "/reject",
-        desc: "reject pending tool execution",
+        key: "/reject [id]",
+        desc: "deny the pending approval (front of the queue, or by id)",
     },
     HelpEntry {
         key: "/reload",

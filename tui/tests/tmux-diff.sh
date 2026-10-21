@@ -698,6 +698,29 @@ expect_pane_has permission-applied "Tool permission level: Workspace" \
 
 close_overlay
 
+# ── Approvals: the parked run and the answer keys ──
+# The mock parks the run behind an `approval_request` (no `agent_end` until it
+# is answered), so this screen pins the card, the prompt line above the input
+# and the fact that the editor is NOT prefilled with a command.
+submit_cmd "ask me to run something"
+step_when approval-prompt "[1/y] allow"
+
+# `1` answers the front of the queue: the prompt line disappears, the outcome
+# lands in the transcript, and the run finishes (the mock plays the agent's
+# own `approval_decision` broadcast plus `agent_end`).
+tmux send-keys -t "$RUST_PANE" 1
+step_when approval-allowed "Allowed: Approve shell command"
+expect_pane_lacks approval-allowed "[1/y] allow" "the prompt line left with the queue"
+
+# A second request, denied with `2` this time — the deny path and its copy.
+submit_cmd "ask me again"
+step_when approval-prompt-2 "[1/y] allow"
+tmux send-keys -t "$RUST_PANE" 2
+step_when approval-denied "Denied: Approve shell command"
+expect_pane_lacks approval-denied "[1/y] allow" "the prompt line left with the queue"
+
+close_overlay
+
 # ── Theme: the picker, then light applied and dark restored ──
 submit_cmd "/theme"
 step_when theme-overlay "High Contrast"

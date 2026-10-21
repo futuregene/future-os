@@ -292,6 +292,14 @@ const SESSION_ID: &str = "mock-session-1";
 /// `read` calls with nothing in between — the shape the compact view folds
 /// (`ctrl+d`). Any other prompt gets the fixed single-call reply.
 const BURST_PROMPT_PREFIX: &str = "scan the workspace";
+/// A prompt starting with this parks the run behind an `approval_request`
+/// — no `agent_end` until the harness answers the prompt line, which is what
+/// the approval goldens pin (the card, the prompt line, the answer keys).
+const APPROVAL_PROMPT_PREFIX: &str = "ask me";
+/// The id the mock's `approval_request` carries. Fixed, not generated: the
+/// goldens are byte-compared and the harness types no ids (the prompt line
+/// answers the front of the queue).
+const APPROVAL_REQUEST_ID: &str = "approval_mock_1";
 /// The files the burst reads, one call each.
 const BURST_PATHS: [&str; 3] = ["src/main.rs", "src/lib.rs", "src/cli.rs"];
 /// The session `get_session_entries` has planted history for: the second entry
@@ -323,9 +331,38 @@ struct MockAgent {
     /// golden-screen timing deterministic; used by the tmux attach repro to
     /// keep the reply streaming while a client detaches/reattaches.
     stream_delay_ms: u64,
+    /// Monotonic event counter for broadcasts made outside the fixed prompt
+    /// sequence (the `approval_decision` reply): those need their own
+    /// `idx`/`eventId` pairs that never collide with `evt_mock_*`.
+    next_event_idx: Arc<std::sync::Mutex<i64>>,
 }
 
 impl MockAgent {
+    /// Broadcast one stream event to every subscriber, with a fresh
+    /// `idx`/`eventId` (see `next_event_idx`).
+    fn broadcast_raw(&self, ty: &str, data: &str) {
+        let idx = {
+            let mut next = self.next_event_idx.lock().unwrap();
+            let idx = *next;
+            *next += 1;
+            idx
+        };
+        let event = StreamEvent {
+            r#type: ty.to_string(),
+            data: data.to_string(),
+            run_id: RUN_ID.into(),
+            idx,
+            session_id: SESSION_ID.into(),
+            epoch: 1,
+            event_id: format!("evt_decision_{idx}"),
+            timestamp: "2026-08-07T00:00:00.000Z".into(),
+            ..Default::default()
+        };
+        let senders = self.subs.lock().unwrap().clone();
+        for tx in senders {
+            let _ = tx.send(event.clone());
+        }
+    }
     fn ok(&self, cmd: &RpcCommand, data: &str) -> RpcResponse {
         RpcResponse {
             id: cmd.id.clone(),
@@ -514,6 +551,10 @@ impl MockAgent {
         // one tool: that is what the compact view (`ctrl+d`) folds, and a burst
         // cannot be produced by the fixed reply below.
         let burst = prompt_text.starts_with(BURST_PROMPT_PREFIX);
+        // …and a prompt that asks to be asked parks the run behind an
+        // approval: the events end at the request, and `approval_decision`
+        // (`handle_command`) plays the rest.
+        let approval = prompt_text.starts_with(APPROVAL_PROMPT_PREFIX);
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(100)).await;
             let mut events: Vec<(String, String)> = vec![
@@ -529,7 +570,18 @@ impl MockAgent {
                     format!(r#"{{"started_at_ms":1750000000000,"run_id":"{RUN_ID}"}}"#),
                 ),
             ];
-            if burst {
+            if approval {
+                // The same payload shape the real agent's `ApprovalGate`
+                // broadcasts (`approval.rs`): the TUI reads
+                // `approval_request_id`, `kind`, `risk_level`, `title`,
+                // `summary` and `requested_action`.
+                events.push((
+                    "approval_request".to_string(),
+                    format!(
+                        r#"{{"type":"approval_request","approval_request_id":"{APPROVAL_REQUEST_ID}","session_id":"{SESSION_ID}","tool_id":"tool_mock_1","tool_name":"shell","kind":"shell_command","risk_level":"medium","title":"Approve shell command","summary":"Agent wants to run a shell command.","requested_action":"curl -s https://example.com | head -c 2000","reviewer":"user"}}"#
+                    ),
+                ));
+            } else if burst {
                 events.push((
                     "text_chunk".to_string(),
                     r#"{"text":"Scanning the workspace.\n\n","delta":true}"#.to_string(),
@@ -575,25 +627,27 @@ impl MockAgent {
                         .to_string(),
                 ));
             }
-            events.push((
-                "agent_end".to_string(),
-                // `state` is what the real agent puts on this event
-                // (`session_prompt.rs`: `"state": terminal_state`, from
-                // `run_journal::RUN_STATE_*`), and the TUI gates the desktop
-                // notification on it. Without it the mock could never
-                // exercise that path at all — the harness would show a
-                // silent terminal for a feature whose whole job is to make
-                // noise when the user is looking elsewhere.
-                //
-                // `text` is the run's final answer, which the TUI writes over
-                // the last assistant message — so it has to be the same text
-                // the chunks above spelled out, exactly as the agent's own
-                // `agent_end` carries the assembled reply.
-                format!(
-                    r#"{{"type":"agent_end","state":"completed","run_id":"{RUN_ID}","duration_ms":500,"usage":{{"prompt_tokens":10,"completion_tokens":20}},"error":null,"text":{}}}"#,
-                    serde_json::to_string(if burst { BURST_REPLY_TEXT } else { REPLY_TEXT }).unwrap()
-                ),
-            ));
+            if !approval {
+                events.push((
+                    "agent_end".to_string(),
+                    // `state` is what the real agent puts on this event
+                    // (`session_prompt.rs`: `"state": terminal_state`, from
+                    // `run_journal::RUN_STATE_*`), and the TUI gates the desktop
+                    // notification on it. Without it the mock could never
+                    // exercise that path at all — the harness would show a
+                    // silent terminal for a feature whose whole job is to make
+                    // noise when the user is looking elsewhere.
+                    //
+                    // `text` is the run's final answer, which the TUI writes over
+                    // the last assistant message — so it has to be the same text
+                    // the chunks above spelled out, exactly as the agent's own
+                    // `agent_end` carries the assembled reply.
+                    format!(
+                        r#"{{"type":"agent_end","state":"completed","run_id":"{RUN_ID}","duration_ms":500,"usage":{{"prompt_tokens":10,"completion_tokens":20}},"error":null,"text":{}}}"#,
+                        serde_json::to_string(if burst { BURST_REPLY_TEXT } else { REPLY_TEXT }).unwrap()
+                    ),
+                ));
+            }
             let senders: Vec<mpsc::UnboundedSender<StreamEvent>> = subs.lock().unwrap().clone();
             for (idx, (ty, data)) in events.iter().enumerate() {
                 if idx > 0 && stream_delay_ms > 0 {
@@ -655,6 +709,45 @@ impl FutureAgent for MockAgent {
             "prompt" => {
                 self.schedule_prompt_events(&cmd.message);
                 PROMPT_ACK_JSON.to_string()
+            }
+            // The parked run's release: the real agent answers a decision by
+            // broadcasting `approval_decision` and finishing the tool call the
+            // request was gating. The mock plays the same two beats — the
+            // broadcast plus the run's `agent_end` — so the harness can pin
+            // the prompt line disappearing and the outcome line arriving.
+            "approval_decision" => {
+                let approved = cmd.mode == "approved";
+                let status = if approved { "approved" } else { "rejected" };
+                self.broadcast_raw(
+                    "approval_decision",
+                    &format!(
+                        r#"{{"type":"approval_decision","approval_request_id":"{APPROVAL_REQUEST_ID}","session_id":"{SESSION_ID}","status":"{status}","reviewer":"user"}}"#
+                    ),
+                );
+                if approved {
+                    self.broadcast_raw(
+                        "text_chunk",
+                        r#"{"text":"Approved and finished.\n","delta":true}"#,
+                    );
+                } else {
+                    self.broadcast_raw(
+                        "text_chunk",
+                        r#"{"text":"Denied and finished.\n","delta":true}"#,
+                    );
+                }
+                self.broadcast_raw(
+                    "agent_end",
+                    &format!(
+                        r#"{{"type":"agent_end","state":"completed","run_id":"{RUN_ID}","duration_ms":500,"usage":{{"prompt_tokens":10,"completion_tokens":20}},"error":null,"text":{}}}"#,
+                        serde_json::to_string(if approved {
+                            "Approved and finished.\n"
+                        } else {
+                            "Denied and finished.\n"
+                        })
+                        .unwrap()
+                    ),
+                );
+                r#"{"ok":true}"#.to_string()
             }
             // ── Providers / auth ─────────────────────────────────────────
             "list_providers" => PROVIDERS_JSON.to_string(),
@@ -770,6 +863,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let agent = MockAgent {
         subs: Arc::new(std::sync::Mutex::new(Vec::new())),
         stream_delay_ms,
+        next_event_idx: Arc::new(std::sync::Mutex::new(1000)),
     };
     println!("mock agent listening on {addr}");
     Server::builder()

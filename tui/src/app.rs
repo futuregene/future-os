@@ -86,7 +86,7 @@ use crate::worktree::{
 use crate::worktree::GitRunner;
 use regex::Regex;
 use serde_json::{Map, Value};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -1105,12 +1105,22 @@ async fn load_history_tail(client: &GrpcClient, session_id: &str) -> Result<Valu
     }
 }
 
-/// Stored pending approval (the TS keeps it for reference; the visible
-/// surface is the chat message + input autofill).
+/// One approval request waiting for this user's decision.
+///
+/// The agent parks the whole run until a decision arrives (there is no
+/// timeout), and it can hold several requests per session — the queue below
+/// mirrors that. The id is kept for the `approval_decision` RPC and for
+/// matching the agent's own `approval_decision` broadcast (another client may
+/// have answered first), but the user never has to type it: the prompt line
+/// above the input answers the front of the queue with `1`/`y`/`2`/`n`/`esc`.
+/// The remaining fields feed the id-addressed commands' diagnostics and future
+/// card renderings; `title` is the one every surface shows.
+#[derive(Clone)]
 #[allow(dead_code)]
 struct PendingApproval {
     request_id: String,
     tool_name: String,
+    kind: String,
     title: String,
     summary: String,
     risk_level: String,
@@ -1673,7 +1683,13 @@ pub struct App<T: TerminalIo> {
     previous_height: usize,
     previous_kitty_image_ids: BTreeSet<u32>,
     full_redraw_count: usize,
-    pending_approval: Option<PendingApproval>,
+    /// Approvals waiting for a decision, oldest first. The front of the queue
+    /// is what the prompt line and the bare `/approve` act on.
+    pending_approvals: VecDeque<PendingApproval>,
+    /// Request ids with a decision in flight (the RPC answered, the agent's
+    /// confirmation has not arrived yet). Guards against a key held down
+    /// firing `approval_decision` twice for the same request.
+    pending_decisions: Vec<String>,
     cached_models: Vec<String>,
     /// Model id → `ModelInfo.supports_images`, from the `list_models` the TUI
     /// has seen (startup, `/model`, the autocomplete fetch). The paste path
@@ -1871,7 +1887,8 @@ impl<T: TerminalIo> App<T> {
             previous_height: 0,
             previous_kitty_image_ids: BTreeSet::new(),
             full_redraw_count: 0,
-            pending_approval: None,
+            pending_approvals: VecDeque::new(),
+            pending_decisions: Vec::new(),
             cached_models: Vec::new(),
             model_image_support: HashMap::new(),
             model_labels: HashMap::new(),
@@ -1923,14 +1940,14 @@ impl<T: TerminalIo> App<T> {
             SlashCommand {
                 value: "/approve".into(),
                 label: "/approve".into(),
-                description: "approve pending tool execution".into(),
+                description: "allow the pending approval (or by id)".into(),
                 takes_model_arg: false,
                 takes_session_arg: false,
             },
             SlashCommand {
                 value: "/reject".into(),
                 label: "/reject".into(),
-                description: "reject pending tool execution".into(),
+                description: "deny the pending approval (or by id)".into(),
                 takes_model_arg: false,
                 takes_session_arg: false,
             },
@@ -2665,24 +2682,38 @@ impl<T: TerminalIo> App<T> {
                 result,
                 kind,
                 request_id,
-            } => match result {
-                Ok(_) => {
-                    let verb = if kind == "approved" {
-                        "Approved"
-                    } else {
-                        "Rejected"
-                    };
-                    self.add_system_message(format!("{verb} request: {request_id}"));
+            } => {
+                let title = self
+                    .pending_approvals
+                    .iter()
+                    .find(|pending| pending.request_id == request_id)
+                    .map(|pending| pending.title.clone())
+                    .unwrap_or_else(|| request_id.clone());
+                match result {
+                    Ok(()) => {
+                        let verb = if kind == "approved" {
+                            "Allowed"
+                        } else {
+                            "Denied"
+                        };
+                        self.add_system_message(format!("{verb}: {title}"));
+                        self.finish_pending_approval(&request_id);
+                    }
+                    Err(err) => {
+                        let verb = if kind == "approved" {
+                            "approve"
+                        } else {
+                            "deny"
+                        };
+                        self.add_system_message(format!("Failed to {verb}: {err}"));
+                        // The request stays queued: the failure is transport
+                        // noise (a reconnect, a refused connect), and the
+                        // decision can simply be sent again.
+                        self.pending_decisions.retain(|id| *id != request_id);
+                        self.request_render(false);
+                    }
                 }
-                Err(err) => {
-                    let verb = if kind == "approved" {
-                        "approve"
-                    } else {
-                        "reject"
-                    };
-                    self.add_system_message(format!("Failed to {verb}: {err}"));
-                }
-            },
+            }
             UiCmd::StopDone(result) => match result {
                 Ok(_) => self.add_system_message("Stopped current generation.".into()),
                 Err(err) => self.add_system_message(format!("Failed to stop: {err}")),
@@ -3916,6 +3947,16 @@ impl<T: TerminalIo> App<T> {
                 self.state.active_tool_count = 0;
                 self.state.tool_start_time = None;
                 self.update_terminal_title();
+                // A finished run leaves no approval pending: the agent cancels
+                // its parked requests on abort/termination, and a run that
+                // completed means nothing was parked. Drop whatever the
+                // broadcasts have not already removed — the prompt line must
+                // not outlive the run it was asking about.
+                if !self.pending_approvals.is_empty() {
+                    self.pending_approvals.clear();
+                    self.pending_decisions.clear();
+                    self.request_render(false);
+                }
                 let text = event.text();
                 if !text.is_empty() {
                     self.chat.update_last_message(text);
@@ -4036,7 +4077,7 @@ impl<T: TerminalIo> App<T> {
             }
             "approval_request" => {
                 let e = &event.data;
-                self.show_approval_overlay(ApprovalEvent {
+                self.handle_approval_request(ApprovalEvent {
                     request_id: e
                         .get("approval_request_id")
                         .and_then(Value::as_str)
@@ -4074,6 +4115,49 @@ impl<T: TerminalIo> App<T> {
                         .to_string(),
                     requested_action: e.get("requested_action").cloned(),
                 });
+            }
+            // The agent's own record of a decision — sent for every request it
+            // held, whichever client answered. This client's own RPC is one
+            // source; this broadcast is the other two: another client (the
+            // desktop, the phone) decided first, or an abort/run termination
+            // cancelled the request on the agent side.
+            "approval_decision" => {
+                let e = &event.data;
+                let Some(id) = e
+                    .get("approval_request_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                else {
+                    return;
+                };
+                let was_pending = self
+                    .pending_approvals
+                    .iter()
+                    .any(|pending| pending.request_id == id);
+                if !was_pending {
+                    return;
+                }
+                let status = e.get("status").and_then(Value::as_str).unwrap_or("");
+                let decided_here = self.pending_decisions.contains(&id);
+                // Our own decision's transcript line comes from `ApprovalDone`
+                // (it knows the outcome of the RPC); this branch only speaks
+                // for decisions made elsewhere.
+                if !decided_here {
+                    let title = self
+                        .pending_approvals
+                        .iter()
+                        .find(|pending| pending.request_id == id)
+                        .map(|pending| pending.title.clone())
+                        .unwrap_or_default();
+                    let text = match status {
+                        "approved" => format!("Allowed elsewhere: {title}"),
+                        "rejected" => format!("Denied elsewhere: {title}"),
+                        "cancelled" => format!("Cancelled: {title}"),
+                        other => format!("Resolved ({other}): {title}"),
+                    };
+                    self.add_system_message(text);
+                }
+                self.finish_pending_approval(&id);
             }
             "error" => {
                 self.state.streaming = false;
@@ -4467,6 +4551,11 @@ impl<T: TerminalIo> App<T> {
                 }
                 self.hide_overlay();
                 self.request_render(false);
+            } else if self.approval_keys_active() && self.input.get_value().is_empty() {
+                // Empty editor + pending approval: escape denies. With a draft
+                // the editor keeps the key (it clears the draft — the queued
+                // message matters more than the prompt line's shortcut).
+                self.decide_front_approval(false);
             } else {
                 self.input.set_value("", None);
                 self.autocomplete.hide();
@@ -4499,6 +4588,29 @@ impl<T: TerminalIo> App<T> {
             if key == Key::ENTER {
                 self.apply_autocomplete_selection();
                 return;
+            }
+        }
+
+        // A pending approval takes the answer keys while the editor is empty.
+        // Checked at the same layer as the skill-reco `a` (after overlays so a
+        // panel in front still wins, before the keybinding manager so a user
+        // binding cannot shadow it) — but only when there is nothing to lose:
+        // a draft means the user is typing a queued message, and those keys
+        // belong to the editor.
+        if self.approval_keys_active()
+            && self.input.get_value().is_empty()
+            && !self.autocomplete.is_visible()
+        {
+            match key {
+                "1" | "y" | "Y" => {
+                    self.decide_front_approval(true);
+                    return;
+                }
+                "2" | "n" | "N" => {
+                    self.decide_front_approval(false);
+                    return;
+                }
+                _ => {}
             }
         }
 
@@ -4799,49 +4911,56 @@ impl<T: TerminalIo> App<T> {
         self.request_render(false);
     }
 
-    // ─── Approval overlay ──────────────────────────────────────────────
+    // ─── Approval prompt ──────────────────────────────────────────────
 
-    fn show_approval_overlay(&mut self, req: ApprovalEvent) {
-        // Store pending approval.
-        self.pending_approval = Some(PendingApproval {
+    /// An `approval_request` arrived: queue it, print the card, and let the
+    /// prompt line above the input collect the decision. The input itself is
+    /// left alone — an approval never costs the user their draft.
+    fn handle_approval_request(&mut self, req: ApprovalEvent) {
+        self.pending_approvals.push_back(PendingApproval {
             request_id: req.request_id.clone(),
             tool_name: req.tool_name.clone(),
+            kind: req.kind.clone(),
             title: req.title.clone(),
             summary: req.summary.clone(),
             risk_level: req.risk_level.clone(),
             requested_action: req.requested_action.clone(),
         });
 
-        // Show as a chat message with instructions.
+        // The card is plain text: system messages are not markdown-rendered,
+        // so bold markers would show up as literal asterisks.
         let action_preview = match &req.requested_action {
             Some(Value::String(s)) => s.clone(),
             Some(v) => serde_json::to_string_pretty(v).unwrap_or_default(),
             None => String::new(),
         };
         let risk = req.risk_level.to_uppercase();
-        let preview_block = if action_preview.is_empty() {
+        let preview_lines = if action_preview.is_empty() {
             String::new()
         } else {
-            format!(
-                "```\n{}\n```",
-                truncate_to_width(
-                    &action_preview,
-                    500,
-                    &TruncateOptions {
-                        ellipsis: false,
-                        pad: false
-                    }
-                )
-            )
+            let clipped = truncate_to_width(
+                &action_preview,
+                500,
+                &TruncateOptions {
+                    ellipsis: false,
+                    pad: false,
+                },
+            );
+            clipped
+                .lines()
+                .map(|line| format!("  {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         };
-        let content = format!(
-            "⚠️ **Approval Required** [{risk} RISK]\n**{}**\n{}\n{}\n\nType **/approve {}** to allow or **/reject {}** to deny.",
-            req.title,
-            req.summary,
-            preview_block,
-            req.request_id,
-            req.request_id
+        let mut content = format!(
+            "⚠ Approval required · {risk} risk\n{}\n{}",
+            req.title, req.summary
         );
+        if !preview_lines.is_empty() {
+            content.push('\n');
+            content.push_str(&preview_lines);
+        }
+        content.push_str("\nChoose at the prompt below: 1 allow · 2 deny");
         self.chat
             .add_message(ChatMessage::new(random_id(), ChatRole::System, &content));
 
@@ -4849,14 +4968,86 @@ impl<T: TerminalIo> App<T> {
         // parks the whole run until they answer, which is exactly the case the
         // desktop notifications exist for.
         let body = format!(
-            "{} — /approve {} or /reject {}",
-            req.title, req.request_id, req.request_id
+            "{} — answer at the TUI prompt (1 allow · 2 deny)",
+            req.title
         );
         self.notify_event(NotifyKind::ApprovalNeeded, &body);
+        self.request_render(false);
+    }
 
-        // Auto-fill the input with the approve command.
-        self.input
-            .set_value(&format!("/approve {}", req.request_id), None);
+    /// Whether the approval answer keys are live: a request is queued, none of
+    /// its decisions is in flight, and no overlay is in front. (Autocomplete
+    /// visibility is checked separately at the call sites that need it.)
+    fn approval_keys_active(&self) -> bool {
+        !self.pending_approvals.is_empty() && self.overlay_stack.is_empty()
+    }
+
+    /// The prompt line above the input while approvals are pending, or `None`
+    /// when the queue is empty. One row, truncated to the width by the caller.
+    fn approval_prompt_line(&self) -> Option<String> {
+        let front = self.pending_approvals.front()?;
+        let title = truncate_to_width(
+            &front.title,
+            44,
+            &TruncateOptions {
+                ellipsis: true,
+                pad: false,
+            },
+        );
+        let count = if self.pending_approvals.len() > 1 {
+            format!("  ({} pending)", self.pending_approvals.len())
+        } else {
+            String::new()
+        };
+        Some(format!(
+            "Approve: {title}  [1/y] allow · [2/n] deny · esc denies{count}"
+        ))
+    }
+
+    /// Send a decision for the front of the queue. The queue keeps the entry
+    /// until the RPC answers (`ApprovalDone` removes it): removing it here
+    /// would hide the prompt before the agent confirmed, and a failed RPC
+    /// would have to re-insert it at the front — both worse than one frame of
+    /// double-answering protection from `pending_decisions`.
+    fn decide_front_approval(&mut self, approved: bool) {
+        let Some(front) = self.pending_approvals.front().cloned() else {
+            return;
+        };
+        if self.pending_decisions.contains(&front.request_id) {
+            return;
+        }
+        let verb = if approved { "Approving" } else { "Denying" };
+        self.add_system_message(format!("{verb}: {}", front.title));
+        self.send_approval_decision(&front.request_id, approved);
+    }
+
+    /// The `approval_decision` RPC and its result plumbing. Shared by the
+    /// prompt line, the bare `/approve`, and the id-addressed form.
+    fn send_approval_decision(&mut self, request_id: &str, approved: bool) {
+        self.pending_decisions.push(request_id.to_string());
+        let client = self.client.clone();
+        let tx = self.op_tx.clone();
+        let id = request_id.to_string();
+        tokio::spawn(async move {
+            let result = client.approval_decision(&id, approved, "").await;
+            let _ = tx.send(UiCmd::ApprovalDone {
+                result,
+                kind: if approved {
+                    "approved".into()
+                } else {
+                    "rejected".into()
+                },
+                request_id: id,
+            });
+        });
+    }
+
+    /// Remove an answered request from the queue (this client's RPC result or
+    /// the agent's own broadcast — another client may have decided first).
+    fn finish_pending_approval(&mut self, request_id: &str) {
+        self.pending_decisions.retain(|id| id != request_id);
+        self.pending_approvals
+            .retain(|pending| pending.request_id != request_id);
         self.request_render(false);
     }
 }
@@ -4872,7 +5063,6 @@ pub struct ApprovalEvent {
     pub summary: String,
     pub requested_action: Option<Value>,
 }
-
 // ─── /sandbox and /skills overlay wrappers ──────────────────────────────────
 
 /// Overlay wrapper for `SandboxView`.
@@ -5969,33 +6159,38 @@ impl<T: TerminalIo> App<T> {
                     // trailing-separator trim — no `..` handling on its side).
                     self.switch_cwd(normalize_path(&resolved));
                 }
-                "approve" if !arg.is_empty() => {
-                    let client = self.client.clone();
-                    let tx = self.op_tx.clone();
-                    let id = arg.clone();
-                    tokio::spawn(async move {
-                        let result = client.approval_decision(&id, true, "").await;
-                        let _ = tx.send(UiCmd::ApprovalDone {
-                            result,
-                            kind: "approved".into(),
-                            request_id: id,
+                // `/approve` / `/reject`: with an id, decide that request
+                // (validated against the queue — an id the agent no longer
+                // holds answers with an error anyway); with no argument,
+                // decide the front of the queue. The prompt line's keys are
+                // the primary surface; these commands are the scriptable and
+                // id-addressable path.
+                "approve" | "reject" => {
+                    let approved = cmd == "approve";
+                    let Some(id) = (if arg.is_empty() {
+                        self.pending_approvals
+                            .front()
+                            .map(|front| front.request_id.clone())
+                    } else {
+                        // Not the bare `/approve id` + `/reject id` note form.
+                        Some(arg.trim().trim_matches(|c| c == '`').to_string())
+                    }) else {
+                        self.add_system_message(if arg.is_empty() {
+                            format!("No pending approval to {cmd}")
+                        } else {
+                            format!("No pending approval with id '{arg}'")
                         });
-                    });
-                }
-                "reject" if !arg.is_empty() => {
-                    let client = self.client.clone();
-                    let tx = self.op_tx.clone();
-                    let id = arg.clone();
-                    tokio::spawn(async move {
-                        let result = client
-                            .approval_decision(&id, false, "rejected by user")
-                            .await;
-                        let _ = tx.send(UiCmd::ApprovalDone {
-                            result,
-                            kind: "rejected".into(),
-                            request_id: id,
-                        });
-                    });
+                        return;
+                    };
+                    if !self
+                        .pending_approvals
+                        .iter()
+                        .any(|pending| pending.request_id == id)
+                    {
+                        self.add_system_message(format!("No pending approval with id '{arg}'"));
+                        return;
+                    }
+                    self.send_approval_decision(&id, approved);
                 }
                 "stop" => {
                     let client = self.client.clone();
@@ -9211,6 +9406,47 @@ impl<T: TerminalIo> App<T> {
             self.chat
                 .update_run_state(&run_id, RunState::LostOnAgentRestart);
         }
+        // Approvals the agent still holds — a reconnect's way of saying "the
+        // run is parked on these". Rebuild the queue from the snapshot: drop
+        // the ones that resolved while we were away (their broadcasts were
+        // missed), keep the prompt line for the rest. Entries already queued
+        // (a decision in flight, or a duplicate refresh) are left alone —
+        // the id is the identity, so re-slicing would only churn the order.
+        let snapshot_ids: std::collections::HashSet<&str> = s
+            .pending_approvals
+            .iter()
+            .map(|pending| pending.approval_request_id.as_str())
+            .collect();
+        self.pending_approvals
+            .retain(|pending| snapshot_ids.contains(pending.request_id.as_str()));
+        for pending in &s.pending_approvals {
+            if !self
+                .pending_approvals
+                .iter()
+                .any(|queued| queued.request_id == pending.approval_request_id)
+            {
+                self.handle_approval_request(ApprovalEvent {
+                    request_id: pending.approval_request_id.clone(),
+                    tool_id: pending.tool_id.clone(),
+                    tool_name: pending.tool_name.clone(),
+                    kind: pending.kind.clone(),
+                    risk_level: pending.risk_level.clone(),
+                    title: if pending.title.is_empty() {
+                        "Approve tool execution".to_string()
+                    } else {
+                        pending.title.clone()
+                    },
+                    summary: pending.summary.clone(),
+                    requested_action: pending.requested_action.clone(),
+                });
+            }
+        }
+        // Decisions that were in flight when the connection dropped never
+        // came back: without this their ids would keep guarding the keys
+        // forever (the queue is empty, but `pending_decisions` never drains).
+        if self.pending_approvals.is_empty() {
+            self.pending_decisions.clear();
+        }
         for queued in &s.queued_runs {
             self.chat.upsert_queued_run(
                 &queued.run_id,
@@ -10033,6 +10269,22 @@ impl<T: TerminalIo> App<T> {
         self.input
             .set_image_support(self.current_model_image_support());
         let mut editor_lines = self.input.render(w);
+        // The approval prompt sits directly above the input box for the same
+        // reason the recommendation prompt does (counted as editor height, so
+        // the chat viewport shrinks by exactly the row it takes). Approvals
+        // outrank recommendations: a run is parked until the user answers.
+        if let Some(line) = self.approval_prompt_line() {
+            let colour = if self
+                .pending_approvals
+                .front()
+                .is_some_and(|front| front.risk_level == "high")
+            {
+                self.theme.error as u8
+            } else {
+                self.theme.accent as u8
+            };
+            editor_lines.insert(0, crate::theme::fg(colour, &fit_overlay_row(&line, w)));
+        }
         // The recommendation prompt sits directly above the input box and is
         // counted as editor height, so the chat viewport shrinks by exactly the
         // row it takes instead of being overdrawn by it (PRD v1.6 §6.1).
@@ -12844,19 +13096,34 @@ mod tests {
         });
         assert!(last_system(&app).contains("Failed to change directory"));
 
-        // ApprovalDone approved/rejected × ok/err.
+        // ApprovalDone approved/rejected × ok/err. The title comes from the
+        // queue, so queue the requests first; an unknown id falls back to it.
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            r#"{"approval_request_id":"r1","tool_id":"t1","tool_name":"shell","kind":"exec","risk_level":"medium","title":"Run one","summary":"s"}"#,
+        ));
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            r#"{"approval_request_id":"r2","tool_id":"t2","tool_name":"shell","kind":"exec","risk_level":"medium","title":"Run two","summary":"s"}"#,
+        ));
         app.handle_cmd(UiCmd::ApprovalDone {
             result: Ok(()),
             kind: "approved".into(),
             request_id: "r1".into(),
         });
-        assert!(last_system(&app).contains("Approved request: r1"));
+        assert!(last_system(&app).contains("Allowed: Run one"));
+        assert_eq!(app.pending_approvals.len(), 1);
         app.handle_cmd(UiCmd::ApprovalDone {
             result: Err("x".into()),
             kind: "rejected".into(),
             request_id: "r2".into(),
         });
-        assert!(last_system(&app).contains("Failed to reject"));
+        assert!(last_system(&app).contains("Failed to deny"));
+        assert_eq!(
+            app.pending_approvals.len(),
+            1,
+            "a failed RPC keeps the request queued"
+        );
 
         // StopDone ok/err.
         app.handle_cmd(UiCmd::StopDone(Ok(())));
@@ -13626,14 +13893,22 @@ mod tests {
         app.handle_agent_event(&make_event("tool_end", r#"{"tool_id":"t2"}"#));
         pump(&mut app, &mut rx).await; // tool_end's spawn_refresh fails silently
 
-        // approval_request → chat card + prefilled /approve command.
+        // approval_request → chat card + prompt line; the editor is untouched.
         app.handle_agent_event(&make_event(
             "approval_request",
             r#"{"approval_request_id":"a1","tool_id":"t9","tool_name":"shell","kind":"exec","risk_level":"high","summary":"rm -rf","requested_action":"rm -rf /"}"#,
         ));
-        assert!(last_system(&app).contains("Approval Required"));
-        assert!(app.input.get_value().contains("/approve a1"));
-        app.input.set_value("", None);
+        assert!(last_system(&app).contains("Approval required"));
+        assert!(app.input.get_value().is_empty());
+        assert_eq!(app.pending_approvals.len(), 1);
+        // The agent's own decision broadcast removes it (another client
+        // answered first — the `approval_decision` event carries the id).
+        app.handle_agent_event(&make_event(
+            "approval_decision",
+            r#"{"approval_request_id":"a1","status":"approved"}"#,
+        ));
+        assert!(app.pending_approvals.is_empty());
+        assert!(app.approval_prompt_line().is_none());
 
         // error event.
         app.handle_agent_event(&make_event("error", r#"{"error":"boom"}"#));
@@ -13944,13 +14219,26 @@ mod tests {
         assert!(last_system(&app).contains("Cannot change working directory"));
         app.state.streaming = false;
 
-        // /approve, /reject (with and without arg).
+        // /approve, /reject: bare (no pending → refusal), id-addressed
+        // (queued request → decided), unknown id (local refusal, no RPC).
         app.handle_cmd(UiCmd::Submit("/approve".into()));
+        assert!(last_system(&app).contains("No pending approval to approve"));
         app.handle_cmd(UiCmd::Submit("/reject".into()));
+        assert!(last_system(&app).contains("No pending approval to reject"));
+        app.handle_cmd(UiCmd::Submit("/approve nowhere".into()));
+        assert!(last_system(&app).contains("No pending approval with id 'nowhere'"));
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            r#"{"approval_request_id":"req-1","tool_id":"t1","tool_name":"shell","kind":"exec","risk_level":"medium","title":"Run one","summary":"s"}"#,
+        ));
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            r#"{"approval_request_id":"req-2","tool_id":"t2","tool_name":"shell","kind":"exec","risk_level":"medium","title":"Run two","summary":"s"}"#,
+        ));
         app.handle_cmd(UiCmd::Submit("/approve req-1".into()));
         pump_until_msg(&mut app, &mut rx, "Failed to approve").await;
         app.handle_cmd(UiCmd::Submit("/reject req-2".into()));
-        pump_until_msg(&mut app, &mut rx, "Failed to reject").await;
+        pump_until_msg(&mut app, &mut rx, "Failed to deny").await;
 
         // /cancel with and without arg.
         app.handle_cmd(UiCmd::Submit("/cancel".into()));
@@ -15678,21 +15966,25 @@ mod tests {
             .iter()
             .any(|m| m.contains("Cancelled queued run")));
 
-        // /approve + /reject succeed.
+        // /approve + /reject succeed (against the mock agent's live session).
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            r#"{"approval_request_id":"r1","tool_id":"t1","tool_name":"shell","kind":"exec","risk_level":"medium","title":"Run one","summary":"s"}"#,
+        ));
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            r#"{"approval_request_id":"r2","tool_id":"t2","tool_name":"shell","kind":"exec","risk_level":"medium","title":"Run two","summary":"s"}"#,
+        ));
         app.handle_cmd(UiCmd::Submit("/approve r1".into()));
         app.handle_cmd(UiCmd::Submit("/reject r2".into()));
-        pump_until_all(
-            &mut app,
-            &mut rx,
-            &["Approved request: r1", "Rejected request: r2"],
-        )
-        .await;
+        pump_until_all(&mut app, &mut rx, &["Allowed: Run one", "Denied: Run two"]).await;
         assert!(system_messages(&app)
             .iter()
-            .any(|m| m.contains("Approved request: r1")));
+            .any(|m| m.contains("Allowed: Run one")));
         assert!(system_messages(&app)
             .iter()
-            .any(|m| m.contains("Rejected request: r2")));
+            .any(|m| m.contains("Denied: Run two")));
+        assert!(app.pending_approvals.is_empty());
 
         app.stop();
     }
@@ -16415,12 +16707,13 @@ mod tests {
             "approval_request",
             r#"{"approval_request_id":"a2","requested_action":{"cmd":"ls"}}"#,
         ));
-        assert!(last_system(&app).contains("Approval Required"));
+        assert!(last_system(&app).contains("Approval required"));
         app.handle_agent_event(&make_event(
             "approval_request",
             r#"{"approval_request_id":"a3"}"#,
         ));
-        assert!(last_system(&app).contains("Approval Required"));
+        assert!(last_system(&app).contains("Approval required"));
+        assert_eq!(app.pending_approvals.len(), 2);
 
         // /model selector refused while streaming.
         app.state.streaming = true;
@@ -19037,7 +19330,7 @@ mod tests {
     #[tokio::test]
     async fn approval_request_notifies_the_user() {
         let (mut app, _rx) = make_app(100, 30);
-        app.show_approval_overlay(ApprovalEvent {
+        app.handle_approval_request(ApprovalEvent {
             request_id: "req-1".into(),
             tool_id: "t1".into(),
             tool_name: "shell".into(),
@@ -19053,11 +19346,17 @@ mod tests {
             "approval must emit an OSC 9 notification: {writes:?}"
         );
         assert!(
-            writes.contains("req-1"),
+            writes.contains("Run rm -rf"),
             "the notification names the request"
         );
-        assert!(app.pending_approval.is_some());
-        assert!(app.input.get_value().starts_with("/approve req-1"));
+        assert_eq!(app.pending_approvals.len(), 1);
+        // The editor is never hijacked: a draft the user was typing survives
+        // the request (the answer keys only live while it is empty).
+        assert!(app.input.get_value().is_empty());
+        assert_eq!(
+            app.approval_prompt_line().as_deref(),
+            Some("Approve: Run rm -rf  [1/y] allow · [2/n] deny · esc denies")
+        );
     }
 
     /// Notifications respect the settings gate: disabling them silences the
@@ -19071,7 +19370,7 @@ mod tests {
             osc9: true,
             title: true,
         });
-        app.show_approval_overlay(ApprovalEvent {
+        app.handle_approval_request(ApprovalEvent {
             request_id: "req-2".into(),
             tool_id: "t1".into(),
             tool_name: "shell".into(),
@@ -19085,6 +19384,189 @@ mod tests {
             !terminal_writes(&app).contains("\x1b]9;"),
             "a disabled config must stay silent"
         );
+    }
+
+    /// A helper that queues one approval request through the real event path.
+    fn queue_approval(app: &mut App<FakeTerminal>, id: &str, title: &str) {
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            &format!(
+                r#"{{"approval_request_id":"{id}","tool_id":"t1","tool_name":"shell","kind":"shell_command","risk_level":"medium","title":"{title}","summary":"s"}}"#
+            ),
+        ));
+    }
+
+    /// The answer keys decide the front of the queue while the editor is
+    /// empty; a draft disables them; a decision in flight swallows repeats.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn approval_answer_keys_decide_the_front_of_the_queue() {
+        let (mut app, mut rx) = make_app(100, 30);
+        queue_approval(&mut app, "a1", "First command");
+        queue_approval(&mut app, "a2", "Second command");
+
+        // `1` (and `y`) approve the front — but only once: the second press
+        // is swallowed while the decision is in flight (the dead client's
+        // answer never comes, which is exactly the window that matters).
+        app.handle_key("1");
+        assert_eq!(app.pending_decisions, vec!["a1".to_string()]);
+        app.handle_key("y");
+        assert_eq!(
+            app.pending_decisions,
+            vec!["a1".to_string()],
+            "a repeat press must not fire a second RPC"
+        );
+        // The queue keeps the request until the answer arrives; the prompt
+        // line still shows the front (with the count).
+        assert_eq!(app.pending_approvals.len(), 2);
+        assert!(app
+            .approval_prompt_line()
+            .expect("still pending")
+            .contains("(2 pending)"));
+
+        // The answer removes it; the next request moves to the front.
+        app.handle_cmd(UiCmd::ApprovalDone {
+            result: Ok(()),
+            kind: "approved".into(),
+            request_id: "a1".into(),
+        });
+        assert_eq!(app.pending_approvals.len(), 1);
+        assert_eq!(app.pending_approvals[0].request_id, "a2");
+        assert!(app
+            .approval_prompt_line()
+            .expect("still pending")
+            .contains("Second command"));
+
+        // `2` (and `n`) deny; `esc` on an empty editor denies too.
+        app.handle_key("2");
+        app.handle_cmd(UiCmd::ApprovalDone {
+            result: Ok(()),
+            kind: "rejected".into(),
+            request_id: "a2".into(),
+        });
+        assert!(app.pending_approvals.is_empty());
+        assert!(app.approval_prompt_line().is_none());
+        // Nothing pending: the keys fall through to the editor (`1` types).
+        app.handle_key("1");
+        assert_eq!(app.input.get_value(), "1");
+        app.input.set_value("", None);
+
+        // A draft outranks the shortcuts: the keys type into the editor and
+        // the request stays queued.
+        queue_approval(&mut app, "a3", "Third command");
+        app.input.set_value("answering later", None);
+        app.handle_key("y");
+        assert_eq!(app.input.get_value(), "answering latery");
+        assert!(app.pending_decisions.is_empty());
+        app.input.set_value("", None);
+
+        // `esc` with a draft clears the draft (existing behaviour), not the
+        // request; with an empty editor it denies.
+        app.handle_key(Key::ESCAPE);
+        assert!(app.input.get_value().is_empty());
+        assert_eq!(app.pending_approvals.len(), 1);
+        app.handle_key(Key::ESCAPE);
+        assert_eq!(app.pending_decisions, vec!["a3".to_string()]);
+        let _ = rx.try_recv();
+    }
+
+    /// A decision made by another client arrives as the agent's
+    /// `approval_decision` broadcast: the request disappears with a notice,
+    /// and our own in-flight decision does not double-announce.
+    #[tokio::test]
+    async fn an_approval_decided_elsewhere_removes_the_request() {
+        let (mut app, _rx) = make_app(100, 30);
+        queue_approval(&mut app, "a1", "First command");
+        queue_approval(&mut app, "a2", "Second command");
+
+        // Another client allowed a1.
+        app.handle_agent_event(&make_event(
+            "approval_decision",
+            r#"{"approval_request_id":"a1","status":"approved"}"#,
+        ));
+        assert_eq!(app.pending_approvals.len(), 1);
+        assert_eq!(app.pending_approvals[0].request_id, "a2");
+        assert!(last_system(&app).contains("Allowed elsewhere: First command"));
+
+        // Our own decision (in flight) resolves via the broadcast without a
+        // second transcript line from this branch.
+        app.send_approval_decision("a2", false);
+        app.handle_agent_event(&make_event(
+            "approval_decision",
+            r#"{"approval_request_id":"a2","status":"rejected"}"#,
+        ));
+        assert!(app.pending_approvals.is_empty());
+        assert!(app.pending_decisions.is_empty());
+
+        // A broadcast for an id we never held is ignored (another session's).
+        app.handle_agent_event(&make_event(
+            "approval_decision",
+            r#"{"approval_request_id":"zz","status":"approved"}"#,
+        ));
+        assert!(last_system(&app).contains("Denied") || last_system(&app).contains("elsewhere"));
+    }
+
+    /// `agent_end` clears the queue: a finished run leaves nothing parked.
+    #[tokio::test]
+    async fn agent_end_clears_pending_approvals() {
+        let (mut app, _rx) = make_app(100, 30);
+        queue_approval(&mut app, "a1", "First command");
+        assert_eq!(app.pending_approvals.len(), 1);
+        app.handle_agent_event(&make_event("agent_end", r#"{"state":"completed"}"#));
+        assert!(app.pending_approvals.is_empty());
+        assert!(app.approval_prompt_line().is_none());
+    }
+
+    /// A reconnect rebuilds the queue from `get_state`'s `pendingApprovals`:
+    /// what the agent still holds comes back, what resolved while we were
+    /// away is dropped, and duplicates are not re-queued.
+    #[tokio::test]
+    async fn a_refresh_rebuilds_the_approval_queue_from_the_agent_state() {
+        let (mut app, _rx) = make_app(100, 30);
+        queue_approval(&mut app, "a1", "First command");
+        queue_approval(&mut app, "a2", "Second command");
+
+        let mut state = sample_state();
+        state.pending_approvals = vec![
+            crate::rpc::types::PendingApprovalState {
+                approval_request_id: "a2".into(),
+                tool_id: "t2".into(),
+                tool_name: "shell".into(),
+                kind: "shell_command".into(),
+                risk_level: "medium".into(),
+                title: "Second command".into(),
+                summary: "s".into(),
+                requested_action: None,
+            },
+            // A new one the agent holds that we have never seen (queued while
+            // the connection was down).
+            crate::rpc::types::PendingApprovalState {
+                approval_request_id: "a3".into(),
+                tool_id: "t3".into(),
+                tool_name: "shell".into(),
+                kind: "shell_command".into(),
+                risk_level: "medium".into(),
+                title: "Third command".into(),
+                summary: "s".into(),
+                requested_action: None,
+            },
+        ];
+        app.handle_cmd(UiCmd::Refreshed(Ok(state)));
+        let ids: Vec<&str> = app
+            .pending_approvals
+            .iter()
+            .map(|pending| pending.request_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["a2", "a3"], "a1 resolved while away; no dupes");
+        assert!(app
+            .approval_prompt_line()
+            .expect("still pending")
+            .contains("(2 pending)"));
+
+        // An empty snapshot empties the queue (nothing parked any more).
+        let mut empty = sample_state();
+        empty.pending_approvals = vec![];
+        app.handle_cmd(UiCmd::Refreshed(Ok(empty)));
+        assert!(app.pending_approvals.is_empty());
     }
 
     #[tokio::test]

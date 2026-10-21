@@ -1,14 +1,3 @@
-[1m[38;5;151mfuture-tui[0m[38;5;245m v0.0.0-mock[39m
-
-[38;5;245mctrl+c interrupt · ctrl+p model · ctrl+t thinking · ctrl+o expand/collapse ·[39m
-
-[38;5;245m[skills] code-review, future-slides, future-web[39m
-
-[48;5;59m hello
-
-[49m Hello from the mock agent!
-
-
 [48;5;236m [1m[38;5;109medit[0m[48;5;236m [38;5;39msrc/greeting.rs[39m [38;5;143m+2[39m [38;5;204m-1[39m
 
 [49m Hello from the mock agent!
@@ -33,4 +22,15 @@
  [38;5;245m  user/assistant: 42/40[39m
  [38;5;245m  tool calls/results: 57/57[39m
  [38;5;245m  tokens in/out: 812000/12000[39m
-[2mj/k scroll · space/b page · g/G top/bottom · / search · y copy · q close      0%
+ [38;5;245m  tokens cache read/write: 780000/12000
+[39m [38;5;245m  tokens total: 824000[39m
+ [38;5;245m  cost: 8.42[39m
+
+ [38;5;245mTool permission level raised to Workspace — the approval mode only asks while[39m
+ [38;5;245mthe gate is armed.[39m
+
+ [38;5;245mApproval mode: Manual — File access follows approval rules; allowlisted[39m
+ [38;5;245mread-only commands run automatically, other commands ask. No OS sandbox.[39m
+
+ [38;5;245mUsage: /permission [all|workspace|none]
+[2m[39mj/k scroll · space/b page · g/G top/bottom · / search · y copy · q close     24%

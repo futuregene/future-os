@@ -99,8 +99,8 @@ future tui        # 终端 2：终端界面
 | `/shell <cmd>` | 经 agent 执行一条命令并显示输出 |
 | `/stop` | 停止当前生成 |
 | `/cancel <run-id>` | 取消排队中的运行 |
-| `/approve <request-id>` | 批准待执行工具 |
-| `/reject <request-id>` | 拒绝待执行工具 |
+| `/approve [id]` | 允许待处理的审批（队首，或按 id） |
+| `/reject [id]` | 拒绝待处理的审批（队首，或按 id） |
 | `/editor` | 用 `$VISUAL` / `$EDITOR` 编辑当前草稿 |
 | `/cancel-input` | 取消正在等待的 `/provider-key` 输入 |
 
@@ -126,6 +126,23 @@ agent 侧设置：自动压缩开启时页脚会显示指示；`/autoretry` 则�
 请求。`/delete --yes` 删除会话文件后新建一个会话。`/worktree` 刻意只做只读查询与
 新建：它只会跑 `git worktree list`/`status`/`rev-parse` 与 `git worktree add`，并直接
 拒绝 `remove`/`prune`/`reset`/`clean`/`checkout`/`gc`/`reflog`。
+
+## 审批
+
+当 agent 要执行审批闸门放行不了的操作（白名单外的 shell 命令、工作区外的写入……），
+它会暂停整个 run 并询问。请求以 transcript 里的一张卡片和输入行上方的一行提示呈现：
+
+```
+Approve: Approve shell command  [1/y] allow · [2/n] deny · esc denies
+```
+
+输入行为空时，`1`（或 `y`）允许该请求，`2`（或 `n`）、`escape` 拒绝。同时有多个待处理
+请求时会显示计数，按键作用于最早的那个。正在输入草稿时快捷键让位于编辑器——每个按键
+都进输入框——但提示行保持可见；排队中的消息在审批解决后照常送达。
+
+`/approve` 与 `/reject` 是可脚本化的路径：不带参数作用于队首，带 id 作用于指定请求。
+若另一端（桌面端、手机）先作了决定，transcript 里会给出提示并撤下提示行；重连后队列
+从 agent 状态重建，断线不会困住被暂停的 run。
 
 ## 弹窗菜单与分页浮层
 
