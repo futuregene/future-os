@@ -48,6 +48,7 @@ import { terminalTarget } from "../../features/terminal/panelTarget";
 import { TerminalPanel } from "../../features/terminal/TerminalPanel";
 import { TerminalToggleButton } from "../../features/terminal/TerminalToggleButton";
 import { useTerminalPanel } from "../../features/terminal/useTerminalPanel";
+import { exitNativeFullscreen } from "../../features/vibe/fullscreen";
 import { VibeStage } from "../../features/vibe/VibeStage";
 import { defaultAgentModelId, modelOption, readLastUsedModel } from "../../integrations/agent/agentClient";
 import { installAgentEventListener, revalidateAgentState } from "../../integrations/agent/agentStateCache";
@@ -178,6 +179,20 @@ function ReadyAppShell({
    * the panel is a view here instead of a window of its own.
    */
   const [vibeOpen, setVibeOpen] = useState(false);
+  /**
+   * Close the panel — and leave native fullscreen with it.
+   *
+   * Every way out of the panel goes through here (its own button and `Esc`, the
+   * `vibe.toggle` accelerator, and the three "open it in the shell" routes), because
+   * the panel is the only surface that offers fullscreen at all: its bar's icon, its
+   * menu row and `vibe.fullscreen` are registered with it, so a panel closed while
+   * fullscreen used to strand the reader in a window with no way back.
+   * `exitNativeFullscreen` holds the rest of the reasoning.
+   */
+  const closeVibe = useCallback(() => {
+    setVibeOpen(false);
+    void exitNativeFullscreen();
+  }, []);
   /**
    * Which machines the conversation list shows. Kept at the shell rather than
    * in the rail so the choice survives the rail remounting when the sidebar
@@ -1248,7 +1263,12 @@ function ReadyAppShell({
   // asks the same question — a shortcut that made something on a machine other
   // than the one on screen was wrong for the same reason the button was.
   useCommand("chat.new", () => handleNewConversationRequest(), shortcutsLive);
-  useCommand("vibe.toggle", () => setVibeOpen(open => !open), shortcutsLive);
+  useCommand("vibe.toggle", () => {
+    if (vibeOpen)
+      closeVibe();
+    else
+      setVibeOpen(true);
+  }, shortcutsLive);
   useCommand("panel.left", handleToggleLeftPanel, shortcutsLive);
   useCommand("panel.right", () => setRightExpanded(value => !value), shortcutsLive && !hideRightPanel);
   useCommand("settings.open", () => {
@@ -1484,18 +1504,18 @@ function ReadyAppShell({
         ? (
             <VibeStage
               catalogs={remoteCatalogs}
-              onClose={() => setVibeOpen(false)}
+              onClose={closeVibe}
               onOpenInShell={(thread) => {
                 handleSelectThread(thread);
-                setVibeOpen(false);
+                closeVibe();
               }}
               onOpenRemoteInShell={(desktopId, sessionId) => {
                 openRemoteSession(desktopId, sessionId);
-                setVibeOpen(false);
+                closeVibe();
               }}
               onNewConversation={() => {
                 pinNextCreatedRef.current = true;
-                setVibeOpen(false);
+                closeVibe();
                 handleOpenNewChat();
               }}
               onPinLocal={(threadId, pinned) => void pinLocalThread(threadId, pinned)}
