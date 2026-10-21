@@ -820,7 +820,7 @@ Usage:
   future task list [--all] [--json]                 List scheduled tasks
   future task show <id|name> [--json] [--prompt]    Show one scheduled task
   future task add --name N --prompt P|--prompt-file F --cwd D
-        [--model M] [--thinking L] [--session new|existing]
+        [--model M] [--thinking L] [--timezone IANA] [--session new|existing]
         [--session-retention keep|delete]
         [--conversation workspace|chat] [--disabled] [--json]
         (--manual | --at "YYYY-MM-DD HH:MM" | --every 30m
@@ -843,7 +843,7 @@ Triggers:
   --manual    Only runs when triggered: `future task run`, the desktop panel,
               the phone, or another agent. This is also what an add without any
               trigger flag produces.
-  --at        One-shot on a calendar date/time (local time).
+  --at        One-shot on a calendar date/time (in the task's time zone).
   --every     Every N minutes (30m, 2h, 1d). Anchored to a grid; no drift.
   --daily     Every day at --time (default 09:00).
   --weekly    Every selected weekday at --time (default 09:00).
@@ -852,6 +852,14 @@ Triggers:
   --yearly    Once a year on --month (1-12) and --day (1-31) at --time
               (default 09:00). A day the month cannot hold runs on the last
               day of that month, so 2/29 runs on the 28th in a common year.
+
+Time zone:
+  --timezone IANA   The zone every wall-clock time above is read in, e.g.
+                    Asia/Shanghai, Europe/Berlin, America/New_York, UTC. A
+                    schedule keeps its meaning when the machine's own zone
+                    changes or the task is managed from elsewhere.
+                    Omitted: this machine's zone; when that cannot be read,
+                    Asia/Shanghai. `future task show` prints the resulting zone.
 
 Session:
   --session new       Each run opens a new conversation (default).

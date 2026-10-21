@@ -42,6 +42,10 @@ pub struct TaskView {
     pub cwd: String,
     pub model_id: Option<String>,
     pub thinking_level: Option<String>,
+    /// The IANA zone the schedule's wall-clock times are read in. Always a
+    /// concrete name: a task with none stored reports the zone it resolves to
+    /// (the host's, else Beijing), so the form can show what will actually run.
+    pub timezone: String,
     pub session_policy: String,
     /// `keep` (default) or `delete`; see [`SessionRetention`]. Only meaningful
     /// with `session_policy = new`, and the clients only offer it there.
@@ -104,6 +108,8 @@ fn task_view(store: &Store, task: Task) -> TaskView {
         .ok()
         .flatten()
         .map(run_view);
+    // Resolved before the fields below are moved out of `task`.
+    let timezone = future_tasks::task_timezone(&task).name().to_string();
     TaskView {
         id: task.id,
         name: task.name,
@@ -113,6 +119,7 @@ fn task_view(store: &Store, task: Task) -> TaskView {
         cwd: task.cwd,
         model_id: task.model_id,
         thinking_level: task.thinking_level,
+        timezone,
         session_policy: format!("{:?}", task.session_policy).to_lowercase(),
         session_retention: format!("{:?}", task.session_retention).to_lowercase(),
         conversation_mode: format!("{:?}", task.conversation_mode).to_lowercase(),
@@ -135,6 +142,10 @@ pub struct TaskInput {
     pub model_id: Option<String>,
     #[serde(default)]
     pub thinking_level: Option<String>,
+    /// IANA zone (`Asia/Shanghai`). Absent or empty means "not chosen": the
+    /// host's own zone is resolved and stored, Beijing when it cannot be read.
+    #[serde(default)]
+    pub timezone: Option<String>,
     #[serde(default)]
     pub session_policy: Option<String>,
     #[serde(default)]
@@ -175,6 +186,23 @@ fn parse_session_retention(raw: Option<&str>, policy: SessionPolicy) -> SessionR
     }
 }
 
+/// The zone to store for a **create**: an explicit, valid name wins; an empty
+/// value means "not chosen" and resolves to the host's zone. A non-empty name
+/// this build cannot parse is refused rather than silently replaced — the user
+/// typed a zone, and getting Beijing back without being told would make the
+/// schedule fire on a clock they never picked.
+fn parse_timezone_field(raw: Option<&str>) -> Result<Option<String>, crate::Error> {
+    match raw.map(str::trim).filter(|name| !name.is_empty()) {
+        None => Ok(Some(future_tasks::resolve_timezone(None))),
+        Some(name) => match future_tasks::parse_timezone(name) {
+            Some(tz) => Ok(Some(tz.name().to_string())),
+            None => Err(crate::Error::Message(format!(
+                "unknown timezone {name:?}: expected an IANA name like Asia/Shanghai"
+            ))),
+        },
+    }
+}
+
 fn parse_trigger_kind(raw: Option<&str>) -> TriggerKind {
     match raw {
         Some("schedule") => TriggerKind::Schedule,
@@ -204,6 +232,7 @@ pub fn create_task(input: TaskInput) -> Result<TaskView, crate::Error> {
         cwd: input.cwd,
         model_id: input.model_id,
         thinking_level: input.thinking_level,
+        timezone: parse_timezone_field(input.timezone.as_deref())?,
         session_policy: parse_session_policy(input.session_policy.as_deref()),
         session_retention: parse_session_retention(
             input.session_retention.as_deref(),
@@ -263,6 +292,12 @@ pub fn update_task(id: String, input: TaskInput) -> Result<TaskView, crate::Erro
     task.cwd = input.cwd;
     task.model_id = input.model_id;
     task.thinking_level = input.thinking_level;
+    // An update that says nothing about the zone keeps the stored one; an empty
+    // value asks for "the host's zone" explicitly. (A whole-record write from
+    // another client may omit the field entirely.)
+    if let Some(raw) = input.timezone.as_deref() {
+        task.timezone = parse_timezone_field(Some(raw))?;
+    }
     task.session_policy = parse_session_policy(input.session_policy.as_deref());
     task.session_retention =
         parse_session_retention(input.session_retention.as_deref(), task.session_policy);
@@ -472,6 +507,7 @@ mod tests {
             cwd: "/tmp/repo".into(),
             model_id: Some("future/gpt-5".into()),
             thinking_level: Some("high".into()),
+            timezone: Some("Asia/Shanghai".into()),
             session_policy: Some("existing".into()),
             conversation_mode: Some("chat".into()),
             session_retention: None,
@@ -747,6 +783,87 @@ mod tests {
 
         let disabled = set_task_enabled(created.id, false).expect("disable");
         assert!(!disabled.enabled);
+    }
+
+    /// The zone is part of the record: what the form sends is what the schedule
+    /// reads, and a task that sends none still ends up with a concrete name
+    /// (the host's zone, else Beijing) rather than a NULL that the next read has
+    /// to guess at again.
+    #[test]
+    fn the_task_zone_is_stored_and_an_unset_one_resolves() {
+        let _home = init("cmd_tasks_timezone");
+        let created = create_task(input("shanghai")).expect("create");
+        assert_eq!(created.timezone, "Asia/Shanghai");
+
+        let mut tokyo = input("tokyo");
+        tokyo.timezone = Some("Asia/Tokyo".into());
+        let created = create_task(tokyo).expect("create tokyo");
+        assert_eq!(created.timezone, "Asia/Tokyo");
+        assert_eq!(
+            list_scheduled_tasks_includes(&created.id).timezone,
+            "Asia/Tokyo",
+            "the view reports what the row carries"
+        );
+
+        // An edit that does not mention the zone keeps it; an explicit zone
+        // replaces it (canonically, whatever the client's spelling).
+        let mut edit = input("tokyo");
+        edit.timezone = None;
+        assert_eq!(
+            update_task(created.id.clone(), edit)
+                .expect("edit")
+                .timezone,
+            "Asia/Tokyo"
+        );
+        let mut edit = input("tokyo");
+        edit.timezone = Some("europe/berlin".into());
+        assert_eq!(
+            update_task(created.id.clone(), edit)
+                .expect("edit")
+                .timezone,
+            "Europe/Berlin"
+        );
+
+        // An empty value asks for the host's zone.
+        let mut edit = input("tokyo");
+        edit.timezone = Some(String::new());
+        assert_eq!(
+            update_task(created.id, edit).expect("edit").timezone,
+            future_tasks::resolve_timezone(None)
+        );
+
+        // A name nobody can resolve is refused, not silently replaced.
+        let mut bad = input("bogus");
+        bad.timezone = Some("Mars/Olympus_Mons".into());
+        let error = create_task(bad).unwrap_err();
+        assert!(error.to_string().contains("unknown timezone"), "{error}");
+        assert!(
+            list_tasks().expect("list").len() == 2,
+            "nothing was created"
+        );
+    }
+
+    /// The schedule is computed in the task's zone, not the host's: a daily
+    /// 09:00 in Shanghai is 01:00 UTC whatever this machine's clock says.
+    #[test]
+    fn a_tasks_schedule_uses_its_own_zone() {
+        let _home = init("cmd_tasks_timezone_schedule");
+        let mut shanghai = input("daily shanghai");
+        shanghai.timezone = Some("Asia/Shanghai".into());
+        let shanghai = create_task(shanghai).expect("create");
+        let mut berlin = input("daily berlin");
+        berlin.timezone = Some("Europe/Berlin".into());
+        let berlin = create_task(berlin).expect("create");
+
+        let due_of = |task: &TaskView| {
+            chrono::DateTime::from_timestamp_millis(task.next_due_at.expect("a schedule"))
+                .unwrap()
+                .with_timezone(&chrono_tz::Tz::Asia__Shanghai)
+                .format("%H:%M")
+                .to_string()
+        };
+        assert_eq!(due_of(&shanghai), "09:00");
+        assert_eq!(due_of(&berlin), "15:00", "09:00 Berlin is 15:00 Shanghai");
     }
 
     #[test]

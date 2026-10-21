@@ -30,6 +30,11 @@ export interface TaskView {
   cwd: string;
   modelId: string | null;
   thinkingLevel: string | null;
+  /**
+   * IANA zone the schedule's wall-clock times are read in (`Asia/Shanghai`).
+   * Always concrete: a task that stores none reports the zone it resolves to.
+   */
+  timezone: string;
   sessionPolicy: string;
   /** `keep` (default) or `delete`; only meaningful with `sessionPolicy: "new"`. */
   sessionRetention: string;
@@ -54,6 +59,8 @@ export interface TaskInput {
   cwd: string;
   modelId?: string | null;
   thinkingLevel?: string | null;
+  /** Empty or absent = this machine's zone (host-resolved, Beijing fallback). */
+  timezone?: string | null;
   sessionPolicy?: string;
   sessionRetention?: string;
   conversationMode?: string;

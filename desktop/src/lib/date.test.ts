@@ -64,6 +64,19 @@ describe("formatDateTime", () => {
     expect(label).toMatch(/07\/09\/2026|2026/);
     expect(label).toMatch(/10:51/);
   });
+
+  // A scheduled task's trigger times are read on its own clock; the label has
+  // to show that reading, not the viewer's. 01:00Z is 09:00 in Shanghai.
+  it("renders an instant on a named zone", () => {
+    expect(formatDateTime("2026-10-07T01:00:00Z", "en-GB", "Asia/Shanghai")).toContain("09:00");
+    expect(formatDateTime("2026-10-07T01:00:00Z", "en-GB", "UTC")).toContain("01:00");
+  });
+
+  // An unknown zone (an older Intl, a typo) falls back to local time instead of
+  // throwing: the row still shows a time the person can read.
+  it("falls back to local time for a zone Intl rejects", () => {
+    expect(() => formatDateTime("2026-10-07T01:00:00Z", "en-GB", "Mars/Olympus_Mons")).not.toThrow();
+  });
 });
 
 describe("formatDuration", () => {
