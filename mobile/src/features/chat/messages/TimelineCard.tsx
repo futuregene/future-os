@@ -35,7 +35,7 @@ function TimelineCardView({
   // This phone's own reading preference, not the desktop's: the same choice
   // shapes every paired machine's conversation, because the transcript is drawn
   // here from the slices the desktop sends.
-  const { finalAnswerOnly } = useAppearance();
+  const { replyDetail } = useAppearance();
   const { t, i18n } = useTranslation();
   const { copied, copy } = useCopyState();
   // The reader's own window: a collapsed prompt's cap is bounded by it (see
@@ -102,7 +102,7 @@ function TimelineCardView({
       // above it. Nothing folds while the reply streams — the reader is
       // watching it happen — and a reply with no prose has no answer to
       // isolate, so it stays whole.
-      const folded = finalAnswerOnly && !item.streaming && blocks.length > 0
+      const folded = replyDetail === "default" && !item.streaming && blocks.length > 0
         ? splitFinalAnswer(blocks)
         : null;
       const visibleBlocks = folded ? folded.answer : blocks;

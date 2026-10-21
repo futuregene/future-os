@@ -2,16 +2,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 /**
- * The reading setting is on unless the reader turns it off.
+ * The reading level is `default` unless the reader picked `detailed`.
  *
- * The default is what a fresh install (and an install that predates the
- * setting) reads, so it is decided by the *absence* of a stored value — a test
- * that only flips the flag would never notice the default going back to off.
+ * The level is what a fresh install (and an install that predates it) reads, so
+ * it is decided by the *absence* of a stored value — a test that only sets the
+ * level would never notice the default changing.
  */
-const KEY = "future.reply.finalAnswerOnly";
+const KEY = "future.reply.detail";
 
 afterEach(() => {
   localStorage.removeItem(KEY);
+  localStorage.removeItem("future.reply.finalAnswerOnly");
   vi.resetModules();
 });
 
@@ -20,35 +21,43 @@ async function fresh() {
   return import("./replyDisplay");
 }
 
-describe("the reading setting's default", () => {
-  it("is on when nothing is stored", async () => {
+describe("the reply detail level", () => {
+  it("is `default` when nothing is stored", async () => {
     const mod = await fresh();
-    expect(mod.DEFAULT_FINAL_ANSWER_ONLY).toBe(true);
-    expect(mod.getFinalAnswerOnly()).toBe(true);
+    expect(mod.DEFAULT_REPLY_DETAIL).toBe("default");
+    expect(mod.getReplyDetail()).toBe("default");
+    expect(mod.foldsSettledReply(mod.getReplyDetail())).toBe(true);
   });
 
-  it("is off only when the reader stored that", async () => {
-    localStorage.setItem(KEY, "false");
-    expect((await fresh()).getFinalAnswerOnly()).toBe(false);
+  it("reads the stored level back, and only folds on `default`", async () => {
+    localStorage.setItem(KEY, "detailed");
+    const detailed = await fresh();
+    expect(detailed.getReplyDetail()).toBe("detailed");
+    expect(detailed.foldsSettledReply("detailed")).toBe(false);
 
-    localStorage.setItem(KEY, "true");
-    expect((await fresh()).getFinalAnswerOnly()).toBe(true);
+    localStorage.setItem(KEY, "default");
+    const folded = await fresh();
+    expect(folded.getReplyDetail()).toBe("default");
+    expect(folded.foldsSettledReply("default")).toBe(true);
   });
 
-  it("never reads a corrupt value as an opt-in", async () => {
-    // Only the one value this app writes turns the fold off; anything else —
-    // a truncated write, another build's key — stays on the default.
-    localStorage.setItem(KEY, "");
-    expect((await fresh()).getFinalAnswerOnly()).toBe(true);
-    localStorage.setItem(KEY, "0");
-    expect((await fresh()).getFinalAnswerOnly()).toBe(true);
+  it("ignores a value it never wrote", async () => {
+    localStorage.setItem(KEY, "verbose");
+    expect((await fresh()).getReplyDetail()).toBe("default");
   });
 
-  it("persists the choice the reader made", async () => {
+  it("does not read the retired boolean as a level", async () => {
+    // The setting used to be a switch under this key. `false` there cannot be
+    // told apart from one an older default wrote, so the level starts fresh.
+    localStorage.setItem("future.reply.finalAnswerOnly", "false");
+    expect((await fresh()).getReplyDetail()).toBe("default");
+  });
+
+  it("persists the level the reader picked", async () => {
     const mod = await fresh();
-    mod.setFinalAnswerOnly(false);
-    expect(localStorage.getItem(KEY)).toBe("false");
-    expect(mod.getFinalAnswerOnly()).toBe(false);
-    expect((await fresh()).getFinalAnswerOnly()).toBe(false);
+    mod.setReplyDetail("detailed");
+    expect(localStorage.getItem(KEY)).toBe("detailed");
+    expect(mod.getReplyDetail()).toBe("detailed");
+    expect((await fresh()).getReplyDetail()).toBe("detailed");
   });
 });

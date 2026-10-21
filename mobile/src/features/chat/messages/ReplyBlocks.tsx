@@ -314,7 +314,7 @@ export function ReplyBlockRow({
 /**
  * The work a settled reply ran, folded above its answer.
  *
- * The phone's display setting `finalAnswerOnly` keeps a reply to the answer it
+ * The phone's `default` output level keeps a reply to the answer it
  * ends on: the reasoning, calls and notes that produced it fold into this one
  * row, so the answer sits at the reading edge of a screen that holds a few
  * lines at a time. Nothing is discarded — opening the row draws exactly the

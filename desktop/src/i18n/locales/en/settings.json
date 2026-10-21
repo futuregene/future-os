@@ -18,9 +18,14 @@
     "large": "Large",
     "xlarge": "Extra large"
   },
-  "finalAnswerOnly": {
-    "title": "Show only the final answer",
-    "description": "Once an answer settles, fold its reasoning, tool calls and notes into one row and keep the final answer. On by default. Work is still shown while it streams; “Show process” opens it again."
+  "replyDetail": {
+    "title": "Model output",
+    "default": "Default",
+    "detailed": "Detailed",
+    "description": {
+      "default": "A finished reply shows its final answer, with the reasoning, tool calls and notes that produced it folded into one row you can open. Work is still shown while it streams.",
+      "detailed": "A finished reply keeps everything: its reasoning, tool calls and notes stay in place, interleaved with the answer in the order they happened."
+    }
   },
   "approvalTier": {
     "title": "Approval mode",

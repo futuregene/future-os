@@ -18,9 +18,14 @@
     "large": "大",
     "xlarge": "特大"
   },
-  "finalAnswerOnly": {
-    "title": "只显示最终回答",
-    "description": "回答完成后收起思考、工具调用和中间说明，只保留最终回答，默认开启；生成过程中仍完整显示，点“查看过程”可展开"
+  "replyDetail": {
+    "title": "模型输出展示",
+    "default": "默认",
+    "detailed": "详细",
+    "description": {
+      "default": "回答完成后只保留最终回答，思考、工具调用和中间说明收起到一行，可随时展开；生成过程中仍完整显示。",
+      "detailed": "回答完成后保留完整过程：思考、工具调用和中间说明按发生顺序与正文一起显示。"
+    }
   },
   "approvalTier": {
     "title": "审批模式",

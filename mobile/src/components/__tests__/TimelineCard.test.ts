@@ -45,7 +45,7 @@ beforeEach(async () => {
   // These cases describe a reply's blocks as a whole. The shipped default folds
   // a settled reply onto its answer, which has its own suite
   // (`TimelineCardFinalAnswer.test.ts`); here the reply stays unfolded.
-  await setAppearance({ finalAnswerOnly: false });
+  await setAppearance({ replyDetail: "detailed" });
   (AppState.addEventListener as jest.Mock).mockReturnValue({ remove: jest.fn() });
 });
 afterEach(() => { if (tree) act(() => tree.unmount()); });
