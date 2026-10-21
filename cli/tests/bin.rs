@@ -1044,7 +1044,7 @@ struct MockPlatform {
 
 impl MockPlatform {
     fn start() -> Self {
-        use std::io::{Read, Write};
+        use std::io::{BufRead, Read, Write};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the mock platform");
         let addr = listener.local_addr().expect("mock platform addr");
@@ -1066,17 +1066,46 @@ impl MockPlatform {
                         }
                         Err(_) => break,
                     };
-                    // The request line is all this mock needs: both answers are
-                    // fixed and `login` sends no other request.
-                    let mut request = [0u8; 4096];
-                    let read = socket.read(&mut request).unwrap_or(0);
-                    let head = String::from_utf8_lossy(&request[..read]).into_owned();
-                    let path = head
-                        .lines()
-                        .next()
-                        .and_then(|line| line.split_whitespace().nth(1))
+                    // Accepted sockets can inherit nonblocking mode on Windows.
+                    // Read the complete POST before closing so fragmented headers
+                    // or an unread body cannot turn the reply into a TCP reset.
+                    socket
+                        .set_nonblocking(false)
+                        .expect("blocking request socket");
+                    socket
+                        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                        .unwrap();
+                    socket
+                        .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+                        .unwrap();
+                    let mut request = std::io::BufReader::new(&mut socket);
+                    let mut line = String::new();
+                    request.read_line(&mut line).expect("request line");
+                    let path = line
+                        .split_whitespace()
+                        .nth(1)
                         .unwrap_or_default()
                         .to_string();
+                    let mut content_length = 0;
+                    loop {
+                        line.clear();
+                        assert!(request.read_line(&mut line).expect("request headers") > 0);
+                        if line == "\r\n" {
+                            break;
+                        }
+                        if let Some((name, value)) = line.split_once(':') {
+                            if name.eq_ignore_ascii_case("content-length") {
+                                content_length =
+                                    value.trim().parse::<usize>().expect("body length");
+                            }
+                        }
+                    }
+                    assert!(content_length <= 4096, "unexpected fixture request size");
+                    let mut body = vec![0; content_length];
+                    request
+                        .read_exact(&mut body)
+                        .expect("complete request body");
+                    drop(request);
                     paths.lock().expect("paths").push(path.clone());
                     let (status, body) = match path.as_str() {
                         "/client/v1/oauth/device/code" => (
@@ -1109,10 +1138,19 @@ impl MockPlatform {
         self.paths.lock().expect("paths").clone()
     }
 
-    fn stop(mut self) {
+    fn stop(self) {
+        drop(self);
+    }
+}
+
+impl Drop for MockPlatform {
+    fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            let result = thread.join();
+            if !std::thread::panicking() {
+                result.expect("mock platform thread");
+            }
         }
     }
 }
