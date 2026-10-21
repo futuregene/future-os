@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import type { ComponentProps } from "react";
+import type { ComponentProps, ReactElement } from "react";
 import type { StoredWorkspace } from "../../integrations/storage/threadStore";
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAsync } from "../../test/renderHook";
@@ -43,7 +43,7 @@ function thread(id: string, title: string) {
 
 function props(): ComponentProps<typeof ActivityRail> {
   return {
-    active: "chat",
+    active: "conversations",
     expanded: true,
     activeThreadId: null,
     threads: [thread("a", "Alpha chat"), thread("b", "Beta chat")],
@@ -70,6 +70,8 @@ function props(): ComponentProps<typeof ActivityRail> {
     onTogglePinThread: vi.fn(),
     onTogglePinWorkspace: vi.fn(),
     onToggleExpanded: vi.fn(),
+    view: "workspace",
+    onSelectView: vi.fn(),
   };
 }
 
@@ -86,11 +88,11 @@ const peer = {
   pairId: "pair_1",
 };
 
-async function render(p: ComponentProps<typeof ActivityRail>) {
+async function render(node: ReactElement) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
-  act(() => root.render(<ActivityRail {...p} />));
+  act(() => root.render(node));
   await flushAsync();
   return { container, root };
 }
@@ -100,8 +102,33 @@ function band(container: HTMLElement, id: "rail-view-band" | "rail-list-tools") 
 }
 
 const searchField = (root: HTMLElement) => root.querySelector<HTMLInputElement>("input[aria-label='Search conversations']");
-/** The recent list's menu trigger — the "..." that is not a section heading's. */
-const recentMenu = (root: HTMLElement) => root.querySelector<HTMLButtonElement>("button[aria-label='Recent list actions']");
+/** Each tab's list menu, by the name the tab gives it. */
+function listMenu(root: HTMLElement, view: "Workspaces" | "Chats" | "Recent") {
+  return root.querySelector<HTMLButtonElement>(`button[aria-label='${view} list actions']`);
+}
+
+/**
+ * The rail, with the tab held the way the shell holds it.
+ *
+ * `view` is the shell's state now (so opening a conversation can follow it), which
+ * means a click on a tab needs something to answer. This is that something, and
+ * nothing more: it is the smallest shell that can hold a tab.
+ */
+function Rail(base: ComponentProps<typeof ActivityRail>) {
+  const [view, setView] = useState(base.view);
+  return (
+    <ActivityRail
+      {...base}
+      view={view}
+      onSelectView={(next) => {
+        base.onSelectView?.(next);
+        setView(next);
+      }}
+    />
+  );
+}
+
+const TABS = ["Workspaces", "Chats", "Recent"] as const;
 
 describe("the rail's bands", () => {
   beforeEach(() => {
@@ -109,28 +136,33 @@ describe("the rail's bands", () => {
     document.body.innerHTML = "";
   });
 
-  it("keeps the switch's band to the switch alone", async () => {
-    const { container } = await render(props());
-    // Read in the recent view, where the list's own menu exists at all: in the
-    // tree view there is no such menu to misplace, so a default-view assertion
-    // would pass on a layout that has it in the wrong band.
-    act(() => container.querySelector<HTMLButtonElement>("[data-testid='rail-view-recent']")!.click());
+  /**
+   * Band 1 answers one question and holds nothing else — in **every** tab.
+   *
+   * The menu used to sit here, and only in one tab; reading the band in one tab
+   * is what let that pass unnoticed, so this walks all three.
+   */
+  it.each(TABS)("keeps the switch's band to the switch alone (%s)", async (tab) => {
+    const { container } = await render(<Rail {...props()} />);
+    act(() => [...container.querySelectorAll<HTMLButtonElement>("[data-testid^='rail-view-']")]
+      .find(button => button.title === tab)!
+      .click());
     await flushAsync();
+    expect(container.querySelector<HTMLButtonElement>("[data-testid='rail-view-switch'] button[aria-pressed='true']")!.title).toBe(tab);
 
     const viewBand = band(container, "rail-view-band")!;
     expect(viewBand.querySelector("[data-testid='rail-view-switch']")).not.toBeNull();
-    // Nothing that belongs to the list: no search field, no list menu. The menu
-    // used to sit here, one pixel from the switch it does not act on.
+    // Nothing that belongs to the list: no search field, no list menu, no menu
+    // trigger of any kind.
     expect(viewBand.querySelector("input")).toBeNull();
-    expect(recentMenu(viewBand)).toBeNull();
     expect(viewBand.querySelector("button[aria-haspopup='menu']")).toBeNull();
-    // And the menu does exist — otherwise the assertions above would be about a
+    // And the list does have a menu — otherwise the assertions above are about a
     // control that is not on screen at all.
-    expect(recentMenu(container)).not.toBeNull();
+    expect(listMenu(container, tab)).not.toBeNull();
   });
 
   it("keeps the search field on screen, in the list's own band, with no interaction", async () => {
-    const { container } = await render(props());
+    const { container } = await render(<Rail {...props()} />);
     const tools = band(container, "rail-list-tools")!;
     const field = searchField(tools);
     expect(field).not.toBeNull();
@@ -140,49 +172,49 @@ describe("the rail's bands", () => {
     expect(band(container, "rail-view-band")!.contains(field)).toBe(false);
   });
 
-  it("shares one row between the search field and the recent list's menu", async () => {
-    const { container } = await render(props());
-    act(() => container.querySelector<HTMLButtonElement>("[data-testid='rail-view-recent']")!.click());
+  /** One row holds the list's controls, and the list's menu is its last item. */
+  it.each(TABS)("shares one row between the search field and the list's menu (%s)", async (tab) => {
+    const { container } = await render(<Rail {...props()} />);
+    act(() => [...container.querySelectorAll<HTMLButtonElement>("[data-testid^='rail-view-']")]
+      .find(button => button.title === tab)!
+      .click());
     await flushAsync();
 
     const tools = band(container, "rail-list-tools")!;
-    const trigger = recentMenu(tools);
+    const trigger = listMenu(tools, tab);
     expect(trigger).not.toBeNull();
-    // Same band as the field: that is the whole point of the change — one row
-    // holding the list's actions, instead of a row of their own for each. A
-    // sibling band would satisfy "in a band" and fail this.
+    // Same band as the field: that is the whole point — one row holding the
+    // list's actions, instead of a row of their own for each.
     expect(tools.contains(searchField(tools))).toBe(true);
     // And at its right end.
     expect(tools.lastElementChild!.contains(trigger)).toBe(true);
   });
 
-  it("orders the band: machine picker, search, then the list's menu", async () => {
+  it("orders the band: machine picker, search, the tab's create control, then the menu", async () => {
     const p = props();
     p.remotePeers = [peer];
     p.onChangeDeviceFilter = vi.fn();
     p.onManageDesktops = vi.fn();
-    const { container } = await render(p);
-    act(() => container.querySelector<HTMLButtonElement>("[data-testid='rail-view-recent']")!.click());
-    await flushAsync();
+    const { container } = await render(<Rail {...p} />);
 
     const tools = band(container, "rail-list-tools")!;
     const children = Array.from(tools.children);
-    const pickerIndex = children.findIndex(child => child.textContent?.includes("All devices"));
-    const searchIndex = children.findIndex(child => child.contains(searchField(tools)));
-    const menuIndex = children.findIndex(child => child.contains(recentMenu(tools)));
-    expect(pickerIndex).toBe(0);
-    expect(searchIndex).toBe(1);
-    expect(menuIndex).toBe(2);
+    expect(children[0]!.textContent).toContain("All devices");
+    expect(children[1]!.contains(searchField(tools))).toBe(true);
+    // The workspace tab's "+" (new workspace) sits between them and the menu.
+    // The "+" is the band's own item, not something wrapped around one.
+    expect(children[2]!.getAttribute("aria-label")).toBe("New workspace");
+    expect(children[3]!.contains(listMenu(tools, "Workspaces"))).toBe(true);
   });
 
   it("drops the list's band while a batch is being selected", async () => {
-    const { container } = await render(props());
+    const { container } = await render(<Rail {...props()} />);
     act(() => container.querySelector<HTMLButtonElement>("[data-testid='rail-view-recent']")!.click());
     await flushAsync();
-    act(() => recentMenu(container)!.click());
+    act(() => listMenu(container, "Recent")!.click());
     await flushAsync();
     act(() => [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find(button => button.textContent?.includes("Select chats"))!
+      .find(button => button.textContent?.includes("Select conversations in “Recent”"))!
       .click());
     await flushAsync();
 
@@ -190,5 +222,123 @@ describe("the rail's bands", () => {
     // which list the batch covers is still the question it answers.
     expect(band(container, "rail-list-tools")).toBeNull();
     expect(band(container, "rail-view-band")).not.toBeNull();
+  });
+
+  /**
+   * The chat tab keeps the machine-aware "new conversation".
+   *
+   * It lived on the chats section heading, which the tabs replaced; a
+   * conversation with no workspace can only be started on a chosen machine, and
+   * dropping the control with its heading would have made that impossible.
+   */
+  it("keeps the machine-aware new conversation on the chats tab, and only there", async () => {
+    const p = props();
+    p.remotePeers = [peer];
+    p.onChangeDeviceFilter = vi.fn();
+    p.onManageDesktops = vi.fn();
+    const { container } = await render(<Rail {...p} />);
+    const newChatOn = () => container.querySelector("button[aria-label='New chat']");
+
+    // Workspaces tab: creating a *workspace* is the action; a machine-less chat
+    // is the top nav's, which is outside this band.
+    expect(newChatOn()).toBeNull();
+    act(() => container.querySelector<HTMLButtonElement>("[data-testid='rail-view-chat']")!.click());
+    await flushAsync();
+    expect(newChatOn()).not.toBeNull();
+    act(() => container.querySelector<HTMLButtonElement>("[data-testid='rail-view-recent']")!.click());
+    await flushAsync();
+    expect(newChatOn()).toBeNull();
+  });
+});
+
+/**
+ * Three lists, and the tab is what decides which one is drawn.
+ *
+ * The structural claim under test: a workspace conversation and a chat are
+ * siblings, so *neither* list may draw the other's rows. Before the tabs they
+ * were two sections of one list drawn from the shell's page (`ActivitySection`),
+ * which is why the chats read as living inside the workspaces — an arrangement
+ * that satisfies "both kinds are on screen" and not "this is the list I chose".
+ */
+describe("the three lists", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    document.body.innerHTML = "";
+  });
+
+  const fixture = () => {
+    const p = props();
+    p.threads = [
+      { ...thread("chat-one", "A chat"), mode: "chat" },
+      { ...thread("ws-one", "A workspace conversation"), mode: "workspace", workspaceId: "ws-1" },
+    ];
+    p.workspaces = [{ id: "ws-1", name: "Charts", kind: "user", path: "/tmp/ws-1", cleanupStatus: "active", createdAt: 0, updatedAt: 0 }];
+    return p;
+  };
+
+  it("draws the three tabs in the order the design names them", async () => {
+    const { container } = await render(<Rail {...props()} />);
+    const tabs = [...container.querySelectorAll<HTMLButtonElement>("[data-testid='rail-view-switch'] button")];
+    expect(tabs.map(tab => tab.getAttribute("data-testid"))).toEqual([
+      "rail-view-workspace",
+      "rail-view-chat",
+      "rail-view-recent",
+    ]);
+    // The names are on the button, not only in its tooltip: three glyphs with no
+    // words would have made the reader hover to learn what each one is.
+    expect(tabs.map(tab => tab.textContent?.trim())).toEqual(["Workspaces", "Chats", "Recent"]);
+  });
+
+  it("draws the workspace list, and nothing from the chats list", async () => {
+    const { container } = await render(<Rail {...fixture()} />);
+
+    expect(container.querySelector("[data-testid='workspace-tab']")).not.toBeNull();
+    expect(container.textContent).toContain("A workspace conversation");
+    // The regression this exists for: a workspace conversation and a chat in one
+    // list is what made "in the workspaces" ambiguous — and it is what a revert
+    // to drawing the shell's two sections produces.
+    expect(container.textContent).not.toContain("A chat");
+    expect(container.querySelector("[data-testid='chat-tab']")).toBeNull();
+  });
+
+  it("draws the chats list, and nothing from the workspace list", async () => {
+    const p = { ...fixture(), view: "chat" as const };
+    const { container } = await render(<Rail {...p} />);
+
+    expect(container.querySelector("[data-testid='chat-tab']")).not.toBeNull();
+    expect(container.textContent).toContain("A chat");
+    expect(container.textContent).not.toContain("A workspace conversation");
+    expect(container.querySelector("[data-testid='workspace-tab']")).toBeNull();
+  });
+
+  /**
+   * The page and the list are two questions.
+   *
+   * The list is drawn whichever page the window is on — the rail is always the
+   * rail — so its contents must come from the tab alone. A shell's page value
+   * leaning on the list's choice is the old coupling, and it is what this test
+   * would catch coming back.
+   */
+  it("draws the chosen list whatever page the window is on", async () => {
+    const p = { ...fixture(), active: "skill" as const, view: "chat" as const };
+    const { container } = await render(<Rail {...p} />);
+    expect(container.textContent).toContain("A chat");
+    expect(container.textContent).not.toContain("A workspace conversation");
+  });
+
+  /** A pin is a shortcut *within* its list, so it lands in its own tab's pinned section. */
+  it("puts each pinned conversation in its own list's pinned section", async () => {
+    const p = fixture();
+    p.view = "chat";
+    p.threads = [
+      { ...p.threads![0]!, pinned: true },
+      { ...p.threads![1]!, pinned: true },
+    ];
+    const { container } = await render(<Rail {...p} />);
+    // The chat tab's pinned section holds the pinned chat…
+    expect(container.textContent).toContain("Pinned");
+    expect(container.textContent).toContain("A chat");
+    // …and not the pinned workspace conversation, which belongs to the other list.
+    expect(container.textContent).not.toContain("A workspace conversation");
   });
 });

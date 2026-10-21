@@ -22,11 +22,14 @@
       "next": "下一个对话"
     },
     "rail": {
+      "tab": {
+        "workspace": "切换到工作区列表",
+        "chat": "切换到对话列表",
+        "recent": "切换到最近列表"
+      },
       "search": "筛选对话列表"
     },
     "section": {
-      "chat": "切换到对话",
-      "workspace": "切换到工作区",
       "skill": "切换到技能",
       "tasks": "切换到定时任务",
       "remote": "切换到远程桌面"

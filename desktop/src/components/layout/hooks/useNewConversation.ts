@@ -28,6 +28,15 @@ interface UseNewConversationParams {
   refreshStore: (nextActiveThreadId?: string) => Promise<void>;
   syncSelection: (modelId: string, thinkingLevel: string) => void;
   setSection: Dispatch<SetStateAction<ActivitySection>>;
+  /**
+   * The conversation this flow just created is now the one on screen.
+   *
+   * The tab it belongs in is the shell's to know (`useRailView` lives there), and
+   * moving it here would make this hook a second owner of which list is drawn.
+   * Unlike opening a row, this *follows* rather than selects: creating a
+   * conversation is not the reader choosing a list to live in.
+   */
+  onOpenedThread?: (mode: "chat" | "workspace") => void;
   setCenterMode: Dispatch<SetStateAction<"thread" | "new-chat">>;
   /**
    * Whether the next thread created should be pinned, asked **after** it exists.
@@ -60,6 +69,7 @@ export function useNewConversation({
   refreshStore,
   syncSelection,
   setSection,
+  onOpenedThread,
   setCenterMode,
   pinCreated,
 }: UseNewConversationParams): NewConversationFlow {
@@ -117,7 +127,8 @@ export function useNewConversation({
         thinkingLevel: input.thinkingLevel,
       });
       await refreshStore(thread.id);
-      setSection(thread.mode === "workspace" ? "workspace" : "chat");
+      setSection("conversations");
+      onOpenedThread?.(thread.mode);
       setCenterMode("thread");
       setPendingPrompt({
         attachments: input.attachments,

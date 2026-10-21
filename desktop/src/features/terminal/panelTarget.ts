@@ -5,10 +5,12 @@
  * wrong is invisible: the panel simply never appears, which reads as "the
  * feature was never implemented" rather than as a bug.
  *
- * Both thread sections count. Selecting a workspace conversation sets the
- * shell's section to `"workspace"`, not `"chat"` — an earlier version gated on
- * `"chat"` alone and hid the entry point for every workspace conversation,
- * which is the common case.
+ * The window has one conversation page, so the question is "is the conversation
+ * column up?" rather than "which of the two conversation sections is up". It
+ * used to name `chat` and `workspace` separately — two sections that answered one
+ * question, and an earlier version that matched only `chat` hid the entry point
+ * for every workspace conversation. The rail's tab decides *which list* is drawn
+ * and has nothing to say about the terminal, which is why it is not read here.
  */
 export function terminalTarget(input: {
   section: string;
@@ -17,7 +19,7 @@ export function terminalTarget(input: {
 }): string | null {
   if (input.centerMode !== "thread")
     return null;
-  if (input.section !== "chat" && input.section !== "workspace")
+  if (input.section !== "conversations")
     return null;
   return input.threadId ?? null;
 }
