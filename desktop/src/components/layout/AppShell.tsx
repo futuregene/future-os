@@ -1064,6 +1064,19 @@ function ReadyAppShell({
   const activeRemoteContext = activeRemote
     ? contextOfRemote(remoteCatalogs, activeRemote)
     : null;
+  /**
+   * That host's conversations, for the remote composer's `#` menu.
+   *
+   * The same snapshot the list is drawn from, so a reference can point at any
+   * conversation the reader can see, including one this client never opened —
+   * and without a second request to the host while a draft is being typed.
+   */
+  const remoteConversations = useMemo(
+    () => (activeRemote
+      ? remoteCatalogs.find(catalog => catalog.desktopId === activeRemote.desktopId)?.sessions ?? []
+      : []),
+    [remoteCatalogs, activeRemote],
+  );
 
   /**
    * Ask a host to compact a conversation's context.
@@ -1583,6 +1596,7 @@ function ReadyAppShell({
                                         // band over the transcript's foot, at the same
                                         // width the local composer is given.
                                         className="pointer-events-auto mx-auto w-full max-w-3xl"
+                                        conversations={remoteConversations}
                                         desktopId={activeRemote.desktopId}
                                         // The host-owned model and thinking level live in
                                         // the composer's control row, beside the send
