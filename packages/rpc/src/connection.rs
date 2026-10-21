@@ -113,6 +113,12 @@ pub enum ConnectionError {
     },
     InstanceChanged,
     StartupBlocked(String),
+    /// Another process holds this data root's Agent instance lock. It is not a
+    /// failure: the holder is starting (or serving) the Agent, and a client that
+    /// meets this must wait for it rather than start a second one. Kept distinct
+    /// from [`ConnectionError::StartupBlocked`] so supervision can tell "yield"
+    /// from "report and stop" without reading the message.
+    InstanceBusy(String),
 }
 
 impl fmt::Display for ConnectionError {
@@ -131,10 +137,24 @@ impl fmt::Display for ConnectionError {
                 "Agent instance changed; reconnect and verify readiness before sending commands",
             ),
             Self::StartupBlocked(reason) => write!(f, "Cannot start a local Agent: {reason}"),
+            Self::InstanceBusy(reason) => write!(
+                f,
+                "Cannot start a local Agent: {reason}\nAnother process owns this data root; \
+                 waiting for it instead of starting a second Agent"
+            ),
         }
     }
 }
 impl std::error::Error for ConnectionError {}
+
+impl ConnectionError {
+    /// The local instance lock is held by another process. Distinct from every
+    /// other refusal because the right answer is to wait for that process, not
+    /// to report a fault or to start a second Agent.
+    pub fn is_instance_busy(&self) -> bool {
+        matches!(self, Self::InstanceBusy(_))
+    }
+}
 
 /// Hash a canonical directory, not its database contents. This identifies a
 /// data root without publishing a user's path or creating/modifying storage.
@@ -391,13 +411,17 @@ pub fn check_instance_lock(home: &Path) -> Result<(), ConnectionError> {
     let _guard = lock.try_write().map_err(|error| {
         // A held lock gets the same owner-identifying report the Agent itself
         // prints on a conflicting start: pid, host, executable and the advice
-        // for shared-home setups. Anything else stays a plain I/O complaint.
-        let reason = if error.kind() == io::ErrorKind::WouldBlock {
-            crate::instance_lock::lock_conflict_message(&path, home)
-        } else {
-            format!("instance lock is occupied or unavailable: {error}; do not start another Agent")
-        };
-        ConnectionError::StartupBlocked(reason)
+        // for shared-home setups. A held lock is a *yield* signal, not a
+        // failure, so it keeps its own variant; anything else stays a plain I/O
+        // complaint that no amount of waiting will fix.
+        if error.kind() == io::ErrorKind::WouldBlock {
+            return ConnectionError::InstanceBusy(crate::instance_lock::lock_conflict_message(
+                &path, home,
+            ));
+        }
+        ConnectionError::StartupBlocked(format!(
+            "instance lock is occupied or unavailable: {error}; do not start another Agent"
+        ))
     })?;
     Ok(())
 }

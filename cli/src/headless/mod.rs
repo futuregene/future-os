@@ -126,7 +126,7 @@ pub fn run(options: Options) -> Result<(), String> {
     future_host::runtime::set(runtime.handle().clone());
     let result = runtime.block_on(async {
         let signals = ShutdownSignals::new()?;
-        let mut agent = agent::Agent;
+        let mut agent = agent::Agent::default();
         let result = until_shutdown(signals.wait(), session(&mut agent)).await;
         agent.shutdown().await?;
         result
@@ -265,6 +265,13 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     let mut said_idle = false;
     loop {
         agent.check_running()?;
+        // The Agent may live in another process (an external `future agent`, or a
+        // Desktop that started it), in which case `check_running` — which only
+        // reads this host's own phase — stays silent forever. Probing the
+        // endpoint is what notices that it died, and starting a replacement (or
+        // waiting for the process that holds the lock) is what keeps this entry
+        // serving instead of answering every RPC with a transport error.
+        agent.supervise().await?;
         // Logout/account/environment changes never leave an old account's
         // remote ingress open until its JWT eventually expires. There is no
         // account to watch in relay mode: the pairing's own credential and the

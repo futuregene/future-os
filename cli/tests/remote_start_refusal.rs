@@ -611,10 +611,48 @@ fn windows_interrupt_helper() {
             add: i32,
         ) -> i32;
         fn GenerateConsoleCtrlEvent(event: u32, group: u32) -> i32;
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut core::ffi::c_void;
+        fn WaitForSingleObject(handle: *mut core::ffi::c_void, millis: u32) -> u32;
+        fn CloseHandle(handle: *mut core::ffi::c_void) -> i32;
     }
+    /// Has the target process already exited? `AttachConsole` fails both for a
+    /// dead pid and for a live one without a console, and the two need opposite
+    /// answers here.
+    unsafe fn exited(pid: u32) -> bool {
+        const SYNCHRONIZE: u32 = 0x0010_0000;
+        const WAIT_OBJECT_0: u32 = 0;
+        let handle = unsafe { OpenProcess(SYNCHRONIZE, 0, pid) };
+        if handle.is_null() {
+            return true;
+        }
+        let state = unsafe { WaitForSingleObject(handle, 0) };
+        unsafe { CloseHandle(handle) };
+        state == WAIT_OBJECT_0
+    }
+    let pid: u32 = pid.parse().expect("owned child pid");
     unsafe {
         FreeConsole();
-        assert_ne!(AttachConsole(pid.parse().expect("owned child pid")), 0);
+        // The parent checks that the child is alive before spawning this helper,
+        // but the child can exit in the window between that check and this
+        // attach — a fixture that is shutting down on its own does so routinely.
+        // An exited target means the interrupt is moot, not that delivery
+        // failed; retry briefly so a transient console hand-off is not mistaken
+        // for either.
+        let mut attached = AttachConsole(pid) != 0;
+        for _ in 0..40 {
+            if attached || exited(pid) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            attached = AttachConsole(pid) != 0;
+        }
+        if !attached {
+            assert!(
+                exited(pid),
+                "could not attach to the child's console while it was still alive"
+            );
+            return;
+        }
         assert_ne!(SetConsoleCtrlHandler(None, 1), 0);
         assert_ne!(GenerateConsoleCtrlEvent(0, 0), 0); // CTRL_C_EVENT
                                                        // Delivery is asynchronous. Keep the attached console alive until the

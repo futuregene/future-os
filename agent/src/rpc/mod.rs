@@ -7,6 +7,7 @@ mod control_plane;
 pub use control_plane::ControlPlane;
 mod prompt_helpers;
 mod protocol;
+pub(crate) mod resume;
 pub(crate) mod run_snapshot;
 mod session;
 mod session_prompt;

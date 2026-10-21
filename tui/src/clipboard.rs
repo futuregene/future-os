@@ -373,24 +373,35 @@ fn spawn_native(program: &str, args: &[String]) -> Result<Child, String> {
 
 /// Pipe `text` into `child` on stdin (the convention for `pbcopy`, `clip.exe`,
 /// `wl-copy`, `xclip -i`, `xsel -i`) and report its exit status.
+/// Pipe `text` into an already spawned program and report its outcome.
+///
+/// A program may exit before it has read its stdin — `false`, `exit 3`, or a
+/// clipboard helper that rejects its arguments. The payload write then fails
+/// with a broken pipe, and that failure must not bury the exit status: the
+/// status (and any stderr) is what tells the caller why the copy did not
+/// happen, while a *successful* exit with an undelivered payload is the real
+/// "write failed" case the caller has to hear about.
 fn run_native(mut child: Child, text: &str) -> Result<(), String> {
     let Some(mut stdin) = child.stdin.take() else {
         let _ = child.kill();
         let _ = child.wait();
         return Err("failed to open stdin".to_string());
     };
-    if let Err(error) = stdin.write_all(text.as_bytes()) {
-        let _ = child.kill();
-        let _ = child.wait();
-        return Err(format!("failed to write: {error}"));
-    }
+    let write_error = stdin.write_all(text.as_bytes()).err();
+    // Close the pipe first: a program that stopped reading after our write
+    // failed still sees EOF, so the wait below cannot hang because of us.
     drop(stdin);
 
     let output = child
         .wait_with_output()
         .map_err(|error| format!("failed to wait: {error}"))?;
     if output.status.success() {
-        return Ok(());
+        return match write_error {
+            None => Ok(()),
+            // The program reported success without taking the payload, so the
+            // clipboard does not hold what the caller asked for.
+            Some(error) => Err(format!("failed to write: {error}")),
+        };
     }
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if stderr.is_empty() {
@@ -1020,6 +1031,26 @@ mod tests {
         let huge = "x".repeat(1_000_000);
         let error = run_native(child, &huge).expect_err("the pipe must break");
         assert!(error.starts_with("failed to write"), "{error}");
+    }
+
+    /// A program that exits non-zero *without reading its stdin* makes the
+    /// write fail with a broken pipe. The exit status explains the failed copy,
+    /// so it wins over the pipe error — that arm cannot be observed by writing a
+    /// small payload, which only loses the race when the host is loaded.
+    #[test]
+    #[cfg(unix)]
+    fn run_native_prefers_the_exit_status_over_a_broken_stdin_write() {
+        let script = "exit 3";
+        let child = Command::new(crate::test_env::absolute_tool("sh"))
+            .args(["-c", script])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sh");
+        let error = run_native(child, &"x".repeat(1_000_000)).expect_err("exit 3");
+        assert!(error.starts_with("exited with status"), "{error}");
+        assert!(error.contains('3'), "{error}");
     }
 
     // ─── The same default-runner paths on Windows ──────────────────────────

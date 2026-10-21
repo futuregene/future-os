@@ -91,6 +91,29 @@ pub struct Settings {
     /// change takes effect without restarting the agent.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub default_model: String,
+    /// Continue, on startup, the conversations a run was interrupted in.
+    ///
+    /// Off by default: continuing sends a prompt the user did not type, which
+    /// spends their credits while nobody is watching. A machine that restarts
+    /// on its own (a server, a supervised process) must not start paying for
+    /// work because it came back up.
+    /// Continue, on startup, the conversations a run was interrupted in.
+    ///
+    /// On by default, matching the consent the desktop already recorded
+    /// (`autoResumeInterrupted`, also on by default): moving the continuation
+    /// here must not silently drop a behaviour users already rely on. The
+    /// desktop's settings switch writes this key, so the one control still
+    /// governs the one executor.
+    #[serde(default = "default_true_bool", skip_serializing_if = "is_true")]
+    pub resume_interrupted_on_start: bool,
+}
+
+fn default_true_bool() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 // ─── Defaults ──────────────────────────────────────────────────────────────
@@ -191,6 +214,7 @@ impl Default for Settings {
             max_turns: 0,
             default_permission_level: default_permission_level(),
             default_model: String::new(),
+            resume_interrupted_on_start: true,
         }
     }
 }

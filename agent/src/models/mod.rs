@@ -2803,8 +2803,15 @@ mod tests {
     #[test]
     fn registry_injects_future_models_from_disk_cache() {
         // Serialize against future.rs tests and start from cold caches so the
-        // disk seed below is the only catalog source.
+        // disk seed below is the only catalog source. The cache-access guard is
+        // held for the whole body: another module's registry build publishes
+        // into the same process-global caches, and one that landed between the
+        // reset and the assertion would answer for this seed.
+        // Lock order is global: the future-models test lock first, then the
+        // cache-access lock (every other test resets caches with the test lock
+        // already held, so the reverse order would deadlock).
         let _cache_guard = super::future::future_models_test_lock();
+        let _access = super::future::lock_cache_access();
         let home = crate::test_support::TestHome::new();
         // Acquiring HOME can wait behind other registry tests. Reset only AFTER
         // that wait: those tests may populate the cache while owning the old

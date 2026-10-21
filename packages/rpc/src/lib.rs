@@ -27,6 +27,7 @@ pub mod instance_lock;
 pub mod session_deletion;
 pub mod session_errors;
 pub mod shell_result;
+pub mod supervision;
 pub mod transport;
 
 pub mod proto {

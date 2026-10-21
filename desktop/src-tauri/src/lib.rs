@@ -1376,12 +1376,10 @@ mod gui {
             // shape once before approvals so an Agent run that survived
             // the GUI restart is reanimated instead of staying hidden.
             agent_bridge::reconcile_interrupted_runs().await;
-            // A conversation whose run this process's predecessor cut short
-            // (the embedded Agent dies with the app) is continued here, before
-            // the watchdog's first pass settles that row as interrupted: the
-            // Agent's own `interruptedRun` marker is the evidence, and the user
-            // reopening the app is what asks for the work to go on.
-            agent_bridge::resume_interrupted_runs_at_launch(store::now_millis()).await;
+            // Continuing interrupted conversations is the Agent's job now: it
+            // owns the journal the decision reads, and the instance lock makes
+            // it the single trigger. A second pass here would race it and send
+            // the same conversation two continuation prompts.
             agent_bridge::reconcile_pending_approvals().await;
         });
         // Shadow-review maintenance (consistency check + crash recovery) runs

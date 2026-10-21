@@ -1908,9 +1908,20 @@ mod tests {
         wait_conn(conn, true, "never connected").await;
     }
 
-    /// Wait until `conn` reads `want` (bounded).
+    /// Bound on a connect/disconnect state wait in these tests.
+    ///
+    /// A fixture must not assert the host's speed. Measured 2026-10-19 on a
+    /// loaded host (32-core, 8 concurrent whole-suite copies, load 86), the
+    /// *same* handshake took 0.91 s in one copy and 14.96 s in another, so the
+    /// former 10 s bound sat inside the spread: `subscribe_failure_modes` red
+    /// with `never connected: Elapsed(())` here, and again on `main` and on
+    /// PR #1283's head on 2026-10-21. 60 s is 4x that worst value — a real
+    /// regression still reports, it just takes longer to say so.
+    const CONNECT_STATE_BOUND: Duration = Duration::from_secs(60);
+
+    /// Wait until `conn` reads `want` (bounded by [`CONNECT_STATE_BOUND`]).
     async fn wait_conn(conn: &mut watch::Receiver<bool>, want: bool, what: &str) {
-        tokio::time::timeout(Duration::from_secs(10), conn.wait_for(|v| *v == want))
+        tokio::time::timeout(CONNECT_STATE_BOUND, conn.wait_for(|v| *v == want))
             .await
             .expect(what)
             .expect("conn channel closed");
@@ -1970,7 +1981,7 @@ mod tests {
     /// event (`if (connectWatchdog) { clearTimeout(...) }`), never re-arms it.
     /// A port that re-armed the watchdog on every event flapped the
     /// connection every 5 s on an idle TUI (PTY smoke test found:
-    /// "Connection to agent lost — retrying every 1s..." right after the
+    /// "Connection to agent lost — reconnecting; …" right after the
     /// welcome screen, before any input).
     #[tokio::test(flavor = "multi_thread")]
     async fn idle_stream_does_not_flap_after_first_data() {

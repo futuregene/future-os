@@ -13,7 +13,21 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use future_rpc::supervision::{
+    probe_local_agent, restart_delay, Attached, LocalAgentState, RestartBudget, WAIT_FOR_OWNER,
+    WAIT_NOTICE_AFTER, WAIT_PROBE_INTERVAL,
+};
+
+/// Per-attempt probe budget inside the supervision loop. Local IPC answers in
+/// milliseconds when it answers at all.
+const PROBE_CONNECT: Duration = Duration::from_millis(400);
+const PROBE_HANDSHAKE: Duration = Duration::from_secs(2);
+
+/// How often an attached Agent is re-probed. Long enough to stay out of the
+/// way, short enough that a death is noticed before the user blames the TUI.
+const PROBE_INTERVAL: Duration = Duration::from_secs(3);
 
 fn executable_name(path: &Path) -> String {
     path.file_stem()
@@ -225,6 +239,163 @@ pub async fn ensure_agent_running_within(
         tail_after_exit(&stdout_done, &stderr_done, &stdout_tail, &stderr_tail),
     );
     Err(sidecar_launch_failed(failure))
+}
+
+/// [`ensure_agent_running`] for a launch that must not fail on a busy lock.
+///
+/// Losing the instance-lock race is not a reason to refuse to start: another
+/// process is bringing the Agent up, and the only thing this client has to do
+/// is wait for it. Waiting is bounded ([`WAIT_FOR_OWNER`]) and says so while it
+/// happens — a client that waits silently and then fails is worse than one that
+/// fails immediately, because the user cannot tell the two apart.
+///
+/// Everything that is *not* a held lock (an unreachable explicit endpoint, a
+/// version mismatch, a stop in progress) is still reported at once: no amount of
+/// waiting repairs those.
+pub async fn ensure_agent_running_waiting(configured: &str) -> Result<Option<OwnedAgent>, String> {
+    let started = Instant::now();
+    let mut last_notice: Option<Instant> = None;
+    loop {
+        match probe_local_agent(configured, PROBE_CONNECT, PROBE_HANDSHAKE).await {
+            LocalAgentState::Busy(detail) => {
+                let waited = started.elapsed();
+                if waited >= WAIT_FOR_OWNER {
+                    return Err(format!(
+                        "another process has held this data root's Agent lock for {WAIT_FOR_OWNER:?} \
+                         without serving; it is not starting. Stop it, then start the TUI again. {detail}"
+                    ));
+                }
+                let due = last_notice.is_none_or(|at| at.elapsed() >= WAIT_NOTICE_AFTER);
+                if due && waited >= WAIT_NOTICE_AFTER {
+                    eprintln!(
+                        "future-tui: waiting for the Agent another process is starting \
+                         ({waited:?} of {WAIT_FOR_OWNER:?}). {detail}"
+                    );
+                    last_notice = Some(Instant::now());
+                }
+                tokio::time::sleep(WAIT_PROBE_INTERVAL).await;
+            }
+            LocalAgentState::Blocked(reason) => return Err(reason),
+            // Attached already, or free to start: the ordinary launch decides.
+            LocalAgentState::Attached | LocalAgentState::Startable => {
+                return ensure_agent_running(configured).await;
+            }
+        }
+    }
+}
+
+/// Keep watching the Agent for as long as the TUI runs.
+///
+/// The TUI's first launch happens once, which is why an Agent that dies later
+/// (killed, OOM, its owning Desktop quitting) leaves the terminal reconnecting
+/// forever. This task closes that: it notices the absence, starts a replacement
+/// when nobody holds the instance lock, waits for the process that does, and rate
+/// limits its own restarts so an Agent the host keeps killing cannot become a
+/// loop. `initial` is the guard the launch produced, so an owned sidecar keeps
+/// living exactly as long as it did before.
+///
+/// The entry point calls this from outside async context, where a bare
+/// `tokio::spawn` has no reactor and panics, so the caller hands over the
+/// runtime's handle instead. The task lives exactly as long as that runtime.
+pub fn spawn_agent_supervision(
+    handle: &tokio::runtime::Handle,
+    configured: String,
+    initial: Option<OwnedAgent>,
+) {
+    handle.spawn(async move {
+        let mut guard = initial;
+        let mut budget = RestartBudget::new();
+        let mut waiting_since: Option<Instant> = None;
+        let mut lost_notice: Option<Instant> = None;
+        let mut reachable_since: Option<Instant> = None;
+        loop {
+            tokio::time::sleep(PROBE_INTERVAL).await;
+            match probe_local_agent(&configured, PROBE_CONNECT, PROBE_HANDSHAKE).await {
+                LocalAgentState::Attached => {
+                    if waiting_since.take().is_some() {
+                        eprintln!("future-tui: the Agent is serving again.");
+                    }
+                    lost_notice = None;
+                    // Only a lasting recovery is a success: an Agent the host
+                    // keeps killing becomes ready on every lap, and clearing the
+                    // budget on "attached" would reset the breaker each time.
+                    let now = Instant::now();
+                    let since = *reachable_since.get_or_insert(now);
+                    if Attached::of(since, now) == Attached::Stable {
+                        budget.reset();
+                    }
+                }
+                LocalAgentState::Busy(detail) => {
+                    let now = Instant::now();
+                    let since = *waiting_since.get_or_insert(now);
+                    let waited = now.duration_since(since);
+                    // Say it once, then every minute; say nothing at all once
+                    // the wait is over.
+                    let due = lost_notice.is_none_or(|at| at.elapsed() >= WAIT_NOTICE_AFTER)
+                        && waited >= WAIT_NOTICE_AFTER;
+                    if due {
+                        eprintln!(
+                            "future-tui: waiting for the Agent another process is starting \
+                             ({waited:?} of {WAIT_FOR_OWNER:?}). {detail}"
+                        );
+                        lost_notice = Some(now);
+                    }
+                    if waited >= WAIT_FOR_OWNER {
+                        eprintln!(
+                            "future-tui: no Agent has served this data root for {WAIT_FOR_OWNER:?}; \
+                             still waiting. The TUI keeps reconnecting, and a new attempt starts \
+                             when the lock is released."
+                        );
+                        waiting_since = None;
+                        lost_notice = Some(now);
+                    }
+                }
+                LocalAgentState::Blocked(reason) => {
+                    // Not repairable by waiting (version mismatch, explicit
+                    // endpoint). Keep the connection banner and look again later.
+                    if lost_notice.is_none_or(|at| at.elapsed() >= WAIT_NOTICE_AFTER) {
+                        eprintln!("future-tui: cannot use the Agent: {reason}");
+                        lost_notice = Some(Instant::now());
+                    }
+                }
+                LocalAgentState::Startable => {
+                    waiting_since = None;
+                    reachable_since = None;
+                    let now = Instant::now();
+                    if !budget.allow(now) {
+                        if lost_notice.is_none_or(|at| at.elapsed() >= WAIT_NOTICE_AFTER) {
+                            eprintln!(
+                                "future-tui: the Agent keeps exiting right after it starts; \
+                                 not restarting it for {:?}. Check the host log: {}",
+                                budget.open_for(now).unwrap_or_default(),
+                                configured
+                            );
+                            lost_notice = Some(now);
+                        }
+                        continue;
+                    }
+                    // Nothing answers: a guard we still hold is dead weight (and
+                    // possibly a zombie child that would keep the endpoint).
+                    drop(guard.take());
+                    match ensure_agent_running(&configured).await {
+                        Ok(new_guard) => {
+                            guard = new_guard;
+                            eprintln!("future-tui: the Agent was gone; started a new one.");
+                            reachable_since = None;
+                            lost_notice = None;
+                        }
+                        Err(error) => {
+                            if lost_notice.is_none_or(|at| at.elapsed() >= WAIT_NOTICE_AFTER) {
+                                eprintln!("future-tui: could not start an Agent: {error}");
+                                lost_notice = Some(Instant::now());
+                            }
+                            tokio::time::sleep(restart_delay(2)).await;
+                        }
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// The launch's final word: nothing answered the probe and the one sidecar

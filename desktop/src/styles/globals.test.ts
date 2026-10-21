@@ -59,6 +59,22 @@ function colorTokens(body: string): Map<string, string> {
   return new Map([...all].filter(([name]) => name.startsWith("--color-")));
 }
 
+/** Every declaration in a block, custom properties and standard ones alike. */
+function properties(body: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const stripped = body.replace(/\/\*[\s\S]*?\*\//g, "");
+  for (const declaration of stripped.split(";")) {
+    const colon = declaration.indexOf(":");
+    if (colon < 0)
+      continue;
+    const name = declaration.slice(0, colon).trim().replace(/\s+/g, " ");
+    if (!/^-{0,2}[a-z][\w-]*$/.test(name))
+      continue;
+    out.set(name, declaration.slice(colon + 1).trim().replace(/\s+/g, " "));
+  }
+  return out;
+}
+
 const lightTheme = colorTokens(blockAt("@theme {").body);
 const darkTheme = colorTokens(blockAt(":root.dark {").body);
 
@@ -125,5 +141,87 @@ describe("globals.css palettes", () => {
     expect(css.split(OPEN_MARKER).length).toBe(2);
     expect(css.split(CLOSE_MARKER).length).toBe(2);
     expect(css.indexOf(OPEN_MARKER)).toBeLessThan(css.indexOf(CLOSE_MARKER));
+  });
+});
+
+/**
+ * The base rendition: everything that is not a color.
+ *
+ * None of it is visible to a component test — a stylesheet that loses its
+ * `:root` block still type-checks, still renders every class, and still passes
+ * the palette suites, while the whole app quietly changes: glyphs painted
+ * subpixel-antialiased (every label reads heavier), the reader's text size
+ * setting doing nothing, flat panels in a light window, and animation classes
+ * whose keyframes no longer exist. These assertions pin each one.
+ */
+describe("globals.css base rendition", () => {
+  // Read lazily: a missing `:root` block is the regression under test, so each
+  // assertion has to fail on its own rather than at collection time.
+  const baseOf = () => properties(blockAt(":root {").body);
+  const darkOf = () => properties(blockAt(":root.dark {").body);
+
+  it("declares the reader's text size on the type tokens Tailwind generates", () => {
+    // `lib/fontSize.ts` only writes `--app-font-scale`; if no token reads it the
+    // setting is dead. Covers the sub-`text-xs` labels (`@theme` declares their
+    // design-time size) as well as Tailwind's own steps.
+    const base = baseOf();
+    expect(base.get("--app-font-scale")).toBe("1");
+    for (const size of ["3xs", "2xs", "13", "xs", "sm", "base", "lg", "xl", "2xl", "3xl", "4xl"]) {
+      const value = base.get(`--text-${size}`);
+      expect(value, `--text-${size}`).toBeTruthy();
+      expect(value, `--text-${size}`).toContain("var(--app-font-scale)");
+    }
+  });
+
+  it("keeps the font stack and the antialiasing it was designed with", () => {
+    // The stack falls back to Tailwind's `ui-sans-serif, system-ui` without it;
+    // the smoothing flags are what keep `text-sm font-medium` from reading bold.
+    const base = baseOf();
+    expect(base.get("font-family")).toContain("PingFang SC");
+    expect(base.get("font-synthesis")).toBe("none");
+    expect(base.get("text-rendering")).toBe("optimizeLegibility");
+    expect(base.get("-webkit-font-smoothing")).toBe("antialiased");
+    expect(base.get("-moz-osx-font-smoothing")).toBe("grayscale");
+  });
+
+  it("declares light shadows, so a light window's panels are not flat", () => {
+    // The dark values live in `:root.dark`; a light window needs its own, and a
+    // copy of the dark ones would be visible as a black haze.
+    const base = baseOf();
+    const dark = darkOf();
+    for (const name of ["--shadow-panel", "--shadow-dialog", "--shadow-sidebar-divider", "--shadow-sidebar-floating"]) {
+      expect(base.get(name), name).toBeTruthy();
+      expect(base.get(name), name).not.toBe(dark.get(name));
+    }
+  });
+
+  it("orders the base block after :root.dark, before the palettes", () => {
+    // `:root.dark` wins on specificity, so this block may follow it; the palette
+    // blocks must stay last so a chosen palette still overrides both.
+    const root = blockAt(":root {");
+    expect(root.start).toBeGreaterThan(blockAt(":root.dark {").start);
+    expect(root.start).toBeLessThan(blockAt(`[data-palette="${THEME_PALETTES[0]}"] {`).start);
+  });
+
+  it("defines every hand-written animation its components ask for", () => {
+    // `animate-spin` and friends are Tailwind's; these two are ours, and a
+    // component keeps the class whether or not the rule exists.
+    // `AgentThread`/`RemoteConversationView` use the pop-in, and
+    // `ActivityRail`'s Skills entry the pulse.
+    for (const animation of ["pop-in", "skill-entry-pulse"]) {
+      expect(css, animation).toContain(`@keyframes ${animation} {`);
+      expect(css, animation).toContain(`.animate-${animation} {`);
+    }
+  });
+
+  it("keeps the rail toolbar's container query and the search highlights", () => {
+    // `ActivityRailSelectionToolbar` shrinks its actions through this container;
+    // `ThreadSearch` registers the two highlight names with the CSS Custom
+    // Highlight API, which paints them only if these rules exist.
+    expect(css).toContain("container: activity-rail-selection-toolbar / inline-size");
+    expect(css).toContain("@container activity-rail-selection-toolbar (max-width: 279px)");
+    expect(css).toContain(".activity-rail-selection-action-label");
+    expect(css).toContain("::highlight(thread-search-match)");
+    expect(css).toContain("::highlight(thread-search-current)");
   });
 });

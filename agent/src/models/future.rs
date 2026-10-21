@@ -25,6 +25,12 @@ const FUTURE_MODELS_REFRESH_BACKOFF: u64 = 30;
 
 static FUTURE_MODELS_LAST_ATTEMPT: AtomicU64 = AtomicU64::new(0);
 static FUTURE_MODELS_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+/// Bumped by every test reset. A background refresh reads it before fetching and
+/// publishes only if it still matches, so a thread a *previous* test spawned
+/// cannot overwrite the caches inside a later test's reset→assert window. It is
+/// never bumped in production (nothing calls the test reset), so a real refresh
+/// behaves exactly as before.
+static FUTURE_MODELS_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 // Keep the pool (and blocking client's internal runtime) alive across refresh
 // threads. Initialize only inside fetch_future_models' dedicated thread, never
@@ -72,6 +78,55 @@ fn notify_future_models_synced() {
 /// inside a future-models test's reset→assert window and flip its assertions.
 #[cfg(test)]
 static FUTURE_REFRESH_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Serialize reading and publishing the future-models caches in test builds.
+///
+/// The caches are process-global, and several test modules build a `Registry`
+/// without holding a `TestHome` (so they can run beside the future-models tests
+/// while those hold HOME). A build they spawn can publish a catalog between a
+/// future-models test's reset and its assertion, which is the failure this
+/// lock removes: a build, a reset and a publish can no longer overlap.
+///
+/// Re-entrancy is deliberate: `Registry::new()` may be reached from inside
+/// another build (a rebuild triggered while constructing one), and a plain
+/// mutex would deadlock the same thread. The depth counter makes the guard
+/// outermost-only.
+#[cfg(test)]
+static CACHE_ACCESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(test)]
+thread_local! {
+    static CACHE_ACCESS_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Held for the duration of a cache read, reset or publish (test builds only).
+#[cfg(test)]
+pub(crate) struct CacheAccess(Option<std::sync::MutexGuard<'static, ()>>);
+
+/// Take the cache-access lock unless this thread already holds it.
+#[cfg(test)]
+pub(crate) fn lock_cache_access() -> CacheAccess {
+    let nested = CACHE_ACCESS_DEPTH.with(|depth| {
+        let current = depth.get();
+        depth.set(current + 1);
+        current > 0
+    });
+    if nested {
+        return CacheAccess(None);
+    }
+    let guard = CACHE_ACCESS
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    CacheAccess(Some(guard))
+}
+
+#[cfg(test)]
+impl Drop for CacheAccess {
+    fn drop(&mut self) {
+        drop(self.0.take());
+        CACHE_ACCESS_DEPTH.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
 
 fn now_secs() -> u64 {
     SystemTime::now()
@@ -122,12 +177,18 @@ fn spawn_future_models_refresh_unlocked(
 
     let api_key = api_key.to_string();
     let base_url = base_url.to_string();
+    let generation = FUTURE_MODELS_GENERATION.load(Ordering::Acquire);
     Some(std::thread::spawn(move || {
         let _background = background;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             #[cfg(test)]
             inject_test_panic();
             if let Some(models) = fetch_future_models(&api_key, &base_url) {
+                // A reset while this fetch was in flight means the state it
+                // would publish belongs to a previous owner of the caches.
+                if FUTURE_MODELS_GENERATION.load(Ordering::Acquire) != generation {
+                    return;
+                }
                 let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map(|d| d.as_secs())
@@ -136,6 +197,10 @@ fn spawn_future_models_refresh_unlocked(
                     fetched_at: now,
                     models,
                 };
+                // Publish under the cache lock so a test's read window never
+                // sees a catalog published by somebody else's refresh.
+                #[cfg(test)]
+                let _access = lock_cache_access();
                 save_future_models_cache_inner(&cache);
                 *FUTURE_MODELS_MEMORY_CACHE.write() = Some(cache);
                 notify_future_models_synced();
@@ -702,14 +767,22 @@ pub(super) fn sync_future_models_cache() -> bool {
     };
     let base_url = resolve_future_base_url();
 
+    let generation = FUTURE_MODELS_GENERATION.load(Ordering::Acquire);
     let Some(models) = fetch_future_models(&future_key, &base_url) else {
         return false;
     };
+    if FUTURE_MODELS_GENERATION.load(Ordering::Acquire) != generation {
+        // The caches were reset while this fetch ran; publishing would seed a
+        // stale catalog into whoever owns them now.
+        return false;
+    }
 
     let cache = FutureModelsCache {
         fetched_at: now_secs(),
         models,
     };
+    #[cfg(test)]
+    let _access = lock_cache_access();
     save_future_models_cache_inner(&cache);
     *FUTURE_MODELS_MEMORY_CACHE.write() = Some(cache);
     true
@@ -734,6 +807,8 @@ pub(crate) fn future_models_test_lock() -> std::sync::MutexGuard<'static, ()> {
 /// finishes only re-stores `false` and is otherwise harmless to these tests.
 #[cfg(test)]
 pub(crate) fn reset_future_caches_for_tests() {
+    #[cfg(test)]
+    let _access = lock_cache_access();
     let _gate = FUTURE_REFRESH_GATE
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
@@ -743,6 +818,7 @@ pub(crate) fn reset_future_caches_for_tests() {
 /// Gate already held by the caller.
 #[cfg(test)]
 fn reset_future_caches_for_tests_unlocked() {
+    FUTURE_MODELS_GENERATION.fetch_add(1, Ordering::AcqRel);
     FUTURE_MODELS_LAST_ATTEMPT.store(0, Ordering::Relaxed);
     FUTURE_MODELS_REFRESH_IN_FLIGHT.store(false, Ordering::Relaxed);
     *FUTURE_MODELS_MEMORY_CACHE.write() = None;
