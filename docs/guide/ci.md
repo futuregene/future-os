@@ -30,6 +30,13 @@ builds both Android and iOS bundles on Linux; Jest runs once. Native jobs test
 existing JVM/Swift code without signing or publishing. The iOS Foundation tests
 do not claim Simulator UI/E2E coverage.
 
+For ordinary Rust groups, Build uses `cargo test --locked --no-run` to compile
+the test targets; Tests uses the same package selection and profile to execute
+them. There is no preceding standalone dev-profile build. Documentation tests
+can still compile examples during Tests. Desktop also retains its default,
+no-default-features and combined CLI/GUI builds, and precompiles its separate
+headless integration target.
+
 Rust test invocations use `--no-fail-fast`: a failed target still fails its job,
 but Cargo continues through the other selected test targets so one run exposes
 all their failures instead of revealing them one target at a time.

@@ -1072,6 +1072,10 @@ impl FakeNats {
         let accept_task = tokio::spawn(async move {
             loop {
                 if let Ok((stream, _)) = listener.accept().await {
+                    // Small request/reply frames must leave immediately, as on
+                    // a real NATS server. Nagle plus delayed ACKs otherwise adds
+                    // transport waits to every handshake and command in a fixture.
+                    stream.set_nodelay(true).expect("fake nats TCP_NODELAY");
                     let conn_id = {
                         let mut state = accept_state.lock().unwrap();
                         state.next_id += 1;

@@ -27,6 +27,11 @@ build 和 tests 共享 runner 与 Cargo target 目录。直接导出源码的 TS
 bundle，Jest 只跑一次；原生 job 执行现有 JVM/Swift 测试，不签名或发布。
 iOS 的 Foundation 测试不代表 Simulator UI/E2E 覆盖。
 
+普通 Rust 组的 Build 使用 `cargo test --locked --no-run` 编译测试目标，
+Tests 使用相同的包选择和 profile 执行测试，不再先跑一次独立的 dev-profile 构建。
+文档测试仍可能在 Tests 中编译示例。Desktop 保留默认 features、
+`--no-default-features` 和 CLI/GUI 联合构建，并预编译单独的 headless 集成测试目标。
+
 Rust 测试命令使用 `--no-fail-fast`：任一测试目标失败仍使 job 失败，但 Cargo 会继续执行
 其他选中的测试目标，让一轮 CI 收集它们的失败，避免每次只暴露第一个失败目标。
 

@@ -1405,25 +1405,39 @@ async fn a_supervisor_stops_when_the_host_is_already_connected() {
 #[tokio::test]
 async fn a_supervisor_gives_up_after_its_window() {
     let (_home, mut fx) = start("peer-rt-supervisor-giveup").await;
-    // A broker that is not there, so every attempt fails.
-    fx.paired.creds.nats_url = "nats://127.0.0.1:1".into();
+    // Fail the real NATS handshake immediately on every connection. A closed
+    // port can cost seconds per SYN on Windows; the retry budget must not
+    // depend on how quickly the OS refuses a TCP connection.
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .unwrap();
+    fx.paired.creds.nats_url = format!("nats://{}", listener.local_addr().unwrap());
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let accepted = attempts.clone();
+    let broker = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.expect("accept failed handshake");
+            accepted.fetch_add(1, Ordering::SeqCst);
+            drop(stream);
+        }
+    });
     creds::upsert(fx.paired.creds.clone()).expect("store");
     let desktop_id = fx.paired.creds.desktop_id.clone();
 
     let handle = spawn_supervisor(desktop_id.clone(), None);
-    // The budget is counted in *attempts*, and each one pays a real connect to a
-    // broker that is not there. async-nats caps a single attempt at its own
-    // `connection_timeout` (5 s), and the budget is 18 attempts, so the whole
-    // window can legitimately take ~90 s. On Windows loopback it also costs real
-    // seconds before a connect to a closed port is refused — the SYN is
-    // retransmitted rather than answered with a RST (measured ~2 s per attempt
-    // here, against an immediate refusal on macOS). The deadline is therefore
-    // "the budget plus room", deliberately not a stopwatch on how fast the host
-    // says no: what this test proves is that the loop *ends*.
+    // Keep the existing deadline and verify the complete attempt budget as
+    // well as termination: an accidental early return must not pass this test.
     tokio::time::timeout(std::time::Duration::from_secs(150), handle)
         .await
         .expect("the supervisor must stop once its window is spent")
         .expect("no panic");
+
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        18,
+        "the full retry window was exercised"
+    );
+    broker.abort();
 
     assert!(
         !find(&list().await.expect("list"), &desktop_id).connected,
