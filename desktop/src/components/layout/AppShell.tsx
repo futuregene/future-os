@@ -25,7 +25,7 @@ import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
-import { compactRemoteConversation, deleteRemoteConversation, forkRemoteConversation, installRemoteSkill } from "../../features/remote-peer/remotePeerClient";
+import { compactRemoteConversation, deleteRemoteConversation, forkRemoteConversation, installRemoteSkill, pinRemoteConversation } from "../../features/remote-peer/remotePeerClient";
 import { sendRemoteContinuation } from "../../features/remote-peer/remotePromptOutbox";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { remoteSkillRecoSource } from "../../features/remote-peer/remoteSkillRecoSource";
@@ -820,6 +820,41 @@ function ReadyAppShell({
     await refreshRemotePeers();
   }
 
+  /**
+   * Pin or unpin this machine's conversation **by id**.
+   *
+   * The panel addresses a cell by its key, and the cell it removes is one it may have
+   * just taken out of the list it is drawing: the id is the stable handle, and the
+   * store is what knows the current flag.
+   */
+  async function pinLocalThread(threadId: string, pinned: boolean) {
+    await pinThread({ pinned, threadId });
+    await refreshStore(activeThread?.id ?? undefined);
+  }
+
+  /**
+   * Pin or unpin a host's conversation.
+   *
+   * The host's own route takes a **thread id** and refuses a session id, so the
+   * catalogue is what turns the panel's key into an address; a host too old to report
+   * one is reported rather than guessed at (`pinRemoteConversation` refuses).
+   */
+  async function pinRemoteSession(desktopId: string, sessionId: string, pinned: boolean) {
+    const row = remoteCatalogs
+      .find(catalog => catalog.desktopId === desktopId)
+      ?.sessions
+      .find(session => session.sessionId === sessionId);
+    try {
+      await pinRemoteConversation(desktopId, { sessionId, threadId: row?.threadId ?? null }, pinned);
+    }
+    catch (error) {
+      emitFutureEvent("toast", { message: errorMessage(error), tone: "error" });
+    }
+    // Either way the catalogue is re-read: a pin the host refused leaves the row as it
+    // was, and the panel should show that instead of assuming it worked.
+    await refreshRemotePeers();
+  }
+
   async function handleTogglePinThread(thread: StoredThread) {
     await pinThread({ threadId: thread.id, pinned: !thread.pinned });
     await refreshStore(thread.id);
@@ -1308,12 +1343,19 @@ function ReadyAppShell({
       {vibeOpen
         ? (
             <VibeStage
+              catalogs={remoteCatalogs}
               onClose={() => setVibeOpen(false)}
               onOpenInShell={(thread) => {
                 handleSelectThread(thread);
                 setVibeOpen(false);
               }}
-              onTogglePin={thread => void handleTogglePinThread(thread)}
+              onOpenRemoteInShell={(desktopId, sessionId) => {
+                openRemoteSession(desktopId, sessionId);
+                setVibeOpen(false);
+              }}
+              onPinLocal={(threadId, pinned) => void pinLocalThread(threadId, pinned)}
+              onPinRemote={(desktopId, sessionId, pinned) => void pinRemoteSession(desktopId, sessionId, pinned)}
+              peers={remotePeers}
               runStatuses={threadRunStatuses}
               threads={threads}
               unreadThreadIds={unreadThreadIds}

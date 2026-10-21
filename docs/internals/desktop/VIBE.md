@@ -18,10 +18,14 @@ A cell is a **pinned conversation** — on this machine (`threads.pinned`) or on
 host that reports its own pin (`pinRemoteConversation`). There is no second
 membership list, and that is the whole design:
 
-* **Adding to the panel is pinning.** The user picks a machine, then a
-  workspace, then a conversation that is not pinned yet; the conversation is
-  pinned and lands in the panel. Removing from the panel is unpinning. Two entry
-  points, one state, so "pinned but not in the panel" cannot happen.
+* **Adding to the panel is pinning.** The user picks a machine, then a workspace,
+  then a conversation that is not pinned yet; the conversation is pinned and lands
+  in the panel. Removing from the panel is unpinning. Two entry points, one state, so
+  "pinned but not in the panel" cannot happen. The dialog says so in its footer, once
+  — a row-level reminder on every line would be noise. On a host, adding is that
+  host's own `set_session_pinned`, addressed with its thread id (§9.4's neighbour
+  rule: a session id where a thread id is expected pins the wrong record, so a host
+  too old to report one is refused rather than guessed at).
 * **A pinned **workspace** does not put its conversations in the panel.** A
   workspace pin orders the rail; carrying it in here would drop a dozen
   conversations into the grid at once and lose the overview the panel exists for.
@@ -31,6 +35,18 @@ membership list, and that is the whole design:
 Remote pins need that host to be reachable: while it is offline the action is
 **refused with a reason**, never queued. A pin is a write to the other machine's
 database, and an outbox for it would be a second, weaker truth.
+
+**Which conversations count is the host's own report.** A paired host's catalogue
+carries `pinned` per session, and the panel reads it — there is no local list of
+"remote conversations I want here". A cell therefore appears when that host says so
+and disappears when it stops saying so, on the same next read as everything else.
+
+**What a host's cell can say is what that host reports**, and the panel does not
+invent the rest: its catalogue has a title, a workspace, `streaming` and a pin. It has
+no creation time (so the cell is undated — see §2), no run failure and no unread
+mark, so a host's conversation can be *in* the grid and still be absent from the
+attention queue (§9.5). Its own approvals do reach it, as events to that cell, and
+are answered in the cell.
 
 ## 2. Order: creation time, plus what the user moved
 
@@ -66,7 +82,17 @@ drift can misplace one newcomer at worst.
 
 The panel shows **all machines** by default, or one machine. Switching does not
 reorder: cells come back where they were. Each cell carries a machine badge, and
-the add dialog starts from the current filter.
+the add dialog starts from the machines that are paired.
+
+The choice is a **view preference like the columns** and is remembered per machine
+(it is a window-size-shaped decision, not an account one). The menu's row is the only
+way in, because a remote cannot drive a dialog; the row is a *value* row (`←`/`→`),
+which is what makes "which machine am I looking at" answerable without opening
+anything.
+
+The filter lists **paired** machines, not machines that happen to have something
+pinned: a filter that vanished when the panel was empty would be missing exactly when
+a reader wants to look at a machine.
 
 ## 4. The grid
 
@@ -203,6 +229,8 @@ whole app.
 | `ownsCommands` | `AgentThread` | `true` | the panel only | whether this instance may claim `chat.stop` — off for every cell but the focused one, because one handler per command means "the last mounted wins" |
 | `triggers` | `Composer` → `MentionEditor` | `true` | the panel only | whether `@` / `/` / `#` open their menus while typing |
 | `onEmptySubmit` | `Composer` | absent | the panel only | what the send key means on an empty draft (close the input layer); absent everywhere else, where an empty submit is simply not a send |
+| `chrome` | `RemoteConversationView` | `"full"` | the panel only | `read` drops the conversation's own top bar (the cell draws its own) and puts the approval cards in a strip at the foot instead of over the transcript |
+| `selectiveEvents` | `RemoteConversationView` | `true` | the panel only | whether mounting this view narrows that host's event lane to this session. The panel shows several conversations of one host at once, so it must **not** narrow: the lane is a bandwidth bargain for one conversation, and a grid is not one conversation |
 
 Two invariants ride on those defaults, and both are structural rather than
 supervisory:
@@ -389,6 +417,11 @@ Automatable — and where each one lives:
 | Membership: pinned and live only; a pinned workspace adds nothing; the remove key unpins the focused cell | `VibeStage.test.tsx` |
 | The grid table (1×1 … 4×3), the narrow-window stack, the explicit column override, no wrap at an edge | `layout.test.ts` |
 | The hint line lists exactly the commands with a handler **and** a binding | `hints.test.ts` |
+| Membership across machines: a host's `pinned` only, a status-less host still counts, a filtered machine shows only its own | `vibeCells.test.ts` |
+| The panel's machine filter: the menu row walks all → this machine → each host, and the choice is remembered | `VibeStage.test.tsx` |
+| A host's cell is read-only: `OK` on it opens its reading layer, never an input layer, and its hint line does not offer one | `VibeStage.test.tsx` |
+| Adding: the dialog lists unpinned conversations of the chosen machine and workspace, and pins on the machine that owns them | `VibeStage.test.tsx` |
+| A host's view in a cell mounts no composer and does not narrow the host's event lane | `RemoteConversationView.chrome.test.tsx` |
 | A remote's buttons survive a rebinding and a cleared binding | `shortcuts.test.ts`, `catalog.test.ts`, `keybinding.test.ts` |
 
 Two of these were falsified by hand before landing (the assertions were removed,
@@ -469,7 +502,7 @@ What P0 landed, and what it deliberately left:
 | Stage | Content |
 | --- | --- |
 | **P0 — done** | the panel and its grid; scale-respecting cell rendering for local conversations; membership = pin; order = `createdAt` + drag/keyboard reordering; the three layers and the single-editor invariant; the input layer with dictation, the target bar and the three state meanings; `⌘⇧V`, arrows, `⏎`, `Esc`, `1`–`9`; explicit "still running" refusal |
-| **P1 — in progress** | **done:** the menu (`Menu`, one column, `←`/`→` adjust a value in place) · the attention queue (§9.5) · **next:** the machine filter with the add dialog and removal, then the input layer's chrome, then the send queue. Later in P1: zoom at one or two columns with the panel's three states; degraded rendering for non-focused cells |
+| **P1 — in progress** | **done:** the menu (`Menu`, one column, `←`/`→` adjust a value in place) · the attention queue (§9.5) · the machine filter, a host's conversations as cells, the add dialog and removal across machines · **next:** the input layer's chrome, then the send queue. Later in P1: zoom at one or two columns with the panel's three states; degraded rendering for non-focused cells |
 | **P2** | order in `app.db`; layout presets and a column override; `⌘/` cheat sheet; `h/j/k/l`; a "learn this button" diagnostics page; optional text size on the volume buttons |
 
 ## 15. Open questions

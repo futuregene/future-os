@@ -98,6 +98,8 @@ export function RemoteConversationView({
   title,
   workspaceName,
   sessionId,
+  chrome = "full",
+  selectiveEvents = true,
 }: {
   approvals: RemoteApproval[];
   approvalErrors: Record<string, string>;
@@ -167,6 +169,27 @@ export function RemoteConversationView({
   workspaceName: string | null;
   /** The conversation's session id on that host. */
   sessionId: string;
+  /**
+   * How much of the conversation's own frame to draw.
+   *
+   * `full` is the main window: the title bar with the machine badge, the composer
+   * riding over the transcript. `read` is one cell of the Vibe panel, which draws
+   * its own header and has no composer at all — so the view keeps the transcript and
+   * puts the approvals that need an answer in a strip at its foot. The panel's rule
+   * ("at most one editable element") rides on `read` mounting no composer, which is
+   * why this is a chrome rather than a `showHeader` flag.
+   */
+  chrome?: "full" | "read";
+  /**
+   * Whether mounting this view narrows that host's event lane to this session.
+   *
+   * `true` is right for the main window: one conversation is on screen and the lane
+   * is a bandwidth bargain for it. The panel shows **several** conversations of the
+   * same host in a grid, and narrowing to one would starve the others — a cell whose
+   * events were routed elsewhere silently stops updating. So the panel says `false`
+   * and takes the wide lane, which is what a host with a grid open should send.
+   */
+  selectiveEvents?: boolean;
 }) {
   const { t } = useTranslation("remotePeer");
   const [hoveredId, setHoveredId] = useState<string | null>(null);
@@ -208,11 +231,13 @@ export function RemoteConversationView({
    * narrow lane safe to move.
    */
   useEffect(() => {
+    if (!selectiveEvents)
+      return;
     void setRemotePeerVisibleSession(desktopId, sessionId);
     return () => {
       void setRemotePeerVisibleSession(desktopId, null);
     };
-  }, [desktopId, sessionId]);
+  }, [desktopId, selectiveEvents, sessionId]);
 
   /**
    * The transcript's viewport: this app's own sticky auto-scroll.
@@ -303,26 +328,28 @@ export function RemoteConversationView({
           at the right, same height and padding — a remote conversation is a
           conversation, and its frame should not announce otherwise.
           `pr-14` reserves the collapsed right panel's corner, as there. */}
-      <header
-        className="flex h-12 shrink-0 select-none items-center gap-2 border-b border-line-soft/40 pl-4 pr-14"
-        onMouseDown={startWindowDrag}
-      >
-        <div className="mr-3 flex min-w-0 flex-1 items-center" data-tauri-drag-region>
-          <LeftPanelTitlebarToggle expanded={leftPanelExpanded} onToggle={onToggleLeftPanel} />
-          <div className="flex min-w-0 flex-1 items-center">
-            <div className="min-w-0 truncate text-sm font-semibold text-ink">{title}</div>
-            {/* Which computer this conversation is on. Always shown here — a
+      {chrome === "full"
+        ? (
+            <header
+              className="flex h-12 shrink-0 select-none items-center gap-2 border-b border-line-soft/40 pl-4 pr-14"
+              onMouseDown={startWindowDrag}
+            >
+              <div className="mr-3 flex min-w-0 flex-1 items-center" data-tauri-drag-region>
+                <LeftPanelTitlebarToggle expanded={leftPanelExpanded} onToggle={onToggleLeftPanel} />
+                <div className="flex min-w-0 flex-1 items-center">
+                  <div className="min-w-0 truncate text-sm font-semibold text-ink">{title}</div>
+                  {/* Which computer this conversation is on. Always shown here — a
                 remote conversation is on one that is *not* this one, so the
                 badge is never the redundant "本机" — and named the way the
                 rail names it: the host's own glyph and the user's label for
                 it, with the id as the fallback while the peer list is still
                 loading. */}
-            <MachineBadge
-              glyph={iconGlyph(peer?.icon)}
-              label={peer ? peerBadgeText(peer, peer.desktopId) : desktopId}
-              title={peer?.name ?? peer?.desktopId ?? desktopId}
-            />
-            {/* Which workspace on that machine. The same qualifier the machine
+                  <MachineBadge
+                    glyph={iconGlyph(peer?.icon)}
+                    label={peer ? peerBadgeText(peer, peer.desktopId) : desktopId}
+                    title={peer?.name ?? peer?.desktopId ?? desktopId}
+                  />
+                  {/* Which workspace on that machine. The same qualifier the machine
                 badge is and the same vocabulary the rail's workspace headings
                 use (a folder and the workspace's own name), so a reader who
                 came from a heading can see the conversation stayed in it — the
@@ -330,39 +357,41 @@ export function RemoteConversationView({
                 nothing. Capped like the machine badge: a long name must not
                 squeeze the conversation's own title, which is what the header
                 is for. */}
-            {workspaceName
-              ? (
-                  <span
-                    className="ml-2 inline-flex min-w-0 shrink-0 items-center gap-1 text-xs font-normal text-ink-muted"
-                    data-testid="remote-thread-workspace"
-                    title={workspaceName}
-                  >
-                    <Folder aria-hidden className="size-3.5 shrink-0" />
-                    <span className="max-w-40 truncate">{workspaceName}</span>
-                  </span>
-                )
-              : null}
-          </div>
-        </div>
-        {/* The conversation's own account book, in the same place and the same
+                  {workspaceName
+                    ? (
+                        <span
+                          className="ml-2 inline-flex min-w-0 shrink-0 items-center gap-1 text-xs font-normal text-ink-muted"
+                          data-testid="remote-thread-workspace"
+                          title={workspaceName}
+                        >
+                          <Folder aria-hidden className="size-3.5 shrink-0" />
+                          <span className="max-w-40 truncate">{workspaceName}</span>
+                        </span>
+                      )
+                    : null}
+                </div>
+              </div>
+              {/* The conversation's own account book, in the same place and the same
             shape as this app's own header. An icon rather than the amount: the
             header is for the conversation, and a figure that changes every turn
             draws the eye away from it. */}
-        <div className="flex items-center gap-2">
-          <IconButton
-            aria-haspopup="dialog"
-            // The local header's own size and spacing (`ThreadHeader`): the button
-            // is one of the frame's fixed measurements, and a reader who moves
-            // between the two conversations sees the same control in the same
-            // place, at the same size.
-            className="size-8"
-            data-testid="remote-thread-usage"
-            icon={<ReceiptText className="size-4" />}
-            label={t("usageTitle")}
-            onClick={onOpenUsage}
-          />
-        </div>
-      </header>
+              <div className="flex items-center gap-2">
+                <IconButton
+                  aria-haspopup="dialog"
+                  // The local header's own size and spacing (`ThreadHeader`): the button
+                  // is one of the frame's fixed measurements, and a reader who moves
+                  // between the two conversations sees the same control in the same
+                  // place, at the same size.
+                  className="size-8"
+                  data-testid="remote-thread-usage"
+                  icon={<ReceiptText className="size-4" />}
+                  label={t("usageTitle")}
+                  onClick={onOpenUsage}
+                />
+              </div>
+            </header>
+          )
+        : null}
 
       {/* The transcript, and the band of controls over its foot.
 
@@ -493,63 +522,75 @@ The same two layers this app's own conversation uses (`AgentThread`):
                 this app's own conversation reserves for the same footer. It is
                 inside the observed content, so the sticky viewport and the
                 floating scrollbar settle when the composer grows. */}
-            <div aria-hidden="true" style={{ height: composerHeight }} />
+            {chrome === "read" ? null : <div aria-hidden="true" style={{ height: composerHeight }} />}
           </div>
         </div>
 
-        <div
-          ref={composerRef}
-          className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-linear-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10"
-        >
-          <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
-            {/* Approvals sit above the composer, not inside the transcript: they
+        {chrome === "read" && approvals.length === 0
+          ? null
+          : (
+              <div
+                ref={composerRef}
+                className={chrome === "read"
+                  ? "pointer-events-none shrink-0 border-t border-line-soft/60 px-5 pb-3 pt-2"
+                  : "pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-linear-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10"}
+              >
+                <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
+                  {/* Approvals sit above the composer, not inside the transcript: they
                 are a decision the user has to make now, and a card that scrolls
                 away with history is a card that gets missed while the host waits.
                 The same slot the local conversation gives them. */}
-            {approvals.map(approval => (
-              <div className="pointer-events-auto mx-auto w-full max-w-3xl" key={approval.id}>
-                <ApprovalCard
-                  approval={approval}
-                  error={approvalErrors[approval.id] ?? null}
-                  onDecide={onDecideApproval}
-                  pending={approvalPending === approval.id}
-                  peerName={peer ? peerBadgeText(peer, peer.desktopId) : ""}
-                />
-              </div>
-            ))}
+                  {approvals.map(approval => (
+                    <div className="pointer-events-auto mx-auto w-full max-w-3xl" key={approval.id}>
+                      <ApprovalCard
+                        approval={approval}
+                        error={approvalErrors[approval.id] ?? null}
+                        onDecide={onDecideApproval}
+                        pending={approvalPending === approval.id}
+                        peerName={peer ? peerBadgeText(peer, peer.desktopId) : ""}
+                      />
+                    </div>
+                  ))}
 
-            {/* Reading history is not a fight with the view: once the reader has
+                  {chrome === "read"
+                    ? null
+                    : (
+                        <>
+                          {/* Reading history is not a fight with the view: once the reader has
                 scrolled away, following stops and this is how they come back. */}
-            <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-3">
-              {showJumpToLatest
-                ? (
-                    <button
-                      aria-label={t("jumpToLatest")}
-                      className="pointer-events-auto mx-auto flex items-center gap-1 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
-                      onClick={scrollToLatest}
-                      title={t("jumpToLatest")}
-                      type="button"
-                    >
-                      <ArrowDown className="size-3.5" />
-                      {t("jumpToLatest")}
-                    </button>
-                  )
-                : <div />}
-              {/* The same corner this app's own conversation puts it in: a
+                          <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-3">
+                            {showJumpToLatest
+                              ? (
+                                  <button
+                                    aria-label={t("jumpToLatest")}
+                                    className="pointer-events-auto mx-auto flex items-center gap-1 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
+                                    onClick={scrollToLatest}
+                                    title={t("jumpToLatest")}
+                                    type="button"
+                                  >
+                                    <ArrowDown className="size-3.5" />
+                                    {t("jumpToLatest")}
+                                  </button>
+                                )
+                              : <div />}
+                            {/* The same corner this app's own conversation puts it in: a
                   remote transcript is read the same way, and a control that
                   moves between the two views is a control the reader has to
                   find twice. */}
-              <QuestionNavControl
-                hasNext={hasNextQuestion}
-                hasPrevious={hasPreviousQuestion}
-                onNext={goToNextQuestion}
-                onPrevious={goToPreviousQuestion}
-              />
-            </div>
+                            <QuestionNavControl
+                              hasNext={hasNextQuestion}
+                              hasPrevious={hasPreviousQuestion}
+                              onNext={goToNextQuestion}
+                              onPrevious={goToPreviousQuestion}
+                            />
+                          </div>
 
-            {composer}
-          </div>
-        </div>
+                          {composer}
+                        </>
+                      )}
+                </div>
+              </div>
+            )}
       </div>
     </section>
   );

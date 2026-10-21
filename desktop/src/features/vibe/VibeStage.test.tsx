@@ -1,5 +1,7 @@
-// @vitest-environment jsdom
 import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
+// @vitest-environment jsdom
+import type { RemoteCatalog } from "../remote-peer/mergeConversations";
+import type { RemotePeer } from "../remote-peer/remotePeerClient";
 import type { VibeThreadViewProps } from "./VibeStage";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -9,7 +11,7 @@ import { installShortcuts } from "../../test/installShortcuts";
 import { clearCommandHandlers } from "../keyboard/commands";
 import { resetShortcutScopes } from "../keyboard/scopes";
 import { resetAllCommandBindings } from "../keyboard/shortcuts";
-import { clearVibePreferences, readVibePreferences } from "./vibePreferences";
+import { clearVibePreferences, readVibePreferences, writeVibeDevice } from "./vibePreferences";
 import { VibeStage } from "./VibeStage";
 
 /**
@@ -105,19 +107,29 @@ let uninstallShortcuts: () => void;
 
 function mount(options: {
   threads: StoredThread[];
+  catalogs?: RemoteCatalog[];
+  peers?: RemotePeer[];
+  runStatuses?: Record<string, { status: string }>;
+  unread?: string[];
   onClose?: () => void;
   onOpenInShell?: (thread: StoredThread) => void;
-  onTogglePin?: (thread: StoredThread) => void;
+  onOpenRemoteInShell?: (desktopId: string, sessionId: string) => void;
+  onPinLocal?: (threadId: string, pinned: boolean) => void;
+  onPinRemote?: (desktopId: string, sessionId: string, pinned: boolean) => void;
 }) {
   act(() => {
     root.render(
       <VibeStage
+        catalogs={options.catalogs ?? []}
         onClose={options.onClose ?? (() => {})}
         onOpenInShell={options.onOpenInShell ?? (() => {})}
-        onTogglePin={options.onTogglePin ?? (() => {})}
-        runStatuses={{}}
+        onOpenRemoteInShell={options.onOpenRemoteInShell ?? (() => {})}
+        onPinLocal={options.onPinLocal ?? (() => {})}
+        onPinRemote={options.onPinRemote ?? (() => {})}
+        peers={options.peers ?? []}
+        runStatuses={(options.runStatuses ?? {}) as never}
         threads={options.threads}
-        unreadThreadIds={new Set()}
+        unreadThreadIds={new Set(options.unread ?? [])}
         view={VIEW}
         workspaces={WORKSPACES}
       />,
@@ -138,6 +150,16 @@ function drawn(chrome: string) {
     .map(element => element.dataset.thread);
 }
 const editableCount = () => container.querySelectorAll("[contenteditable=\"true\"]").length;
+
+/** The row the group menu is on, by id. */
+const selectedRow = () => container.querySelector("[aria-current=\"true\"]")?.getAttribute("data-vibe-menu-row") ?? null;
+
+/** Walk the menu down to a row by id, however many presses that takes. */
+function walkTo(id: string) {
+  for (let step = 0; step < 12 && selectedRow() !== id; step++)
+    press({ code: "ArrowDown", key: "ArrowDown" });
+  expect(selectedRow(), id).toBe(id);
+}
 
 beforeEach(() => {
   clearVibePreferences();
@@ -295,7 +317,8 @@ describe("the menu", () => {
   it("changes the layout from its own row and remembers it", () => {
     mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
     press({ code: "ContextMenu", key: "ContextMenu" });
-    // The first row is the layout choice; → moves it off "automatic".
+    walkTo("layout");
+    // → moves it off "automatic".
     press({ code: "ArrowRight", key: "ArrowRight" });
     expect(readVibePreferences().columns).toBe(1);
     // …and the panel says so, so the reader can see what they just chose: three
@@ -304,8 +327,8 @@ describe("the menu", () => {
   });
 
   it("unpins the focused cell from the menu", () => {
-    const onTogglePin = vi.fn();
-    mount({ onTogglePin, threads: [thread("a", 100), thread("b", 200)] });
+    const onPinLocal = vi.fn();
+    mount({ onPinLocal, threads: [thread("a", 100), thread("b", 200)] });
     press({ code: "ContextMenu", key: "ContextMenu" });
     // Walk to "remove". The walk skips the row that cannot run (the focused cell
     // is already first, so "move earlier" is disabled), which is why this counts
@@ -315,7 +338,7 @@ describe("the menu", () => {
       press({ code: "ArrowDown", key: "ArrowDown" });
     expect(selected()).toBe("remove");
     press({ code: "Enter", key: "Enter" });
-    expect(onTogglePin).toHaveBeenCalledWith(expect.objectContaining({ id: "a" }));
+    expect(onPinLocal).toHaveBeenCalledWith("a", false);
   });
 
   it("gives the caret back when it closes from the input layer", () => {
@@ -356,20 +379,7 @@ describe("the attention queue", () => {
   // `h.counts` is the mocked global approval counts; `runStatuses` is passed in.
   function mountWith(runStatuses: Record<string, { status: string }>, counts: Record<string, number> = {}) {
     h.counts = new Map(Object.entries(counts));
-    act(() => {
-      root.render(
-        <VibeStage
-          onClose={() => {}}
-          onOpenInShell={() => {}}
-          onTogglePin={() => {}}
-          runStatuses={runStatuses as never}
-          threads={[thread("a", 100), thread("b", 200), thread("c", 300)]}
-          unreadThreadIds={new Set()}
-          view={VIEW}
-          workspaces={WORKSPACES}
-        />,
-      );
-    });
+    mount({ runStatuses, threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
   }
 
   it("jumps to the next cell that needs a human, and lands on its reading layer", () => {
@@ -418,7 +428,7 @@ describe("the attention queue", () => {
   it("lists what is waiting in the menu, and says so when nothing is", () => {
     mountWith({ b: { status: "failed" } });
     press({ code: "ContextMenu", key: "ContextMenu" });
-    expect(container.querySelector("[aria-current=\"true\"]")?.getAttribute("data-vibe-menu-row")).toBe("attention:b");
+    expect(selectedRow()).toBe("attention:local:b");
     press({ code: "Escape", key: "Escape" });
     mountWith({});
     press({ code: "ContextMenu", key: "ContextMenu" });
@@ -433,6 +443,154 @@ describe("the attention queue", () => {
     press({ code: "Enter", key: "Enter" });
     expect(drawn("read")).toEqual(["c"]);
     expect(container.querySelector("[role=\"menu\"]")).toBeNull();
+  });
+});
+
+describe("other machines", () => {
+  const catalog = (desktopId: string, sessions: Array<Record<string, unknown>>) =>
+    ({ desktopId, sessions } as unknown as RemoteCatalog);
+  const peer = (desktopId: string, name: string) => ({ desktopId, name } as RemotePeer);
+
+  function mountMixed(over: Record<string, unknown> = {}) {
+    mount({
+      catalogs: [
+        catalog("desk_1", [
+          { pinned: true, sessionId: "s1", status: "active", title: "Remote one" },
+          { pinned: false, sessionId: "s2", status: "active", title: "Remote unpinned" },
+        ]),
+      ],
+      peers: [peer("desk_1", "Studio")],
+      threads: [thread("a", 100)],
+      ...over,
+    });
+  }
+
+  it("puts a host's pinned conversations in the grid beside this machine's", () => {
+    mountMixed();
+    expect(container.querySelectorAll("[data-vibe-cell]")).toHaveLength(2);
+    expect(container.querySelector("[data-vibe-cell-kind=\"remote\"]")?.textContent).toContain("Remote one");
+    // A cell says which machine it is on; a grid of one host's conversations that
+    // looked like this machine's would be worse than no grid.
+    expect(container.textContent).toContain("Studio");
+  });
+
+  it("filters to one machine from the menu and remembers it", () => {
+    mountMixed();
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    // attention (none) → add → device; ←/→ walks "all" → this machine → each host,
+    // in the order the machines are paired.
+    walkTo("device");
+    press({ code: "ArrowRight", key: "ArrowRight" });
+    expect(container.querySelector("[data-vibe-device]")?.textContent).toBe("This Mac");
+    expect(container.querySelectorAll("[data-vibe-cell]")).toHaveLength(1);
+    expect(container.querySelector("[data-vibe-cell-kind=\"local\"]")).not.toBeNull();
+    press({ code: "ArrowRight", key: "ArrowRight" });
+    expect(container.querySelector("[data-vibe-device]")?.textContent).toBe("Studio");
+    expect(readVibePreferences().device).toEqual({ desktopId: "desk_1", kind: "device" });
+    // Only the host's cell is left.
+    expect(container.querySelectorAll("[data-vibe-cell]")).toHaveLength(1);
+    expect(container.querySelector("[data-vibe-cell-kind=\"remote\"]")).not.toBeNull();
+  });
+
+  it("starts from the stored filter", () => {
+    writeVibeDevice({ desktopId: "desk_1", kind: "device" });
+    mountMixed();
+    expect(container.querySelectorAll("[data-vibe-cell]")).toHaveLength(1);
+  });
+
+  it("opens a host's conversation in the main window, never in an input layer", () => {
+    // Dictation is this machine's: a remote cell has no composer at all, so `OK` on
+    // one must go to its reading layer instead of opening an editor that would not
+    // exist (`VIBE.md` §5).
+    const onOpenRemoteInShell = vi.fn();
+    mountMixed({ onOpenRemoteInShell });
+    expect(drawn("input")).toEqual([]);
+    // The host's cell is second in the order (undated members sort last).
+    press({ code: "Digit2", key: "2" });
+    press({ code: "Enter", key: "Enter" });
+    expect(drawn("input")).toEqual([]);
+    expect(readVibePreferences().order).toEqual([]);
+    // It is in the reading layer instead.
+    expect(container.getAttribute).toBeTruthy();
+    expect(container.querySelector("[data-vibe-layer]")?.getAttribute("data-vibe-layer")).toBe("read");
+    // …and the key that would open an input layer is not offered there.
+    expect(container.textContent).not.toContain("进入输入层");
+  });
+
+  it("unpins a host's conversation on the machine that owns it", () => {
+    const onPinRemote = vi.fn();
+    const onPinLocal = vi.fn();
+    mountMixed({ onPinLocal, onPinRemote });
+    press({ code: "Digit2", key: "2" });
+    press({ code: "Backspace", key: "Backspace", ctrlKey: true, shiftKey: true });
+    expect(onPinRemote).toHaveBeenCalledWith("desk_1", "s1", false);
+    expect(onPinLocal).not.toHaveBeenCalled();
+  });
+});
+
+describe("adding a conversation", () => {
+  const catalog = (desktopId: string, sessions: Array<Record<string, unknown>>) =>
+    ({ desktopId, sessions } as unknown as RemoteCatalog);
+
+  function mountForAdd(onPinLocal: (id: string, pinned: boolean) => void, onPinRemote: (desktopId: string, sessionId: string, pinned: boolean) => void) {
+    mount({
+      catalogs: [catalog("desk_1", [
+        { pinned: false, sessionId: "s1", status: "active", title: "Remote candidate" },
+      ])],
+      onPinLocal,
+      onPinRemote,
+      peers: [{ desktopId: "desk_1", name: "Studio" } as RemotePeer],
+      threads: [thread("a", 100), thread("candidate", 200, { pinned: false, title: "Local candidate" })],
+    });
+  }
+
+  function openAdd() {
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    walkTo("add");
+    press({ code: "Enter", key: "Enter" });
+  }
+
+  it("lists a machine's unpinned conversations and adds one by pinning it", () => {
+    const onPinLocal = vi.fn();
+    mountForAdd(onPinLocal, vi.fn());
+    openAdd();
+    const row = container.querySelector("[data-add-choice=\"local:candidate\"]");
+    expect(row).not.toBeNull();
+    act(() => {
+      row!.querySelector("button")!.click();
+    });
+    expect(onPinLocal).toHaveBeenCalledWith("candidate", true);
+  });
+
+  it("adds a host's conversation on that host", () => {
+    const onPinRemote = vi.fn();
+    mountForAdd(vi.fn(), onPinRemote);
+    openAdd();
+    // Machine → Studio, then the conversation.
+    act(() => {
+      container.querySelector<HTMLElement>("[data-add-machine=\"desk_1\"]")!.click();
+    });
+    const row = container.querySelector("[data-add-choice=\"remote:desk_1:s1\"]");
+    expect(row).not.toBeNull();
+    act(() => {
+      row!.querySelector("button")!.click();
+    });
+    expect(onPinRemote).toHaveBeenCalledWith("desk_1", "s1", true);
+  });
+
+  it("does not offer a conversation that is already in the panel", () => {
+    const threads = [thread("a", 100)];
+    mount({
+      catalogs: [catalog("desk_1", [{ pinned: true, sessionId: "s1", status: "active", title: "Already" }])],
+      threads,
+    });
+    openAdd();
+    act(() => {
+      container.querySelector<HTMLElement>("[data-add-machine=\"desk_1\"]")!.click();
+    });
+    // Nothing to add on that machine, and the dialog says so rather than showing an
+    // empty list.
+    expect(container.querySelector("[data-add-choice=\"remote:desk_1:s1\"]")).toBeNull();
   });
 });
 
@@ -456,11 +614,11 @@ describe("membership", () => {
   });
 
   it("unpins the focused conversation on the remove key", () => {
-    const onTogglePin = vi.fn();
-    mount({ onTogglePin, threads: [thread("a", 100), thread("b", 200)] });
+    const onPinLocal = vi.fn();
+    mount({ onPinLocal, threads: [thread("a", 100), thread("b", 200)] });
     press({ code: "Digit2", key: "2" });
     press({ code: "Backspace", key: "Backspace", ctrlKey: true, shiftKey: true });
-    expect(onTogglePin).toHaveBeenCalledWith(expect.objectContaining({ id: "b" }));
+    expect(onPinLocal).toHaveBeenCalledWith("b", false);
   });
 });
 
@@ -487,20 +645,7 @@ describe("order", () => {
     expect(drawn("read")).toEqual(["c", "a"]);
     // … then pins one that is older than both. It joins by its creation time
     // instead of being appended.
-    act(() => {
-      root.render(
-        <VibeStage
-          onClose={() => {}}
-          onOpenInShell={() => {}}
-          onTogglePin={() => {}}
-          runStatuses={{}}
-          threads={[thread("a", 100), thread("b", 50), thread("c", 300)]}
-          unreadThreadIds={new Set()}
-          view={VIEW}
-          workspaces={WORKSPACES}
-        />,
-      );
-    });
+    mount({ threads: [thread("a", 100), thread("b", 50), thread("c", 300)] });
     expect(drawn("read")).toEqual(["b", "c", "a"]);
   });
 
@@ -509,20 +654,7 @@ describe("order", () => {
     press({ code: "Digit3", key: "3" });
     press({ code: "ArrowLeft", key: "ArrowLeft", ctrlKey: true, altKey: true });
     expect(drawn("read")).toEqual(["a", "c", "b"]);
-    act(() => {
-      root.render(
-        <VibeStage
-          onClose={() => {}}
-          onOpenInShell={() => {}}
-          onTogglePin={() => {}}
-          runStatuses={{}}
-          threads={[thread("b", 200), thread("c", 300)]}
-          unreadThreadIds={new Set()}
-          view={VIEW}
-          workspaces={WORKSPACES}
-        />,
-      );
-    });
+    mount({ threads: [thread("b", 200), thread("c", 300)] });
     expect(drawn("read")).toEqual(["c", "b"]);
   });
 

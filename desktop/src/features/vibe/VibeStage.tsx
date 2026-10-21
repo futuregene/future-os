@@ -5,8 +5,11 @@ import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { AgentThreadChrome } from "../agent/AgentThread";
 import type { SessionMentionOption } from "../agent/sessionMention";
+import type { RemoteCatalog } from "../remote-peer/mergeConversations";
+import type { RemotePeer } from "../remote-peer/remotePeerClient";
 import type { VibeAttentionReason } from "./attention";
 import type { VibeMenuRow } from "./menuNav";
+import type { VibeCell, VibeDeviceFilter } from "./vibeCells";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Expand, MoreHorizontal, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -23,12 +26,15 @@ import { AgentThread } from "../agent/AgentThread";
 import { useCommand } from "../keyboard/commands";
 import { useShortcutScope } from "../keyboard/scopes";
 import { bindingLabel, useShortcutOverrides } from "../keyboard/shortcuts";
+import { AddToVibeDialog } from "./AddToVibeDialog";
 import { attentionOf, nextAttention } from "./attention";
 import { cellPosition, gridOf, MAX_CELLS, moveInGrid } from "./layout";
-import { moveInOrder, resolveOrder, vibeKeyOfLocal } from "./order";
+import { moveInOrder, resolveOrder } from "./order";
+import { vibeCellsOf } from "./vibeCells";
 import { VibeHintBar } from "./VibeHintBar";
 import { VibeMenu } from "./VibeMenu";
-import { readVibePreferences, writeVibeColumns, writeVibeOrder } from "./vibePreferences";
+import { readVibePreferences, writeVibeColumns, writeVibeDevice, writeVibeOrder } from "./vibePreferences";
+import { VibeRemoteCell } from "./VibeRemoteCell";
 
 /** Everything a conversation's view needs that does not vary per conversation. */
 export interface VibeThreadViewProps {
@@ -69,11 +75,24 @@ export interface VibeStageProps {
   runStatuses: Record<string, ThreadRunInfo | undefined>;
   unreadThreadIds: Set<string>;
   view: VibeThreadViewProps;
+  /** Every paired host's catalogue: the remote half of the panel's membership. */
+  catalogs: RemoteCatalog[];
+  /** Labelled hosts, for the machine filter and a cell's badge. */
+  peers: RemotePeer[];
   onClose: () => void;
   /** Open a conversation in the main window (the panel's "go there" escape hatch). */
   onOpenInShell: (thread: StoredThread) => void;
-  /** Unpin, which is what "remove from the panel" means. */
-  onTogglePin: (thread: StoredThread) => void;
+  /** The same, for a host's conversation. */
+  onOpenRemoteInShell: (desktopId: string, sessionId: string) => void;
+  /**
+   * Pin or unpin, on the machine that owns the conversation.
+   *
+   * One callback per machine rather than one polymorphic "toggle": the pin is a
+   * write to that machine's own database, and the two routes take different ids
+   * (a thread id here, a thread id *and* a session id there).
+   */
+  onPinLocal: (threadId: string, pinned: boolean) => void;
+  onPinRemote: (desktopId: string, sessionId: string, pinned: boolean) => void;
 }
 
 /**
@@ -100,7 +119,20 @@ function isRunning(status: ThreadRunInfo | undefined): boolean {
  * conversations are members and in what order, which layer is on top, and the
  * geometry. Everything a conversation *is* stays in `AgentThread`.
  */
-export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, view, onClose, onOpenInShell, onTogglePin }: VibeStageProps) {
+export function VibeStage({
+  catalogs,
+  onClose,
+  onOpenInShell,
+  onOpenRemoteInShell,
+  onPinLocal,
+  onPinRemote,
+  peers,
+  runStatuses,
+  threads,
+  unreadThreadIds,
+  view,
+  workspaces,
+}: VibeStageProps) {
   const { t } = useTranslation("vibe");
   const approvalCounts = usePendingApprovalCounts();
   const overrides = useShortcutOverrides();
@@ -114,6 +146,8 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
    * same layer when it closes.
    */
   const [menuOpen, setMenuOpen] = useState(false);
+  /** Whether the "add a conversation" dialog is up. */
+  const [addOpen, setAddOpen] = useState(false);
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const preferences = useMemo(() => readVibePreferences(), []);
   const [order, setOrder] = useState<string[]>(preferences.order);
@@ -121,21 +155,29 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
   const [size, setSize] = useState({ height: 0, width: 0 });
   const areaRef = useRef<HTMLDivElement>(null);
 
-  // Members: pinned, alive, and this machine's. P0 is the local machine only;
-  // the machine filter and a host's conversations are P1 (`VIBE.md` §14).
-  const members = useMemo(
-    () => threads
-      .filter(thread => thread.pinned && thread.status === "active")
-      .map(thread => ({ key: vibeKeyOfLocal(thread.id), thread })),
-    [threads],
+  // Members: pinned conversations of the machines the filter lets through, this
+  // one's and paired hosts' alike (`vibeCells.ts` owns the rule, `order.ts` the
+  // order — two questions, two inputs).
+  const [deviceFilter, setDeviceFilter] = useState<VibeDeviceFilter>(preferences.device);
+  const workspaceNames = useMemo(
+    () => new Map(workspaces.map(workspace => [workspace.id, workspace.name])),
+    [workspaces],
   );
-  const memberByKey = useMemo(() => new Map(members.map(member => [member.key, member.thread])), [members]);
+  const peerLabels = useMemo(
+    () => new Map(peers.map(peer => [peer.desktopId, peer.name || peer.desktopId])),
+    [peers],
+  );
+  const members = useMemo(
+    () => vibeCellsOf(threads, catalogs, deviceFilter, workspaceNames),
+    [catalogs, deviceFilter, threads, workspaceNames],
+  );
+  const memberByKey = useMemo(() => new Map(members.map(cell => [cell.key, cell])), [members]);
   const resolved = useMemo(
-    () => resolveOrder(members.map(member => ({ createdAt: member.thread.createdAt, key: member.key })), order),
+    () => resolveOrder(members.map(cell => ({ createdAt: cell.createdAt, key: cell.key })), order),
     [members, order],
   );
   const cells = useMemo(
-    () => resolved.map(key => memberByKey.get(key)).filter((thread): thread is StoredThread => Boolean(thread)),
+    () => resolved.map(key => memberByKey.get(key)).filter((cell): cell is VibeCell => Boolean(cell)),
     [memberByKey, resolved],
   );
   const overflow = Math.max(0, cells.length - MAX_CELLS);
@@ -147,11 +189,15 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
   const focusIndex = useMemo(() => {
     if (!focusKey)
       return 0;
-    const index = shown.findIndex(thread => vibeKeyOfLocal(thread.id) === focusKey);
+    const index = shown.findIndex(cell => cell.key === focusKey);
     return index === -1 ? 0 : index;
   }, [focusKey, shown]);
   const focused = shown[focusIndex] ?? null;
-  const focusedKey = focused ? vibeKeyOfLocal(focused.id) : null;
+  const focusedKey = focused?.key ?? null;
+  // The focused *local* conversation, if that is what the ring is on: the panel's
+  // own approval queue and its input layer are this machine's, and a host's
+  // conversation answers its own approvals inside its own cell.
+  const focusedLocal = focused?.thread ?? null;
 
   const layout = useMemo(
     () => gridOf(shown.length, size.width || window.innerWidth, size.height || window.innerHeight, columns),
@@ -178,7 +224,7 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
   // The panel's own approvals: only the focused conversation can be answered
   // from here (one queue, not twelve). A cell shows its count and, at the focus
   // point, the answerable card.
-  const { activeApproval, decideApproval } = useApprovals(layer === "grid" ? null : focused?.id ?? null);
+  const { activeApproval, decideApproval } = useApprovals(layer === "grid" ? null : focusedLocal?.id ?? null);
 
   /**
    * Which cells need a human, and why.
@@ -189,26 +235,42 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
    */
   const attention = useMemo(() => {
     const reasons = new Map<string, VibeAttentionReason>();
-    for (const thread of shown) {
-      const reason = attentionOf({
-        approvals: approvalCounts.get(thread.id) ?? 0,
-        runStatus: runStatuses[thread.id]?.status ?? null,
-        unread: unreadThreadIds.has(thread.id),
-      });
+    for (const cell of shown) {
+      const thread = cell.thread;
+      // A host's answer is narrower than this machine's: its catalogue reports whether
+      // a run is in flight but not a failure or an unread mark, and its approvals
+      // arrive *at the cell* that draws them (`VibeRemoteCell`), not in the rail's
+      // count. So a remote cell can be busy, and that is not attention — the rule is
+      // the same one as here, applied to the facts the source actually has.
+      const reason = thread
+        ? attentionOf({
+            approvals: approvalCounts.get(thread.id) ?? 0,
+            runStatus: runStatuses[thread.id]?.status ?? null,
+            unread: unreadThreadIds.has(thread.id),
+          })
+        : attentionOf({ approvals: 0, runStatus: null, unread: false });
       if (reason)
-        reasons.set(vibeKeyOfLocal(thread.id), reason);
+        reasons.set(cell.key, reason);
     }
     return reasons;
   }, [approvalCounts, runStatuses, shown, unreadThreadIds]);
   const attentionCount = attention.size;
+
+  /** "Remove from the panel" is "unpin", on whichever machine owns the cell. */
+  const removeFromPanel = useCallback((cell: VibeCell) => {
+    if (cell.thread)
+      onPinLocal(cell.thread.id, false);
+    else if (cell.desktopId && cell.session)
+      onPinRemote(cell.desktopId, cell.session.sessionId, false);
+  }, [onPinLocal, onPinRemote]);
 
   const persistOrder = useCallback((next: string[]) => {
     setOrder(next);
     writeVibeOrder(next);
   }, []);
 
-  const setFocus = useCallback((thread: StoredThread | null) => {
-    setFocusKey(thread ? vibeKeyOfLocal(thread.id) : null);
+  const setFocus = useCallback((cell: VibeCell | null) => {
+    setFocusKey(cell?.key ?? null);
   }, []);
 
   const moveFocus = useCallback((direction: "up" | "down" | "left" | "right") => {
@@ -239,13 +301,13 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
   useCommand("vibe.focus.down", () => moveFocus("down"), onGrid);
   useCommand("vibe.focus.left", () => moveFocus("left"), onGrid);
   useCommand("vibe.focus.right", () => moveFocus("right"), onGrid);
-  // `OK` on a cell opens its **input layer**, not a reading view: speaking is the
-  // cheapest thing this panel can do, so it gets the shortest path. Watching
-  // without speaking is one more key (`Esc`), which is also how a reader who
-  // changed their mind gets out.
+  // `OK` on a cell opens its **input layer** for this machine's conversations, and
+  // its reading layer for a host's: dictation is this machine's (`chrome="input"`
+  // mounts a composer, and a remote cell deliberately has none — see `VIBE.md` §5).
   useCommand("vibe.open", () => {
-    if (focused)
-      setLayer("input");
+    if (!focused)
+      return;
+    setLayer(focused.kind === "local" ? "input" : "read");
   }, onGrid);
   useCommand("vibe.close", onClose, onGrid);
   useCommand("vibe.cell", (binding) => {
@@ -262,10 +324,7 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
   useCommand("vibe.back", () => setLayer("grid"), onRead);
   useCommand("vibe.zoom.previous", () => stepFocus(-1), onRead);
   useCommand("vibe.zoom.next", () => stepFocus(1), onRead);
-  useCommand("vibe.input.open", () => {
-    if (focused)
-      setLayer("input");
-  }, onRead);
+  useCommand("vibe.input.open", () => setLayer("input"), onRead && focused?.kind === "local");
 
   // ── Input layer ───────────────────────────────────────────────────────────
   // Sending is **not** here: `⏎` is the composer's own fixed key, which already
@@ -310,11 +369,14 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
   });
   useCommand("vibe.remove", () => {
     if (focused)
-      onTogglePin(focused);
+      removeFromPanel(focused);
   });
   // The remote's `Menu`. It is also the input layer's way out of the editor's
   // chrome, which is why it is one of the few commands allowed to run over it.
   useCommand("vibe.menu", () => setMenuOpen(true));
+  // The panel's own "add a conversation", for the pointer and the keyboard: the
+  // dialog is a three-column list, which a remote's four arrows cannot drive.
+  useCommand("vibe.add", () => setAddOpen(true));
   /**
    * Jump to the next conversation that needs a human.
    *
@@ -325,8 +387,8 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
    * one more press to find out would make the queue pointless.
    */
   useCommand("vibe.attention", () => {
-    const next = nextAttention(shown.map(thread => vibeKeyOfLocal(thread.id)), attention, focusedKey);
-    const target = next ? shown.find(thread => vibeKeyOfLocal(thread.id) === next) : null;
+    const next = nextAttention(shown.map(cell => cell.key), attention, focusedKey);
+    const target = next ? shown.find(cell => cell.key === next) : null;
     if (!target)
       return;
     setFocus(target);
@@ -370,6 +432,23 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
     />
   );
 
+  /** A cell's body: this machine's conversation, or a host's. */
+  const cellBody = (cell: VibeCell, ownsCommands: boolean) => {
+    if (cell.thread)
+      return threadView(cell.thread, "read", ownsCommands);
+    const catalog = catalogs.find(item => item.desktopId === cell.desktopId);
+    if (!catalog || !cell.session)
+      return null;
+    return (
+      <VibeRemoteCell
+        catalog={catalog}
+        onOpenInShell={() => onOpenRemoteInShell(catalog.desktopId, cell.session!.sessionId)}
+        peer={peers.find(peer => peer.desktopId === catalog.desktopId)}
+        session={cell.session}
+      />
+    );
+  };
+
   const arrows = ["vibe.focus.left", "vibe.focus.up", "vibe.focus.down", "vibe.focus.right"]
     .map(id => bindingLabel(id as never, overrides, isMac))
     .filter(Boolean)
@@ -387,19 +466,44 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
    * teach the reader that the menu is decoration, which on a seven-key device is
    * the end of the feature.
    */
+  const machines = [
+    { id: "local", label: t("devices.local") },
+    ...catalogs.map(catalog => ({ id: catalog.desktopId, label: peerLabels.get(catalog.desktopId) ?? catalog.desktopId })),
+  ];
+  // "All machines" is a real choice, not the absence of one: it is what the panel
+  // shows before anyone filters, and the row shows it by name.
+  const deviceOrder: VibeDeviceFilter[] = [
+    { kind: "all" },
+    ...machines.map(machine => ({ desktopId: machine.id, kind: "device" as const })),
+  ];
+  const deviceIndex = deviceOrder.findIndex((entry) => {
+    if (entry.kind === "all")
+      return deviceFilter.kind === "all";
+    return deviceFilter.kind === "device" && deviceFilter.desktopId === entry.desktopId;
+  });
+  const deviceLabel = (entry: VibeDeviceFilter) => {
+    if (entry.kind === "all")
+      return t("devices.all");
+    return machines.find(machine => machine.id === entry.desktopId)?.label ?? entry.desktopId;
+  };
+  const chooseDevice = (entry: VibeDeviceFilter) => {
+    setDeviceFilter(entry);
+    writeVibeDevice(entry);
+  };
+
   const menuRows: VibeMenuRow[] = [
     // What needs a human, first: on a remote this is the screen's opening question,
     // and a menu whose first row is "columns" answers something nobody asked.
     ...(attentionCount > 0
       ? shown
-          .filter(thread => attention.has(vibeKeyOfLocal(thread.id)))
-          .map((thread, index) => ({
-            id: `attention:${thread.id}`,
-            label: thread.title,
-            value: t(`attention.${attention.get(vibeKeyOfLocal(thread.id))!}`),
+          .filter(cell => attention.has(cell.key))
+          .map((cell, index) => ({
+            id: `attention:${cell.key}`,
+            label: cell.title,
+            value: t(`attention.${attention.get(cell.key)!}`),
             group: index === 0,
             onRun: () => {
-              setFocus(thread);
+              setFocus(cell);
               setLayer("read");
               closeMenu();
             },
@@ -413,6 +517,27 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
           group: true,
           onRun: () => {},
         }]),
+    {
+      id: "add",
+      label: t("menu.add"),
+      group: true,
+      onRun: () => {
+        setAddOpen(true);
+        closeMenu();
+      },
+      description: t("menu.addHint"),
+    },
+    {
+      id: "device",
+      label: t("devices.label"),
+      value: deviceLabel(deviceOrder[deviceIndex] ?? { kind: "all" }),
+      onRun: () => chooseDevice({ kind: "all" }),
+      // ←/→ walks the machines, wrapping: this computer, then each paired host.
+      onAdjust: (delta) => {
+        const at = deviceIndex === -1 ? 0 : deviceIndex;
+        chooseDevice(deviceOrder[(at + delta + deviceOrder.length) % deviceOrder.length]!);
+      },
+    },
     {
       id: "layout",
       label: t("menu.layout"),
@@ -449,14 +574,21 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
       group: true,
       label: t("menu.remove"),
       disabled: !focused,
-      onRun: () => focused && onTogglePin(focused),
+      onRun: () => focused && removeFromPanel(focused),
       description: t("menu.removeHint"),
     },
     {
       id: "open-in-shell",
       label: t("menu.openInShell"),
       disabled: !focused,
-      onRun: () => focused && onOpenInShell(focused),
+      onRun: () => {
+        if (!focused)
+          return;
+        if (focused.thread)
+          onOpenInShell(focused.thread);
+        else if (focused.desktopId && focused.session)
+          onOpenRemoteInShell(focused.desktopId, focused.session.sessionId);
+      },
     },
     {
       id: "fullscreen",
@@ -482,7 +614,7 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
    * would mount it twice — two subscriptions, two history reads, one truth.
    */
   function grid(excludeKey: string | null, dimmed: boolean) {
-    const visible = shown.filter(thread => vibeKeyOfLocal(thread.id) !== excludeKey);
+    const visible = shown.filter(cell => cell.key !== excludeKey);
     return (
       <div
         aria-hidden={dimmed || undefined}
@@ -495,10 +627,9 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
           gridTemplateRows: `repeat(${layout.rows}, minmax(0, 1fr))`,
         }}
       >
-        {visible.map((thread, index) => {
-          const key = vibeKeyOfLocal(thread.id);
-          const focusedCell = key === focusedKey;
-          const approvals = approvalCounts.get(thread.id) ?? 0;
+        {visible.map((cell, index) => {
+          const focusedCell = cell.key === focusedKey;
+          const approvals = cell.thread ? approvalCounts.get(cell.thread.id) ?? 0 : 0;
           return (
             <section
               className={cn(
@@ -508,11 +639,12 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
                   : "border-line-soft",
               )}
               data-vibe-cell={index + 1}
-              key={key}
+              data-vibe-cell-kind={cell.kind}
+              key={cell.key}
               onMouseDown={dimmed
                 ? undefined
                 : () => {
-                    setFocus(thread);
+                    setFocus(cell);
                     setLayer("read");
                   }}
               style={{ gridColumn: cellPosition(index, layout).column + 1 }}
@@ -522,19 +654,34 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
                   "flex h-7 shrink-0 items-center gap-2 border-b px-2 text-xs",
                   focusedCell ? "border-accent/40 bg-accent-soft/40" : "border-line-soft/60",
                 )}
-                onDoubleClick={dimmed ? undefined : () => onOpenInShell(thread)}
-                title={thread.title}
+                onDoubleClick={dimmed
+                  ? undefined
+                  : () => (cell.thread ? onOpenInShell(cell.thread) : cell.desktopId && cell.session && onOpenRemoteInShell(cell.desktopId, cell.session.sessionId))}
+                title={cell.title}
               >
                 <span className="font-mono text-[11px] text-ink-faint">{index + 1}</span>
-                <span className="min-w-0 flex-1 truncate font-medium">{thread.title}</span>
-                {isRunning(runStatuses[thread.id])
+                <span className="min-w-0 flex-1 truncate font-medium">{cell.title}</span>
+                {cell.desktopId
+                  ? (
+                      <span className="shrink-0 truncate text-[10px] text-ink-muted">
+                        {peerLabels.get(cell.desktopId) ?? cell.desktopId}
+                      </span>
+                    )
+                  : null}
+                {cell.thread && isRunning(runStatuses[cell.thread.id])
                   ? <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-accent" title={t("running")} />
                   : null}
-                {/* Why this cell is in the attention queue. The approval badge below
-                    already counts approvals; this is the other two reasons, and it
-                    is the only place a *failed* run says so without opening the cell. */}
+                {approvals > 0
+                  ? <Badge className="h-5 px-1.5" tone="warning">{approvals}</Badge>
+                  : null}
+                {cell.thread && unreadThreadIds.has(cell.thread.id)
+                  ? <span className="size-1.5 shrink-0 rounded-full bg-info" title={t("unread")} />
+                  : null}
+                {/* Why this cell is in the attention queue. The approval badge above
+                    already counts approvals; this is the other two reasons, and it is
+                    the only place a *failed* run says so without opening the cell. */}
                 {(() => {
-                  const reason = attention.get(key);
+                  const reason = attention.get(cell.key);
                   return reason === "failed" || reason === "finished"
                     ? (
                         <span
@@ -552,15 +699,9 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
                       )
                     : null;
                 })()}
-                {approvals > 0
-                  ? <Badge className="h-5 px-1.5" tone="warning">{approvals}</Badge>
-                  : null}
-                {unreadThreadIds.has(thread.id)
-                  ? <span className="size-1.5 shrink-0 rounded-full bg-info" title={t("unread")} />
-                  : null}
               </header>
               <div className="min-h-0 flex-1">
-                {threadView(thread, "read", false)}
+                {cellBody(cell, false)}
               </div>
             </section>
           );
@@ -569,13 +710,22 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
     );
   }
 
+  /**
+   * The reading layer's keys, by cell kind: a host's conversation has no input layer,
+   * so the key that would open one is not offered there rather than being offered and
+   * doing nothing.
+   */
+  const readHintIds: Parameters<typeof VibeHintBar>[0]["ids"] = focused?.kind === "local"
+    ? ["vibe.zoom.previous", "vibe.attention", "vibe.input.open", "vibe.menu", "vibe.back"]
+    : ["vibe.zoom.previous", "vibe.attention", "vibe.menu", "vibe.back"];
+
   return (
     <div
       className="fixed inset-0 z-40 flex flex-col bg-canvas text-ink"
       // Which conversation the ring is on, and which layer is on top. Two facts the
       // panel's own keys move, and the only ones a capture can assert the way a
       // reader sees them (a screenshot cannot show focus).
-      data-vibe-focused={focused?.id ?? ""}
+      data-vibe-focused={focused?.key ?? ""}
       data-vibe-layer={layer}
     >
       <header className="flex h-9 shrink-0 select-none items-center gap-3 border-b border-line-soft/60 px-3">
@@ -584,6 +734,13 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
           {t("count", { count: shown.length })}
           {overflow > 0 ? ` · ${t("overflow", { count: overflow })}` : ""}
         </span>
+        {deviceFilter.kind === "device"
+          ? (
+              <span className="text-xs text-ink-muted" data-vibe-device={deviceFilter.desktopId}>
+                {deviceLabel(deviceFilter)}
+              </span>
+            )
+          : null}
         {attentionCount > 0
           ? (
               <span className="text-xs font-medium text-warning" data-vibe-attention="">
@@ -638,6 +795,13 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
             <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-8 text-center">
               <p className="text-sm font-medium text-ink">{t("empty.title")}</p>
               <p className="max-w-md text-xs leading-5 text-ink-soft">{t("empty.body")}</p>
+              <button
+                className="mt-2 rounded-md border border-line-soft px-3 py-1 text-xs text-ink-soft hover:bg-surface-subtle"
+                onClick={() => setAddOpen(true)}
+                type="button"
+              >
+                {t("menu.add")}
+              </button>
             </div>
           )
         : layer === "grid"
@@ -648,15 +812,25 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
                   <div className="flex h-7 shrink-0 items-center gap-2 px-1 text-xs">
                     <span className="font-mono text-[11px] text-ink-faint">{focusIndex + 1}</span>
                     <span className="min-w-0 flex-1 truncate font-medium">{focused?.title ?? ""}</span>
+                    {focused?.desktopId
+                      ? <span className="text-[10px] text-ink-muted">{peerLabels.get(focused.desktopId) ?? focused.desktopId}</span>
+                      : null}
                     <span className="text-ink-faint">{t("of", { total: shown.length })}</span>
                   </div>
                   <div
                     className="min-h-0 flex-1 overflow-hidden rounded-lg border border-line-soft bg-surface"
-                    onDoubleClick={() => focused && onOpenInShell(focused)}
+                    onDoubleClick={() => {
+                      if (!focused)
+                        return;
+                      if (focused.thread)
+                        onOpenInShell(focused.thread);
+                      else if (focused.desktopId && focused.session)
+                        onOpenRemoteInShell(focused.desktopId, focused.session.sessionId);
+                    }}
                   >
-                    {focused ? threadView(focused, "read", true) : null}
+                    {focused ? cellBody(focused, true) : null}
                   </div>
-                  <VibeHintBar ids={["vibe.zoom.previous", "vibe.input.open", "vibe.menu", "vibe.back"]} />
+                  <VibeHintBar ids={readHintIds} />
                 </div>
               )
             : (
@@ -675,11 +849,11 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
                       <div className="flex h-9 shrink-0 select-none items-center gap-2 border-b border-line-soft/60 bg-surface-subtle px-4 text-xs">
                         <span className="text-ink-soft">{t("input.to")}</span>
                         <span className="min-w-0 truncate text-sm font-medium">{focused?.title ?? ""}</span>
-                        {focused ? <Badge className="h-5" tone="neutral">{t("input.local")}</Badge> : null}
+                        {focusedLocal ? <Badge className="h-5" tone="neutral">{t("input.local")}</Badge> : null}
                         <span className="ml-auto font-mono text-[11px] text-ink-faint">{arrows}</span>
                       </div>
                       <div className="min-h-0 flex-1">
-                        {focused
+                        {focusedLocal
                           ? (
                               <VibeThreadView
                                 chrome="input"
@@ -695,9 +869,9 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
                                   view.onApprovalDecided();
                                 }}
                                 onLeaveInput={() => setLayer("read")}
-                                thread={focused}
+                                thread={focusedLocal}
                                 view={view}
-                                workspacePath={workspacePathOf(focused)}
+                                workspacePath={workspacePathOf(focusedLocal)}
                               />
                             )
                           : null}
@@ -710,10 +884,26 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
       {menuOpen
         ? <VibeMenu onClose={closeMenu} rows={menuRows} title={t("menu.title")} />
         : null}
+      {addOpen
+        ? (
+            <AddToVibeDialog
+              catalogs={catalogs}
+              members={members}
+              onAddLocal={thread => onPinLocal(thread.id, true)}
+              onAddRemote={(desktopId, sessionId) => onPinRemote(desktopId, sessionId, true)}
+              onClose={() => setAddOpen(false)}
+              peerLabels={peerLabels}
+              threads={threads}
+              workspaces={workspaces}
+            />
+          )
+        : null}
     </div>
   );
 }
 
+/**
+ * One conversation as the panel draws it.
 /**
  * One conversation as the panel draws it.
  *
