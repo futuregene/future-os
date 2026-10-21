@@ -264,65 +264,12 @@ fn local_socket_path_from(
         return path.into();
     }
     if let Some(future_home) = future_home {
-        return fit_unix_socket_path(future_home.join("run").join("agent.sock"));
+        return future_home.join("run").join("agent.sock");
     }
     let home = home
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir);
-    fit_unix_socket_path(home.join(".future").join("run").join("agent.sock"))
-}
-
-/// A unix `sun_path` holds 104 bytes on macOS and 108 on Linux, NUL included.
-/// The endpoint also gets a sibling lease file (`<path>.owner.lock`), so the
-/// usable budget for the socket path itself is smaller than either limit.
-#[cfg(unix)]
-const SOCKET_PATH_BUDGET: usize = 90;
-
-/// Return a bindable socket path for `path`.
-///
-/// A FutureOS home long enough to push the socket past the `sun_path` limit
-/// (a deep checkout, a CI worktree, a nested project directory) would otherwise
-/// make the Agent fail to bind at all — the failure surfaces as
-/// "invalid argument" from `bind(2)`, far from its cause. Rather than refuse, the
-/// endpoint moves to a short, deterministic name under the temp directory, keyed
-/// by a hash of the path it wanted: two different homes still get two different
-/// sockets, and client and server derive it identically because both call this.
-///
-/// Short paths (the ordinary case) are returned unchanged, so the documented
-/// "the endpoint lives under the instance's own home" layout still holds.
-#[cfg(unix)]
-fn fit_unix_socket_path(path: std::path::PathBuf) -> std::path::PathBuf {
-    if path.as_os_str().len() <= SOCKET_PATH_BUDGET {
-        return path;
-    }
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(unix_path_bytes(&path));
-    let digest = hasher.finalize();
-    let stem: String = digest
-        .iter()
-        .take(8)
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    // A directory of our own inside the temp root, not the temp root itself:
-    // the endpoint's lease step chmods the socket's parent to 0700, and macOS
-    // refuses to chmod `$TMPDIR` ("Operation not permitted"), which is what a
-    // bare file there would hit. A per-user directory is ours to restrict, so
-    // the same protection applies without touching a shared one.
-    let root = std::env::temp_dir().join(format!("future-os-{}", current_uid()));
-    root.join(format!("{stem}.sock"))
-}
-
-/// The effective uid, for a per-user directory name inside the temp root.
-#[cfg(unix)]
-fn current_uid() -> u32 {
-    unsafe { libc::geteuid() }
-}
-
-#[cfg(unix)]
-fn unix_path_bytes(path: &std::path::Path) -> Vec<u8> {
-    use std::os::unix::ffi::OsStrExt;
-    path.as_os_str().as_bytes().to_vec()
+    home.join(".future").join("run").join("agent.sock")
 }
 
 #[cfg(unix)]
@@ -700,42 +647,6 @@ mod tests {
                 .join(".future")
                 .join("run")
                 .join("agent.sock")
-        );
-    }
-
-    /// A home deep enough to push the socket past the unix `sun_path` limit
-    /// would make the Agent fail to bind with a bare "invalid argument" from
-    /// `bind(2)`. The endpoint moves to a short deterministic name instead, and
-    /// two different homes still get two different sockets.
-    #[cfg(unix)]
-    #[test]
-    fn a_home_too_long_for_sun_path_gets_a_short_deterministic_endpoint() {
-        let long = std::path::PathBuf::from(format!("/tmp/{}", "d/".repeat(60)));
-        let first = local_socket_path_from(None, Some(long.clone()), None);
-        assert!(
-            first.as_os_str().len() <= SOCKET_PATH_BUDGET,
-            "still too long for bind: {}",
-            first.display()
-        );
-        // Deterministic: client and server derive the same name independently.
-        assert_eq!(first, local_socket_path_from(None, Some(long), None));
-        // Still per-instance: a different home is a different socket.
-        let other = std::path::PathBuf::from(format!("/tmp/{}x", "d/".repeat(60)));
-        assert_ne!(first, local_socket_path_from(None, Some(other), None));
-        // The lease file beside it must fit too (sun_path has room for one NUL).
-        let lease = format!("{}.owner.lock", first.display());
-        assert!(lease.len() <= 103, "lease path too long: {lease}");
-    }
-
-    /// Short homes keep the documented layout: the endpoint lives inside the
-    /// instance's own FutureOS home.
-    #[cfg(unix)]
-    #[test]
-    fn a_short_home_keeps_the_endpoint_inside_it() {
-        let home = std::path::PathBuf::from("/tmp/short-home");
-        assert_eq!(
-            local_socket_path_from(None, Some(home.clone()), None),
-            home.join("run").join("agent.sock")
         );
     }
 

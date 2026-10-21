@@ -175,14 +175,37 @@ pub(crate) mod test_support {
 
     impl TestHome {
         pub(crate) fn new() -> Self {
+            Self::at(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("workspace root")
+                    .join("target/test-homes"),
+            )
+        }
+
+        /// A home whose absolute path is short enough for a unix `sun_path`.
+        ///
+        /// [`TestHome::new`] anchors the home under `<workspace>/target/test-homes`
+        /// so sandbox rules keep matching (see its comment). That anchor is also
+        /// as long as the checkout is deep: in a git worktree the derived
+        /// `<home>/.future/run/agent.sock` measured 106 bytes against the 104-byte
+        /// `sun_path` limit, and binding then fails with `EPERM` — a test that
+        /// binds a local endpoint fails for a reason that has nothing to do with
+        /// the code under test.
+        ///
+        /// The platform temp root is short on every supported system, and a test
+        /// that starts a real listener does not depend on sandbox rule matching,
+        /// so it uses this instead. Everything else keeps `new()`.
+        #[cfg_attr(not(unix), allow(dead_code))] // the limit it avoids is unix-only
+        pub(crate) fn short() -> Self {
+            Self::at(std::env::temp_dir())
+        }
+
+        fn at(base: std::path::PathBuf) -> Self {
             let guard = home_env_lock();
             let previous_home = std::env::var_os("HOME");
             let previous_userprofile = std::env::var_os("USERPROFILE");
             let previous_future_home = std::env::var_os("FUTURE_HOME");
-            let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("workspace root")
-                .join("target/test-homes");
             std::fs::create_dir_all(&base).expect("create test-homes dir");
             let dir = tempfile::tempdir_in(base).expect("tempdir");
             // Use the CANONICAL dir as $HOME: on macOS /var -> /private/var
