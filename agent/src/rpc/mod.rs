@@ -681,11 +681,13 @@ fn get_state_internal(
         pending_approvals,
         // `None` until a client sets a policy, which is deliberately distinct
         // from a policy of "off": the former means the default (no OS
-        // wrapping), the latter an explicit choice.
+        // wrapping), the latter an explicit choice. The value is the full mode
+        // ("auto" when a model reviewer is configured), so clients can tell
+        // automatic review apart from the plain sandbox tier.
         sandbox_tier: sess
             .sandbox_policy
             .as_ref()
-            .map(|policy| policy.tier.as_str().to_string()),
+            .map(|policy| policy.mode().to_string()),
         // The persistent per-session append segment (read-back half of
         // `append_system_prompt`) and whether project context is folded in.
         // `context_files` alone cannot answer the latter: an enabled session

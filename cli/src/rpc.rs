@@ -555,9 +555,12 @@ impl RunClient {
         Ok(())
     }
 
-    /// `setSandboxPolicy(tier, sessionId?)` — `set_sandbox_policy`. Only the
-    /// approval tier travels over the wire; the agent probes the OS sandbox
-    /// before accepting `sandbox`, so a failure here is a real refusal.
+    /// `setSandboxPolicy(tier, sessionId?)` — `set_sandbox_policy`. The mode
+    /// travels as `(tier, reviewer)`: `auto` is `sandbox` plus the `model`
+    /// reviewer, everything else keeps `user`. The agent probes the OS sandbox
+    /// (and, for `auto`, the Future account) before accepting the request, so a
+    /// downgrade is visible in the returned summary (`effectiveMode` vs
+    /// `configuredMode`).
     pub async fn set_sandbox_policy(&self, tier: &str, session_id: &str) -> Result<Value, String> {
         use future_rpc::proto::SandboxPolicy;
         let cmd = RpcCommand {

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Switch, Text, View } from "react-native";
 import { FONT_SIZE_PREFERENCE_ORDER, FONT_SIZE_SCALE, layout, radius, spacing } from "./tokens";
 import { getAppearance, setAppearance, type Appearance, type ThemeMode } from "./preferences";
 import { createThemedStyles, useAppearance, useTheme } from "./ThemeContext";
@@ -9,17 +9,20 @@ import { createThemedStyles, useAppearance, useTheme } from "./ThemeContext";
 const THEME_MODES: readonly ThemeMode[] = ["system", "light", "dark"];
 
 /**
- * This phone's appearance: the scheme and the text size.
+ * This phone's appearance: the scheme, the text size, and how a settled reply
+ * is read.
  *
- * Both are local to the phone — no desktop is read or written — and both are
- * stored before they are applied, so a choice that cannot be saved leaves the
- * screen on the value the store actually holds.
+ * All three are local to the phone — no desktop is read or written — and all
+ * three are stored before they are applied, so a choice that cannot be saved
+ * leaves the screen on the value the store actually holds. "Local to the phone"
+ * is why the reply setting covers every paired desktop at once: the transcript
+ * is drawn here, and the desktop sends the same ordered slices either way.
  */
 export function AppearanceSettings() {
   const styles = useStyles();
   const theme = useTheme();
   const { t } = useTranslation();
-  const { themeMode, fontSize } = useAppearance();
+  const { themeMode, fontSize, finalAnswerOnly } = useAppearance();
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
 
@@ -79,6 +82,20 @@ export function AppearanceSettings() {
         ))}
       </View>
       {failed ? <Text accessibilityRole="alert" style={styles.error}>{t("appearance.saveFailed")}</Text> : null}
+      <Text accessibilityRole="header" style={styles.label}>{t("appearance.reply")}</Text>
+      <View style={styles.row}>
+        <View style={styles.rowText}>
+          <Text style={styles.optionText}>{t("appearance.finalAnswerOnly")}</Text>
+          <Text style={styles.description}>{t("appearance.finalAnswerOnlyHint")}</Text>
+        </View>
+        <Switch
+          accessibilityLabel={t("appearance.finalAnswerOnly")}
+          disabled={saving}
+          onValueChange={value => void select({ finalAnswerOnly: value })}
+          trackColor={{ false: theme.colors.line, true: theme.colors.accent }}
+          value={finalAnswerOnly}
+        />
+      </View>
     </View>
   );
 }
@@ -102,5 +119,8 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   selected: { borderColor: theme.colors.accent, backgroundColor: theme.colors.accentSoft },
   dimmed: { opacity: 0.6 },
   optionText: { color: theme.colors.ink },
+  row: { flexDirection: "row", alignItems: "center", gap: spacing.sm, minHeight: layout.touchTarget },
+  rowText: { flex: 1, gap: 2 },
+  description: { color: theme.colors.inkMuted, fontSize: theme.font(13), lineHeight: theme.font(18) },
   error: { color: theme.colors.danger, fontSize: theme.font(13) },
 }));

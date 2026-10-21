@@ -536,11 +536,13 @@ pub(crate) fn handle_set_sandbox_policy(
         policy.model_reviewer = false;
     }
     let tier = policy.tier.as_str().to_string();
+    let effective_mode = policy.mode().to_string();
+    let reviewer = policy.model_reviewer;
     let summary = serde_json::json!({
         "tier": tier,
         "configuredMode": configured_mode,
-        "effectiveMode": policy.mode(),
-        "reviewer": if policy.model_reviewer { "model" } else { "user" },
+        "effectiveMode": effective_mode,
+        "reviewer": if reviewer { "model" } else { "user" },
         "requestedTier": requested_tier,
         "sandboxAvailable": probe.available,
         "sandboxCode": probe.code,
@@ -551,7 +553,12 @@ pub(crate) fn handle_set_sandbox_policy(
     let sess = session.read();
     sess.broadcaster.broadcast(SseEvent::new(
         "sandbox_policy_changed",
-        serde_json::json!({"tier": tier}),
+        serde_json::json!({
+            "tier": tier,
+            "mode": effective_mode,
+            "configuredMode": configured_mode,
+            "reviewer": if reviewer { "model" } else { "user" }
+        }),
     ));
     RpcResponse::ok(id, "set_sandbox_policy", summary)
 }

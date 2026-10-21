@@ -26,7 +26,7 @@ a "unidentified developer" or "damaged" warning. This is expected. Choose one:
   only its own submitted runs.
 · Incompatible or unavailable lock owners fail. Exit or upgrade that service;
   never delete its lock to bypass the check.
-· The desktop defaults to Unrestricted; select approvals/sandboxing in Settings.
+· The desktop defaults to Full access; select approvals/sandboxing in Settings.
   Online features still send requests to their corresponding services.
 · The command-line tool future is included at
   FutureOS.app/Contents/MacOS/future.

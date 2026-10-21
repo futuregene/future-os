@@ -95,14 +95,14 @@ const GUTTER: usize = 2;
 /// [`SHORTCUTS`] above is deliberately *not* sorted: it is grouped by what the
 /// keys act on (interrupt first, then the cycling keys, then paging), which is
 /// how a key table is read.
-const COMMANDS: [HelpEntry; 43] = [
+const COMMANDS: [HelpEntry; 44] = [
     HelpEntry {
         key: "/agent",
         desc: "agent version and instance info",
     },
     HelpEntry {
-        key: "/approve",
-        desc: "approve pending tool execution",
+        key: "/approve [id]",
+        desc: "allow the pending approval (front of the queue, or by id)",
     },
     HelpEntry {
         key: "/autocompact [on|off]",
@@ -169,6 +169,10 @@ const COMMANDS: [HelpEntry; 43] = [
         desc: "runtime metrics of this session",
     },
     HelpEntry {
+        key: "/mode [manual|sandbox|auto|off]",
+        desc: "show or set the approval mode",
+    },
+    HelpEntry {
         key: "/model [name]",
         desc: "select model",
     },
@@ -185,8 +189,8 @@ const COMMANDS: [HelpEntry; 43] = [
         desc: "start a new session",
     },
     HelpEntry {
-        key: "/permission [level]",
-        desc: "tool permissions; or set the level",
+        key: "/permission <all|workspace|none>",
+        desc: "set the tool permission level",
     },
     HelpEntry {
         key: "/provider-key <id>",
@@ -197,8 +201,8 @@ const COMMANDS: [HelpEntry; 43] = [
         desc: "providers, API keys, model sync",
     },
     HelpEntry {
-        key: "/reject",
-        desc: "reject pending tool execution",
+        key: "/reject [id]",
+        desc: "deny the pending approval (front of the queue, or by id)",
     },
     HelpEntry {
         key: "/reload",
@@ -206,7 +210,7 @@ const COMMANDS: [HelpEntry; 43] = [
     },
     HelpEntry {
         key: "/sandbox",
-        desc: "approval tier + tool permissions (one card)",
+        desc: "show and set the approval mode",
     },
     HelpEntry {
         key: "/scoped-models",
@@ -444,7 +448,7 @@ mod tests {
     /// The commands the card must list, as a set the test maintains by hand so
     /// it cannot silently follow a change to `COMMANDS` itself. Membership
     /// only — the order is `command_card_is_sorted_by_command_name`'s business.
-    const EXPECTED_COMMANDS: [&str; 43] = [
+    const EXPECTED_COMMANDS: [&str; 44] = [
         "/model [name]",
         "/new",
         "/sessions",
@@ -480,7 +484,8 @@ mod tests {
         "/autoretry [on|off]",
         "/tool-output [call-id]",
         "/sandbox",
-        "/permission [level]",
+        "/mode [manual|sandbox|auto|off]",
+        "/permission <all|workspace|none>",
         "/shell <cmd>",
         "/title [zh|en]",
         "/metrics",
@@ -730,11 +735,11 @@ mod tests {
         }
     }
 
-    /// `/sandbox` and `/permission` are two doors into one card, and the card
-    /// is the only place that can say so — the two rows used to describe two
-    /// different panels.
+    /// `/sandbox` is the approval-mode card; `/permission` sets the legacy
+    /// level directly — the two rows must not describe one shared panel, which
+    /// the card no longer is.
     #[test]
-    fn the_sandbox_and_permission_rows_name_the_shared_card() {
+    fn the_sandbox_and_permission_rows_name_their_own_surfaces() {
         let text = render_help(80)
             .iter()
             .map(|l| strip_ansi_codes(l))
@@ -747,11 +752,10 @@ mod tests {
                 .to_string()
         };
         let sandbox = row("/sandbox");
-        assert!(sandbox.contains("one card"), "{sandbox}");
-        assert!(sandbox.contains("tool permissions"), "{sandbox}");
+        assert!(sandbox.contains("approval mode"), "{sandbox}");
+        assert!(!sandbox.contains("tool permissions"), "{sandbox}");
         let permission = row("/permission");
-        assert!(permission.contains("tool permissions"), "{permission}");
-        assert!(permission.contains("level"), "{permission}");
+        assert!(permission.contains("permission level"), "{permission}");
     }
 
     #[test]
