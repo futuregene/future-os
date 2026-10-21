@@ -4,6 +4,7 @@ import type { VibeThreadViewProps } from "./VibeStage";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { onFutureEvent } from "../../lib/futureEvents";
 import { installShortcuts } from "../../test/installShortcuts";
 import { clearCommandHandlers } from "../keyboard/commands";
 import { resetShortcutScopes } from "../keyboard/scopes";
@@ -256,6 +257,98 @@ describe("the panel's layers", () => {
     press({ code: "Enter", key: "Enter" });
     expect(drawn("input")).toEqual(["a"]);
     expect(editableCount()).toBe(1);
+  });
+});
+
+describe("the menu", () => {
+  it("opens on the remote's menu button and closes on it again", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200)] });
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    expect(container.querySelector("[role=\"menu\"]")).not.toBeNull();
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    expect(container.querySelector("[role=\"menu\"]")).toBeNull();
+  });
+
+  it("holds the panel's chords while it is up", () => {
+    // `useKeyboardOwner`: a chord that would move a cell must not fire behind the
+    // menu. Without the registration the dispatcher would still see `⌘⌥→` and the
+    // order would move under a sheet the reader is reading.
+    mount({ threads: [thread("a", 100), thread("b", 200)] });
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    press({ code: "ArrowRight", key: "ArrowRight", ctrlKey: true, altKey: true });
+    expect(drawn("read")).toEqual(["a", "b"]);
+    expect(readVibePreferences().order).toEqual([]);
+  });
+
+  it("keeps the grid's arrows when the menu is up", () => {
+    // The menu holds the keyboard (`useKeyboardOwner`), so `↓` walks its rows
+    // instead of moving the ring behind it. Without that the reader would open the
+    // menu and silently re-select a different conversation.
+    mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    press({ code: "ArrowDown", key: "ArrowDown" });
+    press({ code: "Escape", key: "Escape" });
+    press({ code: "Enter", key: "Enter" });
+    expect(drawn("input")).toEqual(["a"]);
+  });
+
+  it("changes the layout from its own row and remembers it", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    // The first row is the layout choice; → moves it off "automatic".
+    press({ code: "ArrowRight", key: "ArrowRight" });
+    expect(readVibePreferences().columns).toBe(1);
+    // …and the panel says so, so the reader can see what they just chose: three
+    // cells in one column, marked as a manual choice.
+    expect(container.textContent).toContain("1×3");
+  });
+
+  it("unpins the focused cell from the menu", () => {
+    const onTogglePin = vi.fn();
+    mount({ onTogglePin, threads: [thread("a", 100), thread("b", 200)] });
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    // Walk to "remove". The walk skips the row that cannot run (the focused cell
+    // is already first, so "move earlier" is disabled), which is why this counts
+    // steps by what is selected rather than by a fixed number of presses.
+    const selected = () => container.querySelector("[aria-current=\"true\"]")?.getAttribute("data-vibe-menu-row");
+    for (let step = 0; step < 8 && selected() !== "remove"; step++)
+      press({ code: "ArrowDown", key: "ArrowDown" });
+    expect(selected()).toBe("remove");
+    press({ code: "Enter", key: "Enter" });
+    expect(onTogglePin).toHaveBeenCalledWith(expect.objectContaining({ id: "a" }));
+  });
+
+  it("gives the caret back when it closes from the input layer", () => {
+    // The menu takes focus when it opens. Closing it while dictating must hand the
+    // caret back, or the next `⏎` sends nothing and the next sentence is lost.
+    const focused = vi.fn();
+    const off = onFutureEvent("focus-composer", focused);
+    try {
+      mount({ threads: [thread("a", 100)] });
+      press({ code: "Enter", key: "Enter" });
+      expect(editableCount()).toBe(1);
+      press({ code: "ContextMenu", key: "ContextMenu" });
+      press({ code: "Escape", key: "Escape" });
+      expect(focused).toHaveBeenCalledTimes(1);
+      expect(editableCount()).toBe(1);
+    }
+    finally {
+      off();
+    }
+  });
+
+  it("does not ask for a caret when it closes from the grid", () => {
+    const focused = vi.fn();
+    const off = onFutureEvent("focus-composer", focused);
+    try {
+      mount({ threads: [thread("a", 100)] });
+      press({ code: "ContextMenu", key: "ContextMenu" });
+      press({ code: "Escape", key: "Escape" });
+      expect(focused).not.toHaveBeenCalled();
+    }
+    finally {
+      off();
+    }
   });
 });
 

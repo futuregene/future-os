@@ -190,6 +190,31 @@ hand-off when a conversation is opened, not a queue): a dictated message then
 waits for the current run and sends itself. Until then the draft is kept, and
 `Esc` never throws it away.
 
+### 5.5 The contract with the conversation views
+
+Two components carry the panel's rules into the window's own views. Their props are
+therefore a contract, not an implementation detail: **the defaults are what keeps an
+ordinary conversation ordinary**, and a change to either default is a change to the
+whole app.
+
+| Prop | On | Default | Who may pass it | What it does |
+| --- | --- | --- | --- | --- |
+| `chrome` | `AgentThread` | `"full"` | the panel only | `full` draws the title bar, the find bar and the floating composer; `read` draws the transcript and an approval card, **no composer**; `input` draws the conversation's tail with the composer in the flow |
+| `ownsCommands` | `AgentThread` | `true` | the panel only | whether this instance may claim `chat.stop` — off for every cell but the focused one, because one handler per command means "the last mounted wins" |
+| `triggers` | `Composer` → `MentionEditor` | `true` | the panel only | whether `@` / `/` / `#` open their menus while typing |
+| `onEmptySubmit` | `Composer` | absent | the panel only | what the send key means on an empty draft (close the input layer); absent everywhere else, where an empty submit is simply not a send |
+
+Two invariants ride on those defaults, and both are structural rather than
+supervisory:
+
+* **`read` mounts no composer**, so "the app has at most one editable element while
+  the panel is open" holds because the tree has one editor — not because focus is
+  policed.
+* **`chrome` defaults to `full` and `triggers` to `true`**, so a caller that knows
+  nothing about the panel gets exactly the behaviour it had before the panel
+  existed. A new prop follows the same rule: it goes in this table first, then in
+  the code.
+
 ## 6. Reading layer: blocks, and zoom at one or two columns
 
 `↑`/`↓` in the reading layer move a **block cursor** over the transcript — a user
@@ -270,11 +295,12 @@ to cover twenty-odd actions:
 | `Menu` | the layer's menu | the layer's menu | the layer's menu |
 | `Home` | first cell | jump to the live end | jump to the live end |
 
-**What P0 actually answers.** Arrows, `OK`, `Back` and the digits work; `Home`,
-`Menu`, the attention queue, the add dialog and the machine filter are P1. A command
-with no handler is not drawn in the hint line, so a P0 panel never promises a
-button it does not answer — the `Menu` row below is the plan, not a shipped
-behaviour.
+**What the panel answers today.** Arrows, `OK`, `Back`, the digits and `Menu` work
+(P1-1 added the menu); `Home`, the attention queue, the add dialog and the machine
+filter are still P1 and are **not** drawn in the hint line until they have a
+handler. The `Home` row below is the plan, not a shipped behaviour — and which of
+these buttons a given remote actually sends is unverified (§11: the hardware matrix
+is empty).
 
 Two deliberate choices:
 
@@ -292,7 +318,7 @@ Measured (see the matrix in §11), and honest about what stops working:
 
 | Situation | Behaviour | What remains |
 | --- | --- | --- |
-| No `Menu` button (sends nothing) | with P1's menu: unreachable **from the remote**. In P0 there is no menu yet, so it costs nothing today and everything once it lands | `⌘⇧K` on a keyboard; layout, add/remove and order already need the keyboard |
+| No `Menu` button (sends nothing) | the menu is unreachable **from the remote** — this is now a real loss (P1-1 landed it), and the reason §9.4's `aliases` matters | `⌘⇧K` on a keyboard, or the pointer's `⋯` in the panel's bar. Everything the menu configures (layout, order, remove, open in the window) is reachable there, so a remote without the button is usable but permanently stuck in the automatic layout |
 | No `Home` button | no "jump to the live end" | the transcript's own scroll-to-bottom control; sending still scrolls there by itself |
 | No `Back` button (or `Esc` swallowed) | **the panel still exits**: the exit button in the panel's top bar is always present and clickable, and `⌘⇧V` toggles it. Exiting may never depend on a key that a given remote does not have | pointer or keyboard |
 | Only `←` / `→` + one function key (a presentation clicker) | the panel opens, and `←`/`→` change conversation | not enough to be usable; documented so nobody tries |
@@ -418,7 +444,7 @@ What P0 landed, and what it deliberately left:
 | Stage | Content |
 | --- | --- |
 | **P0 — done** | the panel and its grid; scale-respecting cell rendering for local conversations; membership = pin; order = `createdAt` + drag/keyboard reordering; the three layers and the single-editor invariant; the input layer with dictation, the target bar and the three state meanings; `⌘⇧V`, arrows, `⏎`, `Esc`, `1`–`9`; explicit "still running" refusal |
-| **P1 — next** | remote conversations and the machine filter; the add dialog (machine → workspace → conversation, pins on add); zoom at one or two columns with the panel's three states; degraded rendering for non-focused cells; the attention queue; the send queue |
+| **P1 — in progress** | **done:** the menu (`Menu`, one column, `←`/`→` adjust a value in place) · **next:** the attention queue, then the machine filter with the add dialog and removal, then the input layer's chrome, then the send queue. Later in P1: zoom at one or two columns with the panel's three states; degraded rendering for non-focused cells |
 | **P2** | order in `app.db`; layout presets and a column override; `⌘/` cheat sheet; `h/j/k/l`; a "learn this button" diagnostics page; optional text size on the volume buttons |
 
 ## 15. Open questions
