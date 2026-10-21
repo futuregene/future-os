@@ -84,5 +84,6 @@
     "show": "Show the right column",
     "hide": "Hide the right column",
     "pin": "Pin the right column for this conversation"
-  }
+  },
+  "fullscreenFailed": "Full screen was refused — see the console for the reason"
 }

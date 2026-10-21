@@ -2529,6 +2529,23 @@
             "shot": "d-vibe-column-hidden.png"
           }
         ]
+      },
+      "vibe-bar": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "(() => {const bar = document.querySelector('header');const label = bar ? bar.querySelector('span') : null;return JSON.stringify({pad: bar ? getComputedStyle(bar).paddingLeft : null,labelLeft: label ? Math.round(label.getBoundingClientRect().left) : null,drag: bar ? bar.getAttribute('data-vibe-drag') : null,fullscreenButton: !!document.querySelector('[aria-label=\"切换全屏\"], [aria-label=\"Toggle full screen\"]'),});})()"
+          },
+          {
+            "eval": "document.querySelector('[data-vibe-layer]')?.getAttribute('data-vibe-layer')"
+          },
+          {
+            "shot": "d-vibe-bar.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",

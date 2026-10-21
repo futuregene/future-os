@@ -303,6 +303,30 @@ The line is read from the agent's cached state for that thread (what the session
 *actually* running), falling back to the shell's selection only until that state has
 been read once.
 
+### 5.7 The bar, and the two things it has to get right
+
+The panel is `fixed inset-0`: it is the only surface in the app whose content starts at
+x = 0, and the window is a macOS **overlay title bar**
+(`titleBarStyle: "Overlay"`, `trafficLightPosition: { x: 14, y: 26 }`), so the traffic
+lights are drawn *over* the page at roughly x 14–72. Two consequences, both of which were
+wrong once and are now pinned by tests:
+
+* **The bar's content starts past the lights.** 80px (`pl-20`) — the same reserve the
+  activity rail uses — on macOS outside fullscreen, and the ordinary 12px everywhere else
+  (other platforms, and fullscreen, where the system hides the lights). `barChrome.ts`
+  holds the rule; the numbers come from the config, not from taste.
+* **The bar is the drag handle.** While the panel is open nothing else visible is
+  draggable, so the bar starts a window drag on a press (`startWindowDrag`, which skips
+  buttons — the three controls in it keep working).
+
+And one thing about fullscreen that is not geometry: **`set_fullscreen` is an explicit
+capability grant**. `isFullscreen` comes from `core:default`, `setFullscreen` does not, and
+the button shipped once with the grant missing — the capability layer rejected the call,
+the code's `.catch(() => {})` swallowed it, and the button did nothing at all. So the
+toggle lives in one function (`fullscreen.ts`), a refusal **reaches the reader** as an
+error toast and the console, and `fullscreenCapability.test.ts` asserts the grant next to
+the code that needs it.
+
 ## 6. Reading layer: blocks, and zoom at one or two columns
 
 `↑`/`↓` in the reading layer move a **block cursor** over the transcript — a user
@@ -510,6 +534,10 @@ Automatable — and where each one lives:
 | The settings line shows the cell's own model, on both the reading and the input layer, and the input layer's composer is asked for values only | `VibeStage.test.tsx`, `Composer.inputLayer.test.tsx` |
 | The menu's three settings rows exist for a local cell, adjust with `←`/`→`, and are absent for a host's | `VibeStage.test.tsx` |
 | The second column: `auto` follows the width, `pinned` ignores it, `hidden` is never there; `⌘\` returns to `auto` rather than to `pinned`; the choice is per conversation and survives a relaunch | `readingPanel.test.ts`, `VibeStage.test.tsx` |
+| The bar reserves the macOS traffic-light box on macOS outside fullscreen, and uses the ordinary inset otherwise | `barChrome.test.ts`, plus the harness reporting `padding-left: 80px` and the label at x = 80 |
+| The bar is the window's drag surface, and its three buttons still click | `VibeStage.test.tsx` |
+| `core:window:allow-set-fullscreen` is granted to the main window, and no `deny-` entry undercuts it | `fullscreenCapability.test.ts` |
+| A refused fullscreen reaches the reader as an error toast, not silence | `VibeStage.test.tsx` |
 | The queue: one per conversation (a second is refused), visible on the cell, handed back into the box when the run ends, kept across a failure, and cancelled into the box rather than discarded | `vibeQueue.test.ts`, `VibeStage.test.tsx` |
 | The composer's half: a send during a run hands the text over and clears the box, a refusal leaves the text in place, and an idle send is still a send | `Composer.inputLayer.test.tsx` |
 | A remote's buttons survive a rebinding and a cleared binding | `shortcuts.test.ts`, `catalog.test.ts`, `keybinding.test.ts` |
