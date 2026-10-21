@@ -3291,6 +3291,9 @@ async fn an_automatic_reviewer_policy_reviews_a_sandboxed_run_without_asking_the
 enum CrashedTail {
     /// The model's tool call got its result: the request is already valid.
     ToolResult,
+    /// The tool call was issued and the process died before the result: the
+    /// request is invalid until something answers the call.
+    UnansweredToolCall,
     /// The model wrote text and the process died: a valid turn, but the loop
     /// used to refuse it.
     AssistantText,
@@ -3318,6 +3321,12 @@ fn crashed_entries(tail: CrashedTail) -> Vec<crate::session::SessionEntry> {
                 vec![call],
             ));
             entries.push(SessionEntry::new_tool("c1", "touched"));
+        }
+        CrashedTail::UnansweredToolCall => {
+            entries.push(SessionEntry::new_assistant(
+                serde_json::json!("running it"),
+                vec![call],
+            ));
         }
         CrashedTail::AssistantText => {
             entries.push(SessionEntry::new_assistant(
@@ -3539,6 +3548,18 @@ async fn a_tool_result_tail_continues_without_a_user_message() {
         "cont-tool-result",
         crashed_entries(CrashedTail::ToolResult),
         None,
+    )
+    .await;
+}
+
+/// Step 2: the tool call was issued and the process died before its result, so
+/// the request would be rejected (HTTP 400) until something answers the call.
+#[tokio::test(flavor = "current_thread")]
+async fn an_unanswered_tool_call_tail_continues_without_a_user_message() {
+    assert_a_continuation_is_accepted(
+        "cont-unanswered",
+        crashed_entries(CrashedTail::UnansweredToolCall),
+        Some("whether it ran is unknown"),
     )
     .await;
 }

@@ -35,7 +35,7 @@ fn load_dedupes_tool_results_preferring_real_over_placeholder() {
     // Placeholder written by a stale repair, then the real result.
     session.entries.push(SessionEntry::new_tool(
         "tc1",
-        "[Tool execution lost — shell was not executed before the session was interrupted]",
+        "[Tool execution lost — the Agent was interrupted after this shell call was issued and before its result was recorded, so whether it ran is unknown]",
     ));
     session
         .entries

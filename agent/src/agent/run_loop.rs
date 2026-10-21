@@ -150,6 +150,57 @@ fn assemble_assistant_content(
     content
 }
 
+/// Pair every tool call that never got a result with a placeholder result.
+///
+/// A request whose transcript ends with `tool_calls` and no matching `tool`
+/// messages is rejected upstream (HTTP 400), so a run interrupted between the
+/// call and its result cannot be continued without this. Request-only, like the
+/// recovery notice below: the durable transcript is not rewritten.
+///
+/// Whether the tool ran is genuinely unknown — the process died in between — so
+/// the text says that instead of claiming it did not execute. "Not executed"
+/// is a guess in the one direction that makes the model repeat a side effect
+/// that may already have landed.
+fn close_outstanding_tool_calls(messages: &mut Vec<AgentMessage>) {
+    let answered: std::collections::HashSet<String> = messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult { tool_call_id, .. } => Some(tool_call_id.clone()),
+            _ => None,
+        })
+        .collect();
+    // Only the last message can be a half-finished assistant turn: everything
+    // before it belongs to turns that already reached a result.
+    let outstanding: Vec<(String, String)> = messages
+        .last()
+        .map(|message| {
+            message
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::ToolCall { id, name, .. } if !answered.contains(id) => {
+                        Some((id.clone(), name.clone()))
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for (id, name) in outstanding {
+        messages.push(AgentMessage {
+            role: "tool".to_string(),
+            content: vec![ContentBlock::tool_result(
+                id,
+                crate::session::interrupted_tool_placeholder(&name),
+                true,
+            )],
+            name,
+            ..Default::default()
+        });
+    }
+}
+
 fn clear_unfinished_provider_identity(tool: &mut AgentToolCall) {
     if let Some(metadata) = tool
         .provider_metadata
@@ -188,9 +239,21 @@ impl Loop {
         }
         let mut active_checkpoint = self.active_checkpoint.lock().clone();
         let mut context_manager = self.context_manager.clone();
-        // Validate: last message must not be from assistant
+        // Validate: a conversation may end on an assistant turn only in the one
+        // case that is repairable — continuing a run whose process died after
+        // the model had issued a tool call and before its result was recorded.
+        // The last message can then be an assistant turn carrying unanswered
+        // tool calls, which the continuation answers with a placeholder; every
+        // other assistant tail is still the upstream bug this guard exists to
+        // catch.
         if let Some(last) = messages.last() {
-            if last.role == "assistant" {
+            let repairable_tool_calls = ctx.resume.is_some()
+                && last.role == "assistant"
+                && last
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::ToolCall { .. }));
+            if last.role == "assistant" && !repairable_tool_calls {
                 return Err(anyhow!(
                     "Internal error: conversation ended with an assistant message. \
                      This is a bug — please report it."
@@ -516,12 +579,20 @@ impl Loop {
                 work_messages.push(recovery);
             }
 
-            // Continuing a run this process died in. Request-only, because the
-            // durable transcript is not rewritten: the instruction says why the
-            // transcript stops mid-turn, and without it the model reads its own
-            // unfinished turn with no explanation and restarts the task.
+            // Continuing a run this process died in. Two repairs, both
+            // request-only, because the durable transcript is not rewritten:
+            //
+            // 1. A tool call with no result makes the request invalid — the
+            //    provider answers 400 rather than letting the model comment on
+            //    it. The interruption killed the process, so whether the tool
+            //    ran is genuinely unknown; the placeholder says so instead of
+            //    claiming it did not execute.
+            // 2. The instruction says why the transcript stops mid-turn.
+            //    Without it the model reads its own unfinished turn with no
+            //    explanation and tends to restart the task from the top.
             if turn == 0 {
                 if let Some(resume) = &ctx.resume {
+                    close_outstanding_tool_calls(&mut work_messages);
                     let mut notice = AgentMessage {
                         role: "user".into(),
                         content: vec![ContentBlock::text(resume.instruction.as_str())],
@@ -3030,8 +3101,76 @@ mod tests {
         );
     }
 
-    /// A crashed tail whose tool call already has its result is a valid request
-    /// as it stands; the continuation only adds the directive.
+    /// A call whose result was never recorded makes the request invalid
+    /// upstream, so continuation has to pair it. The placeholder must not claim
+    /// the tool did not run: the process died, so that is unknown, and guessing
+    /// "not executed" invites repeating a side effect that already landed.
+    #[test]
+    fn outstanding_tool_calls_are_closed_as_unknown() {
+        let mut messages = vec![
+            AgentMessage::new_user("user", serde_json::json!("go")),
+            AgentMessage {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolCall {
+                    id: "c1".to_string(),
+                    name: "shell".to_string(),
+                    args: serde_json::json!({}),
+                    provider_metadata: Default::default(),
+                }],
+                ..Default::default()
+            },
+        ];
+        super::close_outstanding_tool_calls(&mut messages);
+        let tool: Vec<&AgentMessage> = messages
+            .iter()
+            .filter(|message| message.role == "tool")
+            .collect();
+        assert_eq!(tool.len(), 1);
+        assert_eq!(tool[0].name, "shell");
+        let ContentBlock::ToolResult {
+            tool_call_id,
+            content,
+            is_error,
+        } = &tool[0].content[0]
+        else {
+            panic!("expected a tool result");
+        };
+        assert_eq!(tool_call_id, "c1");
+        assert!(content.contains("whether it ran is unknown"), "{content}");
+        assert!(*is_error);
+    }
+
+    /// An already-answered call must not be closed twice, or the model sees two
+    /// results for one call id.
+    #[test]
+    fn answered_tool_calls_are_left_alone() {
+        let mut messages = vec![
+            AgentMessage::new_user("user", serde_json::json!("go")),
+            AgentMessage {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolCall {
+                    id: "c1".to_string(),
+                    name: "shell".to_string(),
+                    args: serde_json::json!({}),
+                    provider_metadata: Default::default(),
+                }],
+                ..Default::default()
+            },
+            AgentMessage {
+                role: "tool".to_string(),
+                content: vec![ContentBlock::tool_result("c1", "done", false)],
+                name: "shell".to_string(),
+                ..Default::default()
+            },
+        ];
+        let before = messages.len();
+        super::close_outstanding_tool_calls(&mut messages);
+        assert_eq!(messages.len(), before);
+    }
+
+    /// A crashed tail must produce a request the provider accepts. A tail whose
+    /// call already has its result is valid as it stands; one whose call died
+    /// with the process is not, and the continuation has to answer it.
     #[tokio::test(flavor = "current_thread")]
     async fn each_crashed_tail_shape_produces_a_valid_continuation_request() {
         let tool_call = || ContentBlock::ToolCall {
@@ -3040,22 +3179,32 @@ mod tests {
             args: serde_json::json!({}),
             provider_metadata: Default::default(),
         };
-        let cases = [(
-            "a tool result",
-            vec![
-                AgentMessage {
+        let cases = [
+            (
+                "a tool result",
+                vec![
+                    AgentMessage {
+                        role: "assistant".to_string(),
+                        content: vec![tool_call()],
+                        ..Default::default()
+                    },
+                    AgentMessage {
+                        role: "tool".to_string(),
+                        content: vec![ContentBlock::tool_result("c1", "done", false)],
+                        name: "shell".to_string(),
+                        ..Default::default()
+                    },
+                ],
+            ),
+            (
+                "an unanswered tool call",
+                vec![AgentMessage {
                     role: "assistant".to_string(),
                     content: vec![tool_call()],
                     ..Default::default()
-                },
-                AgentMessage {
-                    role: "tool".to_string(),
-                    content: vec![ContentBlock::tool_result("c1", "done", false)],
-                    name: "shell".to_string(),
-                    ..Default::default()
-                },
-            ],
-        )];
+                }],
+            ),
+        ];
         for (shape, tail) in cases {
             let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_stop()])]);
             let loop_ = Loop::new(provider.clone(), "mock");
