@@ -1,7 +1,9 @@
 # The Vibe panel
 
-Status: **design agreed; implementation staged** (P0 in progress). This file is the
-product and interaction contract. The keys it uses live in
+Status: **P0 implemented** (grid, membership = pin, order, the three layers, the
+dictation layer); P1 (remote conversations, the machine filter, the add dialog, the
+two-column reading layer) and P2 are not. This file is the product and interaction
+contract. The keys it uses live in
 [`KEYBINDINGS.md`](KEYBINDINGS.md) — that file owns the keyboard table, this one
 owns the panel, and neither repeats the other.
 
@@ -70,8 +72,14 @@ the add dialog starts from the current filter.
 
 The layout is a pure function of cell count and window size (testable without a
 browser): 1 → 1×1, 2 → 2×1 (1×2 on a narrow window), 3–4 → 2×2, 5–6 → 3×2,
-7–9 → 3×3, 10–12 → 4×3. A cell's floor is about 520×420; the column count is the
-one that keeps every cell above it with a shape closest to 4:3.
+7–9 → 3×3, 10–12 → 4×3 — i.e. `ceil(sqrt(n))` columns, capped at four.
+
+A cell *likes* about 520×420, and that number is a **preference, not a floor**: no
+arrangement of five cells in a 1280px window can give every cell 520px, so
+refusing to draw would be worse than drawing 416px cells. The preference decides
+only one thing — when a window is narrow enough that **stacking beats squeezing**,
+which is why two cells become 1×2 rather than two slivers while five stay 3×2
+(stacking five would make 180px strips).
 
 * **A short last row is left empty, not stretched.** Cell 2 is always the second
   place. The keys can override the column count (`⌘=` / `⌘-`, `⌘0` back to auto).
@@ -135,6 +143,18 @@ The send key does not change meaning with the draft's state:
 No setting, no long press, no modifier. A key that sometimes sends and sometimes
 does nothing is a key the user stops trusting.
 
+**That key is the composer's own, not a command.** `⏎` already sends in the
+editor (`MentionEditor.onSubmit`, a `FIXED_KEYS` entry) and already stands down
+while an input method composes. The panel adds only the case the editor had no
+answer for — an empty draft closes the layer — and it adds it inside the send
+path, not in the command table. A command would have been a second owner on one
+press: the dispatcher listens in the capture phase, so it would run before the
+editor's submit, and the pair is one bad refactor away from sending twice.
+
+Because a cell's reading chrome mounts no composer at all, "closing the input
+layer cannot be undone by an auto-focus" is also structural rather than a flag:
+the editor is unmounted, so there is nothing to focus.
+
 ### 5.3 What the input layer turns off, and where that capability went
 
 The panel's editor is the app's ordinary composer (contentEditable, IME-tested by
@@ -145,9 +165,10 @@ the same tests) with three behaviours disabled while the layer is on:
    swallow the next utterance's keys. These stay off.
 2. **Skill recommendation.** A recommendation asks before sending, and the first
    `⏎` would then *not* send. In a sofa workflow that reads as a broken key.
-3. **Auto-focus outside the input layer.** The composer's mount/settle/switch
-   focus behaviour is driven by the layer instead, or closing the input layer
-   would be undone by the next render.
+3. **Auto-focus outside the input layer.** Nothing to disable in practice: the
+   composer is mounted *only* by the input layer, so a cell's reading chrome has no
+   editor and no focus effect to run. The layer's boundary is the component
+   boundary.
 
 **Where "name a file by voice" went**: not away — the fallback is
 `menu → read → @`, i.e. dictate, send, then in the reading layer add the mention
@@ -249,6 +270,12 @@ to cover twenty-odd actions:
 | `Menu` | the layer's menu | the layer's menu | the layer's menu |
 | `Home` | first cell | jump to the live end | jump to the live end |
 
+**What P0 actually answers.** Arrows, `OK`, `Back` and the digits work; `Home`,
+`Menu`, the attention queue, the add dialog and the machine filter are P1. A command
+with no handler is not drawn in the hint line, so a P0 panel never promises a
+button it does not answer — the `Menu` row below is the plan, not a shipped
+behaviour.
+
 Two deliberate choices:
 
 * **`OK` on an approval card opens it; it does not approve.** Approving is
@@ -265,7 +292,7 @@ Measured (see the matrix in §11), and honest about what stops working:
 
 | Situation | Behaviour | What remains |
 | --- | --- | --- |
-| No `Menu` button (sends nothing) | the menu is unreachable **from the remote** | `⌘⇧K` on a keyboard; the panel keeps working for reading and dictating, but layout, machine filter, add/remove and order need the keyboard or another device |
+| No `Menu` button (sends nothing) | with P1's menu: unreachable **from the remote**. In P0 there is no menu yet, so it costs nothing today and everything once it lands | `⌘⇧K` on a keyboard; layout, add/remove and order already need the keyboard |
 | No `Home` button | no "jump to the live end" | the transcript's own scroll-to-bottom control; sending still scrolls there by itself |
 | No `Back` button (or `Esc` swallowed) | **the panel still exits**: the exit button in the panel's top bar is always present and clickable, and `⌘⇧V` toggles it. Exiting may never depend on a key that a given remote does not have | pointer or keyboard |
 | Only `←` / `→` + one function key (a presentation clicker) | the panel opens, and `←`/`→` change conversation | not enough to be usable; documented so nobody tries |
@@ -298,25 +325,36 @@ commands on one chord.
 
 ## 11. Verification
 
-Automatable:
+Automatable — and where each one lives:
 
-* **The invariant**: with three cells on screen, exactly one editable element
-  exists, and after `↩` it is that cell's editor with the caret at the end.
-* **Focus is driven by the layer**: closing the input layer is not undone by the
-  composer's auto-focus effect (the effect's three triggers are all covered).
-* **A dictation's `⏎` never sends**: composing start → 200 characters → `⏎`
-  (`isComposing`) sends nothing; `compositionend` → `⏎` sends the trimmed text.
-* **The three state meanings**: empty `⏎` closes without sending; non-empty `⏎`
-  sends and lands in the reading layer, scrolled to the live end; a running
-  conversation refuses with its reason visible.
-* **Triggers stay off** in the input layer (`@`, `/`).
-* **Order**: created-time default; a user order wins and survives an unrelated
-  pin; a new pin lands by its `createdAt`; unpinning moves nobody.
-* **Membership**: adding an unpinned conversation pins it (both local and remote
-  paths), removing unpins it; a pinned workspace does not add its conversations.
-* **Two cells, two drafts**: switching cells never carries text between them.
-* **The hint line** lists exactly the commands that have a handler and a binding
-  in the current layer — deleting a label turns the test red.
+| Property | Test |
+| --- | --- |
+| **The invariant**: with cells on screen exactly one editable element exists once the input layer is open, and none while it is not | `VibeStage.test.tsx` (panel side), `AgentThread.chrome.test.tsx` (view side) |
+| The reading chrome mounts no composer at all, so closing the layer cannot be undone by an auto-focus | `AgentThread.chrome.test.tsx` |
+| A dictation's `⏎` never sends: `isComposing` and `keyCode 229` send nothing; the `⏎` after `compositionend` sends the trimmed text | `Composer.inputLayer.test.tsx`, `dispatch.test.ts` |
+| The three meanings of the send key: empty `⏎` closes without sending; non-empty `⏎` sends; `Shift+⏎` is a newline | `Composer.inputLayer.test.tsx` |
+| One layer at a time: `Esc` walks input → reading → grid → closed, and the grid's keys do not run over an editor | `VibeStage.test.tsx`, `dispatch.test.ts` |
+| Order: created-time default; a user order wins; a new pin lands by its `createdAt`; an unpin moves nobody; the ring follows the conversation, not the index | `order.test.ts`, `VibeStage.test.tsx` |
+| Membership: pinned and live only; a pinned workspace adds nothing; the remove key unpins the focused cell | `VibeStage.test.tsx` |
+| The grid table (1×1 … 4×3), the narrow-window stack, the explicit column override, no wrap at an edge | `layout.test.ts` |
+| The hint line lists exactly the commands with a handler **and** a binding | `hints.test.ts` |
+| A remote's buttons survive a rebinding and a cleared binding | `shortcuts.test.ts`, `catalog.test.ts`, `keybinding.test.ts` |
+
+Two of these were falsified by hand before landing (the assertions were removed,
+the tests went red, the assertions came back): the empty-draft close, and
+"pinned only".
+
+Still open, and honestly not covered:
+
+* **A running conversation's refusal.** The panel does not queue (P1), and the
+  visible reason lives on the composer's own state rather than in a test of the
+  panel. Until P1 this is a manual check.
+* **Trigger suppression.** The input layer passes no recommendation and the
+  triggers are the editor's, but nothing yet asserts that a dictated `@` opens no
+  menu; the editor's trigger is text-driven, so this needs a test at the editor's
+  level.
+* **Per-conversation column preference** (the reading layer's second column) is
+  P1 and not implemented.
 
 On hardware (manual, recorded in the matrix below):
 
@@ -359,18 +397,28 @@ window and not by unmounting the shell. Every hook that keeps run state, unread
 marks, approvals and remote polling alive lives there; a panel that owns its own
 copies would show a different truth than the rail.
 
-`AgentThread`'s content layer (transcript + paging + search + approval cards) is
-extracted and reused by a cell: a second message renderer would re-earn every
-scroll, paging and approval bug already fixed. That extraction is the first code
-task, because it is the risk — three streaming conversations on one screen is what
-decides whether the panel is usable.
+`AgentThread` grew a `chrome` prop (`full` | `read` | `input`) instead of a second
+renderer: a second message renderer would re-earn every scroll, paging and approval
+bug already fixed. The three chromes are one component with the surrounding pieces
+chosen per layer, and `read` simply mounts no composer — which is what turns the
+single-editor invariant into a property of the tree rather than a rule someone has
+to police (`VIBE.md` §5).
+
+What P0 actually shipped, against the plan above: `layout.ts` and `order.ts` as
+pure modules with their tables asserted in tests; `vibePreferences.ts` as the only
+file touching the panel's storage keys; `VibeStage.tsx` holding the layers, the
+membership and the geometry; `VibeHintBar.tsx` generating the hint line; and
+`VibeStage` wired into `AppShell` behind `vibeOpen`, *replacing* the shell's
+columns rather than covering them, so an editor can never stay mounted underneath.
 
 ## 14. Staging
 
+What P0 landed, and what it deliberately left:
+
 | Stage | Content |
 | --- | --- |
-| **P0** | the panel and its grid; scale-respecting cell rendering for local conversations; membership = pin; order = `createdAt` + drag/keyboard reordering; the three layers and the single-editor invariant; the input layer with dictation, the target bar and the three state meanings; `⌘⇧V`, arrows, `⏎`, `Esc`, `1`–`9`; explicit "still running" refusal |
-| **P1** | remote conversations and the machine filter; the add dialog (machine → workspace → conversation, pins on add); zoom at one or two columns with the panel's three states; degraded rendering for non-focused cells; the attention queue; the send queue |
+| **P0 — done** | the panel and its grid; scale-respecting cell rendering for local conversations; membership = pin; order = `createdAt` + drag/keyboard reordering; the three layers and the single-editor invariant; the input layer with dictation, the target bar and the three state meanings; `⌘⇧V`, arrows, `⏎`, `Esc`, `1`–`9`; explicit "still running" refusal |
+| **P1 — next** | remote conversations and the machine filter; the add dialog (machine → workspace → conversation, pins on add); zoom at one or two columns with the panel's three states; degraded rendering for non-focused cells; the attention queue; the send queue |
 | **P2** | order in `app.db`; layout presets and a column override; `⌘/` cheat sheet; `h/j/k/l`; a "learn this button" diagnostics page; optional text size on the volume buttons |
 
 ## 15. Open questions

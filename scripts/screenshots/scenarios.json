@@ -2181,6 +2181,46 @@
             "shot": "d-remote-multi-device-waiting.png"
           }
         ]
+      },
+      "vibe-grid": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_fig,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 2600
+          },
+          {
+            "eval": "(() => {\n  const cells = [...document.querySelectorAll(\"[data-vibe-cell]\")];\n  const grid = document.querySelector(\".grid\");\n  return JSON.stringify({\n    cells: cells.length,\n    titles: cells.map(c => c.querySelector(\"header span:nth-child(2)\") ? c.querySelector(\"header span:nth-child(2)\").textContent : null),\n    editors: document.querySelectorAll('[contenteditable=\"true\"]').length,\n    cols: grid ? getComputedStyle(grid).gridTemplateColumns : null,\n    rows: grid ? getComputedStyle(grid).gridTemplateRows : null,\n  });\n})()"
+          },
+          {
+            "shot": "d-vibe-grid.png"
+          }
+        ]
+      },
+      "vibe-input": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_fig,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 2600
+          },
+          {
+            "key": "ArrowDown"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "eval": "(() => {\n  const cells = [...document.querySelectorAll(\"[data-vibe-cell]\")];\n  const ed = document.querySelector('[contenteditable=\"true\"]');\n  const bar = document.querySelector(\"[data-vibe-target]\");\n  return JSON.stringify({\n    cells: cells.length,\n    editors: document.querySelectorAll('[contenteditable=\"true\"]').length,\n    activeIsEditor: document.activeElement === ed,\n    hint: document.body.innerText.split(\"\\n\").filter(l => /发送|收起|菜单|Escape|Esc|↩/.test(l)).slice(-6),\n    target: bar ? bar.textContent : null,\n    layerHint: [...document.querySelectorAll(\"kbd\")].map(k => k.textContent).slice(0, 8),\n  });\n})()"
+          },
+          {
+            "shot": "d-vibe-input.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",

@@ -1,0 +1,21 @@
+{
+  "title": "Vibe",
+  "count": "{{count}} 个置顶",
+  "overflow": "另有 {{count}} 个超出网格上限",
+  "manualLayout": "手动",
+  "fullscreen": "切换全屏",
+  "shortcuts": "全部快捷键",
+  "close": "关闭面板",
+  "running": "正在运行",
+  "unread": "有未读",
+  "of": "共 {{total}} 个",
+  "input": {
+    "to": "正在对",
+    "local": "本机"
+  },
+  "empty": {
+    "title": "还没有置顶的会话",
+    "body": "置顶的会话会出现在这里。可以在左边栏的行菜单里置顶，或等面板有了「加入」键再用它。"
+  },
+  "shortcutHint": "快捷键："
+}

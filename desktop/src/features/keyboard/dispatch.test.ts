@@ -206,25 +206,30 @@ describe("several keys on one command", () => {
 });
 
 describe("the input layer", () => {
-  // The one place a bare key runs *over* a text field: `↩` sends, where every
-  // other layer's `↩` belongs to the editor.
-  const inputBindings = { "vibe.input.close": "escape", "vibe.input.send": "enter" };
+  // The one place a bare key runs *over* a text field. Note what is **not** here:
+  // sending. `⏎` sends through the composer's own editor (`MentionEditor.onSubmit`,
+  // a fixed key), not through this table, so the two never share one press.
+  const inputBindings = { "vibe.input.close": "escape", "vibe.menu": "mod+shift+k" };
   const scopes = ["vibeInput", "vibeZoom", "vibe", "global"] as const;
 
-  it("sends with ↩ while the caret is in the editor", () => {
+  it("runs the layer's own key while the caret is in the editor", () => {
+    // `Esc` over the editor backs out of the layer; the draft is the composer's,
+    // so half a sentence is not thrown away — and the key still had to get past
+    // the "a bare key belongs to the field" rule to do anything at all.
     const hit = dispatchShortcut(
-      event("Enter", { code: "Enter" }),
+      event("Escape", { code: "Escape" }),
       context({ bindings: inputBindings, editable: true, scopes }),
     );
-    expect(hit?.id).toBe("vibe.input.send");
+    expect(hit?.id).toBe("vibe.input.close");
   });
 
-  it("leaves a composing ↩ to the input method", () => {
-    // This is what makes dictation safe: the Enter that commits a candidate (or
-    // ends a phrase) is never the Enter that sends.
-    const press = (overrides: Partial<ShortcutEvent>) => event("Enter", { code: "Enter", ...overrides });
+  it("leaves a composing key to the input method", () => {
+    // This is what makes dictation safe: the key that commits a candidate (or ends
+    // a phrase) never runs a command, whatever that command would have been.
+    const press = (overrides: Partial<ShortcutEvent>) => event("Escape", { code: "Escape", ...overrides });
     expect(dispatchShortcut(press({ isComposing: true }), context({ bindings: inputBindings, editable: true, scopes }))).toBeNull();
     expect(dispatchShortcut(press({ keyCode: 229 }), context({ bindings: inputBindings, editable: true, scopes }))).toBeNull();
+    expect(dispatchShortcut(event("Enter", { code: "Enter", isComposing: true }), context({ bindings: inputBindings, editable: true, scopes }))).toBeNull();
   });
 
   it("leaves another layer's bare key to the editor", () => {

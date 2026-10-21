@@ -61,6 +61,8 @@ let settings: typeof appSettings = { ...appSettings };
  * the fixture's default state.
  */
 let harnessStreamingThreadIds: string[] = [];
+/** Thread ids `?pinned=` added to the fixture's own pin (see `HarnessState`). */
+let harnessPinnedThreadIds: string[] = [];
 
 export interface HarnessState {
   /** Thread ids the agent reports as streaming (drives the row's running ring). */
@@ -74,10 +76,23 @@ export interface HarnessState {
    * gated on the run's own status.
    */
   unread?: string[];
+  /**
+   * Thread ids to pin for this capture (drives the Vibe panel's membership).
+   *
+   * The fixture ships one pinned conversation, which is what the rail's own
+   * pinned section needs to be reachable. A panel with a single cell would say
+   * nothing about the grid, so a capture that opens the panel pins a few more —
+   * here, and only for that page load.
+   */
+  pinned?: string[];
 }
 
 export function seedHarnessState(state: HarnessState) {
+  // Recorded, not applied: `threadList` is built below this function, so the flag
+  // is stamped on when the list is read (see `list_threads`). Stamping is
+  // idempotent, which is what makes that safe to do per read.
   harnessStreamingThreadIds = state.streaming ?? [];
+  harnessPinnedThreadIds = state.pinned ?? [];
   if (state.unread) {
     try {
       sessionStorage.setItem("future.unreadThreads", JSON.stringify(state.unread));
@@ -326,7 +341,14 @@ const handlers: Record<string, (args: any) => unknown> = {
     updatedAt: Date.now(),
   }),
   ensure_workspace_git: () => true,
-  list_threads: () => threadList,
+  list_threads: () => {
+    for (const id of harnessPinnedThreadIds) {
+      const target = threadList.find(thread => thread.id === id);
+      if (target)
+        target.pinned = true;
+    }
+    return threadList;
+  },
   get_recent_thread: () => threadList.find(thread => thread.id === "th_review") ?? null,
   mark_thread_opened: () => null,
   pin_thread: (args) => {
