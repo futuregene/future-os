@@ -313,21 +313,17 @@ describe("useNewConversation", () => {
     const syncSelection = vi.fn();
     const setSection = vi.fn();
     const setCenterMode = vi.fn();
-    // The tab the flow follows: the hook reports the created conversation's mode
-    // and the shell decides which list that is.
-    const onOpenedThread = vi.fn();
     const harness = renderHook(() => useNewConversation({
       refreshStore: mocks.refreshStore,
       syncSelection,
       setSection,
       setCenterMode,
-      onOpenedThread,
     }));
-    return { harness, onOpenedThread, setCenterMode, setSection, syncSelection };
+    return { harness, setCenterMode, setSection, syncSelection };
   }
 
   it("creates the thread, primes the selection and stages the first prompt", async () => {
-    const { harness, onOpenedThread, setCenterMode, setSection, syncSelection } = mount();
+    const { harness, setCenterMode, setSection, syncSelection } = mount();
     await act(async () => {
       await harness.current.startNewConversation({
         content: "  Fix   the   flaky test  ",
@@ -349,16 +345,14 @@ describe("useNewConversation", () => {
     expect(syncSelection).toHaveBeenCalledWith("m1", "high");
     expect(mocks.updateCachedAgentState).toHaveBeenCalledWith("new-1", { model: "m1", thinkingLevel: "high" });
     expect(mocks.refreshStore).toHaveBeenCalledWith("new-1");
-    expect(setSection).toHaveBeenCalledWith("conversations");
-    // A chat, so the shell is told to show the chats list.
-    expect(onOpenedThread).toHaveBeenCalledWith("chat");
+    expect(setSection).toHaveBeenCalledWith("chat");
     expect(setCenterMode).toHaveBeenCalledWith("thread");
     expect(harness.current.pendingPrompt).toMatchObject({ content: "  Fix   the   flaky test  ", targetThreadId: "new-1" });
   });
 
   it("falls back to the New Chat label for empty content and routes a workspace thread", async () => {
     mocks.createThread.mockResolvedValue(thread("ws-thread", { mode: "workspace" }));
-    const { harness, onOpenedThread, setSection } = mount();
+    const { harness, setSection } = mount();
     await act(async () => {
       await harness.current.startNewConversation({
         content: "   \n ",
@@ -374,8 +368,7 @@ describe("useNewConversation", () => {
       workspaceName: "Alpha",
       workspacePath: "/tmp/alpha",
     }));
-    expect(setSection).toHaveBeenCalledWith("conversations");
-    expect(onOpenedThread).toHaveBeenCalledWith("workspace");
+    expect(setSection).toHaveBeenCalledWith("workspace");
   });
 
   it("truncates an over-long title by characters, not code units", async () => {

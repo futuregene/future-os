@@ -5,7 +5,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ActivityRailAccountFooter } from "./ActivityRailAccountFooter";
-import { RailListMenu, ThreadItemMenu, WorkspaceHeaderMenu } from "./ActivityRailMenus";
+import { ChatSectionMenu, ThreadItemMenu, WorkspaceHeaderMenu } from "./ActivityRailMenus";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -249,25 +249,14 @@ describe("workspace header menu", () => {
   });
 });
 
-describe("the open list's menu", () => {
-  /** The one item every list has, and the shape a caller passes. */
-  const selectItem = (onSelect: () => void) => [{
-    icon: createElement("span"),
-    label: "Select chats",
-    onSelect,
-  }];
-
-  it("opens its trigger without bubbling and runs the item it was given", () => {
+describe("chat section menu", () => {
+  it("opens its trigger without bubbling and selects all chats", () => {
     const onOpenChange = vi.fn();
     const onSelect = vi.fn();
     const parentClick = vi.fn();
-    const view = mount(createElement(
-      "div",
-      { onClick: parentClick },
-      createElement(RailListMenu, { items: selectItem(onSelect), label: "Workspaces list actions", onOpenChange, open: true }),
-    ));
+    const view = mount(createElement("div", { onClick: parentClick }, createElement(ChatSectionMenu, { onOpenChange, onSelect, open: true })));
     const trigger = view.container.querySelector<HTMLButtonElement>("button")!;
-    expect(trigger.getAttribute("aria-label")).toBe("Workspaces list actions");
+    expect(trigger.getAttribute("aria-label")).toBe("Chat section actions");
 
     act(() => item(view.container, "Select chats")!.click());
     expect(onSelect).toHaveBeenCalledTimes(1);
@@ -294,7 +283,7 @@ describe("the open list's menu", () => {
 
 describe("activity rail account footer", () => {
   const base = {
-    active: "conversations" as const,
+    active: "chat" as const,
     balance: 12,
     onChange: vi.fn(),
   };
@@ -606,12 +595,11 @@ describe("dropdown flip", () => {
     view.unmount();
   });
 
-  it("flips the list menu the same way", () => {
+  it("flips the chat section menu the same way", () => {
     stubMenuBottomAt(window.innerHeight + 200);
-    const view = mount(createElement(RailListMenu, {
-      items: [{ icon: createElement("span"), label: "Select chats", onSelect: vi.fn() }],
-      label: "Chats list actions",
+    const view = mount(createElement(ChatSectionMenu, {
       onOpenChange: vi.fn(),
+      onSelect: vi.fn(),
       open: true,
     }));
     expect(menuClasses(view.container)).toContain("bottom-7");

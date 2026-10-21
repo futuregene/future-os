@@ -70,9 +70,7 @@ function mount(node: ReactElement) {
 
 function props(threads: StoredThread[], overrides: Partial<ComponentProps<typeof ActivityRail>> = {}): ComponentProps<typeof ActivityRail> {
   return {
-    active: "conversations" as const,
-    view: "workspace" as const,
-    onSelectView: vi.fn(),
+    active: "chat" as const,
     activeThreadId: "root",
     expanded: true,
     futureSessionStatus: "authenticated",
@@ -114,12 +112,11 @@ function buttonByText(container: HTMLElement, text: string) {
  *  order. Discovered from a deliberate mismatch while writing the guard test
  *  below; the trailing two come from that test's workspace/account fixtures.
  */
-// The three tab entries sit between the standing entries and the list they
-// switch: which list is drawn is one property of this rail, and the switch is
-// drawn in the nav's own column. They are in this set on purpose — the
-// assertion's job is to make every addition here deliberate — and there is no
-// longer a workspace/chat *page* entry, because those were the same question.
-const EXPECTED_NAV_ENTRIES = ["New Chat", "Models", "Skills", "Scheduled tasks", "Remote", "Workspaces", "Chats", "Recent", "Alpha", "Aalice"];
+// The two view-switch entries sit between the standing entries and the list
+// they switch: "Workspaces" and "Recent" are one property of the list, and the
+// switch is drawn in the nav's own column. They are in this set on purpose — the
+// assertion's job is to make every addition here deliberate.
+const EXPECTED_NAV_ENTRIES = ["New Chat", "Models", "Skills", "Scheduled tasks", "Remote", "Workspaces", "Recent", "Alpha", "Aalice"];
 
 beforeEach(() => {
   localStorage.clear();
@@ -145,12 +142,10 @@ describe("activity rail navigation", () => {
     act(() => buttonByText(view.container, "Scheduled tasks")!.click());
     expect(p.onChange).toHaveBeenLastCalledWith("tasks");
 
-    // The workspace tab's own "+" — the section heading that used to carry it is
-    // gone with the extra level, and creating a workspace is still the list's
-    // own action.
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"New workspace\"]")!.click());
     expect(p.onNewWorkspace).toHaveBeenCalledTimes(1);
-    // A workspace's own "+" starts a conversation inside it.
+    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"New chat\"]")!.click());
+    expect(p.onNewChat).toHaveBeenCalledTimes(2);
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"New chat in Alpha\"]")!.click());
     expect(p.onNewChat).toHaveBeenLastCalledWith("ws-a");
     view.unmount();
@@ -206,48 +201,30 @@ describe("activity rail navigation", () => {
     expect(p.onChange).toHaveBeenCalledWith("remote");
     act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Scheduled tasks\"]")!.click());
     expect(p.onChange).toHaveBeenLastCalledWith("tasks");
-    // The folded rail's three list icons are the tabs, not a section: they used
-    // to set a *page* ("workspace" / "chat") and the switch above them set the
-    // list, so the two controls could disagree about which list was showing —
-    // and "Recent" had no icon here at all, which put that list out of reach
-    // with the rail folded.
-    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Workspaces\"]")!.click());
-    expect(p.onSelectView).toHaveBeenCalledWith("workspace");
-    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Chats\"]")!.click());
-    expect(p.onSelectView).toHaveBeenLastCalledWith("chat");
-    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Recent\"]")!.click());
-    expect(p.onSelectView).toHaveBeenLastCalledWith("recent");
-    // None of them is a page: the page stays the conversation column.
-    expect(p.onChange).not.toHaveBeenCalledWith("workspace");
-    expect(p.onChange).not.toHaveBeenCalledWith("chat");
+    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Workspace\"]")!.click());
+    expect(p.onChange).toHaveBeenCalledWith("workspace");
+    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Chat\"]")!.click());
+    expect(p.onChange).toHaveBeenCalledWith("chat");
     view.unmount();
   });
 
-  /**
-   * A group folds; the whole list does not.
-   *
-   * The two section-wide fold controls went with the two section headings: a tab
-   * already *is* the choice to look at that list, so folding everything under it
-   * had nothing left to say. What folds is one workspace, which is the unit the
-   * reader is narrowing.
-   */
-  it("folds one workspace group, and leaves the other lists alone", () => {
+  it("collapses and re-expands each list section independently", () => {
     const p = props([thread("root"), thread("ws-thread", { mode: "workspace", workspaceId: "ws-a" })]);
     const view = mount(<ActivityRail {...p} />);
     const has = (title: string) => view.container.querySelector(`button[aria-label="${title}"]`) !== null;
 
+    expect(has("root")).toBe(true);
     expect(has("ws-thread")).toBe(true);
-    // The chats list is not drawn on this tab at all.
+    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Collapse chat list\"]")!.click());
     expect(has("root")).toBe(false);
-
-    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Collapse workspace\"]")!.click());
-    expect(has("ws-thread")).toBe(false);
-    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Expand workspace\"]")!.click());
+    // Workspace section is independent — its rows stay.
     expect(has("ws-thread")).toBe(true);
+    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Expand chat list\"]")!.click());
+    expect(has("root")).toBe(true);
 
-    // No list-wide fold control survives.
-    expect(view.container.querySelector("button[aria-label='Collapse chat list']")).toBeNull();
-    expect(view.container.querySelector("button[aria-label='Collapse workspace list']")).toBeNull();
+    act(() => view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Collapse workspace list\"]")!.click());
+    expect(has("ws-thread")).toBe(false);
+    expect(has("root")).toBe(true);
     view.unmount();
   });
 });
@@ -302,7 +279,7 @@ describe("activity rail workspace group actions", () => {
 
 describe("activity rail thread menu", () => {
   it("opens a thread's actions menu from the row and routes its items", () => {
-    const p = props([thread("root")], { view: "chat" });
+    const p = props([thread("root")]);
     const view = mount(<ActivityRail {...p} />);
     const trigger = view.container.querySelector<HTMLButtonElement>("button[aria-label=\"Thread actions for root\"]")!;
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
@@ -377,7 +354,7 @@ describe("activity rail keyboard commands", () => {
   }
 
   it("walks to the next and previous conversation in the drawn order", () => {
-    const p = props([thread("root"), thread("second")], { view: "chat" });
+    const p = props([thread("root"), thread("second")]);
     const view = mount(<ActivityRail {...p} />);
 
     press({ code: "BracketRight", ctrlKey: true, key: "]", shiftKey: true });
@@ -392,7 +369,7 @@ describe("activity rail keyboard commands", () => {
   });
 
   it("opens the first conversation when nothing is selected", () => {
-    const p = props([thread("root"), thread("second")], { activeThreadId: null, view: "chat" });
+    const p = props([thread("root"), thread("second")], { activeThreadId: null });
     const view = mount(<ActivityRail {...p} />);
     press({ code: "BracketRight", ctrlKey: true, key: "]" });
     expect(p.onSelectThread).toHaveBeenCalledTimes(1);
@@ -400,7 +377,7 @@ describe("activity rail keyboard commands", () => {
   });
 
   it("stops at the end of the list instead of wrapping", () => {
-    const p = props([thread("root")], { view: "chat" });
+    const p = props([thread("root")]);
     const view = mount(<ActivityRail {...p} />);
     press({ code: "BracketRight", ctrlKey: true, key: "]", shiftKey: true });
     expect(p.onSelectThread).not.toHaveBeenCalled();
@@ -482,29 +459,26 @@ describe("activity rail two-level navigation", () => {
     ];
   }
 
-  /**
-   * The coarse move steps the *current list's* stops, and stops there.
-   *
-   * It used to step from the last workspace into the chats, because both were
-   * sections of one list. They are two lists now, and a step onto a row the
-   * reader cannot see is the same defect in the coarse move as in the fine one:
-   * the selection goes somewhere invisible. Both walks are checked here, because
-   * they are one order.
-   */
-  it("steps between the current list's stops, and never into another tab", () => {
-    const p = props(fixture(), { view: "workspace", activeThreadId: "alpha-1", workspaces: [alpha, beta] });
+  it("steps between workspaces and conversations, skipping the rows inside", () => {
+    const p = props(fixture(), { active: "workspace", activeThreadId: "alpha-1", workspaces: [alpha, beta] });
     const view = mount(<ActivityRail {...p} />);
 
-    // From a workspace the coarse move reaches the next workspace, not its
-    // second conversation.
+    // The drawn order is pinned, then the workspaces, then the chats — so from a
+    // workspace the coarse move reaches the next workspace, not its second
+    // conversation.
     coarseNext();
     expect(p.onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "beta-1" }));
 
-    // beta is the last stop of the workspace list: the chat row is in the other
-    // tab, so there is nowhere further forward and nothing opens.
+    // … and then the chat section, which the coarse move crosses on purpose:
+    // opening a conversation is what switches the section.
     view.rerender(<ActivityRail {...p} activeThreadId="beta-1" />);
     coarseNext();
-    expect(p.onSelectThread).toHaveBeenCalledTimes(1);
+    expect(p.onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "chat-a" }));
+
+    // Backwards, the same stops in reverse.
+    view.rerender(<ActivityRail {...p} activeThreadId="chat-a" />);
+    coarsePrevious();
+    expect(p.onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "beta-1" }));
 
     // A conversation nested inside a workspace is *on* that workspace's stop, so
     // "previous" from it is the stop before the workspace, not the workspace
@@ -515,12 +489,12 @@ describe("activity rail two-level navigation", () => {
     view.rerender(<ActivityRail {...p} activeThreadId="alpha-2" />);
     coarsePrevious();
     // alpha is the first stop: nowhere further back.
-    expect(p.onSelectThread).toHaveBeenCalledTimes(2);
+    expect(p.onSelectThread).toHaveBeenCalledTimes(4);
     view.unmount();
   });
 
   it("walks the conversations inside the current list", () => {
-    const p = props(fixture(), { view: "workspace", activeThreadId: "alpha-1", workspaces: [alpha, beta] });
+    const p = props(fixture(), { active: "workspace", activeThreadId: "alpha-1", workspaces: [alpha, beta] });
     const view = mount(<ActivityRail {...p} />);
 
     fineNext();
@@ -534,24 +508,16 @@ describe("activity rail two-level navigation", () => {
     finePrevious();
     expect(p.onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "alpha-2" }));
     view.unmount();
-
-    // …and the row in the other tab is not reachable from here: the fine walk
-    // ends at this list's last row instead of continuing into it.
-    const chats = mount(<ActivityRail {...props(fixture(), { view: "chat", activeThreadId: "chat-a", workspaces: [alpha, beta] })} />);
-    fineNext();
-    expect(p.onSelectThread).toHaveBeenCalledTimes(3);
-    chats.unmount();
   });
 
   it("stops at both ends of the coarse walk", () => {
-    const p = props(fixture(), { view: "workspace", activeThreadId: "alpha-1", workspaces: [alpha, beta] });
+    const p = props(fixture(), { active: "workspace", activeThreadId: "alpha-1", workspaces: [alpha, beta] });
     const view = mount(<ActivityRail {...p} />);
     // alpha is the first stop (no pinned conversations here);
     coarsePrevious();
     expect(p.onSelectThread).not.toHaveBeenCalled();
 
-    // beta is the last stop of this list; the chat row belongs to another tab.
-    view.rerender(<ActivityRail {...p} activeThreadId="beta-1" />);
+    view.rerender(<ActivityRail {...p} activeThreadId="chat-a" />);
     coarseNext();
     expect(p.onSelectThread).not.toHaveBeenCalled();
     view.unmount();
@@ -571,7 +537,7 @@ describe("activity rail two-level navigation", () => {
 
   it("lands on a workspace's first conversation, and opens an empty one", () => {
     const empty: StoredWorkspace = { ...beta, id: "ws-empty", name: "Empty", path: "/tmp/empty" };
-    const p = props(fixture(), { view: "workspace", activeThreadId: "alpha-1", workspaces: [alpha, empty] });
+    const p = props(fixture(), { active: "workspace", activeThreadId: "alpha-1", workspaces: [alpha, empty] });
     const view = mount(<ActivityRail {...p} />);
 
     // A workspace with no conversations is still a stop: it is selected as a
@@ -629,7 +595,7 @@ describe("two-level navigation in the merged list", () => {
         thread("chat-a", { lastMessageAt: 1_000, updatedAt: 1_000 }),
       ],
       {
-        view: "workspace",
+        active: "workspace",
         activeThreadId: "alpha-1",
         onOpenRemoteConversation: vi.fn(),
         workspaces: [alpha, beta],

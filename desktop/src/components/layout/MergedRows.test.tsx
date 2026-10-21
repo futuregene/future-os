@@ -69,6 +69,7 @@ function thread(id: string): StoredThread {
 }
 
 async function render(props: {
+  chatSectionCollapsed?: boolean;
   collapsedWorkspaces?: ReadonlySet<string>;
   expandedRemoteRows?: ReadonlySet<string>;
   filter?: DeviceFilter;
@@ -77,9 +78,12 @@ async function render(props: {
   onNewWorkspace?: () => void;
   onOpenRemote?: (row: MergedConversation) => void;
   onRenameRemoteWorkspace?: (target: { desktopId: string; workspaceId: string; name: string }) => void;
+  onSelectChats?: () => void;
   onSelectWorkspaceChats?: (groupKey: string) => void;
+  onToggleChatSection?: () => void;
   onToggleRemoteExpanded?: (key: string) => void;
   onToggleWorkspace?: (key: string) => void;
+  onToggleWorkspaceSection?: () => void;
   peers?: RemotePeer[];
   /** Where each listed row sits in the shared list's tree, by row key. */
   rowMeta?: ReadonlyMap<string, { depth: number; hasChildren: boolean }>;
@@ -95,8 +99,7 @@ async function render(props: {
   rows: MergedConversation[];
   selectionMode?: boolean;
   threadById: Map<string, StoredThread>;
-  /** Which list to draw: one tab at a time, which is one list at a time. */
-  view?: "workspace" | "chat";
+  workspaceSectionCollapsed?: boolean;
 }) {
   const container = document.createElement("div");
   document.body.append(container);
@@ -105,18 +108,24 @@ async function render(props: {
     root.render(
       <MergedRows
         activeKey={null}
+        chatSectionCollapsed={props.chatSectionCollapsed ?? false}
         collapsedWorkspaces={props.collapsedWorkspaces ?? new Set()}
         expandedRemoteRows={props.expandedRemoteRows ?? new Set()}
         filter={props.filter ?? { kind: "all" }}
         onChangedRemote={vi.fn()}
         onDeletedRemote={vi.fn()}
+        onNewChat={props.onNewChat}
         onNewChatInWorkspace={props.onNewChatInWorkspace}
+        onNewWorkspace={props.onNewWorkspace}
         onOpenRemote={props.onOpenRemote ?? vi.fn()}
         onRenameRemote={vi.fn()}
         onRenameRemoteWorkspace={props.onRenameRemoteWorkspace}
+        onSelectChats={props.onSelectChats}
         onSelectWorkspaceChats={props.onSelectWorkspaceChats}
+        onToggleChatSection={props.onToggleChatSection ?? vi.fn()}
         onToggleRemoteExpanded={props.onToggleRemoteExpanded ?? vi.fn()}
         onToggleWorkspace={props.onToggleWorkspace ?? vi.fn()}
+        onToggleWorkspaceSection={props.onToggleWorkspaceSection ?? vi.fn()}
         peers={props.peers ?? []}
         rowMeta={props.rowMeta ?? new Map()}
         remoteSelection={props.remoteSelection}
@@ -126,7 +135,7 @@ async function render(props: {
         rows={props.rows}
         selectionMode={props.selectionMode ?? false}
         threadById={props.threadById}
-        view={props.view ?? "workspace"}
+        workspaceSectionCollapsed={props.workspaceSectionCollapsed ?? false}
       />,
     );
   });
@@ -194,20 +203,11 @@ it("labels each group, and marks the remote ones with their machine", async () =
   const headings = [...view.container.querySelectorAll("[data-testid='merged-group-heading']")]
     .map(node => node.textContent ?? "");
   expect(headings).toEqual(["future-os"]);
-  // A chat row is not in any workspace: it belongs to the chats list, which is
-  // a tab of its own — so this list does not hold it at all.
-  expect(view.container.textContent).not.toContain("a chat on the host");
+  expect(view.container.querySelector("[data-testid='remote-source-icon']")).not.toBeNull();
+  // A chat row is not a workspace the row is not in: it lands in the one chat
+  // section, whatever machine it came from.
+  expect(view.container.querySelector("[data-testid='merged-conversations']")!.textContent).toContain("a chat on the host");
   await view.unmount();
-
-  const chats = await render({
-    renderLocalRow: vi.fn(() => <div>row</div>),
-    rows: [conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a", title: "a chat on the host" })],
-    threadById: new Map(),
-    view: "chat",
-  });
-  // Whatever machine it came from, a chat is in the one chats list.
-  expect(chats.container.querySelector("[data-testid='merged-conversations']")!.textContent).toContain("a chat on the host");
-  await chats.unmount();
 });
 
 it("renders a local row through the rail's renderer, with its tree place", async () => {
@@ -216,7 +216,6 @@ it("renders a local row through the rail's renderer, with its tree place", async
     renderLocalRow,
     rows: [conversation()],
     threadById: new Map([["thread_1", thread("thread_1")]]),
-    view: "chat",
   });
 
   // The fourth argument is the group's `compact` answer, passed on to the rail's
@@ -229,10 +228,8 @@ it("renders a local row through the rail's renderer, with its tree place", async
     0,
     false,
     false,
-    // No age: the tabbed lists draw no second column, and the row is asked for
-    // one only in the recent list.
-    undefined,
-    // No origin label either: that belongs to the search results.
+    // No age: the tree view draws no second column, and the row is asked for one
+    // only in the recent view.
     undefined,
   );
   await view.unmount();
@@ -257,7 +254,6 @@ it("tells a local row inside a workspace that it is compact", async () => {
     0,
     false,
     true,
-    undefined,
     undefined,
   );
   await view.unmount();
@@ -286,7 +282,6 @@ it("renders nothing, rather than throwing, for a row whose thread is missing", a
 it("merges every machine's chats into one section, in time order", async () => {
   const peers = [peer("desktop_a", "Studio iMac"), peer("desktop_b", "Mac mini")];
   const view = await render({
-    view: "chat",
     peers,
     renderLocalRow: vi.fn(() => <div>row</div>),
     rows: [
@@ -326,7 +321,6 @@ it("draws a fork under the conversation it hangs under", async () => {
     title: "Fork",
   });
   const view = await render({
-    view: "chat",
     peers: [peer("desktop_a", "Studio iMac")],
     renderLocalRow: vi.fn(() => <div>row</div>),
     // The fork first, as the merge orders rows by time: the tree's answer is what
@@ -368,7 +362,6 @@ it("drops the per-row machine badge when one machine is selected", async () => {
   }];
 
   const all = await render({
-    view: "chat",
     peers,
     renderLocalRow: vi.fn(() => <div>row</div>),
     rows: [remote],
@@ -378,7 +371,6 @@ it("drops the per-row machine badge when one machine is selected", async () => {
   await all.unmount();
 
   const single = await render({
-    view: "chat",
     filter: { kind: "device", desktopId: "desktop_a" },
     peers,
     renderLocalRow: vi.fn(() => <div>row</div>),
@@ -412,7 +404,6 @@ it("keeps the badge on a mixed list even when the filter is not `all`", async ()
     pairId: "pair_1",
   }];
   const view = await render({
-    view: "chat",
     filter: { kind: "device", desktopId: null },
     peers,
     renderLocalRow: vi.fn(() => <div>row</div>),
@@ -650,6 +641,67 @@ it("puts the machine's icon after the group name", async () => {
 });
 
 /**
+ * The chat section folds as well as a workspace one, through the section header.
+ *
+ * It is where most conversations are, and a reader who wants to scroll past them
+ * has no other way to put them away.
+ */
+it("folds the chat section through its header, and back", async () => {
+  const onToggleChatSection = vi.fn();
+  const view = await render({
+    onToggleChatSection,
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a", title: "a chat on the host" })],
+    threadById: new Map(),
+  });
+
+  const sectionToggle = view.container.querySelector<HTMLButtonElement>("button[aria-label='Collapse chat list']")!;
+  expect(sectionToggle).not.toBeNull();
+  await act(async () => sectionToggle.click());
+  expect(onToggleChatSection).toHaveBeenCalledTimes(1);
+
+  // Collapsed, the rows are not built; the section header stays so it can be
+  // reopened.
+  await view.unmount();
+  const folded = await render({
+    chatSectionCollapsed: true,
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a", title: "a chat on the host" })],
+    threadById: new Map(),
+  });
+  expect(folded.container.textContent).not.toContain("a chat on the host");
+  expect(folded.container.textContent).toContain("Chat");
+  await folded.unmount();
+});
+
+it("offers the local-only controls only when this machine's rows are listed", async () => {
+  const onNewChat = vi.fn();
+  const onNewWorkspace = vi.fn();
+  const rows = [conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a" })];
+
+  const all = await render({ onNewChat, onNewWorkspace, renderLocalRow: vi.fn(() => <div>row</div>), rows, threadById: new Map() });
+  expect(all.container.querySelector("button[aria-label='New chat']")).not.toBeNull();
+  expect(all.container.querySelector("button[aria-label='New workspace']")).not.toBeNull();
+  await all.unmount();
+
+  // Filtered to a host, "new chat" would create a chat on *this* machine and
+  // show it under the host's filter — a control that adds something the user
+  // cannot see.
+  const remote = await render({
+    filter: { kind: "device", desktopId: "desktop_a" },
+    onNewChat,
+    onNewWorkspace,
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows,
+    threadById: new Map(),
+  });
+  expect(remote.container.querySelector("button[aria-label='New chat']")).toBeNull();
+  expect(remote.container.querySelector("button[aria-label='New workspace']")).toBeNull();
+  await remote.unmount();
+});
+
+/**
  * Pinned rows lead the list, remote ones included.
  *
  * A pinned conversation on a host is pinned for the same reason this machine's
@@ -658,7 +710,6 @@ it("puts the machine's icon after the group name", async () => {
  */
 it("lists a pinned remote conversation in the pinned section", async () => {
   const view = await render({
-    view: "chat",
     peers: [peer("desktop_a", "Studio iMac")],
     renderLocalRow: vi.fn(() => <div>row</div>),
     rows: [
@@ -726,36 +777,32 @@ it("offers a menu and a new-chat control on a remote workspace heading", async (
  */
 it("does not repeat the machine on a row whose group heading already names it", async () => {
   const peers = [peer("desktop_a", "Studio iMac")];
-  // The two kinds of row are in two lists now, so each is asked in its own.
-  const workspaceRow = conversation({
-    desktopId: "desktop_a",
-    id: "ws_remote",
-    key: "desktop_a::ws_remote",
-    mode: "workspace",
-    title: "in a workspace",
-    workspaceId: "ws_9",
-    workspaceName: "图表脚本",
-  });
-  const inWorkspace = await render({
+  const view = await render({
     peers,
     renderLocalRow: vi.fn(() => <div>row</div>),
-    rows: [workspaceRow],
+    rows: [
+      conversation({
+        desktopId: "desktop_a",
+        id: "ws_remote",
+        key: "desktop_a::ws_remote",
+        mode: "workspace",
+        title: "in a workspace",
+        workspaceId: "ws_9",
+        workspaceName: "图表脚本",
+      }),
+      conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a", title: "a chat" }),
+    ],
     threadById: new Map(),
   });
-  // The workspace group's heading carries it, so its row does not.
-  expect(inWorkspace.container.querySelector("[data-testid='remote-source-icon']")).toBeNull();
-  await inWorkspace.unmount();
 
-  // The chats list has no heading of its own, so its rows still say it.
-  const inChats = await render({
-    view: "chat",
-    peers,
-    renderLocalRow: vi.fn(() => <div>row</div>),
-    rows: [conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a", title: "a chat" })],
-    threadById: new Map(),
-  });
-  expect(inChats.container.querySelector("[data-testid='remote-source-icon']")).not.toBeNull();
-  await inChats.unmount();
+  // The workspace group's heading carries it, so its row does not...
+  const rows = [...view.container.querySelectorAll("div[class*='group/thread']")];
+  const inWorkspace = rows.find(row => (row.textContent || "").includes("in a workspace"))!;
+  expect(inWorkspace.querySelector("[data-testid='remote-source-icon']")).toBeNull();
+  // ...and the chat section, which has no heading of its own, still does.
+  const inChats = rows.find(row => (row.textContent || "").includes("a chat"))!;
+  expect(inChats.querySelector("[data-testid='remote-source-icon']")).not.toBeNull();
+  await view.unmount();
 });
 
 /**
@@ -818,7 +865,6 @@ it("takes the batch's checkbox on a host's row, and ticks instead of opening it"
   const toggle = vi.fn();
   const selectable = vi.fn(() => true);
   const view = await render({
-    view: "chat",
     peers: [peer("desktop_a", "Studio iMac")],
     remoteSelection: { selectable, selected: () => true, toggle },
     renderLocalRow: vi.fn(() => <div>row</div>),
@@ -865,7 +911,181 @@ it("drops the machine from headings too when one machine is selected", async () 
   await view.unmount();
 });
 
+/**
+ * The chat section has its own menu, as the local list's does.
+ *
+ * The action it offers is this machine's — marking conversations for a batch
+ * operation — so it appears only where this machine's rows are listed: under a
+ * host's filter a menu that could only act on rows the filter has hidden would be
+ * a control that does nothing.
+ *
+ * Offered whatever the filter shows, including a host's rows alone: a batch can
+ * hold a host's conversations — they carry the same checkbox a local row does —
+ * so the section that lists them is where it is entered from. What stays
+ * local-only is creation (a new workspace or chat is made on this machine, which
+ * under another device's filter the user could not see).
+ */
+it("offers the chat section menu in every mode, and the creation controls only where this machine's rows are", async () => {
+  const onSelectChats = vi.fn();
+  const onNewChat = vi.fn();
+  const rows = [conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a", title: "a chat" })];
+
+  const all = await render({
+    onNewChat,
+    onSelectChats,
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows,
+    threadById: new Map(),
+  });
+  await act(async () => all.container.querySelector<HTMLButtonElement>("button[aria-label='Chat section actions']")!.click());
+  await act(async () => {
+    [...all.container.querySelectorAll("button")].find(node => node.textContent === "Select chats")!.click();
+  });
+  expect(onSelectChats).toHaveBeenCalledTimes(1);
+  expect(all.container.querySelector("button[aria-label='New chat']")).not.toBeNull();
+  await all.unmount();
+
+  const remoteOnly = await render({
+    filter: { kind: "device", desktopId: "desktop_a" },
+    onNewChat,
+    onSelectChats,
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows,
+    threadById: new Map(),
+  });
+  expect(remoteOnly.container.querySelector("button[aria-label='Chat section actions']")).not.toBeNull();
+  expect(remoteOnly.container.querySelector("button[aria-label='New chat']")).toBeNull();
+  await remoteOnly.unmount();
+});
+
 // ── starting a conversation ─────────────────────────────────────────────────
+
+/**
+ * With one machine on screen there is nothing to ask, so the control acts.
+ *
+ * It used to be offered only for *this* machine, so filtering the list to a host
+ * left the reader with no way to start a conversation on the host they had just
+ * chosen to look at — the one machine whose conversations they were reading.
+ */
+it("starts a conversation on the machine the list is filtered to", async () => {
+  const onNewChatInWorkspace = vi.fn();
+  const onNewChat = vi.fn();
+  const view = await render({
+    filter: { kind: "device", desktopId: "desktop_a" },
+    onNewChat,
+    onNewChatInWorkspace,
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a" })],
+    threadById: new Map(),
+  });
+
+  const add = view.container.querySelector<HTMLButtonElement>("button[aria-label='New chat']")!;
+  expect(add).not.toBeNull();
+  await act(async () => add.click());
+
+  // On that host, with no workspace of its own.
+  expect(onNewChatInWorkspace).toHaveBeenCalledWith("desktop_a", null);
+  expect(onNewChat).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+/** Filtered to this machine, the control still makes a conversation here. */
+it("starts a conversation on this machine when it is the one filtered to", async () => {
+  const onNewChat = vi.fn();
+  const view = await render({
+    filter: { kind: "device", desktopId: null },
+    onNewChat,
+    peers: [],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [conversation()],
+    threadById: new Map([["thread_1", thread("thread_1")]]),
+  });
+
+  await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='New chat']")!.click());
+  expect(onNewChat).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
+/**
+ * Showing every machine, the machine *is* the choice, so the control asks.
+ *
+ * A conversation lives on one machine, and the list can be showing all of them —
+ * so "+" cannot decide on its own which machine the reader meant.
+ */
+it("asks which machine when the list shows all of them", async () => {
+  const onNewChat = vi.fn();
+  const onNewChatInWorkspace = vi.fn();
+  const view = await render({
+    filter: { kind: "all" },
+    onNewChat,
+    onNewChatInWorkspace,
+    peers: [peer("desktop_a", "Studio iMac"), peer("desktop_b", "Mac mini")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a" })],
+    threadById: new Map(),
+  });
+
+  await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='New chat']")!.click());
+  // Every machine is named, this one first.
+  const choices = [...view.container.querySelectorAll("[role='menuitem']")].map(node => node.textContent);
+  // The rail's own name for each machine, so a conversation started here lands
+  // where the reader expects.
+  expect(choices).toEqual(["This computer", "Studio iMac", "Mac mini"]);
+
+  await act(async () => {
+    [...view.container.querySelectorAll<HTMLElement>("[role='menuitem']")]
+      .find(node => node.textContent === "Mac mini")!
+      .click();
+  });
+  expect(onNewChatInWorkspace).toHaveBeenCalledWith("desktop_b", null);
+  expect(onNewChat).not.toHaveBeenCalled();
+  // The menu closes behind the choice.
+  expect([...view.container.querySelectorAll("[role='menuitem']")]).toHaveLength(0);
+  await view.unmount();
+});
+
+/** And this machine is one of the choices, not an implicit default. */
+it("starts a conversation here when this machine is chosen", async () => {
+  const onNewChat = vi.fn();
+  const view = await render({
+    filter: { kind: "all" },
+    onNewChat,
+    onNewChatInWorkspace: vi.fn(),
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [conversation()],
+    threadById: new Map([["thread_1", thread("thread_1")]]),
+  });
+
+  await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='New chat']")!.click());
+  await act(async () => {
+    [...view.container.querySelectorAll<HTMLElement>("[role='menuitem']")]
+      .find(node => node.textContent === "This computer")!
+      .click();
+  });
+  expect(onNewChat).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
+/** With no machines paired there is nothing to choose between. */
+it("acts directly when no other machine is paired", async () => {
+  const onNewChat = vi.fn();
+  const view = await render({
+    filter: { kind: "all" },
+    onNewChat,
+    peers: [],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows: [conversation()],
+    threadById: new Map([["thread_1", thread("thread_1")]]),
+  });
+
+  await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='New chat']")!.click());
+  expect(onNewChat).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
 
 /**
  * In selection mode a click on a host's *row* ticks it instead of opening it.
@@ -880,7 +1100,6 @@ it("ticks a host's row when the row itself is activated in selection mode", asyn
   const onOpenRemote = vi.fn();
   const conversationRow = conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a", title: "a chat" });
   const view = await render({
-    view: "chat",
     onOpenRemote,
     peers: [peer("desktop_a", "Studio iMac")],
     remoteSelection: { selectable: () => true, selected: () => false, toggle },
@@ -903,7 +1122,6 @@ it("ticks a host's row when the row itself is activated in selection mode", asyn
 /** An empty chat section says so rather than drawing an unexplained gap. */
 it("says the chat section is empty when it holds no rows", async () => {
   const view = await render({
-    view: "chat",
     renderLocalRow: vi.fn(() => null),
     rows: [],
     threadById: new Map(),

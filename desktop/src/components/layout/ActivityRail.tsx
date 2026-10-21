@@ -4,15 +4,14 @@ import type { DeviceFilter, MergedConversation, RemoteWorkspaceTarget } from "..
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { FutureSessionStatus } from "./hooks/useFutureAccount";
-import type { RailView } from "./hooks/useRailView";
 import type { RemoteIndicator } from "./hooks/useRemoteStatus";
 import type { ThreadRunInfo } from "./hooks/useThreadStore";
 import type { TreeNode } from "./threadTree";
 import {
   Blocks,
-  CheckSquare,
+  ChevronDown,
+  ChevronRight,
   Folder,
-  History,
   ListChecks,
   MessageSquare,
   MonitorSmartphone,
@@ -39,31 +38,22 @@ import { startWindowDrag } from "../../lib/windowDrag";
 import { FloatingScrollbar } from "../ui/FloatingScrollbar";
 import { IconButton } from "../ui/IconButton";
 import { ActivityRailAccountFooter } from "./ActivityRailAccountFooter";
-import { RailListMenu, WorkspaceHeaderMenu } from "./ActivityRailMenus";
+import { ChatSectionMenu, WorkspaceHeaderMenu } from "./ActivityRailMenus";
 import { ActivityRailSelectionToolbar } from "./ActivityRailSelectionToolbar";
 import { ConversationSearch } from "./ConversationSearch";
 import { DeviceSelector } from "./DeviceSelector";
 import { useCollapsedWorkspaces } from "./hooks/useCollapsedWorkspaces";
 import { usePendingApprovalCounts } from "./hooks/usePendingApprovalCounts";
 import { useRailSelection } from "./hooks/useRailSelection";
+import { useRailView } from "./hooks/useRailView";
 import { MergedRows } from "./MergedRows";
 import { RailDisclosure, RailHeaderButton } from "./RailChrome";
-import { RailNewChatButton } from "./RailNewChatButton";
 import { RailViewSwitch } from "./RailViewSwitch";
 import { isActiveRun, RECENT_PAGE_SIZE, recentSplit } from "./recentOrder";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, buildTree, threadParentIds, visibleThreadRows, visibleTreeRows } from "./threadTree";
 
-/**
- * Which page the window shows.
- *
- * `conversations` is the conversation column, and it is one page: **which list**
- * that column draws is the rail's tab (`RailView`), never a section. Workspaces
- * and chats used to be two sections of their own, which is what made the two
- * questions ("which page", "which list") look like one and left the chats
- * reading as a child of the workspaces.
- */
-export type ActivitySection = "conversations" | "skill" | "tasks" | "remote" | "settings";
+export type ActivitySection = "chat" | "workspace" | "skill" | "tasks" | "remote" | "settings";
 
 interface ActivityRailProps {
   active: ActivitySection;
@@ -108,10 +98,6 @@ interface ActivityRailProps {
   onSelectThread: (thread: StoredThread) => void;
   onTogglePinThread: (thread: StoredThread) => void;
   onToggleExpanded: () => void;
-  /** The list this rail draws. Owned by the shell, so opening a conversation can follow it. */
-  view: RailView;
-  /** The user chose a list (a tab click, or ⌘1/2/3) — the choice to remember. */
-  onSelectView: (view: RailView) => void;
   /** Remote bridge connection state for the nav indicator dot. */
   remoteIndicator?: RemoteIndicator;
   /** The remote desktops this machine is paired with (client role). */
@@ -164,35 +150,6 @@ interface ActivityRailProps {
 // add them back to restore. (Research was removed entirely; see PRODUCT.md §4.9.)
 const featureItems: Array<{ id: ActivitySection; label: string; icon: LucideIcon }> = [];
 
-/**
- * The three tab icons of the collapsed rail, in the order the tabs sit in.
- *
- * One list, so the folded rail cannot drift from the expanded one: they are the
- * same three answers to "which list", drawn as glyphs because a 56px rail has no
- * room for names.
- */
-const COLLAPSED_VIEW_ICONS: Array<{ icon: LucideIcon; view: RailView }> = [
-  { icon: Folder, view: "workspace" },
-  { icon: MessageSquare, view: "chat" },
-  { icon: History, view: "recent" },
-];
-
-/** Which tab a conversation belongs to — the one place that rule is written. */
-function rowTabOfMode(mode: "chat" | "workspace" | null | undefined): RailView {
-  return mode === "workspace" ? "workspace" : "chat";
-}
-
-/**
- * No tree, for the flat lists.
- *
- * The search results are rows without parents or forks — every row is its own
- * entry at depth 0 — so they need no metadata and no roots, and handing them the
- * tree the tabbed lists use would draw indents for a hierarchy the list does not
- * have.
- */
-const NO_ROW_META = new Map<string, { depth: number; hasChildren: boolean }>();
-const NO_ROW_ROOTS = new Map<string, MergedConversation>();
-
 export function ActivityRail({
   active,
   activeThreadId,
@@ -221,8 +178,6 @@ export function ActivityRail({
   onSelectThread,
   onTogglePinThread,
   onToggleExpanded,
-  view,
-  onSelectView,
   remoteIndicator,
   remotePeers = [],
   remoteCatalogs = [],
@@ -324,14 +279,18 @@ export function ActivityRail({
   }, []);
   // Persisted across restarts (see useCollapsedWorkspaces).
   const { collapsedWorkspaces, toggleWorkspaceCollapsed } = useCollapsedWorkspaces();
-  // The open list menu. One menu, whichever tab is up: it acts on the list the
-  // tab names, and that list is the only thing it can act on.
-  //
-  // The two per-section fold states that used to live here (Workspace / Chat)
-  // went with the two headings that carried them: a tab already *is* the choice
-  // to see that list, and each workspace still folds on its own (persisted, see
-  // `useCollapsedWorkspaces`).
-  const [listMenuOpen, setListMenuOpen] = useState(false);
+  // Collapse state for the two top-level list sections (Workspace / Chat),
+  // independent of the per-workspace group collapse above.
+  const [workspaceSectionCollapsed, setWorkspaceSectionCollapsed] = useState(false);
+  const [chatSectionCollapsed, setChatSectionCollapsed] = useState(false);
+  // Chat section header menu.
+  const [chatSectionMenuOpen, setChatSectionMenuOpen] = useState(false);
+  // The recent view's own actions menu (its only way into a batch).
+  const [recentMenuOpen, setRecentMenuOpen] = useState(false);
+  // Which list the rail shows: the tree (its own shape, and the default) or the
+  // recent view. Persisted — it is how this window lists things, and a restart
+  // should bring back the list the reader left.
+  const { setView: setRailView, view: railView } = useRailView();
   // Text search for the conversation list. Not persisted: the list is huge
   // and a leftover query after restart would feel like a stale filter.
   const [searchQuery, setSearchQuery] = useState("");
@@ -391,12 +350,7 @@ export function ActivityRail({
     const allExpanded = new Set(visibleThreads.map(thread => thread.id));
     const scopes = new Map<string, string>();
     for (const root of threadTree) {
-      // A scope names *where* a conversation lives, and the name is a path: the
-      // tab it is in, then the group inside it. Selecting a prefix therefore
-      // selects everything under it — which is what makes the tab's own menu
-      // ("select this whole list") and a workspace heading's menu ("select this
-      // workspace") the same mechanism instead of two (see `useRailSelection`).
-      const scope = root.item.mode === "chat" ? "chat" : `workspace/${root.item.workspaceId}`;
+      const scope = root.item.mode === "chat" ? "chat" : root.item.workspaceId;
       for (const { thread } of visibleThreadRows([root], allExpanded)) scopes.set(thread.id, scope);
     }
     return scopes;
@@ -505,12 +459,7 @@ export function ActivityRail({
   const remoteScopes = useMemo(
     () => new Map(visibleRemoteRows.map(row => [
       row.key,
-      // The same path as the local half: the tab, then the group it sits in. A
-      // group is keyed by machine *and* workspace id, because a workspace called
-      // "future-os" exists on two machines at once.
-      row.mode === "workspace"
-        ? `workspace/${row.desktopId ?? ""}::${row.workspaceId ?? ""}`
-        : "chat",
+      row.mode === "workspace" ? `${row.desktopId ?? ""}::${row.workspaceId ?? ""}` : "chat",
     ])),
     [visibleRemoteRows],
   );
@@ -682,25 +631,26 @@ export function ActivityRail({
     onBatchDeleteThreads,
     onDeleteRemoteConversations,
     onSelectThread,
-    // The batch is assembled from what the current list draws, in that list's
-    // own scopes: a tab (everything in it), or one group inside a tab, or the
-    // recent view — where a pin is a marker rather than a section, so a pinned
-    // row joins the batch instead of being lifted out of it.
-    pinnedAreShortcuts: view !== "recent",
-    remoteScopes: view === "recent" ? recentRemoteScopes : remoteScopes,
-    threadScopes: view === "recent" ? recentThreadScopes : threadScopes,
-    visibleRemoteRows: view === "recent"
+    // The batch is assembled from what the current view draws, in that view's
+    // own scopes: one workspace or the chat section in the tree, and the whole
+    // flat list in the recent view — where a pin is a marker rather than a
+    // section, so a pinned row joins the batch instead of being lifted out of it.
+    pinnedAreShortcuts: railView !== "recent",
+    remoteScopes: railView === "recent" ? recentRemoteScopes : remoteScopes,
+    threadScopes: railView === "recent" ? recentThreadScopes : threadScopes,
+    visibleRemoteRows: railView === "recent"
       ? recentRemoteRows
       : mergedMode
         ? filteredRemoteRows
-        : [],
-    visibleThreads: view === "recent"
+        : visibleRemoteRows,
+    visibleThreads: railView === "recent"
       ? recentThreads
-      : filteredVisibleThreads,
+      : mergedMode
+        ? filteredVisibleThreads
+        : visibleThreads,
   });
 
-  /** Whether this machine's rows come from a pick of devices rather than one. */
-  const showDevicePicker = Boolean(onChangeDeviceFilter && remotePeers.length > 0);
+  const showListTools = !selectionMode || Boolean(onChangeDeviceFilter && remotePeers.length > 0);
 
   /** Whether this thread should show a selection checkbox. */
   function threadSelectionMode(thread: StoredThread): boolean {
@@ -727,121 +677,64 @@ export function ActivityRail({
           rows: visibleThreadRows(roots, expandedThreads),
           threads: visibleThreadRows(roots, new Set(visibleThreads.map(thread => thread.id))).map(row => row.thread),
         };
-      });
-  }, [workspaceRoots, workspaces, expandedThreads, visibleThreads]);
+      })
+      .filter((group) => {
+        if (normalizedQuery.length === 0)
+          return true;
+        return group.workspace.name.toLowerCase().includes(normalizedQuery)
+          || group.rows.some(row => threadMatchesQuery(row.thread));
+      })
+      .map(group => ({
+        ...group,
+        rows: group.rows.filter(({ thread }) => threadMatchesQuery(thread)),
+        threads: group.threads.filter(thread => threadMatchesQuery(thread)),
+      }));
+  }, [workspaceRoots, workspaces, expandedThreads, visibleThreads, threadMatchesQuery, normalizedQuery]);
 
-  // The tab decides which half of the tree is drawn. A pinned row is hoisted into
-  // its tab's own pinned section — not one shared "pinned" list, which is what
-  // made a pinned chat sit above a list of workspaces and read as one list.
-  const visiblePinnedThreads = useMemo(
-    () => pinnedThreads.filter(({ thread }) => rowTabOfMode(thread.mode) === view),
-    [pinnedThreads, view],
+  const filteredPinnedThreads = useMemo(
+    () => pinnedThreads.filter(({ thread }) => threadMatchesQuery(thread)),
+    [pinnedThreads, threadMatchesQuery],
   );
-  const visibleWorkspaceGroups = workspaceGroups;
-  const visibleChatThreads = chatThreads;
+  const filteredChatThreads = useMemo(
+    () => chatThreads.filter(({ thread }) => threadMatchesQuery(thread)),
+    [chatThreads, threadMatchesQuery],
+  );
 
-  /**
-   * The search results: every matching conversation, whichever tab it lives in.
-   *
-   * Flat and cross-tab on purpose. A per-tab filter would answer "no matches"
-   * while the thing the reader is looking for sits one tab away, and that reads
-   * as "it does not exist". Each row therefore says where it lives
-   * (`searchLabels`), which is the one fact leaving its own list takes away.
-   *
-   * The recent tab keeps its own list while a query is up — that list *is* every
-   * conversation, so there is nothing for a flattened copy of it to add, and it
-   * would lose the ages and the running/finished split the reader is scanning.
-   */
-  const searchRows = useMemo(() => {
-    if (!queryActive || view === "recent")
-      return [];
-    return remoteRows
-      .filter(rowMatchesQuery)
-      .sort((left, right) => {
-        const at = left.lastMessageAt ?? left.createdAt ?? Number.NEGATIVE_INFINITY;
-        const bt = right.lastMessageAt ?? right.createdAt ?? Number.NEGATIVE_INFINITY;
-        if (at !== bt)
-          return bt - at;
-        return left.key < right.key ? -1 : left.key > right.key ? 1 : 0;
-      });
-  }, [queryActive, remoteRows, rowMatchesQuery, view]);
-
-  /** Where each search result lives, weakly, for the flat result list. */
-  const searchLabels = useMemo(() => {
-    const labels = new Map<string, string>();
-    for (const row of searchRows) {
-      labels.set(row.key, row.mode === "workspace"
-        ? (row.workspaceName ?? t("activityRail.workspace"))
-        : t("activityRail.viewChat"));
-    }
-    return labels;
-  }, [searchRows, t]);
-
-  /** Whether this tab's own rows answered the query. */
-  const searchHitsThisTab = searchRows.some(row => rowTabOfMode(row.mode) === view);
-  /**
-   * The three empty answers, and they are three because they say different
-   * things: "this list has nothing in it", "nothing anywhere matches", and
-   * "matches exist, in another list" — the last of which is the one a reader
-   * would otherwise read as "my conversation is gone".
-   */
-  const showNoMatches = queryActive && (view === "recent" ? recent.rows.length === 0 : searchRows.length === 0);
-  const showElsewhere = queryActive && view !== "recent" && searchRows.length > 0 && !searchHitsThisTab;
-
-  /** The tab's own name, for the menu and the "found elsewhere" line. */
-  const viewLabel = t(view === "workspace"
-    ? "activityRail.viewWorkspace"
-    : view === "chat"
-      ? "activityRail.viewChat"
-      : "activityRail.viewRecent");
-
-  /**
-   * What the open list's menu offers: the batch, and only the batch.
-   *
-   * It acts on the whole list, which is what the tab names. Making something —
-   * a workspace, a conversation — is a control of its own in the same row
-   * (below), not a menu item: it is the one thing a reader looks for when the
-   * list is empty, and an empty list has no rows to aim a menu at.
-   *
-   * **The recent list has no menu.** A batch is "the rows under this heading", and
-   * this list's only boundary is time — a selection here would mean every
-   * conversation on the machine, which is not a batch a reader can picture. The
-   * workspace and chats lists keep theirs. Deleting one conversation from the
-   * recent list is still a row action, so nothing is lost by it.
-   */
-  const listMenuItems = useMemo(() => (view === "recent"
-    ? []
-    : [{
-        icon: <CheckSquare className="size-3.5" />,
-        label: t("activityRail.selectChatsInView", { view: viewLabel }),
-        onSelect: () => enterSelectionMode(view),
-      }]), [enterSelectionMode, t, view, viewLabel]);
-  const showListMenu = !selectionMode && listMenuItems.length > 0;
-
-  // Creating a workspace makes one on *this* machine, so the control belongs only
-  // where this machine's workspaces are the ones on screen.
-  const canCreateHere = deviceFilter.kind === "all"
-    || (deviceFilter.kind === "device" && deviceFilter.desktopId === null);
-  const showCreateControl = !selectionMode
-    && (view === "workspace" ? canCreateHere : view === "chat" && remotePeers.length > 0);
-  /**
-   * The row above the list switch: the machine whose rows these are, and the
-   * search field that narrows them.
-   *
-   * Where it has always been — above the workspace row, directly over the list it
-   * filters. In a batch the field gives way to the selection toolbar, and only the
-   * machine picker stays: the rows a batch covers still depend on it.
-   */
-  const showSearchBand = showDevicePicker || !selectionMode;
-  /**
-   * The row under the switch: what the open list itself offers — the way to add
-   * something to it, and its own menu.
-   *
-   * Only where the list has either. The recent list has no batch (see
-   * `listMenuItems`) and nothing to add to, so the row is not drawn there rather
-   * than left as an empty strip under its switch.
-   */
-  const showListActions = !selectionMode && (showCreateControl || showListMenu);
+  // Memoized rather than computed inline: these three are dependencies of the
+  // walkable-row list below (and of the row builders), and a fresh array every
+  // render would rebuild all of it on every keystroke elsewhere in the app.
+  const visibleWorkspaceGroups = useMemo(
+    () => (workspaceSectionCollapsed ? [] : workspaceGroups),
+    [workspaceSectionCollapsed, workspaceGroups],
+  );
+  const visiblePinnedThreads = filteredPinnedThreads;
+  const visibleChatThreads = useMemo(
+    () => (chatSectionCollapsed ? [] : filteredChatThreads),
+    [chatSectionCollapsed, filteredChatThreads],
+  );
+  const hasAnyVisibleRow = useMemo(() => {
+    if (!queryActive)
+      return true;
+    // The recent view draws every row of the filtered list, so it is the one
+    // place that can answer this without asking its sections: a row the tree
+    // folds away is still a row here.
+    if (railView === "recent")
+      return recent.rows.length > 0;
+    if (mergedMode)
+      return filteredRemoteRows.length > 0;
+    return filteredPinnedThreads.length > 0
+      || filteredChatThreads.length > 0
+      || workspaceGroups.some(group => group.rows.length > 0);
+  }, [
+    queryActive,
+    mergedMode,
+    railView,
+    recent.rows.length,
+    filteredRemoteRows,
+    filteredPinnedThreads,
+    filteredChatThreads,
+    workspaceGroups,
+  ]);
 
   /**
    * Which row is "current". A local thread is current while a list is showing
@@ -853,7 +746,7 @@ export function ActivityRail({
    * first (or last) row — which is exactly the "within a workspace" step this
    * navigation needs.
    */
-  const activeConversationKey = active === "conversations" && activeThreadId
+  const activeConversationKey = (active === "chat" || active === "workspace") && activeThreadId
     ? `local::${activeThreadId}`
     : activeRemoteKey;
 
@@ -868,16 +761,10 @@ export function ActivityRail({
     hasChildren = false,
     compact = false,
     ageLabel?: string,
-    /** Where the conversation lives, for the flat search results. */
-    qualifier?: string,
   ): React.ReactNode {
     return (
       <ThreadListItem
-        // The highlight follows the *open conversation*, not the list it happens
-        // to be drawn in: it is on screen whichever tab the reader is looking
-        // at, and a highlight that vanished when they peeked at another tab read
-        // as "this conversation was closed".
-        active={thread.id === activeThreadId && active === "conversations"}
+        active={thread.id === activeThreadId && (active === "chat" || railView === "recent")}
         ageLabel={ageLabel}
         archived={thread.status === "archived"}
         key={thread.id}
@@ -887,7 +774,6 @@ export function ActivityRail({
         runStatus={threadRunStatuses[thread.id]}
         isStreaming={threadStreamingStatuses[thread.id]}
         selected={selectedThreadIds.has(thread.id)}
-        qualifier={qualifier}
         selectionMode={threadSelectionMode(thread)}
         thread={thread}
         depth={depth}
@@ -972,16 +858,7 @@ export function ActivityRail({
       open: open ?? (() => rows[0]?.open()),
     });
 
-    if (view !== "recent" && queryActive) {
-      // The results list is what is on screen, so it is what the keys walk —
-      // in the order the list draws itself, across the tabs.
-      return searchRows.map(row => toBlock("recent", [{
-        key: row.key,
-        open: () => openRow(row),
-      }]));
-    }
-
-    if (view === "recent") {
+    if (railView === "recent") {
       // One block per drawn row, in the order the view draws them: the recent
       // list is flat, so every conversation is a stop of its own and the two
       // moves (fine and coarse) agree about where it begins — as they do for a
@@ -993,20 +870,16 @@ export function ActivityRail({
     }
 
     if (mergedMode) {
-      // The merged list's own grouping decides its blocks — its pinned section,
-      // then (in the workspace tab) the workspaces or (in the chat tab) the
-      // chats — so this cannot be a second opinion about where a workspace
-      // begins. Only the current tab's half is walked: a step from a chat must
-      // not land on a row of a list that is not on screen.
+      // The merged list's own grouping decides its blocks — pinned, then the
+      // workspaces, then the chats — so this cannot be a second opinion about
+      // where a workspace begins.
       const { chats, pinned, workspaces } = groupMergedRows(mergedRowTree.rows, mergedRowTree.roots);
       const rootOf = (row: MergedConversation) => mergedRowTree.roots.get(row.key)?.key ?? row.key;
       const toRows = (row: MergedConversation) => ({ key: row.key, open: () => openRow(row) });
-      const tabPinned = pinned.filter(row => rowTabOfMode(row.mode) === view);
       return [
-        ...byRoot(tabPinned, rootOf).map(rows => toBlock("pinned", rows.map(toRows))),
-        ...(view === "workspace"
-          ? workspaces.map(group => toBlock("workspace", group.rows.map(toRows)))
-          : byRoot(chats, rootOf).map(rows => toBlock("chat", rows.map(toRows)))),
+        ...byRoot(pinned, rootOf).map(rows => toBlock("pinned", rows.map(toRows))),
+        ...workspaces.map(group => toBlock("workspace", group.rows.map(toRows))),
+        ...byRoot(chats, rootOf).map(rows => toBlock("chat", rows.map(toRows))),
       ];
     }
 
@@ -1029,18 +902,17 @@ export function ActivityRail({
     return [
       ...byRoot(visiblePinnedThreads, row => rootOf(row.thread.id))
         .map(rows => toBlock("pinned", rows.map(toRows))),
-      ...(view === "workspace"
-        ? visibleWorkspaceGroups.map(group => toBlock(
-            "workspace",
-            group.rows.map(toRows),
-            // A workspace with no conversations is still a stop, and opening it
-            // selects the workspace rather than a row it does not have.
-            () => (group.rows[0]
-              ? onSelectThread(group.rows[0].thread)
-              : onSelectWorkspace(group.workspace, [])),
-          ))
-        : byRoot(visibleChatThreads, row => rootOf(row.thread.id))
-            .map(rows => toBlock("chat", rows.map(toRows)))),
+      ...visibleWorkspaceGroups.map(group => toBlock(
+        "workspace",
+        group.rows.map(toRows),
+        // A workspace with no conversations is still a stop, and opening it
+        // selects the workspace rather than a row it does not have.
+        () => (group.rows[0]
+          ? onSelectThread(group.rows[0].thread)
+          : onSelectWorkspace(group.workspace, [])),
+      )),
+      ...byRoot(visibleChatThreads, row => rootOf(row.thread.id))
+        .map(rows => toBlock("chat", rows.map(toRows))),
     ];
   }, [
     mergedMode,
@@ -1049,9 +921,7 @@ export function ActivityRail({
     onSelectThread,
     onSelectWorkspace,
     openRow,
-    queryActive,
-    searchRows,
-    view,
+    railView,
     recent.rows,
     threadParents,
     visibleChatThreads,
@@ -1059,17 +929,18 @@ export function ActivityRail({
     visibleWorkspaceGroups,
   ]);
 
-  /**
-   * The rows the fine move walks: the blocks the current list draws.
-   *
-   * Every block `walkBlocks` built belongs to the current tab — it built only
-   * that tab's — so there is nothing left to filter by section. What this still
-   * must not do is walk another tab's rows, and the guard for that lives in the
-   * builder, where the tab is known.
-   */
+  /** The rows the fine move walks: the blocks the current section draws. */
   const walkableRows = useMemo(
-    () => walkBlocks.flatMap(block => block.rows),
-    [walkBlocks],
+    () => walkBlocks
+      .filter(block =>
+        // The recent view is not split into the rail's sections — it is one list
+        // whichever section the shell thinks is open — so every block it built
+        // is walkable.
+        block.section === "recent"
+        || block.section === "pinned"
+        || (active === "workspace" ? block.section === "workspace" : block.section === "chat"))
+      .flatMap(block => block.rows),
+    [active, walkBlocks],
   );
 
   /**
@@ -1122,7 +993,7 @@ export function ActivityRail({
   // Only while the rail is showing a list: on Skills, Tasks or Remote there is no
   // order to walk, and the keys stay unclaimed instead of moving an invisible
   // selection.
-  const listShowing = active === "conversations";
+  const listShowing = active === "chat" || active === "workspace";
   useCommand("thread.previous", () => stepConversation(-1), listShowing && walkableRows.length > 0);
   useCommand("thread.next", () => stepConversation(1), listShowing && walkableRows.length > 0);
   // A single stop has nowhere to step to, so the keys stay free rather than being
@@ -1194,7 +1065,7 @@ export function ActivityRail({
           onOpenChange={open => setOpenWorkspaceMenuId(open ? workspace.id : null)}
           onRename={onRenameWorkspace}
           onTogglePin={onTogglePinWorkspace}
-          onSelect={selectionMode ? undefined : () => enterSelectionMode(`workspace/${workspace.id}`)}
+          onSelect={selectionMode ? undefined : () => enterSelectionMode(workspace.id)}
         />
         <RailHeaderButton
           icon={<Plus className="size-3.5" />}
@@ -1321,25 +1192,31 @@ export function ActivityRail({
                       </div>
                     )
                   : null}
-                {/* Three rows, top to bottom, in the reader's own order.
+                {/* Two bands, each with one job.
 
-                    First the filter of the list — the machine whose rows these are,
-                    and the search field — directly above the list switch it
-                    narrows, which is where it has always been; then which list;
-                    then the open list's own actions. Each row has one job, so a
-                    control that moves changes the question it answers. */}
-                {showSearchBand
+                    Band 1 answers "which list" — only the switch, and nothing
+                    else. Band 2 holds what belongs to *the list that switch
+                    shows*: its search, the machine picker the search filters
+                    within, and the list's own menu. The menu sat in band 1 until
+                    now, which read as an action on the switch while it is really
+                    an action on the list — the thing the reader is looking at. */}
+                <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-view-band">
+                  <div className="min-w-0 flex-1">
+                    <RailViewSwitch onChange={setRailView} view={railView} />
+                  </div>
+                </div>
+                {showListTools
                   ? (
-                      <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-search-band">
+                      <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-list-tools">
                         {/* One machine standing behind the list is named by the
-                            picker, `compact` because it shares this row with the
-                            search field. */}
-                        {showDevicePicker
+                            picker, `compact` because it now shares the row with
+                            the search field. */}
+                        {onChangeDeviceFilter && remotePeers.length > 0
                           ? (
                               <DeviceSelector
                                 compact
                                 filter={deviceFilter}
-                                onChange={onChangeDeviceFilter!}
+                                onChange={onChangeDeviceFilter}
                                 onManage={() => onManageDesktops?.()}
                                 peers={remotePeers}
                               />
@@ -1354,57 +1231,18 @@ export function ActivityRail({
                                 query={searchQuery}
                               />
                             )}
-                      </div>
-                    )
-                  : null}
-                <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-view-band">
-                  <div className="min-w-0 flex-1">
-                    {/* A tab click is the user's choice of list, which is the one
-                        thing the preference remembers. Opening a conversation
-                        goes through the shell instead, and only moves the tab for
-                        this run. */}
-                    <RailViewSwitch onChange={onSelectView} view={view} />
-                  </div>
-                </div>
-                {showListActions
-                  ? (
-                      <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-list-actions">
-                        {/* Making something in this list. The workspace tab's
-                            `+` was the "Workspace" section heading's; the chat
-                            tab's is the machine-aware "new conversation", which
-                            lived on the chat heading. Both headings are gone, and
-                            both controls belong with the list they fill. The
-                            recent tab has neither: it is a view over lists that
-                            already exist. */}
-                        {showCreateControl
-                          ? (view === "workspace"
-                              ? (
-                                  <RailHeaderButton
-                                    icon={<Plus className="size-3.5" />}
-                                    label={t("activityRail.newWorkspace")}
-                                    onClick={onNewWorkspace}
-                                  />
-                                )
-                              : (
-                                  <RailNewChatButton
-                                    filter={deviceFilter}
-                                    onNewChatLocal={() => onNewChat()}
-                                    onNewChatRemote={onNewChatOnRemote
-                                      ? (desktopId, workspaceId) => onNewChatOnRemote(desktopId, workspaceId)
-                                      : undefined}
-                                    peers={remotePeers}
-                                  />
-                                ))
-                          : null}
-                        {/* The open list's own menu, at the row's right end —
-                            where the list has one (see `listMenuItems`). */}
-                        {showListMenu
+                        {/* The recent view's own way into a batch. The tree
+                            reaches it from a section's menu (the chat section, a
+                            workspace); this view has no such heading — it is one
+                            flat list — so its one menu sits here, at the row's
+                            right end, and marks the whole list as the batch. */}
+                        {railView === "recent" && !selectionMode
                           ? (
-                              <RailListMenu
-                                items={listMenuItems}
-                                label={t("activityRail.listActions", { view: viewLabel })}
-                                onOpenChange={setListMenuOpen}
-                                open={listMenuOpen}
+                              <ChatSectionMenu
+                                label={t("activityRail.recentActions")}
+                                onOpenChange={setRecentMenuOpen}
+                                onSelect={() => enterSelectionMode("recent")}
+                                open={recentMenuOpen}
                               />
                             )
                           : null}
@@ -1420,164 +1258,211 @@ export function ActivityRail({
                       onScroll={listScrollbar.handleScroll}
                     >
                       <div ref={listScrollbar.contentRef} className="flex min-h-full flex-col" data-activity-rail-content="true">
-                        {/* Nothing anywhere matches. */}
-                        {showNoMatches
+                        {!hasAnyVisibleRow
                           ? (
                               <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches">{noMatchesText}</div>
-                            )
-                          : null}
-                        {/* Matches exist, but not in this list. Below this line
-                            the results are drawn, so the reader can see them —
-                            the sentence is what stops them reading the list
-                            under it as "these are all from here". */}
-                        {showElsewhere
-                          ? (
-                              <div className="px-2 py-1 text-xs text-ink-muted" data-testid="search-elsewhere">
-                                {t("activityRail.searchElsewhere", { view: viewLabel })}
-                              </div>
                             )
                           : null}
                         {/* One list component for both views and both list modes:
                             the recent view holds a host's rows and this machine's
                             together, which is exactly the merge, and the tree view
                             is the merge grouped by workspace. */}
-                        {queryActive && view !== "recent"
-                          ? (searchRows.length === 0
-                              ? null
-                              : (
-                                  <MergedRows
-                                    activeKey={activeConversationKey}
-                                    collapsedWorkspaces={collapsedWorkspaces}
-                                    filter={deviceFilter}
-                                    onChangedRemote={() => onRemoteConversationsChanged?.()}
-                                    onDeletedRemote={conversation => onRemoteConversationDeleted(conversation)}
-                                    onNewChatInWorkspace={(desktopId, workspaceId) =>
-                                      onNewChatOnRemote?.(desktopId, workspaceId)}
-                                    onOpenRemote={conversation => onOpenRemoteConversation?.(conversation)}
-                                    onRenameRemote={conversation => onRenameRemoteConversation?.(conversation)}
-                                    onRenameRemoteWorkspace={target => onRenameRemoteWorkspace?.(target)}
-                                    onSelectWorkspaceChats={groupKey => enterSelectionMode(`workspace/${groupKey}`)}
-                                    onToggleRemoteExpanded={toggleRemoteThreadExpanded}
-                                    onToggleWorkspace={toggleWorkspaceCollapsed}
-                                    peers={remotePeers}
-                                    remoteSelection={{
-                                      selectable: isRemoteRowSelectable,
-                                      selected: row => selectedRemoteKeys.has(row.key),
-                                      toggle: toggleRemoteSelection,
-                                    }}
-                                    expandedRemoteRows={expandedRemoteThreads}
-                                    rowMeta={NO_ROW_META}
-                                    rowRoots={NO_ROW_ROOTS}
-                                    renderLocalGroupHeader={() => null}
-                                    renderLocalRow={renderLocalRow}
-                                    rows={searchRows}
-                                    searchLabels={searchLabels}
-                                    selectionMode={selectionMode}
-                                    threadById={threadById}
-                                    view="search"
-                                  />
-                                ))
-                          : mergedMode || view === "recent"
-                            ? (
-                                <MergedRows
-                                  activeKey={activeConversationKey}
-                                  ageLabels={view === "recent" ? recentAgeLabels : undefined}
-                                  collapsedWorkspaces={collapsedWorkspaces}
-                                  filter={deviceFilter}
-                                  onChangedRemote={() => onRemoteConversationsChanged?.()}
-                                  onDeletedRemote={conversation => onRemoteConversationDeleted(conversation)}
-                                  onNewChatInWorkspace={(desktopId, workspaceId) =>
-                                    onNewChatOnRemote?.(desktopId, workspaceId)}
-                                  onOpenRemote={conversation => onOpenRemoteConversation?.(conversation)}
-                                  onRenameRemote={conversation => onRenameRemoteConversation?.(conversation)}
-                                  onRenameRemoteWorkspace={target => onRenameRemoteWorkspace?.(target)}
-                                  onSelectWorkspaceChats={groupKey => enterSelectionMode(`workspace/${groupKey}`)}
-                                  onToggleRemoteExpanded={toggleRemoteThreadExpanded}
-                                  onToggleWorkspace={toggleWorkspaceCollapsed}
-                                  peers={remotePeers}
-                                  remoteSelection={{
-                                    selectable: isRemoteRowSelectable,
-                                    selected: row => selectedRemoteKeys.has(row.key),
-                                    toggle: toggleRemoteSelection,
-                                  }}
-                                  expandedRemoteRows={expandedRemoteThreads}
-                                  rowMeta={mergedRowTree.meta}
-                                  rowRoots={mergedRowTree.roots}
-                                  renderLocalGroupHeader={(workspaceId) => {
-                                    const found = visibleWorkspaceGroups.find(item => item.workspace.id === workspaceId);
-                                    return found ? renderWorkspaceHeader(found.workspace, found.threads) : null;
-                                  }}
-                                  renderLocalRow={renderLocalRow}
-                                  recentMore={view === "recent" ? recent.more : undefined}
-                                  recentSections={view === "recent" ? recent.sections : undefined}
-                                  rows={view === "recent" ? recent.rows : mergedRowTree.rows}
-                                  selectionMode={selectionMode}
-                                  threadById={threadById}
-                                  view={view}
-                                  onShowMoreRecent={() => setRecentLimit(current => current + RECENT_PAGE_SIZE)}
-                                />
-                              )
-                            : null}
-                        {queryActive || mergedMode || view === "recent"
+                        {mergedMode || railView === "recent"
+                          ? (
+                              <MergedRows
+                                activeKey={activeConversationKey}
+                                ageLabels={railView === "recent" ? recentAgeLabels : undefined}
+                                chatSectionCollapsed={chatSectionCollapsed}
+                                collapsedWorkspaces={collapsedWorkspaces}
+                                filter={deviceFilter}
+                                onChangedRemote={() => onRemoteConversationsChanged?.()}
+                                onDeletedRemote={conversation => onRemoteConversationDeleted(conversation)}
+                                onNewChat={() => onNewChat()}
+                                onNewChatInWorkspace={(desktopId, workspaceId) =>
+                                  onNewChatOnRemote?.(desktopId, workspaceId)}
+                                onNewWorkspace={onNewWorkspace}
+                                onOpenRemote={conversation => onOpenRemoteConversation?.(conversation)}
+                                onRenameRemote={conversation => onRenameRemoteConversation?.(conversation)}
+                                onRenameRemoteWorkspace={target => onRenameRemoteWorkspace?.(target)}
+                                onSelectChats={() => enterSelectionMode("chat")}
+                                onSelectWorkspaceChats={groupKey => enterSelectionMode(groupKey)}
+                                onToggleChatSection={() => setChatSectionCollapsed(value => !value)}
+                                onToggleRemoteExpanded={toggleRemoteThreadExpanded}
+                                onToggleWorkspace={toggleWorkspaceCollapsed}
+                                onToggleWorkspaceSection={() => setWorkspaceSectionCollapsed(value => !value)}
+                                peers={remotePeers}
+                                remoteSelection={{
+                                  selectable: isRemoteRowSelectable,
+                                  selected: row => selectedRemoteKeys.has(row.key),
+                                  toggle: toggleRemoteSelection,
+                                }}
+                                expandedRemoteRows={expandedRemoteThreads}
+                                rowMeta={mergedRowTree.meta}
+                                rowRoots={mergedRowTree.roots}
+                                renderLocalGroupHeader={(workspaceId) => {
+                                  const found = visibleWorkspaceGroups.find(item => item.workspace.id === workspaceId);
+                                  return found ? renderWorkspaceHeader(found.workspace, found.threads) : null;
+                                }}
+                                renderLocalRow={renderLocalRow}
+                                recentMore={railView === "recent" ? recent.more : undefined}
+                                recentSections={railView === "recent" ? recent.sections : undefined}
+                                rows={railView === "recent" ? recent.rows : mergedRowTree.rows}
+                                selectionMode={selectionMode}
+                                threadById={threadById}
+                                view={railView === "recent" ? "recent" : "tree"}
+                                workspaceSectionCollapsed={workspaceSectionCollapsed}
+                                onShowMoreRecent={() => setRecentLimit(current => current + RECENT_PAGE_SIZE)}
+                              />
+                            )
+                          : null}
+                        {railView === "recent" || mergedMode
                           ? null
                           : (
                               <>
-                                {/* The tab's own pinned rows. Not one shared
-                                    "pinned" list: a pinned chat above a list of
-                                    workspaces read as one list, and a pin is
-                                    only a shortcut *within* the list it is in. */}
                                 {visiblePinnedThreads.length > 0
                                   ? (
                                       <div className="mb-3 space-y-0.5">
                                         <div className="sticky top-0 z-20 flex h-6 items-center bg-surface px-2 text-xs font-medium text-ink-muted">
                                           <span>{t("activityRail.pinnedHeader")}</span>
                                         </div>
-                                        {visiblePinnedThreads.map(({ thread, depth, hasChildren }) =>
-                                          renderLocalRow(thread, depth, hasChildren))}
+                                        {visiblePinnedThreads.map(({ thread, depth, hasChildren }) => (
+                                          <ThreadListItem
+                                            active={thread.id === activeThreadId}
+                                            archived={thread.status === "archived"}
+                                            key={thread.id}
+                                            menuOpen={openThreadMenuId === thread.id}
+                                            pendingApprovalCount={pendingApprovalCounts.get(thread.id)}
+                                            runStatus={threadRunStatuses[thread.id]}
+                                            selected={selectedThreadIds.has(thread.id)}
+                                            selectionMode={threadSelectionMode(thread)}
+                                            thread={thread}
+                                            depth={depth}
+                                            hasChildren={hasChildren}
+                                            expanded={expandedThreads.has(thread.id)}
+                                            onToggleExpanded={toggleThreadExpanded}
+                                            isStreaming={threadStreamingStatuses[thread.id]}
+                                            unread={unreadThreadIds.has(thread.id)}
+                                            onDeleteThread={onDeleteThread}
+                                            onMenuOpenChange={handleThreadMenuOpenChange}
+                                            onRenameThread={onRenameThread}
+                                            onRestoreThread={onRestoreThread}
+                                            onSelectThread={handleRowSelect}
+                                            onTogglePinThread={onTogglePinThread}
+                                            onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
+                                          />
+                                        ))}
                                       </div>
                                     )
                                   : null}
-                                {view === "workspace"
-                                  ? (
-                                      <div className="space-y-0.5" data-testid="workspace-tab">
-                                        {visibleWorkspaceGroups.length === 0
+                                <div className="space-y-0.5">
+                                  <div className="sticky top-0 z-20 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
+                                    <span>{t("activityRail.workspace")}</span>
+                                    <div className="flex items-center gap-0.5">
+                                      <SectionToggle
+                                        collapsed={workspaceSectionCollapsed}
+                                        label={workspaceSectionCollapsed
+                                          ? t("activityRail.expandWorkspaceSection")
+                                          : t("activityRail.collapseWorkspaceSection")}
+                                        onToggle={() => setWorkspaceSectionCollapsed(value => !value)}
+                                      />
+                                      <button
+                                        aria-label={t("activityRail.newWorkspace")}
+                                        className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                                        onClick={onNewWorkspace}
+                                        title={t("activityRail.newWorkspace")}
+                                        type="button"
+                                      >
+                                        <Plus className="size-3.5" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                  {!workspaceSectionCollapsed && workspaceGroups.length === 0 && (filteredChatThreads.length === 0 || chatSectionCollapsed)
+                                    ? (
+                                        <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches-workspace">{noMatchesText}</div>
+                                      )
+                                    : null}
+                                  {visibleWorkspaceGroups.map(({ workspace, threads: groupThreads, rows }) => {
+                                    const collapsed = collapsedWorkspaces.has(workspace.id);
+                                    return (
+                                      <div key={workspace.id} className="space-y-0.5">
+                                        {renderWorkspaceHeader(workspace, groupThreads)}
+                                        {!collapsed && groupThreads.length > 0
                                           ? (
-                                              <div className="px-2 py-1 text-xs text-ink-muted" data-testid="empty-workspace-tab">
-                                                {t("activityRail.emptyWorkspaceTab")}
+                                              <div className="space-y-0.5">
+                                                {rows.map(({ thread, depth, hasChildren }) => (
+                                                  <ThreadListItem
+                                                    active={thread.id === activeThreadId}
+                                                    archived={thread.status === "archived"}
+                                                    key={thread.id}
+                                                    menuOpen={openThreadMenuId === thread.id}
+                                                    pendingApprovalCount={pendingApprovalCounts.get(thread.id)}
+                                                    runStatus={threadRunStatuses[thread.id]}
+                                                    selected={selectedThreadIds.has(thread.id)}
+                                                    selectionMode={threadSelectionMode(thread)}
+                                                    thread={thread}
+                                                    depth={depth}
+                                                    hasChildren={hasChildren}
+                                                    expanded={expandedThreads.has(thread.id)}
+                                                    onToggleExpanded={toggleThreadExpanded}
+                                                    isStreaming={threadStreamingStatuses[thread.id]}
+                                                    unread={unreadThreadIds.has(thread.id)}
+                                                    compact
+                                                    onDeleteThread={onDeleteThread}
+                                                    onMenuOpenChange={handleThreadMenuOpenChange}
+                                                    onRenameThread={onRenameThread}
+                                                    onRestoreThread={onRestoreThread}
+                                                    onSelectThread={handleRowSelect}
+                                                    onTogglePinThread={onTogglePinThread}
+                                                    onToggleSelection={threadSelectionMode(thread) ? toggleThreadSelection : undefined}
+                                                  />
+                                                ))}
                                               </div>
                                             )
                                           : null}
-                                        {visibleWorkspaceGroups.map(({ workspace, threads: groupThreads, rows }) => {
-                                          const collapsed = collapsedWorkspaces.has(workspace.id);
-                                          return (
-                                            <div key={workspace.id} className="space-y-0.5">
-                                              {renderWorkspaceHeader(workspace, groupThreads)}
-                                              {!collapsed && groupThreads.length > 0
-                                                ? (
-                                                    <div className="space-y-0.5">
-                                                      {rows.map(({ thread, depth, hasChildren }) =>
-                                                        renderLocalRow(thread, depth, hasChildren, true))}
-                                                    </div>
-                                                  )
-                                                : null}
-                                            </div>
-                                          );
-                                        })}
                                       </div>
-                                    )
-                                  : (
-                                      <div className="space-y-0.5" data-testid="chat-tab">
-                                        {visibleChatThreads.length === 0
-                                          ? (
-                                              <div className="px-2 py-1 text-xs text-ink-muted" data-testid="empty-chat-tab">
-                                                {t("activityRail.noChats")}
-                                              </div>
-                                            )
-                                          : null}
-                                        {visibleChatThreads.map(({ thread, depth, hasChildren }) =>
-                                          renderLocalRow(thread, depth, hasChildren))}
-                                      </div>
-                                    )}
+                                    );
+                                  })}
+                                </div>
+                                <div className="mt-3 flex flex-1 flex-col space-y-0.5">
+                                  <div className="sticky top-0 z-20 flex h-6 items-center justify-between bg-surface px-2 text-xs font-medium text-ink-muted">
+                                    <span>{t("activityRail.chatHeader")}</span>
+                                    <div className="flex items-center gap-0.5">
+                                      <SectionToggle
+                                        collapsed={chatSectionCollapsed}
+                                        label={chatSectionCollapsed
+                                          ? t("activityRail.expandChatSection")
+                                          : t("activityRail.collapseChatSection")}
+                                        onToggle={() => setChatSectionCollapsed(value => !value)}
+                                      />
+                                      {!selectionMode
+                                        ? (
+                                            <ChatSectionMenu
+                                              open={chatSectionMenuOpen}
+                                              onOpenChange={setChatSectionMenuOpen}
+                                              onSelect={() => enterSelectionMode("chat")}
+                                            />
+                                          )
+                                        : null}
+                                      <button
+                                        aria-label={t("activityRail.newChatShort")}
+                                        className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+                                        onClick={() => onNewChat()}
+                                        title={t("activityRail.newChatShort")}
+                                        type="button"
+                                      >
+                                        <Plus className="size-3.5" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                  {!chatSectionCollapsed && filteredChatThreads.length === 0
+                                    ? (
+                                        <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches">{noMatchesText}</div>
+                                      )
+                                    : null}
+                                  <div className="shrink-0 space-y-0.5">
+                                    {visibleChatThreads.map(({ thread, depth, hasChildren }) => renderLocalRow(thread, depth, hasChildren))}
+                                  </div>
+                                </div>
                               </>
                             )}
                       </div>
@@ -1647,27 +1532,18 @@ export function ActivityRail({
                   active={active === "remote"}
                   onClick={() => onChange("remote")}
                 />
-                {/* The collapsed rail draws the same three lists the tabs do,
-                    and each icon *selects a tab* rather than a section. They
-                    used to set a section, which is what made the collapsed and
-                    expanded rails two different controls over one question: this
-                    icon chose the chat list, the tabs above chose between the
-                    workspace list and the recent one, and the two could disagree.
-                    "Recent" had no icon here at all, so that list was unreachable
-                    with the rail folded. */}
-                {COLLAPSED_VIEW_ICONS.map(({ icon: Icon, view: itemView }) => (
-                  <IconButton
-                    active={active === "conversations" && view === itemView}
-                    icon={<Icon className="size-4" />}
-                    key={itemView}
-                    label={t(itemView === "workspace"
-                      ? "activityRail.viewWorkspace"
-                      : itemView === "chat"
-                        ? "activityRail.viewChat"
-                        : "activityRail.viewRecent")}
-                    onClick={() => onSelectView(itemView)}
-                  />
-                ))}
+                <IconButton
+                  icon={<Folder className="size-4" />}
+                  label={t("activityRail.workspace")}
+                  active={active === "workspace"}
+                  onClick={() => onChange("workspace")}
+                />
+                <IconButton
+                  icon={<MessageSquare className="size-4" />}
+                  label={t("activityRail.chat")}
+                  active={active === "chat"}
+                  onClick={() => onChange("chat")}
+                />
               </>
             )}
       </div>
@@ -1699,6 +1575,33 @@ function sortThreads(items: StoredThread[]) {
 
 function threadSortTime(thread: StoredThread) {
   return thread.lastMessageAt ?? thread.updatedAt ?? thread.createdAt;
+}
+
+/**
+ * Collapse/expand chevron for a top-level list section header (Workspace / Chat),
+ * sized to sit next to that header's `+` button.
+ */
+function SectionToggle({
+  collapsed,
+  label,
+  onToggle,
+}: {
+  collapsed: boolean;
+  label: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      aria-expanded={!collapsed}
+      aria-label={label}
+      className="inline-flex size-5 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
+      onClick={onToggle}
+      title={label}
+      type="button"
+    >
+      {collapsed ? <ChevronRight className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+    </button>
+  );
 }
 
 /**

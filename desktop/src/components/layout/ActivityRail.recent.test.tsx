@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { ComponentProps, ReactElement } from "react";
 import type { StoredThread } from "../../integrations/storage/threadStore";
-import { act, useState } from "react";
+import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resetAllCommandBindings } from "../../features/keyboard/shortcuts";
@@ -67,11 +67,7 @@ function props(
   overrides: Partial<ComponentProps<typeof ActivityRail>> = {},
 ): ComponentProps<typeof ActivityRail> {
   return {
-    active: "conversations" as const,
-    // The file is about the recent list, but it opens where the app opens: the
-    // workspace list.
-    view: "workspace" as const,
-    onSelectView: vi.fn(),
+    active: "chat" as const,
     activeThreadId: null,
     expanded: true,
     futureSessionStatus: "authenticated",
@@ -102,28 +98,6 @@ function props(
     workspaces: [],
     ...overrides,
   };
-}
-
-/**
- * The rail, with the tab held the way the shell holds it.
- *
- * `view` is a prop now (the shell owns it, so opening a conversation can follow
- * it), which means a test that clicks a tab needs something to answer. This is
- * that something: it switches the tab and reports the choice through
- * `onSelectView`, and does nothing else the shell would not.
- */
-function Rail(base: ComponentProps<typeof ActivityRail>) {
-  const [view, setView] = useState(base.view);
-  return (
-    <ActivityRail
-      {...base}
-      view={view}
-      onSelectView={(next) => {
-        base.onSelectView?.(next);
-        setView(next);
-      }}
-    />
-  );
 }
 
 /**
@@ -177,7 +151,7 @@ afterEach(() => {
 
 describe("the rail's view switch", () => {
   it("opens on the tree, and the switch says which list is showing", () => {
-    const view = mount(<Rail {...props([thread("a")])} />);
+    const view = mount(<ActivityRail {...props([thread("a")])} />);
     const tree = view.container.querySelector("[data-testid=\"rail-view-workspace\"]")!;
     const recent = view.container.querySelector("[data-testid=\"rail-view-recent\"]")!;
     expect(tree.getAttribute("aria-pressed")).toBe("true");
@@ -189,7 +163,7 @@ describe("the rail's view switch", () => {
 
   it("draws every conversation flat, with no heading for where it lives", () => {
     const view = mount(
-      <Rail {...props([
+      <ActivityRail {...props([
         thread("in-workspace", { mode: "workspace", title: "In a workspace" }),
         thread("a-chat", { mode: "chat", title: "A chat" }),
       ])}
@@ -211,7 +185,7 @@ describe("the rail's view switch", () => {
 describe("the recent view's order", () => {
   it("puts the runs in flight above the rest, ranked by when they started", () => {
     const view = mount(
-      <Rail {...props(
+      <ActivityRail {...props(
         [
         // Started first, spoke most recently: by activity it would lead, by
         // creation it is the last of the running rows. This is the jump the
@@ -251,7 +225,7 @@ describe("the recent view's order", () => {
 
   it("follows a run the agent reports as streaming without a local run row", () => {
     const view = mount(
-      <Rail {...props(
+      <ActivityRail {...props(
         [thread("tui-run", { title: "Started elsewhere", lastMessageAt: now - 5 * minute })],
         { threadStreamingStatuses: { "tui-run": true } },
       )}
@@ -264,7 +238,7 @@ describe("the recent view's order", () => {
 
   it("keeps a pinned conversation in its place, with its marker still drawn", () => {
     const view = mount(
-      <Rail {...props([
+      <ActivityRail {...props([
         thread("pinned-stale", { title: "Pinned stale", pinned: true, lastMessageAt: now - 90 * minute }),
         thread("fresh", { title: "Fresh", lastMessageAt: now - minute }),
       ])}
@@ -280,7 +254,7 @@ describe("the recent view's order", () => {
 
   it("keeps this machine's order when a paired machine's rows are in the list", () => {
     const view = mount(
-      <Rail {...props(
+      <ActivityRail {...props(
         [thread("local", { title: "Local", lastMessageAt: now - 10 * minute })],
         {
           remoteCatalogs: [{
@@ -321,7 +295,7 @@ describe("the recent view's window", () => {
         })),
     ];
     const view = mount(
-      <Rail {...props(many, {
+      <ActivityRail {...props(many, {
         threadRunStatuses: { busy: { status: "running", endedAt: null } },
       })}
       />,
@@ -341,8 +315,8 @@ describe("the recent view's window", () => {
   });
 });
 
-describe("a batch and the recent view", () => {
-  it("leaves a pinned conversation out of a list's batch", () => {
+describe("a batch in the recent view", () => {
+  it("reaches a pinned conversation, which the tree leaves out", () => {
     // The tree lifts a pin above its groups, so a group's "select all" must not
     // sweep it up and it carries no checkbox. This view opens no such section —
     // the pin is a marker — so the row is one of the list's own rows, and leaving
@@ -351,40 +325,33 @@ describe("a batch and the recent view", () => {
       thread("pinned", { title: "Pinned one", pinned: true, lastMessageAt: now - minute }),
       thread("plain", { title: "Plain one", lastMessageAt: now - hour }),
     ];
-    const view = mount(<Rail {...props(threads, { view: "chat" })} />);
+    const view = mount(<ActivityRail {...props(threads)} />);
 
-    // The chats list: the pinned row is its own section, outside the list's own
-    // rows, so the list's batch leaves it out.
-    act(() => view.container.querySelector<HTMLButtonElement>("[aria-label=\"Chats list actions\"]")!.click());
+    // The tree: the pinned row is its own section, outside every group, so the
+    // chat section's batch leaves it out.
+    act(() => view.container.querySelector<HTMLButtonElement>("[aria-label=\"Chat section actions\"]")!.click());
     act(() => [...view.container.querySelectorAll<HTMLElement>("button")]
-      .find(element => element.textContent === "Select conversations in “Chats”")!
+      .find(element => element.textContent === "Select chats")!
       .click());
     expect(rowCheckboxes(view.container)).toEqual(["Select Plain one"]);
     view.unmount();
   });
 
-  /**
-   * The recent list has no batch of its own.
-   *
-   * A batch is "the rows under this heading" — a workspace, the chats list. This
-   * list's only boundary is time, so a selection here would mean every
-   * conversation on the machine, which is not a batch a reader can picture. So it
-   * offers no trigger rather than one that promises that. Deleting a conversation
-   * from it is still a row action.
-   */
-  it("offers no batch entry of its own", () => {
+  it("offers every drawn row once the recent view is the list", () => {
     const threads = [
       thread("pinned", { title: "Pinned one", pinned: true, lastMessageAt: now - minute }),
       thread("plain", { title: "Plain one", lastMessageAt: now - hour }),
     ];
-    const view = mount(<Rail {...props(threads)} />);
+    const view = mount(<ActivityRail {...props(threads)} />);
     showRecent(view.container);
-
-    expect(view.container.querySelector("button[aria-label='Recent list actions']")).toBeNull();
-    // The rows are still there, with their own menus: deleting one conversation
-    // from this list is a row action, not a batch one.
-    expect(drawnTitles(view.container)).toEqual(["Pinned one", "Plain one"]);
-    expect(view.container.querySelector("button[aria-label='Thread actions for Plain one']")).not.toBeNull();
+    act(() => view.container.querySelector<HTMLButtonElement>("[aria-label=\"Recent list actions\"]")!.click());
+    act(() => [...view.container.querySelectorAll<HTMLElement>("button")]
+      .find(element => element.textContent === "Select chats")!
+      .click());
+    expect(rowCheckboxes(view.container)).toEqual([
+      "Select Pinned one",
+      "Select Plain one",
+    ]);
     view.unmount();
   });
 });
@@ -400,7 +367,7 @@ describe("the recent view from the keyboard", () => {
     const uninstallShortcuts = installShortcuts();
     const onSelectThread = vi.fn();
     const view = mount(
-      <Rail {...props(
+      <ActivityRail {...props(
         [
           thread("busy", { title: "Busy", createdAt: now - minute, lastMessageAt: now - 3 * hour }),
           thread("fresh", { title: "Fresh", createdAt: now - 5 * hour, lastMessageAt: now - minute }),
@@ -422,7 +389,7 @@ describe("the recent view from the keyboard", () => {
 
     // From the active row, the next stop is the finished one under it.
     view.rerender(
-      <Rail {...props(
+      <ActivityRail {...props(
         [
           thread("busy", { title: "Busy", createdAt: now - minute, lastMessageAt: now - 3 * hour }),
           thread("fresh", { title: "Fresh", createdAt: now - 5 * hour, lastMessageAt: now - minute }),
@@ -474,7 +441,7 @@ describe("the recent view and the tree do not leak into each other", () => {
       updatedAt: now,
     }];
     const view = mount(
-      <Rail {...props(threads, {
+      <ActivityRail {...props(threads, {
       // A run in flight, which the recent view would lift to the top. It must not
       // move inside the tree.
         threadRunStatuses: { "ws-old": { status: "running", endedAt: null } },
@@ -498,20 +465,15 @@ describe("the recent view and the tree do not leak into each other", () => {
     view.unmount();
   });
 
-  /**
-   * The switch reports a choice and does not remember it itself.
-   *
-   * Remembering is the shell's (`useRailView`), and only for choices — an opened
-   * conversation moves the tab for the run without claiming it as the
-   * preference. A rail that wrote the key on every render would make that
-   * distinction impossible, so it writes nothing.
-   */
-  it("reports the chosen tab and leaves remembering to the shell", () => {
-    const onSelectView = vi.fn();
-    const view = mount(<Rail {...props([thread("a")], { onSelectView })} />);
-    showRecent(view.container);
-    expect(onSelectView).toHaveBeenCalledWith("recent");
-    expect(localStorage.getItem("future.activityRail.view")).toBeNull();
-    view.unmount();
+  it("remembers the view across mounts", () => {
+    const first = mount(<ActivityRail {...props([thread("a")])} />);
+    showRecent(first.container);
+    first.unmount();
+
+    const second = mount(<ActivityRail {...props([thread("a")])} />);
+    expect(second.container.querySelector("[data-testid=\"recent-rows\"]")).not.toBeNull();
+    expect(second.container.querySelector("[data-testid=\"rail-view-recent\"]")!.getAttribute("aria-pressed"))
+      .toBe("true");
+    second.unmount();
   });
 });

@@ -39,7 +39,6 @@ export function RemoteConversationRow({
   onToggleExpanded,
   onToggleSelection,
   peer,
-  qualifier,
   selected,
   selectionMode,
   showSource,
@@ -73,13 +72,6 @@ export function RemoteConversationRow({
   /** Tick or untick this row while a batch is being assembled. */
   onToggleSelection?: (conversation: MergedConversation) => void;
   peer: RemotePeer | undefined;
-  /**
-   * Where this conversation lives, weakly — the search results' origin label.
-   *
-   * The same slot as the local row's, so a result list holding both machines'
-   * rows keeps one shape.
-   */
-  qualifier?: string;
   selected?: boolean;
   /**
    * Whether this row shows a checkbox.
@@ -147,13 +139,6 @@ export function RemoteConversationRow({
               {iconGlyph(peer?.icon)}
             </span>
           )}
-      {qualifier
-        ? (
-            <span className="pointer-events-none shrink-0 text-2xs text-ink-muted" data-testid="row-qualifier">
-              {qualifier}
-            </span>
-          )
-        : null}
       <RailRowSpacer />
       {/* The age, before the run indicator: the same column the local row puts
           it in, so a list holding both machines' rows keeps one right edge. */}

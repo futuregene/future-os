@@ -695,10 +695,7 @@ describe("app shell layout", () => {
     expect(view.container.querySelector("[data-child=\"agent-thread\"]")).not.toBeNull();
     expect(view.container.querySelector("[data-child=\"context-panel\"]")).not.toBeNull();
     expect(view.container.querySelector("[data-child=\"workspace-dialogs\"]")).not.toBeNull();
-    expect(rail().active).toBe("conversations");
-    // The list it draws is the user's own choice, and a fresh window has not
-    // made one: the workspace list is the default.
-    expect(rail().view).toBe("workspace");
+    expect(rail().active).toBe("chat");
     expect(rail().activeThreadId).toBe("t1");
     view.unmount();
   });
@@ -979,8 +976,7 @@ describe("app shell layout", () => {
     const view = mount(<AppShell />);
     act(() => rail().onNewChat("w-t2"));
     expect(children.newConversation).toMatchObject({ initialMode: "workspace", initialWorkspaceId: "w-t2" });
-    // Composing inside a workspace shows that workspace's list — a follow.
-    expect(rail().view).toBe("workspace");
+    expect(rail().active).toBe("workspace");
     view.unmount();
   });
 
@@ -1296,7 +1292,7 @@ describe("app shell workspace handlers", () => {
     });
     expect(mocks.hooks.restoreThread).toHaveBeenCalledWith("t3");
     expect(mocks.refreshStore).toHaveBeenCalledWith("t3");
-    expect(rail().view).toBe("workspace");
+    expect(rail().active).toBe("workspace");
     view.unmount();
   });
 
@@ -1306,25 +1302,23 @@ describe("app shell workspace handlers", () => {
     // must land on the chat section rather than the workspace one.
     (mocks.hooks.restoreThread as ReturnType<typeof vi.fn>).mockResolvedValue(thread("t4", { mode: "chat" }));
     const view = mount(<AppShell />);
-    act(() => rail().onSelectView("workspace"));
-    expect(rail().view).toBe("workspace");
+    act(() => rail().onChange("workspace"));
+    expect(rail().active).toBe("workspace");
 
     await act(async () => {
       await rail().onRestoreThread(thread("t4"));
     });
     expect(mocks.hooks.restoreThread).toHaveBeenCalledWith("t4");
-    expect(rail().view).toBe("chat");
+    expect(rail().active).toBe("chat");
     view.unmount();
   });
 
-  it("selects a thread, and follows it into the list it lives in", () => {
+  it("selects a thread, routing workspace threads to the workspace section", () => {
     const view = mount(<AppShell />);
     act(() => rail().onSelectThread(chatThread));
-    expect(rail().active).toBe("conversations");
-    expect(rail().view).toBe("chat");
+    expect(rail().active).toBe("chat");
     act(() => rail().onSelectThread(workThread));
-    expect(rail().active).toBe("conversations");
-    expect(rail().view).toBe("workspace");
+    expect(rail().active).toBe("workspace");
     view.unmount();
   });
 
@@ -1334,7 +1328,7 @@ describe("app shell workspace handlers", () => {
 
     act(() => rail().onSelectWorkspace(workWorkspace, [workThread]));
     expect(setActiveThreadId).toHaveBeenLastCalledWith("t2");
-    expect(rail().view).toBe("workspace");
+    expect(rail().active).toBe("workspace");
 
     act(() => rail().onSelectWorkspace(workWorkspace, []));
     expect(setActiveThreadId).toHaveBeenLastCalledWith(null);
@@ -2782,47 +2776,13 @@ describe("app shell keyboard commands", () => {
     view.unmount();
   });
 
-  /**
-   * The number row: three lists, then the pages.
-   *
-   * ⌘1/2/3 are the rail's tabs now — they answer the question `section.chat` and
-   * `section.workspace` asked (which conversations), which is why those two
-   * commands were retired and the pages moved to ⌘4 and up. Pressing a tab also
-   * comes back to the conversation column, or the number row would move a
-   * selection the reader cannot see.
-   */
-  it("switches lists and pages with the number row", () => {
+  it("switches sections with the number row", () => {
     const view = mount(<AppShell />);
-    press({ ctrlKey: true, key: "4" });
+    press({ ctrlKey: true, key: "3" });
     expect(view.container.querySelector("[data-child=\"skills-view\"]")).not.toBeNull();
-
     press({ ctrlKey: true, key: "2" });
     expect(view.container.querySelector("[data-child=\"skills-view\"]")).toBeNull();
-    expect(rail().active).toBe("conversations");
-    expect(rail().view).toBe("chat");
-
-    press({ ctrlKey: true, key: "1" });
-    expect(rail().view).toBe("workspace");
-    press({ ctrlKey: true, key: "3" });
-    expect(rail().view).toBe("recent");
-    view.unmount();
-  });
-
-  /**
-   * A tab pressed by the user is remembered; one the shell followed is not.
-   *
-   * The preference is "the list I chose", so opening a conversation moves the tab
-   * for this run and the next launch returns to the choice — otherwise the app
-   * would reopen wherever the user was last dragged.
-   */
-  it("remembers the chosen tab and not the followed one", () => {
-    const view = mount(<AppShell />);
-    press({ ctrlKey: true, key: "3" });
-    expect(localStorage.getItem("future.activityRail.view")).toBe("recent");
-
-    act(() => rail().onSelectThread(chatThread));
-    expect(rail().view).toBe("chat");
-    expect(localStorage.getItem("future.activityRail.view")).toBe("recent");
+    expect(rail().active).toBe("workspace");
     view.unmount();
   });
 
