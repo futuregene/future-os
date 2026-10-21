@@ -3,8 +3,8 @@
  * edge? Measured in the rendered app — the class list says what was intended,
  * the boxes say what the browser did.
  */
-export async function run(): Promise<unknown> {
-  const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+export async function run() {
+  const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
   // Open the remote page, then the machine list, so the merged list is drawn.
   const rail = document.querySelectorAll("[data-activity-rail-scroll='true']");
@@ -12,7 +12,7 @@ export async function run(): Promise<unknown> {
     return { error: "no rail" };
   await wait(600);
 
-  const out: Record<string, unknown> = {};
+  const out = {};
 
   // The device selector starts on "all devices" (the merged list).
   const rows = [...document.querySelectorAll("[data-testid='merged-conversations'] > *")];
@@ -37,7 +37,7 @@ export async function run(): Promise<unknown> {
   const headings = [...document.querySelectorAll("[data-testid='merged-group-heading']")];
   out.headingCount = headings.length;
   out.headings = headings.slice(0, 4).map((name) => {
-    const header = name.closest("div")!;
+    const header = name.closest("div");
     const icon = [...header.querySelectorAll("span[aria-hidden]")]
       .find(span => (span.textContent ?? "").trim() !== "");
     const nameBox = name.getBoundingClientRect();
