@@ -34,6 +34,32 @@
           }
         ]
       },
+      "hash-session-menu": {
+        "note": "The composer's `#` menu: one list, newest activity first — a chat leads its workspace neighbours when it was used more recently, so there is no chats-first section — and each row names the workspace it lives in. The conversation being composed in is not offered.",
+        "steps": [
+          {
+            "wait": 1800
+          },
+          {
+            "eval": "(() => { const ed = document.querySelector('[contenteditable=\"true\"][role=\"textbox\"]'); if (!ed) throw new Error('no composer'); ed.focus(); return 'focused'; })()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "type": "#"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const rows = [...document.querySelectorAll('[data-menu-index]')]; if (rows.length < 6) throw new Error('the menu did not list the conversations: ' + rows.length); const title = row => ((row.querySelector('.flex-1') || {}).textContent || '').trim(); const ws = row => { const el = row.querySelector('[data-session-workspace]'); return el ? el.textContent.trim() : null; }; const titles = rows.map(title); const labels = rows.map(ws); const expected = ['基金申报书的创新点怎么写', '只看风险偏好那一段', '把结论改成中文表格', '表格加上样本量一列', '帮我把这段英文摘要改通顺']; for (let i = 0; i < expected.length; i += 1) { if (titles[i] !== expected[i]) throw new Error('row ' + i + ' is ' + JSON.stringify(titles[i]) + ', expected ' + JSON.stringify(expected[i]) + ' in ' + JSON.stringify(titles.slice(0, 6))); } if (labels[0] !== null) throw new Error('a chat names a workspace: ' + JSON.stringify(labels[0])); if (labels[1] !== '多巴胺与决策') throw new Error('the conversation does not name its workspace: ' + JSON.stringify(labels[1])); if (titles.includes('整理两篇文献的结论对比表')) throw new Error('the conversation being composed in is offered as a reference to itself'); return { titles: titles.slice(0, 5), labels: labels.slice(0, 5) }; })()"
+          },
+          {
+            "shot": "d-hash-session-menu.png"
+          }
+        ]
+      },
       "rail-pin-menu": {
         "steps": [
           {
@@ -2703,6 +2729,50 @@
       "mobile": true
     },
     "scenarios": {
+      "hash-session-menu": {
+        "note": "The composer's `#` picker: conversations from every workspace in one list, newest activity first (even when that pulls a chat above a workspace's own conversations), and the workspace named on each row.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').focus()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "type": "#"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => { const header = [...document.querySelectorAll('*')].find(el => el.children.length === 0 && (el.textContent || '').trim() === '引用会话'); if (!header) throw new Error('the picker did not open'); const panel = header.parentElement.parentElement; const rows = [...panel.querySelectorAll('[role=\"button\"]')].filter(el => (el.getAttribute('aria-label') || '') !== '关闭技能候选'); const labels = rows.map(el => el.getAttribute('aria-label') || ''); const texts = rows.map(el => (el.innerText || '').trim()); const expected = ['跑通 Longformer 的 baseline', '把这份问卷数据清洗一下', '只看风险偏好那一段']; for (let i = 0; i < expected.length; i += 1) { if (labels[i] !== expected[i]) throw new Error('row ' + i + ' is ' + JSON.stringify(labels[i]) + ', expected ' + JSON.stringify(expected[i]) + ' in ' + JSON.stringify(labels.slice(0, 5))); } if (!texts[0].includes('稀疏注意力复现')) throw new Error('a workspace conversation names no workspace: ' + JSON.stringify(texts[0])); if (!texts[0].startsWith('跑通 Longformer 的 baseline')) throw new Error('the row is not titled: ' + JSON.stringify(texts[0])); if (texts.some(text => text.includes('临时会话'))) throw new Error('a chat names a workspace: ' + JSON.stringify(texts)); if (labels.includes('整理两篇文献的结论对比表')) throw new Error('the conversation being composed in is offered as a reference to itself'); return { labels: labels.slice(0, 6), texts: texts.slice(0, 3) }; })()"
+          },
+          {
+            "shot": "m-hash-session-menu.png"
+          }
+        ]
+      },
       "list": {
         "steps": [
           {

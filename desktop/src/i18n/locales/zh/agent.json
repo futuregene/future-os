@@ -190,7 +190,6 @@
     "noSlashMatches": "没有匹配的工具或技能。",
     "skillsSection": "技能",
     "noSessionMatches": "没有匹配的对话。",
-    "sessionsSection": "对话",
     "workspaceSection": "工作区",
     "compactContext": "压缩",
     "compactContextDescription": "压缩此对话的上下文",
