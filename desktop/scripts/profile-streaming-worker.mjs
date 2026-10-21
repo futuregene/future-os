@@ -3,15 +3,16 @@
 // node --expose-gc scripts/profile-streaming-worker.mjs mixed baseline
 // No Agent, desktop deployment, browser, filesystem data or network is involved.
 import assert from "node:assert/strict";
-import { readFile, readdir } from "node:fs/promises";
-import { performance } from "node:perf_hooks";
+import { readdir, readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
+import { performance } from "node:perf_hooks";
+import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { runInNewContext } from "node:vm";
 
 const fixture = process.argv[2] ?? "list";
 const label = process.argv[3] ?? "candidate";
-assert.ok(global.gc, "Run Node with --expose-gc to measure retained heap");
+assert.ok(globalThis.gc, "Run Node with --expose-gc to measure retained heap");
 assert.ok(["list", "mixed", "code"].includes(fixture));
 const assets = process.argv[4]
   ? pathToFileURL(`${resolve(process.argv[4])}${sep}`)
@@ -20,14 +21,18 @@ const workers = (await readdir(assets)).filter(name => /^streamingMarkdown\.work
 assert.equal(workers.length, 1);
 const bundle = await readFile(new URL(workers[0], assets), "utf8");
 let lastResponse;
-const scope = { postMessage: message => { lastResponse = message; } };
+const scope = {
+  postMessage: (message) => {
+    lastResponse = message;
+  },
+};
 runInNewContext(bundle, scope, { timeout: 10000 });
 const updates = 80;
 let text = fixture === "list"
   ? Array.from({ length: 800 }, (_, i) => `- Item ${i}: **value** with \`code\` and [link](https://example.com/${i}).`).join("\n")
   : fixture === "mixed"
-    ? Array.from({ length: 120 }, (_, i) => `## Section ${i}\n\nParagraph ${i} with **bold** and $x^2$.\n\n- Item ${i}\n\n\`\`\`ts\nconst n = ${i};\n\`\`\`\n\n`).join("") + "Growing tail"
-    : "```text\n" + "long code line with a sample value\n".repeat(1500);
+    ? `${Array.from({ length: 120 }, (_, i) => `## Section ${i}\n\nParagraph ${i} with **bold** and $x^2$.\n\n- Item ${i}\n\n\`\`\`ts\nconst n = ${i};\n\`\`\`\n\n`).join("")}Growing tail`
+    : `\`\`\`text\n${"long code line with a sample value\n".repeat(1500)}`;
 const initialChars = text.length;
 let id = 0;
 function project(live) {
@@ -41,12 +46,14 @@ function project(live) {
   assert.equal(lastResponse.blocks.at(-1)?.live, live);
   return { ms: duration, cpuMs: (cpu.user + cpu.system) / 1000 };
 }
-function heap() { return process.memoryUsage().heapUsed; }
+function heap() {
+  return process.memoryUsage().heapUsed;
+}
 function median(values) {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.floor(sorted.length / 2)];
 }
-global.gc();
+globalThis.gc();
 const baseHeap = heap();
 const first = project(true);
 let highWater = heap();
@@ -59,7 +66,7 @@ for (let i = 0; i < updates; i++) {
   appendCpuMs.push(sample.cpuMs);
   highWater = Math.max(highWater, heap());
 }
-global.gc();
+globalThis.gc();
 const retainedAfterAppends = heap();
 const unchangedTextMs = [];
 const unchangedTextCpuMs = [];
@@ -68,15 +75,27 @@ for (let i = 0; i < 10; i++) {
   unchangedTextMs.push(sample.ms);
   unchangedTextCpuMs.push(sample.cpuMs);
 }
-global.gc();
+globalThis.gc();
 const result = {
-  label, fixture, node: process.version, platform: process.platform,
-  workerBundle: workers[0], initialChars, updates,
-  firstParseMs: first.ms, firstParseCpuMs: first.cpuMs,
-  appendMedianMs: median(appendMs), appendMaxMs: Math.max(...appendMs), appendMedianCpuMs: median(appendCpuMs),
-  unchangedTextMedianMs: median(unchangedTextMs), unchangedTextMedianCpuMs: median(unchangedTextCpuMs),
+  label,
+  fixture,
+  node: process.version,
+  platform: process.platform,
+  workerBundle: workers[0],
+  initialChars,
+  updates,
+  firstParseMs: first.ms,
+  firstParseCpuMs: first.cpuMs,
+  appendMedianMs: median(appendMs),
+  appendMaxMs: Math.max(...appendMs),
+  appendMedianCpuMs: median(appendCpuMs),
+  unchangedTextMedianMs: median(unchangedTextMs),
+  unchangedTextMedianCpuMs: median(unchangedTextCpuMs),
   retainedAfterAppendsMiB: (retainedAfterAppends - baseHeap) / 1024 ** 2,
   sampledHeapHighWaterMiB: (highWater - baseHeap) / 1024 ** 2,
-  appendMs, unchangedTextMs, appendCpuMs, unchangedTextCpuMs,
+  appendMs,
+  unchangedTextMs,
+  appendCpuMs,
+  unchangedTextCpuMs,
 };
 console.log(JSON.stringify(result));

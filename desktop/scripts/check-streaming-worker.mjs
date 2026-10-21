@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
+import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runInNewContext } from "node:vm";
 
@@ -27,9 +28,9 @@ assert.equal(replies[0].blocks.at(-1).live, true);
 assert.equal(replies[0].blocks[0].parsed, true);
 assert.equal(replies[0].blocks[0].document.nodes[0].type, "heading");
 assert.equal(replies[0].blocks[1].document.nodes[0].children[1].type, "strong");
-const table = "| A | B |\n| --- | --- |\n" + "| stable | row |\n".repeat(500) + "| mutable | **bo";
+const table = `| A | B |\n| --- | --- |\n${"| stable | row |\n".repeat(500)}| mutable | **bo`;
 scope.onmessage({ data: { id: 2, live: true, text: table } });
-const appended = table + "ld** |\n| next | row |";
+const appended = `${table}ld** |\n| next | row |`;
 scope.onmessage({ data: { id: 3, live: true, text: appended } });
 assert.equal(replies.at(-1).blocks[0].document.nodes[0].rows.length, 502);
 assert.equal(replies.at(-1).blocks[0].document.nodes[0].rows[500][1][0].type, "strong");

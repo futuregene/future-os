@@ -1,10 +1,11 @@
 /// <reference types="vitest/config" />
+import type { Plugin } from "vite";
 import { readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { defineConfig, type Plugin } from "vite";
-import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
 
 // pdf.js v6 ships its image decoders (JBIG2 / OpenJPEG / QCMS) as WebAssembly and
 // resolves them at runtime from a `wasmUrl` base directory. They aren't part of the
@@ -116,8 +117,8 @@ export default defineConfig({
       // Don't watch the Rust side: cargo writes into src-tauri/target while it
       // builds, and on Windows the fs watcher throws EBUSY on those files and
       // crashes the dev server. (macOS tolerates it, hence Windows-only.)
-      ignored: ["**/src-tauri/**"]
-    }
+      ignored: ["**/src-tauri/**"],
+    },
   },
-  envPrefix: ["VITE_", "TAURI_"]
+  envPrefix: ["VITE_", "TAURI_"],
 });
