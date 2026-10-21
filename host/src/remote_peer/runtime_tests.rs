@@ -1424,7 +1424,7 @@ async fn a_supervisor_gives_up_after_its_window() {
     creds::upsert(fx.paired.creds.clone()).expect("store");
     let desktop_id = fx.paired.creds.desktop_id.clone();
 
-    let handle = spawn_supervisor(desktop_id.clone(), None);
+    let handle = install_supervisor_for_test(&desktop_id).await;
     // Keep the existing deadline and verify the complete attempt budget as
     // well as termination: an accidental early return must not pass this test.
     tokio::time::timeout(std::time::Duration::from_secs(150), handle)

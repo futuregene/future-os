@@ -113,7 +113,7 @@ pub async fn close_socket_for_test(desktop_id: &str) {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub async fn install_supervisor_for_test(desktop_id: &str) {
+pub async fn install_supervisor_for_test(desktop_id: &str) -> future_remote_client::TaskHandle {
     client().install_supervisor_for_test(desktop_id).await
 }
 

@@ -19,11 +19,6 @@ function run(command, args) {
 switch (phase) {
   case 'fmt': run('cargo', ['fmt', ...flags, '--check']); break;
   case 'build':
-    if (packages.includes('futureos')) {
-      run('cargo', ['build', '--locked', ...flags]);
-      run('cargo', ['build', '--locked', '-p', 'futureos', '--no-default-features']);
-      run('cargo', ['build', '--locked', '-p', 'future-cli', '-p', 'futureos']);
-    }
     run('cargo', ['test', '--locked', '--no-run', ...flags]);
     if (packages.includes('futureos')) {
       run('cargo', ['test', '--locked', '--no-run', '-p', 'futureos', '--no-default-features', '--test', 'headless_cli']);

@@ -40,6 +40,10 @@ mod tests {
     /// leaving this line at the mercy of the host's PATH.
     #[test]
     fn a_host_without_a_resolvable_cli_still_starts_logging() {
+        #[cfg(unix)]
+        if future_host::test_support::reexec_test() {
+            return;
+        }
         #[cfg(all(windows, feature = "gui"))]
         if crate::test_process::reexec(
             "host_environment::tests::a_host_without_a_resolvable_cli_still_starts_logging",

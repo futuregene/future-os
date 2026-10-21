@@ -1212,6 +1212,13 @@ impl FakeNats {
 impl Drop for FakeNats {
     fn drop(&mut self) {
         self.accept_task.abort();
+        // The connection readers also own state. Drop the queued senders so
+        // their writers close, instead of retaining sockets after the fixture.
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .conns
+            .clear();
     }
 }
 
@@ -2096,6 +2103,24 @@ fn blank_comments_and_literals(source: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn dropping_the_broker_closes_its_accepted_connections() {
+        let broker = FakeNats::start().await;
+        let mut stream =
+            tokio::net::TcpStream::connect(broker.url().strip_prefix("nats://").unwrap())
+                .await
+                .unwrap();
+        assert!(read_line(&mut stream).await.starts_with("INFO "));
+        drop(broker);
+        let mut byte = [0u8; 1];
+        let received =
+            tokio::time::timeout(std::time::Duration::from_secs(5), stream.read(&mut byte))
+                .await
+                .expect("the dropped broker must close its writer")
+                .unwrap();
+        assert_eq!(received, 0, "an accepted connection must receive EOF");
+    }
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     /// The two process-global test locks have one legal acquisition order:

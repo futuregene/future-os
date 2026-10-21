@@ -465,6 +465,9 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn app_maintenance_status_reports_the_cli_it_discovered() {
+        if future_host::test_support::reexec_test() {
+            return;
+        }
         use std::os::unix::fs::PermissionsExt;
 
         let _home = crate::auth_store::test_support::HomeGuard::new("cmd-update-maintenance");

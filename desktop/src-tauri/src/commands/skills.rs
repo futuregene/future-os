@@ -92,6 +92,10 @@ mod tests {
     /// ("should reject a malformed body") because the malformed body is accepted.
     #[tokio::test]
     async fn the_bootstrap_spawns_the_cli_runner_and_tolerates_a_missing_cli() {
+        #[cfg(unix)]
+        if future_host::test_support::reexec_test() {
+            return;
+        }
         #[cfg(windows)]
         if crate::test_process::reexec("commands::skills::tests::the_bootstrap_spawns_the_cli_runner_and_tolerates_a_missing_cli") {
             return;

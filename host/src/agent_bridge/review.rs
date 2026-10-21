@@ -1031,6 +1031,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn retry_reports_a_run_deleted_while_the_changeset_is_materialized() {
+        if crate::test_support::reexec_test() {
+            return;
+        }
         use std::os::unix::fs::PermissionsExt;
         use std::path::Path;
 
