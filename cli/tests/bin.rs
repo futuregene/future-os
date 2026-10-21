@@ -729,6 +729,7 @@ fn auth_login_against_an_unreachable_platform_reports_a_network_error() {
 /// agent-side writer applies are executed by one run — then "no more models".
 /// Each model is: id, display name, context window, output-token limit, image
 /// support, four per-1M prices.
+#[cfg(unix)]
 const CUSTOM_WIZARD_ANSWERS: &[&str] = &[
     "2",
     "revprobe",
