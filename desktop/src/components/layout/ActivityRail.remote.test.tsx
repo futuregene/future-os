@@ -879,13 +879,13 @@ describe("the rail's remote row controls", () => {
 });
 
 /**
- * The device picker and the search field share one row above the list.
+ * The device picker and the search field share one row, above the list switch.
  *
  * They used to take turns in it — the field appeared on a click and pushed the
- * picker out. Now the field is permanent and the picker stays, drawn `compact`:
- * glyph, name, chevron in a quarter of the row instead of a band of its own. So
- * what this checks is that *both* are there at once, in the same row, which is
- * what "one row, two controls" means and what a two-row regression breaks.
+ * picker out. Now both are there at once: the permanent field, and the picker
+ * drawn `compact` (glyph, name, chevron in a quarter of the row instead of a band
+ * of its own). The row sits above the list switch and directly over the list it
+ * narrows, which is where it has always been.
  */
 describe("the search field and the device picker", () => {
   it("shows both at once, in one row, with the picker compact", async () => {
@@ -899,7 +899,7 @@ describe("the search field and the device picker", () => {
     expect(picker()).not.toBeNull();
     expect(field()).not.toBeNull();
 
-    const tools = view.container.querySelector<HTMLElement>("[data-testid='rail-list-tools']")!;
+    const tools = view.container.querySelector<HTMLElement>("[data-testid='rail-search-band']")!;
     // One row for both: the picker's own wrapper and the field are siblings of
     // the same band, so neither has a line to itself.
     expect(tools.contains(picker())).toBe(true);

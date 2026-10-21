@@ -825,15 +825,23 @@ export function ActivityRail({
   const showCreateControl = !selectionMode
     && (view === "workspace" ? canCreateHere : view === "chat" && remotePeers.length > 0);
   /**
-   * Whether the list's control row is drawn at all.
+   * The row above the list switch: the machine whose rows these are, and the
+   * search field that narrows them.
    *
-   * Outside a batch it always is, because the search field lives in it — that
-   * field is the rail's one way to narrow any list, so the row is never empty even
-   * on a tab with no menu and no creation control. In a batch its controls give
-   * way to the selection toolbar, and only the machine picker stays: the rows a
-   * batch covers still depend on it.
+   * Where it has always been — above the workspace row, directly over the list it
+   * filters. In a batch the field gives way to the selection toolbar, and only the
+   * machine picker stays: the rows a batch covers still depend on it.
    */
-  const showListTools = selectionMode ? showDevicePicker : true;
+  const showSearchBand = showDevicePicker || !selectionMode;
+  /**
+   * The row under the switch: what the open list itself offers — the way to add
+   * something to it, and its own menu.
+   *
+   * Only where the list has either. The recent list has no batch (see
+   * `listMenuItems`) and nothing to add to, so the row is not drawn there rather
+   * than left as an empty strip under its switch.
+   */
+  const showListActions = !selectionMode && (showCreateControl || showListMenu);
 
   /**
    * Which row is "current". A local thread is current while a list is showing
@@ -1313,29 +1321,19 @@ export function ActivityRail({
                       </div>
                     )
                   : null}
-                {/* Two bands, each with one job.
+                {/* Three rows, top to bottom, in the reader's own order.
 
-                    Band 1 answers "which list" — only the switch, and nothing
-                    else. Band 2 holds what belongs to *the list that switch
-                    shows*: its search, the machine picker the search filters
-                    within, and the list's own menu. The menu sat in band 1 until
-                    now, which read as an action on the switch while it is really
-                    an action on the list — the thing the reader is looking at. */}
-                <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-view-band">
-                  <div className="min-w-0 flex-1">
-                    {/* A tab click is the user's choice of list, which is the one
-                        thing the preference remembers. Opening a conversation
-                        goes through the shell instead, and only moves the tab for
-                        this run. */}
-                    <RailViewSwitch onChange={onSelectView} view={view} />
-                  </div>
-                </div>
-                {showListTools
+                    First the filter of the list — the machine whose rows these are,
+                    and the search field — directly above the list switch it
+                    narrows, which is where it has always been; then which list;
+                    then the open list's own actions. Each row has one job, so a
+                    control that moves changes the question it answers. */}
+                {showSearchBand
                   ? (
-                      <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-list-tools">
+                      <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-search-band">
                         {/* One machine standing behind the list is named by the
-                            picker, `compact` because it now shares the row with
-                            the search field. */}
+                            picker, `compact` because it shares this row with the
+                            search field. */}
                         {showDevicePicker
                           ? (
                               <DeviceSelector
@@ -1356,6 +1354,21 @@ export function ActivityRail({
                                 query={searchQuery}
                               />
                             )}
+                      </div>
+                    )
+                  : null}
+                <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-view-band">
+                  <div className="min-w-0 flex-1">
+                    {/* A tab click is the user's choice of list, which is the one
+                        thing the preference remembers. Opening a conversation
+                        goes through the shell instead, and only moves the tab for
+                        this run. */}
+                    <RailViewSwitch onChange={onSelectView} view={view} />
+                  </div>
+                </div>
+                {showListActions
+                  ? (
+                      <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-list-actions">
                         {/* Making something in this list. The workspace tab's
                             `+` was the "Workspace" section heading's; the chat
                             tab's is the machine-aware "new conversation", which
