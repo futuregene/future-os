@@ -506,4 +506,35 @@ describe("activity rail conversation search", () => {
     expect(banner.textContent).not.toBe("No chats");
     elsewhere.root.unmount();
   });
+  /**
+   * A result is a row you can open, and opening it is the rail's own click.
+   *
+   * Which list a hit belongs to is the shell's answer: opening a conversation
+   * switches the page and follows the tab (see `AppShell.test.tsx`, "follows it
+   * into the list it lives in"). What this asserts is the rail's half — the
+   * result is a real conversation row that reports *that* conversation, not a
+   * display string a reader can only look at.
+   */
+  it("opens a hit as a conversation, not as a dead row", async () => {
+    const onSelectThread = vi.fn();
+    const target = workspaceThread("ws_row", "ws_a", "the needle");
+    const p: ComponentProps<typeof ActivityRail> = {
+      ...props([target], [storedWorkspace("ws_a", "Alpha")]),
+      view: "chat",
+      onSelectThread,
+    };
+    const { container } = await render(p);
+    const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
+    await act(async () => {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      descriptor?.set?.call(input, "needle");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const result = container.querySelector<HTMLButtonElement>("button[aria-label='the needle']")!;
+    expect(result).not.toBeNull();
+    act(() => result.click());
+    expect(onSelectThread).toHaveBeenCalledWith(expect.objectContaining({ id: "ws_row" }));
+  });
 });

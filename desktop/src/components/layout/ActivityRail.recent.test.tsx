@@ -341,8 +341,8 @@ describe("the recent view's window", () => {
   });
 });
 
-describe("a batch in the recent view", () => {
-  it("reaches a pinned conversation, which the tree leaves out", () => {
+describe("a batch and the recent view", () => {
+  it("leaves a pinned conversation out of a list's batch", () => {
     // The tree lifts a pin above its groups, so a group's "select all" must not
     // sweep it up and it carries no checkbox. This view opens no such section —
     // the pin is a marker — so the row is one of the list's own rows, and leaving
@@ -363,21 +363,28 @@ describe("a batch in the recent view", () => {
     view.unmount();
   });
 
-  it("offers every drawn row once the recent view is the list", () => {
+  /**
+   * The recent list has no batch of its own.
+   *
+   * A batch is "the rows under this heading" — a workspace, the chats list. This
+   * list's only boundary is time, so a selection here would mean every
+   * conversation on the machine, which is not a batch a reader can picture. So it
+   * offers no trigger rather than one that promises that. Deleting a conversation
+   * from it is still a row action.
+   */
+  it("offers no batch entry of its own", () => {
     const threads = [
       thread("pinned", { title: "Pinned one", pinned: true, lastMessageAt: now - minute }),
       thread("plain", { title: "Plain one", lastMessageAt: now - hour }),
     ];
     const view = mount(<Rail {...props(threads)} />);
     showRecent(view.container);
-    act(() => view.container.querySelector<HTMLButtonElement>("[aria-label=\"Recent list actions\"]")!.click());
-    act(() => [...view.container.querySelectorAll<HTMLElement>("button")]
-      .find(element => element.textContent === "Select conversations in “Recent”")!
-      .click());
-    expect(rowCheckboxes(view.container)).toEqual([
-      "Select Pinned one",
-      "Select Plain one",
-    ]);
+
+    expect(view.container.querySelector("button[aria-label='Recent list actions']")).toBeNull();
+    // The rows are still there, with their own menus: deleting one conversation
+    // from this list is a row action, not a batch one.
+    expect(drawnTitles(view.container)).toEqual(["Pinned one", "Plain one"]);
+    expect(view.container.querySelector("button[aria-label='Thread actions for Plain one']")).not.toBeNull();
     view.unmount();
   });
 });
