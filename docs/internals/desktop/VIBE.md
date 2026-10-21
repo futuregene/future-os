@@ -233,6 +233,8 @@ whole app.
 | `ownsCommands` | `AgentThread` | `true` | the panel only | whether this instance may claim `chat.stop` — off for every cell but the focused one, because one handler per command means "the last mounted wins" |
 | `triggers` | `Composer` → `MentionEditor` | `true` | the panel only | whether `@` / `/` / `#` open their menus while typing |
 | `onEmptySubmit` | `Composer` | absent | the panel only | what the send key means on an empty draft (close the input layer); absent everywhere else, where an empty submit is simply not a send |
+| `controls` | `Composer` | `"full"` | the panel only | `full` is the interactive row (model, thinking, approval, attach); `none` hides it, for the input layer where those controls live in the menu and only a read-only line stays on screen |
+| `onQueue` | `Composer` | absent | the panel only | what a send means while the conversation is still running: the draft is handed to the panel's queue instead of being dropped. Absent everywhere else, where a send during a run is simply not a send |
 | `chrome` | `RemoteConversationView` | `"full"` | the panel only | `read` drops the conversation's own top bar (the cell draws its own) and puts the approval cards in a strip at the foot instead of over the transcript |
 | `selectiveEvents` | `RemoteConversationView` | `true` | the panel only | whether mounting this view narrows that host's event lane to this session. The panel shows several conversations of one host at once, so it must **not** narrow: the lane is a bandwidth bargain for one conversation, and a grid is not one conversation |
 
@@ -246,6 +248,40 @@ supervisory:
   nothing about the panel gets exactly the behaviour it had before the panel
   existed. A new prop follows the same rule: it goes in this table first, then in
   the code.
+
+### 5.6 The values stay visible; only the change moves
+
+The composer's control row — model, thinking level, approval tier, attach — is the
+right thing in the main window and the wrong thing in the middle of a dictated
+sentence. It is not removed, though, because "which model is this cell running, and
+how much is it allowed to do" is one of the questions a person watching five
+conversations actually asks.
+
+So the panel splits the row in two:
+
+* **The values are always on screen, read-only**, on one line —
+  `DeepSeek V4 Pro · 中 · 完全放开` — in the **same place on the reading layer and on
+  the input layer**. A value that moved or vanished between the two layers would be a
+  value the reader stops trusting.
+* **The change lives in the menu** (§9), on three value rows adjusted with `←`/`→`:
+  the model (cycles the catalogue), the thinking level (cycles the levels the model
+  has), and the approval tier.
+
+Three rules about who owns what:
+
+* **A cell's model and thinking level are that conversation's**, written through its
+  own thread id (`vibeCellSettings.ts`). The main window's `changeModel` persists to
+  *the shell's active thread*, which in the panel is whichever conversation happened
+  to be open there — using it would silently retune a different cell.
+* **The approval tier is the application's, not a cell's.** The menu row says so
+  ("applies to every conversation"); a per-cell tier does not exist and the panel
+  does not imply one.
+* **A host's cell shows no settings line and offers no rows.** Its model and its
+  sandbox are that machine's, and the panel changes only what it owns.
+
+The line is read from the agent's cached state for that thread (what the session is
+*actually* running), falling back to the shell's selection only until that state has
+been read once.
 
 ## 6. Reading layer: blocks, and zoom at one or two columns
 
@@ -426,6 +462,8 @@ Automatable — and where each one lives:
 | A host's cell is read-only: `OK` on it opens its reading layer, never an input layer, and its hint line does not offer one | `VibeStage.test.tsx` |
 | Adding: the dialog lists unpinned conversations of the chosen machine and workspace, and pins on the machine that owns them | `VibeStage.test.tsx` |
 | A host's view in a cell mounts no composer and does not narrow the host's event lane | `RemoteConversationView.chrome.test.tsx` |
+| The settings line shows the cell's own model, on both the reading and the input layer, and the input layer's composer is asked for values only | `VibeStage.test.tsx`, `Composer.inputLayer.test.tsx` |
+| The menu's three settings rows exist for a local cell, adjust with `←`/`→`, and are absent for a host's | `VibeStage.test.tsx` |
 | A remote's buttons survive a rebinding and a cleared binding | `shortcuts.test.ts`, `catalog.test.ts`, `keybinding.test.ts` |
 
 Two of these were falsified by hand before landing (the assertions were removed,
@@ -506,7 +544,7 @@ What P0 landed, and what it deliberately left:
 | Stage | Content |
 | --- | --- |
 | **P0 — done** | the panel and its grid; scale-respecting cell rendering for local conversations; membership = pin; order = `createdAt` + drag/keyboard reordering; the three layers and the single-editor invariant; the input layer with dictation, the target bar and the three state meanings; `⌘⇧V`, arrows, `⏎`, `Esc`, `1`–`9`; explicit "still running" refusal |
-| **P1 — in progress** | **done:** the menu (`Menu`, one column, `←`/`→` adjust a value in place) · the attention queue (§9.5) · the machine filter, a host's conversations as cells, the add dialog and removal across machines · **next:** the input layer's chrome, then the send queue. Later in P1: zoom at one or two columns with the panel's three states; degraded rendering for non-focused cells |
+| **P1 — in progress** | **done:** the menu (`Menu`, one column, `←`/`→` adjust a value in place) · the attention queue (§9.5) · the machine filter, a host's conversations as cells, the add dialog and removal across machines · the input layer's controls moved into the menu with the values left read-only on screen (§5.6) · the send queue (§5.4) · **next:** zoom at one or two columns with the panel's three states; degraded rendering for non-focused cells |
 | **P2** | order in `app.db`; layout presets and a column override; `⌘/` cheat sheet; `h/j/k/l`; a "learn this button" diagnostics page; optional text size on the volume buttons |
 
 ## 15. Open questions

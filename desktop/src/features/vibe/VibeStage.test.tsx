@@ -32,8 +32,12 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock("../agent/AgentThread", () => ({
-  AgentThread: (props: { chrome?: string; thread: { id: string } }) => (
-    <div data-chrome={props.chrome ?? "full"} data-thread={props.thread.id}>
+  AgentThread: (props: { chrome?: string; composerControls?: string; thread: { id: string } }) => (
+    <div
+      data-chrome={props.chrome ?? "full"}
+      data-composer-controls={props.composerControls ?? ""}
+      data-thread={props.thread.id}
+    >
       {props.chrome === "input"
         ? <div contentEditable data-input-editor="" suppressContentEditableWarning />
         : null}
@@ -591,6 +595,118 @@ describe("adding a conversation", () => {
     // Nothing to add on that machine, and the dialog says so rather than showing an
     // empty list.
     expect(container.querySelector("[data-add-choice=\"remote:desk_1:s1\"]")).toBeNull();
+  });
+});
+
+describe("this cell's settings", () => {
+  // What used to be four dropdowns inside a dictated sentence, now a read-only line
+  // plus three menu rows (§5.6). The line is the part that matters most: a reader
+  // watching five cells has to be able to answer "what is this one running" without
+  // changing it.
+  const MODEL_OPTIONS = [
+    { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", provider: "future" },
+    { id: "claude-sonnet", label: "Claude Sonnet", provider: "future" },
+  ] as never;
+
+  function mountWithSettings(over: Record<string, unknown> = {}) {
+    h.cached.current = { model: "future/deepseek-v4-pro", thinkingLevel: "medium" };
+    mount({
+      threads: [thread("a", 100)],
+      ...over,
+    });
+    act(() => {
+      root.render(
+        <VibeStage
+          catalogs={[]}
+          onClose={() => {}}
+          onOpenInShell={() => {}}
+          onOpenRemoteInShell={() => {}}
+          onPinLocal={() => {}}
+          onPinRemote={() => {}}
+          peers={[]}
+          runStatuses={{}}
+          threads={[thread("a", 100)]}
+          unreadThreadIds={new Set()}
+          view={{ ...VIEW, approvalTier: "off", modelOptions: MODEL_OPTIONS }}
+          workspaces={WORKSPACES}
+        />,
+      );
+    });
+  }
+
+  it("shows the model, thinking level and approval tier on the reading layer", () => {
+    mountWithSettings();
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    const line = container.querySelector("[data-vibe-settings]");
+    expect(line).not.toBeNull();
+    expect(line!.textContent).toContain("DeepSeek V4 Pro");
+    // The approval tier is named, because "what is allowed to run here" is the other
+    // half of the question a reader asks of a cell. Asserted by attribute: the label is
+    // translated, the tier is not.
+    expect(line!.getAttribute("data-vibe-approval")).toBe("off");
+  });
+
+  it("shows the same line on the input layer", () => {
+    mountWithSettings();
+    press({ code: "Enter", key: "Enter" });
+    const lines = [...container.querySelectorAll("[data-vibe-settings]")];
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.textContent).toContain("DeepSeek V4 Pro");
+  });
+
+  it("asks the input layer's composer for values only, and leaves the cells as they are", () => {
+    // The whole point of §5.6: the four dropdowns move into the menu, and the layer
+    // keeps one read-only line. `AgentThread` is stubbed, so this asserts the prop the
+    // panel hands it; `Composer.inputLayer.test.tsx` holds the composer's side.
+    mountWithSettings();
+    expect(container.querySelector("[data-chrome=\"read\"]")!.getAttribute("data-composer-controls")).toBe("");
+    press({ code: "Enter", key: "Enter" });
+    expect(container.querySelector("[data-chrome=\"input\"]")!.getAttribute("data-composer-controls")).toBe("none");
+  });
+
+  it("offers the three values in the menu, adjustable with ← and →", () => {
+    const onChangeApprovalTier = vi.fn();
+    h.cached.current = { model: "future/deepseek-v4-pro", thinkingLevel: "medium" };
+    act(() => {
+      root.render(
+        <VibeStage
+          catalogs={[]}
+          onClose={() => {}}
+          onOpenInShell={() => {}}
+          onOpenRemoteInShell={() => {}}
+          onPinLocal={() => {}}
+          onPinRemote={() => {}}
+          peers={[]}
+          runStatuses={{}}
+          threads={[thread("a", 100)]}
+          unreadThreadIds={new Set()}
+          view={{ ...VIEW, approvalTier: "off", modelOptions: MODEL_OPTIONS, onChangeApprovalTier }}
+          workspaces={WORKSPACES}
+        />,
+      );
+    });
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    // Model, thinking, approval: the three rows that used to be the composer's.
+    for (const id of ["model", "thinking", "approval"])
+      expect(container.querySelector(`[data-vibe-menu-row="${id}"]`), id).not.toBeNull();
+    walkTo("approval");
+    // The approval tier is application-wide, so its row drives the shell's setter — the
+    // same one the main window's dropdown uses.
+    press({ code: "ArrowRight", key: "ArrowRight" });
+    expect(onChangeApprovalTier).toHaveBeenCalledWith("manual");
+  });
+
+  it("keeps the model row out of a host's conversation", () => {
+    // A host's model is that machine's; the panel changes what it owns.
+    mount({
+      catalogs: [{ desktopId: "desk_1", sessions: [{ pinned: true, sessionId: "s1", status: "active", title: "Remote" }] } as never],
+      peers: [{ desktopId: "desk_1", name: "Studio" } as never],
+      threads: [],
+    });
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    expect(container.querySelector("[data-vibe-menu-row=\"model\"]")).toBeNull();
+    expect(container.querySelector("[data-vibe-menu-row=\"approval\"]")).toBeNull();
   });
 });
 

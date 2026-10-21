@@ -31,7 +31,11 @@
     "openInShell": "在主窗口打开",
     "fullscreen": "切换系统全屏",
     "close": "关闭面板",
-    "more": "更多…"
+    "more": "更多…",
+    "model": "模型",
+    "thinking": "思考级别",
+    "approval": "审批档位",
+    "approvalHint": "对整个应用生效，不只是这一格"
   },
   "attention": {
     "badge": "{{count}} 个待处理",

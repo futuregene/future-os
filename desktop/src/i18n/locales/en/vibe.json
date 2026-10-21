@@ -31,7 +31,11 @@
     "openInShell": "Open in the main window",
     "fullscreen": "Toggle full screen",
     "close": "Close the panel",
-    "more": "More…"
+    "more": "More…",
+    "model": "Model",
+    "thinking": "Thinking level",
+    "approval": "Approval",
+    "approvalHint": "Applies to every conversation, not just this cell"
   },
   "attention": {
     "badge": "{{count}} need you",
