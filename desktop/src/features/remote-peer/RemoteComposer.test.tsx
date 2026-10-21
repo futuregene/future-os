@@ -1079,23 +1079,27 @@ it("keeps the menu working when the host will not list its skills", async () => 
 });
 
 /**
- * The placeholder says what `/` offers, as this app's own two do.
+ * The placeholder says what `/` offers, as this app's own two do — and that `#`
+ * reaches another conversation.
  *
  * The local composer distinguishes a conversation ("@ to add files, / for tools
  * and skills") from a new one ("/ to use skills"), and a remote conversation is
  * the same distinction: with something to compact the menu holds a command and
- * the skills, and a draft holds only the skills. What it must never do is name
+ * the skills, and a draft holds only the skills. Both also carry the `#`
+ * hand-off, which is the one extra way of pointing at something this side has
+ * (the local screen says so in the same words). What it must never do is name
  * the machine — this app's own composers describe the task, and the machine a
  * conversation is on is the rail's business.
  */
-it("describes the task, naming the `/` menu and not the machine", async () => {
+it("describes the task, naming the `/` and `#` menus and not the machine", async () => {
   const conversation = await mount({ canCompact: true });
-  expect(conversation.input.placeholder).toBe("Describe the task, / for tools and skills");
+  expect(conversation.input.placeholder)
+    .toBe("Describe the task, / for tools and skills, # to reference a conversation");
   expect(conversation.input.placeholder).not.toContain("Studio iMac");
   await conversation.unmount();
 
   const draft = await mount({ canCompact: false });
-  expect(draft.input.placeholder).toBe("Describe the task, / to use skills");
+  expect(draft.input.placeholder).toBe("Describe the task, / to use skills, # to reference a conversation");
   await draft.unmount();
 });
 

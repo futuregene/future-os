@@ -25,6 +25,7 @@ import { peerDrivable, peerStatus } from "../../features/remote-peer/peerStatus"
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
+import { RemoteDraftTargetChooser } from "../../features/remote-peer/RemoteDraftTargetChooser";
 import { RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
 import { compactRemoteConversation, deleteRemoteConversation, forkRemoteConversation, installRemoteSkill, pinRemoteConversation, takeoverRemotePeer } from "../../features/remote-peer/remotePeerClient";
 import { sendRemoteContinuation } from "../../features/remote-peer/remotePromptOutbox";
@@ -38,6 +39,7 @@ import { useRemoteConversationSettings } from "../../features/remote-peer/useRem
 import { useRemoteSkillCatalog } from "../../features/remote-peer/useRemoteSkillCatalog";
 import { useRemoteSkillRecommend } from "../../features/remote-peer/useRemoteSkillRecommend";
 import { useRemoteTimeline } from "../../features/remote-peer/useRemoteTimeline";
+import { useRemoteWorkspaceRows } from "../../features/remote-peer/useRemoteWorkspaces";
 import { WorkspaceDeviceDialog } from "../../features/remote-peer/WorkspaceDeviceDialog";
 import { startRemote, stopRemote } from "../../features/remote/remoteClient";
 import { RemoteHubView } from "../../features/remote/RemoteHubView";
@@ -168,6 +170,10 @@ function ReadyAppShell({
   // The remote peer's own namespace: its strings describe another machine, and
   // folding them into `layout` would put them where no other remote string is.
   const { t: tRemotePeer } = useTranslation("remotePeer");
+  // The local new-conversation screen's words, for its remote twin: a draft on
+  // another machine is titled and described exactly as this machine's is, and
+  // its header reads "新对话" for the same reason.
+  const { t: tAgent } = useTranslation("agent");
   const [section, setSection] = useState<ActivitySection>("chat");
   const [centerMode, setCenterMode] = useState<"thread" | "new-chat">("thread");
   /**
@@ -219,6 +225,25 @@ function ReadyAppShell({
      */
     workspaceId: string | null;
   } | null>(null);
+  /**
+   * A draft on another machine, if that is what is on screen.
+   *
+   * An empty session id is the host's own signal for "this conversation does not
+   * exist yet", so it is also the answer to "may the reader still choose where
+   * it lives": a conversation that already exists has a workspace and cannot be
+   * moved, while a draft can be pointed at any of that host's workspaces (or at
+   * none) until its first prompt creates it.
+   */
+  const remoteDraft = activeRemote?.sessionId === "" ? activeRemote : null;
+  /**
+   * That host's workspaces, read while a draft is open.
+   *
+   * Read here rather than inside the chooser because two things need the names:
+   * the chooser's menu, and the draft's header badge — which otherwise has no
+   * catalogue row to read a workspace name from, since the conversation does not
+   * exist on the host yet.
+   */
+  const draftWorkspaces = useRemoteWorkspaceRows(remoteDraft?.desktopId ?? null);
   /** The remote conversation whose rename dialog is open, if any. */
   const [remoteRename, setRemoteRename] = useState<MergedConversation | null>(null);
   /** The remote *workspace* whose rename dialog is open, if any. */
@@ -862,6 +887,10 @@ function ReadyAppShell({
   function handleRemoteWorkspaceCreated(desktopId: string, workspace: RemoteWorkspaceRow) {
     setRemoteWorkspaceHost(null);
     void refreshRemotePeers();
+    // The draft's chooser lists that host's workspaces, and the one just created
+    // is not in the list it read — a workspace picked from a menu that does not
+    // contain it would read as unnamed.
+    void draftWorkspaces.reload();
     startRemoteConversation(desktopId, workspace.id);
   }
 
@@ -1112,6 +1141,18 @@ function ReadyAppShell({
   // simply has no catalogue row to read.
   const activeRemoteContext = activeRemote
     ? contextOfRemote(remoteCatalogs, activeRemote)
+    : null;
+  /**
+   * The workspace a remote draft is in, named as the host names it.
+   *
+   * A draft has no catalogue row, so `activeRemoteContext` cannot supply this —
+   * the chooser's own read of that host's workspaces does, which is why the read
+   * lives here at the shell rather than inside the menu. `null` while the list
+   * has not arrived (or when the draft has no workspace), and the header then
+   * leaves the badge off rather than drawing an id.
+   */
+  const draftWorkspace = remoteDraft?.workspaceId
+    ? (draftWorkspaces.rows.find(row => row.id === remoteDraft.workspaceId) ?? null)
     : null;
   /**
    * That host's conversations, for the remote composer's `#` menu.
@@ -1643,40 +1684,63 @@ function ReadyAppShell({
                                     approvalPending={remoteApprovals.pending}
                                     desktopId={activeRemote.desktopId}
                                     composer={(
-                                      <RemoteComposer
-                                        key={`remote-composer:${activeRemote.desktopId}:${activeRemote.sessionId}`}
-                                        canCompact={remoteTimeline.canCompact}
-                                        // The conversation frame places the composer: the
-                                        // band over the transcript's foot, at the same
-                                        // width the local composer is given.
-                                        className="pointer-events-auto mx-auto w-full max-w-3xl"
-                                        conversations={remoteConversations}
-                                        desktopId={activeRemote.desktopId}
-                                        // The host-owned model and thinking level live in
-                                        // the composer's control row, beside the send
-                                        // button they apply to — the same place this
-                                        // app's own model and thinking controls are.
-                                        controls={<RemoteConversationSettings settings={remoteSettings} />}
-                                        freshModelId={remoteSettings.model}
-                                        freshThinkingLevel={remoteSettings.thinkingLevel}
-                                        onCompact={() => void compactRemoteConversationOn(activeRemote.desktopId, activeRemote.sessionId)}
-                                        onCreated={(createdSessionId) => {
-                                          // Adopt the conversation the host just made, so
-                                          // the next prompt goes to it by name instead
-                                          // of creating a second one.
-                                          setActiveRemote({ desktopId: activeRemote.desktopId, sessionId: createdSessionId, workspaceId: null });
-                                          void refreshRemotePeers();
-                                        }}
-                                        onSent={() => {
-                                          void remoteTimeline.refresh();
-                                          void refreshRemotePeers();
-                                        }}
-                                        peer={activeRemotePeer}
-                                        sessionId={activeRemote.sessionId}
-                                        skillRecommendation={remoteSkillRecommendation}
-                                        streaming={remoteTimeline.streaming}
-                                        workspaceId={activeRemote.workspaceId}
-                                      />
+                                      // The composer and, for a draft, the row that
+                                      // decides where the conversation will live. One
+                                      // card, as on this app's own new-conversation
+                                      // screen: the footer belongs to the box it sits
+                                      // under, so the two are wrapped together and the
+                                      // box's bottom corners are handed to the footer.
+                                      <div className="pointer-events-auto mx-auto w-full max-w-3xl">
+                                        <RemoteComposer
+                                          key={`remote-composer:${activeRemote.desktopId}:${activeRemote.sessionId}`}
+                                          canCompact={remoteTimeline.canCompact}
+                                          // The conversation frame places the composer: the
+                                          // band over the transcript's foot, at the same
+                                          // width the local composer is given.
+                                          className={remoteDraft ? "w-full rounded-b-none" : "w-full"}
+                                          conversations={remoteConversations}
+                                          desktopId={activeRemote.desktopId}
+                                          // The host-owned model and thinking level live in
+                                          // the composer's control row, beside the send
+                                          // button they apply to — the same place this
+                                          // app's own model and thinking controls are.
+                                          controls={<RemoteConversationSettings settings={remoteSettings} />}
+                                          freshModelId={remoteSettings.model}
+                                          freshThinkingLevel={remoteSettings.thinkingLevel}
+                                          onCompact={() => void compactRemoteConversationOn(activeRemote.desktopId, activeRemote.sessionId)}
+                                          onCreated={(createdSessionId) => {
+                                            // Adopt the conversation the host just made, so
+                                            // the next prompt goes to it by name instead
+                                            // of creating a second one.
+                                            setActiveRemote({ desktopId: activeRemote.desktopId, sessionId: createdSessionId, workspaceId: null });
+                                            void refreshRemotePeers();
+                                          }}
+                                          onSent={() => {
+                                            void remoteTimeline.refresh();
+                                            void refreshRemotePeers();
+                                          }}
+                                          peer={activeRemotePeer}
+                                          sessionId={activeRemote.sessionId}
+                                          skillRecommendation={remoteSkillRecommendation}
+                                          streaming={remoteTimeline.streaming}
+                                          workspaceId={activeRemote.workspaceId}
+                                        />
+                                        {remoteDraft
+                                          ? (
+                                              <RemoteDraftTargetChooser
+                                                error={draftWorkspaces.error}
+                                                loading={draftWorkspaces.loading}
+                                                onOpenWorkspace={activeRemotePeer
+                                                  ? () => setRemoteWorkspaceHost(activeRemotePeer)
+                                                  : undefined}
+                                                onSelect={workspaceId => setActiveRemote(current =>
+                                                  current ? { ...current, workspaceId } : current)}
+                                                rows={draftWorkspaces.rows}
+                                                workspaceId={remoteDraft.workspaceId}
+                                              />
+                                            )
+                                          : null}
+                                      </div>
                                     )}
                                     leftPanelExpanded={showLeftPanel}
                                     liveReplies={remoteTimeline.liveReplies}
@@ -1703,8 +1767,13 @@ function ReadyAppShell({
                                     persistedEntryIds={remoteTimeline.persistedEntryIds}
                                     sessionId={activeRemote.sessionId}
                                     streaming={remoteTimeline.streaming}
-                                    title={activeRemoteContext?.title ?? activeRemote.sessionId}
-                                    workspaceName={activeRemoteContext?.workspaceName ?? null}
+                                    title={remoteDraft
+                                      // A draft is named as this machine's own new
+                                      // conversation is, rather than by the empty
+                                      // session id that is about to exist.
+                                      ? tAgent("newConversation.headerTitle")
+                                      : (activeRemoteContext?.title ?? activeRemote.sessionId)}
+                                    workspaceName={activeRemoteContext?.workspaceName ?? draftWorkspace?.name ?? null}
                                   />
                                 )
                               : storeError
