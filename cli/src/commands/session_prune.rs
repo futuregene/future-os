@@ -51,8 +51,9 @@ Options:
 Safety: a session with an active run is skipped, never interrupted, and the
 Agent also refuses one that starts a run or a compaction between the listing
 and the deletion — that refusal is reported per session, so the rest of the
-batch still goes. A session whose age cannot be established (no history and no
-timestamp) is left alone.
+batch still goes. Each deletion is confirmed against the session list, so a
+batch that outlives its own deadline still reports the truth. A session whose
+age cannot be established (no history and no timestamp) is left alone.
 
 Examples:
   future session prune --older-than 3d             # preview
@@ -231,6 +232,76 @@ struct Match {
     activity_ms: i64,
 }
 
+/// Sessions per `delete_sessions` call. The command carries one fixed 30-second
+/// deadline (`STORAGE_TIMEOUT`) and the Agent reclaims each deleted session's
+/// space before answering, so a full 32-session batch is exactly the size that
+/// runs past it on a large database. A smaller batch keeps one slow session
+/// from costing the deadline of seven others that would have finished.
+const DELETE_CHUNK: usize = 8;
+
+/// A batch may never exceed what the Agent accepts, and must stay well under it:
+/// the deadline belongs to the whole call.
+const _: () = assert!(
+    DELETE_CHUNK < MAX_DELETE_SESSIONS,
+    "a full-size batch overruns the command's deadline"
+);
+
+/// Delete `ids` and collect `(deleted, error)` per session from the Agent's
+/// per-session answers. A batch that fails as a whole (transport, or the
+/// deadline) is retried once; when it fails again every session in it is
+/// reported with that error, and the caller settles the truth from the list.
+async fn delete_all(client: &RunClient, ids: &[String]) -> HashMap<String, (bool, String)> {
+    let mut outcomes: HashMap<String, (bool, String)> = HashMap::new();
+    for chunk in ids.chunks(DELETE_CHUNK) {
+        let attempt = client.delete_sessions(chunk).await;
+        let attempt = match attempt {
+            Ok(response) => Ok(parse_delete_results(&response)),
+            Err(_) => client
+                .delete_sessions(chunk)
+                .await
+                .map(|response| parse_delete_results(&response)),
+        };
+        match attempt {
+            Ok(results) => outcomes.extend(results),
+            Err(error) => {
+                for id in chunk {
+                    outcomes.insert(id.clone(), (false, error.clone()));
+                }
+            }
+        }
+    }
+    outcomes
+}
+
+fn parse_delete_results(response: &Value) -> Vec<(String, (bool, String))> {
+    response
+        .get("results")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|result| {
+            let id = result["sessionId"].as_str().unwrap_or_default().to_string();
+            let deleted = result["deleted"].as_bool().unwrap_or(false);
+            let error = result["error"].as_str().unwrap_or_default().to_string();
+            (id, (deleted, error))
+        })
+        .collect()
+}
+
+/// The ids the Agent still knows about, or `None` when the list itself could not
+/// be read (then the per-session replies are all the caller has).
+async fn remaining_ids(client: &RunClient) -> Option<std::collections::HashSet<String>> {
+    let data = client.list_sessions().await.ok()?;
+    let sessions = data.get("sessions")?.as_array()?;
+    Some(
+        sessions
+            .iter()
+            .filter_map(|session| session["id"].as_str())
+            .map(str::to_string)
+            .collect(),
+    )
+}
+
 /// Everything one prune run needs to report, gathered before anything is
 /// printed so the JSON and the text form cannot disagree.
 struct Report {
@@ -390,38 +461,31 @@ pub(super) async fn run(args: &[String], out: &Output) -> Result<(), String> {
         .map(str::to_string)
         .collect();
 
-    let mut deleted = Vec::new();
-    let mut failed = Vec::new();
+    let mut deleted: Vec<String> = Vec::new();
+    let mut failed: Vec<(String, String)> = Vec::new();
     if options.apply && !ids.is_empty() {
-        for chunk in ids.chunks(MAX_DELETE_SESSIONS) {
-            let response = match client.delete_sessions(chunk).await {
-                Ok(response) => response,
-                // The Agent answers per session, so a whole-batch failure is
-                // the transport or a rejected request: no session in this
-                // chunk was deleted, and the ones already reported as deleted
-                // stay reported.
-                Err(error) => {
-                    failed.extend(chunk.iter().map(|id| (id.clone(), error.clone())));
-                    break;
-                }
-            };
-            for result in response
-                .get("results")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
-            {
-                let id = result["sessionId"].as_str().unwrap_or_default().to_string();
-                if result["deleted"].as_bool().unwrap_or(false) {
-                    deleted.push(id);
-                } else {
-                    let message = result["error"]
-                        .as_str()
-                        .filter(|message| !message.is_empty())
-                        .unwrap_or("deletion failed")
-                        .to_string();
-                    failed.push((id, message));
-                }
+        let outcomes = delete_all(&client, &ids).await;
+        // The Agent's answer to a batch can arrive after the deletion finished
+        // (the command carries one 30-second deadline, and reclaiming the space
+        // of a large session can outlast it), so the outcome is read back from
+        // the session list rather than trusted from the reply.
+        let remaining = remaining_ids(&client).await;
+        for id in &ids {
+            let outcome = outcomes.get(id);
+            let listed = remaining.as_ref().map(|remaining| remaining.contains(id));
+            match (listed, outcome) {
+                // Still listed: whatever the reply said, the session is there.
+                (Some(true), _) => failed.push((
+                    id.clone(),
+                    outcome
+                        .map(|(_, error)| error.clone())
+                        .filter(|error| !error.is_empty())
+                        .unwrap_or_else(|| "the session is still present after deletion".into()),
+                )),
+                // Gone from the list: deleted, even if the reply never arrived.
+                (Some(false), _) | (None, Some((true, _))) => deleted.push(id.clone()),
+                (None, Some((false, error))) => failed.push((id.clone(), error.clone())),
+                (None, None) => failed.push((id.clone(), "no outcome reported".into())),
             }
         }
     }
@@ -733,25 +797,37 @@ mod tests {
         );
     }
 
-    /// `--yes` deletes exactly the matched ids, in one batched call, and the
-    /// per-session refusal the Agent answers with is reported instead of
-    /// failing the whole batch.
+    /// `--yes` deletes exactly the matched ids, and the per-session refusal the
+    /// Agent answers with is reported instead of failing the whole batch. The
+    /// outcome is settled against the post-delete list, so a session that
+    /// vanished despite the reply counts as deleted.
     #[tokio::test]
     async fn apply_deletes_the_matched_ids_and_reports_refusals() {
         let _guard = crate::test_env::lock_env().await;
         let now = now_ms();
         let day = 86_400_000i64;
         let mut agent = crate::test_server::MockAgent::default();
-        agent.responses.insert(
+        agent.sequences.insert(
             "list_sessions".into(),
-            json!({"sessions": [
-                // Listed as just saved; its history is ten days old.
-                {"id": "gone-1", "updatedAtMs": now},
-                {"id": "gone-2", "updatedAtMs": now - 8 * day},
-                {"id": "refused", "updatedAtMs": now},
-                {"id": "recent", "updatedAtMs": now}
-            ]})
-            .to_string(),
+            vec![
+                // The pre-delete listing: `gone-1` and `refused` were saved
+                // recently, so only their history shows how old they are.
+                json!({"sessions": [
+                    {"id": "gone-1", "updatedAtMs": now},
+                    {"id": "gone-2", "updatedAtMs": now - 8 * day},
+                    {"id": "refused", "updatedAtMs": now},
+                    {"id": "recent", "updatedAtMs": now}
+                ]})
+                .to_string(),
+                // The post-delete listing: `gone-2` is still there although the
+                // reply claimed it, `gone-1` is gone.
+                json!({"sessions": [
+                    {"id": "gone-2", "updatedAtMs": now - 8 * day},
+                    {"id": "refused", "updatedAtMs": now},
+                    {"id": "recent", "updatedAtMs": now}
+                ]})
+                .to_string(),
+            ],
         );
         for (id, age_days) in [("gone-1", 10), ("refused", 7), ("recent", 1)] {
             agent.per_session.insert(
@@ -781,16 +857,20 @@ mod tests {
         let (out, captured) = Output::memory();
         let error = run(&args(&["--older-than", "3d", "--yes"]), &out)
             .await
-            .expect_err("a refused deletion exits non-zero");
+            .expect_err("a session still present after deletion exits non-zero");
         assert_eq!(error, crate::HANDLED_EXIT);
         let text = stdout_of(&captured);
-        assert!(text.contains("2 of 3 sessions deleted"), "{text}");
+        assert!(text.contains("1 of 3 sessions deleted"), "{text}");
         assert!(!text.contains("recent"), "{text}");
-        // The refusal names the session and the Agent's reason on stderr, so a
+        // Both failures name the session and the reason on stderr, so a
         // script's stdout stays a report and a person still sees what failed.
         let errors = stderr_of(&captured);
         assert!(errors.contains("Failed to delete refused"), "{errors}");
         assert!(errors.contains("waiting for the active run"), "{errors}");
+        assert!(
+            errors.contains("Failed to delete gone-2: the session is still present after deletion"),
+            "{errors}"
+        );
 
         let commands = seen.lock().unwrap();
         let deletes: Vec<_> = commands
@@ -813,6 +893,55 @@ mod tests {
                 .filter(|c| c.r#type == "get_session_entries")
                 .count(),
             3
+        );
+    }
+
+    /// A batch can run past the command's own deadline while the Agent goes on
+    /// to finish it. The reply is then lost, and only the session list says what
+    /// happened — which is why the report is settled from it.
+    #[tokio::test]
+    async fn a_timed_out_batch_is_settled_from_the_session_list() {
+        let _guard = crate::test_env::lock_env().await;
+        let now = now_ms();
+        let day = 86_400_000i64;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.sequences.insert(
+            "list_sessions".into(),
+            vec![
+                json!({"sessions": [
+                    {"id": "old-1", "updatedAtMs": now - 9 * day},
+                    {"id": "old-2", "updatedAtMs": now - 9 * day}
+                ]})
+                .to_string(),
+                json!({"sessions": []}).to_string(),
+            ],
+        );
+        agent
+            .fail_with
+            .insert("delete_sessions".into(), "Timeout expired".to_string());
+        let seen = agent.seen.clone();
+        let addr = crate::test_server::spawn_mock(agent).await;
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from(addr),
+        )])
+        .with_temp_home();
+
+        let (out, captured) = Output::memory();
+        run(&args(&["--older-than", "3d", "--yes"]), &out)
+            .await
+            .expect("both sessions are gone, so the run succeeded");
+        let text = stdout_of(&captured);
+        assert!(text.contains("2 of 2 sessions deleted"), "{text}");
+        assert!(stderr_of(&captured).is_empty(), "{}", stderr_of(&captured));
+        // A failed batch is retried once before it is given up on.
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|c| c.r#type == "delete_sessions")
+                .count(),
+            2
         );
     }
 
