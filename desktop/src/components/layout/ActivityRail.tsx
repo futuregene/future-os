@@ -29,6 +29,7 @@ import { peersDotState } from "../../features/remote-peer/peerStatus";
 import { SkillIntroBubble } from "../../features/skills/SkillIntroBubble";
 import { listInstalledSkills } from "../../integrations/skills/skillsClient";
 import { cn } from "../../lib/cn";
+import { formatMessageTimestamp } from "../../lib/date";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { isMacOS } from "../../lib/platform";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
@@ -44,8 +45,11 @@ import { DeviceSelector } from "./DeviceSelector";
 import { useCollapsedWorkspaces } from "./hooks/useCollapsedWorkspaces";
 import { usePendingApprovalCounts } from "./hooks/usePendingApprovalCounts";
 import { useRailSelection } from "./hooks/useRailSelection";
+import { useRailView } from "./hooks/useRailView";
 import { MergedRows } from "./MergedRows";
 import { RailDisclosure, RailHeaderButton } from "./RailChrome";
+import { RailViewSwitch } from "./RailViewSwitch";
+import { isActiveRun, RECENT_PAGE_SIZE, recentSplit } from "./recentOrder";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, buildTree, threadParentIds, visibleThreadRows, visibleTreeRows } from "./threadTree";
 
@@ -194,7 +198,7 @@ export function ActivityRail({
   skillIntroDismissed,
   onDismissSkillIntro,
 }: ActivityRailProps) {
-  const { t } = useTranslation("layout");
+  const { i18n, t } = useTranslation("layout");
   const noMatchesText = t("activityRail.noMatches");
   // Pending approvals across all threads — badged on rail items so a background
   // conversation's approval is visible without opening it.
@@ -281,6 +285,10 @@ export function ActivityRail({
   const [chatSectionCollapsed, setChatSectionCollapsed] = useState(false);
   // Chat section header menu.
   const [chatSectionMenuOpen, setChatSectionMenuOpen] = useState(false);
+  // Which list the rail shows: the tree (its own shape, and the default) or the
+  // recent view. Persisted — it is how this window lists things, and a restart
+  // should bring back the list the reader left.
+  const { setView: setRailView, view: railView } = useRailView();
   // Text search for the conversation list. Not persisted: the list is huge
   // and a leftover query after restart would feel like a stale filter.
   const [searchQuery, setSearchQuery] = useState("");
@@ -521,6 +529,63 @@ export function ActivityRail({
     [visibleThreads, threadMatchesQuery],
   );
 
+  /**
+   * How much of the recent view's "earlier" stretch is drawn.
+   *
+   * Held here rather than in the list because the keyboard walk steps the same
+   * order the list draws: two copies of "how far down the list goes" would be
+   * two answers to "which row is next". It starts over when the view is left and
+   * returned to, since coming back to "the recent ones" means the recent ones.
+   */
+  const [recentLimit, setRecentLimit] = useState(RECENT_PAGE_SIZE);
+
+  /**
+   * The recent view's rows: every conversation the device filter admits, in one
+   * list, with the two facts it is ordered and split by.
+   *
+   * `remoteRows` already holds this machine's threads and every listed host's
+   * sessions, under the same filter the tree draws with — so the two views cannot
+   * disagree about *which* conversations exist, only about how they are ranked.
+   * A run's state is read per row: this machine's threads from the rail's own
+   * per-thread run statuses (the same source the row's indicator uses), a host's
+   * from what it reports on its row.
+   */
+  const recent = useMemo(() => {
+    const rows = remoteRows.filter(rowMatchesQuery).map(row => ({
+      ...row,
+      active: row.desktopId === null
+        ? isActiveRun(
+            threadRunStatuses[row.id]?.status,
+            threadStreamingStatuses[row.id],
+          )
+        : isActiveRun(row.runStatus, row.streaming),
+      createdAt: row.createdAt ?? null,
+      lastActivityAt: row.lastMessageAt,
+    }));
+    return recentSplit(rows, recentLimit);
+  }, [recentLimit, remoteRows, rowMatchesQuery, threadRunStatuses, threadStreamingStatuses]);
+
+  /**
+   * The age each recent row shows, by row key.
+   *
+   * The activity stamp, not the start time: a row's age answers "how long since
+   * this last moved", which is what the reader is scanning the list for. The
+   * start time only decides *where* the running rows sit (see `recentOrder.ts`).
+   */
+  const recentAgeLabels = useMemo(() => {
+    const labels = new Map<string, string>();
+    const now = Date.now();
+    for (const row of recent.rows) {
+      if (row.lastMessageAt === null)
+        continue;
+      labels.set(row.key, formatMessageTimestamp(new Date(row.lastMessageAt).toISOString(), i18n.language, {
+        now,
+        justNowLabel: t("activityRail.recentJustNow"),
+      }));
+    }
+    return labels;
+  }, [i18n.language, recent.rows, t]);
+
   const {
     deleteSelected,
     deselectAll,
@@ -618,7 +683,14 @@ export function ActivityRail({
     return filteredPinnedThreads.length > 0
       || filteredChatThreads.length > 0
       || workspaceGroups.some(group => group.rows.length > 0);
-  }, [queryActive, mergedMode, filteredRemoteRows, filteredPinnedThreads, filteredChatThreads, workspaceGroups]);
+  }, [
+    queryActive,
+    mergedMode,
+    filteredRemoteRows,
+    filteredPinnedThreads,
+    filteredChatThreads,
+    workspaceGroups,
+  ]);
 
   /**
    * Which row is "current". A local thread is current while a list is showing
@@ -644,10 +716,12 @@ export function ActivityRail({
     depth = 0,
     hasChildren = false,
     compact = false,
+    ageLabel?: string,
   ): React.ReactNode {
     return (
       <ThreadListItem
-        active={thread.id === activeThreadId && active === "chat"}
+        active={thread.id === activeThreadId && (active === "chat" || railView === "recent")}
+        ageLabel={ageLabel}
         archived={thread.status === "archived"}
         key={thread.id}
         compact={compact}
@@ -1085,6 +1159,14 @@ export function ActivityRail({
                         />
                       )}
                 </div>
+                {/* Which list this is. Above the list rather than inside it,
+                    and with both names written out: the tree is the default and
+                    the reader has no other way to learn a second view exists. */}
+                <div className="mb-2 flex shrink-0 items-center gap-1">
+                  <div className="min-w-0 flex-1">
+                    <RailViewSwitch onChange={setRailView} view={railView} />
+                  </div>
+                </div>
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="group relative -mx-2 flex min-h-0 flex-1">
                     <div
@@ -1099,10 +1181,15 @@ export function ActivityRail({
                               <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches">{noMatchesText}</div>
                             )
                           : null}
-                        {mergedMode
+                        {/* One list component for both views and both list modes:
+                            the recent view holds a host's rows and this machine's
+                            together, which is exactly the merge, and the tree view
+                            is the merge grouped by workspace. */}
+                        {mergedMode || railView === "recent"
                           ? (
                               <MergedRows
                                 activeKey={activeConversationKey}
+                                ageLabels={railView === "recent" ? recentAgeLabels : undefined}
                                 chatSectionCollapsed={chatSectionCollapsed}
                                 collapsedWorkspaces={collapsedWorkspaces}
                                 filter={deviceFilter}
@@ -1135,14 +1222,18 @@ export function ActivityRail({
                                   return found ? renderWorkspaceHeader(found.workspace, found.threads) : null;
                                 }}
                                 renderLocalRow={renderLocalRow}
-                                rows={mergedRowTree.rows}
+                                recentMore={railView === "recent" ? recent.more : undefined}
+                                recentSections={railView === "recent" ? recent.sections : undefined}
+                                rows={railView === "recent" ? recent.rows : mergedRowTree.rows}
                                 selectionMode={selectionMode}
                                 threadById={threadById}
+                                view={railView === "recent" ? "recent" : "tree"}
                                 workspaceSectionCollapsed={workspaceSectionCollapsed}
+                                onShowMoreRecent={() => setRecentLimit(current => current + RECENT_PAGE_SIZE)}
                               />
                             )
                           : null}
-                        {mergedMode
+                        {railView === "recent" || mergedMode
                           ? null
                           : (
                               <>

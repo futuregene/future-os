@@ -131,7 +131,13 @@ export const threads: MockThread[] = [
 
   thread("th_longformer", "ws_sparse", "跑通 Longformer 的 baseline", 5 * 60),
   thread("th_ablation", "ws_sparse", "帮我设计消融实验", 2 * 24 * 60),
-  thread("th_sc", "ws_sc", "找一下这批细胞的 marker 基因", 26 * 60),
+  // Started two hours ago and then stopped on a question: the recency view ranks
+  // the running rows by when they *started*, so this row leads the active stretch
+  // even though it is the older one to have spoken. With both clocks agreeing the
+  // capture would say nothing about which one the list uses.
+  thread("th_sc", "ws_sc", "找一下这批细胞的 marker 基因", 26 * 60, {
+    createdAt: now - 2 * 60 * minute,
+  }),
   thread("th_temp", "ws_temp", "帮我把这段英文摘要改通顺", 3 * 60),
   // Chat-mode conversations (the rail's own "对话" group).
   thread("th_chat1", "ws_temp", "基金申报书的创新点怎么写", 20, { mode: "chat" }),
@@ -582,6 +588,32 @@ export const runs = [
     endedAt: now - 3.2 * minute,
     createdAt: now - 4 * minute,
     updatedAt: now - 3.2 * minute,
+  },
+  // A run still producing output, and one stopped on a question — the two states
+  // the recency view's active stretch exists to hold. `list_latest_run_infos`
+  // reads the *first* run of a thread, which is why each of these is the only
+  // entry for its thread.
+  {
+    id: "run_longformer",
+    threadId: "th_longformer",
+    status: "running",
+    modelProvider: "future",
+    modelId: "deepseek-v4-pro",
+    startedAt: now - 6 * minute,
+    endedAt: null,
+    createdAt: now - 6 * minute,
+    updatedAt: now - minute,
+  },
+  {
+    id: "run_sc_waiting",
+    threadId: "th_sc",
+    status: "waiting_approval",
+    modelProvider: "future",
+    modelId: "deepseek-v4-pro",
+    startedAt: now - 118 * minute,
+    endedAt: null,
+    createdAt: now - 118 * minute,
+    updatedAt: now - 40 * minute,
   },
   // A finished run on a thread that is *not* the one the screenshots open on.
   // The rail's unread dot needs both halves — a terminal run status here, and
