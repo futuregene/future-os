@@ -592,6 +592,69 @@ test("empty workspace list keeps creation disabled", () => {
   expect(modal.findAllByType(Text).some(node => node.props.children === "sessions.noWorkspaces")).toBe(true);
 });
 
+/**
+ * The recency page lists both kinds of conversation, so its "new conversation"
+ * cannot answer "which kind" for the reader.
+ *
+ * It used to create a chat on the spot. That made the same button open a picker
+ * on the workspaces page and skip it on the page beside it, and left no way to
+ * start a *workspace* conversation from the one list that holds every
+ * workspace's conversations — this is the behaviour the workspaces page has.
+ */
+test("the recency page asks which kind of conversation before creating one", () => {
+  mockRemote.workspaces = [{ id: "w1", name: "Project" }];
+  act(() => tree.root.findByType(SessionList).props.onTabChange("recent"));
+  act(() => button("sessions.new").props.onPress());
+
+  // Nothing is created until the reader picks a kind and confirms.
+  expect(mockRemote.newConversation).not.toHaveBeenCalled();
+  expect(mockRemote.newConversationOn).not.toHaveBeenCalled();
+  const modes = visibleModal()!.findAll(node =>
+    node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function");
+  // Workspace first and in force, exactly as on the workspaces page — and its
+  // list is behind that answer, so the workspace can be chosen.
+  expect(modes.slice(0, 2).map(mode => mode.props.accessibilityState.checked)).toEqual([true, false]);
+  expect(modes.length).toBe(3);
+  expect(visibleModal()!.findAllByType(Text).some(text => text.props.children === "Project"))
+    .toBe(true);
+});
+
+test("the recency page's workspace answer creates a workspace conversation", async () => {
+  mockRemote.workspaces = [
+    { id: "w1", name: "Project" },
+    { id: "w2", name: "Second" },
+  ];
+  act(() => tree.root.findByType(SessionList).props.onTabChange("recent"));
+  act(() => button("sessions.new").props.onPress());
+  const dialog = visibleModal()!;
+  // Pick the second workspace, then confirm: the draft is built in the
+  // workspace the reader chose, not in the first one offered.
+  const workspaces = dialog.findAll(node =>
+    node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function").slice(2);
+  act(() => workspaces[1]!.props.onPress());
+  act(() => footerButton("sessions.new").props.onPress());
+  expect(mockRemote.newConversationOn).not.toHaveBeenCalled();
+  act(() => dialog.props.onDismiss());
+  expect(mockRemote.newConversationOn).toHaveBeenCalledWith("desktop_1", "workspace", "w2");
+});
+
+test("the recency page can still start a plain chat", async () => {
+  mockRemote.workspaces = [{ id: "w1", name: "Project" }];
+  act(() => tree.root.findByType(SessionList).props.onTabChange("recent"));
+  act(() => button("sessions.new").props.onPress());
+  const dialog = visibleModal()!;
+  const modes = dialog.findAll(node =>
+    node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function");
+  // The second answer is the chat: it hides the workspace list and creates a
+  // conversation with no workspace of its own.
+  act(() => modes[1]!.props.onPress());
+  act(() => footerButton("sessions.new").props.onPress());
+  act(() => dialog.props.onDismiss());
+  // A chat belongs to no workspace, and the selection made for the *workspace*
+  // answer must not ride along with it.
+  expect(mockRemote.newConversationOn).toHaveBeenCalledWith("desktop_1", "chat", "");
+});
+
 test("new chat opens immediately, without an extra creation dialog", () => {
   act(() => tree.root.findByType(SessionList).props.onTabChange("chat"));
   act(() => button("sessions.new").props.onPress());

@@ -399,13 +399,19 @@ impl Store {
         Ok(rows.next().transpose()?)
     }
 
+    /// Newest first, so a task the user just created is at the top of the panel
+    /// and of `future task list`. `created_at` alone ties when several tasks are
+    /// created in the same millisecond (a script, a test), so `rowid` breaks the
+    /// tie by insertion order instead of leaving those rows arbitrary.
     pub fn list_tasks(&self, include_deleted: bool) -> Result<Vec<Task>> {
         let filter = if include_deleted {
             ""
         } else {
             "WHERE deleted_at IS NULL"
         };
-        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks {filter} ORDER BY created_at");
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks {filter} ORDER BY created_at DESC, rowid DESC"
+        );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], task_from_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -1272,6 +1278,30 @@ mod tests {
         assert_eq!(live[0].name, "live");
         let all = s.list_tasks(true).unwrap();
         assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn list_tasks_returns_the_newest_first() {
+        let (_dir, s) = store();
+        let mut older = task("older");
+        older.created_at = 1_000;
+        s.insert_task(&older).unwrap();
+        let mut newer = task("newer");
+        newer.created_at = 2_000;
+        s.insert_task(&newer).unwrap();
+        // Same millisecond: insertion order decides, so a script that creates
+        // several tasks at once still reads back the order it made them in.
+        let mut tied = task("tied");
+        tied.created_at = 2_000;
+        s.insert_task(&tied).unwrap();
+
+        let names: Vec<String> = s
+            .list_tasks(false)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(names, ["tied", "newer", "older"]);
     }
 
     #[test]

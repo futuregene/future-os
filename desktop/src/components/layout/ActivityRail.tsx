@@ -285,8 +285,6 @@ export function ActivityRail({
   const [chatSectionCollapsed, setChatSectionCollapsed] = useState(false);
   // Chat section header menu.
   const [chatSectionMenuOpen, setChatSectionMenuOpen] = useState(false);
-  // The recent view's own actions menu (its only way into a batch).
-  const [recentMenuOpen, setRecentMenuOpen] = useState(false);
   // Which list the rail shows: the tree (its own shape, and the default) or the
   // recent view. Persisted — it is how this window lists things, and a restart
   // should bring back the list the reader left.
@@ -295,6 +293,8 @@ export function ActivityRail({
   // and a leftover query after restart would feel like a stale filter.
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  // Closing takes the filter with it: a hidden field must not keep filtering a
+  // list the reader thinks is complete.
   const closeSearch = useCallback(() => {
     setSearchOpen(false);
     setSearchQuery("");
@@ -652,9 +652,11 @@ export function ActivityRail({
         : visibleThreads,
   });
 
+  const showListTools = !selectionMode || Boolean(onChangeDeviceFilter && remotePeers.length > 0);
+
   /** Whether this thread should show a selection checkbox. */
   function threadSelectionMode(thread: StoredThread): boolean {
-    return selectionMode && isThreadInScope(thread) && (!searchOpen || threadMatchesQuery(thread));
+    return selectionMode && isThreadInScope(thread) && threadMatchesQuery(thread);
   }
 
   // Pinned threads are hoisted into a single global section (regardless of
@@ -707,10 +709,7 @@ export function ActivityRail({
     () => (workspaceSectionCollapsed ? [] : workspaceGroups),
     [workspaceSectionCollapsed, workspaceGroups],
   );
-  const visiblePinnedThreads = useMemo(
-    () => (searchOpen || queryActive ? filteredPinnedThreads : pinnedThreads),
-    [filteredPinnedThreads, pinnedThreads, queryActive, searchOpen],
-  );
+  const visiblePinnedThreads = filteredPinnedThreads;
   const visibleChatThreads = useMemo(
     () => (chatSectionCollapsed ? [] : filteredChatThreads),
     [chatSectionCollapsed, filteredChatThreads],
@@ -1195,57 +1194,58 @@ export function ActivityRail({
                       </div>
                     )
                   : null}
-                <div className="mb-2 flex shrink-0 items-center gap-1">
-                  {/* The search field takes the whole row while it is open: the
-                      two were sharing it half-and-half, which squeezed the
-                      device picker down to its glyph and the field down to a
-                      few characters. Search still filters within the selected
-                      device; closing it brings the picker back. */}
-                  {onChangeDeviceFilter && remotePeers.length > 0 && !searchOpen
-                    ? (
-                        <div className="min-w-0 flex-1">
-                          <DeviceSelector
-                            filter={deviceFilter}
-                            onChange={onChangeDeviceFilter}
-                            onManage={() => onManageDesktops?.()}
-                            peers={remotePeers}
-                          />
-                        </div>
-                      )
-                    : null}
-                  {selectionMode
-                    ? null
-                    : (
-                        <ConversationSearch
-                          onClose={closeSearch}
-                          onQueryChange={setSearchQuery}
-                          onToggleOpen={() => setSearchOpen(current => !current)}
-                          open={searchOpen}
-                          query={searchQuery}
-                        />
-                      )}
-                </div>
-                {/* Which list this is. Above the list rather than inside it,
-                    and with both names written out: the tree is the default and
-                    the reader has no other way to learn a second view exists. */}
-                <div className="mb-2 flex shrink-0 items-center gap-1">
+                {/* Two rows, and each has one job — in this order.
+
+                    The first narrows the list: the machine whose rows these are,
+                    and the search. It sits *above* the switch, directly over the
+                    list it filters, which is where it has always been; putting it
+                    under the switch read as if the filter belonged to whichever
+                    list happened to be selected.
+
+                    The second answers "which list" — only the switch, nothing
+                    else. Neither row offers a create action or a batch: those act
+                    on something *inside* the list, so they live on the heading
+                    they act on (a workspace, the chats section), which is also the
+                    only place a reader can see what they mean. */}
+                {showListTools
+                  ? (
+                      <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-list-tools">
+                        {/* One machine standing behind the list is named by the
+                            picker, `compact` because it shares this row with the
+                            search. */}
+                        {onChangeDeviceFilter && remotePeers.length > 0
+                          ? (
+                              <DeviceSelector
+                                compact
+                                filter={deviceFilter}
+                                onChange={onChangeDeviceFilter}
+                                onManage={() => onManageDesktops?.()}
+                                peers={remotePeers}
+                              />
+                            )
+                          : null}
+                        {/* A magnifier until it is clicked, then the field in
+                            its place: the rail is a narrow column and the list is
+                            the point, so a field that is always drawn would spend
+                            a row on a control most sessions never touch. */}
+                        {selectionMode
+                          ? null
+                          : (
+                              <ConversationSearch
+                                onClose={closeSearch}
+                                onQueryChange={setSearchQuery}
+                                onToggleOpen={() => setSearchOpen(current => !current)}
+                                open={searchOpen}
+                                query={searchQuery}
+                              />
+                            )}
+                      </div>
+                    )
+                  : null}
+                <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-view-band">
                   <div className="min-w-0 flex-1">
                     <RailViewSwitch onChange={setRailView} view={railView} />
                   </div>
-                  {/* The recent view's own way into a batch. The tree reaches it
-                      from a section's menu (the chat section, a workspace); this
-                      view has no such heading — it is one flat list — so its one
-                      menu sits here, and marks the whole list as the batch. */}
-                  {railView === "recent" && !selectionMode
-                    ? (
-                        <ChatSectionMenu
-                          label={t("activityRail.recentActions")}
-                          onOpenChange={setRecentMenuOpen}
-                          onSelect={() => enterSelectionMode("recent")}
-                          open={recentMenuOpen}
-                        />
-                      )
-                    : null}
                 </div>
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="group relative -mx-2 flex min-h-0 flex-1">

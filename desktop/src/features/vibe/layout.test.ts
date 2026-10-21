@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { cellPosition, gridOf, MAX_CELLS, moveInGrid } from "./layout";
+import { cellPosition, gridAreaOf, gridOf, MAX_CELLS, moveInGrid } from "./layout";
 
 /** A typical 16-inch laptop window, in CSS pixels. */
 const WIDE = { height: 900, width: 1512 };
@@ -101,5 +101,53 @@ describe("moveInGrid", () => {
 
   it("survives an empty grid", () => {
     expect(moveInGrid(0, "down", 0, threeByTwo)).toBe(0);
+  });
+});
+
+/**
+ * Placement, both axes.
+ *
+ * The bug this pins, measured on a real render: a child given only `gridColumn` keeps an
+ * automatic row, so CSS places it with the auto-placement cursor instead of in the square
+ * the index names. The add tile — drawn before the cells — took row one, every cell was
+ * pushed down a row, and the last ones fell into an *implicit* row: `rows: 346px 346px 70px`
+ * with the third cell 70px tall, and (with five cells) `0px 0px 762px` where three cells
+ * were two pixels tall. Stating the row is the fix; this table is what makes a regression
+ * fail here instead of in a screenshot.
+ */
+describe("gridAreaOf", () => {
+  it("states both axes, one-based, for every square a layout has", () => {
+    expect(gridAreaOf(0, { columns: 2, rows: 2 })).toEqual({ gridColumn: 1, gridRow: 1 });
+    expect(gridAreaOf(1, { columns: 2, rows: 2 })).toEqual({ gridColumn: 2, gridRow: 1 });
+    expect(gridAreaOf(2, { columns: 2, rows: 2 })).toEqual({ gridColumn: 1, gridRow: 2 });
+    expect(gridAreaOf(3, { columns: 2, rows: 2 })).toEqual({ gridColumn: 2, gridRow: 2 });
+  });
+
+  it("gives every cell of every documented shape its own square inside the template", () => {
+    // The property that matters for a real grid: `count` cells plus a possible add tile —
+    // so `count + 1` children — each get a distinct square, and none is beyond the rows or
+    // columns the template declares (which is what an implicit row would be).
+    for (let count = 1; count <= MAX_CELLS; count++) {
+      const layout = gridOf(count + 1, WIDE.width, WIDE.height);
+      const seen = new Set<string>();
+      for (let index = 0; index < count + 1; index++) {
+        const area = gridAreaOf(index, layout);
+        expect(area.gridRow).toBeGreaterThanOrEqual(1);
+        expect(area.gridRow).toBeLessThanOrEqual(layout.rows);
+        expect(area.gridColumn).toBeGreaterThanOrEqual(1);
+        expect(area.gridColumn).toBeLessThanOrEqual(layout.columns);
+        seen.add(`${area.gridRow}:${area.gridColumn}`);
+      }
+      // Cells 0..count-1 plus the tile: all distinct, i.e. no two children want one square.
+      expect(seen.size).toBe(count + 1);
+    }
+  });
+
+  it("agrees with cellPosition, so navigation and placement cannot disagree", () => {
+    const layout = { columns: 3, rows: 2 };
+    for (let index = 0; index < 6; index++) {
+      const { column, row } = cellPosition(index, layout);
+      expect(gridAreaOf(index, layout)).toEqual({ gridColumn: column + 1, gridRow: row + 1 });
+    }
   });
 });

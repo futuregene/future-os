@@ -395,13 +395,23 @@ describe("activity rail keyboard commands", () => {
     view.unmount();
   });
 
-  it("jumps to the filter box", () => {
+  /**
+   * The key opens the filter box, which is otherwise a magnifier.
+   *
+   * The field is a mode (see `ActivityRail.toolbar.test.tsx`), so reaching it
+   * without a mouse is what this command is for: it opens it, and the field takes
+   * the caret itself the moment it appears.
+   */
+  it("opens the filter box", async () => {
     const p = props([thread("root"), thread("second")]);
     const view = mount(<ActivityRail {...p} />);
-    expect(view.container.querySelector("input[aria-label=\"Search conversations\"]")).toBeNull();
+    const field = () => view.container.querySelector("input[aria-label=\"Search conversations\"]");
+    expect(field()).toBeNull();
 
     press({ code: "KeyF", ctrlKey: true, key: "f", shiftKey: true });
-    expect(view.container.querySelector("input[aria-label=\"Search conversations\"]")).not.toBeNull();
+    await act(async () => {});
+    expect(field()).not.toBeNull();
+    expect(document.activeElement).toBe(field());
     view.unmount();
   });
 });

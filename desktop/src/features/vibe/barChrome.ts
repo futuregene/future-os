@@ -30,3 +30,15 @@ export function barStart(reserveTrafficLights: boolean): string {
 export function reserveTrafficLights(isMac: boolean, isFullscreen: boolean): boolean {
   return isMac && !isFullscreen;
 }
+
+/**
+ * The bar's height — and the reason it is a constant rather than a class in the markup.
+ *
+ * Every other top bar in the app is `h-12`: the rail's header, the thread header, the
+ * context panel's, the new-conversation header, the collapsed titlebar toggle. The panel's
+ * bar was `h-9`, so its text centred at 18px while those surfaces — and the traffic lights
+ * they sit beside — centre at 24px. A 6px lift reads exactly as the report did: "the text
+ * after the dots is not aligned". Matching the height is the whole fix; adding a top
+ * padding instead would have introduced a second number to keep in sync with the first.
+ */
+export const BAR_HEIGHT = "h-12";

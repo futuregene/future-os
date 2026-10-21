@@ -24,6 +24,10 @@ use future_rpc::proto::{RpcCommand, RpcResponse, StreamEvent, StreamRequest};
 pub struct MockAgent {
     /// Command type → `data` JSON string returned with success=true.
     pub responses: HashMap<String, String>,
+    /// Per (command type, session id) canned responses, consulted before
+    /// [`Self::responses`] — for a command whose answer depends on the target
+    /// session (a history page, a per-session acknowledgement).
+    pub per_session: HashMap<(String, String), String>,
     /// Types answered with success=false and error="boom".
     pub fail_types: HashSet<String>,
     /// Types answered with success=false and a CUSTOM error message.
@@ -114,8 +118,9 @@ impl FutureAgent for MockAgent {
             }
         }
         let data = self
-            .responses
-            .get(&cmd.r#type)
+            .per_session
+            .get(&(cmd.r#type.clone(), cmd.session_id.clone()))
+            .or_else(|| self.responses.get(&cmd.r#type))
             .cloned()
             .unwrap_or_else(|| "{}".to_string());
         let success = !self.fail_types.contains(&cmd.r#type)

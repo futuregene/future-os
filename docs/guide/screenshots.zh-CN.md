@@ -247,7 +247,7 @@ python3 scripts/screenshots/capture.py check-upright-mobile chat
 - **点不到的状态用 `eval`。** 只在悬停时出现的控件，需要先对它的容器加一个 `hover` 步骤（否则驱动会报告目标尺寸为 0，而不是去点页面角落）。例如对话内搜索是 ⌘F 打开的，驱动没法把它当按键发出去，所以场景改为访问 `?press=meta%2Bf`，由 `desktop/shot/main.tsx` 把快捷键派发给真实的 window 监听器。
 - **`eval` 里断言就是测试。** 步骤里的 `eval` 抛错会让这次截图以非零退出码失败（和点不到目标一样计入 `step(s) could not reach their target`），所以「界面必须处于某状态」写成 `eval` 断言才有意义：`if (document.body.innerText.includes('正在生成')) throw new Error('…');`。驱动内部自己的探测（`ready`、可选的元素读取）不在此列，不会因为读不到就判失败。
 
-`desktop/shot/main.tsx` 还接受 `?lang=en` 和 `?settings=key:value,...`，用来固定界面语言、在启动前预置应用设置；`?remoteSlowRead=1` 会把对端主机的回答压慢，这是截图唯一能拍到"读取还在途中"那一刻的办法（例如模型控件在对端回答之前的样子）；`mobile/shot/mock/shareIntent.ts` 读 `?share=1`，好让分享面板只出现在分享相关场景里。
+`desktop/shot/prefs.ts`（在 `main.tsx` 之前加载）负责固定那些「在 import 时就被读走」的偏好：`?lang=en`、`?theme=dark|light|system`、`?palette=<主题 id>`（见 `lib/theme.ts` 的 `THEME_PALETTES`）；它同时给出默认值（zh / light / FutureOS），所以切换配色主题的场景不会渗到同一轮后面的截图里，深色系统的机器也仍然拍到多数用户看到的画面。`?settings=key:value,...` 用来在启动前预置应用设置；`?remoteSlowRead=1` 会把对端主机的回答压慢，这是截图唯一能拍到"读取还在途中"那一刻的办法（例如模型控件在对端回答之前的样子）；`mobile/shot/mock/shareIntent.ts` 读 `?share=1`，好让分享面板只出现在分享相关场景里。
 
 ### 指针指示与标注
 

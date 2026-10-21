@@ -6,6 +6,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { onFutureEvent } from "../../lib/futureEvents";
+import { setReplyDetail } from "../../lib/replyDisplay";
 import { MessageBlock } from "./MessageBlock";
 
 /**
@@ -43,6 +44,10 @@ let container: HTMLDivElement;
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.previews.length = 0;
+  // This suite covers the row's own wiring against the whole reply: one text
+  // slice per segment, no fold. The fold has its own suite
+  // (`MessageBlock.finalAnswer.test.tsx`), which turns the setting on.
+  setReplyDetail("detailed");
   Object.defineProperty(navigator, "clipboard", {
     configurable: true,
     value: { writeText: vi.fn(async () => {}) },

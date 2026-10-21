@@ -1,6 +1,7 @@
 import type { Language } from "../../i18n";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { FontSizePreference } from "../../lib/fontSize";
+import type { ReplyDetail } from "../../lib/replyDisplay";
 import type { ThemeMode } from "../../lib/theme";
 import { useTranslation } from "react-i18next";
 import { Select } from "../../components/ui/Select";
@@ -9,10 +10,11 @@ import { automaticApprovalAvailable, effectiveApprovalTier } from "../../integra
 import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
 import { FONT_SIZES, setFontSize, useFontSize } from "../../lib/fontSize";
 import { isLinux, isWindows } from "../../lib/platform";
-import { setFinalAnswerOnly, useFinalAnswerOnly } from "../../lib/replyDisplay";
+import { REPLY_DETAIL_LEVELS, setReplyDetail, useReplyDetail } from "../../lib/replyDisplay";
 import { setThemeMode, THEME_MODES, useThemeMode } from "../../lib/theme";
 import { linuxUnavailableReasonKey } from "./linuxSandboxStatus";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
+import { ThemePalettePicker } from "./ThemePalettePicker";
 
 export function GeneralPage({
   approvalTier,
@@ -46,7 +48,7 @@ export function GeneralPage({
   const { t } = useTranslation("settings");
   const themeMode = useThemeMode();
   const fontSize = useFontSize();
-  const finalAnswerOnly = useFinalAnswerOnly();
+  const replyDetail = useReplyDetail();
   const sandboxAvailability = useSandboxAvailability();
   const autoAvailable = automaticApprovalAvailable(futureSessionStatus);
   const visibleApprovalTier = effectiveApprovalTier(approvalTier, futureSessionStatus);
@@ -72,8 +74,8 @@ export function GeneralPage({
           </Select>
         </SettingsRow>
         <SettingsRow
-          title={t("theme.title")}
-          description={t("theme.description")}
+          title={t("appearance.title")}
+          description={t("appearance.description")}
         >
           <Select
             size="sm"
@@ -83,10 +85,19 @@ export function GeneralPage({
           >
             {THEME_MODES.map(mode => (
               <option key={mode} value={mode}>
-                {t(`theme.${mode}`)}
+                {t(`appearance.${mode}`)}
               </option>
             ))}
           </Select>
+        </SettingsRow>
+        {/* The palette is a second, independent axis: it works in both
+            renditions, so it gets its own row instead of a combined list. */}
+        <SettingsRow
+          description={t("theme.description")}
+          stacked
+          title={t("theme.title")}
+        >
+          <ThemePalettePicker />
         </SettingsRow>
         <SettingsRow
           title={t("fontSize.title")}
@@ -106,10 +117,21 @@ export function GeneralPage({
           </Select>
         </SettingsRow>
         <SettingsRow
-          title={t("finalAnswerOnly.title")}
-          description={t("finalAnswerOnly.description")}
+          title={t("replyDetail.title")}
+          description={t(`replyDetail.description.${replyDetail}`)}
         >
-          <Switch checked={finalAnswerOnly} label={t("finalAnswerOnly.title")} onChange={setFinalAnswerOnly} />
+          <Select
+            size="sm"
+            value={replyDetail}
+            wrapperClassName="w-32"
+            onChange={e => setReplyDetail(e.target.value as ReplyDetail)}
+          >
+            {REPLY_DETAIL_LEVELS.map(level => (
+              <option key={level} value={level}>
+                {t(`replyDetail.${level}`)}
+              </option>
+            ))}
+          </Select>
         </SettingsRow>
         <SettingsRow
           title={t("approvalTier.title")}

@@ -41,6 +41,16 @@ development and distribution maintenance.
   lifted above the groups and a group's select-all must not sweep it up — and is
   an ordinary tickable row on the **recent** page, which opens no shortcut
   section of its own.
+- The "new conversation" button asks a different question on each page. The
+  **workspaces** and **recent** pages both list both kinds of conversation, so it
+  opens on that choice first (workspace / chat, workspace in force, with that
+  machine's workspace list behind the workspace answer). The **conversations**
+  page *is* the list of chats that belong to no workspace, so there is no second
+  possibility there and it creates a chat straight away. The recency page used to
+  do the latter, which made the same button skip the chooser on one page and open
+  it on the page beside it — and left no way to start a *workspace* conversation
+  from the one list that holds every workspace's. Choosing "chat" does not carry
+  a workspace picked for the workspace answer into the draft.
 - The session list opens on the **recent** page (`lastTab`), and returns there
   when a chat is closed. Its three pages are, **in order**, recent, workspaces
   (its conversations filed under their workspace) and conversations (the ones in
