@@ -111,6 +111,14 @@ declares `https://` must still answer `wss://`, and the Future platform always
 requires `https://` and `wss://`. A public deployment with a public CA is
 unaffected.
 
+A certificate reaches every listener. `--tls-cert/--tls-key` are written into
+the generated `nats.conf` **twice**: once for the client port, and again inside
+the `websocket` block, because nats-server does not let websocket traffic
+inherit the top-level `tls` and refuses to start when a `wss://` deployment has
+no websocket TLS configuration at all. Keep both blocks when editing the file
+by hand; a `websocket` block with `tls {}` and no certificate paths starts up
+and then rejects every handshake with `tls: no certificates configured`.
+
 ## 2. Run it
 
 ```bash

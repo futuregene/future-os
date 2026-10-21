@@ -94,6 +94,12 @@ API 24 起对普通应用忽略用户安装的 CA，自签或私有 CA 要么装
 `wss://`，官方平台更是始终要求 `https://` + `wss://`。要做公网部署就用公共 CA，
 那条路径完全不受影响。
 
+一份证书会写进每个监听器。`--tls-cert/--tls-key` 在生成的 `nats.conf` 里出现
+**两次**：一次给客户端端口，一次在 `websocket` 块内部——nats-server 不允许
+websocket 流量继承顶层的 `tls`，而声明了 `wss://` 却没有 websocket TLS 配置会
+直接拒绝启动。手工改这个文件时两块都要留；写成空的 `tls {}`（没有证书路径）虽然
+能启动，但每次握手都会被拒，日志是 `tls: no certificates configured`。
+
 ## 2. 启动
 
 ```bash
