@@ -232,8 +232,11 @@ offline push.
   title column without covering the title).
   Workspace group headers use a 4px folder→name gap so the group name lines up
   with its first-level conversation titles.
-  The workspace and conversation lists are the two pages of one horizontal
-  swipe: left from workspaces into conversations, right back into workspaces.
+  The list's three pages are the pages of one horizontal swipe, and they form a
+  loop: workspaces → conversations → recency by dragging left, with both ends
+  wrapping (right from workspaces lands on recency, left from recency lands on
+  workspaces). A swipe still moves one page, so the loop never skips
+  conversations.
   A drag that is not clearly horizontal stays a list scroll, and the swipe is
   off while the toolbar is searching or selecting (the tab bar is hidden then,
   so the swipe would change mode unseen); the tabs themselves still switch on

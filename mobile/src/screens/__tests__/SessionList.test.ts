@@ -567,7 +567,7 @@ test("the tab row is the list's whole width, with the page tools in the header",
   expect(onTabChange).toHaveBeenCalledWith("workspace");
 });
 
-test("a horizontal swipe pages the list, and closes the row into a loop", () => {
+test("a horizontal swipe pages the list, and the row closes into a loop", () => {
   const fromConversations = swipeHarness("chat");
   // Conversations is the middle page: dragging right leaves it ...
   expect(fromConversations.drag(120, 4)).toBe(true);
@@ -579,9 +579,14 @@ test("a horizontal swipe pages the list, and closes the row into a loop", () => 
   act(() => fromConversations.rendered.unmount());
 
   const fromRecent = swipeHarness("recent");
-  // The recency page is the last one, so a drag left has nothing behind it.
+  // The rightmost page: dragging left wraps to the workspaces page. It still
+  // moves one page at a time in the other direction — reaching conversations
+  // from here is one drag right, not through the workspaces page.
   expect(fromRecent.drag(-120, 4)).toBe(true);
-  expect(fromRecent.tabChange).not.toHaveBeenCalled();
+  expect(fromRecent.tabChange).toHaveBeenCalledWith("workspace");
+  fromRecent.tabChange.mockClear();
+  expect(fromRecent.drag(120, 4)).toBe(true);
+  expect(fromRecent.tabChange).toHaveBeenCalledWith("chat");
   act(() => fromRecent.rendered.unmount());
 
   const fromWorkspaces = swipeHarness("workspace");
