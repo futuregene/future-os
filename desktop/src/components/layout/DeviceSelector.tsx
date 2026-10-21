@@ -107,9 +107,7 @@ export function DeviceSelector({
         onClick={() => setOpen(current => !current)}
         type="button"
       >
-        <span aria-hidden className="shrink-0 text-sm">
-          {filterIcon(filter, peers)}
-        </span>
+        <GlyphSlot>{filterIcon(filter, peers)}</GlyphSlot>
         <span className="min-w-0 flex-1 truncate text-left">{label}</span>
         <ChevronDown className="size-3.5 shrink-0 text-ink-soft" />
       </button>
@@ -197,6 +195,26 @@ export function DeviceSelector({
 }
 
 /**
+ * The one column every mark in this control is drawn in.
+ *
+ * The marks are not the same kind of thing: "all devices" and "this computer"
+ * are 14px line icons, while a paired machine carries an emoji the user picked,
+ * and a colour emoji's advance is a third wider than a line icon's box at the
+ * same font size. Left to their own widths the entries started their names at
+ * three different x's — the list read as two columns, with the emoji hanging
+ * into the first one. A reserved, centred slot pins the column, so every name
+ * begins where the one above it does and the icons line up with each other
+ * rather than each with its own glyph's edge.
+ */
+function GlyphSlot({ children }: { children: React.ReactNode }) {
+  return (
+    <span aria-hidden className="flex size-4 shrink-0 items-center justify-center leading-none">
+      {children}
+    </span>
+  );
+}
+
+/**
  * The glyph that stands for a filter.
  *
  * One function for both the collapsed button and the expanded entries, because
@@ -270,7 +288,7 @@ function SelectorOption({
         role="option"
         type="button"
       >
-        <span className="shrink-0">{children}</span>
+        <GlyphSlot>{children}</GlyphSlot>
         {action
           ? (
               // The note moves under the name when an action shares the line,
