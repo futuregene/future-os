@@ -42,6 +42,15 @@ export interface RemoteSession {
    * rather than pretending to be current.
    */
   lastMessageAt?: number | null;
+  /**
+   * When the conversation was started (unix millis), from `threads.created_at`.
+   *
+   * A run rewrites `lastMessageAt` about once a second while it streams, so a
+   * client that ranks the *running* conversations by that reshuffles the list
+   * under the reader's thumb; the creation time does not move. Absent on a
+   * desktop older than the field, and the client falls back to recency there.
+   */
+  createdAt?: number | null;
 }
 
 export interface RemoteWorkspace {
@@ -68,6 +77,8 @@ export interface PresenceSession {
   workspaceName?: string | null;
   workspacePinned?: boolean | null;
   workspaceOrderedAt?: number | null;
+  /** Same wire field as `RemoteSession.createdAt`: when the conversation began. */
+  createdAt?: number | null;
 }
 
 export interface SnapshotVersion {

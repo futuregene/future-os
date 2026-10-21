@@ -5,6 +5,7 @@ import { isActiveSession, RECENT_PAGE_SIZE, recentRows } from "../recentRows";
 const minute = 60_000;
 const now = Date.UTC(2026, 9, 21, 12, 0, 0);
 
+const hour = 60 * minute;
 const row = (
   id: string,
   extra: Partial<RemoteSession> = {},
@@ -58,6 +59,72 @@ describe("the recency page", () => {
     // The captions carry what is under them, so a reader can see how much moves.
     expect(countOf(page, "activeSection")!.count).toBe(2);
     expect(countOf(page, "earlierSection")!.count).toBe(2);
+  });
+
+  it("ranks active rows by when they started, not by their last reply", () => {
+    // A run rewrites its last-reply stamp about once a second, so ranking by it
+    // swapped rows under the reader's thumb. The start time does not move.
+    const page = recentRows([
+      // Started first, but the newest reply: with recency order this row would
+      // lead; by creation it is last of the three.
+      row("busy-old", {
+        streaming: true,
+        createdAt: now - 3 * hour,
+        lastMessageAt: now - 1_000,
+      } as Partial<RemoteSession>),
+      row("busy-middle", {
+        streaming: true,
+        createdAt: now - 2 * hour,
+        lastMessageAt: now - 2 * hour,
+      } as Partial<RemoteSession>),
+      row("busy-new", {
+        status: "running",
+        createdAt: now - minute,
+        lastMessageAt: now - minute,
+      } as Partial<RemoteSession>),
+    ], "");
+    expect(ids(page)).toEqual(["busy-new", "busy-middle", "busy-old"]);
+  });
+
+  it("does not reorder active rows when only their activity moves", () => {
+    const started = [
+      row("older-start", { streaming: true, createdAt: now - 3 * hour } as Partial<RemoteSession>),
+      row("newer-start", { streaming: true, createdAt: now - 2 * hour } as Partial<RemoteSession>),
+    ];
+    // Both stretches are asserted explicitly: the order is by start, so the row
+    // that started later leads even when the other one has spoken most recently.
+    expect(ids(recentRows(started, ""))).toEqual(["newer-start", "older-start"]);
+    const after = ids(recentRows([
+      { ...started[0]!, lastMessageAt: now - 500 },
+      { ...started[1]!, lastMessageAt: now - hour },
+    ], ""));
+    expect(after).toEqual(["newer-start", "older-start"]);
+  });
+
+  it("falls back to recency for a desktop that sends no start time", () => {
+    // Older desktops omit the field; recency is the only key they offer, and the
+    // page must still draw the stretch in some order.
+    const page = recentRows([
+      row("quiet", { streaming: true, lastMessageAt: now - 5 * minute } as Partial<RemoteSession>),
+      row("chatty", { streaming: true, lastMessageAt: now - minute } as Partial<RemoteSession>),
+    ], "");
+    expect(ids(page)).toEqual(["chatty", "quiet"]);
+  });
+
+  it("orders the earlier stretch by the last reply even when a start time exists", () => {
+    // The two stretches use different clocks on purpose: "earlier" answers
+    // "what did I last touch", so it stays on the reply stamp.
+    const page = recentRows([
+      row("started-first-touched-last", {
+        createdAt: now - 5 * hour,
+        lastMessageAt: now - minute,
+      } as Partial<RemoteSession>),
+      row("started-last-touched-first", {
+        createdAt: now - minute,
+        lastMessageAt: now - hour,
+      } as Partial<RemoteSession>),
+    ], "");
+    expect(ids(page)).toEqual(["started-first-touched-last", "started-last-touched-first"]);
   });
 
   it("ignores pinning for the order, and keeps the marker on the row", () => {
