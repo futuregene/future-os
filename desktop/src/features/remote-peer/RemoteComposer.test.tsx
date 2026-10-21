@@ -1039,20 +1039,19 @@ it("does not run the outbox recovery against a host that is not connected", asyn
 });
 
 /**
- * And a recovery whose dynamic import lands after the composer is gone is
- * abandoned.
+ * And a recovery already in flight when the composer is gone is abandoned.
  *
- * The module is imported lazily (`import("./remotePromptOutbox")`), so the
- * continuation can run after an unmount. The window is one microtask wide, so
- * this test drives the render and the unmount *without* a flush in between: the
- * usual `mount()` helper awaits a flush, by which time the import has already
- * landed and the abandoned branch cannot be reached at all.
+ * `recoverRemoteOutbox` is awaited, so it settles after an unmount whenever the
+ * conversation closes while the host is answering. The window is one microtask
+ * wide, so this test drives the render and the unmount *without* a flush in
+ * between: the usual `mount()` helper awaits a flush, by which time the recovery
+ * has already landed and the abandoned branch cannot be reached at all.
  */
-it("abandons a recovery whose module import lands after unmount", async () => {
+it("abandons a recovery that settles after unmount", async () => {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
-  // Sync `act`: effects run (and initiate the import), no microtasks are drained.
+  // Sync `act`: effects run (and start the recovery), no microtasks are drained.
   act(() => {
     root.render(
       <RemoteComposer
@@ -1069,11 +1068,11 @@ it("abandons a recovery whose module import lands after unmount", async () => {
   act(() => root.unmount());
   container.remove();
 
-  // The import lands here, with the composer gone.
+  // The recovery settles here, with the composer gone.
   await settle();
 
   // Nothing was queued or reported: the abandoned continuation returned before
-  // touching state (a state update after unmount is the React warning this
-  // branch exists to avoid).
+  // touching state, and the outbox is exactly as the recovery found it (a state
+  // update after unmount is the branch these guards exist to avoid).
   expect(getRemoteOutbox("desktop_a", "sess_1").prompt).toBeNull();
 });
