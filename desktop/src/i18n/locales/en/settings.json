@@ -312,5 +312,9 @@
     "followCopyName": "Copy account name",
     "followCopied": "Copied",
     "followReadArticle": "Read an article"
+  },
+  "autoResumeInterrupted": {
+    "title": "Continue interrupted conversations",
+    "description": "Closing FutureOS stops the conversations that were running (the agent runs inside the app). When on, the next launch continues them by itself; when off, they stay interrupted until you continue them."
   }
 }
