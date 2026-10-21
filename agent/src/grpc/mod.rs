@@ -1650,7 +1650,11 @@ mod tests {
     /// for the same local endpoint.
     #[test]
     fn the_public_serve_wrappers_bind_serve_and_report_bind_failures() {
-        let _home = crate::test_support::TestHome::new();
+        // This test binds a real unix endpoint, so its home has to be short
+        // enough for a `sun_path`: the default `TestHome` anchors under the
+        // checkout's `target/`, and a deep worktree pushed the derived socket
+        // path to 106 bytes against a 104-byte limit (bind failed with EPERM).
+        let _home = crate::test_support::TestHome::short();
         let subscriber = tracing_subscriber::fmt()
             .with_writer(std::io::sink)
             .with_ansi(false)

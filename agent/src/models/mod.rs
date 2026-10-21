@@ -840,12 +840,6 @@ pub struct Registry {
 
 impl Registry {
     pub fn new() -> Self {
-        // Test builds only: the future-models caches are process-global, and
-        // several test modules build a registry without holding a `TestHome`.
-        // Serializing here keeps a concurrent build from publishing a catalog
-        // between another test's cache reset and its assertion.
-        #[cfg(test)]
-        let _cache_access = future::lock_cache_access();
         let (mut user_models, overrides) =
             load_user_models_with_overrides(&user_models_path()).unwrap_or_default();
 
