@@ -555,6 +555,16 @@ records who measured it, when, on which machine and which model.
 The panel's view preferences follow the same rule as the theme, font size and
 panel widths: per machine, read on the render path, in `localStorage`.
 
+**Why the order is not in `app.db` yet, stated precisely** so the next person does not
+start in the wrong crate: the desktop's database and its migration chain live in
+`host/src/store/` (the desktop's `src-tauri/src/store.rs` is a re-export of
+`future_host::store`), and the settings document's schema lives in
+`packages/app-settings/` — both **outside `desktop/`**. Moving the order there is a
+schema change with a versioned migration, a fresh-install fixture and a bilingual
+`ER.md` update; it is a task of its own, not a line in this one. Until then the
+`localStorage` keys are the only ones the panel reads, and `vibePreferences.ts` is the
+only file that touches them.
+
 ## 13. Where the code goes
 
 ```

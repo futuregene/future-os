@@ -436,6 +436,13 @@ mac 输入法的候选窗、语音输入法自己的浮层，都跟着光标出�
 面板的视图偏好与主题、字号、面板宽度同一条规则：按机器、在读渲染路径上读、存在
 `localStorage`。
 
+**为什么顺序还没进 `app.db`，说清楚**，免得下一个人从错误的 crate 开始：桌面端的数据库与它的
+迁移链在 `host/src/store/`（桌面端 `src-tauri/src/store.rs` 只是 `future_host::store` 的再导出），
+而设置文档的 schema 在 `packages/app-settings/` —— **两者都在 `desktop/` 之外**。把顺序搬过去
+是一次带版本化迁移、全新安装夹具和双语 `ER.md` 同步的 schema 改动，是一件独立任务，不是这一件
+里的一行。在那之前，`localStorage` 那几个键是面板唯一读的东西，`vibePreferences.ts` 是唯一碰
+它们的文件。
+
 ## 13. 代码落在哪
 
 ```
