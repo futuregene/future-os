@@ -10,7 +10,7 @@ export type Appearance = {
   fontSize: FontSizePreference;
   /**
    * Keep a settled reply to the answer it ends on: its reasoning, tool calls and
-   * notes fold into one "show process" row above the answer.
+   * notes fold into one "show process" row above the answer. **On by default.**
    *
    * A reading preference of *this phone*, not of the machine it is reading: the
    * same choice applies to every paired desktop's conversation, because it is
@@ -23,8 +23,9 @@ export type Appearance = {
 const STORAGE_KEY = "future.mobile.appearance";
 
 /** Light at the size the app was designed at, which is also what a reader who
- * has never opened the setting should get — and the whole reply, work included. */
-export const DEFAULT_APPEARANCE: Appearance = { themeMode: "system", fontSize: "medium", finalAnswerOnly: false };
+ * has never opened the setting should get — with a settled reply folded to its
+ * answer, the way it now ships. */
+export const DEFAULT_APPEARANCE: Appearance = { themeMode: "system", fontSize: "medium", finalAnswerOnly: true };
 
 let appearance = DEFAULT_APPEARANCE;
 let initialization: Promise<void> | undefined;
@@ -55,9 +56,10 @@ export function parseAppearance(value: string | null): Appearance {
   const record = typeof stored === "object" && stored !== null ? stored as Record<string, unknown> : {};
   const themeMode = record.themeMode;
   const fontSize = record.fontSize;
-  // Anything but a stored `true` is off: a record written before this field
-  // existed must read as the default rather than as undefined.
-  const finalAnswerOnly = record.finalAnswerOnly === true;
+  // Only an explicit `false` opts out: the field and its switch shipped
+  // together, so a stored false is the reader's own choice, while anything
+  // else — including a record written before the field existed — is the default.
+  const finalAnswerOnly = record.finalAnswerOnly !== false;
   return {
     themeMode: themeMode === "light" || themeMode === "dark" || themeMode === "system" ? themeMode : DEFAULT_APPEARANCE.themeMode,
     fontSize: fontSize === "small" || fontSize === "large" || fontSize === "xlarge" || fontSize === "medium"

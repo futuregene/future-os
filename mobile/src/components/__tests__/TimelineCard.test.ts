@@ -5,6 +5,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 import { TimelineCard } from "../TimelineCard";
 import type { TimelineCardProps } from "../TimelineCard";
 import type { TimelineItem, TimelineSegment, TimelineToolRow } from "../../remote/types";
+import { setAppearance } from "../../theme/preferences";
 
 jest.mock("../MarkdownText", () => ({ MarkdownText: "MarkdownText" }));
 jest.mock("lucide-react-native", () => Object.fromEntries([
@@ -40,7 +41,11 @@ jest.mock("react-i18next", () => {
 });
 
 let tree: ReactTestRenderer;
-beforeEach(() => {
+beforeEach(async () => {
+  // These cases describe a reply's blocks as a whole. The shipped default folds
+  // a settled reply onto its answer, which has its own suite
+  // (`TimelineCardFinalAnswer.test.ts`); here the reply stays unfolded.
+  await setAppearance({ finalAnswerOnly: false });
   (AppState.addEventListener as jest.Mock).mockReturnValue({ remove: jest.fn() });
 });
 afterEach(() => { if (tree) act(() => tree.unmount()); });

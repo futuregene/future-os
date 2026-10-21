@@ -12,16 +12,23 @@ import { useSyncExternalStore } from "react";
  *
  * A display preference, not backend state: like the theme and the text size it
  * is persisted in `localStorage` and read before the first React paint.
+ *
+ * **On by default.** A reply that finishes is read for its answer, and the work
+ * above it is one click away; a reader who wants the work in the transcript sets
+ * this off, and that choice is remembered like any other. Only a stored `false`
+ * turns it off: an absent or unreadable value is the default.
  */
 const STORAGE_KEY = "future.reply.finalAnswerOnly";
 
+export const DEFAULT_FINAL_ANSWER_ONLY = true;
+
 function readStored(): boolean {
   try {
-    return localStorage.getItem(STORAGE_KEY) === "true";
+    return localStorage.getItem(STORAGE_KEY) !== "false";
   }
   catch {
     // localStorage may be unavailable; fall through to the default.
-    return false;
+    return DEFAULT_FINAL_ANSWER_ONLY;
   }
 }
 
@@ -58,5 +65,5 @@ export function subscribeFinalAnswerOnly(listener: () => void): () => void {
 
 /** Whether settled replies show only their final answer. */
 export function useFinalAnswerOnly(): boolean {
-  return useSyncExternalStore(subscribeFinalAnswerOnly, getFinalAnswerOnly, () => false);
+  return useSyncExternalStore(subscribeFinalAnswerOnly, getFinalAnswerOnly, () => DEFAULT_FINAL_ANSWER_ONLY);
 }

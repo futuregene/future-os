@@ -20,7 +20,7 @@
   },
   "finalAnswerOnly": {
     "title": "Show only the final answer",
-    "description": "Once an answer settles, fold its reasoning, tool calls and notes into one row and keep the final answer. Work is still shown while it streams; “Show process” opens it again."
+    "description": "Once an answer settles, fold its reasoning, tool calls and notes into one row and keep the final answer. On by default. Work is still shown while it streams; “Show process” opens it again."
   },
   "approvalTier": {
     "title": "Approval mode",

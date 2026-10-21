@@ -32,7 +32,7 @@ export const resources = {
         reply: "Replies",
         finalAnswerOnly: "Show only the final answer",
         finalAnswerOnlyHint:
-          "Once an answer settles, fold its reasoning, tool calls and notes into one row above it. Applies to every desktop this phone is paired with; work still shows while it streams.",
+          "Once an answer settles, fold its reasoning, tool calls and notes into one row above it. On by default. Applies to every desktop this phone is paired with; work still shows while it streams.",
         saveFailed: "Could not save the appearance setting. Please try again.",
       },
       language: {
@@ -1032,7 +1032,7 @@ export const resources = {
         reply: "回复显示",
         finalAnswerOnly: "只显示最终回答",
         finalAnswerOnlyHint:
-          "回答结束后，把思考、工具调用和中间说明收起到回答上方的一行；生成过程中仍完整显示。对本手机连接的全部电脑生效。",
+          "回答结束后，把思考、工具调用和中间说明收起到回答上方的一行，默认开启；生成过程中仍完整显示。对本手机连接的全部电脑生效。",
         saveFailed: "无法保存外观设置，请重试。",
       },
       language: {

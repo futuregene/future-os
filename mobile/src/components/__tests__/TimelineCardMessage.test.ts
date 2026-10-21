@@ -10,6 +10,7 @@ import { collapsedPromptHeight, PROMPT_COLLAPSE_LINES } from "../../features/cha
 import { lightTheme } from "../../theme/theme";
 import type { HistoryAttachment, TimelineItem, TimelineSegment } from "../../remote/types";
 import i18n from "../../i18n";
+import { setAppearance } from "../../theme/preferences";
 
 jest.mock("../MarkdownText", () => ({ MarkdownText: "MarkdownText" }));
 // The reader is its own surface with its own suite; here it is a host element,
@@ -26,6 +27,12 @@ jest.mock("../appAlerts", () => ({ AppAlert: { alert: jest.fn() } }));
 jest.mock("expo-clipboard", () => ({ setStringAsync: jest.fn(async () => true) }));
 
 let tree: ReactTestRenderer;
+beforeEach(async () => {
+  // These cases describe a reply's blocks as a whole. The shipped default folds
+  // a settled reply onto its answer, which has its own suite
+  // (`TimelineCardFinalAnswer.test.ts`); here the reply stays unfolded.
+  await setAppearance({ finalAnswerOnly: false });
+});
 afterEach(() => {
   if (tree) act(() => tree.unmount());
   jest.useRealTimers();

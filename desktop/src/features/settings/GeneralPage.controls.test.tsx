@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "../../i18n";
 import { setFontSize } from "../../lib/fontSize";
-import { getFinalAnswerOnly, setFinalAnswerOnly } from "../../lib/replyDisplay";
+import { DEFAULT_FINAL_ANSWER_ONLY, getFinalAnswerOnly, setFinalAnswerOnly } from "../../lib/replyDisplay";
 import { setThemeMode } from "../../lib/theme";
 import { GeneralPage } from "./GeneralPage";
 
@@ -36,7 +36,8 @@ beforeEach(() => {
   mocks.isWindows = true;
   setThemeMode("system");
   setFontSize("medium");
-  setFinalAnswerOnly(false);
+  // Back to the shipped default (on) rather than whatever the last case left.
+  setFinalAnswerOnly(DEFAULT_FINAL_ANSWER_ONLY);
   void i18n.changeLanguage("en");
 });
 
@@ -157,21 +158,23 @@ describe("generalPage font size picker", () => {
 });
 
 describe("generalPage final answer only switch", () => {
-  it("reflects and persists the reading setting", () => {
+  it("is on until the reader turns it off, and remembers that", () => {
     const { container } = mount();
     const toggle = container.querySelector<HTMLButtonElement>("button[role='switch'][aria-label='Show only the final answer']")!;
 
-    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    // On by default: a settled reply opens on its answer.
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
     expect(container.textContent).toContain("fold its reasoning, tool calls and notes");
 
     act(() => toggle.click());
 
-    expect(getFinalAnswerOnly()).toBe(true);
-    expect(localStorage.getItem("future.reply.finalAnswerOnly")).toBe("true");
-    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(getFinalAnswerOnly()).toBe(false);
+    expect(localStorage.getItem("future.reply.finalAnswerOnly")).toBe("false");
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
 
     act(() => toggle.click());
-    expect(getFinalAnswerOnly()).toBe(false);
+    expect(getFinalAnswerOnly()).toBe(true);
+    expect(localStorage.getItem("future.reply.finalAnswerOnly")).toBe("true");
   });
 });
 
@@ -324,7 +327,7 @@ describe("generalPage switches", () => {
       "Completion bell",
       "Continue interrupted conversations",
     ]);
-    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["false", "true", "false", "true", "false", "false"]);
+    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["true", "true", "false", "true", "false", "false"]);
   });
 
   it("reports each toggle to its own callback, inverted", () => {
