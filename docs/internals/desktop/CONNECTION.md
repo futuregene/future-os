@@ -556,7 +556,15 @@ that machine, and no second journal is created here.
 
 **Merging the conversation list.** The shared list (left panel) interleaves this
 machine's conversations with every connected host's by time, each row carrying
-its source icon; the device selector narrows it to one machine. The ordering key
+its source icon; the device selector narrows it to one machine. **Creating one
+is device-first**: a new conversation lives on one machine and runs there, so
+the rail's "new conversation" control and `⌘N` ask which machine before
+anything is made — in a dialog, because the shortcut has no button to hang a
+menu under. The question is skipped when it has one answer: no host can take
+the work (the list already is one machine's), or the selector above the list
+names one machine already. A machine that is offline, restarting, or driven by
+another paired device is listed with the reason and not offered, since it would
+accept the tap and refuse the first prompt. The ordering key
 for **rows** is the one the local list already used —
 `pinned DESC, COALESCE(last_message_at, updated_at, created_at) DESC` — which is
 why the `state.sessions` snapshot gained an optional `lastMessageAt` (older

@@ -20,7 +20,8 @@ import { runCommand, useCommand } from "../../features/keyboard/commands";
 import { useShortcutDispatcher } from "../../features/keyboard/useDispatcher";
 import { CommandPalette } from "../../features/palette/CommandPalette";
 import { ShortcutCheatSheet } from "../../features/palette/ShortcutCheatSheet";
-import { peerStatus } from "../../features/remote-peer/peerStatus";
+import { DeviceChoiceDialog } from "../../features/remote-peer/DeviceChoiceDialog";
+import { peerDrivable, peerStatus } from "../../features/remote-peer/peerStatus";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
@@ -226,6 +227,20 @@ function ReadyAppShell({
    * question the phone's new-conversation dialog opens on.
    */
   const [workspaceDeviceChoice, setWorkspaceDeviceChoice] = useState(false);
+  /**
+   * The machine step in front of a new conversation.
+   *
+   * A conversation lives on one machine and runs there, so "new conversation"
+   * cannot create anything until it knows which machine — and the rail's list
+   * can be showing one machine or all of them. The create controls used to
+   * assume this computer: with a host's conversations on screen, the button
+   * and ⌘N made a local conversation, which is a different disk, a different
+   * agent and a different place from the one the reader was looking at.
+   *
+   * The device picker above the list answers the question when it names one
+   * machine, and that case asks nothing (`handleNewConversationRequest`).
+   */
+  const [newChatDeviceChoice, setNewChatDeviceChoice] = useState(false);
   /** The host whose create-workspace form is open, if any. */
   const [remoteWorkspaceHost, setRemoteWorkspaceHost] = useState<RemotePeer | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -714,6 +729,43 @@ function ReadyAppShell({
     handleOpenNewChat();
   }
 
+  /**
+   * The rail's plain "new conversation": device first, then the conversation.
+   *
+   * Three answers, in the order they cost the reader:
+   *
+   * - **One machine on screen**: the picker above the list already names it, and
+   *   that is the answer — asking again would be a dialog whose only content is
+   *   what the button beside it says. This is the ordinary case and it creates
+   *   straight away, on that machine.
+   * - **One machine paired**: nothing to choose between, so nothing is asked.
+   * - **The merged list with machines to choose from**: the machine *is* the
+   *   question, so it is asked — in a dialog, because this is also what ⌘N does
+   *   and a shortcut has no button to hang a menu under.
+   *
+   * A conversation started inside a workspace skips all of this
+   * (`handleOpenNewChat(workspaceId)`): that workspace is a folder on this
+   * machine's disk, and there is no question left to ask.
+   */
+  function handleNewConversationRequest() {
+    if (deviceFilter.kind === "device") {
+      if (deviceFilter.desktopId === null) {
+        handleOpenNewChat();
+        return;
+      }
+      startRemoteConversation(deviceFilter.desktopId);
+      return;
+    }
+    // Only a machine that can take the work is something to choose between: a
+    // machine that is offline, restarting, or driven by another paired device
+    // would answer the tap and then refuse the first prompt.
+    if (!remotePeers.some(peerDrivable)) {
+      handleOpenNewChat();
+      return;
+    }
+    setNewChatDeviceChoice(true);
+  }
+
   // Skills page 「教我使用技能」: create the coach conversation (same flow as
   // the banner) with the platform coach prompt as the first message.
   function handleStartCoachConversation(content: string) {
@@ -1145,7 +1197,10 @@ function ReadyAppShell({
   // Nothing on the onboarding gate: there is no conversation, no rail and no
   // settings page to reach yet.
   const shortcutsLive = !showGate;
-  useCommand("chat.new", () => handleOpenNewChat(), shortcutsLive);
+  // ⌘N is the rail's "new conversation" button under a different name, so it
+  // asks the same question — a shortcut that made something on a machine other
+  // than the one on screen was wrong for the same reason the button was.
+  useCommand("chat.new", () => handleNewConversationRequest(), shortcutsLive);
   useCommand("vibe.toggle", () => setVibeOpen(open => !open), shortcutsLive);
   useCommand("panel.left", handleToggleLeftPanel, shortcutsLive);
   useCommand("panel.right", () => setRightExpanded(value => !value), shortcutsLive && !hideRightPanel);
@@ -1275,7 +1330,16 @@ function ReadyAppShell({
     workspaces,
     onChange: handleSectionChange,
     onOpenModels: handleOpenModels,
-    onNewChat: handleOpenNewChat,
+    // The rail's create controls: a plain new conversation asks which machine
+    // first (`handleNewConversationRequest`); one started inside a workspace
+    // names its machine already — that folder is on this disk.
+    onNewChat: (workspaceId?: string) => {
+      if (workspaceId) {
+        handleOpenNewChat(workspaceId);
+        return;
+      }
+      handleNewConversationRequest();
+    },
     onNewWorkspace: handleOpenNewWorkspace,
     onBatchDeleteThreads: openBatchDelete,
     onDeleteRemoteConversations: handleDeleteRemoteConversations,
@@ -1719,6 +1783,24 @@ function ReadyAppShell({
                 setRemoteWorkspaceHost(peer);
               }}
               peers={remotePeers}
+            />
+          )
+        : null}
+      {newChatDeviceChoice
+        ? (
+            <DeviceChoiceDialog
+              description={tRemotePeer("chooseChatDeviceHint")}
+              onClose={() => setNewChatDeviceChoice(false)}
+              onPickLocal={() => {
+                setNewChatDeviceChoice(false);
+                handleOpenNewChat();
+              }}
+              onPickPeer={(peer) => {
+                setNewChatDeviceChoice(false);
+                startRemoteConversation(peer.desktopId);
+              }}
+              peers={remotePeers}
+              title={tRemotePeer("chooseChatDevice")}
             />
           )
         : null}

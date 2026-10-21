@@ -188,6 +188,8 @@
   "workspacesUnpin": "取消置顶",
   "chooseDevice": "选择设备",
   "chooseDeviceHint": "工作区是某一台电脑上的目录。选择它所在的电脑。",
+  "chooseChatDevice": "在哪台电脑上新建对话",
+  "chooseChatDeviceHint": "对话保存在一台电脑上，并在那台电脑上执行。先选择那台电脑。",
   "newWorkspaceOn": "在 {{host}} 上新建工作区",
   "workspacesCreateAction": "新建",
   "workspacesPathLabel": "目录路径",

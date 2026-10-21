@@ -11,7 +11,6 @@ import { iconGlyph } from "../../features/remote-peer/peerIcons";
 import { RemoteWorkspaceMenu } from "../../features/remote-peer/RemoteWorkspaceMenu";
 import { ChatSectionMenu } from "./ActivityRailMenus";
 import { RailGroupHeader, RailHeaderButton, RailSectionHeader, RailSectionToggle } from "./RailChrome";
-import { RailNewChatButton } from "./RailNewChatButton";
 import { RemoteConversationRow } from "./RemoteConversationRow";
 
 /**
@@ -111,6 +110,14 @@ export function MergedRows({
    * is what holds the open conversation; this list only knows its rows.
    */
   onDeletedRemote: (conversation: MergedConversation) => void;
+  /**
+   * Ask for a new conversation.
+   *
+   * The machine is *not* decided here: the list can hold one machine's rows or
+   * several, and a control that guessed would make something on a disk the
+   * reader was not looking at. The shell asks when there is something to ask
+   * and creates otherwise.
+   */
   onNewChat?: () => void;
   /**
    * Start a conversation on another machine: in a workspace, or with none.
@@ -507,19 +514,21 @@ export function MergedRows({
                     />
                   )
                 : null}
-              {/* A conversation lives on one machine, and the list can be
-                  showing one or all of them — so this asks only when there is
-                  something to ask. Filtering to a host used to leave the reader
-                  no way to start a conversation *on* the host they had just
-                  chosen to look at. */}
-              <RailNewChatButton
-                filter={filter}
-                onNewChatLocal={onNewChat}
-                onNewChatRemote={onNewChatInWorkspace
-                  ? (desktopId, workspaceId) => onNewChatInWorkspace(desktopId, workspaceId)
-                  : undefined}
-                peers={peers}
-              />
+              {/* One button, one question: a conversation lives on one
+                  machine, and the shell asks which when the list shows several
+                  (`handleNewConversationRequest`). This control used to ask it
+                  here, in a menu of its own — so the same question had two
+                  shapes depending on which of the two "new" buttons was
+                  pressed. It now hands the request up, like ⌘N does. */}
+              {onNewChat
+                ? (
+                    <RailHeaderButton
+                      icon={<Plus className="size-3.5" />}
+                      label={t("activityRail.newChatShort")}
+                      onClick={onNewChat}
+                    />
+                  )
+                : null}
             </>
           )}
         >

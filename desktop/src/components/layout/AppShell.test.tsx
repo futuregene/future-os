@@ -598,6 +598,18 @@ function railButton(container: HTMLElement, label: string) {
   return [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === label)!;
 }
 
+/**
+ * A control found by its accessible name.
+ *
+ * The machine rows in a device dialog draw a glyph and a status note around the
+ * name, so `railButton`'s exact-text match cannot address them; the aria-label
+ * is the name, which is what the reader of a screen reader hears too.
+ */
+function labeledButton(container: HTMLElement, label: string) {
+  return [...container.querySelectorAll<HTMLButtonElement>("button[aria-label]")]
+    .find(button => button.getAttribute("aria-label") === label)!;
+}
+
 beforeEach(() => {
   // The child-prop captures are module-level, so a test that reads one without
   // first rendering that child would silently borrow whatever a *previous* test
@@ -977,6 +989,144 @@ describe("app shell layout", () => {
     act(() => rail().onNewChat("w-t2"));
     expect(children.newConversation).toMatchObject({ initialMode: "workspace", initialWorkspaceId: "w-t2" });
     expect(rail().active).toBe("workspace");
+    view.unmount();
+  });
+
+  /** A paired machine that answers, as the shell's own peer list reports it. */
+  function connectedHost(overrides: Record<string, unknown> = {}) {
+    return {
+      agentAvailable: true,
+      bridgeInstanceId: "bridge_1",
+      connected: true,
+      desktopId: "desktop_a",
+      error: null,
+      features: [],
+      icon: "laptop",
+      name: "Studio iMac",
+      pairId: "pair_1",
+      stopped: false,
+      ...overrides,
+    };
+  }
+
+  /**
+   * A new conversation is made on one machine, so it is asked which — before
+   * anything is created.
+   *
+   * The merged list holds several machines' conversations, and "new" used to
+   * assume this computer: the button on the left made a local conversation
+   * while the reader was looking at another machine's rows. The machine is the
+   * question now, and ⌘N asks it too (see the test below), because a shortcut
+   * that skipped it was the same mistake without a button under the pointer.
+   */
+  it("asks which machine a new conversation belongs to", () => {
+    mocks.remotePeers = { catalogs: [], peers: [connectedHost()] };
+    const view = mount(<AppShell />);
+    expect(rail().deviceFilter).toEqual({ kind: "all" });
+
+    act(() => rail().onNewChat());
+
+    // Nothing was created: the machine comes first.
+    expect(view.container.querySelector("[data-child='new-conversation']")).toBeNull();
+    expect(view.container.textContent).toContain("Where should this conversation live?");
+    const pick = (label: string) => labeledButton(view.container, label);
+
+    act(() => pick("Studio iMac").click());
+    // The machine's own composer takes the column, with the empty session id
+    // that is the host's signal to create one.
+    expect((children.remoteComposer as { desktopId?: string }).desktopId).toBe("desktop_a");
+    expect((children.remoteComposer as { sessionId?: string }).sessionId).toBe("");
+    expect(view.container.textContent).not.toContain("Where should this conversation live?");
+
+    view.unmount();
+  });
+
+  /** This computer is one answer among the machines, not the assumption. */
+  it("offers this computer as one of the answers", () => {
+    mocks.remotePeers = { catalogs: [], peers: [connectedHost()] };
+    const view = mount(<AppShell />);
+    act(() => rail().onNewChat());
+    expect(view.container.querySelector("[data-child='new-conversation']")).toBeNull();
+
+    act(() => labeledButton(view.container, "This computer").click());
+
+    expect(view.container.querySelector("[data-child='new-conversation']")).not.toBeNull();
+    expect(view.container.textContent).not.toContain("Where should this conversation live?");
+    // Nothing was addressed to the host: this draft is this machine's.
+    expect(children.remoteComposer).toBeNull();
+    view.unmount();
+  });
+
+  /**
+   * The device picker above the list answers it when it names one machine, and
+   * nothing is asked twice: asking again would be a dialog whose only content
+   * is the label of the button beside it.
+   */
+  it("creates on the machine the picker names, without asking again", () => {
+    mocks.remotePeers = { catalogs: [], peers: [connectedHost()] };
+    const view = mount(<AppShell />);
+
+    act(() => rail().onChangeDeviceFilter({ desktopId: null, kind: "device" }));
+    act(() => rail().onNewChat());
+    expect(view.container.querySelector("[data-child='new-conversation']")).not.toBeNull();
+
+    act(() => rail().onChangeDeviceFilter({ desktopId: "desktop_a", kind: "device" }));
+    act(() => rail().onNewChat());
+    expect((children.remoteComposer as { desktopId?: string }).desktopId).toBe("desktop_a");
+    expect(view.container.textContent).not.toContain("Where should this conversation live?");
+    view.unmount();
+  });
+
+  /** With nothing paired there is one machine, and so no question to ask. */
+  it("asks nothing when no other machine is paired", () => {
+    mocks.remotePeers = { catalogs: [], peers: [] };
+    const view = mount(<AppShell />);
+    act(() => rail().onNewChat());
+    expect(view.container.querySelector("[data-child='new-conversation']")).not.toBeNull();
+    expect(view.container.textContent).not.toContain("Where should this conversation live?");
+    view.unmount();
+  });
+
+  /** ⌘N is the same command as the button, so it asks the same question. */
+  it("asks which machine from the new-conversation shortcut too", () => {
+    mocks.remotePeers = { catalogs: [], peers: [connectedHost()] };
+    const view = mount(<AppShell />);
+
+    act(() => runCommand("chat.new"));
+
+    expect(view.container.querySelector("[data-child='new-conversation']")).toBeNull();
+    expect(view.container.textContent).toContain("Where should this conversation live?");
+    act(() => labeledButton(view.container, "Studio iMac").click());
+    expect((children.remoteComposer as { desktopId?: string }).desktopId).toBe("desktop_a");
+    view.unmount();
+  });
+
+  /**
+   * A machine that cannot take work says so instead of being offered.
+   *
+   * Two ways to be there and still unable: offline (the link is down) and held
+   * by another paired device (it answers, and refuses the work). Either would
+   * accept the tap and fail the first prompt, so the row is disabled with the
+   * reason the device picker already uses for it.
+   */
+  it("does not offer a machine that cannot take a new conversation", () => {
+    mocks.remotePeers = {
+      catalogs: [],
+      peers: [
+        connectedHost(),
+        { ...connectedHost(), connected: false, desktopId: "desktop_b", error: "gone", name: "Offline Mac" },
+        { ...connectedHost(), control: "standby", desktopId: "desktop_c", holder: { name: "Hui's phone" }, name: "Held Mac" },
+      ],
+    };
+    const view = mount(<AppShell />);
+    act(() => rail().onNewChat());
+
+    expect(labeledButton(view.container, "Offline Mac").disabled).toBe(true);
+    expect(labeledButton(view.container, "Held Mac").disabled).toBe(true);
+    // A held machine is connected, so its status says nothing; the reason has to
+    // be the one the device picker gives for the same fact.
+    expect(view.container.textContent).toContain("In use by Hui's phone");
+    expect(view.container.textContent).toContain("Offline");
     view.unmount();
   });
 

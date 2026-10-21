@@ -188,6 +188,8 @@
   "workspacesUnpin": "Unpin",
   "chooseDevice": "Choose a device",
   "chooseDeviceHint": "A workspace is a folder on one computer. Choose that computer.",
+  "chooseChatDevice": "Where should this conversation live?",
+  "chooseChatDeviceHint": "A conversation is stored on one computer and runs there. Choose that computer first.",
   "newWorkspaceOn": "New workspace on {{host}}",
   "workspacesCreateAction": "Create",
   "workspacesPathLabel": "Folder path",
