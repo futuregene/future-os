@@ -1,8 +1,8 @@
 import { Profiler } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import "../src/i18n";
 import { MarkdownContent, StreamingMarkdownContent } from "../src/features/markdown/MarkdownContent";
+import "../src/i18n";
 
 // Run with the desktop Vite dev server, then open
 // /scripts/streaming-markdown-benchmark.html. No Agent or Tauri IPC is used.
@@ -19,15 +19,18 @@ async function nextFrame() {
 
 function waitForRows(count: number) {
   return new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => { observer.disconnect(); reject(new Error("Worker/render timeout")); }, 30000);
-    const check = () => {
+    const observer = new MutationObserver(check);
+    const timer = setTimeout(() => {
+      observer.disconnect();
+      reject(new Error("Worker/render timeout"));
+    }, 30000);
+    function check() {
       if (host.querySelectorAll("tbody tr").length !== count)
         return;
       clearTimeout(timer);
       observer.disconnect();
       resolve();
-    };
-    const observer = new MutationObserver(check);
+    }
     observer.observe(host, { childList: true, subtree: true });
     check();
   });
@@ -52,8 +55,8 @@ async function run(mode: "baseline" | "worker") {
     measuredBaselines.add(rows);
   const Renderer = mode === "baseline" ? MarkdownContent : StreamingMarkdownContent;
   flushSync(() => root.render(null));
-  const base = "| Field | Value | Note |\n| --- | --- | --- |\n"
-    + Array.from({ length: rows }, (_, i) => `| item ${i} | **result** | Some detailed explanation |`).join("\n");
+  const base = `| Field | Value | Note |\n| --- | --- | --- |\n${
+    Array.from({ length: rows }, (_, i) => `| item ${i} | **result** | Some detailed explanation |`).join("\n")}`;
   let source = base;
   const commits: number[] = [];
   const samples: Array<{ pushMs: number; renderMs: number; formatReadyMs: number; maxTimerDelayMs: number }> = [];
@@ -97,10 +100,16 @@ async function run(mode: "baseline" | "worker") {
       return Math.round(sorted[Math.floor(sorted.length / 2)]! * 10) / 10;
     };
     result.textContent = JSON.stringify({
-      mode, rows, chars: base.length, rounds, userAgent: navigator.userAgent,
+      mode,
+      rows,
+      chars: base.length,
+      rounds,
+      userAgent: navigator.userAgent,
       median: {
-        pushMs: median("pushMs"), renderMs: median("renderMs"),
-        formatReadyMs: median("formatReadyMs"), maxTimerDelayMs: median("maxTimerDelayMs"),
+        pushMs: median("pushMs"),
+        renderMs: median("renderMs"),
+        formatReadyMs: median("formatReadyMs"),
+        maxTimerDelayMs: median("maxTimerDelayMs"),
       },
       samples,
     }, null, 2);
@@ -114,5 +123,9 @@ async function run(mode: "baseline" | "worker") {
   }
 }
 
-document.getElementById("baseline")!.addEventListener("click", () => { void run("baseline"); });
-document.getElementById("worker")!.addEventListener("click", () => { void run("worker"); });
+document.getElementById("baseline")!.addEventListener("click", () => {
+  void run("baseline");
+});
+document.getElementById("worker")!.addEventListener("click", () => {
+  void run("worker");
+});

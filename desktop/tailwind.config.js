@@ -8,8 +8,8 @@ export default {
       // through CSS variables. Only values that need a variable reference stay
       // here, which is why shadows point at `--shadow-*`.
       boxShadow: {
-        panel: "var(--shadow-panel)",
-        dialog: "var(--shadow-dialog)",
+        "panel": "var(--shadow-panel)",
+        "dialog": "var(--shadow-dialog)",
         "sidebar-divider": "var(--shadow-sidebar-divider)",
         "sidebar-floating": "var(--shadow-sidebar-floating)",
       },
