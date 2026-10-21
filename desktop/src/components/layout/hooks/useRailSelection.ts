@@ -53,6 +53,17 @@ export function useRailSelection({
 }) {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectionScope, setSelectionScope] = useState("chat");
+  /**
+   * Whether a row's scope is inside the batch being assembled.
+   *
+   * Scopes are paths — `chat`, `recent`, `workspace/<id>` — so the tab's own
+   * menu ("select this whole list") and a group's menu ("select this workspace")
+   * are the same rule with a different prefix rather than two mechanisms. The
+   * separator is checked, not just the prefix: `workspace` must not match
+   * `workspaces-x` if a scope is ever named that way.
+   */
+  const inScope = useCallback((scope: string | undefined, target: string) =>
+    scope !== undefined && (scope === target || scope.startsWith(`${target}/`)), []);
   const [selectedThreadIds, setSelectedThreadIds] = useState<Set<string>>(() => new Set());
   /** Remote rows are keyed by `desktopId::sessionId` (their merged-list key). */
   const [selectedRemoteKeys, setSelectedRemoteKeys] = useState<Set<string>>(() => new Set());
@@ -64,15 +75,15 @@ export function useRailSelection({
   // pinned *host* row, for the same reason.
   const scopedThreads = useMemo(
     () => visibleThreads.filter(
-      thread => (!pinnedAreShortcuts || !thread.pinned) && threadScopes.get(thread.id) === selectionScope,
+      thread => (!pinnedAreShortcuts || !thread.pinned) && inScope(threadScopes.get(thread.id), selectionScope),
     ),
-    [pinnedAreShortcuts, selectionScope, threadScopes, visibleThreads],
+    [inScope, pinnedAreShortcuts, selectionScope, threadScopes, visibleThreads],
   );
   const scopedRemoteRows = useMemo(
     () => visibleRemoteRows.filter(
-      row => (!pinnedAreShortcuts || !row.pinned) && remoteScopes.get(row.key) === selectionScope,
+      row => (!pinnedAreShortcuts || !row.pinned) && inScope(remoteScopes.get(row.key), selectionScope),
     ),
-    [pinnedAreShortcuts, remoteScopes, selectionScope, visibleRemoteRows],
+    [inScope, pinnedAreShortcuts, remoteScopes, selectionScope, visibleRemoteRows],
   );
 
   const exitSelectionMode = useCallback(() => {
@@ -122,14 +133,14 @@ export function useRailSelection({
 
   const isThreadInScope = useCallback(
     (thread: StoredThread) =>
-      (!pinnedAreShortcuts || !thread.pinned) && threadScopes.get(thread.id) === selectionScope,
-    [pinnedAreShortcuts, selectionScope, threadScopes],
+      (!pinnedAreShortcuts || !thread.pinned) && inScope(threadScopes.get(thread.id), selectionScope),
+    [inScope, pinnedAreShortcuts, selectionScope, threadScopes],
   );
 
   const isRemoteRowInScope = useCallback(
     (row: MergedConversation) =>
-      (!pinnedAreShortcuts || !row.pinned) && remoteScopes.get(row.key) === selectionScope,
-    [pinnedAreShortcuts, remoteScopes, selectionScope],
+      (!pinnedAreShortcuts || !row.pinned) && inScope(remoteScopes.get(row.key), selectionScope),
+    [inScope, pinnedAreShortcuts, remoteScopes, selectionScope],
   );
 
   const toggleThreadSelection = useCallback((thread: StoredThread) => {

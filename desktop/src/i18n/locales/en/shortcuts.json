@@ -22,11 +22,14 @@
       "next": "Next conversation"
     },
     "rail": {
+      "tab": {
+        "workspace": "Switch to the workspaces list",
+        "chat": "Switch to the chats list",
+        "recent": "Switch to the recent list"
+      },
       "search": "Filter the conversation list"
     },
     "section": {
-      "chat": "Go to Chats",
-      "workspace": "Go to Workspaces",
       "skill": "Go to Skills",
       "tasks": "Go to Scheduled tasks",
       "remote": "Go to Remote"

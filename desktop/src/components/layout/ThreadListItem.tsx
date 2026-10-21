@@ -34,6 +34,7 @@ function ThreadListItemImpl({
   selectionMode,
   thread,
   unread,
+  qualifier,
   onDeleteThread,
   onMenuOpenChange,
   onRenameThread,
@@ -73,6 +74,14 @@ function ThreadListItemImpl({
   selectionMode?: boolean;
   thread: StoredThread;
   unread?: boolean;
+  /**
+   * Where this conversation lives, weakly — the search results' origin label.
+   *
+   * A cross-tab result list is flat, so a row that says nothing about its list
+   * is a row the reader has to open to find out where it came from. Muted and
+   * after the title: it qualifies the title, it is not a second column.
+   */
+  qualifier?: string;
   onDeleteThread: (thread: StoredThread) => void;
   /** Receives the row's thread so the rail can pass one stable callback to every row. */
   onMenuOpenChange: (thread: StoredThread, open: boolean) => void;
@@ -128,7 +137,14 @@ function ThreadListItemImpl({
             />
           )
         : null}
-      <RailRowTitle grow={!ageLabel} muted={archived}>{displayTitle}</RailRowTitle>
+      <RailRowTitle grow={!ageLabel && !qualifier} muted={archived}>{displayTitle}</RailRowTitle>
+      {qualifier
+        ? (
+            <span className="pointer-events-none shrink-0 text-2xs text-ink-muted" data-testid="row-qualifier">
+              {qualifier}
+            </span>
+          )
+        : null}
       {ageLabel
         ? (
             <>

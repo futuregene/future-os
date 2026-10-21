@@ -80,7 +80,9 @@ function mount(node: ReactElement) {
 
 function props(overrides: Partial<ComponentProps<typeof ActivityRail>> = {}): ComponentProps<typeof ActivityRail> {
   return {
-    active: "chat" as const,
+    active: "conversations" as const,
+    view: "chat" as const,
+    onSelectView: vi.fn(),
     activeThreadId: "root",
     expanded: true,
     futureSessionStatus: "authenticated",
@@ -318,10 +320,10 @@ describe("activity rail selection mode", () => {
       act(() => header.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
     }
     else {
-      act(() => byLabel(container, "Chat section actions")!.click());
+      act(() => byLabel(container, "Chats list actions")!.click());
     }
     const item = [...container.querySelectorAll<HTMLButtonElement>("[role=\"menuitem\"]")]
-      .find(button => button.textContent === "Select chats")!;
+      .find(button => button.textContent === (scope === "workspace" ? "Select chats" : "Select conversations in “Chats”"))!;
     act(() => item.click());
     await flushAsync();
   };
@@ -337,7 +339,7 @@ describe("activity rail selection mode", () => {
   });
 
   it("shows a checkbox per scoped thread and toggles the selection from it", async () => {
-    const view = mount(<ActivityRail {...props({ threads: twoThreads })} />);
+    const view = mount(<ActivityRail {...props({ threads: twoThreads, view: "workspace" })} />);
     await flushAsync();
     await enterSelection(view.container);
 
@@ -378,9 +380,10 @@ describe("activity rail selection mode", () => {
   });
 
   it("drops the per-thread actions menu while selection mode is open", async () => {
-    const view = mount(<ActivityRail {...props({ threads: twoThreads })} />);
+    const view = mount(<ActivityRail {...props({ threads: twoThreads, view: "workspace" })} />);
     await flushAsync();
-    expect(byLabel(view.container, "Thread actions for a")).not.toBeNull();
+    // The workspace row's own trigger is there before a batch opens…
+    expect(byLabel(view.container, "Thread actions for ws-a")).not.toBeNull();
 
     await enterSelection(view.container);
     expect(byLabel(view.container, "Thread actions for ws-a")).toBeNull();
@@ -389,7 +392,7 @@ describe("activity rail selection mode", () => {
   });
 
   it("exits selection mode from the toolbar's cancel", async () => {
-    const view = mount(<ActivityRail {...props({ threads: twoThreads })} />);
+    const view = mount(<ActivityRail {...props({ threads: twoThreads, view: "workspace" })} />);
     await flushAsync();
     await enterSelection(view.container);
 
@@ -467,7 +470,7 @@ describe("activity rail signed-out variants", () => {
     expect(byLabel(view.container, "Remote")).not.toBeNull();
     // The other collapsed entries are unaffected.
     expect(byLabel(view.container, "New chat")).not.toBeNull();
-    expect(byLabel(view.container, "Chat")).not.toBeNull();
+    expect(byLabel(view.container, "Chats")).not.toBeNull();
     view.unmount();
   });
 
@@ -538,9 +541,9 @@ describe("activity rail scope invariants (they hold the dead arms dead)", () => 
     expect(view.container.textContent).toContain("Pinned");
 
     // Enter batch selection over the whole chat list.
-    act(() => byLabel(view.container, "Chat section actions")!.click());
+    act(() => byLabel(view.container, "Chats list actions")!.click());
     const item = [...view.container.querySelectorAll<HTMLButtonElement>("[role=\"menuitem\"]")]
-      .find(button => button.textContent === "Select chats")!;
+      .find(button => button.textContent === "Select conversations in “Chats”")!;
     act(() => item.click());
     await flushAsync();
 
