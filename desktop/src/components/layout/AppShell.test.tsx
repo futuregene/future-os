@@ -79,11 +79,13 @@ const mocks = vi.hoisted(() => ({
   nudgeLeftPanel: undefined as undefined | ReturnType<typeof vi.fn>,
   remotePeers: undefined as undefined | { catalogs?: unknown[]; peers?: unknown[] },
   invoke: vi.fn<(command: string, args?: unknown) => Promise<unknown>>(async () => {}),
+  isFullscreen: false,
   refreshStore: vi.fn(async (_threadId?: string) => {}),
   remoteStatus: { phase: "idle" } as Record<string, unknown>,
   startRemote: vi.fn(async () => {}),
   stopRemote: vi.fn(async () => {}),
   store: {} as Record<string, unknown>,
+  setFullscreen: vi.fn(async (_value: boolean) => {}),
   approvalsThreadIds: [] as (string | null)[],
   tauriEvents: {} as Record<string, (payload: unknown) => void>,
   terminalTarget: null as string | null,
@@ -407,6 +409,9 @@ vi.mock("../../features/terminal/panelTarget", () => ({ terminalTarget: () => mo
 vi.mock("../../integrations/agent/agentStateCache", () => ({
   installAgentEventListener: () => mocks.hooks.installAgentEventListener?.(),
   revalidateAgentState: (threadId: string) => mocks.hooks.revalidateAgentState?.(threadId),
+  // The Vibe panel reads each cell's settings from the host's cached state; this shell
+  // test has no host, so every cell falls back to the shell's own view.
+  useCachedAgentState: () => undefined,
 }));
 vi.mock("../../integrations/agent/agentClient", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../integrations/agent/agentClient")>();
@@ -473,8 +478,16 @@ vi.mock("../../lib/useTauriEvent", () => ({
 // The client role's settings window raises itself through this API when it hands
 // a conversation to the main window; jsdom has no Tauri internals behind it.
 const setFocus = vi.fn(() => Promise.resolve());
+// The Vibe panel (mounted here by `vibe.toggle`) subscribes to the host's
+// `approvals-updated` push; jsdom has no Tauri IPC behind `listen`.
+vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => {}) }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ setFocus: () => setFocus() }),
+  getCurrentWindow: () => ({
+    isFullscreen: () => Promise.resolve(mocks.isFullscreen),
+    onResized: () => Promise.resolve(() => {}),
+    setFocus: () => setFocus(),
+    setFullscreen: (value: boolean) => mocks.setFullscreen(value),
+  }),
 }));
 
 function thread(id: string, overrides: Partial<StoredThread> = {}): StoredThread {
@@ -631,6 +644,8 @@ beforeEach(() => {
   mocks.geometry = { left: true, right: true };
   mocks.nudgeLeftPanel = undefined;
   mocks.invoke.mockReset().mockResolvedValue(undefined);
+  mocks.isFullscreen = false;
+  mocks.setFullscreen.mockClear();
   mocks.hooks = {
     createWorkspace: vi.fn(async () => chatWorkspace),
     installAgentEventListener: vi.fn(),
@@ -3010,6 +3025,23 @@ describe("app shell keyboard commands", () => {
     const view = mount(<AppShell />);
     press({ ctrlKey: true, key: "n" });
     expect(view.container.querySelector("[data-child=\"new-conversation\"]")).not.toBeNull();
+    view.unmount();
+  });
+
+  it("leaves fullscreen when the panel closes", async () => {
+    // The panel is the only surface that offers fullscreen, so a panel closed while
+    // fullscreen used to leave a window with no way back to windowed (Windows draws no
+    // title bar in fullscreen). Closing the panel is the state before it was opened.
+    mocks.isFullscreen = true;
+    const view = mount(<AppShell />);
+    press({ ctrlKey: true, shiftKey: true, key: "v" });
+    expect(view.container.querySelector("[data-vibe-layer]")).not.toBeNull();
+    press({ ctrlKey: true, shiftKey: true, key: "v" });
+    expect(view.container.querySelector("[data-vibe-layer]")).toBeNull();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mocks.setFullscreen).toHaveBeenCalledWith(false);
     view.unmount();
   });
 
