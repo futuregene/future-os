@@ -358,7 +358,7 @@ Runs 面板明确不做以下事情：
 
 ### 5.6 配色与设计 token
 
-GUI 的颜色统一走 `desktop/src/styles/globals.css` 里定义的**语义 token**（中性/表面、强调/交互、状态三件套、diff、阴影），组件里不直接写 Tailwind 原生具名色。每个 token 都有浅色与深色两套值；主题（浅色 / 深色 / 跟随系统）在 设置 → 通用 里选择。状态徽章统一用 `<Badge tone>` 组件；用颜色区分**并列种类**（运行错误子类型）的地方是有意的例外。
+GUI 的颜色统一走 `desktop/src/styles/globals.css` 里定义的**语义 token**（中性/表面、强调/交互、状态三件套、diff、阴影），组件里不直接写 Tailwind 原生具名色。观感有两个独立维度，都在 设置 → 通用 里选：**外观**（浅色 / 深色 / 跟随系统）与**配色主题**（FutureOS 默认，另有 Nord、Solarized、Gruvbox、Rosé Pine、Catppuccin）。每个 token、每个主题都有浅色与深色两套值，所以选定的主题仍然跟随系统外观，切换配色主题也不必重选明暗。状态徽章统一用 `<Badge tone>` 组件；用颜色区分**并列种类**（运行错误子类型）的地方是有意的例外。
 
 配色清单、用法速查与反模式见 [`desktop/COLOR.zh-CN.md`](COLOR.zh-CN.md)——新写或改组件选色时以它为准。
 

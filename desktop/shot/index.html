@@ -7,6 +7,9 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- URL-pinned preferences first: module scripts run in document order, and
+         the app reads the language / theme / palette while it is imported. -->
+    <script type="module" src="/shot/prefs.ts"></script>
     <script type="module" src="/shot/main.tsx"></script>
   </body>
 </html>

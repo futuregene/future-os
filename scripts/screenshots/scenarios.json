@@ -2752,6 +2752,71 @@
             "shot": "d-vibe-add-slot.png"
           }
         ]
+      },
+      "settings-themes": {
+        "note": "Settings → General's color-theme picker: one card per palette, each painting itself while the app keeps the active theme. The assertion pins that separation — a card that inherited the app's surfaces would make every preview identical.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "lixin"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "eval": "(() => {\n        const cards = [...document.querySelectorAll('[role=radio][data-palette]')];\n        if (cards.length !== 6) throw new Error('expected 6 palette cards, found ' + cards.length);\n        const ids = cards.map(card => card.dataset.palette);\n        const expected = ['futureos', 'nord', 'solarized', 'gruvbox', 'rose-pine', 'catppuccin'];\n        if (ids.join(',') !== expected.join(',')) throw new Error('cards are ' + ids.join(','));\n        const canvases = cards.map(card => getComputedStyle(card).getPropertyValue('--color-canvas').trim());\n        const unique = new Set(canvases);\n        if (unique.size !== 6) throw new Error('previews share surfaces: ' + JSON.stringify(canvases));\n        return { ids, canvases };\n      })()"
+          },
+          {
+            "shot": "d-settings-themes.png"
+          },
+          {
+            "tap": "Nord"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => {\n        const root = document.documentElement;\n        if (root.dataset.palette !== 'nord') throw new Error('the root palette is ' + root.dataset.palette);\n        const canvas = getComputedStyle(root).getPropertyValue('--color-canvas').trim();\n        if (canvas !== '#eceff4') throw new Error('canvas is ' + canvas + ', expected the Nord light value');\n        const body = getComputedStyle(document.body).backgroundColor;\n        if (body !== 'rgb(236, 239, 244)') throw new Error('body painted ' + body);\n        if (!localStorage.getItem('future.palette')?.includes('nord')) throw new Error('the choice was not stored');\n        return { canvas, body };\n      })()"
+          },
+          {
+            "shot": "d-settings-themes-nord.png"
+          }
+        ]
+      },
+      "settings-themes-dark": {
+        "url": "http://localhost:5299/shot/?theme=dark&palette=catppuccin",
+        "note": "The same picker in a dark window with Catppuccin active: previews follow the rendition as well as the palette, and the app itself is on Catppuccin Mocha.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "lixin"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "eval": "(() => {\n        const root = document.documentElement;\n        if (!root.classList.contains('dark')) throw new Error('the harness did not boot dark');\n        const canvas = getComputedStyle(root).getPropertyValue('--color-canvas').trim();\n        if (canvas !== '#11111b') throw new Error('canvas is ' + canvas + ', expected Catppuccin Mocha');\n        const cards = [...document.querySelectorAll('[role=radio][data-palette]')];\n        const nord = cards.find(card => card.dataset.palette === 'nord');\n        if (!nord) throw new Error('no Nord card');\n        const nordCanvas = getComputedStyle(nord).getPropertyValue('--color-canvas').trim();\n        if (nordCanvas !== '#2e3440') throw new Error('the Nord card shows ' + nordCanvas + ', not its dark surface');\n        return { canvas, nordCanvas };\n      })()"
+          },
+          {
+            "shot": "d-settings-themes-dark.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",

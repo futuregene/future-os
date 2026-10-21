@@ -2,20 +2,76 @@
 
 > ([English](COLOR.md)) GUI 的颜色全部走
 > [`desktop/src/styles/globals.css`](../../../desktop/src/styles/globals.css)
-> 里定义的**语义 token**(`@theme` 是浅色，`:root.dark` 覆盖同名变量),不直接用
-> Tailwind 原生具名色(`blue-300` / `green-50` …)。新写或改组件选色时,从下面的语义
-> token 里挑——按「这个色表达什么」选,而不是「我想要个蓝色」。
+> 里定义的**语义 token**(`@theme` 是默认浅色，`:root.dark` 覆盖同名变量，每个配色
+> 主题再加一段 `[data-palette="…"]` 做同样的事),不直接用 Tailwind 原生具名色
+> (`blue-300` / `green-50` …)。新写或改组件选色时,从下面的语义 token 里挑——按
+> 「这个色表达什么」选,而不是「我想要个蓝色」。
 
-## 浅色与深色
+## 外观与配色主题（两个独立维度）
 
-应用同时提供两套配色。每个 token 在两套里都存在,所以组件只写一次
-`bg-surface` / `text-ink-soft`,不需要按主题分支。切换方式是 `<html>` 上的
-`.dark` 类,由 `lib/theme.ts` 负责;选项(浅色 / 深色 / 跟随系统)在
-设置 → 通用,持久化在 `localStorage`。因为值是 CSS 变量,dark mode 不需要
-`dark:` 变体——同一个工具类(`bg-surface` → `var(--color-surface)`)底下的
-调色板整体翻转。
+界面观感由**两个相互独立的选择**决定，都在设置 → 通用，都在首屏绘制前写入
+`localStorage`：
 
-下面每张表都是 `浅色 / 深色`。只有一个值的 token 表示两套主题相同。
+| 维度 | 取值 | 落到哪里 | 决定 |
+| --- | --- | --- | --- |
+| **外观** | 浅色 / 深色 / 跟随系统 | `<html>` 上的 `.dark` | 画哪一套明暗 |
+| **配色主题** | FutureOS（默认）· Nord · Solarized · Gruvbox · Rosé Pine · Catppuccin | `<html>` 上的 `data-palette` | 色相 |
+
+分开的原因是它们回答两个不同的问题：「多亮」和「什么气质」。每个配色主题**都自带
+深浅两套**，所以选定的主题仍然跟随系统——Rosé Pine 在浅色窗口是 Dawn，在深色窗口是
+Moon。若把 6 个浅色 + 6 个深色并成一份列表，系统外观一翻转，用户就得重挑一次。
+
+值都是 CSS 变量，所以组件只写一次 `bg-surface` / `text-ink-soft`，不按任一维度
+分支：`bg-surface` 解析成 `var(--color-surface)`，当前生效的主题已经把那个变量设好
+了。也正因如此，两个维度都不需要 `dark:` 变体或按主题的变体。
+
+下面的表格列的是**默认主题**（FutureOS）的 `浅色 / 深色`。只有一个值的 token 表示
+两套明暗相同。
+
+## 配色主题
+
+每个主题是 `styles/globals.css` 里的一段，重新赋值 `@theme` / `:root.dark` 声明的
+**同一组 `--color-*` 变量**。每个主题两种选择器形式：
+
+```css
+[data-palette="nord"] { … }                      /* 浅色那一套 */
+.dark [data-palette="nord"],
+:root.dark[data-palette="nord"] { … }            /* 深色那一套 */
+```
+
+- `[data-palette="nord"]` 既匹配根元素，也匹配任何带该属性的元素——设置里的选择器
+  就是靠这一条给每个主题画一张预览卡（见
+  `features/settings/ThemePalettePicker.tsx`），而应用本身仍停在生效的主题上。
+- 深色那段两个选择器都要：根元素同时带 `.dark` 和 `data-palette`，预览卡只在
+  `.dark` 祖先下带 `data-palette`。两者都不能输给 `:root.dark`——前者特异性不低，
+  后者靠所有主题块都排在 `:root.dark` **之后**。`styles/globals.test.ts` 钉住了这个
+  顺序、每个主题的 token 集合，以及 `futureos` 那段是否仍等于 `@theme` /
+  `:root.dark`。
+
+刻意**不**按主题改的：
+
+- `search-*`——搜索命中在任何主题里都是亮底配深字，共用的值保持不变。
+- `--shadow-*`——阴影深度属于明暗，不属于色相。
+
+每个主题都从上游项目自己的色板取值（Nord 的 Polar Night / Snow Storm / Frost、
+Solarized 的 base03 / base3、Gruvbox 的 bg0 / bg1、Rosé Pine 的 Dawn / Moon、
+Catppuccin 的 Latte / Mocha），再调整到满足下面的对比度下限。新主题必须定义同一组
+token——否则 `styles/globals.test.ts` 会失败；`features/terminal/theme.ts` 缺了它的
+终端配色则编译不过。
+
+### 对比度下限
+
+加主题时逐项核对，终端配色另由 `features/terminal/theme.test.ts` 钉住：
+
+| 组合 | 下限 |
+| --- | --- |
+| `ink` 对 `canvas` / `surface` | 7:1 |
+| `ink-soft` 对 `surface` | 4.5:1 |
+| `ink-muted` 对 `surface` | 3:1（弱化文字刻意压低） |
+| `accent`、`success`、`danger`、`warning`、`info` 对 `surface` | 4.5:1 |
+| 白字对 `accent-fill` / `danger-fill` | 4.5:1 |
+| `ink` 对 `surface-subtle` / `code-surface` | 6:1 |
+| `search-ink` 对 `search-match` | 4.5:1 |
 
 ## 原则
 
@@ -129,17 +185,25 @@
 > (`bg-overlay` + backdrop blur)——**不要**在别处另写遮罩色;要调整深浅统一改
 > token,改模糊改 `Overlay`。
 
-### 非 CSS 调色板
+### 非 CSS 的调色板
 
-有两处用不了 CSS 变量，需要在 JS 里按主题取值：
+有两处用不了 CSS 变量、必须在 JS 里解析主题，因此每处都要有「每个主题 × 明暗」的
+条目——这也是新主题唯一可能被悄悄漏掉的地方：
 
-- **终端**（`features/terminal/theme.ts`）：`TERMINAL_THEME`(浅)与
-  `TERMINAL_DARK_THEME`(深),由 `terminalTheme(resolvedTheme)` 选择。
-  `theme.test.ts` 为两套里的每个 ANSI 色钉了最低 WCAG 对比度。
-- **代码高亮**（`features/markdown/useCodeHighlighter.ts`）：Shiki
-  `github-light` / `github-dark`,由 `useResolvedTheme()` 选择。
+- **终端**（`features/terminal/theme.ts`）：每个主题、每套明暗各一份 xterm 配色，
+  由 `terminalTheme(palette, theme)` 取；构造 xterm 时改用
+  `currentTerminalTheme()`，那里读不到 hook 的值。那张
+  `Record<ThemePalette, Record<ResolvedTheme, …>>` 表让漏配成为类型错误，
+  `theme.test.ts` 为**每个**主题的每个 ANSI 色钉了最低 WCAG 对比度。
+- **代码高亮**（`features/markdown/useCodeHighlighter.ts`）：每个主题、每套明暗各
+  一个 Shiki 主题，由 `useThemePalette()` + `useResolvedTheme()` 选，且都在启动时
+  一并载入。各主题都用自己上游项目出的编辑器主题（`nord`、
+  `solarized-light` / `solarized-dark`、`gruvbox-light-medium` /
+  `gruvbox-dark-medium`、`rose-pine-dawn` / `rose-pine-moon`、`catppuccin-latte` /
+  `catppuccin-mocha`）；默认主题继续用 `github-light` / `github-dark`，它的色板就是
+  从这两套取的。
 
-给其中一处加颜色时，两套都要加。
+给这两处加颜色时，每个主题的两套都要加。
 
 ## 选色速查
 
@@ -165,5 +229,7 @@
 
 token 值定义在
 [`desktop/src/styles/globals.css`](../../../desktop/src/styles/globals.css):
-`@theme` 是浅色调色板,`:root.dark` 是深色覆盖,`:root` / `:root.dark` 里的
-`--shadow-*` 是阴影。**改色统一改那里**,不在组件里散写原生色。
+`@theme` 是默认浅色调色板,`:root.dark` 是它的深色版本,`[data-palette="…"]`
+各段是其它配色主题,`:root` / `:root.dark` 里的 `--shadow-*` 是阴影。
+**改色统一改那里**,不在组件里散写原生色。主题 id 本身(`lib/theme.ts` 的
+`THEME_PALETTES`)是选择器、终端配色表和 Shiki 表的唯一来源。

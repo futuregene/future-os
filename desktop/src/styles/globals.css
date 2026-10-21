@@ -163,6 +163,572 @@
   --shadow-sidebar-floating: 6px 0 16px rgba(0, 0, 0, 0.3);
 }
 
+/* ── Theme palettes ─────────────────────────────────────────────────────────
+   Appearance has two independent axes:
+
+   - **Appearance** (`light` / `dark` / `system`, `lib/theme.ts`) picks which
+     rendition is painted. It is the `.dark` class on <html>.
+   - **Palette** (`data-palette` on <html>, `lib/theme.ts` THEME_PALETTES) picks
+     the hues. Every palette ships *both* renditions, so "Rose Pine" in a light
+     window is Dawn and in a dark one Moon — which is what lets "follow the
+     system" coexist with a chosen look.
+
+   A palette only reassigns the same `--color-*` variables `@theme` and
+   `:root.dark` declare, so no component has to know palettes exist. Two
+   selector forms per palette:
+
+     [data-palette="x"]             the light rendition. Matches the root *and* a
+                                    preview element nested inside it — the
+                                    Settings picker paints one card per palette
+                                    this way, so a card shows its own hues.
+     .dark [data-palette="x"],      the dark rendition. `.dark [data-palette]`
+     :root.dark[data-palette="x"]   has the same specificity as `:root.dark`,
+                                    so all palette blocks stay *after* it.
+
+   `search-*` tokens are deliberately absent here: a search hit is a bright mark
+   with dark text in every palette, so each one inherits the shared values.
+   `--shadow-*` is shared too (per rendition, not per palette).
+
+   Values, their contrast floors and the picker rules are documented in
+   `docs/internals/desktop/COLOR.md`. `styles/globals.test.ts` fails if a palette
+   stops defining a token, or if the futureos mirror drifts from `@theme` /
+   `:root.dark`.
+*/
+
+/* ── FUTUREOS — the default ───────────────────────────────────────────
+   Mirrors `@theme` / `:root.dark` so the Settings picker can preview the default
+   palette while another one is active; `globals.test.ts` pins the mirror.
+ */
+[data-palette="futureos"] {
+  --color-canvas: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-surface-panel: #f8faff;
+  --color-surface-subtle: #f1f4f8;
+  --color-code-surface: #f6f8fa;
+  --color-line: #d9dee7;
+  --color-line-soft: #e8edf4;
+  --color-ink: #172033;
+  --color-ink-soft: #5d687a;
+  --color-ink-muted: #8a94a6;
+  --color-ink-strong: #0f172a;
+  --color-accent: #2563eb;
+  --color-accent-soft: #e8f0ff;
+  --color-accent-fill: #2563eb;
+  --color-accent-fill-hover: #1d4ed8;
+  --color-accent-fill-disabled: #bfdbfe;
+  --color-accent-pulse: rgba(37, 99, 235, 0.28);
+  --color-focus: #93c5fd;
+  --color-success: #15803d;
+  --color-success-soft: #f0fdf4;
+  --color-success-line: #bbf7d0;
+  --color-danger: #dc2626;
+  --color-danger-soft: #fef2f2;
+  --color-danger-line: #fecaca;
+  --color-danger-fill: #dc2626;
+  --color-warning: #b45309;
+  --color-warning-soft: #fffbeb;
+  --color-warning-line: #fde68a;
+  --color-info: #1d4ed8;
+  --color-info-soft: #eff6ff;
+  --color-info-line: #bfdbfe;
+  --color-generating: #f59e0b;
+  --color-scrollbar: #c8ced9;
+  --color-scrollbar-hover: #aeb7c6;
+  --color-diff-add: #e6ffec;
+  --color-diff-add-line: #aadfb8;
+  --color-diff-remove: #ffebe9;
+  --color-diff-remove-line: #ffc9c9;
+  --color-overlay: rgba(0, 0, 0, 0.6);
+}
+
+.dark [data-palette="futureos"],
+:root.dark[data-palette="futureos"] {
+  --color-canvas: #0d1116;
+  --color-surface: #161b22;
+  --color-surface-panel: #11161d;
+  --color-surface-subtle: #1d232c;
+  --color-code-surface: #0f141a;
+  --color-line: #2b333d;
+  --color-line-soft: #222a34;
+  --color-ink: #e6ebf2;
+  --color-ink-soft: #a3adbb;
+  --color-ink-muted: #78828f;
+  --color-ink-strong: #f4f7fb;
+  --color-accent: #60a5fa;
+  --color-accent-soft: #16243c;
+  --color-accent-fill: #2563eb;
+  --color-accent-fill-hover: #1d4ed8;
+  --color-accent-fill-disabled: #1e3a5f;
+  --color-accent-pulse: rgba(96, 165, 250, 0.3);
+  --color-focus: #3b82f6;
+  --color-success: #4ade80;
+  --color-success-soft: #10251a;
+  --color-success-line: #1e4a33;
+  --color-danger: #f87171;
+  --color-danger-soft: #2a1517;
+  --color-danger-line: #5b2528;
+  --color-danger-fill: #b91c1c;
+  --color-warning: #fbbf24;
+  --color-warning-soft: #2a2110;
+  --color-warning-line: #5a4419;
+  --color-info: #60a5fa;
+  --color-info-soft: #14233b;
+  --color-info-line: #2a4270;
+  --color-generating: #fbbf24;
+  --color-scrollbar: #38414d;
+  --color-scrollbar-hover: #4a5563;
+  --color-diff-add: #12261a;
+  --color-diff-add-line: #2f6b45;
+  --color-diff-remove: #2b1519;
+  --color-diff-remove-line: #7a3438;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+}
+
+/* ── NORD ─────────────────────────────────────────────────────────────
+   Nord, by Arctic Ice Studio — Polar Night surfaces, Snow Storm text and
+   the Frost blues for accent. https://www.nordtheme.com
+ */
+[data-palette="nord"] {
+  --color-canvas: #eceff4;
+  --color-surface: #ffffff;
+  --color-surface-panel: #f7f9fc;
+  --color-surface-subtle: #e5e9f0;
+  --color-code-surface: #f2f5f9;
+  --color-line: #cdd6e2;
+  --color-line-soft: #e1e7f0;
+  --color-ink: #2e3440;
+  --color-ink-soft: #4c566a;
+  --color-ink-muted: #6f7c93;
+  --color-ink-strong: #212734;
+  --color-accent: #46708f;
+  --color-accent-soft: #e2ecf4;
+  --color-accent-fill: #4c6f92;
+  --color-accent-fill-hover: #3d5c7b;
+  --color-accent-fill-disabled: #c2d0de;
+  --color-accent-pulse: rgba(70, 112, 143, 0.26);
+  --color-focus: #88c0d0;
+  --color-success: #4a7340;
+  --color-success-soft: #eef5ea;
+  --color-success-line: #c6dcc0;
+  --color-danger: #a63d48;
+  --color-danger-soft: #fbeff0;
+  --color-danger-line: #ecc9cd;
+  --color-danger-fill: #a63d48;
+  --color-warning: #8a6215;
+  --color-warning-soft: #fdf6e6;
+  --color-warning-line: #ecdcb4;
+  --color-info: #3f6c8c;
+  --color-info-soft: #eaf2f8;
+  --color-info-line: #c8dcea;
+  --color-generating: #b07d24;
+  --color-scrollbar: #c8d2e0;
+  --color-scrollbar-hover: #adbacd;
+  --color-diff-add: #e9f4e6;
+  --color-diff-add-line: #b6d5ac;
+  --color-diff-remove: #fcecee;
+  --color-diff-remove-line: #ecc3c8;
+  --color-overlay: rgba(23, 30, 42, 0.55);
+}
+
+.dark [data-palette="nord"],
+:root.dark[data-palette="nord"] {
+  --color-canvas: #2e3440;
+  --color-surface: #3b4252;
+  --color-surface-panel: #333947;
+  --color-surface-subtle: #434c5e;
+  --color-code-surface: #2b303b;
+  --color-line: #4c566a;
+  --color-line-soft: #3f4859;
+  --color-ink: #eceff4;
+  --color-ink-soft: #d8dee9;
+  --color-ink-muted: #9aa6bb;
+  --color-ink-strong: #ffffff;
+  --color-accent: #88c0d0;
+  --color-accent-soft: #394b57;
+  --color-accent-fill: #4a6b92;
+  --color-accent-fill-hover: #40597c;
+  --color-accent-fill-disabled: #465a72;
+  --color-accent-pulse: rgba(136, 192, 208, 0.3);
+  --color-focus: #5e81ac;
+  --color-success: #a3be8c;
+  --color-success-soft: #37452f;
+  --color-success-line: #4e6446;
+  --color-danger: #e8a291;
+  --color-danger-soft: #432f30;
+  --color-danger-line: #6d4742;
+  --color-danger-fill: #a63d48;
+  --color-warning: #ebcb8b;
+  --color-warning-soft: #3f3a2a;
+  --color-warning-line: #625a3c;
+  --color-info: #a3c0dd;
+  --color-info-soft: #33404f;
+  --color-info-line: #4b5d72;
+  --color-generating: #ebcb8b;
+  --color-scrollbar: #4c566a;
+  --color-scrollbar-hover: #5e6a80;
+  --color-diff-add: #2c3a2f;
+  --color-diff-add-line: #4c7350;
+  --color-diff-remove: #3a2b2f;
+  --color-diff-remove-line: #7a4a52;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+}
+
+/* ── SOLARIZED ────────────────────────────────────────────────────────
+   Solarized, by Ethan Schoonover — warm paper tones with a blue accent.
+   https://ethanschoonover.com/solarized
+ */
+[data-palette="solarized"] {
+  --color-canvas: #f4ecd8;
+  --color-surface: #fdf6e3;
+  --color-surface-panel: #fffaf0;
+  --color-surface-subtle: #eee8d5;
+  --color-code-surface: #f6efdc;
+  --color-line: #ded6bf;
+  --color-line-soft: #e9e2cd;
+  --color-ink: #073642;
+  --color-ink-soft: #586e75;
+  --color-ink-muted: #6d7f80;
+  --color-ink-strong: #002b36;
+  --color-accent: #1e6fa8;
+  --color-accent-soft: #e4eef3;
+  --color-accent-fill: #1e6fa8;
+  --color-accent-fill-hover: #155a8a;
+  --color-accent-fill-disabled: #b8d2e2;
+  --color-accent-pulse: rgba(30, 111, 168, 0.26);
+  --color-focus: #268bd2;
+  --color-success: #5f6f00;
+  --color-success-soft: #f1f2dd;
+  --color-success-line: #d5d8ac;
+  --color-danger: #b52a27;
+  --color-danger-soft: #fbeae4;
+  --color-danger-line: #eec6bd;
+  --color-danger-fill: #b52a27;
+  --color-warning: #8b6a00;
+  --color-warning-soft: #fbf2da;
+  --color-warning-line: #e9d9a6;
+  --color-info: #1e6fa8;
+  --color-info-soft: #e6eff4;
+  --color-info-line: #bfd5e2;
+  --color-generating: #a97d00;
+  --color-scrollbar: #d5cdb6;
+  --color-scrollbar-hover: #bcb49d;
+  --color-diff-add: #eaf0d9;
+  --color-diff-add-line: #c2cf95;
+  --color-diff-remove: #fbe8e2;
+  --color-diff-remove-line: #eec0b6;
+  --color-overlay: rgba(0, 43, 54, 0.55);
+}
+
+.dark [data-palette="solarized"],
+:root.dark[data-palette="solarized"] {
+  --color-canvas: #002b36;
+  --color-surface: #073642;
+  --color-surface-panel: #04252e;
+  --color-surface-subtle: #0d4452;
+  --color-code-surface: #012129;
+  --color-line: #12505f;
+  --color-line-soft: #0a3d49;
+  --color-ink: #eee8d5;
+  --color-ink-soft: #b7c4bf;
+  --color-ink-muted: #8ba09c;
+  --color-ink-strong: #fdf6e3;
+  --color-accent: #5fb3e8;
+  --color-accent-soft: #0d4054;
+  --color-accent-fill: #1e6fa8;
+  --color-accent-fill-hover: #268bd2;
+  --color-accent-fill-disabled: #1b4b69;
+  --color-accent-pulse: rgba(95, 179, 232, 0.3);
+  --color-focus: #268bd2;
+  --color-success: #b5bb63;
+  --color-success-soft: #1e3a2c;
+  --color-success-line: #33563f;
+  --color-danger: #f08a7f;
+  --color-danger-soft: #40242a;
+  --color-danger-line: #6b3a3a;
+  --color-danger-fill: #b52a27;
+  --color-warning: #e2c261;
+  --color-warning-soft: #3a3520;
+  --color-warning-line: #5c532f;
+  --color-info: #6cb6e8;
+  --color-info-soft: #0e3c4f;
+  --color-info-line: #1d5a70;
+  --color-generating: #e2c261;
+  --color-scrollbar: #12505f;
+  --color-scrollbar-hover: #1c6577;
+  --color-diff-add: #0b3b2c;
+  --color-diff-add-line: #2f6b4d;
+  --color-diff-remove: #3a1f24;
+  --color-diff-remove-line: #743a3a;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+}
+
+/* ── GRUVBOX ──────────────────────────────────────────────────────────
+   Gruvbox, by Pavel Pertsev — retro warm greys and a teal accent.
+   https://github.com/morhetz/gruvbox
+ */
+[data-palette="gruvbox"] {
+  --color-canvas: #f2e5bc;
+  --color-surface: #fbf1c7;
+  --color-surface-panel: #fdf8e0;
+  --color-surface-subtle: #ebdbb2;
+  --color-code-surface: #f6ecc6;
+  --color-line: #d5c4a1;
+  --color-line-soft: #e5d5b0;
+  --color-ink: #3c3836;
+  --color-ink-soft: #665c54;
+  --color-ink-muted: #7e7364;
+  --color-ink-strong: #282828;
+  --color-accent: #076678;
+  --color-accent-soft: #dde4d8;
+  --color-accent-fill: #076678;
+  --color-accent-fill-hover: #054d5b;
+  --color-accent-fill-disabled: #a9c2c2;
+  --color-accent-pulse: rgba(7, 102, 120, 0.26);
+  --color-focus: #427b58;
+  --color-success: #4f6a12;
+  --color-success-soft: #ecf0d6;
+  --color-success-line: #cfd8ac;
+  --color-danger: #9d0006;
+  --color-danger-soft: #f8e3dc;
+  --color-danger-line: #e6bcb0;
+  --color-danger-fill: #9d0006;
+  --color-warning: #945e05;
+  --color-warning-soft: #f9eed2;
+  --color-warning-line: #e5d3a2;
+  --color-info: #076678;
+  --color-info-soft: #e2e9e0;
+  --color-info-line: #bfd2cd;
+  --color-generating: #b57614;
+  --color-scrollbar: #d5c4a1;
+  --color-scrollbar-hover: #bdae91;
+  --color-diff-add: #e7ecd0;
+  --color-diff-add-line: #c2cf97;
+  --color-diff-remove: #f8e1da;
+  --color-diff-remove-line: #e6b9ad;
+  --color-overlay: rgba(40, 40, 40, 0.55);
+}
+
+.dark [data-palette="gruvbox"],
+:root.dark[data-palette="gruvbox"] {
+  --color-canvas: #1d2021;
+  --color-surface: #282828;
+  --color-surface-panel: #232323;
+  --color-surface-subtle: #32302f;
+  --color-code-surface: #1b1b1b;
+  --color-line: #504945;
+  --color-line-soft: #3c3836;
+  --color-ink: #ebdbb2;
+  --color-ink-soft: #d5c4a1;
+  --color-ink-muted: #a89984;
+  --color-ink-strong: #fbf1c7;
+  --color-accent: #83a598;
+  --color-accent-soft: #333f3a;
+  --color-accent-fill: #3a7276;
+  --color-accent-fill-hover: #47807f;
+  --color-accent-fill-disabled: #3f5a56;
+  --color-accent-pulse: rgba(131, 165, 152, 0.3);
+  --color-focus: #458588;
+  --color-success: #b8bb26;
+  --color-success-soft: #33381f;
+  --color-success-line: #565c2c;
+  --color-danger: #fb7564;
+  --color-danger-soft: #3d2a25;
+  --color-danger-line: #6b3b32;
+  --color-danger-fill: #9d0006;
+  --color-warning: #fabd2f;
+  --color-warning-soft: #3d3620;
+  --color-warning-line: #63552f;
+  --color-info: #83a598;
+  --color-info-soft: #2c3a37;
+  --color-info-line: #41564f;
+  --color-generating: #fabd2f;
+  --color-scrollbar: #504945;
+  --color-scrollbar-hover: #665c54;
+  --color-diff-add: #2b3520;
+  --color-diff-add-line: #4d6b33;
+  --color-diff-remove: #3a2220;
+  --color-diff-remove-line: #7a3b32;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+}
+
+/* ── ROSE PINE ────────────────────────────────────────────────────────
+   Rose Pine, by Rose Pine — soft plum and rose (Dawn / Moon).
+   https://rosepinetheme.com
+ */
+[data-palette="rose-pine"] {
+  --color-canvas: #faf4ed;
+  --color-surface: #fffaf3;
+  --color-surface-panel: #fdf7f0;
+  --color-surface-subtle: #f2e9e1;
+  --color-code-surface: #f4ece5;
+  --color-line: #e4dcd8;
+  --color-line-soft: #efe6e0;
+  --color-ink: #4f4a6e;
+  --color-ink-soft: #6e6a86;
+  --color-ink-muted: #87829b;
+  --color-ink-strong: #403c5c;
+  --color-accent: #7c6595;
+  --color-accent-soft: #efe8f2;
+  --color-accent-fill: #7c6595;
+  --color-accent-fill-hover: #66527d;
+  --color-accent-fill-disabled: #d2c6dd;
+  --color-accent-pulse: rgba(124, 101, 149, 0.26);
+  --color-focus: #907aa9;
+  --color-success: #286983;
+  --color-success-soft: #e6eef0;
+  --color-success-line: #bdd3da;
+  --color-danger: #a4475e;
+  --color-danger-soft: #fbe9ec;
+  --color-danger-line: #eec4cc;
+  --color-danger-fill: #a4475e;
+  --color-warning: #9a5f10;
+  --color-warning-soft: #fdf0dd;
+  --color-warning-line: #eed7b0;
+  --color-info: #3f7180;
+  --color-info-soft: #e8f0f1;
+  --color-info-line: #c1d8dc;
+  --color-generating: #b87a13;
+  --color-scrollbar: #ddd2cb;
+  --color-scrollbar-hover: #c8bbb4;
+  --color-diff-add: #e9efdf;
+  --color-diff-add-line: #c3d3b1;
+  --color-diff-remove: #fbe8e8;
+  --color-diff-remove-line: #eec3c5;
+  --color-overlay: rgba(87, 82, 121, 0.5);
+}
+
+.dark [data-palette="rose-pine"],
+:root.dark[data-palette="rose-pine"] {
+  --color-canvas: #191724;
+  --color-surface: #232136;
+  --color-surface-panel: #1e1c2c;
+  --color-surface-subtle: #2a273f;
+  --color-code-surface: #171523;
+  --color-line: #393552;
+  --color-line-soft: #2c2942;
+  --color-ink: #e0def4;
+  --color-ink-soft: #b0acc8;
+  --color-ink-muted: #8f8aa8;
+  --color-ink-strong: #f6f4ff;
+  --color-accent: #c4a7e7;
+  --color-accent-soft: #302a45;
+  --color-accent-fill: #7c6595;
+  --color-accent-fill-hover: #907aa9;
+  --color-accent-fill-disabled: #4b4262;
+  --color-accent-pulse: rgba(196, 167, 231, 0.3);
+  --color-focus: #907aa9;
+  --color-success: #9ccfd8;
+  --color-success-soft: #212f38;
+  --color-success-line: #35505a;
+  --color-danger: #eb6f92;
+  --color-danger-soft: #3a2330;
+  --color-danger-line: #63364a;
+  --color-danger-fill: #a4475e;
+  --color-warning: #f6c177;
+  --color-warning-soft: #39301f;
+  --color-warning-line: #5d4c30;
+  --color-info: #6cb2cc;
+  --color-info-soft: #1d303b;
+  --color-info-line: #2f5061;
+  --color-generating: #f6c177;
+  --color-scrollbar: #393552;
+  --color-scrollbar-hover: #4a4566;
+  --color-diff-add: #1f3327;
+  --color-diff-add-line: #3c6849;
+  --color-diff-remove: #39222c;
+  --color-diff-remove-line: #75404a;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+}
+
+/* ── CATPPUCCIN ───────────────────────────────────────────────────────
+   Catppuccin, by Catppuccin — pastel with a blue accent (Latte / Mocha).
+   https://catppuccin.com
+ */
+[data-palette="catppuccin"] {
+  --color-canvas: #e8ebf1;
+  --color-surface: #ffffff;
+  --color-surface-panel: #f6f8fb;
+  --color-surface-subtle: #eff1f5;
+  --color-code-surface: #f2f4f8;
+  --color-line: #ccd0da;
+  --color-line-soft: #e0e3ea;
+  --color-ink: #474962;
+  --color-ink-soft: #6c6f85;
+  --color-ink-muted: #898ca4;
+  --color-ink-strong: #303242;
+  --color-accent: #3b5bdb;
+  --color-accent-soft: #e7ecfd;
+  --color-accent-fill: #3b5bdb;
+  --color-accent-fill-hover: #2f49b3;
+  --color-accent-fill-disabled: #c3cffa;
+  --color-accent-pulse: rgba(59, 91, 219, 0.26);
+  --color-focus: #7287fd;
+  --color-success: #2f7d1f;
+  --color-success-soft: #e9f5e4;
+  --color-success-line: #c3dcb9;
+  --color-danger: #c10f33;
+  --color-danger-soft: #fbe8ec;
+  --color-danger-line: #eec3cc;
+  --color-danger-fill: #c10f33;
+  --color-warning: #9c6300;
+  --color-warning-soft: #fdf0da;
+  --color-warning-line: #eed9ae;
+  --color-info: #3b5bdb;
+  --color-info-soft: #e8edfd;
+  --color-info-line: #c3cffa;
+  --color-generating: #b8720a;
+  --color-scrollbar: #ccd0da;
+  --color-scrollbar-hover: #b4bac8;
+  --color-diff-add: #e9f4e4;
+  --color-diff-add-line: #bfd9b3;
+  --color-diff-remove: #fbe8eb;
+  --color-diff-remove-line: #eec3cb;
+  --color-overlay: rgba(76, 79, 105, 0.5);
+}
+
+.dark [data-palette="catppuccin"],
+:root.dark[data-palette="catppuccin"] {
+  --color-canvas: #11111b;
+  --color-surface: #1e1e2e;
+  --color-surface-panel: #181825;
+  --color-surface-subtle: #313244;
+  --color-code-surface: #181825;
+  --color-line: #45475a;
+  --color-line-soft: #313244;
+  --color-ink: #cdd6f4;
+  --color-ink-soft: #a6adc8;
+  --color-ink-muted: #7f849c;
+  --color-ink-strong: #e6e9f8;
+  --color-accent: #89b4fa;
+  --color-accent-soft: #232b45;
+  --color-accent-fill: #3b5bdb;
+  --color-accent-fill-hover: #4a6ee0;
+  --color-accent-fill-disabled: #2a3a63;
+  --color-accent-pulse: rgba(137, 180, 250, 0.3);
+  --color-focus: #89b4fa;
+  --color-success: #a6e3a1;
+  --color-success-soft: #1f2d28;
+  --color-success-line: #374e3d;
+  --color-danger: #f38ba8;
+  --color-danger-soft: #32212c;
+  --color-danger-line: #5c3444;
+  --color-danger-fill: #c10f33;
+  --color-warning: #f9e2af;
+  --color-warning-soft: #322e22;
+  --color-warning-line: #544c33;
+  --color-info: #89b4fa;
+  --color-info-soft: #212a40;
+  --color-info-line: #35486b;
+  --color-generating: #f9e2af;
+  --color-scrollbar: #45475a;
+  --color-scrollbar-hover: #585b70;
+  --color-diff-add: #1c2c24;
+  --color-diff-add-line: #3a6248;
+  --color-diff-remove: #301f26;
+  --color-diff-remove-line: #75414e;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+}
+
 /* Load-older button entrance: a quick pop with a small overshoot bounce so the
    "pause + confirm" affordance is unmissable when it settles at the top. */
 @keyframes pop-in {

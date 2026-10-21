@@ -1,5 +1,21 @@
+import type { TerminalTheme } from "./theme";
 import { describe, expect, it } from "vitest";
-import { TERMINAL_DARK_THEME, TERMINAL_THEME, terminalTheme } from "./theme";
+import { THEME_PALETTES } from "../../lib/theme";
+import {
+  CATPPUCCIN_DARK_TERMINAL_THEME,
+  CATPPUCCIN_TERMINAL_THEME,
+  GRUVBOX_DARK_TERMINAL_THEME,
+  GRUVBOX_TERMINAL_THEME,
+  NORD_DARK_TERMINAL_THEME,
+  NORD_TERMINAL_THEME,
+  ROSEPINE_DARK_TERMINAL_THEME,
+  ROSEPINE_TERMINAL_THEME,
+  SOLARIZED_DARK_TERMINAL_THEME,
+  SOLARIZED_TERMINAL_THEME,
+  TERMINAL_DARK_THEME,
+  TERMINAL_THEME,
+  terminalTheme,
+} from "./theme";
 
 /**
  * WCAG 2.x relative luminance (sRGB) and contrast ratio.
@@ -8,7 +24,8 @@ import { TERMINAL_DARK_THEME, TERMINAL_THEME, terminalTheme } from "./theme";
  * programs write colors assuming a dark terminal (PowerShell's prompt and
  * PSReadLine output white / bright-* text), and a too-light spelling on white —
  * or a too-dark one on the dark surface — renders as invisible text. These
- * bounds pin both palettes so an edit cannot silently reintroduce that.
+ * bounds pin every palette, so an edit (or a new theme) cannot silently
+ * reintroduce that.
  */
 
 function luminance(hex: string): number {
@@ -30,36 +47,61 @@ function contrast(foreground: string, background: string): number {
   return (light + 0.05) / (dark + 0.05);
 }
 
-const palettes: Array<{
+interface PaletteCase {
   name: string;
-  theme: typeof TERMINAL_THEME | typeof TERMINAL_DARK_THEME;
+  theme: TerminalTheme;
   /** ANSI spellings programs use for plain body text (4.5:1 floor). */
   bodyText: string[];
   /** Spellings that are deliberately invisible on this background. */
   exempt: string[];
-}> = [
-  {
-    name: "light",
-    theme: TERMINAL_THEME,
-    bodyText: ["black", "white"],
-    exempt: [],
-  },
-  {
-    name: "dark",
-    theme: TERMINAL_DARK_THEME,
-    // On a dark terminal `black` is a background / deliberately-invisible
-    // color (ANSI 40), exactly as in every dark terminal palette.
-    bodyText: ["white"],
-    exempt: ["black"],
-  },
+}
+
+const LIGHT = { bodyText: ["black", "white"], exempt: [] };
+// On a dark terminal `black` is a background / deliberately-invisible color
+// (ANSI 40), exactly as in every dark terminal palette.
+const DARK = { bodyText: ["white"], exempt: ["black"] };
+
+const palettes: PaletteCase[] = [
+  { name: "futureos light", theme: TERMINAL_THEME, ...LIGHT },
+  { name: "futureos dark", theme: TERMINAL_DARK_THEME, ...DARK },
+  { name: "nord light", theme: NORD_TERMINAL_THEME, ...LIGHT },
+  { name: "nord dark", theme: NORD_DARK_TERMINAL_THEME, ...DARK },
+  { name: "solarized light", theme: SOLARIZED_TERMINAL_THEME, ...LIGHT },
+  { name: "solarized dark", theme: SOLARIZED_DARK_TERMINAL_THEME, ...DARK },
+  { name: "gruvbox light", theme: GRUVBOX_TERMINAL_THEME, ...LIGHT },
+  { name: "gruvbox dark", theme: GRUVBOX_DARK_TERMINAL_THEME, ...DARK },
+  { name: "rose-pine light", theme: ROSEPINE_TERMINAL_THEME, ...LIGHT },
+  { name: "rose-pine dark", theme: ROSEPINE_DARK_TERMINAL_THEME, ...DARK },
+  { name: "catppuccin light", theme: CATPPUCCIN_TERMINAL_THEME, ...LIGHT },
+  { name: "catppuccin dark", theme: CATPPUCCIN_DARK_TERMINAL_THEME, ...DARK },
 ];
 
 describe("terminal theme", () => {
   it("ships a light palette for the light app theme and a dark one for the dark", () => {
     expect(luminance(TERMINAL_THEME.background)).toBeGreaterThan(0.5);
     expect(luminance(TERMINAL_DARK_THEME.background)).toBeLessThan(0.1);
-    expect(terminalTheme("light")).toBe(TERMINAL_THEME);
-    expect(terminalTheme("dark")).toBe(TERMINAL_DARK_THEME);
+    expect(terminalTheme("futureos", "light")).toBe(TERMINAL_THEME);
+    expect(terminalTheme("futureos", "dark")).toBe(TERMINAL_DARK_THEME);
+  });
+
+  it("defines a terminal palette for every app palette, in both renditions", () => {
+    for (const palette of THEME_PALETTES) {
+      const light = terminalTheme(palette, "light");
+      const dark = terminalTheme(palette, "dark");
+      // A palette that fell back to another theme's colors would paint the
+      // terminal in someone else's hues.
+      expect(light, `${palette} light`).toBeDefined();
+      expect(dark, `${palette} dark`).toBeDefined();
+      expect(light.background, `${palette} light background`).not.toBe(dark.background);
+    }
+    // The default palette keeps its long-standing colors.
+    expect(terminalTheme("futureos", "light")).toBe(TERMINAL_THEME);
+    expect(terminalTheme("futureos", "dark")).toBe(TERMINAL_DARK_THEME);
+  });
+
+  it.each(palettes)("puts the light and dark background on the right side of the palette", ({ name, theme }) => {
+    const light = name.endsWith("light");
+    expect(luminance(theme.background) > 0.5, name).toBe(light);
   });
 
   it.each(palettes)("keeps every ANSI foreground readable in the $name palette", ({ theme, bodyText, exempt }) => {
@@ -103,5 +145,14 @@ describe("terminal theme", () => {
     expect(luminance(theme.black)).toBeLessThan(
       luminance(theme.brightBlack),
     );
+  });
+
+  it.each(palettes)("keeps the cursor and the body text readable in the $name palette", ({ theme }) => {
+    // The cursor is a 1px bar over the text it sits on, so it needs the same
+    // 3:1 floor as the dimmest text rather than none at all.
+    expect(contrast(theme.cursor, theme.background)).toBeGreaterThanOrEqual(3);
+    expect(contrast(theme.foreground, theme.background)).toBeGreaterThanOrEqual(4.5);
+    // A selection is a background: the text drawn on it must survive.
+    expect(contrast(theme.foreground, theme.selectionBackground)).toBeGreaterThanOrEqual(3);
   });
 });
