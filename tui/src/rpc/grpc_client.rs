@@ -126,6 +126,12 @@ struct ClientState {
     lost_queued_run_ids: Vec<String>,
 }
 
+#[cfg(test)]
+#[derive(Default)]
+struct TestHooks {
+    before_empty_wait: Option<Arc<tokio::sync::Barrier>>,
+}
+
 struct Inner {
     addr: String,
     state: Mutex<ClientState>,
@@ -179,6 +185,24 @@ impl GrpcClient {
         mpsc::UnboundedReceiver<AgentEvent>,
         watch::Receiver<bool>,
     ) {
+        Self::new_inner(
+            addr,
+            #[cfg(test)]
+            TestHooks::default(),
+        )
+    }
+
+    // Both entry paths initialize all state before spawning either task.
+    // Startup gates must be supplied here: installing one after `new` returns
+    // races the manager's first iteration on a multi-thread runtime.
+    fn new_inner(
+        addr: &str,
+        #[cfg(test)] hooks: TestHooks,
+    ) -> (
+        GrpcClient,
+        mpsc::UnboundedReceiver<AgentEvent>,
+        watch::Receiver<bool>,
+    ) {
         let (event_tx, events) = mpsc::unbounded_channel();
         let (conn_tx, connection_changes) = watch::channel(false);
         let inner = Arc::new(Inner {
@@ -197,7 +221,7 @@ impl GrpcClient {
             poke_count: AtomicU64::new(0),
             poke_notify: Notify::new(),
             #[cfg(test)]
-            before_empty_wait: Mutex::new(None),
+            before_empty_wait: Mutex::new(hooks.before_empty_wait),
             #[cfg(test)]
             before_reconnect_wait: Mutex::new(None),
             #[cfg(test)]
@@ -1902,10 +1926,18 @@ mod tests {
         .expect(what);
     }
 
-    async fn arrive(gate: &tokio::sync::Barrier) {
-        tokio::time::timeout(Duration::from_secs(10), gate.wait())
+    async fn wait_at_gate(gate: &tokio::sync::Barrier, phase: &str) {
+        let budget = Duration::from_secs(10);
+        tokio::time::timeout(budget, gate.wait())
             .await
-            .expect("test task did not reach its synchronization point");
+            .unwrap_or_else(|_| panic!("timed out after {budget:?} waiting for {phase}"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    #[should_panic(expected = "waiting for idle manager release")]
+    async fn gate_timeout_identifies_the_waiting_phase() {
+        let gate = tokio::sync::Barrier::new(2);
+        wait_at_gate(&gate, "idle manager release").await;
     }
 
     async fn wait_client_released(inner: std::sync::Weak<Inner>) {
@@ -3338,23 +3370,41 @@ mod tests {
         /// Wait until `count` `stream_events` calls have been served — i.e. the
         /// client's stream manager (or its resubscription) is attached.
         async fn wait_for_subscribes(&self, count: usize) {
-            loop {
-                // Register before re-checking: `notify_waiters` only wakes
-                // waiters that are already registered.
-                let attached = self.attached.notified();
-                tokio::pin!(attached);
-                attached.as_mut().enable();
-                if self.subscribe_count() >= count {
-                    return;
+            let budget = Duration::from_secs(10);
+            tokio::time::timeout(budget, async {
+                loop {
+                    // Register before re-checking: `notify_waiters` only wakes
+                    // waiters that are already registered.
+                    let attached = self.attached.notified();
+                    tokio::pin!(attached);
+                    attached.as_mut().enable();
+                    if self.subscribe_count() >= count {
+                        return;
+                    }
+                    attached.await;
                 }
-                attached.await;
-            }
+            })
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "timed out after {budget:?} waiting for at least {count} stream_events subscriptions; observed {}",
+                    self.subscribe_count()
+                )
+            });
         }
 
         /// `stream_events` calls served so far.
         fn subscribe_count(&self) -> usize {
             self.subscribes.load(std::sync::atomic::Ordering::SeqCst)
         }
+    }
+
+    #[tokio::test(start_paused = true)]
+    #[should_panic(expected = "waiting for at least 2 stream_events subscriptions; observed 1")]
+    async fn subscription_timeout_reports_expected_and_observed_counts() {
+        let source = EventSource::default();
+        let _stream = source.stream();
+        source.wait_for_subscribes(2).await;
     }
 
     #[derive(Clone)]
@@ -3424,15 +3474,19 @@ mod tests {
         })
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn session_poke_between_empty_read_and_wait_is_not_lost() {
         let (tx, addr) = spawn_eventful_mock().await;
-        let (client, mut events, _conn) = GrpcClient::new(&addr);
         let barrier = Arc::new(tokio::sync::Barrier::new(2));
-        *client.inner.before_empty_wait.lock() = Some(barrier.clone());
-        barrier.wait().await;
+        let (client, mut events, _conn) = GrpcClient::new_inner(
+            &addr,
+            TestHooks {
+                before_empty_wait: Some(barrier.clone()),
+            },
+        );
+        wait_at_gate(&barrier, "idle session manager arrival").await;
         client.set_current_session_id("s1");
-        barrier.wait().await;
+        wait_at_gate(&barrier, "idle session manager release").await;
         // The manager subscribes only after the barrier releases it, so wait
         // for that subscription rather than hoping a send is buffered.
         tx.wait_for_subscribes(1).await;
@@ -3525,11 +3579,11 @@ mod tests {
         let gate = Arc::new(tokio::sync::Barrier::new(2));
         *client.inner.before_subscribe_wait.lock() = Some(gate.clone());
         source.send(stream_event("ping", "{}", "")).unwrap();
-        arrive(&gate).await;
+        wait_at_gate(&gate, "subscription stop manager arrival").await;
         client.inner.stop.store(true, Ordering::SeqCst);
         // No stop notification: the next data iteration must see the flag.
         source.send(stream_event("ping", "{}", "")).unwrap();
-        arrive(&gate).await;
+        wait_at_gate(&gate, "subscription stop manager release").await;
         let inner = Arc::downgrade(&client.inner);
         drop(client);
         wait_client_released(inner).await;
@@ -3854,7 +3908,7 @@ mod tests {
         *client.inner.before_reconnect_wait.lock() = Some(gate.clone());
         client.set_current_session_id("s1");
         client.connect_events();
-        arrive(&gate).await;
+        wait_at_gate(&gate, "reconnect session-change manager arrival").await;
         assert!(!client.is_connected());
         // Change state after the poll checked it but before its select starts.
         // The notification must still wake it even with a 30-second backoff.
@@ -3863,7 +3917,7 @@ mod tests {
             .backoff_ms
             .store(RECONNECT_BACKOFF_MAX_MS, Ordering::SeqCst);
         client.set_current_session_id("s2");
-        arrive(&gate).await;
+        wait_at_gate(&gate, "reconnect session-change manager release").await;
         wait_test_state(
             "session change lost its reconnect wakeup",
             Duration::from_millis(1300),
@@ -3904,10 +3958,10 @@ mod tests {
         *client.inner.before_reconnect_wait.lock() = Some(gate.clone());
         client.set_current_session_id("s1");
         client.connect_events();
-        arrive(&gate).await;
+        wait_at_gate(&gate, "reconnect silent session-change manager arrival").await;
         // A state change without a notification is detected after the tick.
         client.inner.state.lock().current_session_id = "s2".into();
-        arrive(&gate).await;
+        wait_at_gate(&gate, "reconnect silent session-change manager release").await;
         wait_test_state(
             "reconnect poll ignored a changed session",
             Duration::from_millis(6500),
@@ -3940,10 +3994,10 @@ mod tests {
         *client.inner.before_reconnect_wait.lock() = Some(poll.clone());
         client.set_current_session_id("s1");
         client.connect_events();
-        arrive(&poll).await;
+        wait_at_gate(&poll, "reconnect probe manager arrival").await;
         let probe = Arc::new(ReadinessGate::default());
         *readiness_gate.lock() = Some(probe.clone());
-        arrive(&poll).await;
+        wait_at_gate(&poll, "reconnect probe manager release").await;
         probe.wait_entered().await;
         // The failing readiness probe is genuinely in flight, not inferred
         // from a fixed delay (the mock's old readiness fast path skipped it).
@@ -3970,13 +4024,17 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn manager_loop_top_stop_with_idle_manager() {
-        let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
         let gate = Arc::new(tokio::sync::Barrier::new(2));
-        *client.inner.before_empty_wait.lock() = Some(gate.clone());
-        arrive(&gate).await;
+        let (client, _events, _conn) = GrpcClient::new_inner(
+            "127.0.0.1:1",
+            TestHooks {
+                before_empty_wait: Some(gate.clone()),
+            },
+        );
+        wait_at_gate(&gate, "idle stop manager arrival").await;
         client.inner.stop.store(true, Ordering::SeqCst);
         client.connect_events();
-        arrive(&gate).await;
+        wait_at_gate(&gate, "idle stop manager release").await;
         let inner = Arc::downgrade(&client.inner);
         drop(client);
         wait_client_released(inner).await;
@@ -4143,14 +4201,18 @@ mod tests {
         wait_client_released(inner).await;
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread")]
     async fn disconnect_between_idle_check_and_wait_releases_the_client() {
-        let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
         let gate = Arc::new(tokio::sync::Barrier::new(2));
-        *client.inner.before_empty_wait.lock() = Some(gate.clone());
-        arrive(&gate).await;
+        let (client, _events, _conn) = GrpcClient::new_inner(
+            "127.0.0.1:1",
+            TestHooks {
+                before_empty_wait: Some(gate.clone()),
+            },
+        );
+        wait_at_gate(&gate, "idle disconnect manager arrival").await;
         client.disconnect();
-        arrive(&gate).await;
+        wait_at_gate(&gate, "idle disconnect manager release").await;
         let inner = Arc::downgrade(&client.inner);
         drop(client);
         wait_client_released(inner).await;
@@ -4164,9 +4226,9 @@ mod tests {
         let gate = Arc::new(tokio::sync::Barrier::new(2));
         *client.inner.before_subscribe_wait.lock() = Some(gate.clone());
         source.send(stream_event("ping", "{}", "")).unwrap();
-        arrive(&gate).await;
+        wait_at_gate(&gate, "subscription disconnect manager arrival").await;
         client.disconnect();
-        arrive(&gate).await;
+        wait_at_gate(&gate, "subscription disconnect manager release").await;
         let inner = Arc::downgrade(&client.inner);
         drop(client);
         wait_client_released(inner).await;
@@ -4179,13 +4241,13 @@ mod tests {
         *client.inner.before_reconnect_wait.lock() = Some(gate.clone());
         client.set_current_session_id("s1");
         client.connect_events();
-        arrive(&gate).await;
+        wait_at_gate(&gate, "reconnect disconnect manager arrival").await;
         client
             .inner
             .backoff_ms
             .store(RECONNECT_BACKOFF_MAX_MS, Ordering::SeqCst);
         client.disconnect();
-        arrive(&gate).await;
+        wait_at_gate(&gate, "reconnect disconnect manager release").await;
         let inner = Arc::downgrade(&client.inner);
         drop(client);
         wait_client_released(inner).await;
@@ -4336,12 +4398,12 @@ mod tests {
         wait_connected(&mut conn).await;
         // The real stable timer has expired, but cannot reset until released.
         // Scheduling the test after that timer can no longer invert the order.
-        arrive(&gate).await;
+        wait_at_gate(&gate, "stable backoff reset manager arrival").await;
         client
             .inner
             .backoff_ms
             .store(RECONNECT_BACKOFF_MAX_MS, Ordering::SeqCst);
-        arrive(&gate).await;
+        wait_at_gate(&gate, "stable backoff reset manager release").await;
         wait_test_state(
             "stable connection did not reset backoff",
             Duration::from_millis(RECONNECT_STABLE_MS * 3),
