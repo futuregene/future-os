@@ -17,5 +17,20 @@
     "title": "还没有置顶的会话",
     "body": "置顶的会话会出现在这里。可以在左边栏的行菜单里置顶，或等面板有了「加入」键再用它。"
   },
-  "shortcutHint": "快捷键："
+  "shortcutHint": "快捷键：",
+  "menu": {
+    "title": "面板菜单",
+    "layout": "列数",
+    "layoutHint": "左右键切换；自动会跟随窗口",
+    "auto": "自动",
+    "columns": "{{count}} 列",
+    "moveEarlier": "把这格往前挪",
+    "moveLater": "把这格往后挪",
+    "remove": "移出面板",
+    "removeHint": "这会取消置顶：左边栏里也不再置顶",
+    "openInShell": "在主窗口打开",
+    "fullscreen": "切换系统全屏",
+    "close": "关闭面板",
+    "more": "更多…"
+  }
 }

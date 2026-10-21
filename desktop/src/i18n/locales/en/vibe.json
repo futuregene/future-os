@@ -17,5 +17,20 @@
     "title": "No pinned conversations",
     "body": "A pinned conversation appears here. Pin one from the sidebar's row menu, or press the add key once the panel has one."
   },
-  "shortcutHint": "Keyboard:"
+  "shortcutHint": "Keyboard:",
+  "menu": {
+    "title": "Panel menu",
+    "layout": "Columns",
+    "layoutHint": "Left and right change it; automatic follows the window",
+    "auto": "Automatic",
+    "columns": "{{count}}",
+    "moveEarlier": "Move this cell earlier",
+    "moveLater": "Move this cell later",
+    "remove": "Remove from the panel",
+    "removeHint": "This unpins the conversation, here and in the sidebar",
+    "openInShell": "Open in the main window",
+    "fullscreen": "Toggle full screen",
+    "close": "Close the panel",
+    "more": "More…"
+  }
 }

@@ -2221,6 +2221,41 @@
             "shot": "d-vibe-input.png"
           }
         ]
+      },
+      "vibe-menu": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_fig,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 2600
+          },
+          {
+            "key": "ContextMenu"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "key": "ArrowRight"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => {const m = document.querySelector('[role=\"menu\"]');const row = m?.querySelector('[data-vibe-menu-row=\"layout\"]');const grid = document.querySelector('.grid');return JSON.stringify({open: !!m,rows: m ? m.querySelectorAll('[data-vibe-menu-row]').length : 0,value: row ? row.textContent : null,cols: grid ? getComputedStyle(grid).gridTemplateColumns.split(' ').length : null,editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-menu.png"
+          },
+          {
+            "key": "Escape"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "JSON.stringify({ open: !!document.querySelector('[role=\"menu\"]') })"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",

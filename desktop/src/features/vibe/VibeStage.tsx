@@ -5,8 +5,9 @@ import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { AgentThreadChrome } from "../agent/AgentThread";
 import type { SessionMentionOption } from "../agent/sessionMention";
+import type { VibeMenuRow } from "./menuNav";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Expand, Keyboard, X } from "lucide-react";
+import { Expand, MoreHorizontal, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useApprovals } from "../../components/layout/hooks/useApprovals";
@@ -15,6 +16,7 @@ import { Badge } from "../../components/ui/Badge";
 import { IconButton } from "../../components/ui/IconButton";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { cn } from "../../lib/cn";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { isMacOS } from "../../lib/platform";
 import { AgentThread } from "../agent/AgentThread";
 import { useCommand } from "../keyboard/commands";
@@ -23,6 +25,7 @@ import { bindingLabel, useShortcutOverrides } from "../keyboard/shortcuts";
 import { cellPosition, gridOf, MAX_CELLS, moveInGrid } from "./layout";
 import { moveInOrder, resolveOrder, vibeKeyOfLocal } from "./order";
 import { VibeHintBar } from "./VibeHintBar";
+import { VibeMenu } from "./VibeMenu";
 import { readVibePreferences, writeVibeColumns, writeVibeOrder } from "./vibePreferences";
 
 /** Everything a conversation's view needs that does not vary per conversation. */
@@ -101,6 +104,14 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
   const overrides = useShortcutOverrides();
   const isMac = isMacOS;
   const [layer, setLayer] = useState<VibeLayer>("grid");
+  /**
+   * Whether the menu is up.
+   *
+   * Its own state rather than a layer: the menu is not a place the reader is in,
+   * it is a sheet over whatever layer they were using — and it comes back to that
+   * same layer when it closes.
+   */
+  const [menuOpen, setMenuOpen] = useState(false);
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const preferences = useMemo(() => readVibePreferences(), []);
   const [order, setOrder] = useState<string[]>(preferences.order);
@@ -277,6 +288,25 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
     if (focused)
       onTogglePin(focused);
   });
+  // The remote's `Menu`. It is also the input layer's way out of the editor's
+  // chrome, which is why it is one of the few commands allowed to run over it.
+  useCommand("vibe.menu", () => setMenuOpen(true));
+
+  /**
+   * Close the menu and put the caret back where it was.
+   *
+   * The menu takes focus when it opens (a key opened it; the next key should land
+   * in it), so closing it from the input layer would otherwise leave the caret
+   * nowhere: `⏎` would send nothing and the next dictation would go to the
+   * document. The composer already answers `focus-composer` — the same request the
+   * terminal's collapse makes — so the panel asks in the same vocabulary instead of
+   * growing a second way to focus an editor it does not own.
+   */
+  const closeMenu = useCallback(() => {
+    setMenuOpen(false);
+    if (layer === "input")
+      emitFutureEvent("focus-composer", undefined);
+  }, [layer]);
 
   const workspacePathOf = useCallback(
     (thread: StoredThread) => workspaces.find(workspace => workspace.id === thread.workspaceId)?.path ?? null,
@@ -303,6 +333,80 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
     .map(id => bindingLabel(id as never, overrides, isMac))
     .filter(Boolean)
     .join(" ");
+  // The menu's key(s), shown beside the arrows in the grid: on a remote the menu
+  // button is the only way to reach the panel's configuration, so it has to be
+  // visible before the reader knows to look for it.
+  const menuKeys = bindingLabel("vibe.menu", overrides, isMac);
+
+  /**
+   * What the menu offers, in the order a remote reaches it.
+   *
+   * Built here, not in `VibeMenu`: the panel owns what is configurable, the menu
+   * owns how a menu behaves. Every row is real — a row that did nothing would
+   * teach the reader that the menu is decoration, which on a seven-key device is
+   * the end of the feature.
+   */
+  const menuRows: VibeMenuRow[] = [
+    {
+      id: "layout",
+      label: t("menu.layout"),
+      value: columns === null ? t("menu.auto") : t("menu.columns", { count: columns }),
+      onRun: () => {
+        setColumns(null);
+        writeVibeColumns(null);
+      },
+      // 1 → 2 → 3 → 4 → automatic, wrapping. Automatic is a real choice, not the
+      // absence of one: it is what follows the window on the next resize.
+      onAdjust: (delta) => {
+        const order: Array<number | null> = [null, 1, 2, 3, 4];
+        const current = order.indexOf(columns);
+        const next = order[(current + delta + order.length) % order.length] ?? null;
+        setColumns(next);
+        writeVibeColumns(next);
+      },
+      description: t("menu.layoutHint"),
+    },
+    {
+      id: "move-earlier",
+      label: t("menu.moveEarlier"),
+      disabled: !focusedKey || focusIndex === 0,
+      onRun: () => focusedKey && persistOrder(moveInOrder(resolved, focusedKey, -1)),
+    },
+    {
+      id: "move-later",
+      label: t("menu.moveLater"),
+      disabled: !focusedKey || focusIndex >= shown.length - 1,
+      onRun: () => focusedKey && persistOrder(moveInOrder(resolved, focusedKey, 1)),
+    },
+    {
+      id: "remove",
+      group: true,
+      label: t("menu.remove"),
+      disabled: !focused,
+      onRun: () => focused && onTogglePin(focused),
+      description: t("menu.removeHint"),
+    },
+    {
+      id: "open-in-shell",
+      label: t("menu.openInShell"),
+      disabled: !focused,
+      onRun: () => focused && onOpenInShell(focused),
+    },
+    {
+      id: "fullscreen",
+      group: true,
+      label: t("menu.fullscreen"),
+      onRun: () => {
+        const win = getCurrentWindow();
+        void win.isFullscreen().then(full => win.setFullscreen(!full)).catch(() => {});
+      },
+    },
+    {
+      id: "close",
+      label: t("menu.close"),
+      onRun: onClose,
+    },
+  ];
 
   /**
    * The grid: one cell per member, in order, left to right.
@@ -391,7 +495,15 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
           {layout.rows}
           {columns === null ? "" : ` ${t("manualLayout")}`}
         </span>
-        {layer === "grid" ? <span className="font-mono text-xs text-ink-faint">{arrows}</span> : null}
+        {layer === "grid"
+          ? (
+              <span className="font-mono text-xs text-ink-faint">
+                {arrows}
+                {"  "}
+                {menuKeys}
+              </span>
+            )
+          : null}
         <div className="ml-auto flex items-center gap-1">
           <IconButton
             className="size-7"
@@ -402,11 +514,13 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
               void win.isFullscreen().then(full => win.setFullscreen(!full)).catch(() => {});
             }}
           />
+          {/* The menu, for the pointer (and for the first-time reader): the
+              remote's own way in is its `Menu` button. */}
           <IconButton
             className="size-7"
-            icon={<Keyboard className="size-3.5" />}
-            label={t("shortcuts")}
-            onClick={() => focused && onOpenInShell(focused)}
+            icon={<MoreHorizontal className="size-4" />}
+            label={t("menu.title")}
+            onClick={() => setMenuOpen(true)}
           />
           <IconButton
             className="size-7"
@@ -440,7 +554,7 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
                   >
                     {focused ? threadView(focused, "read", true) : null}
                   </div>
-                  <VibeHintBar ids={["vibe.zoom.previous", "vibe.input.open", "vibe.back"]} />
+                  <VibeHintBar ids={["vibe.zoom.previous", "vibe.input.open", "vibe.menu", "vibe.back"]} />
                 </div>
               )
             : (
@@ -490,6 +604,10 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
                   </div>
                 </div>
               )}
+
+      {menuOpen
+        ? <VibeMenu onClose={closeMenu} rows={menuRows} title={t("menu.title")} />
+        : null}
     </div>
   );
 }
