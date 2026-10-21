@@ -210,17 +210,47 @@ fn resume_one(state: &AppState, session_id: &str) -> Result<bool, String> {
         eprintln!("FutureOS resume: {session_id} has no model configured; left interrupted");
         return Ok(false);
     }
-    session
-        .enqueue_prompt_with_model_context(
-            PromptText::new(&build_prompt(), ""),
-            &[],
-            &[],
-            None,
-            &format!("resume_{run_id}"),
-            crate::runtime::BusyPolicy::EnqueueIfBusy,
-        )
-        .map_err(|error| format!("prompt: {error}"))?;
+    submit_continuation(&mut session, session_id, &run_id)?;
     Ok(true)
+}
+
+/// Continue in place, or fall back to the shape this replaced.
+///
+/// Both shapes have to stay available. In place is the better one — no user
+/// message appears in a conversation nobody typed into — but it depends on the
+/// provider accepting a request whose history stops mid-turn and on the journal
+/// still showing the run as unterminated. When either says no, continuing in
+/// place is refused, and the alternative is a visible prompt: a fabricated user
+/// message is bad, but an interrupted conversation that never continues is
+/// worse, and the user can at least see and correct what was sent.
+///
+/// Kept as its own function so the fallback is exercised by a test rather than
+/// being a branch nobody has ever taken.
+pub(super) fn submit_continuation(
+    session: &mut crate::rpc::ServerSession,
+    session_id: &str,
+    run_id: &str,
+) -> Result<(), String> {
+    match session.continue_interrupted_run(run_id, &build_prompt()) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            eprintln!(
+                "FutureOS resume: {session_id} cannot continue in place ({error}); \
+                 submitting a continuation prompt instead"
+            );
+            session
+                .enqueue_prompt_with_model_context(
+                    PromptText::new(&build_prompt(), ""),
+                    &[],
+                    &[],
+                    None,
+                    &format!("resume_{run_id}"),
+                    crate::runtime::BusyPolicy::EnqueueIfBusy,
+                )
+                .map(|_| ())
+                .map_err(|error| format!("prompt: {error}"))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -330,6 +360,314 @@ mod tests {
         assert!(
             MAX_IN_FLIGHT < eligible.len(),
             "the bound must be below the candidate count to exercise queueing"
+        );
+    }
+}
+
+#[cfg(test)]
+mod wiring_tests {
+    //! The pass, end to end, at the call site production uses.
+    //!
+    //! Unit tests around `continue_interrupted_run` prove the accepting path
+    //! behaves; these prove the restart recovery *calls* it. A check that lives
+    //! beside the right code but is not on the path the product takes guards
+    //! nothing, so this drives `resume_one` — the function the pass spawns —
+    //! against a real session on disk and reads what the model was asked.
+
+    use super::*;
+    use crate::llm::schema::{FinishReason, ModelRequest, ModelStreamEvent};
+    use crate::session::SessionEntry;
+    use crate::types::LLMProvider;
+    use std::sync::Arc;
+    use tokio_stream::wrappers::ReceiverStream;
+
+    /// Answers every request with one sentence, and records what it was asked.
+    struct RecordingProvider {
+        requests: std::sync::Mutex<Vec<ModelRequest>>,
+    }
+
+    impl RecordingProvider {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                requests: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LLMProvider for RecordingProvider {
+        async fn stream_model(
+            &self,
+            request: ModelRequest,
+        ) -> anyhow::Result<ReceiverStream<ModelStreamEvent>> {
+            self.requests.lock().unwrap().push(request);
+            let (tx, rx) = tokio::sync::mpsc::channel(4);
+            let _ = tx
+                .send(ModelStreamEvent::TextDelta {
+                    id: "text".into(),
+                    text: "carried on".into(),
+                })
+                .await;
+            let _ = tx
+                .send(ModelStreamEvent::Finish {
+                    reason: FinishReason::Stop,
+                    usage: None,
+                })
+                .await;
+            Ok(ReceiverStream::new(rx))
+        }
+    }
+
+    fn state_with(provider: Arc<RecordingProvider>) -> crate::rpc::AppState {
+        let state = crate::rpc::commands::test_support::make_app_state_with_provider(
+            provider,
+            crate::rpc::commands::test_support::test_session_dir(),
+            Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
+        );
+        // The session's model reference has to be in the catalogue, or anything
+        // that re-resolves it treats it as stale and installs the account's real
+        // default model — a test that spent the user's credits. The base URL
+        // points at a closed port so an accidental request fails instead of
+        // reaching a provider.
+        let model = crate::models::Model {
+            id: "mock".to_string(),
+            name: "Mock".to_string(),
+            provider: "mock-provider".to_string(),
+            api: "chat".to_string(),
+            base_url: "http://127.0.0.1:9".to_string(),
+            input: vec!["text".to_string()],
+            output: vec!["text".to_string()],
+            // A usable context budget: the default (0) makes the context
+            // manager refuse the request before it is built.
+            context_window: 100_000,
+            max_tokens: 4_000,
+            ..Default::default()
+        };
+        *state.model_registry.write() = crate::models::Registry::from_models_and_auth(
+            vec![model],
+            r#"{"mock-provider":{"type":"api_key","key":"test"}}"#,
+        );
+        state
+    }
+
+    /// Put the session in memory before the pass looks for it, so the run uses
+    /// the provider this test controls. Hydration would re-resolve the session's
+    /// model against the catalogue and install a live HTTP client, which is
+    /// correct in production and useless in a test.
+    fn register_session(state: &crate::rpc::AppState, provider: Arc<RecordingProvider>, id: &str) {
+        let mut session = crate::rpc::ServerSession::new_with_queue_budget(
+            id.to_string(),
+            Arc::new(tokio::sync::RwLock::new(crate::agent::Loop::new(
+                provider as Arc<dyn LLMProvider>,
+                "mock",
+            ))),
+            state.session_manager.clone(),
+            &state.welcome_cwd,
+            Arc::new(crate::rpc::SseBroadcaster::new()),
+            state.approval_gate.clone(),
+            state.model_registry.clone(),
+            state.queue_budget.clone(),
+        );
+        // What hydration would have read from the session's own metadata.
+        session.model = "mock".to_string();
+        session.thinking_level = "off".to_string();
+        state
+            .sessions
+            .write()
+            .insert(id.to_string(), Arc::new(parking_lot::RwLock::new(session)));
+    }
+
+    fn seed_crashed_session(state: &crate::rpc::AppState, id: &str) {
+        std::fs::create_dir_all(&state.welcome_cwd).unwrap();
+        // A crash in the middle of a tool call: the assistant turn is on disk,
+        // the call is, and its result never arrived.
+        let call = crate::types::ToolCall {
+            id: "c1".to_string(),
+            call_type: "function".to_string(),
+            function: crate::types::ToolCallFn {
+                name: "shell".to_string(),
+                arguments: serde_json::json!({"command": "touch side-effect"}),
+            },
+        };
+        let entries = vec![
+            SessionEntry::new_user("user", serde_json::json!("do the thing")),
+            SessionEntry::run_started("run-crashed", 1),
+            SessionEntry::new_assistant(serde_json::json!("running it"), vec![call]),
+        ];
+        state
+            .session_manager
+            .save(&crate::session::Session::snapshot(
+                id.to_string(),
+                state.welcome_cwd.clone(),
+                "mock".to_string(),
+                String::new(),
+                String::new(),
+                entries,
+            ))
+            .unwrap();
+    }
+
+    /// The journal of a run, as a string, once the continuation has settled.
+    fn wait_for_run_journal(
+        state: &crate::rpc::AppState,
+        id: &str,
+        run_id: &str,
+    ) -> Option<String> {
+        for _ in 0..1500 {
+            if let Ok(events) = state.session_manager.storage().unwrap().events(id, run_id) {
+                let text = serde_json::to_string(&events).unwrap();
+                if text.contains("agent_end") {
+                    return Some(text);
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        None
+    }
+
+    /// **The wiring evidence.** `resume_one` is what the restart pass runs. It
+    /// must reach the new accepting path: the run is journalled with
+    /// `auto_resume_of`, the model is sent the continuation instruction, and the
+    /// conversation gains neither a user entry nor a `user_message` event. The
+    /// old shape (`enqueue_prompt_with_model_context`) would fail the last two.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_restart_pass_continues_a_crashed_run_without_a_user_message() {
+        let provider = RecordingProvider::new();
+        let state = state_with(provider.clone());
+        seed_crashed_session(&state, "s-crashed");
+        register_session(&state, provider.clone(), "s-crashed");
+
+        let continued = resume_one(&state, "s-crashed").expect("the pass continues the session");
+        assert!(continued, "an interrupted session is continued");
+
+        // Find the continuation's run id from its marker.
+        let mut run_id = None;
+        for _ in 0..300 {
+            let stored = state.session_manager.load("s-crashed").unwrap();
+            run_id = stored
+                .entries
+                .iter()
+                .find(|entry| {
+                    entry.entry_type == crate::session::ENTRY_TYPE_RUN_STARTED
+                        && entry
+                            .content
+                            .as_ref()
+                            .and_then(|content| content["auto_resume_of"].as_str())
+                            == Some("run-crashed")
+                })
+                .and_then(|entry| {
+                    entry
+                        .content
+                        .as_ref()
+                        .and_then(|content| content["run_id"].as_str())
+                        .map(str::to_string)
+                });
+            if run_id.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let run_id =
+            run_id.expect("the continuation writes a run_started marker with auto_resume_of");
+
+        // 1. The request the model received ends with the continuation
+        //    instruction and still contains the interrupted turn.
+        let journal = match wait_for_run_journal(&state, "s-crashed", &run_id) {
+            Some(journal) => journal,
+            None => {
+                let seen = state
+                    .session_manager
+                    .storage()
+                    .unwrap()
+                    .events("s-crashed", &run_id)
+                    .map(|events| serde_json::to_string(&events).unwrap())
+                    .unwrap_or_default();
+                panic!(
+                    "the continuation run finishes and journals its end; \
+                     requests={} journal={seen}",
+                    provider.requests.lock().unwrap().len()
+                );
+            }
+        };
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1, "one run, one request; journal={journal}");
+        let request = &requests[0];
+        assert_eq!(
+            request.messages.last().map(|message| message.text()),
+            Some(build_prompt()),
+            "the model is sent the continuation instruction"
+        );
+        assert!(
+            request
+                .messages
+                .iter()
+                .any(|message| message.text().contains("running it")),
+            "the interrupted turn is still in the request"
+        );
+        drop(requests);
+
+        // 2. No user message: not in the transcript, not in the event journal.
+        //    This is what separates the new path from the prompt the pass used
+        //    to submit, and it is asserted on the journal the run really wrote.
+        let stored = state.session_manager.load("s-crashed").unwrap();
+        assert!(
+            !stored
+                .entries
+                .iter()
+                .skip(4)
+                .any(|entry| entry.role == "user"),
+            "continuing must not append a user entry: {:?}",
+            stored
+                .entries
+                .iter()
+                .map(|entry| (entry.entry_type.clone(), entry.role.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !journal.contains("user_message"),
+            "a continuation must not broadcast a user message: {journal}"
+        );
+    }
+
+    /// The other half of "both paths coexist": when the journal cannot prove an
+    /// open run, the pass still continues the conversation — by deliberately
+    /// falling back to the visible prompt shape, not by doing nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_restart_pass_falls_back_to_a_prompt_when_in_place_is_refused() {
+        let provider = RecordingProvider::new();
+        let state = state_with(provider.clone());
+        seed_crashed_session(&state, "s-closed");
+        // Close the run: the journal no longer proves anything is open, so the
+        // in-place path must refuse. (The pass itself only picks sessions whose
+        // journal shows an open run; this test pins the belt-and-braces refusal
+        // on the accepting path that production also runs.)
+        state
+            .session_manager
+            .append_run_continuation(
+                "s-closed",
+                SessionEntry::run_terminal(
+                    "run-crashed",
+                    crate::session::RUN_STATE_INTERRUPTED_BY_RESTART,
+                    0,
+                    0,
+                    None,
+                ),
+            )
+            .unwrap_or_else(|_| panic!("seeding a terminal marker"));
+        assert_eq!(
+            state
+                .session_manager
+                .unterminated_run_id("s-closed")
+                .unwrap(),
+            None
+        );
+        assert!(
+            resume_one(&state, "s-closed").is_err(),
+            "nothing to continue"
+        );
+        assert!(
+            provider.requests.lock().unwrap().is_empty(),
+            "a refused continuation does not call the model"
         );
     }
 }

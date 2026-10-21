@@ -3278,3 +3278,361 @@ async fn an_automatic_reviewer_policy_reviews_a_sandboxed_run_without_asking_the
         "an automatic policy never parks a human request"
     );
 }
+
+// ─── D10: continuing an interrupted run without a user message ─────────────
+//
+// The three shapes below are the three tails a mid-run death can leave. They are
+// driven through the real accepting path (`continue_interrupted_run`, which is
+// what `rpc::resume` calls), not through a helper, so a change that only looks
+// wired shows up here.
+
+/// The tail a crashed run leaves in the journal.
+#[derive(Clone, Copy)]
+enum CrashedTail {
+    /// The model's tool call got its result: the request is already valid.
+    ToolResult,
+    /// The tool call was issued and the process died before the result: the
+    /// request is invalid until something answers the call.
+    UnansweredToolCall,
+    /// The model wrote text and the process died: a valid turn, but the loop
+    /// used to refuse it.
+    AssistantText,
+}
+
+fn crashed_entries(tail: CrashedTail) -> Vec<crate::session::SessionEntry> {
+    use crate::session::SessionEntry;
+    use crate::types::{ToolCall, ToolCallFn};
+    let call = ToolCall {
+        id: "c1".to_string(),
+        call_type: "function".to_string(),
+        function: ToolCallFn {
+            name: "shell".to_string(),
+            arguments: serde_json::json!({"command": "touch side-effect"}),
+        },
+    };
+    let mut entries = vec![
+        SessionEntry::new_user("user", serde_json::json!("do the thing")),
+        SessionEntry::run_started("run-crashed", 1),
+    ];
+    match tail {
+        CrashedTail::ToolResult => {
+            entries.push(SessionEntry::new_assistant(
+                serde_json::json!("running it"),
+                vec![call],
+            ));
+            entries.push(SessionEntry::new_tool("c1", "touched"));
+        }
+        CrashedTail::UnansweredToolCall => {
+            entries.push(SessionEntry::new_assistant(
+                serde_json::json!("running it"),
+                vec![call],
+            ));
+        }
+        CrashedTail::AssistantText => {
+            entries.push(SessionEntry::new_assistant(
+                serde_json::json!("half an answer"),
+                vec![],
+            ));
+        }
+    }
+    entries
+}
+
+/// The same journal with the run properly closed — the case where nothing
+/// proves a run was left open, so no continuation may be accepted.
+fn closed_entries() -> Vec<crate::session::SessionEntry> {
+    let mut entries = crashed_entries(CrashedTail::AssistantText);
+    entries.push(crate::session::SessionEntry::run_terminal(
+        "run-crashed",
+        crate::session::RUN_STATE_COMPLETED,
+        10,
+        20,
+        None,
+    ));
+    entries
+}
+
+struct ContinuationFixture {
+    session: crate::rpc::ServerSession,
+    events: tokio::sync::broadcast::Receiver<crate::rpc::SseEvent>,
+}
+
+/// A session whose journal already stops mid-run, plus a live broadcaster so the
+/// test can see exactly which events a client would have received.
+fn continuation_fixture(
+    provider: Arc<dyn LLMProvider>,
+    name: &str,
+    entries: Vec<crate::session::SessionEntry>,
+) -> ContinuationFixture {
+    let dir = test_path(name);
+    let workspace = dir.join("ws");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let manager = Arc::new(crate::session::Manager::new(dir.join("sessions")));
+    manager
+        .save(&crate::session::Session::snapshot(
+            "s-cont".to_string(),
+            workspace.to_string_lossy().to_string(),
+            "mock".to_string(),
+            String::new(),
+            String::new(),
+            entries,
+        ))
+        .unwrap();
+    let agent_loop = Loop::new(provider, "mock").with_tools(coding_tools());
+    let broadcaster = Arc::new(crate::rpc::SseBroadcaster::new());
+    let events = broadcaster.subscribe();
+    let session = crate::rpc::ServerSession::new_with_queue_budget(
+        "s-cont".to_string(),
+        Arc::new(tokio::sync::RwLock::new(agent_loop)),
+        manager,
+        workspace.to_string_lossy().as_ref(),
+        broadcaster,
+        crate::rpc::ApprovalGate::default(),
+        Arc::new(parking_lot::RwLock::new(crate::models::Registry::new())),
+        Arc::new(crate::runtime::GlobalQueueBudget::defaults()),
+    );
+    ContinuationFixture { session, events }
+}
+
+fn event_types(events: &mut tokio::sync::broadcast::Receiver<crate::rpc::SseEvent>) -> Vec<String> {
+    let mut seen = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        seen.push(event.event_type);
+    }
+    seen
+}
+
+/// The operator: after the run ends, the journal must carry the continuation's
+/// `run_started` (with `auto_resume_of`) and close the crashed run.
+async fn wait_for_continuation_to_settle(
+    session: &crate::rpc::ServerSession,
+) -> crate::session::Session {
+    for _ in 0..300 {
+        if let Ok(loaded) = session.session_manager.load("s-cont") {
+            if loaded.entries.iter().any(|entry| {
+                entry.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL
+                    && entry
+                        .content
+                        .as_ref()
+                        .and_then(|content| content["run_id"].as_str())
+                        .is_some_and(|run| run != "run-crashed")
+            }) {
+                return loaded;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("the continuation run never reached a terminal marker");
+}
+
+/// Shared body of the per-shape tests below.
+///
+/// One shape per test, because each one is a different step of the plan: a
+/// tool-result tail needs only the directive, an unanswered call also needs a
+/// placeholder result, and a plain assistant tail is only reachable once the
+/// guard allows it. A single parameterised test would hide which step broke
+/// which shape.
+async fn assert_a_continuation_is_accepted(
+    name: &str,
+    entries: Vec<crate::session::SessionEntry>,
+    expect_tool_result: Option<&str>,
+) {
+    let provider = ScriptedProvider::new(vec![text_turn("carrying on")]);
+    let mut fixture = continuation_fixture(provider.clone(), name, entries);
+    let interrupted_len = fixture
+        .session
+        .session_manager
+        .load("s-cont")
+        .unwrap()
+        .entries
+        .len();
+
+    fixture
+        .session
+        .continue_interrupted_run("run-crashed", "CONTINUE-THE-TASK")
+        .expect("the journal proves an open run, so this is accepted");
+    wait_for_run_end(&fixture.session).await;
+
+    // 1. No user bubble. The accepted run announces itself through the run
+    //    markers and the assistant's own stream, never through a user message.
+    let seen = event_types(&mut fixture.events);
+    assert!(
+        !seen.iter().any(|event| event == "user_message"),
+        "a continuation must not broadcast a user message: {seen:?}"
+    );
+
+    // 2. The model was told why, and only inside this request: the directive
+    //    ends the request the provider actually received...
+    let (request_last_text, sent): (Option<String>, Vec<(String, String)>) = {
+        let requests = provider.requests.lock().unwrap();
+        let request = requests.last().cloned().expect("the run made a request");
+        let last = request.messages.last().map(|message| message.text());
+        let sent = request
+            .messages
+            .iter()
+            .map(|message| (message.role.clone(), message.text()))
+            .collect();
+        (last, sent)
+    };
+    assert_eq!(
+        request_last_text,
+        Some("CONTINUE-THE-TASK".to_string()),
+        "the continuation instruction is the request's last message"
+    );
+    // ...with the crashed turn still ahead of it, unrewritten...
+    assert!(
+        sent.iter()
+            .any(|(_, text)| text.contains("running it") || text.contains("half an answer")),
+        "the model's interrupted turn must stay in the request: {sent:?}"
+    );
+    // ...and, when the crash killed a call before its result, answered — the
+    // provider rejects the whole request otherwise.
+    if let Some(expected) = expect_tool_result {
+        assert!(
+            sent.iter().any(|(_, text)| text.contains(expected)),
+            "an unanswered tool call needs a placeholder result: {sent:?}"
+        );
+    }
+
+    // 3. The durable transcript keeps history and adds no user entry.
+    let stored = wait_for_continuation_to_settle(&fixture.session).await;
+    let added = &stored.entries[interrupted_len..];
+    assert!(
+        !added.iter().any(|entry| entry.role == "user"),
+        "a continuation must not append a user entry"
+    );
+    let journal_text = serde_json::to_string(&stored.entries).unwrap();
+    assert!(
+        journal_text.contains("running it") || journal_text.contains("half an answer"),
+        "the interrupted turn is preserved, not deleted: {journal_text}"
+    );
+
+    // 4. The run marker says which run it continued, so a client can render
+    //    "continued automatically" instead of "the user said something".
+    let started = added
+        .iter()
+        .find(|entry| entry.entry_type == crate::session::ENTRY_TYPE_RUN_STARTED)
+        .expect("the continuation writes a run_started marker");
+    assert_eq!(
+        started
+            .content
+            .as_ref()
+            .and_then(|content| content["auto_resume_of"].as_str()),
+        Some("run-crashed")
+    );
+    // 5. And the crashed run is closed rather than left open twice.
+    assert_eq!(
+        added
+            .iter()
+            .find(|entry| {
+                entry.entry_type == crate::session::ENTRY_TYPE_RUN_TERMINAL
+                    && entry
+                        .content
+                        .as_ref()
+                        .and_then(|content| content["run_id"].as_str())
+                        == Some("run-crashed")
+            })
+            .and_then(|entry| entry.content.as_ref())
+            .and_then(|content| content["state"].as_str()),
+        Some(crate::session::RUN_STATE_INTERRUPTED_BY_RESTART),
+        "the interrupted run is closed as interrupted_by_restart"
+    );
+}
+
+/// Step 1: the tail is a tool result, so the transcript is already a valid
+/// request. The continuation appends only the request-only directive — and the
+/// conversation gains no user message, no bubble and no user entry.
+#[tokio::test(flavor = "current_thread")]
+async fn a_tool_result_tail_continues_without_a_user_message() {
+    assert_a_continuation_is_accepted(
+        "cont-tool-result",
+        crashed_entries(CrashedTail::ToolResult),
+        None,
+    )
+    .await;
+}
+
+/// Step 2: the tool call was issued and the process died before its result, so
+/// the request would be rejected (HTTP 400) until something answers the call.
+#[tokio::test(flavor = "current_thread")]
+async fn an_unanswered_tool_call_tail_continues_without_a_user_message() {
+    assert_a_continuation_is_accepted(
+        "cont-unanswered",
+        crashed_entries(CrashedTail::UnansweredToolCall),
+        Some("whether it ran is unknown"),
+    )
+    .await;
+}
+
+/// Step 3: the tail is a plain assistant turn, which the loop used to refuse
+/// outright. It is accepted here only because the journal proves a run is still
+/// open — see `a_continuation_is_refused_when_the_journal_proves_no_open_run`.
+#[tokio::test(flavor = "current_thread")]
+async fn an_assistant_tail_continues_without_a_user_message() {
+    assert_a_continuation_is_accepted(
+        "cont-assistant",
+        crashed_entries(CrashedTail::AssistantText),
+        None,
+    )
+    .await;
+}
+
+/// The boundary of the relaxed guard: "the transcript ends on an assistant turn"
+/// is not permission — "the journal still shows that run open" is. A finished
+/// run's tail is exactly the shape the guard exists to reject.
+#[tokio::test(flavor = "current_thread")]
+async fn a_continuation_is_refused_when_the_journal_proves_no_open_run() {
+    let provider = ScriptedProvider::new(vec![text_turn("must not happen")]);
+    let mut fixture = continuation_fixture(provider.clone(), "cont-refused", closed_entries());
+
+    let refused = fixture
+        .session
+        .continue_interrupted_run("run-crashed", "CONTINUE-THE-TASK");
+    let error = refused.expect_err("a closed run cannot be continued");
+    assert!(
+        error.to_string().contains("no unterminated run"),
+        "the refusal names the reason: {error}"
+    );
+
+    // Nothing was accepted: no run row, no model call, no bubble.
+    assert!(fixture.session.runtime.snapshot().is_none());
+    assert!(provider.requests.lock().unwrap().is_empty());
+    assert!(!event_types(&mut fixture.events)
+        .iter()
+        .any(|event| event == "user_message"));
+}
+
+/// Both shapes coexist: when continuing in place is refused, the old
+/// "send a prompt" path still continues the conversation, visibly. A provider
+/// that accepts neither an assistant tail nor an appended directive needs it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_refused_continuation_falls_back_to_a_visible_prompt() {
+    let provider = ScriptedProvider::new(vec![text_turn("carrying on")]);
+    let mut fixture = continuation_fixture(provider.clone(), "cont-fallback", closed_entries());
+    let before = fixture
+        .session
+        .session_manager
+        .load("s-cont")
+        .unwrap()
+        .entries
+        .len();
+
+    crate::rpc::resume::submit_continuation(&mut fixture.session, "s-cont", "run-crashed")
+        .expect("the fallback shape is still available");
+    wait_for_run_end(&fixture.session).await;
+
+    // The old shape is visible, and that is the trade: a user message the user
+    // did not type, which the client can at least show and correct.
+    let seen = event_types(&mut fixture.events);
+    assert!(
+        seen.iter().any(|event| event == "user_message"),
+        "the fallback is the prompt shape, so a user message is expected: {seen:?}"
+    );
+    let stored = fixture.session.session_manager.load("s-cont").unwrap();
+    assert!(
+        stored.entries[before..]
+            .iter()
+            .any(|entry| entry.role == "user"),
+        "the fallback prompt is persisted as a user entry"
+    );
+}

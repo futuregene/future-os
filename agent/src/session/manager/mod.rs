@@ -239,6 +239,49 @@ impl Manager {
         })
     }
 
+    /// Append a continuation run's `run_started` marker.
+    ///
+    /// Same transaction as [`Self::append_run_start`] minus the user entry,
+    /// because a continuation has no user message: the run continues an
+    /// interrupted one rather than answering something new. Closing the prior
+    /// unterminated run as `interrupted_by_restart` stays here for the same
+    /// reason it is in `append_run_start` — the journal must never carry two
+    /// open runs.
+    pub fn append_run_continuation(&self, id: &str, started: SessionEntry) -> Result<()> {
+        let id = id.to_owned();
+        let run_id = started
+            .content
+            .as_ref()
+            .and_then(|content| content["run_id"].as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let values = Self::encoded(&[started])?;
+        self.storage()?.db.call(move |db| {
+            let tx = crate::session::database::begin_write_transaction(db)?;
+            let existing: Vec<SessionEntry> = super::sqlite_store::read_run_markers(&tx, &id)?
+                .into_iter()
+                .map(serde_json::from_value)
+                .collect::<std::result::Result<_, _>>()?;
+            if let Some(run) = super::find_unterminated_run(&existing) {
+                let terminal =
+                    SessionEntry::run_terminal(&run, RUN_STATE_INTERRUPTED_BY_RESTART, 0, 0, None);
+                super::sqlite_store::insert_transcript_entries(
+                    &tx,
+                    &id,
+                    Self::encoded(&[terminal])?,
+                )?;
+            }
+            super::sqlite_store::insert_transcript_entries(&tx, &id, values)?;
+            tx.execute(
+                "UPDATE queued_run_receipts SET status='started',payload_json=NULL,user_entry_json=NULL WHERE session_id=?1 AND run_id=?2",
+                params![id, run_id],
+            )?;
+            tx.execute("UPDATE sessions SET revision=revision+1 WHERE id=?1", [&id])?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
     pub fn unterminated_run_id(&self, id: &str) -> Result<Option<String>> {
         if !self.contains(id)? {
             return Ok(None);
