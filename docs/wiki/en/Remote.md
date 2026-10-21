@@ -80,7 +80,9 @@ none.
 Commands, conversation events and requested file content pass through the
 configured NATS relay. Mobile uses per-device credentials, short-lived JWTs and
 refresh tokens, with secrets in platform secure storage, and requires `wss://`;
-the desktop requires TLS for its relay connection. Once a phone is paired, the
+the desktop requires TLS for its relay connection, with one exception: a
+self-hosted relay may declare a plaintext origin (see the self-hosted relay
+runbook), which only its own pairings follow. Once a phone is paired, the
 desktop↔phone channel is end-to-end encrypted (a Noise handshake with
 ChaCha20-Poly1305 records), so the relay carries ciphertext and can neither read
 it nor forge an accepted message. The pairing handshake is the one exception: its

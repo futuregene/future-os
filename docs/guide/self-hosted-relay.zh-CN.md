@@ -62,11 +62,16 @@ TLS 终止时才这么用**，否则凭据和元数据是裸奔的。
 两个监听端口取自 `--nats-url` / `--nats-ws-url`，因此中继发给客户端的地址就是它
 实际监听的地址。
 
+给了证书时，`future relay serve` 自己为 API 终结 TLS（见下文「由谁来终结 API 的
+TLS」），所以 `relay.example.com` 前面不需要再做 TLS 终止。上面的例子监听在
+`127.0.0.1:8099`，仍然需要一个能把公开域名导到这个端口的环节——端口转发、NAT
+规则或负载均衡——但那一跳只需要搬运字节。
+
 生成的 `nats.conf` 默认**不开** nats-server 的 HTTP 监控端点：中继自己从不读它，
 而它的固定端口会让同一台机器上的第二个中继起不来。需要那些统计时，把文件里那行
 `http:` 解除注释即可。
 
-`--listen` 默认 `127.0.0.1:8099`，`--public-url` 默认是对应的回环 origin——这是
+`--listen` 默认 `127.0.0.1:8099`，`--public-url` 默认 `http://127.0.0.1:8099`——这是
 「桌面端在同一台机器上」的默认值。局域网里的手机要连得上，就得让中继监听一个可达
 地址：`--listen 0.0.0.0:8099 --public-url http://<本机局域网地址>:8099`，因为
 `--public-url` 的地址会被原样写进每张邀请码。
@@ -126,6 +131,7 @@ future relay serve --config /opt/future-relay/relay.json
 | `DELETE /v1/rooms/{pair}` | 桌面端 NKey 签名 | 删除 room |
 | `POST /client/v1/remote/pair/claim` | 一次性 join token | 手机成为该 room 的一个设备 |
 | `POST /client/v1/remote/auth/token` | bridge 用签名 / client 用 refresh 凭据 | 轮换短期 NATS JWT |
+| `POST /client/v1/remote/pair/revoke` | 设备自己的 refresh 凭据 | 设备把自己从 room 里摘掉（手机上解除配对） |
 
 `/client/v1/...` 这些路径**故意**与官方平台一致，JSON 形状也一致，因此手机和
 桌面端的 client 角色不需要任何特判：换成自建中继只改变请求**发往哪里**，不改变
@@ -222,7 +228,7 @@ NATS 连接、心跳和凭据轮换。
   空间，broker 强制执行——`SUB >`、跨配对订阅、抢 queue group 都会被拒；
 * 以 bridge 身份从 client 连接发布，或读 client 的回复 inbox；
 * 用一个 join token 配第二台设备。它按设备一次性（同一设备可以重试丢失的响应），
-  五分钟后过期，中继只保存它的 SHA-256。
+  默认五分钟后过期（`invitationTtlSeconds`），中继只保存它的 SHA-256。
 
 把这些机器暴露到公网前，你还需要对以下残留风险做决定：
 
@@ -239,9 +245,9 @@ NATS 连接、心跳和凭据轮换。
 * **不启用 JetStream。** 远程控制只用 NATS Core，存储只会让密文和元数据在本不该
   留存的机器上堆积。
 * **room 文件不是密钥库。** `rooms.json` 里只有 pair id、公开 NKey、设备名、时间
-  戳和每设备两个 SHA-256。拿到副本也连不上：每张凭据都绑定到某个公钥，而对应
-  私钥从不离开端点。删掉文件会一次性让所有配对失效，这本身是一种「重来」，也是
-  「文件损坏报错、而不是当空表启动」的原因。
+  戳、room 的邀请哈希，以及每台设备一条 refresh 凭据哈希。拿到副本也连不上：每张
+  凭据都绑定到某个公钥，而对应私钥从不离开端点。删掉文件会一次性让所有配对失效，
+  这本身是一种「重来」，也是「文件损坏报错、而不是当空表启动」的原因。
 * **重启无代价。** 桌面端在下次凭据轮换时用自己的配对 NKey 重新注册同一个 room，
   已配对的手机自动重连。配对存在于两端的凭据里，不在中继里。
 * **凭据短期有效。** 默认 JWT 有效期五分钟，续签是签名请求；中继侧没有长期
@@ -278,3 +284,21 @@ RELAY_E2E_RELAY_URL=http://127.0.0.1:8099 \
 该测试跑的是真实链路：`remote::start()` 经中继生成 v3 邀请，client 角色认领并用
 `Noise XXpsk0` 建立加密通道，presence 和 `list_sessions` 走加密通道，中继的 room
 名册与实际一致，解绑后 room 被删除。
+
+要跑 TLS 版本，给 `init` 一份证书和 `https://` 的公开地址，再让测试用签发它的 CA
+指向那个 origin：
+
+```bash
+future relay init --dir /tmp/relay-tls \
+  --public-url https://127.0.0.1:8099 \
+  --nats-url tls://127.0.0.1:14222 --nats-ws-url wss://127.0.0.1:19090 \
+  --tls-cert cert.pem --tls-key key.pem
+nats-server -c /tmp/relay-tls/nats.conf
+future relay serve --config /tmp/relay-tls/relay.json
+
+RELAY_E2E_RELAY_URL=https://127.0.0.1:8099 FUTURE_RELAY_CA=ca.pem \
+  cargo test -p future-host --lib remote::relay_e2e -- --ignored --nocapture
+```
+
+全程没有外部 TLS 终结器：`serve` 拿出来的就是 `relay.json` 里那份证书，而
+`FUTURE_RELAY_CA` 让测试自己的 HTTP 与 NATS 客户端信任它。
