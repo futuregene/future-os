@@ -147,6 +147,7 @@
   },
   "composer": {
     "placeholder": "描述任务，@文件 添加到上下文，按 / 使用工具或技能",
+    "placeholderPlain": "说点什么，说完按回车发送",
     "skillRecommend": {
       "cardTitle": "推荐技能",
       "installAndUse": "安装并使用",

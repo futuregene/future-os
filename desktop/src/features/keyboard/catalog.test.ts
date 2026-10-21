@@ -70,7 +70,6 @@ describe("command catalog", () => {
       "vibe.home",
       "vibe.input.close",
       "vibe.input.open",
-      "vibe.input.send",
       "vibe.open",
       "vibe.zoom.next",
       "vibe.zoom.previous",
@@ -82,10 +81,12 @@ describe("command catalog", () => {
   it("runs over the editor only in the layer that operates it", () => {
     // A bare key is the text field's — except in the input layer, where `↩`
     // sending *is* how the field is operated. Nothing else may do it.
+    // `⏎` sending is *not* on this list: that key is the composer's own
+    // (`FIXED_KEYS`), routed through `MentionEditor.onSubmit` rather than the
+    // command table, so the two owners never share one press.
     expect(COMMANDS.filter(spec => spec.overEditable).map(spec => spec.id).sort()).toEqual([
       "vibe.home",
       "vibe.input.close",
-      "vibe.input.send",
       "vibe.menu",
     ]);
     for (const spec of COMMANDS.filter(one => one.overEditable)) {

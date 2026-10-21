@@ -123,6 +123,23 @@ interface ComposerProps {
    * around the whole card so the highlight isn't cut off at the composer's edge.
    */
   onDragStateChange?: (state: ComposerDragState) => void;
+  /**
+   * The panel's input layer: what its send key means when the draft is empty.
+   *
+   * The panel puts send on `⏎` — a remote control has no other key for it — and
+   * that key is already the composer's own (`MentionEditor.onSubmit`, a fixed key
+   * that stands down while an input method composes). So the panel does not add a
+   * send command; it adds a meaning for the one case the editor had no answer
+   * for: an empty draft closes the layer instead of doing nothing. Present only in
+   * the input layer.
+   */
+  onEmptySubmit?: () => void;
+  /**
+   * Whether `@` / `/` / `#` may open their menus. Off in the panel's input layer:
+   * a dictated sentence arrives as one run, and a popup over the transcript would
+   * also take the next utterance's keys (`VIBE.md` §5.3).
+   */
+  triggers?: boolean;
 }
 
 function ComposerImpl({
@@ -149,6 +166,8 @@ function ComposerImpl({
   sessionMentions,
   draftKey,
   onDragStateChange,
+  onEmptySubmit,
+  triggers = true,
 }: ComposerProps) {
   const { t, i18n } = useTranslation("agent");
   // The editor is non-controlled (see MentionEditor); we only mirror its empty
@@ -341,9 +360,16 @@ function ComposerImpl({
     // abort button then), while context compaction is running, and while an
     // async send is in flight. The editor intentionally remains enabled so the
     // next message can still be drafted during either operation.
+    if (!trimmed && attachments.length === 0) {
+      // Nothing to send. In the panel's input layer that is still an action: the
+      // layer closes (`VIBE.md` §5.2). A key that silently does nothing is a key
+      // the reader stops trusting, and a remote control has no second way in.
+      if (!disabled)
+        onEmptySubmit?.();
+      return;
+    }
     if (
-      (!trimmed && attachments.length === 0)
-      || disabled
+      disabled
       || sendPending
       || sending
       || compactionPending
@@ -621,7 +647,8 @@ function ComposerImpl({
         // instead). `disabled` restores the caret afterwards — the autofocus
         // effect above keys off it.
         disabled={disabled || recommendPending}
-        placeholder={placeholder ?? t("composer.placeholder")}
+        placeholder={placeholder ?? t(triggers ? "composer.placeholder" : "composer.placeholderPlain")}
+        triggers={triggers}
         onSubmit={submitValue}
         onEmptyChange={setInputEmpty}
         onChange={saveDraft}

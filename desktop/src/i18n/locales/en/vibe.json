@@ -1,0 +1,21 @@
+{
+  "title": "Vibe",
+  "count": "{{count}} pinned",
+  "overflow": "{{count}} more than the grid holds",
+  "manualLayout": "manual",
+  "fullscreen": "Toggle full screen",
+  "shortcuts": "All shortcuts",
+  "close": "Close the panel",
+  "running": "Running",
+  "unread": "Unread",
+  "of": "of {{total}}",
+  "input": {
+    "to": "Talking to",
+    "local": "this Mac"
+  },
+  "empty": {
+    "title": "No pinned conversations",
+    "body": "A pinned conversation appears here. Pin one from the sidebar's row menu, or press the add key once the panel has one."
+  },
+  "shortcutHint": "Keyboard:"
+}

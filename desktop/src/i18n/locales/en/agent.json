@@ -146,6 +146,7 @@
   },
   "composer": {
     "placeholder": "Describe the task, @ to add files, / for tools and skills",
+    "placeholderPlain": "Say it — press Return to send",
     "skillRecommend": {
       "cardTitle": "Recommended skill",
       "installAndUse": "Install & use",

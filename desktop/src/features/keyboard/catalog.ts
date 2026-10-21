@@ -85,7 +85,6 @@ export type CommandId
     // conversation is actually operated with.
     | "vibe.input.open"
     | "vibe.input.close"
-    | "vibe.input.send"
     | "vibe.block.previous"
     | "vibe.block.next"
     | "vibe.menu"
@@ -222,12 +221,18 @@ export const COMMANDS: readonly CommandSpec[] = [
   // ---- The input layer -----------------------------------------------------
   //
   // One editable element exists at a time in the panel, and this layer is the
-  // only one that runs over it. `↩` sends (or closes, on an empty draft), `Esc`
-  // backs out to the reading layer — a dictation is confirmed with the same key
-  // that sends, which is why the panel opens *into* this layer.
+  // only one that runs over it. `Esc` backs out to the reading layer.
+  //
+  // **There is no send command here, deliberately.** `↩` already sends in the
+  // composer (`MentionEditor.onSubmit`, a fixed key — see `FIXED_KEYS`), and it
+  // already stands down while an input method composes. Routing the same key
+  // through the command table would put the two on one keystroke: the dispatcher
+  // listens in the capture phase, so its handler would run first and the editor's
+  // submit second, sending from two owners on one press. The panel's send key is
+  // therefore the composer's own, and an empty draft closes the layer from there
+  // (`VIBE.md` §5.2).
   { id: "vibe.input.open", category: "vibe", defaultBinding: "enter", inTerminal: false, scope: "vibeZoom" },
   { id: "vibe.input.close", category: "vibe", defaultBinding: "escape", aliases: ["browserback"], inTerminal: false, overEditable: true, scope: "vibeInput" },
-  { id: "vibe.input.send", category: "vibe", defaultBinding: "enter", inTerminal: false, overEditable: true, scope: "vibeInput" },
   // ---- Keys the remote control has, and a keyboard does not ----------------
   //
   // The menu and home buttons live in the panel-wide scope: their meaning is the
