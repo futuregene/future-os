@@ -21,7 +21,7 @@ import {
   Sparkles,
   SquarePen,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useCommand } from "../../features/keyboard/commands";
 import { groupMergedRows, mergeConversations, rowKey } from "../../features/remote-peer/mergeConversations";
@@ -285,8 +285,6 @@ export function ActivityRail({
   const [chatSectionCollapsed, setChatSectionCollapsed] = useState(false);
   // Chat section header menu.
   const [chatSectionMenuOpen, setChatSectionMenuOpen] = useState(false);
-  // The recent view's own actions menu (its only way into a batch).
-  const [recentMenuOpen, setRecentMenuOpen] = useState(false);
   // Which list the rail shows: the tree (its own shape, and the default) or the
   // recent view. Persisted — it is how this window lists things, and a restart
   // should bring back the list the reader left.
@@ -294,9 +292,13 @@ export function ActivityRail({
   // Text search for the conversation list. Not persisted: the list is huge
   // and a leftover query after restart would feel like a stale filter.
   const [searchQuery, setSearchQuery] = useState("");
-  // The field is always drawn, so its command puts the caret in it rather than
-  // opening it — the same thing it did before, minus the mode.
-  const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
+  // Closing takes the filter with it: a hidden field must not keep filtering a
+  // list the reader thinks is complete.
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery("");
+  }, []);
   // Attention state for the Skills nav entry: pulsed for a few seconds when
   // the skill-guide banner is dismissed (its notice says the tutorial can be
   // reopened from the Skills page).
@@ -1002,7 +1004,7 @@ export function ActivityRail({
   useCommand("group.next", () => stepGroup(1), listShowing && groupStops.length > 1);
   // Filtering the list is a jump to the field, not a search of its own: the
   // command palette (a separate, later entry) navigates, this narrows.
-  useCommand("rail.search", () => searchInputRef.current?.focus(), listShowing);
+  useCommand("rail.search", () => setSearchOpen(true), listShowing);
 
   /**
    * One workspace's heading, built once and used by both list modes.
@@ -1192,14 +1194,14 @@ export function ActivityRail({
                       </div>
                     )
                   : null}
-                {/* Two bands, each with one job.
+                {/* Two rows, and each has one job.
 
-                    Band 1 answers "which list" — only the switch, and nothing
-                    else. Band 2 holds what belongs to *the list that switch
-                    shows*: its search, the machine picker the search filters
-                    within, and the list's own menu. The menu sat in band 1 until
-                    now, which read as an action on the switch while it is really
-                    an action on the list — the thing the reader is looking at. */}
+                    The first answers "which list" — only the switch, nothing else.
+                    The second is how that list is narrowed: the machine whose rows
+                    these are, and the search. Neither row offers a create action or
+                    a batch: those act on something *inside* the list, so they live
+                    on the heading they act on (a workspace, the chats section),
+                    which is also the only place a reader can see what they mean. */}
                 <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-view-band">
                   <div className="min-w-0 flex-1">
                     <RailViewSwitch onChange={setRailView} view={railView} />
@@ -1209,8 +1211,8 @@ export function ActivityRail({
                   ? (
                       <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-list-tools">
                         {/* One machine standing behind the list is named by the
-                            picker, `compact` because it now shares the row with
-                            the search field. */}
+                            picker, `compact` because it shares this row with the
+                            search. */}
                         {onChangeDeviceFilter && remotePeers.length > 0
                           ? (
                               <DeviceSelector
@@ -1222,30 +1224,21 @@ export function ActivityRail({
                               />
                             )
                           : null}
+                        {/* A magnifier until it is clicked, then the field in
+                            its place: the rail is a narrow column and the list is
+                            the point, so a field that is always drawn would spend
+                            a row on a control most sessions never touch. */}
                         {selectionMode
                           ? null
                           : (
                               <ConversationSearch
-                                inputRef={searchInputRef}
+                                onClose={closeSearch}
                                 onQueryChange={setSearchQuery}
+                                onToggleOpen={() => setSearchOpen(current => !current)}
+                                open={searchOpen}
                                 query={searchQuery}
                               />
                             )}
-                        {/* The recent view's own way into a batch. The tree
-                            reaches it from a section's menu (the chat section, a
-                            workspace); this view has no such heading — it is one
-                            flat list — so its one menu sits here, at the row's
-                            right end, and marks the whole list as the batch. */}
-                        {railView === "recent" && !selectionMode
-                          ? (
-                              <ChatSectionMenu
-                                label={t("activityRail.recentActions")}
-                                onOpenChange={setRecentMenuOpen}
-                                onSelect={() => enterSelectionMode("recent")}
-                                open={recentMenuOpen}
-                              />
-                            )
-                          : null}
                       </div>
                     )
                   : null}

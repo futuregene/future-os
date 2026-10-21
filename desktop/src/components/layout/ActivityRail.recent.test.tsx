@@ -117,6 +117,19 @@ function showRecent(container: HTMLElement) {
   act(() => trigger.click());
 }
 
+/** A workspace, for the cases that need the tree half to have something to draw. */
+function workspace(id: string, name: string) {
+  return {
+    id,
+    name,
+    kind: "user" as const,
+    path: `/tmp/${id}`,
+    cleanupStatus: "active" as const,
+    createdAt: 0,
+    updatedAt: 0,
+  };
+}
+
 /** The row titles the list draws, in document order. */
 function drawnTitles(container: HTMLElement): string[] {
   const list = container.querySelector("[data-testid=\"recent-rows\"]");
@@ -337,21 +350,71 @@ describe("a batch in the recent view", () => {
     view.unmount();
   });
 
-  it("offers every drawn row once the recent view is the list", () => {
+  /**
+   * The recent list has no batch of its own.
+   *
+   * A batch is "the rows under this heading" — a workspace, the chats section —
+   * and this list's only boundary is time, so a selection here would mean every
+   * conversation on the machine. Nothing above the list offers one either, so a
+   * conversation is removed from this view by its own row's menu.
+   */
+  it("offers no batch entry anywhere while the recent view is the list", () => {
     const threads = [
       thread("pinned", { title: "Pinned one", pinned: true, lastMessageAt: now - minute }),
       thread("plain", { title: "Plain one", lastMessageAt: now - hour }),
     ];
     const view = mount(<ActivityRail {...props(threads)} />);
     showRecent(view.container);
-    act(() => view.container.querySelector<HTMLButtonElement>("[aria-label=\"Recent list actions\"]")!.click());
-    act(() => [...view.container.querySelectorAll<HTMLElement>("button")]
-      .find(element => element.textContent === "Select chats")!
-      .click());
-    expect(rowCheckboxes(view.container)).toEqual([
-      "Select Pinned one",
-      "Select Plain one",
-    ]);
+
+    expect(view.container.querySelector("button[aria-label='Recent list actions']")).toBeNull();
+    // Both rows are drawn, and each keeps its own menu — that is how something
+    // leaves this list.
+    expect(rowCheckboxes(view.container)).toEqual([]);
+    expect(view.container.querySelector("button[aria-label='Thread actions for Plain one']")).not.toBeNull();
+    view.unmount();
+  });
+});
+
+/**
+ * Opening a conversation from this list keeps the reader in this list.
+ *
+ * Reported as "in the recent list, clicking a conversation jumps the sidebar to
+ * the workspaces". The cause was that opening a conversation moved the list
+ * selection along with it: the shell sets its section from the conversation's own
+ * mode, and the rail followed that into the workspace list — so the row the
+ * reader had just clicked disappeared from under the pointer. The list they
+ * chose is theirs to change.
+ *
+ * The shell's half of that is asserted here too: `active` goes to "workspace"
+ * (what the shell does for a workspace conversation) and the drawn list must not
+ * move with it.
+ */
+describe("opening a conversation from the recent list", () => {
+  it("keeps the recent list, whatever list the conversation belongs to", () => {
+    const threads = [
+      thread("in-workspace", { mode: "workspace", title: "In a workspace", workspaceId: "ws" }),
+      thread("a-chat", { mode: "chat", title: "A chat" }),
+    ];
+    // A real workspace, so the tree half has something to draw: without one, a
+    // regression that rendered both halves at once would look like a clean recent
+    // list.
+    const workspaces = [workspace("ws", "Charts")];
+    const view = mount(<ActivityRail {...props(threads, { active: "chat", workspaces })} />);
+    showRecent(view.container);
+    expect(drawnTitles(view.container)).toEqual(["A chat", "In a workspace"]);
+
+    // The shell selects the workspace conversation, and its section follows the
+    // conversation's mode — the exact condition that used to move the list.
+    view.rerender(
+      <ActivityRail {...props(threads, { active: "workspace", activeThreadId: "in-workspace", workspaces })} />,
+    );
+
+    // Still the recent list, and *only* it: same rows, same caption, and none of
+    // the tree's own furniture (a workspace group heading above the rows).
+    expect(drawnTitles(view.container)).toEqual(["A chat", "In a workspace"]);
+    expect(captions(view.container)).toEqual(["earlier:Earlier:2"]);
+    expect(view.container.querySelector("[data-testid='local-group-heading']")).toBeNull();
+    expect(view.container.querySelector("button[aria-label='Collapse workspace']")).toBeNull();
     view.unmount();
   });
 });

@@ -55,6 +55,8 @@
     "threadsSelected": "{{count}} selected",
     "deleteSelected": "Delete",
     "tasks": "Scheduled tasks",
+    "openSearch": "Search conversations",
+    "closeSearch": "Close search",
     "searchConversations": "Search conversations",
     "clearSearch": "Clear search",
     "noMatches": "No matching conversations",

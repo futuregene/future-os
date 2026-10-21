@@ -16,14 +16,12 @@ vi.mock("../../lib/useFloatingScrollbar", () => ({
 }));
 
 /**
- * The rail's two bands: which list, then that list's own controls.
+ * The rows above the rail's list, and what is *not* in them.
  *
- * These are *structure* assertions, not behaviour ones: the complaint they
- * answer is about where things are drawn, and a behaviour test that reads the
- * list would stay green with the search field back on a row of its own. So each
- * reads container relationships — which band an element is inside, and where in
- * it — which is the only shape that goes red when the layout is put back the way
- * it was.
+ * The complaint these answer is about what is drawn where, so each reads
+ * container relationships — which row an element is inside, what else is in it —
+ * rather than a label. A behaviour test that reads the list stays green with a
+ * control moved back into the wrong row; these do not.
  */
 
 function thread(id: string, title: string) {
@@ -99,96 +97,145 @@ function band(container: HTMLElement, id: "rail-view-band" | "rail-list-tools") 
   return container.querySelector<HTMLElement>(`[data-testid="${id}"]`);
 }
 
-const searchField = (root: HTMLElement) => root.querySelector<HTMLInputElement>("input[aria-label='Search conversations']");
-/** The recent list's menu trigger — the "..." that is not a section heading's. */
-const recentMenu = (root: HTMLElement) => root.querySelector<HTMLButtonElement>("button[aria-label='Recent list actions']");
+function searchGlyph(root: HTMLElement) {
+  return root.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']");
+}
+function searchField(root: HTMLElement) {
+  return root.querySelector<HTMLInputElement>("input[aria-label='Search conversations']");
+}
 
-describe("the rail's bands", () => {
+describe("the rail's rows above the list", () => {
   beforeEach(() => {
     localStorage.clear();
     document.body.innerHTML = "";
   });
 
-  it("keeps the switch's band to the switch alone", async () => {
+  /** The switch's own row holds the switch, and nothing else — in both lists. */
+  it.each(["workspace", "recent"] as const)("keeps the switch's row to the switch (%s)", async (view) => {
     const { container } = await render(props());
-    // Read in the recent view, where the list's own menu exists at all: in the
-    // tree view there is no such menu to misplace, so a default-view assertion
-    // would pass on a layout that has it in the wrong band.
-    act(() => container.querySelector<HTMLButtonElement>("[data-testid='rail-view-recent']")!.click());
+    if (view === "recent")
+      act(() => container.querySelector<HTMLButtonElement>("[data-testid='rail-view-recent']")!.click());
     await flushAsync();
 
     const viewBand = band(container, "rail-view-band")!;
     expect(viewBand.querySelector("[data-testid='rail-view-switch']")).not.toBeNull();
-    // Nothing that belongs to the list: no search field, no list menu. The menu
-    // used to sit here, one pixel from the switch it does not act on.
     expect(viewBand.querySelector("input")).toBeNull();
-    expect(recentMenu(viewBand)).toBeNull();
     expect(viewBand.querySelector("button[aria-haspopup='menu']")).toBeNull();
-    // And the menu does exist — otherwise the assertions above would be about a
-    // control that is not on screen at all.
-    expect(recentMenu(container)).not.toBeNull();
   });
 
-  it("keeps the search field on screen, in the list's own band, with no interaction", async () => {
+  /** Two lists, in this order, and no third. */
+  it("offers the workspace list and the recent list, and nothing else", async () => {
     const { container } = await render(props());
-    const tools = band(container, "rail-list-tools")!;
-    const field = searchField(tools);
-    expect(field).not.toBeNull();
-    // Drain the click-into-a-mode path: the field used to appear only after a
-    // glyph was clicked. If it is here with nothing done, that path is gone.
-    expect(field!.value).toBe("");
-    expect(band(container, "rail-view-band")!.contains(field)).toBe(false);
+    const tabs = [...container.querySelectorAll<HTMLButtonElement>("[data-testid='rail-view-switch'] button")];
+    expect(tabs.map(tab => tab.getAttribute("data-testid"))).toEqual(["rail-view-workspace", "rail-view-recent"]);
+    expect(tabs.map(tab => tab.textContent?.trim())).toEqual(["Workspaces", "Recent"]);
   });
 
-  it("shares one row between the search field and the recent list's menu", async () => {
+  /**
+   * The search is one glyph until it is clicked.
+   *
+   * The rail is a narrow column and the list is the point; a field drawn all the
+   * time spends a row on a control most sessions never touch. So the row holds a
+   * magnifier, and the field appears in its place on a click.
+   */
+  it("draws a magnifier and no field, until the magnifier is clicked", async () => {
     const { container } = await render(props());
-    act(() => container.querySelector<HTMLButtonElement>("[data-testid='rail-view-recent']")!.click());
+
+    expect(searchField(container)).toBeNull();
+    const glyph = searchGlyph(container)!;
+    expect(glyph).not.toBeNull();
+
+    act(() => glyph.click());
     await flushAsync();
 
-    const tools = band(container, "rail-list-tools")!;
-    const trigger = recentMenu(tools);
-    expect(trigger).not.toBeNull();
-    // Same band as the field: that is the whole point of the change — one row
-    // holding the list's actions, instead of a row of their own for each. A
-    // sibling band would satisfy "in a band" and fail this.
-    expect(tools.contains(searchField(tools))).toBe(true);
-    // And at its right end.
-    expect(tools.lastElementChild!.contains(trigger)).toBe(true);
+    const field = searchField(container);
+    expect(field).not.toBeNull();
+    expect(field!.value).toBe("");
+    // It took the glyph's place in the same row rather than pushing a new one.
+    expect(band(container, "rail-list-tools")!.contains(field)).toBe(true);
   });
 
-  it("orders the band: machine picker, search, then the list's menu", async () => {
+  it("closes the field, and clears the filter with it", async () => {
+    const { container } = await render({ ...props(), active: "chat" });
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
+
+    const input = searchField(container)!;
+    await act(async () => {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      descriptor?.set?.call(input, "Alpha");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushAsync();
+    const list = container.querySelector("[data-activity-rail-content]")!;
+    expect(list.textContent).not.toContain("Beta chat");
+
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Close search']")!.click());
+    await flushAsync();
+
+    // No field, and no forgotten filter: the whole list is back.
+    expect(searchField(container)).toBeNull();
+    expect(list.textContent).toContain("Beta chat");
+  });
+
+  /** The machine picker stays beside the glyph, and beside the open field. */
+  it("keeps the machine picker in the search's own row", async () => {
     const p = props();
     p.remotePeers = [peer];
     p.onChangeDeviceFilter = vi.fn();
     p.onManageDesktops = vi.fn();
     const { container } = await render(p);
-    act(() => container.querySelector<HTMLButtonElement>("[data-testid='rail-view-recent']")!.click());
-    await flushAsync();
 
     const tools = band(container, "rail-list-tools")!;
-    const children = Array.from(tools.children);
-    const pickerIndex = children.findIndex(child => child.textContent?.includes("All devices"));
-    const searchIndex = children.findIndex(child => child.contains(searchField(tools)));
-    const menuIndex = children.findIndex(child => child.contains(recentMenu(tools)));
-    expect(pickerIndex).toBe(0);
-    expect(searchIndex).toBe(1);
-    expect(menuIndex).toBe(2);
+    const picker = () => container.querySelector("button[aria-label='All devices']");
+    expect(tools.contains(picker())).toBe(true);
+    expect(tools.contains(searchGlyph(container))).toBe(true);
+    // Compact: glyph, name and chevron in a fraction of the row.
+    expect(picker()!.className).toContain("max-w-30");
+
+    act(() => searchGlyph(container)!.click());
+    await flushAsync();
+    expect(tools.contains(picker())).toBe(true);
+    expect(tools.contains(searchField(container))).toBe(true);
   });
 
-  it("drops the list's band while a batch is being selected", async () => {
-    const { container } = await render(props());
-    act(() => container.querySelector<HTMLButtonElement>("[data-testid='rail-view-recent']")!.click());
-    await flushAsync();
-    act(() => recentMenu(container)!.click());
-    await flushAsync();
-    act(() => [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find(button => button.textContent?.includes("Select chats"))!
-      .click());
+  /**
+   * Nothing above the list offers a batch or a create action.
+   *
+   * Those belong to what they act on: "new workspace" and "new conversation" sit
+   * on the section headings inside the list, and a batch is entered from a
+   * heading's own menu. A `…` up here marked "the whole list", which is a
+   * selection with no boundary a reader can point at.
+   */
+  it.each(["workspace", "recent"] as const)("draws no create control and no menu above the list (%s)", async (view) => {
+    const p = props();
+    p.remotePeers = [peer];
+    p.onChangeDeviceFilter = vi.fn();
+    p.onManageDesktops = vi.fn();
+    const { container } = await render(p);
+    if (view === "recent")
+      act(() => container.querySelector<HTMLButtonElement>("[data-testid='rail-view-recent']")!.click());
     await flushAsync();
 
-    // The selection toolbar replaces the list's controls; the switch stays, since
-    // which list the batch covers is still the question it answers.
-    expect(band(container, "rail-list-tools")).toBeNull();
-    expect(band(container, "rail-view-band")).not.toBeNull();
+    for (const row of [band(container, "rail-view-band")!, band(container, "rail-list-tools")!]) {
+      expect(row.querySelector("button[aria-haspopup='menu']")).toBeNull();
+      expect(row.querySelector("button[aria-label='New workspace']")).toBeNull();
+      expect(row.querySelector("button[aria-label='New chat']")).toBeNull();
+    }
+    expect(container.querySelector("button[aria-label='Recent list actions']")).toBeNull();
+  });
+
+  /**
+   * A batch is entered from inside the list, which is still the only way in.
+   *
+   * The workspace and chat headings keep their own menus; removing the one above
+   * the list must not have removed those with it.
+   */
+  it("keeps a heading's own menu for a batch", async () => {
+    const p = props();
+    p.threads = [thread("a", "Alpha chat")];
+    const { container } = await render(p);
+
+    expect(container.querySelector("button[aria-label='Chat section actions']")).not.toBeNull();
   });
 });

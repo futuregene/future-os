@@ -396,22 +396,21 @@ describe("activity rail keyboard commands", () => {
   });
 
   /**
-   * The command is a focus now, not an open.
+   * The key opens the filter box, which is otherwise a magnifier.
    *
-   * The field is always drawn (see `ActivityRail.toolbar.test.tsx` for the
-   * structure that guarantees it), so what the key has to do is put the caret in
-   * it — which is the only thing that was useful about it before.
+   * The field is a mode (see `ActivityRail.toolbar.test.tsx`), so reaching it
+   * without a mouse is what this command is for: it opens it, and the field takes
+   * the caret itself the moment it appears.
    */
-  it("puts the caret in the filter box", async () => {
+  it("opens the filter box", async () => {
     const p = props([thread("root"), thread("second")]);
     const view = mount(<ActivityRail {...p} />);
     const field = () => view.container.querySelector("input[aria-label=\"Search conversations\"]");
-    // Present with nothing done, and not where the caret is.
-    expect(field()).not.toBeNull();
-    expect(document.activeElement).not.toBe(field());
+    expect(field()).toBeNull();
 
     press({ code: "KeyF", ctrlKey: true, key: "f", shiftKey: true });
     await act(async () => {});
+    expect(field()).not.toBeNull();
     expect(document.activeElement).toBe(field());
     view.unmount();
   });

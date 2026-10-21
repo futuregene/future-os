@@ -55,6 +55,8 @@
     "threadsSelected": "已选择 {{count}} 个",
     "deleteSelected": "删除",
     "tasks": "定时任务",
+    "openSearch": "搜索会话",
+    "closeSearch": "关闭搜索",
     "searchConversations": "搜索会话",
     "clearSearch": "清除搜索",
     "noMatches": "没有匹配的会话",

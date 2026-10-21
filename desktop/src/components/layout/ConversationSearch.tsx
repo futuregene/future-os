@@ -1,74 +1,86 @@
-import type { RefObject } from "react";
 import { Search, X } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
 
 /**
- * The conversation search field above the activity rail's list.
+ * The activity rail's conversation search: a glyph that opens into a field.
  *
- * **Always on screen**, in the row the list's own controls occupy (see
- * `RailListTools` in `ActivityRail`). It used to be a glyph that expanded into
- * a field on click, on its own row, which cost a whole line for a control that
- * was used rarely and — worse — was invisible as a feature: nothing about a
- * small magnifier says "this list is searchable", so the affordance had to be
- * taught. A field that is always there needs no lesson, and it shares a row
- * with the list's actions instead of pushing a row of its own.
+ * **A magnifier, until it is clicked.** The rail is a narrow column and the list
+ * below it is the point; a field that is always drawn spends a row on a control
+ * most sessions never touch. So the row holds one small glyph, and clicking it
+ * expands the field in place — the glyph's own place, so nothing moves.
  *
- * Escape clears the query and hands the keyboard back (it does not remove the
- * field, because the field is not a mode). It only answers while this input has
- * focus: a stray Escape pressed in the transcript must not wipe a filter the
- * reader is not looking at.
+ * Escape closes and clears the query, because a closed field must not leave a
+ * filter behind that the reader cannot see.
  */
 export function ConversationSearch({
   className,
-  inputRef: forwardedInputRef,
+  onClose,
   onQueryChange,
+  open,
+  onToggleOpen,
   query,
 }: {
   className?: string;
-  /**
-   * The field's own input, when the owner needs to put the caret in it (the
-   * rail's "search sessions" command does). The field is always on screen, so
-   * that command is a focus, not an open.
-   */
-  inputRef?: RefObject<HTMLInputElement | null>;
+  onClose: () => void;
   onQueryChange: (query: string) => void;
+  open: boolean;
+  onToggleOpen: () => void;
   query: string;
 }) {
   const { t } = useTranslation("layout");
-  const ownRef = useRef<HTMLInputElement>(null);
-  const inputRef = forwardedInputRef ?? ownRef;
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (query.length === 0)
-      return;
+    if (open)
+      inputRef.current?.focus();
+  }, [open]);
+
+  useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Escape" || document.activeElement !== inputRef.current)
-        return;
-      event.stopPropagation();
-      onQueryChange("");
-      inputRef.current?.blur();
+      if (event.key === "Escape" && open) {
+        event.stopPropagation();
+        onClose();
+      }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [inputRef, onQueryChange, query]);
+  }, [onClose, open]);
+
+  if (!open) {
+    return (
+      <button
+        aria-label={t("activityRail.openSearch")}
+        className={cn(
+          // Sized and placed like the compact controls beside it, so the closed
+          // state is one more glyph in the row rather than a gap.
+          "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft",
+          className,
+        )}
+        onClick={onToggleOpen}
+        title={t("activityRail.openSearch")}
+        type="button"
+      >
+        <Search className="size-3.5" />
+      </button>
+    );
+  }
 
   return (
     <div
       className={cn(
-        "flex h-7 min-w-0 flex-1 items-center gap-1 rounded-md border border-line-soft bg-surface px-1.5",
+        "flex h-8 flex-1 items-center gap-1 rounded-md border border-line-soft bg-surface px-2",
         className,
       )}
-      data-testid="rail-search"
     >
-      <Search aria-hidden className="size-3.5 shrink-0 text-ink-muted" />
+      <Search className="size-3.5 shrink-0 text-ink-muted" />
       <input
         ref={inputRef}
         aria-label={t("activityRail.searchConversations")}
         autoCapitalize="none"
         autoCorrect="off"
-        className="min-w-0 flex-1 bg-transparent text-xs text-ink placeholder:text-ink-muted focus:outline-none"
+        className="min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-ink-muted focus:outline-none"
         onChange={event => onQueryChange(event.target.value)}
         placeholder={t("activityRail.searchConversations")}
         spellCheck={false}
@@ -78,7 +90,7 @@ export function ConversationSearch({
       {query.length > 0 && (
         <button
           aria-label={t("activityRail.clearSearch")}
-          className="inline-flex size-4 shrink-0 items-center justify-center rounded text-ink-muted hover:bg-surface-subtle hover:text-ink-soft"
+          className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted hover:bg-surface-subtle hover:text-ink-soft"
           onClick={() => onQueryChange("")}
           title={t("activityRail.clearSearch")}
           type="button"
@@ -86,6 +98,15 @@ export function ConversationSearch({
           <X className="size-3" />
         </button>
       )}
+      <button
+        aria-label={t("activityRail.closeSearch")}
+        className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted hover:bg-surface-subtle hover:text-ink-soft"
+        onClick={onClose}
+        title={t("activityRail.closeSearch")}
+        type="button"
+      >
+        <X className="size-3.5" />
+      </button>
     </div>
   );
 }

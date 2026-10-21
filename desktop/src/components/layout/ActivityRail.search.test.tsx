@@ -103,6 +103,8 @@ describe("activity rail conversation search", () => {
       [],
     );
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
     await act(async () => {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -143,6 +145,8 @@ describe("activity rail conversation search", () => {
       onManageDesktops: vi.fn(),
     };
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
     await act(async () => {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -158,6 +162,8 @@ describe("activity rail conversation search", () => {
   it("shows a 'no matches' hint when the filter excludes everything", async () => {
     const p = props([thread("a", "Alpha chat")], []);
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
     await act(async () => {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -169,17 +175,11 @@ describe("activity rail conversation search", () => {
     expect(list.textContent).toContain("No matching conversations");
   });
 
-  /**
-   * Escape clears the query and leaves the field in place.
-   *
-   * The field is always on screen now, so there is no "open" state for Escape
-   * to close: what it can do is take the filter away and hand the keyboard back
-   * to the list. It answers only while the field has focus, which is the next
-   * test's point.
-   */
-  it("clears the query on Escape and keeps the field", async () => {
-    const p = props([thread("a", "Alpha chat"), thread("b", "Beta chat")], []);
+  it("clears search when Escape is pressed", async () => {
+    const p = props([thread("a", "Alpha chat")], []);
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
     await act(async () => {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -187,48 +187,11 @@ describe("activity rail conversation search", () => {
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await flushAsync();
-    const list = container.querySelector("[data-activity-rail-content]")!;
-    expect(list.textContent).not.toContain("Beta chat");
-
-    act(() => input.focus());
     await act(async () => {
       input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
     await flushAsync();
-
-    // Still there (it is not a mode), empty, and the whole list is back.
-    const field = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']");
-    expect(field).not.toBeNull();
-    expect(field!.value).toBe("");
-    expect(list.textContent).toContain("Beta chat");
-  });
-
-  /**
-   * Escape pressed anywhere else must not wipe the filter.
-   *
-   * The field is always mounted, so its Escape listener is live while the reader
-   * is reading the transcript. A bare window listener would empty a search the
-   * reader is not looking at, from a keystroke meant for something else.
-   */
-  it("ignores Escape while the field does not have focus", async () => {
-    const p = props([thread("a", "Alpha chat"), thread("b", "Beta chat")], []);
-    const { container } = await render(p);
-    const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
-    await act(async () => {
-      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
-      descriptor?.set?.call(input, "Alpha");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await flushAsync();
-
-    act(() => input.blur());
-    act(() => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    });
-    await flushAsync();
-
-    expect(container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!.value).toBe("Alpha");
-    expect(container.querySelector("[data-activity-rail-content]")!.textContent).not.toContain("Beta chat");
+    expect(container.querySelector("input[aria-label='Search conversations']")).toBeNull();
   });
 
   it("coexists with device filter and selection mode", async () => {
@@ -259,6 +222,8 @@ describe("activity rail conversation search", () => {
       onManageDesktops: vi.fn(),
     };
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
     await act(async () => {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -275,6 +240,8 @@ describe("activity rail conversation search", () => {
   it("empties the filter from the clear button, which only exists while there is a query", async () => {
     const p = props([thread("a", "Alpha chat"), thread("b", "Beta chat")], []);
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
 
     // Nothing typed: no clear affordance at all.
     expect(container.querySelector("button[aria-label='Clear search']")).toBeNull();
@@ -320,6 +287,8 @@ describe("activity rail conversation search", () => {
       [storedWorkspace("ws_charts", "Charts workspace"), storedWorkspace("ws_other", "Other")],
     );
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
     await act(async () => {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -368,6 +337,8 @@ describe("activity rail conversation search", () => {
       onManageDesktops: vi.fn(),
     };
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
     await act(async () => {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -392,6 +363,8 @@ describe("activity rail conversation search", () => {
   it("counts a matching workspace row as a result", async () => {
     const p = props([workspaceThread("ws_row", "ws_a", "the needle")], [storedWorkspace("ws_a", "Alpha")]);
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
     await act(async () => {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
