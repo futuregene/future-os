@@ -3495,6 +3495,7 @@ mod multi_device_tests {
 /// is paired, because there the invitation *is* what was asked for — so the
 /// difference has to live in the start, not in the caller's good intentions.
 mod switch_tests {
+    use super::runtime_tests::test_creds;
     use super::*;
     use crate::remote::test_support::{init_store, sign_in, HomeGuard, MockPlatform};
 
@@ -3531,6 +3532,57 @@ mod switch_tests {
             pairing::load_slots().is_empty(),
             "nothing may be written to the pairing book"
         );
+    }
+
+    /// "Empty" is not one state, and the arm above is only half the story: a book
+    /// the *user* emptied reads "on, serving nothing", while a book the platform
+    /// emptied by refusing the credential is a fault the operator has to handle.
+    /// The switch mints no invitation, so that start has nothing left to serve —
+    /// and it must say *why* instead of reporting the unpaired machine's answer,
+    /// which is what made `future host` wait forever after a revocation. This is
+    /// also the phase a revocation noticed mid-run produces, so both readings of
+    /// one event agree.
+    #[tokio::test]
+    async fn the_switch_reports_a_revoked_device_instead_of_an_empty_machine() {
+        let _home = HomeGuard::new("remote-switch-revoked");
+        init_store();
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        pairing::save_creds(&test_creds(
+            "pair_switched_revoked",
+            "nats://127.0.0.1:9",
+            3600,
+        ))
+        .unwrap();
+        platform.respond_refresh_revoked();
+
+        let status = super::supervisor::enable()
+            .await
+            .expect("a refused credential is a status, not a local fault");
+
+        assert_eq!(status.phase, RemotePhase::Revoked, "{status:?}");
+        assert_eq!(status.reason, Some(RemoteFailureReason::CredentialRevoked));
+        assert!(
+            status.pairing_code.is_none(),
+            "the switch minted an invitation nobody asked for: {status:?}"
+        );
+        assert!(
+            !platform
+                .requests()
+                .iter()
+                .any(|(_, path, _)| path.ends_with("/remote/pair/code")),
+            "the switch must not replace a revoked device on its own: {:?}",
+            platform.requests()
+        );
+        assert!(
+            pairing::load_slots().is_empty(),
+            "the unusable credential must be dropped rather than retried forever"
+        );
+
+        // The supervisor is process-global: a leaked `revoked` would be reported
+        // by whichever test reads `status()` next, whatever it set up.
+        stop();
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
     }
 
     /// The same machine, asked for an invitation on purpose: the CLI and the

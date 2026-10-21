@@ -246,7 +246,11 @@ and none of this applies.
 - A host entry with the switch off starts (or stays) idle instead of exiting:
   it is the machine's control endpoint, so `future remote enable` turns it back on
   without a restart. A stop while the switch is *on* is still a fault and still
-  ends the entry.
+  ends the entry. "On and empty" is not a fault by itself — a book emptied by your
+  own `remove` keeps the entry running, waiting to be asked for a new device — but
+  a device the platform **revoked** is: the unusable credential is dropped, nothing
+  is left to serve, and the entry stops naming `CredentialRevoked` instead of
+  waiting for an invitation nobody asked for.
 - Switching off keeps every pairing. `future remote devices remove` is what
   unpairs.
 
