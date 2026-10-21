@@ -149,7 +149,8 @@ Independent testing includes units and necessary library integration. GUI-free d
 | Arguments and terminal cases in `headless/mod.rs` | CLI headless module/process tests | Rejected flags, side-effect-free help, TTY, login/pairing display and exit codes |
 | `headless/agent.rs`, `agent_host`, shutdown coordinator and shared scheduling | `future-host` units/integration | Agent ownership, startup/readiness failure, stop order, total deadline and cleanup |
 | Store, business bridge, config/identity and Remote business host | `future-host` or existing shared packages | Original database/file/approval assertions, beyond verifying interface calls |
-| [headless_cli.rs](../../desktop/src-tauri/tests/headless_cli.rs) | Real CLI `future headless` process tests; retain GUI-specific portions in Desktop | Built `future`, first-run non-TTY refusal, existing config, signals, exclusion and external-Agent survival |
+| [headless_cli.rs](../../cli/tests/headless_cli.rs) | CLI real `future headless` process tests | Built `future`, first-run non-TTY refusal, existing config, signals, exclusion and external-Agent survival |
+| [desktop_entry.rs](../../desktop/src-tauri/tests/desktop_entry.rs) | Desktop entry wiring; GUI-disabled compatibility in Misc | Help, retired arguments, CLI hint and absence of startup state |
 | [remote_start_refusal.rs](../../cli/tests/remote_start_refusal.rs) | CLI headless product process tests; shared fault policy in host/Remote libraries | Real active host, platform refusal, single-device revocation, recovery budgets and persisted results |
 | Remote packages and [standalone interoperability](../../tests/remote-interop/Cargo.toml) | Retain their existing owners | Protocol, crypto, role state machines and real endpoint interoperability remain outside the host |
 | Tauri commands, windows/menus, IPC and GUI lifecycle | Desktop | Real shared-backend wiring, window exit and GUI plugin behavior |

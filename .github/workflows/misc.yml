@@ -18,6 +18,7 @@ on:
           - agent-lifecycle
           - remote-compile-measurement
           - headless-measurement
+          - desktop-entry-compat
           - full-regression
       measurement_candidate:
         description: Optional full candidate SHA for Headless observation
@@ -35,6 +36,40 @@ jobs:
     uses: ./.github/workflows/ci.yml
     with:
       full: true
+
+  desktop-entry-compat:
+    name: Desktop GUI-disabled entry compatibility (${{ matrix.os }})
+    if: inputs.suite == 'desktop-entry-compat'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      CARGO_PROFILE_TEST_DEBUG: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: node scripts/ci/setup-rust.mjs
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-ci-desktop
+          save-if: false
+          workspaces: .
+          cache-all-crates: true
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: bash scripts/ci/install-apt-packages.sh build-essential binutils mold pkg-config
+      - name: Check GUI-disabled targets
+        run: cargo clippy --locked -p futureos --no-default-features --all-targets -- -D warnings
+      - name: Compile GUI-disabled entry test
+        run: cargo test --locked --no-run -p futureos --no-default-features --test desktop_entry
+      - name: Verify refusal, CLI hint and absence of startup state
+        run: cargo test --locked --no-fail-fast -p futureos --no-default-features --test desktop_entry
 
   remote-compile-measurement:
     name: Matched Windows Rust compilation

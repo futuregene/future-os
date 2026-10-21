@@ -20,9 +20,6 @@ switch (phase) {
   case 'fmt': run('cargo', ['fmt', ...flags, '--check']); break;
   case 'build':
     run('cargo', ['test', '--locked', '--no-run', ...flags]);
-    if (packages.includes('futureos')) {
-      run('cargo', ['test', '--locked', '--no-run', '-p', 'futureos', '--no-default-features', '--test', 'headless_cli']);
-    }
     break;
   case 'clippy':
     run('cargo', ['clippy', '--locked', ...flags, '--all-targets', '--', '-D', 'warnings']);
@@ -30,7 +27,6 @@ switch (phase) {
       run('cargo', ['clippy', '--locked', '-p', name, '--features', 'test-support', '--all-targets', '--', '-D', 'warnings']);
     }
     if (packages.includes('futureos')) {
-      run('cargo', ['clippy', '--locked', '-p', 'futureos', '--no-default-features', '--all-targets', '--', '-D', 'warnings']);
       run('cargo', ['clippy', '--locked', '-p', 'future-cli', '-p', 'futureos', '--all-targets', '--', '-D', 'warnings']);
     }
     break;
@@ -40,9 +36,6 @@ switch (phase) {
       const others = packages.filter(name => name !== 'future-host');
       if (others.length) run('cargo', ['test', '--locked', '--no-fail-fast', ...others.flatMap(name => ['-p', name])]);
     } else run('cargo', ['test', '--locked', '--no-fail-fast', ...flags]);
-    if (packages.includes('futureos')) {
-      run('cargo', ['test', '--locked', '--no-fail-fast', '-p', 'futureos', '--no-default-features', '--test', 'headless_cli']);
-    }
     break;
   default: throw new Error(`Unknown Rust phase: ${phase}`);
 }

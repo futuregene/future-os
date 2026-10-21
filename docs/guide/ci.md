@@ -33,10 +33,12 @@ do not claim Simulator UI/E2E coverage.
 For Rust groups, Build uses `cargo test --locked --no-run` to compile
 the test targets; Tests uses the same package selection and profile to execute
 them. There is no preceding standalone dev-profile build. Documentation tests
-can still compile examples during Tests. Desktop precompiles its default GUI
-tests and its separate no-default-features headless integration target, without
-the standalone product or combined CLI/GUI builds. Packaging and signing belong
-to the release workflows.
+can still compile examples during Tests. Desktop precompiles only its default GUI
+test targets, including `desktop_entry` argument/startup checks. Actual
+`future headless` process tests belong to CLI. The GUI-disabled Desktop entry
+compatibility test and Clippy run only in Misc (`desktop-entry-compat`). Regular
+CI has no standalone product or combined CLI/GUI build. Packaging and signing
+belong to the release workflows.
 
 Rust test invocations use `--no-fail-fast`: a failed target still fails its job,
 but Cargo continues through the other selected test targets so one run exposes
@@ -177,7 +179,7 @@ crate groups or packages nested below them.
 | tui-cli | tui, cli |
 | desktop | futureos |
 
-The Desktop group also verifies GUI-disabled and combined CLI/GUI builds.
+Desktop Clippy also checks the combined CLI/GUI feature resolution.
 Remote client/server Clippy covers `test-support`. Linux Host tests use an
 isolated broker. Other native platforms run the Host crate's own suite.
 Core groups share one cache per OS; the main CLI test job is its sole writer.
@@ -207,6 +209,7 @@ gh workflow run misc.yml --ref <branch> -f suite=windows-update
 | flaky-stress | Repeated Agent, TUI and CLI tests |
 | agent-lifecycle | Native three-OS lifecycle, Host/CLI boundaries and Host docs |
 | remote-compile-measurement | Matched cold Windows compilation |
+| desktop-entry-compat | Three-OS GUI-disabled Desktop Clippy and entry refusal/hint/no-state regression |
 | headless-measurement | Matched Headless build/startup observation; optional `measurement_candidate` SHA |
 | full-regression | All regular CI projects, without specialty suites |
 

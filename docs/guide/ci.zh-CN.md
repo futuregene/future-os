@@ -29,9 +29,10 @@ iOS 的 Foundation 测试不代表 Simulator UI/E2E 覆盖。
 
 Rust 组的 Build 使用 `cargo test --locked --no-run` 编译测试目标，
 Tests 使用相同的包选择和 profile 执行测试，不再先跑一次独立的 dev-profile 构建。
-文档测试仍可能在 Tests 中编译示例。Desktop 预编译默认 GUI 测试和单独的
-`--no-default-features` headless 集成测试目标，不执行独立产品或 CLI/GUI 联合构建。
-打包和签名归发布工作流负责。
+文档测试仍可能在 Tests 中编译示例。Desktop 只预编译默认 GUI 测试目标，
+其中 `desktop_entry` 验证参数与启动副作用；真正的 `future headless` 进程测试归 CLI。
+关闭 GUI 的 Desktop 入口兼容性测试与 Clippy 只在 Misc 的 `desktop-entry-compat` 中运行。
+常规 CI 不执行独立产品或 CLI/GUI 联合构建；打包和签名归发布工作流负责。
 
 Rust 测试命令使用 `--no-fail-fast`：任一测试目标失败仍使 job 失败，但 Cargo 会继续执行
 其他选中的测试目标，让一轮 CI 收集它们的失败，避免每次只暴露第一个失败目标。
@@ -160,7 +161,7 @@ TS 项目各自拥有一个 Linux build/test runner 和一个独立 Linux lint r
 | tui-cli | tui、cli |
 | desktop | futureos |
 
-Desktop 组额外验证关闭 GUI 和 CLI/GUI 组合构建；Remote client/server 的 Clippy
+Desktop 的 Clippy 额外检查 CLI/GUI 组合特性解析；Remote client/server 的 Clippy
 覆盖 `test-support`；Linux Host 使用隔离 broker，其他平台执行 Host 自有套件。
 Core 分组共享每个操作系统的一份缓存，由 main CLI test job 单独写入；Desktop
 使用独立 GUI 缓存，由 main Desktop test job 写入。PR/check/Misc 不写入大型私有缓存。
@@ -187,6 +188,7 @@ gh workflow run misc.yml --ref <branch> -f suite=windows-update
 | flaky-stress | 重复运行 Agent、TUI、CLI 测试 |
 | agent-lifecycle | 三平台原生生命周期、Host/CLI 边界、Host 文档 |
 | remote-compile-measurement | Windows 冷编译对照 |
+| desktop-entry-compat | 三平台关闭 GUI 的 Desktop Clippy，以及入口拒绝、CLI 提示、无状态副作用回归 |
 | headless-measurement | Headless 构建/启动观测，可传 `measurement_candidate` SHA |
 | full-regression | 全部常规 CI 项目，不包含专项 |
 

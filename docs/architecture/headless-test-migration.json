@@ -37064,7 +37064,7 @@
       "attribute": "#[test]",
       "ignored": false,
       "plannedOwner": "futureos",
-      "target": "desktop/src-tauri/tests/headless_cli.rs",
+      "target": "desktop/src-tauri/tests/desktop_entry.rs",
       "status": "retained"
     },
     {
@@ -37231,7 +37231,7 @@
       "attribute": "#[test]",
       "ignored": false,
       "plannedOwner": "futureos",
-      "target": "desktop/src-tauri/tests/headless_cli.rs",
+      "target": "desktop/src-tauri/tests/desktop_entry.rs",
       "status": "retained"
     },
     {
