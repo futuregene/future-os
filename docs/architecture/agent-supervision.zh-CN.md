@@ -13,8 +13,8 @@
 
 | 入口 | 进程内跑 Agent | 拉起外部 Agent | 持有的锁 |
 |---|---|---|---|
-| `future agent` | 它自己 | — | `agent/agent-instance.lock`（服务锁）+ socket 的 `.owner.lock`（端点租约） |
-| `future headless` | 取到服务锁时 | 否 | `app/desktop.lock`（宿主锁）+ 视情况服务锁 |
+| `future agent` | 它自己 | — | `~/.future/agent/agent-instance.lock`（服务锁）+ socket 的 `.owner.lock`（端点租约） |
+| `future headless` | 取到服务锁时 | 否 | `~/.future/app/desktop.lock`（宿主锁）+ 视情况服务锁 |
 | `future tui` | 否 | 是：`future agent --grpc-addr auto` 子进程 | 都不持 |
 
 三者的判定都收敛在 [`select_agent`](../../packages/rpc/src/connection.rs)：先握手外部服务，失败且确认本地端点缺席（`NotFound`/`ConnectionRefused`）+ [`check_instance_lock`](../../packages/rpc/src/connection.rs) 通过，才发 `LocalStartPermit`，最终由 [`AgentService::with_instance`](../../agent/src/service/mod.rs) 里的 `try_write()` 真正仲裁。
@@ -217,7 +217,7 @@ TUI 采用与 headless 完全相同的策略：外部可达就 attach；缺席�
 | 条件 | 现状 | 本设计需要做什么 |
 |---|---|---|
 | 重启后的会话里有人跑续跑 pass | **只有 Desktop 跑**（[lib.rs](../../desktop/src-tauri/src/lib.rs)）；headless 只跑 `reconcile_interrupted_runs`（结算/重接流，不发 prompt），TUI 完全没有 | 由 Agent 自己在 Ready 后触发，不依赖任何宿主在场（见 §9.2） |
-| 中断要留下"可续跑"的状态 | 优雅停机走 `cancel_all` → 写 terminal → `interruptedRun` 为 null → `plan_resume` 判 `Terminal` → **不续跑**；只有异常死亡（`kill -9` / 崩溃 / OOM）留下 `interrupted` | 优雅退出时按活跃订阅数决定终止方式（见下） |
+| 中断要留下"可续跑"的状态 | 优雅停机走 `cancel_all` → 写 terminal → `interruptedRun` 为 null → `plan_resume` 判 `Terminal` → **不续跑**；只有异常死亡（`kill -9` / 崩溃 / OOM）留下 `interrupted` | 优雅退出时按 cause 标记：`agent_shutdown` → 可续，`user_cancelled` → 不可续（见下面「前提一」） |
 | 会话必须在 `app.db` 里有 thread + run 行 | run 行由宿主提交 prompt 或 import 生成（discovery 每 60s） | 只有 TUI 在跑、没有任何宿主的机器没有候选；自愈首次拉起时补一次 import |
 | 其余产品门槛 | 最新 run、非 `waiting_approval`、7 天内、`autoResumeInterrupted`（默认开，等于代用户花钱） | 不改 |
 
@@ -232,7 +232,7 @@ TUI 采用与 headless 完全相同的策略：外部可达就 attach；缺席�
 
 改用 cause（[§9.2](#92-落点tui宿主还是-agent) 的前提一）：**为什么结束**决定续不续，**不是谁在看**。活跃订阅数只留给 P2 的空闲退出用，两个问题不要共用一把尺子。
 
-`autoResumeInterrupted`（即将改为 `agent/settings.json` 里的 key）继续作为"允许代我发 prompt"的同意门槛。
+`autoResumeInterrupted`（即将改为 `~/.future/agent/settings.json` 里的 key）继续作为"允许代我发 prompt"的同意门槛。
 
 ### 9.2 落点：TUI、宿主，还是 Agent
 
@@ -283,7 +283,7 @@ Agent 已经具备全部判据，不需要 app.db：
 | 职责 | 归属 | 理由 |
 |---|---|---|
 | 判定 + 提交续跑 prompt，**原子完成**，且由 Agent 自己在 Ready 后触发 | **Agent** | 只有它有 journal、活跃 run、审批和那把锁；也只有它在裸 `future agent` 时存在 |
-| 同意开关 | **`~/.future/agent/settings.json`**（新 key，如 `resumeInterruptedOnStart`） | Agent 不能读 app.db：裸 `future agent` 可能根本没有它，且那是 app 的存储（见下面「开关搬家」） |
+| 同意开关 | **`~/.future/agent/settings.json`**（新 key，如 `resumeInterruptedOnStart`） | Agent 不能读 app.db：裸 `future agent` 可能根本没有它，且那是 app 的存储（见下面「前提二」） |
 | `resume:<run id>` 类关联与行展示 | 宿主保留，作为**消费者** | 它本来就维护这些行 |
 | 旧的一次性 pass（`resume_interrupted_runs_at_launch`） | **退役** | 两处并存就是双重提交（就是上面那个窗口） |
 
@@ -305,7 +305,7 @@ Agent 已经具备全部判据，不需要 app.db：
 
 #### 前提二：开关跟着执行者走（不是 D9 的额外成本）
 
-用户指出：把机制放在 headless 或 TUI 里，也照样要面对同一个问题。这是对的，我上一轮把它写成"D9 的代价"不准确。
+容易误以为这是 D9 特有的代价；实际上把机制放在 headless 或 TUI 里也会遇到同一个问题。
 
 真正的事实只有一个：**同意必须放在执行者读得到的地方**。
 
@@ -314,7 +314,7 @@ Agent 已经具备全部判据，不需要 app.db：
 
 所以这不是选型的扣分项，而是选型的直接后果。而且它已有现成做法：`set_default_model` 就是一个 **sessionless RPC → 读 `settings.json` → 改字段 → 存回**（[providers.rs](../../agent/src/rpc/commands/providers.rs)）。新增一对 `get/set_resume_policy` 与它同形，Desktop 设置页照现在的写法调即可。
 
-要做的只有两件小事：`agent/settings.json` 新增一个字段（与 `compaction` / `retry` / `maxTurns` 同级），以及把旧 `app.db` 的值一次性映射过去，避免升级后设置被静默重置。
+要做的只有两件小事：`~/.future/agent/settings.json` 新增一个字段（与 `compaction` / `retry` / `maxTurns` 同级），以及把旧 `app.db` 的值一次性映射过去，避免升级后设置被静默重置。
 
 #### 前提三：护栏（没有它们就是无界花钱）
 
@@ -427,7 +427,7 @@ D10 优先于"发 prompt"的初版：先做"尾部是 tool"和"assistant 带 too
 | 锁冲突退出码（如 75）供父进程判定"输掉选举" | `agent/src/cli.rs` |
 | `CancelCause` 贯穿 abort → 终态记录（D8 的前提） | `agent/src/rpc/session.rs`、`agent/src/runtime/`、`agent/src/session/entry.rs` |
 | Agent 自触发续跑（§9.2）：Ready 后判定 + 原子提交，含护栏 | `agent/src/service/startup.rs`、`agent/src/rpc/`、`agent/src/config/mod.rs` |
-| `agent/settings.json` 新增开关 + 旧 `app.db` 值的一次性映射 | `agent/src/config/mod.rs`、`packages/app-settings`、桌面设置页 |
+| `~/.future/agent/settings.json` 新增开关 + 旧 `app.db` 值的一次性映射 | `agent/src/config/mod.rs`、`packages/app-settings`、桌面设置页 |
 | 续跑 run 的无 user 接受路径 + request-only 指令 + assistant 尾巴守卫（D10） | `agent/src/rpc/session_prompt.rs`、`agent/src/agent/run_loop.rs`、`agent/src/session/entry.rs` |
 | 崩溃尾部缺 tool 结果时补"不确定"占位 | `agent/src/agent/run_loop.rs`（现有取消路径的邻位） |
 | `run_started` 带 `auto_resume_of`，客户端渲染为"自动继续" | `agent/src/session/entry.rs`、`tui/`、`desktop/`、`mobile/`、`packages/thread-projection/` |
@@ -463,7 +463,7 @@ D10 优先于"发 prompt"的初版：先做"尾部是 tool"和"assistant 带 too
 1. **D6：TUI 是否改为进程内启动？** 影响 TUI 的崩溃隔离、内存与冷启动；收益是三入口一条策略。
 2. **P2：Agent 该不该活过 TUI 退出？** 选项 A（随启动者死 + 他人重启，会打断当前这一轮，但会话会续上，见 §9.1）vs B（detached + 空闲退出）。
 3. **D7：用户主动停止后，别的客户端要不要自动把它拉起来？** 建议不自动（尊重"我说停就停"），但需要确认。
-4. **续跑会在没有客户端在场时花钱**：开关搬到 `agent/settings.json` 后，默认值取开还是关？（现 `autoResumeInterrupted` 默认开）
+4. **续跑会在没有客户端在场时花钱**：开关搬到 `~/.future/agent/settings.json` 后，默认值取开还是关？（现 `autoResumeInterrupted` 默认开）
 5. **续跑要不要覆盖非交互来源的会话？**（channels / goal / CLI / 子会话）。默认建议：先只续"用户眼前对话"能识别的会话，其余需额外标记。
 6. **P1 开工许可。** 设计已认可，但三个入口的启动路径都会变；D8/D9/D10 的几项（cause、Agent 自触发、开关跟着执行者、无 user 续跑）建议一并入 P1，否则自愈会把会话停在半路。
 
