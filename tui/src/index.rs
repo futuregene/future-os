@@ -973,6 +973,8 @@ async fn run_interactive(args: &CliArgs) -> u8 {
         }
     }
     // (No is_running gate here: the main loop's own check handles it.)
+    #[cfg(test)]
+    fire_main_loop_gate();
 
     // Poll once alongside input/events, never during the startup handshake.
     // Dropping this future on exit cancels an in-flight check.
@@ -1029,6 +1031,44 @@ async fn run_interactive(args: &CliArgs) -> u8 {
     }
     0
 }
+
+/// Test seam: the moment `run_interactive` leaves startup for the main loop.
+///
+/// The interactive fixtures have to tell "startup" from "the main loop": a
+/// resize or a ctrl+c that must land *after* startup cannot be scheduled from
+/// the mock's command sequence, because startup keeps issuing unary calls after
+/// its last handshake command (`list_models` follows the session handshake) and
+/// any grace sized on the handshake lands inside startup on a loaded host. That
+/// is how `interactive_resize_during_and_after_startup` failed — the ctrl+c was
+/// read by the startup interrupt arm and the exit code was 1, not 0.
+///
+/// One slot, like the stream manager's gates in `rpc::grpc_client`; it is safe
+/// because every test that runs the interactive loop holds `test_env::lock()`.
+#[cfg(test)]
+mod main_loop_gate {
+    use std::sync::{Arc, Mutex};
+
+    static SLOT: Mutex<Option<Arc<tokio::sync::Notify>>> = Mutex::new(None);
+
+    /// Arm the gate for the next `run_interactive`, returning the handle its
+    /// arrival is delivered on. Call before the run starts; a notification
+    /// that arrives before the waiter awaits is retained (one permit).
+    pub(super) fn arm() -> Arc<tokio::sync::Notify> {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        *SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(gate.clone());
+        gate
+    }
+
+    pub(super) fn fire() {
+        let gate = SLOT.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(gate) = gate {
+            gate.notify_one();
+        }
+    }
+}
+
+#[cfg(test)]
+use main_loop_gate::fire as fire_main_loop_gate;
 
 // ─── Main ───────────────────────────────────────────────────────────────────
 
@@ -2885,7 +2925,9 @@ mod tests {
         _home: tempfile::TempDir,
         old_home: Option<std::ffi::OsString>,
         pty: PtyStdin,
-        unary_delay_ms: u64,
+        /// Armed before the run starts: fires when `run_interactive` enters the
+        /// main loop (see [`main_loop_gate`]).
+        main_loop: std::sync::Arc<tokio::sync::Notify>,
     }
 
     #[cfg(unix)]
@@ -2898,6 +2940,9 @@ mod tests {
             let home = tempfile::tempdir().unwrap();
             let old_home = std::env::var_os("HOME");
             std::env::set_var("HOME", home.path());
+            // Arm before the run: the notification must not be missed if
+            // startup finishes before a driver first awaits it.
+            let main_loop = main_loop_gate::arm();
             let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             let addr = spawn_mock(MockAgent {
                 state_data: "{\"sessionId\":\"s1\"}".into(),
@@ -2915,7 +2960,7 @@ mod tests {
                 _home: home,
                 old_home,
                 pty,
-                unary_delay_ms,
+                main_loop,
             }
         }
 
@@ -2938,23 +2983,19 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
-        /// Wait until startup has fully completed: the last startup RPCs
-        /// are `new_session` followed by apply_tui_defaults' `get_state`
-        /// (the second one). Commands are recorded when the mock RECEIVES
-        /// them, so the grace must outlast the unary delay.
+        /// Wait until `run_interactive` has left startup and entered the main
+        /// loop.
+        ///
+        /// This used to be a command-sequence heuristic — `new_session`, two
+        /// `get_state`s, then a grace of `unary_delay_ms + 400` — which sized
+        /// the wait on the *handshake* while startup keeps issuing unary calls
+        /// after it (`list_models` follows), so at a 400 ms unary delay the
+        /// grace expired inside startup and a ctrl+c meant for the main loop
+        /// was consumed by the startup interrupt arm
+        /// (`interactive_resize_during_and_after_startup`: exit 1, not 0).
+        /// The product now signals the transition itself.
         async fn await_startup_complete(&self) {
-            for _ in 0..400 {
-                let done = {
-                    let seen = self.seen.lock().unwrap();
-                    let states = seen.iter().filter(|t| *t == "get_state").count();
-                    seen.iter().any(|t| t == "new_session") && states >= 2
-                };
-                if done {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-            tokio::time::sleep(Duration::from_millis(self.unary_delay_ms + 400)).await;
+            self.main_loop.notified().await;
         }
 
         fn finish(self) {
