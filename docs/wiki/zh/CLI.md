@@ -292,6 +292,7 @@ future session approvals <id>
 future session approve <id> <request-id> [--allow <glob>]
 future session reject <id> <request-id>
 future session delete <id>
+future session prune --older-than 3d [--yes]  # 删除闲置超过该时长的会话（默认只预览）
 ```
 
 `session info` 读的是落盘 journal（对话包含什么、累计花了多少）；`session status` 读的是
