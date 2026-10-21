@@ -498,7 +498,10 @@ async fn websocket_session(
     token: &str,
     bot_user_id: &str,
     allowlist: &HashSet<String>,
-    socket: ws::Socket,
+    socket: impl futures_util::Stream<
+            Item = std::result::Result<WsMessage, tokio_tungstenite::tungstenite::Error>,
+        > + futures_util::Sink<WsMessage>
+        + Unpin,
 ) -> Result<()> {
     let (mut sink, mut stream) = socket.split();
     // The token handshake is an explicit challenge frame; the bearer header

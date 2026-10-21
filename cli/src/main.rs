@@ -48,7 +48,7 @@ fn run_from_args(args: &[String]) -> ExitCode {
     // Invariant: a multi-thread runtime always builds (failure would mean
     // resource exhaustion fatal to the process anyway).
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime starts");
-    let code = runtime.block_on(future_cli::dispatch(args, &out));
+    let code = runtime.block_on(Box::pin(future_cli::dispatch(args, &out)));
     out.flush();
     ExitCode::from(code as u8)
 }

@@ -34,6 +34,7 @@ pub async fn lock_env() -> EnvironmentGuard {
 /// Save/restore a set of env vars around a test body.
 pub struct EnvGuard {
     saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    home: Option<tempfile::TempDir>,
 }
 
 impl EnvGuard {
@@ -46,17 +47,24 @@ impl EnvGuard {
         for (k, v) in vars {
             std::env::set_var(k, v);
         }
-        EnvGuard { saved }
+        EnvGuard { saved, home: None }
     }
 
-    /// Point HOME at a fresh temp dir (and nothing else).
+    /// Own a fresh home until restoration, including the FutureOS override.
     pub fn temp_home() -> Self {
+        Self::set(&[]).with_temp_home()
+    }
+
+    pub fn with_temp_home(mut self) -> Self {
         let dir = tempfile::tempdir().expect("tempdir");
-        let home = std::env::var_os("HOME");
-        std::env::set_var("HOME", dir.path());
-        EnvGuard {
-            saved: vec![("HOME", home)],
+        for key in ["HOME", "USERPROFILE", "FUTURE_HOME"] {
+            self.saved.push((key, std::env::var_os(key)));
         }
+        std::env::set_var("HOME", dir.path());
+        std::env::set_var("USERPROFILE", dir.path());
+        std::env::remove_var("FUTURE_HOME");
+        self.home = Some(dir);
+        self
     }
 
     /// Remove `vars` for the duration of the guard; originals restored on drop.
@@ -65,13 +73,16 @@ impl EnvGuard {
         for k in vars {
             std::env::remove_var(k);
         }
-        EnvGuard { saved }
+        EnvGuard { saved, home: None }
     }
 }
 
 impl Drop for EnvGuard {
     fn drop(&mut self) {
-        for (key, value) in &self.saved {
+        if self.home.is_some() {
+            future_host::auth_store::test_support::cleanup_host();
+        }
+        for (key, value) in self.saved.iter().rev() {
             match value {
                 Some(v) => std::env::set_var(key, v),
                 None => std::env::remove_var(key),
@@ -130,6 +141,45 @@ pub fn reserve_consecutive_ports(n: i64) -> (i64, Vec<std::net::TcpListener>) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn temporary_home_survives_its_constructor_and_restores_all_roots() {
+        let _lock = super::lock_env().await;
+        let previous = tempfile::tempdir().unwrap();
+        let inherited = tempfile::tempdir().unwrap();
+        let _outer = super::EnvGuard::set(&[
+            ("HOME", previous.path().as_os_str().to_owned()),
+            ("USERPROFILE", previous.path().as_os_str().to_owned()),
+            ("FUTURE_HOME", inherited.path().as_os_str().to_owned()),
+        ]);
+        let guard = super::EnvGuard::temp_home();
+        let path = std::path::PathBuf::from(std::env::var_os("HOME").unwrap());
+        assert!(path.is_dir(), "the returned guard owns the live directory");
+        assert!(std::env::var_os("FUTURE_HOME").is_none());
+        assert_eq!(
+            std::env::var_os("USERPROFILE"),
+            Some(path.as_os_str().to_owned())
+        );
+        future_host::store::initialize_app_store().unwrap();
+        assert!(path.join(".future").join("app").join("app.db").is_file());
+        drop(guard);
+        assert!(
+            !path.exists(),
+            "the fixture releases storage before deleting its home"
+        );
+        assert_eq!(
+            std::env::var_os("HOME"),
+            Some(previous.path().as_os_str().to_owned())
+        );
+        assert_eq!(
+            std::env::var_os("USERPROFILE"),
+            Some(previous.path().as_os_str().to_owned())
+        );
+        assert_eq!(
+            std::env::var_os("FUTURE_HOME"),
+            Some(inherited.path().as_os_str().to_owned())
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn wait_for_exhaustion_returns_false() {
         assert!(!super::wait_for(|| false).await);

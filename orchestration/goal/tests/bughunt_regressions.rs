@@ -301,13 +301,13 @@ fn help_root_matches_project_root_and_override_with_newline() {
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout).unwrap();
     // The state root is `std::env::current_dir()/.future/goal`: the cwd as the
-    // OS reports it. `canonicalize` resolves symlinked parents (macOS /var),
-    // but on Windows it adds an extended-length prefix the cwd never carries.
-    let canonical = dir.path().canonicalize().unwrap();
-    let canonical = canonical.to_string_lossy();
-    let expected = std::path::Path::new(canonical.strip_prefix(r"\\?\").unwrap_or(&canonical))
-        .join(".future")
-        .join("goal");
+    // OS reports it. Unix resolves symlinked parents (macOS /var); Windows
+    // retains the spelling passed to current_dir, including DOS 8.3 aliases.
+    #[cfg(unix)]
+    let cwd = dir.path().canonicalize().unwrap();
+    #[cfg(windows)]
+    let cwd = dir.path().to_path_buf();
+    let expected = cwd.join(".future").join("goal");
     assert!(
         text.ends_with(&format!(
             "State root: {} (env FUTURE_GOAL_ROOT)\n",

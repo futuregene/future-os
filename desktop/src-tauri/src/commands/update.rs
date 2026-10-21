@@ -465,6 +465,9 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn app_maintenance_status_reports_the_cli_it_discovered() {
+        if future_host::test_support::reexec_test() {
+            return;
+        }
         use std::os::unix::fs::PermissionsExt;
 
         let _home = crate::auth_store::test_support::HomeGuard::new("cmd-update-maintenance");
@@ -1096,18 +1099,23 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[tokio::test]
     async fn a_manual_build_check_uses_the_endpoint_it_is_given() {
-        let manifest_url = serve_once(
-            "200 OK",
-            "application/json",
-            json!({
-                "version": "0.0.2-121+nightly",
-                "assets": {
-                    (PLATFORM_ASSET_KEY): { "url": "https://dl.future-os.cn/nightly/x" }
-                }
-            })
-            .to_string()
-            .into_bytes(),
-        );
+        let platform_supported = platform_allows_updates();
+        let manifest_url = if platform_supported {
+            serve_once(
+                "200 OK",
+                "application/json",
+                json!({
+                    "version": "0.0.2-121+nightly",
+                    "assets": {
+                        (PLATFORM_ASSET_KEY): { "url": "https://dl.future-os.cn/nightly/x" }
+                    }
+                })
+                .to_string()
+                .into_bytes(),
+            )
+        } else {
+            "http://127.0.0.1:1/not-fetched".to_string()
+        };
         let app = tauri::test::mock_app();
         let status = check_app_update_impl(
             app.handle().clone(),
@@ -1117,8 +1125,11 @@ mod tests {
         )
         .await
         .expect("manual check through the impl");
-        assert!(status.has_update, "the newer nightly is offered");
-        assert!(status.download_url.is_some(), "ships a link");
+        assert_eq!(
+            status.has_update, platform_supported,
+            "only supported installations check for updates"
+        );
+        assert_eq!(status.download_url.is_some(), platform_supported);
         assert!(!status.can_install_in_app);
     }
 
@@ -1127,11 +1138,16 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     #[tokio::test]
     async fn a_signed_build_check_uses_the_endpoint_it_is_given() {
-        let manifest_url = serve_once(
-            "200 OK",
-            "application/json",
-            manifest_json("1.2.0", "http://127.0.0.1:1/not-fetched"),
-        );
+        let platform_supported = platform_allows_updates();
+        let manifest_url = if platform_supported {
+            serve_once(
+                "200 OK",
+                "application/json",
+                manifest_json("1.2.0", "http://127.0.0.1:1/not-fetched"),
+            )
+        } else {
+            "http://127.0.0.1:1/not-fetched".to_string()
+        };
         let app = mock_app_with_updater(&[&manifest_url]);
         let status = check_app_update_impl(
             app.handle().clone(),
@@ -1141,8 +1157,8 @@ mod tests {
         )
         .await
         .expect("signed check through the impl");
-        assert!(status.has_update);
-        assert!(status.can_install_in_app);
+        assert_eq!(status.has_update, platform_supported);
+        assert_eq!(status.can_install_in_app, platform_supported);
     }
 
     /// The body the scheduler calls resolves the channel and version from the
@@ -1234,26 +1250,40 @@ mod tests {
             .contains("Update maintenance is in progress"));
     }
 
-    /// A `failed-restored` record is restart-safe, but only after the saved
-    /// program fingerprint is re-verified — and here nothing was saved, so the
-    /// restart stops instead of relaunching.
+    /// Unix rechecks saved fingerprints on restart. Windows' independent
+    /// observer verifies rollback before publishing restartSafe in the journal;
+    /// it does not create the Unix original-files.json. Test both trust states.
     #[test]
-    fn a_failed_restored_record_reverifies_the_saved_program_files() {
-        let _home = crate::auth_store::test_support::HomeGuard::new("update-restart-restored");
-        let app = tauri::test::mock_app();
-        let operation = journal::Operation::begin("0.0.2-abcdef+local").expect("journal record");
-        operation
-            .finish(
-                "failed-restored",
-                Some("installer launch denied".into()),
-                true,
-            )
-            .expect("persist result");
-        let error = restart_after_app_update_with(app.handle().clone(), |_| {
-            panic!("an unverified record must not relaunch")
-        })
-        .unwrap_err();
-        assert!(!error.to_string().is_empty());
+    fn a_failed_restored_record_requires_platform_recovery_verification() {
+        for verified in [false, true] {
+            let _home = crate::auth_store::test_support::HomeGuard::new(if verified {
+                "update-restart-restored-verified"
+            } else {
+                "update-restart-restored-unverified"
+            });
+            let app = tauri::test::mock_app();
+            let operation =
+                journal::Operation::begin("0.0.2-abcdef+local").expect("journal record");
+            operation
+                .finish(
+                    "failed-restored",
+                    Some("installer launch denied".into()),
+                    verified,
+                )
+                .expect("persist result");
+            let relaunched = std::cell::Cell::new(false);
+            let result = restart_after_app_update_with(app.handle().clone(), |_| {
+                relaunched.set(true);
+                Ok(())
+            });
+            let allowed = cfg!(windows) && verified;
+            assert_eq!(result.is_ok(), allowed, "verified={verified}: {result:?}");
+            assert_eq!(
+                relaunched.get(),
+                allowed,
+                "unverified recovery must never relaunch"
+            );
+        }
     }
 }
 

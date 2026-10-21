@@ -95,7 +95,7 @@ pub(super) fn spawn_web_connection(
     mut stream: tokio::net::TcpStream,
     web_dir: std::path::PathBuf,
 ) {
-    tokio::spawn(async move {
+    crate::runtime::spawn(async move {
         let _permit = permit; // held until the handler returns
         handle_web_request(&mut stream, &web_dir).await;
     });

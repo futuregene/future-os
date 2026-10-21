@@ -1365,10 +1365,17 @@ fn spawn_stream_manager(inner: Arc<Inner>) {
                     }
                     _ = tokio::time::sleep(backoff_delay(&inner)) => {}
                 }
+                if inner.stop.load(Ordering::SeqCst) {
+                    return;
+                }
                 if inner.state.lock().current_session_id != session {
                     break;
                 }
-                if matches!(probe_agent(&inner.addr).await, AgentReachability::Reachable) {
+                let reachability = probe_agent(&inner.addr).await;
+                if inner.stop.load(Ordering::SeqCst) {
+                    return;
+                }
+                if matches!(reachability, AgentReachability::Reachable) {
                     // Agent confirmed alive — resubscribe at the top. (The TS
                     // "recreate the client after 3 failures" step is a no-op
                     // here: every call already uses a fresh tonic channel.)

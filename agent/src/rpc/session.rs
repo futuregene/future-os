@@ -2676,17 +2676,24 @@ mod tests {
     #[test]
     fn execute_shell_does_not_create_a_console() {
         let workspace = tempfile::tempdir().unwrap();
-        let script = r#"Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class FutureOSRpcConsoleProbe { [DllImport("kernel32.dll")] public static extern IntPtr GetConsoleWindow(); }'; [FutureOSRpcConsoleProbe]::GetConsoleWindow().ToInt64()"#;
+        let script = crate::test_support::console_probe_command();
         let result = ServerSession::execute_shell_at(
             &workspace.path().to_string_lossy(),
-            script,
+            &script,
             std::time::Duration::from_secs(30),
             &std::sync::atomic::AtomicU64::new(0),
             0,
         )
         .unwrap();
         assert_eq!(result["exitCode"], 0, "{result}");
-        assert_eq!(result["output"].as_str().unwrap().trim(), "0");
+        assert!(
+            result["output"]
+                .as_str()
+                .unwrap()
+                .lines()
+                .any(|line| line.ends_with("FUTUREOS_PARENT_CONSOLE=0")),
+            "{result}"
+        );
     }
 
     #[test]

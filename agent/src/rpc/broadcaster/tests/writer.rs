@@ -322,6 +322,18 @@ fn lone_delta_is_flushed_after_the_batch_window() {
         serde_json::json!({"text":"safe"}),
     ));
 
+    // Start observing the batch window only after the worker accepted the
+    // delta. Thread startup under CI load is not part of the flush deadline.
+    let gate = b
+        .journal
+        .lock()
+        .writer
+        .as_ref()
+        .unwrap()
+        .hold_worker_for_test();
+    gate.wait();
+    gate.wait();
+
     std::thread::sleep(EVENT_BATCH_WINDOW + std::time::Duration::from_millis(100));
     let count = manager
         .storage()
@@ -354,6 +366,17 @@ fn asynchronous_delta_failure_interrupts_the_run() {
         serde_json::json!({"text":"visible-before-flush"}),
     ));
     assert!(receiver.try_recv().is_ok());
+    // Start observing the batch window only after the worker accepted the
+    // delta. Thread startup under CI load is not part of the flush deadline.
+    let gate = b
+        .journal
+        .lock()
+        .writer
+        .as_ref()
+        .unwrap()
+        .hold_worker_for_test();
+    gate.wait();
+    gate.wait();
     for _ in 0..50 {
         if b.persistence_error().is_some() {
             break;

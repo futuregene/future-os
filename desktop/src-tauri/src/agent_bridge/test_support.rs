@@ -25,8 +25,8 @@ impl TestHome {
     }
 }
 fn cleanup() {
-    crate::runtime::cancel_test_tasks();
-    future_host::agent_bridge::cancel_all_observers();
+    future_host::auth_store::test_support::cleanup_host();
+    crate::desktop_shutdown::reset_for_test();
 }
 
 pub(crate) use future_host::test_support::agent::get_state_payload;

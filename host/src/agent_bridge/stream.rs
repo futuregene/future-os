@@ -122,7 +122,7 @@ pub(super) async fn persist_run_event_off_thread(
     let thread_id = thread_id.to_string();
     let run_id = run_id.to_string();
     let emitted_run_id = run_id.clone();
-    let _ = tokio::task::spawn_blocking(move || {
+    let _ = crate::runtime::run_blocking(move || {
         persist_run_event(Some(&run_id), &event_type, &data, sequence);
         crate::emit_thread_runtime_updated(thread_id, emitted_run_id, status, false);
     })
@@ -140,7 +140,7 @@ pub(super) async fn replace_projection_off_thread(
     let terminal = events
         .iter()
         .any(|(event_type, _, _)| event_type == "agent_end");
-    let _ = tokio::task::spawn_blocking(move || {
+    let _ = crate::runtime::run_blocking(move || {
         if let Some(run_id) = local_run_id.as_deref() {
             // The Agent snapshot is already its canonical journal projection.
             // Fold it only into derived SQLite records; GUI raw-event JSONL is

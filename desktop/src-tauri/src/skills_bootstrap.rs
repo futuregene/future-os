@@ -207,6 +207,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_bootstrap_spawns_the_cli_through_the_shell_plugin() {
+        if future_host::test_support::reexec_test() {
+            return;
+        }
         let _home = crate::auth_store::test_support::HomeGuard::new("bootstrap-spawn");
         let root = std::env::temp_dir().join(format!("futureos-bootstrap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -236,6 +239,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_cli_outside_the_runnable_contract_is_reported_and_ignored() {
+        if future_host::test_support::reexec_test() {
+            return;
+        }
         let _home = crate::auth_store::test_support::HomeGuard::new("bootstrap-unusable");
         let root = std::env::temp_dir().join(format!("futureos-unusable-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -257,6 +263,16 @@ mod tests {
 
     #[test]
     fn run_builtin_skills_logs_spawn_failure() {
+        #[cfg(unix)]
+        if future_host::test_support::reexec_test() {
+            return;
+        }
+        #[cfg(windows)]
+        if crate::test_process::reexec(
+            "skills_bootstrap::tests::run_builtin_skills_logs_spawn_failure",
+        ) {
+            return;
+        }
         let _home = crate::auth_store::test_support::HomeGuard::new("bootstrap-no-cli");
         let previous = std::env::var_os("PATH");
         std::env::set_var("PATH", "");

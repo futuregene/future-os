@@ -8,6 +8,15 @@ pub struct InstanceGuard {
     _file: File,
 }
 
+impl Drop for InstanceGuard {
+    fn drop(&mut self) {
+        // A concurrently forked child can retain this open file description
+        // until exec, even with CLOEXEC. Unlock explicitly when its owner ends
+        // rather than waiting for the last inherited descriptor to close.
+        let _ = fs2::FileExt::unlock(&self._file);
+    }
+}
+
 /// Namespace the native single-instance plugin by the same physical root as
 /// the file lock. The default identifier remains byte-for-byte compatible.
 pub fn gui_identifier(base: &str) -> Result<String, crate::Error> {
@@ -233,6 +242,27 @@ mod tests {
         let second = tempfile::tempdir().unwrap();
         let _a = InstanceGuard::at(first.path()).unwrap();
         let _b = InstanceGuard::at(second.path()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn releasing_the_owner_unlocks_a_description_still_held_by_a_child() {
+        let directory = tempfile::tempdir().unwrap();
+        let guard = InstanceGuard::at(directory.path()).unwrap();
+        // dup shares the same open file description as an inherited fork fd,
+        // without needing to fork from the multithreaded test runner.
+        let inherited = guard._file.try_clone().unwrap();
+        assert!(InstanceGuard::at(directory.path()).is_err());
+        drop(guard);
+        let next = InstanceGuard::at(directory.path())
+            .expect("the old owner's inherited description must not retain its lock");
+        drop(inherited);
+        assert!(
+            InstanceGuard::at(directory.path()).is_err(),
+            "the new owner keeps its lock"
+        );
+        drop(next);
+        assert!(InstanceGuard::at(directory.path()).is_ok());
     }
 
     /// `acquire()` resolves the data directory from the process-global HOME, so

@@ -95,6 +95,36 @@ where
     Ok(())
 }
 
+/// Reply to a pbbp2 ping without turning a failed pong write into a panic.
+async fn send_pbbp2_pong<S>(stream: &mut S, seq_id: i64, log_id: i64)
+where
+    S: futures::Sink<WsMessage, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
+{
+    let pong_frame = WsFrame {
+        seq_id,
+        log_id,
+        service: 0,
+        method: 0,
+        headers: vec![Header {
+            key: "type".into(),
+            value: "pong".into(),
+        }],
+        payload: vec![],
+        payload_encoding: String::new(),
+        payload_type: String::new(),
+        log_id_new: String::new(),
+    };
+    let mut buf = Vec::new();
+    // prost encoding of a valid frame
+    // cannot fail.
+    pong_frame
+        .encode(&mut buf)
+        .expect("WsFrame encoding is infallible");
+    if let Err(e) = stream.send(WsMessage::Binary(buf)).await {
+        warn!("Failed to send pong: {}", e);
+    }
+}
+
 pub struct FeishuWsClient {
     app_id: String,
     app_secret: String,
@@ -231,28 +261,7 @@ impl FeishuWsClient {
                                         "ping" => {
                                             debug!("Received ping, sending pong");
                                             seq_id += 1;
-                                            let pong_frame = WsFrame {
-                                                seq_id,
-                                                log_id: frame.log_id,
-                                                service: 0,
-                                                method: 0,
-                                                headers: vec![
-                                                    Header { key: "type".into(), value: "pong".into() },
-                                                ],
-                                                payload: vec![],
-                                                payload_encoding: String::new(),
-                                                payload_type: String::new(),
-                                                log_id_new: String::new(),
-                                            };
-                                            let mut buf = Vec::new();
-                                            // prost encoding of a valid frame
-                                            // cannot fail.
-                                            pong_frame
-                                                .encode(&mut buf)
-                                                .expect("WsFrame encoding is infallible");
-                                            if let Err(e) = ws_stream.send(WsMessage::Binary(buf)).await {
-                                                warn!("Failed to send pong: {}", e);
-                                            }
+                                            send_pbbp2_pong(&mut ws_stream, seq_id, frame.log_id).await;
                                         }
                                         "pong" => {
                                             debug!("Received pong");
@@ -1288,26 +1297,31 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn pong_send_after_reset_only_warns() {
-        // current_thread + subscriber: the warn! event region only evaluates
-        // under a thread-local subscriber.
+        use std::io::{Read, Seek};
+        // A dropped duplex peer makes the precise pong write fail; no OS reset
+        // or immediately-ready heartbeat can win the race before this branch.
+        let mut logs = tempfile::tempfile().unwrap();
         let _sub = tracing::subscriber::set_default(
             tracing_subscriber::fmt()
-                .with_writer(std::io::sink)
+                .with_ansi(false)
+                .with_writer(logs.try_clone().unwrap())
                 .finish(),
         );
-        ts::ensure_crypto_provider();
-        // Server sends a pbbp2 ping then RSTs the socket — the client's pong
-        // send hits the reset connection (warn arm), then the read fails.
-        let (ws_url, _) = ts::spawn_ws(vec![
-            WsAction::SendBinary(pbbp2_frame("ping", b"")),
-            WsAction::ResetTcp,
-        ])
+        let (client, peer) = tokio::io::duplex(64);
+        let mut ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
+            client,
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
         .await;
-        let (base, _) = ts::spawn_http(vec![bootstrap_route(&ws_url)]).await;
-        let client = FeishuWsClient::new(&base, "app", "secret");
-        // Either the pong-send warn fires and the read errors, or the read
-        // errors first — both end in a WebSocket error, never a panic/hang.
-        let err = client.connect_and_listen(ignore_event).await.err().unwrap();
-        assert!(err.to_string().contains("WebSocket error"), "{err}");
+        drop(peer);
+        send_pbbp2_pong(&mut ws, 1, 2).await;
+        logs.rewind().unwrap();
+        let mut text = String::new();
+        logs.read_to_string(&mut text).unwrap();
+        assert!(
+            text.contains("Failed to send pong"),
+            "the failed send must warn: {text}"
+        );
     }
 }

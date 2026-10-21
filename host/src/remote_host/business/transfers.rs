@@ -49,7 +49,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
         "list_session_files" => {
             let session_id = cmd.session_id.clone();
             let file_path = cmd.file_path.clone();
-            let result = tokio::task::spawn_blocking(move || {
+            let result = crate::runtime::run_blocking(move || {
                 crate::remote_host::session_files::list(&session_id, &file_path)
             })
             .await;

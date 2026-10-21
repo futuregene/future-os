@@ -555,6 +555,9 @@ mod tests {
     /// first version of this test hung for the full 500 s.
     #[test]
     fn filter_ignored_reports_a_git_that_cannot_be_spawned() {
+        if crate::test_support::reexec_test() {
+            return;
+        }
         let s = setup("filter-ignored-spawn");
         std::fs::write(s.repo.workspace_path.join("keep.txt"), "keep\n").unwrap();
         let index = s.repo.prepare_temp_index("filter-ignored-spawn").unwrap();

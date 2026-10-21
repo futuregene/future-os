@@ -486,17 +486,17 @@ async fn handle_command_singleflight(
     };
 
     let request: Value = serde_json::from_slice(&msg.payload).expect("command already decoded");
-    let (slot, inserted) = {
+    let slot = {
         let mut slots = reply_slots.0.lock().unwrap();
         match slots.get(&command_id) {
-            Some(slot) => (slot.clone(), false),
+            Some(slot) => slot.clone(),
             None => {
                 let slot = Arc::new(CachedReply {
                     request: request.clone(),
                     response: Arc::new(tokio::sync::Mutex::new(None)),
                 });
                 slots.insert(command_id.clone(), slot.clone());
-                (slot, true)
+                slot
             }
         }
     };
@@ -532,7 +532,10 @@ async fn handle_command_singleflight(
         )
         .await;
     *cached = capture.lock().unwrap().clone();
-    if inserted {
+    // The delivery that executes the uncached command owns its expiry. The
+    // slot's creator can lose the response-mutex race to a later delivery and
+    // return through the cached-response arm above without scheduling anything.
+    {
         let slots = reply_slots.clone();
         let id = command_id.clone();
         let expected = slot.clone();

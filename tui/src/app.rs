@@ -172,7 +172,10 @@ mod terminal_io_delegation_tests {
             crate::terminal::with_pty_stdin(|pty| {
                 let mut terminal = crate::terminal::Terminal::new()
                     .expect("POSIX terminal construction is infallible");
-                probe(&mut terminal, Some((pty, "é")));
+                probe(&mut terminal, Some("é"), || {
+                    pty.write("é");
+                    pty.resize(90, 30);
+                });
             });
             // The same delegations with nothing typed — the `type_keys`-absent
             // arm the Windows probe takes. Exercised here too, so the shape of
@@ -180,7 +183,7 @@ mod terminal_io_delegation_tests {
             crate::terminal::with_pty_stdin(|_pty| {
                 let mut terminal = crate::terminal::Terminal::new()
                     .expect("POSIX terminal construction is infallible");
-                probe(&mut terminal, None);
+                probe(&mut terminal, None, || {});
             });
         }
         #[cfg(windows)]
@@ -188,14 +191,14 @@ mod terminal_io_delegation_tests {
             let Some(mut terminal) = crate::terminal::terminal_or_skip() else {
                 return;
             };
-            probe(&mut terminal, None);
+            probe(&mut terminal, None, || {});
         }
     }
 
     /// Every `TerminalIo` method, exercised against a live terminal. When
     /// `type_keys` is given, that text is typed through the terminal under test
     /// and must reach the app's own input callback whole.
-    fn probe(io: &mut dyn TerminalIo, type_keys: Option<(&crate::terminal::TestPty, &str)>) {
+    fn probe(io: &mut dyn TerminalIo, type_keys: Option<&str>, type_input: impl FnOnce()) {
         io.hide_cursor();
         io.show_cursor();
         let (cols, rows) = (io.columns(), io.rows());
@@ -220,11 +223,8 @@ mod terminal_io_delegation_tests {
             }),
         )
         .expect("a live terminal starts the reader");
-        if let Some((pty, keys)) = type_keys {
-            pty.write(keys);
-            // …and a terminal emulator resizing the window: the reader reports
-            // it (SIGWINCH through the self-pipe) to the app's resize callback.
-            pty.resize(90, 30);
+        if type_keys.is_some() {
+            type_input();
         }
         // Let the reader reach its wait/timer path (the kitty query fallback
         // fires at 150 ms), then stop: the terminal is restored and the reader
@@ -261,7 +261,7 @@ mod terminal_io_delegation_tests {
                  multi-byte character across reads: {text:?}"
             );
         }
-        if let Some((_, keys)) = type_keys {
+        if let Some(keys) = type_keys {
             assert!(
                 resizes.load(std::sync::atomic::Ordering::SeqCst) >= 1,
                 "a resized terminal must reach the app's resize callback"
@@ -10735,6 +10735,17 @@ mod tests {
 
     // ─── Fake terminal ────────────────────────────────────────────────
 
+    struct TestAgentEvents {
+        receiver: mpsc::UnboundedReceiver<AgentEvent>,
+        client: Arc<GrpcClient>,
+    }
+
+    impl Drop for TestAgentEvents {
+        fn drop(&mut self) {
+            self.client.disconnect();
+        }
+    }
+
     struct FakeTerminal {
         writes: Rc<RefCell<Vec<String>>>,
         cols: u16,
@@ -10744,6 +10755,10 @@ mod tests {
         /// When set, `start` fails — the terminal-failure path a real console
         /// takes on an unusable handle.
         fail_start: bool,
+        // App fixtures do not run the outer terminal event loop. Keep its
+        // inbox alive until the app drops, otherwise the first mock ping is
+        // interpreted as "app gone" and every subsequent RPC can wait 5 s.
+        agent_events: Option<TestAgentEvents>,
     }
 
     impl TerminalIo for FakeTerminal {
@@ -10798,6 +10813,7 @@ mod tests {
                 on_input: None,
                 on_resize: None,
                 fail_start: false,
+                agent_events: None,
             },
             Arc::new(client),
             op_tx,
@@ -11208,6 +11224,7 @@ mod tests {
                 on_input: None,
                 on_resize: None,
                 fail_start: false,
+                agent_events: None,
             },
             Arc::new(client),
             op_tx,
@@ -15016,7 +15033,8 @@ mod tests {
         cli_options: &CliOptions,
     ) -> (App<FakeTerminal>, mpsc::UnboundedReceiver<UiCmd>) {
         let (op_tx, op_rx) = mpsc::unbounded_channel();
-        let (client, _events, _conn) = GrpcClient::new(addr);
+        let (client, events, _conn) = GrpcClient::new(addr);
+        let client = Arc::new(client);
         let app = App::new(
             FakeTerminal {
                 writes: Rc::new(RefCell::new(Vec::new())),
@@ -15025,13 +15043,53 @@ mod tests {
                 on_input: None,
                 on_resize: None,
                 fail_start: false,
+                agent_events: Some(TestAgentEvents {
+                    receiver: events,
+                    client: client.clone(),
+                }),
             },
-            Arc::new(client),
+            client,
             op_tx,
             cli_options,
             test_settings_path(),
         );
         (app, op_rx)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn live_app_fixture_keeps_its_event_inbox_until_the_app_drops() {
+        let (addr, _) = spawn_app_mock().await;
+        let (mut app, _) = make_app_at(&addr, &CliOptions::default());
+        app.client.set_current_session_id("s1");
+        app.client.connect_events();
+        let inbox = app
+            .terminal
+            .agent_events
+            .as_mut()
+            .expect("owned event inbox");
+        let event = tokio::time::timeout(Duration::from_secs(10), inbox.receiver.recv())
+            .await
+            .expect("the real mock stream must deliver its first frame")
+            .expect("the event inbox stays open");
+        assert_eq!(event.r#type, "ping");
+        assert!(
+            app.client.is_connected(),
+            "delivery must keep the stream live"
+        );
+        app.client
+            .get_state()
+            .await
+            .expect("RPC over the live fixture");
+        assert!(
+            app.client.is_connected(),
+            "RPC must not lose the event consumer"
+        );
+        let client = app.client.clone();
+        drop(app);
+        assert!(
+            !client.is_connected(),
+            "dropping the fixture disconnects it"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -24492,16 +24550,15 @@ mod tests {
             let dir =
                 std::env::temp_dir().join(format!("future-app-worktree-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&dir).unwrap();
-            // `git worktree list` prints resolved paths, so the fixture
-            // resolves once on macOS (`/var` → `/private/var`) and nothing
-            // below compares a resolved path with an unresolved one. Windows
-            // is deliberately left alone: there is no symlink to resolve in
-            // the temp dir, and `canonicalize` would add the `\\?\` verbatim
-            // prefix git never prints.
-            #[cfg(not(windows))]
+            // Git reports long Windows names even when TEMP uses an 8.3 alias.
+            // Resolve once, removing only the verbatim prefix Git omits.
             let root = std::fs::canonicalize(&dir).unwrap();
             #[cfg(windows)]
-            let root = dir;
+            let root = PathBuf::from(
+                root.to_string_lossy()
+                    .strip_prefix(r"\\?\")
+                    .expect("canonical Windows temp path has a verbatim prefix"),
+            );
             git_setup(&root, &["init", "-q", "-b", "main"]);
             git_setup(&root, &["config", "user.email", "tui@example.com"]);
             git_setup(&root, &["config", "user.name", "TUI Test"]);
@@ -24643,6 +24700,7 @@ mod tests {
                 on_input: None,
                 on_resize: None,
                 fail_start: false,
+                agent_events: None,
             },
             Arc::new(client),
             op_tx,

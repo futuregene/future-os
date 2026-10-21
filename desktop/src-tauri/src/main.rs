@@ -123,7 +123,7 @@ mod tests {
     /// `<target>/<profile>/<name>`), which is the layout `cargo test` uses.
     ///
     /// Requires the package's normal test build: `cargo test` builds the bins
-    /// because `tests/headless_cli.rs` exists, but `cargo test --bin futureos`
+    /// because `tests/desktop_entry.rs` exists, but `cargo test --bin futureos`
     /// alone does not.
     #[cfg(not(target_os = "linux"))]
     fn launcher_binary(name: &str) -> std::path::PathBuf {

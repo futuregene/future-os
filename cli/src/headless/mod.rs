@@ -1227,22 +1227,11 @@ mod tests {
         let _lock = future_host::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let saved_path = std::env::var_os("PATH");
-        let saved_addr = std::env::var_os("FUTURE_AGENT_GRPC_ADDR");
-        std::env::set_var("PATH", directory.as_os_str());
-        // Unparseable on purpose: `refresh_skills` must fail fast instead of
-        // reaching for a real local Agent.
-        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
-        let result = body();
-        match saved_path {
-            Some(value) => std::env::set_var("PATH", value),
-            None => std::env::remove_var("PATH"),
-        }
-        match saved_addr {
-            Some(value) => std::env::set_var("FUTURE_AGENT_GRPC_ADDR", value),
-            None => std::env::remove_var("FUTURE_AGENT_GRPC_ADDR"),
-        }
-        result
+        let _env = crate::test_env::EnvGuard::set(&[
+            ("PATH", directory.as_os_str().to_owned()),
+            ("FUTURE_AGENT_GRPC_ADDR", "http://[::1".into()),
+        ]);
+        body()
     }
 
     /// The server has no Tauri shell plugin, so it spawns the same `future init`

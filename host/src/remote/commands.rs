@@ -3135,21 +3135,6 @@ mod bridge_tests {
         // runtime. Observe the real eviction instead of assuming its task has
         // run after a fixed sleep on a loaded native runner. Never clear the
         // cache or repeat the command until the actual slot is gone.
-        //
-        // The wait proves the slot *is* retired, and its ceiling is only a
-        // liveness guard — "the task exists, runs and removes this entry" —
-        // not a latency bound, because the scheduling is not this test's to
-        // bound. That executor is the process-wide host runtime every other
-        // test in this binary shares, and the command handlers block its
-        // workers on store and file work (`crate::store::*` runs inline, not
-        // through `spawn_blocking`), so its timer can go unpolled for seconds
-        // while the suite is busy. Measured on the Windows runner: this test
-        // took 5.32 s and spent all of it in a 5 s ceiling over a 500 ms TTL,
-        // with 1700 sibling tests passing before, during and after it — a
-        // frozen task registry (whose spawns are silently dropped) is ruled
-        // out by that, since it is process-wide and sticky. A minute keeps
-        // >10x the stall actually observed, and a real regression still fails
-        // it far inside the job's budget.
         tokio::time::timeout(Duration::from_secs(60), async {
             while bridge.reply_slots.contains_command(&command_id) {
                 tokio::time::sleep(Duration::from_millis(25)).await;
@@ -3174,6 +3159,47 @@ mod bridge_tests {
             serde_json::to_vec(&cmd()).unwrap(),
         );
         tokio::time::sleep(Duration::from_millis(150)).await;
+        bridge.stop().await;
+    }
+
+    #[tokio::test]
+    async fn a_delivery_that_executes_an_existing_pending_slot_still_expires_it() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-singleflight-pending").await;
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        let session = unique("sess");
+        let id = unique("cmdid");
+        let command = json!({"id": id, "type": "get_state", "sessionId": session});
+        // The first delivery inserted a slot and was descheduled before taking
+        // its response mutex. A later delivery performs the actual execution.
+        let response =
+            test_support::insert_reply_slot(&bridge.reply_slots, id.clone(), command.clone());
+        let first = bridge.call(command.clone()).await;
+        let second = bridge.call(command.clone()).await;
+        assert_eq!(first, second);
+        assert_eq!(first["success"], json!(true));
+        assert!(
+            response.lock().await.is_some(),
+            "the real slot cached its reply"
+        );
+        let executions = || {
+            agent
+                .requests()
+                .iter()
+                .filter(|(kind, sid)| kind == "get_state" && sid == &session)
+                .count()
+        };
+        assert_eq!(executions(), 1, "the pending slot still single-flights");
+        tokio::time::timeout(Duration::from_secs(60), async {
+            while bridge.reply_slots.contains_command(&id) {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("the executor must retire a slot it did not insert");
+        assert_eq!(bridge.call(command).await["success"], json!(true));
+        assert_eq!(executions(), 2, "the expired command executes again");
         bridge.stop().await;
     }
 

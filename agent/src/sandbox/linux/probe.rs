@@ -1000,29 +1000,31 @@ mod tests {
             .unwrap()
             .contains("no bwrap executable"));
 
-        let data = root.path().join("data-bin");
-        std::fs::create_dir(&data).unwrap();
-        let candidate = data.join("bwrap");
-        std::fs::write(&candidate, "not executable").unwrap();
+        // Only POSIX metadata has an executable permission bit. The fake
+        // runner must never be asked to execute this deliberately inert file.
         #[cfg(unix)]
         {
+            let data = root.path().join("data-bin");
+            std::fs::create_dir(&data).unwrap();
+            let candidate = data.join("bwrap");
+            std::fs::write(&candidate, "not executable").unwrap();
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let not_executable = probe_with_host(
+                &host,
+                Some(std::env::join_paths([data]).unwrap()),
+                &workspace,
+                &workspace,
+            );
+            assert_eq!(
+                not_executable.code,
+                LinuxSandboxProbeCode::PathRejected,
+                "a non-executable bwrap must be rejected, not probed"
+            );
+            // The helper itself is the arm under test: a non-executable regular
+            // file has no usable identity.
+            assert!(executable_identity(&host, &candidate).is_none());
         }
-        let not_executable = probe_with_host(
-            &host,
-            Some(std::env::join_paths([data]).unwrap()),
-            &workspace,
-            &workspace,
-        );
-        assert_eq!(
-            not_executable.code,
-            LinuxSandboxProbeCode::PathRejected,
-            "a non-executable bwrap must be rejected, not probed"
-        );
-        // The helper itself is the arm under test: a non-executable regular
-        // file has no usable identity.
-        assert!(executable_identity(&host, &candidate).is_none());
     }
 
     /// A success receipt is cached for the TTL; past it the probe runs again
