@@ -26,18 +26,33 @@ export type ResolvedTheme = "light" | "dark";
 export const DEFAULT_THEME_MODE: ThemeMode = "system";
 
 /**
- * The palettes, in picker order. Ids are the `data-palette` values in
- * `styles/globals.css`; labels are the user-facing names, which are proper
- * nouns and therefore live in the locale bundles only for their one-line
- * description.
+ * The palettes, in picker order: the shipped default first, then alphabetical
+ * by id so the list reads as a catalogue rather than as a history of additions.
+ *
+ * The ids are the `data-palette` values in `styles/globals.css`, and the values
+ * behind them live in `src/theme/palettes.json` — this list exists so the
+ * choice is a closed union at compile time (a typo is a type error, not a
+ * silently unsaved preference). `styles/globals.test.ts` and
+ * `theme/palettes.test.ts` fail if it drifts from the JSON.
+ *
+ * Labels are proper nouns, so they live in the locale bundles (with their
+ * one-line description) rather than here.
  */
 export const THEME_PALETTES = [
   "futureos",
-  "nord",
-  "solarized",
-  "gruvbox",
-  "rose-pine",
+  "ayu",
   "catppuccin",
+  "dracula",
+  "everforest",
+  "gruvbox",
+  "kanagawa",
+  "nightfox",
+  "nord",
+  "one-dark",
+  "rose-pine",
+  "solarized",
+  "tokyo-night",
+  "vesper",
 ] as const;
 export type ThemePalette = (typeof THEME_PALETTES)[number];
 
