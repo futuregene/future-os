@@ -327,6 +327,27 @@ session-level `session_idx`, a cross-run `run_sequence`, and an `event_id`; GUI
 observers verify by cursor before fanning out (replay dedup, gaps trigger
 reconnect replay), guaranteeing no disorder and no duplicates.
 
+The session scope (`run_id` empty, `epoch = -1`, `session_idx` ordered) is a
+second, never-compacted log: a standalone manual compaction and every settings
+change between runs land there. A newly created observer starts at
+`session_cursor = -1` and therefore reads that log from its beginning — which is
+what makes a cold observer catch up, and also what makes a replayed event look
+identical to a live one. Two consequences are load-bearing:
+
+- The replay lane is narrowed: `compaction_*` is not forwarded to the webview as
+  `agent-event`. A client turns that payload into a transcript divider it
+  appends at the end of the message list, so a replayed copy would draw a
+  compaction from days ago below the newest message — and it disappears on the
+  next thread open, because the transcript already draws that compaction where
+  it happened. Everything else in the whitelist restates a value
+  (`model_changed`, `cwd_changed`, `permission_level_changed`, …) and converges
+  on the last copy, so replaying it is harmless.
+- The NATS mirror (`publish_event`) still publishes replayed events. It has no
+  `event_id` de-duplication, so remote clients may receive the same replayed
+  `compaction_*` sequence. That is an inference from reading the code, not
+  end-to-end verified; treat it as open when working on the phone's compaction
+  markers.
+
 Event types (consistent with the proto vocabulary):
 
 - `agent_start` / `agent_end` — Run lifecycle (`agent_end` carries the
