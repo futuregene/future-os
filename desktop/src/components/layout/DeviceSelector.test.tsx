@@ -73,7 +73,7 @@ function iconName(node: Element | null): string | null {
  * carries when it has one (a paired machine's icon is an emoji, not an SVG).
  */
 function picture(node: Element | null): string | null {
-  const leading = node?.querySelector("span");
+  const leading = node ? node.querySelector("span") : null;
   return iconName(leading) ?? leading?.textContent ?? null;
 }
 
