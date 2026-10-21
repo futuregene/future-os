@@ -236,7 +236,14 @@ async fn wait_for_room_count(relay: &str, expected: u64, budget: Duration) -> bo
 }
 
 async fn rooms_at(relay: &str) -> u64 {
-    let health: serde_json::Value = reqwest::get(format!("{relay}/v1/health"))
+    // The host's own client, not a fresh `reqwest::get`: a relay that serves its
+    // API from a private CA (`FUTURE_RELAY_CA`) also needs that root here, or
+    // this probe fails while the code under test would not. The test exists to
+    // exercise shipping behaviour, so it asks with shipping trust.
+    let health: serde_json::Value = crate::remote_platform::http_client()
+        .expect("HTTP client")
+        .get(format!("{relay}/v1/health"))
+        .send()
         .await
         .expect("relay health")
         .json()
@@ -260,7 +267,8 @@ async fn describe_room(relay: &str, pair_id: &str) -> serde_json::Value {
     let signature = key
         .sign(super::relay::canonical_request("GET", &path, timestamp, &[]).as_bytes())
         .expect("sign the request");
-    let response = reqwest::Client::new()
+    let response = crate::remote_platform::http_client()
+        .expect("HTTP client")
         .get(format!("{relay}{path}"))
         .header("x-future-public-key", key.public_key())
         .header("x-future-timestamp", timestamp.to_string())
