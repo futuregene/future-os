@@ -205,16 +205,20 @@ of the feature half-restored by accident.
 
 ### 5.4 A conversation that is already running
 
-Under P0 there is **no send queue**: pressing `⏎` on a conversation whose run is
-in flight is disabled, and the panel says why on the send key's own hint line —
-"this conversation is still running" — not by staying silent. A remote's key that
-does nothing is indistinguishable from a key that is not bound, and that is the
-one impression this panel cannot afford.
+**What happens today, stated exactly**: there is no send queue, so pressing `⏎` on a
+conversation whose run is in flight does **nothing**. The composer's `submitValue`
+returns early on `sending`; the draft stays in the editor, and the only signals are
+that the send control has already turned into a **stop** button (`composer.stop`) and
+that the reply is visibly streaming. There is **no text** anywhere saying "this
+conversation is still running", and the panel adds none — an earlier draft of this
+document claimed it did, which was wrong.
 
-P1 adds a per-conversation queue (the existing `pendingPrompt` is a one-shot
-hand-off when a conversation is opened, not a queue): a dictated message then
-waits for the current run and sends itself. Until then the draft is kept, and
-`Esc` never throws it away.
+That is the one interaction this panel cannot leave as it is: on a remote control a
+key that does nothing is indistinguishable from a key that is not bound, and the
+reader has no pointer to look for a reason with. P1 therefore adds a per-conversation
+queue (the existing `pendingPrompt` is a one-shot hand-off when a conversation is
+opened, not a queue): a dictated message waits for the current run and sends itself.
+Until then the draft is kept, and `Esc` never throws it away.
 
 ### 5.5 The contract with the conversation views
 
