@@ -1,7 +1,7 @@
 # 手机远程
 
 FutureOS Mobile 支持 Android/iOS，用来控制桌面上的会话。工具在**桌面电脑**执行，
-不是在手机沙箱里执行。请保持电脑唤醒、Desktop（图形或显式无头模式）运行，并让两台设备联网。
+不是在手机沙箱里执行。请保持电脑唤醒、Desktop（图形或显式主机模式）运行，并让两台设备联网。
 
 ## 配对手机
 
@@ -17,16 +17,17 @@ FutureOS Mobile 支持 Android/iOS，用来控制桌面上的会话。工具在*
 生产版与测试版必须使用匹配的服务环境。其他环境签发的配对码会被拒绝；应使用匹配的
 构建，不要修改配对码或端点来绕过检查。
 
-## 通过 SSH 使用无头 Desktop
+## 通过 SSH 以主机模式运行
 
-安装 Linux `.deb` 或 portable 包（也可从源码构建）后，运行 `future headless` 可在终端前台
+安装 Linux `.deb` 或 portable 包（也可从源码构建）后，运行 `future host` 可在终端前台
 开启手机远程入口，不依赖 GUI 库，也不启动桌面 UI。
 `futureos` 只负责 GUI，原 `--headless` 选项已移除。
-未登录时打印供浏览器扫描的登录二维码；未配对时打印供 FutureOS App 扫描或粘贴的配对邀请。
+未登录时打印供浏览器扫描的登录二维码。它自己**不**打印配对码：在另一个终端运行
+`future remote devices add` 配手机，由它显示供 FutureOS App 扫描或粘贴的二维码与完整链接。
 有效登录和配对会复用，Ctrl+C 关闭入口并退出，不自动后台运行。
 
 完整启动步骤、选项、服务器无 GUI 构建、Agent 生命周期与排障，见
-[Desktop 无头模式使用指南](../../guide/desktop-headless.zh-CN.md)。
+[主机模式使用指南](../../guide/desktop-host.zh-CN.md)。
 
 ## 可以做什么
 
@@ -54,7 +55,7 @@ Remote 控制相同的桌面会话并沿用其权限，配对不会自动开启�
 也在终端管理：`future remote devices` 列出已配对设备、谁在控；`add` 配一台新设备（打印二维码
 与链接），`remove` 只解绑这一台，`remove --all` 解绑全部，`use` 指定在控的那台。
 `list`/`remove`/`use` 直接读写配对簿，不需要 Desktop 在运行；`add` 例外——邀请只有正在服务
-该配对的进程才能签发，所以必须有一个活着的 Desktop（图形或无头）在运行，否则命令会明确
+该配对的进程才能签发，所以必须有一个活着的 Desktop（图形或主机模式）在运行，否则命令会明确
 报错并以非 0 退出。
 
 ## 隐私与传输

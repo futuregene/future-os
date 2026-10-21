@@ -237,7 +237,7 @@
     "headerTitle": "New conversation",
     "chatSubtitle": "Chat",
     "welcome": "Welcome",
-    "placeholder": "Describe the task, @ to add files, / to use skills",
+    "placeholder": "Describe the task, @ to add files, / to use skills, # to reference a conversation",
     "workspace": "Workspace",
     "noWorkspaces": "No workspaces yet.",
     "openExisting": "Open workspace",

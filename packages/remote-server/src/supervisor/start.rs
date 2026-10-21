@@ -333,6 +333,10 @@ impl Supervisor {
 
     pub async fn establish_slots(self: &Arc<Self>) -> Result<Vec<SlotPlan>, crate::Error> {
         let mut plans = Vec::new();
+        // The revocation a start *acted* on, kept as the error itself so the
+        // caller's existing classification names it. It is only the start's answer
+        // when it leaves nothing to serve — see the empty-book arm below.
+        let mut revoked: Option<crate::Error> = None;
         for creds in self.host.load_slots() {
             let pair_id = creds.pair_id.clone();
             if creds.handshake_version != 2 || creds.secure.is_none() {
@@ -355,26 +359,46 @@ impl Supervisor {
                     // credential that can never succeed.
                     eprintln!("remote: a pairing was revoked [PA001 invalid_remote_credential]; forgetting that device");
                     self.forget_slot(&pair_id)?;
+                    // Only the first one is kept: one reason names the event, and
+                    // a machine whose book held several revoked devices has the
+                    // same thing to do about it.
+                    revoked.get_or_insert(error);
                 }
                 Err(error) => return Err(error),
             }
         }
-        if plans.is_empty() && self.invite_when_empty.load(Ordering::Acquire) {
-            // Nothing left to serve: mint one invitation, exactly as a
-            // single-device install always did. Replacing is right here because
-            // there is nothing to keep.
-            let Invitation {
-                creds,
-                code,
-                expires_at,
-                ..
-            // Nothing is on screen yet: this invitation is the one starting.
-            } = self.host.invite(false, &[]).await?;
-            plans.push(SlotPlan {
-                creds,
-                pairing_code: Some(code),
-                pairing_code_expires_at: expires_at,
-            });
+        if plans.is_empty() {
+            if self.invite_when_empty.load(Ordering::Acquire) {
+                // Nothing left to serve: mint one invitation, exactly as a
+                // single-device install always did. Replacing is right here because
+                // there is nothing to keep.
+                let Invitation {
+                    creds,
+                    code,
+                    expires_at,
+                    ..
+                // Nothing is on screen yet: this invitation is the one starting.
+                } = self.host.invite(false, &[]).await?;
+                plans.push(SlotPlan {
+                    creds,
+                    pairing_code: Some(code),
+                    pairing_code_expires_at: expires_at,
+                });
+            } else if let Some(error) = revoked {
+                // This start mints no invitation, so a revoked device leaves it
+                // with nothing at all: no bridge, no book, no code. Answering
+                // "on, serving nothing" there would report the same state as an
+                // unpaired machine while the reason the book is empty — a
+                // credential the platform refused — is a fault the operator has to
+                // handle, and the entry points stop on it (`Revoked` is a terminal
+                // phase). So it is the start's failure, which projects exactly the
+                // phase a revocation noticed mid-run produces; the two readings of
+                // one event must not disagree. A book emptied by the user's own
+                // `remove` never takes this arm: nothing was revoked, so the
+                // emptied book stays "on, serving nothing" and the entry keeps
+                // running, ready to be asked for a new device.
+                return Err(error);
+            }
         }
         Ok(plans)
     }

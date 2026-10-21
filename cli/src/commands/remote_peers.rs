@@ -22,11 +22,12 @@
 //!   handshake identity, whatever a newer Desktop adds) survive an edit, and so
 //!   nothing here can print a credential by accident.
 //! * **A live connection** exists only inside the Desktop process (the window,
-//!   or `future headless`): connect, disconnect and the user's own "stopped"
-//!   mark are all in that process's memory. So `connect`, `disconnect` and
-//!   `remove` ask the running Desktop through the same request/reply files
-//!   `future remote devices` uses ([`super::remote`] documents that channel),
-//!   and say plainly when no Desktop is running to answer.
+//!   or `future host`): connect, disconnect and the user's own "stopped"
+//!   mark are all in that process's memory. So `connect`, `disconnect`,
+//!   `takeover` and `remove` ask the running Desktop through the same
+//!   request/reply files `future remote devices` uses ([`super::remote`]
+//!   documents that channel), and say plainly when no Desktop is running to
+//!   answer.
 
 use super::remote::{
     ask, desktop_running, future_dir, one_device, positional, request_desktop_naming, write_json,
@@ -45,6 +46,7 @@ const BOOK_FILE: &str = "remote_peers.json";
 const OP_PEER_STATE: &str = "peer-state";
 const OP_PEER_CONNECT: &str = "peer-connect";
 const OP_PEER_DISCONNECT: &str = "peer-disconnect";
+const OP_PEER_TAKEOVER: &str = "peer-takeover";
 const OP_PEER_REMOVE: &str = "peer-remove";
 
 /// How long a read waits for the running Desktop.
@@ -71,7 +73,7 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(test)]
 const PEER_TIMEOUT: Duration = Duration::from_millis(400);
 
-/// `future remote peers [list|add|connect|disconnect|rename|remove]`.
+/// `future remote peers [list|add|connect|disconnect|takeover|rename|remove]`.
 pub async fn peers(args: &[String], out: &Output) -> Result<(), String> {
     let (action, rest) = match args.first().map(String::as_str) {
         None => ("list", args),
@@ -79,7 +81,7 @@ pub async fn peers(args: &[String], out: &Output) -> Result<(), String> {
             out.log(help::REMOTE_PEERS_HELP);
             return Ok(());
         }
-        Some("list" | "add" | "connect" | "disconnect" | "rename" | "remove") => {
+        Some("list" | "add" | "connect" | "disconnect" | "takeover" | "rename" | "remove") => {
             (args[0].as_str(), &args[1..])
         }
         // A flag before any action belongs to the default one, so
@@ -101,6 +103,7 @@ pub async fn peers(args: &[String], out: &Output) -> Result<(), String> {
             "list" => help::REMOTE_PEERS_LIST_HELP,
             "add" => help::REMOTE_PEERS_ADD_HELP,
             "connect" | "disconnect" => help::REMOTE_PEERS_CONNECT_HELP,
+            "takeover" => help::REMOTE_PEERS_TAKEOVER_HELP,
             "rename" => help::REMOTE_PEERS_RENAME_HELP,
             _ => help::REMOTE_PEERS_REMOVE_HELP,
         });
@@ -111,6 +114,7 @@ pub async fn peers(args: &[String], out: &Output) -> Result<(), String> {
         "add" => add(rest, out).await,
         "connect" => reach(true, rest, out).await,
         "disconnect" => reach(false, rest, out).await,
+        "takeover" => takeover(rest, out).await,
         "rename" => rename(rest, out),
         _ => remove(rest, out).await,
     }
@@ -141,6 +145,22 @@ struct Live {
     stopped: bool,
     error: Option<String>,
     agent_available: bool,
+    /// `active` while this machine drives it, `standby` while another paired
+    /// device does; `None` when the host said nothing (not connected, or an
+    /// older build).
+    control: Option<String>,
+    /// Who holds it while this machine is in `standby`, as that machine named
+    /// the holder — possibly not at all.
+    holder: Option<Holder>,
+}
+
+/// The device driving a remote desktop, as that machine named it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Holder {
+    name: Option<String>,
+    /// A phone, a tablet, a computer: what the holder called itself. Kept for the
+    /// JSON a script reads; the printed row only has room for the name.
+    kind: Option<String>,
 }
 
 impl Peer {
@@ -201,6 +221,23 @@ impl Peer {
                     .get("agentAvailable")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                control: text("control"),
+                holder: value
+                    .get("holder")
+                    .and_then(Value::as_object)
+                    .map(|holder| {
+                        let field = |key: &str| {
+                            holder
+                                .get(key)
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                                .filter(|value| !value.is_empty())
+                        };
+                        Holder {
+                            name: field("name"),
+                            kind: field("kind"),
+                        }
+                    }),
             }),
         })
     }
@@ -208,6 +245,17 @@ impl Peer {
     /// The name to show: the user's own, else the machine id.
     fn label(&self) -> &str {
         self.name.as_deref().unwrap_or(&self.desktop_id)
+    }
+
+    /// Whether this machine may drive it, as far as the Desktop said.
+    ///
+    /// `false` only for an explicit `standby`: a host that said nothing (an
+    /// older build, or no connection) is not evidence that somebody else holds
+    /// it, and "taken over" would be a claim this side cannot make.
+    fn held(&self) -> bool {
+        self.live
+            .as_ref()
+            .is_some_and(|live| live.connected && live.control.as_deref() == Some("standby"))
     }
 }
 
@@ -416,7 +464,8 @@ async fn list(args: &[String], out: &Output) -> Result<(), String> {
         out.log("The running Desktop did not answer, so the STATE column is unknown.");
     } else {
         out.log(
-            "`future remote peers connect|disconnect <id|#>` changes one; `remove` unpairs it.",
+            "`future remote peers connect|disconnect|takeover <id|#>` changes one; `remove` \
+             unpairs it.",
         );
     }
     Ok(())
@@ -424,6 +473,21 @@ async fn list(args: &[String], out: &Output) -> Result<(), String> {
 
 /// What one row says about the connection, or that it cannot say.
 fn state_of(peer: &Peer, running: bool) -> String {
+    if peer.held() {
+        // A machine answering every heartbeat while another paired device drives
+        // it is connected on the wire and useless in fact: "connected" one line
+        // above a list of commands that all come back `superseded` is the wording
+        // this column exists to avoid.
+        return match peer
+            .live
+            .as_ref()
+            .and_then(|live| live.holder.as_ref())
+            .and_then(|holder| holder.name.as_deref())
+        {
+            Some(name) => format!("taken over by {name}"),
+            None => "taken over".to_string(),
+        };
+    }
     match &peer.live {
         Some(live) if live.connected => "connected".to_string(),
         Some(live) if live.stopped => "disconnected".to_string(),
@@ -447,6 +511,14 @@ fn row_document(peer: &Peer) -> Value {
         "stopped": peer.live.as_ref().map(|live| live.stopped),
         "error": peer.live.as_ref().and_then(|live| live.error.clone()),
         "agentAvailable": peer.live.as_ref().map(|live| live.agent_available),
+        // The same two fields the window reads off `PeerSummary.control` and
+        // `.holder`, so a script can tell "connected" from "connected but held".
+        "control": peer.live.as_ref().and_then(|live| live.control.clone()),
+        "holder": peer
+            .live
+            .as_ref()
+            .and_then(|live| live.holder.as_ref())
+            .map(|holder| json!({ "name": holder.name, "kind": holder.kind })),
     })
 }
 
@@ -580,6 +652,14 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
             stopped: paired.stopped,
             error: paired.error.clone(),
             agent_available: paired.agent_available,
+            // A freshly paired machine is driven by this one, and the handshake
+            // has just said so; a state this build does not know is left out
+            // rather than guessed at.
+            control: paired
+                .control
+                .and_then(|control| serde_json::to_value(control).ok())
+                .and_then(|control| control.as_str().map(str::to_string)),
+            holder: None,
         }),
     };
     let _ = future_host::remote_peer::runtime::shutdown(Duration::from_secs(3)).await;
@@ -615,7 +695,7 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
         out.log("The Desktop running here keeps it connected from now on.");
     } else {
         out.log("No Desktop is running: the pairing is stored, and it connects when one starts");
-        out.log("(the window; a headless host serves devices but does not drive other desktops).");
+        out.log("(the window; a host serves devices but does not drive other desktops).");
     }
     Ok(())
 }
@@ -744,6 +824,87 @@ async fn reach(connect: bool, args: &[String], out: &Output) -> Result<(), Strin
              back, and this Desktop will not reconnect it on its own until then.",
             row.label(),
             row.desktop_id
+        ));
+    }
+    Ok(())
+}
+
+// -- takeover ---------------------------------------------------------------
+
+/// `future remote peers takeover <id|#> [--json]`
+///
+/// Takes the machine back from whichever paired device is driving it. The move
+/// happens on the *other* machine — it is the same `takeover` command a phone
+/// sends — so this asks the running Desktop, which owns the one live connection
+/// that can carry it, and prints the host's own answer: a machine this one
+/// already drove answers `tookOver: false`, which is a result, not a failure.
+///
+/// The reply's peer list is what the Desktop holds *now*, which is a presence
+/// tick behind the move: the host announces control on its own channel, and
+/// this side learns the new state from the next tick. So the sentence about the
+/// move comes from the answer, not from re-reading the row.
+async fn takeover(args: &[String], out: &Output) -> Result<(), String> {
+    let values = positional(args, &["--json"], help::REMOTE_PEERS_USAGE)?;
+    let json_flag = args.iter().any(|argument| argument == "--json");
+    let selector = one_device(values, help::REMOTE_PEERS_USAGE)?;
+    let book = Book::load()?;
+    if book.peers.is_empty() {
+        return Err(
+            "This machine is not paired with any remote desktop. Add one with `future remote \
+             peers add <invitation>`."
+                .to_string(),
+        );
+    }
+    let peer = book.peers[book.position(&selector)?].clone();
+    if !desktop_running() {
+        return Err(format!(
+            "No Desktop is running for {} - the connection that would carry the takeover lives \
+             in that process, and so does this machine's own control state. Start the Desktop \
+             (the window) and run this again.",
+            future_dir()?.display()
+        ));
+    }
+    let reply = request_desktop_naming(
+        OP_PEER_TAKEOVER,
+        None,
+        Some(&peer.desktop_id),
+        "the machine was not taken over",
+        PEER_TIMEOUT,
+    )
+    .await?;
+    if let Some(error) = reply.get("error").and_then(Value::as_str) {
+        return Err(format!("The Desktop could not take it over: {error}"));
+    }
+    let peers = peers_of(&reply);
+    let row = peers
+        .iter()
+        .find(|candidate| candidate.desktop_id == peer.desktop_id)
+        .cloned()
+        .unwrap_or(peer.clone());
+    // A Desktop that answered without the field (an older build) moved control:
+    // it answers an error for every way the move can fail.
+    let moved = reply
+        .get("tookOver")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    if json_flag {
+        out.log(&pretty(json!({
+            "desktopRunning": true,
+            "answered": true,
+            "tookOver": moved,
+            "peers": peers.iter().map(row_document).collect::<Vec<_>>(),
+        }))?);
+        return Ok(());
+    }
+    if moved {
+        out.log(&format!(
+            "{} is now driven by this machine: the device that had it was told to stand by.",
+            row.label()
+        ));
+    } else {
+        out.log(&format!(
+            "{} was already driven by this machine, so nothing moved.",
+            row.label()
         ));
     }
     Ok(())

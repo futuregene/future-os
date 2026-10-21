@@ -301,14 +301,13 @@ fn format_trigger(task: &Task) -> String {
     }
 }
 
-fn format_ms(ms: Option<i64>) -> String {
+/// Epoch ms as a wall-clock stamp in `tz` — the task's own zone, so the time a
+/// command prints is the time the schedule means (not this machine's reading of
+/// the same instant).
+fn format_ms(ms: Option<i64>, tz: chrono_tz::Tz) -> String {
     ms.map(|m| {
         chrono::DateTime::from_timestamp_millis(m)
-            .map(|d| {
-                d.with_timezone(&chrono::Local)
-                    .format("%Y-%m-%d %H:%M")
-                    .to_string()
-            })
+            .map(|d| d.with_timezone(&tz).format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_else(|| m.to_string())
     })
     .unwrap_or_else(|| "-".to_string())
@@ -344,11 +343,31 @@ fn task_json(t: &Task) -> serde_json::Value {
         // (the skill, a script) does not have to handle its absence.
         "depCount": 0,
         "nextDueAt": t.next_due_at,
+        "timezone": t.timezone,
         "queued": t.pending_request_at.is_some(),
         "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
         "sessionRetention": format!("{:?}", t.session_retention).to_lowercase(),
         "conversationMode": format!("{:?}", t.conversation_mode).to_lowercase(),
     })
+}
+
+/// Validate `--timezone` and turn it into the name to store.
+///
+/// A typo is an error, not a silent fallback: a schedule that quietly moved to
+/// another clock is exactly the failure this setting exists to prevent. An
+/// absent or empty value means "not chosen" and resolves to the host's zone
+/// (Beijing when it cannot be read).
+fn resolve_timezone_flag(raw: Option<&str>) -> Result<String> {
+    match raw.map(str::trim).filter(|name| !name.is_empty()) {
+        None => Ok(future_tasks::resolve_timezone(None)),
+        Some(name) => future_tasks::parse_timezone(name)
+            .map(|tz| tz.name().to_string())
+            .ok_or_else(|| {
+                format!(
+                    "unknown timezone {name:?}: expected an IANA name like Asia/Shanghai (or omit --timezone to use this machine's zone)"
+                )
+            }),
+    }
 }
 
 /// The next slot for a schedule, computed on an enabled clone of `task`: a
@@ -383,6 +402,9 @@ fn list(args: &[String], out: &Output) -> Result<()> {
                     "depCount": 0,
                     "nextDueAt": t.next_due_at,
                     "queued": t.pending_request_at.is_some(),
+                    // Resolved, like `show`: a script reading the list gets the
+                    // clock the task actually runs on.
+                    "timezone": future_tasks::task_timezone(t).name(),
                     "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
                     "sessionRetention": format!("{:?}", t.session_retention).to_lowercase(),
                     "conversationMode": format!("{:?}", t.conversation_mode).to_lowercase(),
@@ -399,7 +421,11 @@ fn list(args: &[String], out: &Output) -> Result<()> {
     for t in &tasks {
         let state = if t.enabled { "on" } else { "off" };
         let next = if t.trigger_kind == future_tasks::TriggerKind::Schedule {
-            format!("next {}", format_ms(t.next_due_at))
+            format!(
+                "next {} ({})",
+                format_ms(t.next_due_at, future_tasks::task_timezone(t)),
+                future_tasks::task_timezone(t).name()
+            )
         } else {
             "manual".to_string()
         };
@@ -437,6 +463,7 @@ fn show(args: &[String], out: &Output) -> Result<()> {
             "cwd": t.cwd,
             "modelId": t.model_id,
             "thinkingLevel": t.thinking_level,
+            "timezone": future_tasks::task_timezone(&t).name(),
             "sessionPolicy": format!("{:?}", t.session_policy).to_lowercase(),
             "sessionRetention": format!("{:?}", t.session_retention).to_lowercase(),
             "conversationMode": format!("{:?}", t.conversation_mode).to_lowercase(),
@@ -461,7 +488,11 @@ fn show(args: &[String], out: &Output) -> Result<()> {
     out.log(&format!("  enabled:  {}", t.enabled));
     out.log(&format!("  trigger:  {}", format_trigger(&t)));
     if t.trigger_kind == future_tasks::TriggerKind::Schedule {
-        out.log(&format!("  next due: {}", format_ms(t.next_due_at)));
+        out.log(&format!(
+            "  next due: {} ({})",
+            format_ms(t.next_due_at, future_tasks::task_timezone(&t)),
+            future_tasks::task_timezone(&t).name()
+        ));
     }
     out.log(&format!("  cwd:      {}", t.cwd));
     out.log(&format!(
@@ -471,6 +502,15 @@ fn show(args: &[String], out: &Output) -> Result<()> {
     out.log(&format!(
         "  thinking: {}",
         t.thinking_level.as_deref().unwrap_or("(default)")
+    ));
+    out.log(&format!(
+        "  timezone: {}{}",
+        future_tasks::task_timezone(&t).name(),
+        if t.timezone.is_none() {
+            " (host default)"
+        } else {
+            ""
+        }
     ));
     out.log(&format!(
         "  session:  {}",
@@ -492,7 +532,7 @@ fn show(args: &[String], out: &Output) -> Result<()> {
             "  last run: {} [{:?}] {}",
             r.id,
             r.status,
-            format_ms(r.started_at)
+            format_ms(r.started_at, future_tasks::task_timezone(&t))
         ));
     }
     if show_prompt {
@@ -509,6 +549,7 @@ fn add(args: &[String], out: &Output) -> Result<()> {
     let mut cwd: Option<String> = None;
     let mut model: Option<String> = None;
     let mut thinking: Option<String> = None;
+    let mut timezone: Option<String> = None;
     let mut session_policy = "new".to_string();
     let mut session_retention = "keep".to_string();
     let mut conversation_mode = "workspace".to_string();
@@ -567,6 +608,14 @@ fn add(args: &[String], out: &Output) -> Result<()> {
                     args.get(i)
                         .cloned()
                         .ok_or_else(|| "--thinking requires a value".to_string())?,
+                );
+            }
+            "--timezone" => {
+                i += 1;
+                timezone = Some(
+                    args.get(i)
+                        .cloned()
+                        .ok_or_else(|| "--timezone requires a value".to_string())?,
                 );
             }
             "--session" => {
@@ -706,6 +755,12 @@ fn add(args: &[String], out: &Output) -> Result<()> {
         );
     }
 
+    // `--timezone` names the clock the schedule's times are read on. Absent (or
+    // empty) means "this machine's zone", and a machine whose zone cannot be
+    // read resolves to Beijing — resolved once, so the record says which clock
+    // the task runs on.
+    let timezone = resolve_timezone_flag(timezone.as_deref())?;
+
     let now = now_ms();
     let next_due = compute_next_due(
         &Task {
@@ -717,6 +772,7 @@ fn add(args: &[String], out: &Output) -> Result<()> {
             cwd: cwd.clone(),
             model_id: model.clone(),
             thinking_level: thinking.clone(),
+            timezone: Some(timezone.clone()),
             session_policy,
             session_retention,
             conversation_mode,
@@ -743,6 +799,7 @@ fn add(args: &[String], out: &Output) -> Result<()> {
         cwd,
         model_id: model,
         thinking_level: thinking,
+        timezone: Some(timezone),
         session_policy,
         session_retention,
         conversation_mode,
@@ -775,8 +832,15 @@ fn add(args: &[String], out: &Output) -> Result<()> {
         );
     } else {
         out.log(&format!("Created task {} ({})", t.name, t.id));
+        out.log(&format!(
+            "  timezone: {}",
+            future_tasks::task_timezone(&t).name()
+        ));
         if let Some(due) = t.next_due_at {
-            out.log(&format!("  next due: {}", format_ms(Some(due))));
+            out.log(&format!(
+                "  next due: {}",
+                format_ms(Some(due), future_tasks::task_timezone(&t))
+            ));
         }
     }
     Ok(())
@@ -808,6 +872,9 @@ fn edit(args: &[String], out: &Output) -> Result<()> {
     let mut trigger_kind: Option<future_tasks::TriggerKind> = None;
     let mut enable: Option<bool> = None;
     let mut rename: Option<String> = None;
+    // The zone and the trigger both decide which instant `next_due_at` is, so
+    // either one changing re-resolves the slot.
+    let mut timezone_changed = false;
 
     while i < args.len() {
         if i == reference_index {
@@ -843,6 +910,13 @@ fn edit(args: &[String], out: &Output) -> Result<()> {
             }
             "--thinking" => {
                 task.thinking_level = Some(value(i)?);
+                i += 1;
+            }
+            "--timezone" => {
+                // An empty value means "this machine's zone", resolved now; the
+                // schedule is recomputed below, after the trigger is known.
+                task.timezone = Some(resolve_timezone_flag(Some(&value(i)?))?.to_string());
+                timezone_changed = true;
                 i += 1;
             }
             "--session-retention" => {
@@ -975,6 +1049,11 @@ fn edit(args: &[String], out: &Output) -> Result<()> {
         task.trigger_kind = kind;
         task.trigger_json = trigger_json.unwrap_or_else(|| serde_json::json!({}));
         task.next_due_at = compute_next_due(&task, now_ms());
+    } else if timezone_changed && task.trigger_kind == future_tasks::TriggerKind::Schedule {
+        // Same wall-clock time, different clock: `09:00 Asia/Shanghai` and
+        // `09:00 Europe/Berlin` are different instants, so the stored slot has
+        // to be recomputed even though the trigger itself did not change.
+        task.next_due_at = compute_next_due(&task, now_ms());
     }
     if let Some(on) = enable {
         task.enabled = on;
@@ -1020,7 +1099,10 @@ fn set_enabled(args: &[String], out: &Output, enabled: bool) -> Result<()> {
     ));
     if enabled {
         if let Some(due) = task.next_due_at {
-            out.log(&format!("  next due: {}", format_ms(Some(due))));
+            out.log(&format!(
+                "  next due: {}",
+                format_ms(Some(due), future_tasks::task_timezone(&task))
+            ));
         }
     }
     Ok(())
@@ -1126,7 +1208,7 @@ fn prompt_log(args: &[String], out: &Output) -> Result<()> {
             "  {:<11} {mark:<8} {:<11} {:<16} {}",
             format!("v{}", r.version),
             r.source,
-            format_ms(Some(r.created_at)),
+            format_ms(Some(r.created_at), future_tasks::task_timezone(&task)),
             r.reason.as_deref().unwrap_or("-")
         ));
     }
@@ -1365,7 +1447,7 @@ fn runs(args: &[String], out: &Output) -> Result<()> {
             kind,
             status,
             verdict,
-            format_ms(r.started_at),
+            format_ms(r.started_at, future_tasks::task_timezone(&t)),
             r.error_message.as_deref().unwrap_or("")
         ));
     }
@@ -1630,6 +1712,100 @@ mod tests {
         assert_eq!(t.trigger_json["mode"], "daily");
         assert_eq!(t.trigger_json["time"], "07:30");
         assert!(t.next_due_at.is_some(), "a schedule resolves its next slot");
+    }
+
+    /// `--timezone` names the clock the schedule is read on, for `add` and for
+    /// `edit`. A typo is refused rather than replaced; a task added without the
+    /// flag still lands on a concrete zone (this machine's, else Beijing), so
+    /// the record always says which clock it runs on.
+    #[tokio::test]
+    async fn the_timezone_flag_sets_the_clock_the_schedule_reads() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let (out, _c) = Output::memory();
+        add(
+            &args(&[
+                "--name",
+                "zoned",
+                "--prompt",
+                "p",
+                "--cwd",
+                "/tmp",
+                "--daily",
+                "--time",
+                "09:00",
+                "--timezone",
+                "asia/shanghai",
+            ]),
+            &out,
+        )
+        .unwrap();
+        let store = Store::open(home.dir.path().join(".future").as_path()).unwrap();
+        let t = store.find_task_by_name("zoned").unwrap().unwrap();
+        assert_eq!(
+            t.timezone.as_deref(),
+            Some("Asia/Shanghai"),
+            "the canonical spelling is stored, whatever the caller typed"
+        );
+        let due = t.next_due_at.expect("a schedule resolves its next slot");
+        let at = |zone: &str| {
+            chrono::DateTime::from_timestamp_millis(due)
+                .unwrap()
+                .with_timezone(&future_tasks::parse_timezone(zone).unwrap())
+                .format("%H:%M")
+                .to_string()
+        };
+        assert_eq!(at("Asia/Shanghai"), "09:00");
+        assert_eq!(at("UTC"), "01:00", "09:00 Shanghai is 01:00 UTC");
+
+        // Editing the zone re-reads the same wall-clock time on the new clock.
+        let (out, _c) = Output::memory();
+        edit(&args(&["zoned", "--timezone", "Europe/Berlin"]), &out).unwrap();
+        let t = store.find_task_by_name("zoned").unwrap().unwrap();
+        assert_eq!(t.timezone.as_deref(), Some("Europe/Berlin"));
+        let due = t.next_due_at.expect("still scheduled");
+        assert_eq!(
+            chrono::DateTime::from_timestamp_millis(due)
+                .unwrap()
+                .with_timezone(&future_tasks::parse_timezone("Europe/Berlin").unwrap())
+                .format("%H:%M")
+                .to_string(),
+            "09:00"
+        );
+
+        // A name nobody can resolve is a usage error, not a silent Beijing.
+        let (out, _c) = Output::memory();
+        let error = add(
+            &args(&[
+                "--name",
+                "bogus",
+                "--prompt",
+                "p",
+                "--cwd",
+                "/tmp",
+                "--daily",
+                "--timezone",
+                "Mars/Olympus_Mons",
+            ]),
+            &out,
+        )
+        .unwrap_err();
+        assert!(error.contains("unknown timezone"), "{error}");
+        assert!(store.find_task_by_name("bogus").unwrap().is_none());
+
+        // No flag at all: resolved now, so the row is never left to guess.
+        let (out, _c) = Output::memory();
+        add(
+            &args(&["--name", "plain", "--prompt", "p", "--cwd", "/tmp"]),
+            &out,
+        )
+        .unwrap();
+        let t = store.find_task_by_name("plain").unwrap().unwrap();
+        assert_eq!(
+            t.timezone.as_deref(),
+            Some(future_tasks::resolve_timezone(None).as_str())
+        );
+        assert!(future_tasks::parse_timezone(t.timezone.as_deref().unwrap()).is_some());
     }
 
     /// Switching back to manual clears the schedule: a manual task that kept a
@@ -2354,6 +2530,7 @@ mod tests {
             cwd: "/tmp".into(),
             model_id: None,
             thinking_level: None,
+            timezone: Some("Asia/Shanghai".into()),
             session_policy: future_tasks::SessionPolicy::New,
             conversation_mode: future_tasks::ConversationMode::Workspace,
             thread_id: None,

@@ -13,7 +13,7 @@
 
 在隔离工作目录构建，使用测试账号、专用工作区和无敏感内容的文件。不要覆盖日常数据或停止现有 Agent。既有配对兼容使用专用测试系统用户保存的旧版本数据，升级前备份该测试数据；新配对与兼容升级分别执行。同一数据目录的 GUI/headless 顺序运行。独立 Agent 场景使用独立 FutureOS home 和未占用端点，按现有 Agent 使用指南启动。
 
-源码入口：GUI `make run-desktop`；Android `make run-mobile-android`；iOS `make run-mobile-ios`；headless 与匹配 CLI `make build-desktop-headless`，再在交互终端运行生成的 `futureos-headless`（Windows 使用 `.exe`）。headless 具体登录、配对、退出步骤见[使用指南](../guide/desktop-headless.zh-CN.md)。构建入口不等于本项已通过。
+源码入口：GUI `make run-desktop`；Android `make run-mobile-android`；iOS `make run-mobile-ios`；headless 与匹配 CLI `make build-desktop-headless`，再在交互终端运行生成的 `futureos-headless`（Windows 使用 `.exe`）。headless 具体登录、配对、退出步骤见[使用指南](../guide/desktop-host.zh-CN.md)。构建入口不等于本项已通过。
 
 ## 操作与预期
 

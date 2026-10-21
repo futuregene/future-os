@@ -4,9 +4,11 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetAllCommandBindings } from "../../features/keyboard/shortcuts";
 import i18n from "../../i18n";
 import { emitFutureEvent } from "../../lib/futureEvents";
+import { installShortcuts } from "../../test/installShortcuts";
 import { Composer } from "./Composer";
 
 /**
@@ -675,4 +677,84 @@ it("points at the app when no models are loaded at all", async () => {
   await click(trigger("Model"));
   expect(container.textContent).toContain("Reopen FutureOS to load models");
   expect(container.textContent).not.toContain("all disabled");
+});
+
+/**
+ * The composer's three pickers from the keyboard.
+ *
+ * Each is one command pair: `mod+alt+…` steps forward and `⇧` steps back, with
+ * the ring wrapping so a key never silently stops working at the end of a list
+ * the reader cannot see. The assertions go through the real dispatcher, because
+ * a handler called directly would prove nothing about the key.
+ */
+describe("the composer's pickers from the keyboard", () => {
+  let uninstallShortcuts: () => void;
+  beforeEach(() => {
+    resetAllCommandBindings();
+    uninstallShortcuts = installShortcuts();
+  });
+  afterEach(() => {
+    uninstallShortcuts();
+    resetAllCommandBindings();
+  });
+
+  const press = (code: string, key: string, extra: KeyboardEventInit = {}) => act(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, altKey: true, code, ctrlKey: true, key, ...extra }));
+  });
+
+  it("steps the model forward and back", async () => {
+    const onModelChange = vi.fn();
+    render({ onModelChange });
+    await flush();
+    press("KeyM", "m");
+    expect(onModelChange).toHaveBeenLastCalledWith("openai/m2");
+
+    render({ modelId: "openai/m2", onModelChange });
+    press("KeyM", "m", { shiftKey: true });
+    expect(onModelChange).toHaveBeenLastCalledWith("future/m1");
+  });
+
+  it("steps the thinking level forward and back", async () => {
+    const onThinkingLevelChange = vi.fn();
+    render({ onThinkingLevelChange, thinkingLevel: "high" });
+    await flush();
+    press("KeyT", "t");
+    expect(onThinkingLevelChange).toHaveBeenLastCalledWith("xhigh");
+
+    render({ onThinkingLevelChange, thinkingLevel: "high" });
+    press("KeyT", "t", { shiftKey: true });
+    expect(onThinkingLevelChange).toHaveBeenLastCalledWith("medium");
+  });
+
+  it("steps the access level forward and back", async () => {
+    const onChangeApprovalTier = vi.fn();
+    render({ approvalTier: "off", onChangeApprovalTier });
+    await flush();
+    press("KeyA", "a");
+    expect(onChangeApprovalTier).toHaveBeenLastCalledWith("manual");
+
+    render({ approvalTier: "manual", onChangeApprovalTier });
+    press("KeyA", "a", { shiftKey: true });
+    expect(onChangeApprovalTier).toHaveBeenLastCalledWith("off");
+  });
+
+  it("skips an access level the account cannot use", async () => {
+    // Signed out, automatic review is not offered by the menu, so the ring the
+    // keyboard walks must not land on it either.
+    const onChangeApprovalTier = vi.fn();
+    render({ approvalTier: "sandbox", futureSessionStatus: "signed_out", onChangeApprovalTier });
+    await flush();
+    press("KeyA", "a");
+    expect(onChangeApprovalTier).toHaveBeenLastCalledWith("off");
+  });
+
+  it("leaves the pickers unclaimed in a locked conversation", async () => {
+    const onModelChange = vi.fn();
+    render({ disabled: true, onModelChange });
+    await flush();
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, altKey: true, code: "KeyM", ctrlKey: true, key: "m" });
+    act(() => window.dispatchEvent(event));
+    expect(onModelChange).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
 });

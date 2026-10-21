@@ -1,7 +1,7 @@
 //! Local Agent supervision policy: probe, classify, and decide.
 //!
 //! Three entry points can bring an Agent up for one data root (`future agent`,
-//! `future headless`, `future tui`), and each of them can lose that race or
+//! `future host`, `future tui`), and each of them can lose that race or
 //! outlive the winner. The decisions they must all make are the same, so they
 //! live here once:
 //!

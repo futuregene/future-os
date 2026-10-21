@@ -45,6 +45,8 @@ export interface RemoteTaskDetail extends RemoteTaskRow {
   cwd: string;
   modelId?: string | null;
   thinkingLevel?: string | null;
+  /** IANA zone the trigger times are read in; absent on an older desktop. */
+  timezone?: string;
   sessionPolicy: string;
   /** `keep` (default) or `delete`; only meaningful with `sessionPolicy: "new"`. */
   sessionRetention?: string;

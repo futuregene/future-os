@@ -31,7 +31,7 @@ Quit GUI normally before running headless in a real interactive terminal:
 
 ```bash
 cd /Volumes/ZHITAI/Workspace/future-os
-./target/debug/future headless
+./target/debug/future host
 ```
 
 Use a second terminal for device management:
@@ -48,9 +48,9 @@ Verify the full commit with `./target/debug/future version --json`. Final same-c
 | ID | Platform/preparation | Actions | Expected | Result |
 |---|---|---|---|---|
 | M01 | macOS GUI and existing phone/data | Quit old host normally; record workspaces, conversations and pairs. Open the same home with this GUI, then headless, reconnect phone | Original database/workspaces/identity/book/control pointer remain, no re-pairing, conversation continues | Awaiting user report |
-| M02 | Interactive terminal, phone, isolated empty Future home | Launch with `FUTURE_HOME=<temporary absolute path>`; complete login and phone invitation, send messages and restart | Functional pairing/event sync, original layout, credentials reused after restart | Awaiting user report |
-| M03 | Isolated empty home, redirected stdin | Run `future headless </dev/null`, record output/exit | Exit 1 and terminal requirement; no authorization output, app.db, pairing or credential creation | Awaiting user report |
-| M04 | User's self-hosted relay and phone | In isolated home launch with `--relay <URL>` and existing private `--relay-ca <PEM>` if needed; pair and restart | Selected relay in invitation, persisted pairing, original origin/TLS/CA boundaries | Awaiting user report |
+| M02 | Interactive terminal, phone, isolated empty Future home | Launch with `FUTURE_HOME=<temporary absolute path>`; complete login, pair the phone with `future remote devices add` in a second terminal, send messages and restart | Functional pairing/event sync, original layout, credentials reused after restart | Awaiting user report |
+| M03 | Isolated empty home, redirected stdin | Run `future host </dev/null`, record output/exit | Exit 1 and the platform-login terminal requirement; no authorization output, app.db, pairing or credential creation | Awaiting user report |
+| M04 | User's self-hosted relay and phone | In isolated home launch with `--relay <URL>` and existing private `--relay-ca <PEM>` if needed; pair with `future remote devices add` and restart | Selected relay in invitation, persisted pairing, original origin/TLS/CA boundaries | Awaiting user report |
 | M05 | Two or more paired clients | List devices, add/pair another, use its ID/index to transfer control, restart and inspect | Existing pairs stay, book/control pointer agree, original controller restrictions | Awaiting user report |
 | M06 | Isolated M05 test pairing | Remove one device, confirm another still works; exercise revoke while network fails, restart and restore network | Exact target revoked, others preserved, original pending-revoke recovery | Awaiting user report |
 | M07 | Phone and GUI separately, temporary workspace | Trigger read/write/command approvals, deny and approve, save a workspace rule and repeat | Decisions actually apply, states sync, atomic persistence/live injection, no privilege expansion | Awaiting user report |

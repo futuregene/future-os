@@ -6,7 +6,7 @@
 > 状态：**P1 已落地**（监督器、`Busy` 让位、有界等待、熔断、三入口接线、Agent 自触发续跑）。
 > 本文把"已落地的设计"与"必须由用户拍板的产品决定"分开写，见 [§2](#2-判定分区设计-vs-产品决定)；待决项汇总在 [§12](#12-待决问题汇总)，实测记录在 [§13](#13-实测记录)。
 
-现在有三个入口会把 Agent 带起来：`future agent`、`future headless`、`future tui`。三者都遵守同一个实例锁，但**谁先启动、谁负责、死了怎么办**三件事各有各的写法，缺的正是这一层。本文补的是这一层，不改变实例锁、存储格式和 RPC 契约。
+现在有三个入口会把 Agent 带起来：`future agent`、`future host`、`future tui`。三者都遵守同一个实例锁，但**谁先启动、谁负责、死了怎么办**三件事各有各的写法，缺的正是这一层。本文补的是这一层，不改变实例锁、存储格式和 RPC 契约。
 
 ## 1 现状
 
@@ -15,7 +15,7 @@
 | 入口 | 进程内跑 Agent | 拉起外部 Agent | 持有的锁 |
 |---|---|---|---|
 | `future agent` | 它自己 | — | `~/.future/agent/agent-instance.lock`（服务锁）+ socket 的 `.owner.lock`（端点租约） |
-| `future headless` | 取到服务锁时 | 否 | `~/.future/app/desktop.lock`（宿主锁）+ 视情况服务锁 |
+| `future host` | 取到服务锁时 | 否 | `~/.future/app/desktop.lock`（宿主锁）+ 视情况服务锁 |
 | `future tui` | 否 | 是：`future agent --grpc-addr auto` 子进程 | 都不持 |
 
 三者的判定都收敛在 [`select_agent`](../../packages/rpc/src/connection.rs)：先握手外部服务，失败且确认本地端点缺席（`NotFound`/`ConnectionRefused`）+ [`check_instance_lock`](../../packages/rpc/src/connection.rs) 通过，才发 `LocalStartPermit`，最终由 [`AgentService::with_instance`](../../agent/src/service/mod.rs) 里的 `try_write()` 真正仲裁。
@@ -85,12 +85,12 @@
 
 | 入口 | 可内嵌 | 可 spawn 子进程 | 自愈 |
 |---|---|---|---|
-| `future headless` | 是 | 否（自己能内嵌，多进程无收益） | 是 |
+| `future host` | 是 | 否（自己能内嵌，多进程无收益） | 是 |
 | Desktop GUI | 是 | 否 | 是 |
 | `future tui` | 见 D6 | 现状是；D6 采纳后否 | 是 |
 | channels / goal / `future run` / 手机 | 否 | 否 | 只 attach |
 
-生产部署仍建议用 systemd / launchd / NSSM 包住 `future headless`：进程管理器不会"自己也死掉"，客户端自愈只该是兜底。
+生产部署仍建议用 systemd / launchd / NSSM 包住 `future host`：进程管理器不会"自己也死掉"，客户端自愈只该是兜底。
 
 ### 4.3 四种"死法"要分开
 
@@ -108,7 +108,7 @@
 | 入口 | 探测节奏 | 等待上限 | 期间界面/终端 | 对它自己的 run 的影响 | 上限到达后 |
 |---|---|---|---|---|---|
 | `future tui` | 250ms，逐步放宽到 1s | **180s**（与 `AgentHost::START_TIMEOUT` 一致） | 状态行：`等待另一个客户端启动的 Agent（pid 1234 @ host-a）… 12s`；超过 30s 追加"冷数据根可能要几分钟，进度见 `<日志路径>`" | 输入仍可编辑；发送被拒并显示同一句话——**不排队、不假装成功** | 界面保持可用，转为每 30s 一次的后台探测，状态行常驻不隐藏 |
-| `future headless` | 250ms→1s | **180s** | stderr 每 30s 一行，同上信息 | 不接单（它本来就没起来） | **报错退出**（exit 1），打印持锁者 pid/host + 日志路径，交给进程管理器 |
+| `future host` | 250ms→1s | **180s** | stderr 每 30s 一行，同上信息 | 不接单（它本来就没起来） | **报错退出**（exit 1），打印持锁者 pid/host + 日志路径，交给进程管理器 |
 | Desktop GUI | 250ms→1s | **180s** | Agent 状态页显示"等待另一个客户端启动的 Agent"，带 pid/host | 依赖 Agent 的页面不可用 | 进入 `Failed` 并给"重试"按钮；不启动第二份 |
 
 三条配套约束：

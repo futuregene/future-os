@@ -54,6 +54,7 @@ CREATE TABLE tasks (
   session_policy   TEXT NOT NULL DEFAULT 'new',  -- new | existing
   session_retention TEXT NOT NULL DEFAULT 'keep', -- keep | delete（见 §6.1；只对 new 生效）
   conversation_mode TEXT NOT NULL DEFAULT 'workspace',  -- workspace | chat（新任务的表单默认 chat）
+  timezone         TEXT,                      -- 触发时间按此 IANA 时区读；NULL=本机时区，读不到则 Asia/Shanghai
   thread_id        TEXT,                      -- session_policy=existing 时的宿主会话绑定（懒建）
   trigger_kind     TEXT NOT NULL,             -- manual | schedule
   trigger_json     TEXT NOT NULL,
@@ -122,9 +123,11 @@ CREATE TABLE task_prompt_revisions (
 规则（纯函数 `next_due(trigger, after) -> Option<i64>`，带单测）：
 
 - **interval**：锚定网格——到期点 = `anchor + k·every`，取最小未来网格点；不漂移靠网格，不靠补跑。
-- **daily/weekly/monthly**：日历网格（本机本地时区墙钟），错过的日历点补跑一次。
+- **daily/weekly/monthly**：日历网格，墙钟按**任务自己的时区**读（见下「时区」），错过的日历点补跑一次。
 - **短月**：monthly `day > 当月天数` 时顺延到当月最后一天；UI/CLI 常驻可见此规则。
 - **once**：跑完 `enabled=0`。
+
+**时区**。`tasks.timezone` 存 IANA 时区名（`Asia/Shanghai`、`Europe/Berlin`、`UTC`），上面所有墙钟时间都按它读——机器自身时区变了、或者任务由另一台设备管理，计划仍保持原意。所有写入方都落具体名字：CLI 的 `--timezone`、桌面表单、手机编辑器都会传；客户端没传时在写入时解析为本机时区，**读不到时区时用 Asia/Shanghai**（读不到不能悄悄当成 UTC，否则中文用户的早间任务会跑到下午）。没有存过时区的旧行（该设置出现之前写的）每次重算计划时按同一规则解析。选中的时区会出现在 `future task show`、运行信封（`run settings: … | timezone=…`）、`due=` 与 CLI 的日期列里；任务详情页与工作目录并列显示。无法识别的名字会直接报错，不会被替换。
 
 ## 5. 执行链路（tick → claim → 执行）
 
@@ -161,7 +164,7 @@ tick（30s，墙上时钟；`Run now` 写入 pending_request_at 后会把循环�
 task: 每周进展周报 | id: tsk_... | prompt-version: 3
 run: kind=main | due=2026-10-07T09:00:00+08:00
 trigger: {"mode":"weekly","days":["mon","fri"],"time":"10:00"}
-run settings: cwd=/Users/... | conversation=workspace | session=new (fresh conversation per run) | model=... | thinking=high
+run settings: cwd=/Users/... | timezone=Asia/Shanghai | conversation=workspace | session=new (fresh conversation per run) | model=... | thinking=high
 
 - upstream tsk_a "upstream" [run trn_b status=completed finished=...]: …
 Full output of one source: future task output <run-id> …
@@ -301,7 +304,7 @@ HOME=/tmp/try FUTURE_AGENT_GRPC_ADDR=127.0.0.1:5099 \
 
 ## 12. 明确不做
 
-**已移除**：任务之间的依赖（边、join、链式运行、`--depends-on`/`--join-any` 两个 flag，以及两端编辑器里的依赖块）——定时任务只由自己的计划或手动触发。**不在范围内**：cron 表达式与命名时区；任务之间的编排；OS 常驻服务；shell/goal/skill 类动作；系统通知；每任务工具白名单（全权限是唯一策略）。
+**已移除**：任务之间的依赖（边、join、链式运行、`--depends-on`/`--join-any` 两个 flag，以及两端编辑器里的依赖块）——定时任务只由自己的计划或手动触发。**不在范围内**：cron 表达式；任务之间的编排；OS 常驻服务；shell/goal/skill 类动作；系统通知；每任务工具白名单（全权限是唯一策略）。
 
 ---
 

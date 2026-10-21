@@ -79,11 +79,13 @@ const mocks = vi.hoisted(() => ({
   nudgeLeftPanel: undefined as undefined | ReturnType<typeof vi.fn>,
   remotePeers: undefined as undefined | { catalogs?: unknown[]; peers?: unknown[] },
   invoke: vi.fn<(command: string, args?: unknown) => Promise<unknown>>(async () => {}),
+  isFullscreen: false,
   refreshStore: vi.fn(async (_threadId?: string) => {}),
   remoteStatus: { phase: "idle" } as Record<string, unknown>,
   startRemote: vi.fn(async () => {}),
   stopRemote: vi.fn(async () => {}),
   store: {} as Record<string, unknown>,
+  setFullscreen: vi.fn(async (_value: boolean) => {}),
   approvalsThreadIds: [] as (string | null)[],
   tauriEvents: {} as Record<string, (payload: unknown) => void>,
   terminalTarget: null as string | null,
@@ -407,6 +409,9 @@ vi.mock("../../features/terminal/panelTarget", () => ({ terminalTarget: () => mo
 vi.mock("../../integrations/agent/agentStateCache", () => ({
   installAgentEventListener: () => mocks.hooks.installAgentEventListener?.(),
   revalidateAgentState: (threadId: string) => mocks.hooks.revalidateAgentState?.(threadId),
+  // The Vibe panel reads each cell's settings from the host's cached state; this shell
+  // test has no host, so every cell falls back to the shell's own view.
+  useCachedAgentState: () => undefined,
 }));
 vi.mock("../../integrations/agent/agentClient", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../integrations/agent/agentClient")>();
@@ -473,8 +478,16 @@ vi.mock("../../lib/useTauriEvent", () => ({
 // The client role's settings window raises itself through this API when it hands
 // a conversation to the main window; jsdom has no Tauri internals behind it.
 const setFocus = vi.fn(() => Promise.resolve());
+// The Vibe panel (mounted here by `vibe.toggle`) subscribes to the host's
+// `approvals-updated` push; jsdom has no Tauri IPC behind `listen`.
+vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => {}) }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ setFocus: () => setFocus() }),
+  getCurrentWindow: () => ({
+    isFullscreen: () => Promise.resolve(mocks.isFullscreen),
+    onResized: () => Promise.resolve(() => {}),
+    setFocus: () => setFocus(),
+    setFullscreen: (value: boolean) => mocks.setFullscreen(value),
+  }),
 }));
 
 function thread(id: string, overrides: Partial<StoredThread> = {}): StoredThread {
@@ -631,6 +644,8 @@ beforeEach(() => {
   mocks.geometry = { left: true, right: true };
   mocks.nudgeLeftPanel = undefined;
   mocks.invoke.mockReset().mockResolvedValue(undefined);
+  mocks.isFullscreen = false;
+  mocks.setFullscreen.mockClear();
   mocks.hooks = {
     createWorkspace: vi.fn(async () => chatWorkspace),
     installAgentEventListener: vi.fn(),
@@ -1133,6 +1148,25 @@ describe("app shell layout", () => {
     expect(view.container.textContent).toContain("Where should this conversation live?");
     act(() => labeledButton(view.container, "Studio iMac").click());
     expect((children.remoteComposer as { desktopId?: string }).desktopId).toBe("desktop_a");
+    view.unmount();
+  });
+
+  /**
+   * ⌘N and then Enter, without touching the mouse: the dialog takes the caret
+   * when it opens, so the machine it opens on (this one) is reachable from the
+   * keyboard the shortcut was pressed with.
+   */
+  it("answers the machine dialog with the keyboard, from the shortcut", () => {
+    mocks.remotePeers = { catalogs: [], peers: [connectedHost()] };
+    const view = mount(<AppShell />);
+
+    act(() => runCommand("chat.new"));
+    const row = labeledButton(view.container, "This computer");
+    expect(document.activeElement).toBe(row);
+    act(() => {
+      row.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    });
+    expect(view.container.querySelector("[data-child='new-conversation']")).not.toBeNull();
     view.unmount();
   });
 
@@ -2834,6 +2868,54 @@ describe("app shell collapsed-panel affordances", () => {
     });
 
     /**
+     * A draft on a host asks the same question as this machine's own composer:
+     * a workspace, or a plain conversation.
+     *
+     * It used to ask nothing: a draft opened in a workspace only when it was
+     * started from that workspace's heading, and the new-conversation path made
+     * a chat without saying so. The answer is carried to the host as an id (it
+     * resolves the folder), and the header names the workspace — a draft has no
+     * catalogue row, so that name comes from the same read the menu draws from.
+     */
+    it("lets a draft choose a workspace on the host, or a plain conversation", async () => {
+      mocks.invoke.mockImplementation(async command => command === "remote_peer_workspaces"
+        ? { workspaces: [{ id: "ws_1", name: "future-os", path: "/Users/me/code/future-os" }] }
+        : undefined);
+      const view = mount(<AppShell />);
+      act(() => rail().onNewChatOnRemote?.("desktop_a", null));
+      await act(async () => {
+        for (let i = 0; i < 4; i += 1) await Promise.resolve();
+      });
+
+      // A draft starts on a plain conversation, and says so.
+      expect(view.container.querySelector("[data-testid='remote-draft-target']")).not.toBeNull();
+      expect((children.remoteComposer as { workspaceId?: string | null }).workspaceId).toBeNull();
+      expect((children.remoteConversationView as { title?: string }).title).toBe("New conversation");
+
+      // The host's folder is what the menu offers, and choosing it moves the
+      // draft — the composer sends the id, the header names the workspace.
+      act(() => railButton(view.container, "Workspaces").click());
+      act(() => railButton(view.container, "future-os/Users/me/code/future-os").click());
+      expect((children.remoteComposer as { workspaceId?: string | null }).workspaceId).toBe("ws_1");
+      expect((children.remoteConversationView as { workspaceName?: string | null }).workspaceName)
+        .toBe("future-os");
+
+      // And back: the chat control beside it is the other half of the question.
+      act(() => railButton(view.container, "Chat").click());
+      expect((children.remoteComposer as { workspaceId?: string | null }).workspaceId).toBeNull();
+      view.unmount();
+    });
+
+    /** A conversation that exists has a place already: there is nothing to ask. */
+    it("asks nothing about the place of a conversation that already exists", () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+
+      expect(view.container.querySelector("[data-testid='remote-draft-target']")).toBeNull();
+      view.unmount();
+    });
+
+    /**
      * The conversation's account book is its own, on the host that spent it.
      *
      * Opened from the transcript's header, and quoting that host's figures: the
@@ -3010,6 +3092,23 @@ describe("app shell keyboard commands", () => {
     const view = mount(<AppShell />);
     press({ ctrlKey: true, key: "n" });
     expect(view.container.querySelector("[data-child=\"new-conversation\"]")).not.toBeNull();
+    view.unmount();
+  });
+
+  it("leaves fullscreen when the panel closes", async () => {
+    // The panel is the only surface that offers fullscreen, so a panel closed while
+    // fullscreen used to leave a window with no way back to windowed (Windows draws no
+    // title bar in fullscreen). Closing the panel is the state before it was opened.
+    mocks.isFullscreen = true;
+    const view = mount(<AppShell />);
+    press({ ctrlKey: true, shiftKey: true, key: "v" });
+    expect(view.container.querySelector("[data-vibe-layer]")).not.toBeNull();
+    press({ ctrlKey: true, shiftKey: true, key: "v" });
+    expect(view.container.querySelector("[data-vibe-layer]")).toBeNull();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mocks.setFullscreen).toHaveBeenCalledWith(false);
     view.unmount();
   });
 

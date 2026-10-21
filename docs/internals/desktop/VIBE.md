@@ -358,6 +358,17 @@ toggle lives in one function (`fullscreen.ts`), a refusal **reaches the reader**
 error toast and the console, and `fullscreenCapability.test.ts` asserts the grant next to
 the code that needs it.
 
+And the panel **owns** the fullscreen it offers. The bar's icon, the menu's row and
+`vibe.fullscreen` are all registered by the panel, so a panel closed while fullscreen used
+to leave the reader in a window with no way back — Windows draws no title bar in
+fullscreen (there is not even a restore button), and `Esc` closes the panel on the grid
+layer rather than leaving fullscreen, which is exactly the route the bug report took. So
+every path out of the panel (`onClose`, `vibe.toggle`, and the three "open it in the
+shell" routes) calls `exitNativeFullscreen` after `setVibeOpen(false)`. Deliberately not
+the panel's unmount cleanup: React StrictMode mounts, unmounts and remounts in
+development, and a reader who was already fullscreen (the macOS green button) would be
+dropped out of it every time they opened the panel.
+
 ## 6. Reading layer: blocks, and zoom at one or two columns
 
 **Scrolling, stated as implemented**: `↑`/`↓` in the reading layer scroll the transcript by
@@ -583,6 +594,7 @@ Automatable — and where each one lives:
 | The bar is the window's drag surface, and its three buttons still click | `VibeStage.test.tsx` |
 | `core:window:allow-set-fullscreen` is granted to the main window, and no `deny-` entry undercuts it | `fullscreenCapability.test.ts` |
 | A refused fullscreen reaches the reader as an error toast, not silence | `VibeStage.test.tsx` |
+| Closing the panel from a fullscreen window leaves fullscreen, so no reader is stranded without the toggle | `AppShell.test.tsx`, `fullscreen.test.ts` |
 | The queue: one per conversation (a second is refused), visible on the cell, handed back into the box when the run ends, kept across a failure, and cancelled into the box rather than discarded | `vibeQueue.test.ts`, `VibeStage.test.tsx` |
 | The composer's half: a send during a run hands the text over and clears the box, a refusal leaves the text in place, and an idle send is still a send | `Composer.inputLayer.test.tsx` |
 | A remote's buttons survive a rebinding and a cleared binding | `shortcuts.test.ts`, `catalog.test.ts`, `keybinding.test.ts` |

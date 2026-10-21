@@ -1,11 +1,12 @@
-# Headless Desktop guide
+# Host mode guide
 
-[中文](desktop-headless.zh-CN.md)
+[中文](desktop-host.zh-CN.md)
 
-Headless mode lets FutureOS Desktop provide phone remote access from a terminal,
-without opening a window or WebView. It works over SSH and on local machines that
-do not need the desktop UI. It reuses Desktop's sessions, workspaces, approvals and
-file handling; it is not a separate Remote service or SDK.
+Host mode lets the FutureOS Desktop backend provide phone remote access from a
+terminal, without opening a window or WebView. It works over SSH and on local
+machines that do not need the desktop UI. It reuses Desktop's sessions,
+workspaces, approvals and file handling; it is not a separate Remote service or
+SDK.
 
 **The process stays in the foreground. Press Ctrl+C to close remote access and exit.**
 It does not daemonize or install a system service.
@@ -15,7 +16,7 @@ The unified entry is implemented on this branch; final cross-platform and releas
 ## 1. Before you start
 
 - Install the unified `future` CLI, including from a CLI-only archive. Run
-  `future headless`; no separate server executable or Desktop installation is needed.
+  `future host`; no separate server executable or Desktop installation is needed.
 - The complete Agent runs inside this process when no external service owns the
   default endpoint/data directory. Maintenance invokes this same CLI executable.
   An external Agent is attached only after compatibility/readiness checks.
@@ -25,40 +26,43 @@ The unified entry is implemented on this branch; final cross-platform and releas
 - Run as an ordinary system user. Platform credentials, pairing and tool execution
   belong to that user; do not use root just for convenience.
 - Only one Desktop backend may own a data directory. Close the GUI using that
-  directory before starting headless mode.
+  directory before starting host mode.
 
 Platform access requires valid Future OS account credentials, but **no browser is
-needed on the server**. Initial login and pairing require an interactive terminal;
-do not redirect the output to a file.
+needed on the server**. Signing in requires an interactive terminal (it prints an
+authorization link and user code, which must never land in a redirected log);
+pairing a device does not — `future remote devices add` prints the invitation in
+the terminal that runs it.
 
 ## 2. Start in the foreground
 
-After a `.deb` install, run `future headless` directly. For a portable or source
+After a `.deb` install, run `future host` directly. For a portable or source
 build, change to the directory containing the executable.
 
 Linux / macOS:
 
 ```bash
-./future headless
+./future host
 ```
 
 Windows PowerShell:
 
 ```powershell
-.\future.exe headless
+.\future.exe host
 ```
 
 No `--headless` flag is needed or accepted. `futureos` starts only the graphical
 Desktop; its former `--headless` option has been removed. Replace old commands
-such as `futureos --headless --no-qr` with `future headless`.
+such as `futureos --headless --no-qr` with `future host`.
 Neither entry point takes pairing flags any more: devices are managed with
 `future remote devices` (section 3.1), which asks the running Desktop.
 Both executables share the backend, data and phone protocol; this is not a second
 implementation.
 
-No additional `--pair --qr` options are needed. Desktop guides you according to the
-saved login and pairing state. Pairing does not end the command or return a shell
-prompt: the process continues serving the phone.
+No additional `--pair --qr` options are needed, and none exist: the entry serves
+the devices already paired to this machine, and pairing a new one is a separate
+command (`future remote devices add`, section 3.1). Pairing does not end anything
+or return a shell prompt: the process keeps running and serves the phone.
 
 If the remote desktop switch is off — turned off in the window's Remote page or
 with `future remote disable` — the entry starts idle instead of serving: it stays
@@ -75,7 +79,7 @@ authorization URL and a user code.
 2. Sign in to Future OS and authorize this server. Enter the terminal's user code
    if the web page requests it.
 3. The server waits for authorization, saves credentials through the Agent and
-   proceeds to phone pairing.
+   starts serving the devices already paired to this machine.
 
 This authorizes the server to access your platform account. It does not yet allow
 the mobile app to control the server. No server browser, SSH graphical forwarding
@@ -83,9 +87,16 @@ or inbound browser callback port is required.
 
 ### Step two: mobile app pairing
 
-If no pairing exists, once the remote entry and Agent are ready, the terminal
-shows **PHONE PAIRING**, a second QR code and a complete
-`futureos://remote/pair?...` invitation link.
+The host prints no pairing code of its own. Pairing is a request the operator
+makes, in a second terminal on the same machine:
+
+```bash
+future remote devices add
+```
+
+That command asks the running host to mint an invitation and prints it where it
+was asked for: a QR code, the complete `futureos://remote/pair?...` link, and the
+time left before it expires.
 
 - Scan with **Add device / Scan inside the FutureOS app**.
 - Alternatively, paste the complete link into the app's **Paste pairing code**
@@ -93,7 +104,9 @@ shows **PHONE PAIRING**, a second QR code and a complete
 
 The pairing code is the complete invitation link, not a short numeric code.
 Invitations are valid for five minutes and are single-use. Do not share them,
-post screenshots or save them in shared logs.
+post screenshots or save them in shared logs. The host keeps running while you
+pair, and starts serving the new device as soon as the phone claims the
+invitation — no restart, and nothing else to run.
 
 ### Already signed in or paired
 
@@ -105,7 +118,7 @@ Remote connection logic handles recovery.
 
 ### What the server maintains on its own
 
-Headless serves the same backend as the window, so the phone sees the same
+The host serves the same backend as the window, so the phone sees the same
 sessions, settings, skills, models and tasks. Two steps the window's interface
 drives are performed by this entry point itself, because a server has no window
 to render them:
@@ -135,13 +148,14 @@ event the phone does not read.
 For example:
 
 ```bash
-./future headless --relay https://relay.example.com
-./future headless --help
+./future host --relay https://relay.example.com
+./future host --help
 ```
 
-Invitations are printed as a QR code with the complete link beside it. A narrow
-terminal automatically falls back to the link alone and says why; there is no flag
-for it, and no flag for pairing either — see below.
+`future remote devices add` prints the invitation as a QR code with the complete
+link beside it. A narrow terminal automatically falls back to the link alone and
+says why; there is no flag for it, and no flag for pairing on this entry point
+either — see below.
 
 ### 3.1 Managing paired devices from the terminal
 
@@ -183,21 +197,21 @@ future remote devices use <id|#>       # choose the one in control
   the running process is what actually serves a device. An invitation is only
   usable while the bridge for that pairing is connected, and a removal only takes
   effect now if that bridge is stopped, so all three ask the running Desktop —
-  window or headless — and carry its answer back. `add` prints the invitation it
+  window or host — and carry its answer back. `add` prints the invitation it
   returns as a QR code and link in the terminal that asked. Existing devices stay
   paired; this adds beside them.
   `remove --all` followed by `add` is how a machine's pairing is replaced, and the
   `add` stops any stale bridge left by the removal before minting the replacement.
 
 "Connected right now" and the name a device gave itself exist only in a running
-Desktop process — they are not in the pairing book. A machine with no device at
-all prints an invitation as the Desktop starts, which is also the recovery path
-after `remove --all`.
+Desktop process — they are not in the pairing book. A machine with an empty book
+stays unmatched until somebody runs `add`; that is also the recovery path after
+`remove --all`.
 
 ### 3.2 The remote desktop switch
 
 A machine serves its paired devices only while its remote desktop switch is on.
-It is one preference, shared by the window's Remote page, `future headless` and
+It is one preference, shared by the window's Remote page, `future host` and
 the CLI, and it decides both "serve now" and "serve again at the next launch":
 
 ```bash
@@ -210,7 +224,7 @@ future remote disable              # turn it off now, and keep it off
 Future OS account: the platform mints the invitation, the credential and the
 relay connection. So `future remote enable` checks for a login before it touches
 the switch and refuses with `future auth login` when there is none — a switch
-that is on but unsigned-in serves nobody. `future headless` runs the login flow
+that is on but unsigned-in serves nobody. `future host` runs the login flow
 itself before it serves (and says the same thing when its terminal is not
 interactive). `future remote disable` needs no account: turning serving off is
 never blocked by being unable to serve. With `--relay` there is no account at all,
@@ -222,17 +236,21 @@ and none of this applies.
   as a process. `--json` prints one document whose `state` is the word to test
   (`off`, `unknown`, `on`, `connecting`, `serving`, `degraded`, `failed`,
   `revoked`); see `future remote status --help`.
-- With a Desktop running (window or headless), `enable`/`disable` take effect at
+- With a Desktop running (window or host), `enable`/`disable` take effect at
   once: the request goes to that process, which starts or gracefully stops the
   bridge. Nothing is restarted, and a connected device is told the machine went
   away when the switch goes off.
 - With none running there is no bridge to move, so only the switch is stored for
   the next start. `disable` exits 0 — off is the state that was asked for —
   while `enable` exits 1 and says nothing is serving yet.
-- A headless entry with the switch off starts (or stays) idle instead of exiting:
+- A host entry with the switch off starts (or stays) idle instead of exiting:
   it is the machine's control endpoint, so `future remote enable` turns it back on
   without a restart. A stop while the switch is *on* is still a fault and still
-  ends the entry.
+  ends the entry. "On and empty" is not a fault by itself — a book emptied by your
+  own `remove` keeps the entry running, waiting to be asked for a new device — but
+  a device the platform **revoked** is: the unusable credential is dropped, nothing
+  is left to serve, and the entry stops naming `CredentialRevoked` instead of
+  waiting for an invitation nobody asked for.
 - Switching off keeps every pairing. `future remote devices remove` is what
   unpairs.
 
@@ -247,6 +265,7 @@ future remote peers                     # every remote desktop this machine driv
 future remote peers add <invitation>    # pair with one: paste the link it shows
 future remote peers connect <id|#>      # connect now
 future remote peers disconnect <id|#>   # drop the connection, keep the pairing
+future remote peers takeover <id|#>     # take it back from the device driving it
 future remote peers rename <id|#> <n>   # name it here (--clear for the machine id)
 future remote peers remove <id|#>       # unpair it: stop connecting, revoke
 ```
@@ -263,9 +282,15 @@ future remote peers remove <id|#>       # unpair it: stop connecting, revoke
   because a connection lives in that process and nowhere on disk.
 - `connect` and `disconnect` are asked of the running Desktop: that is where the
   connection and the user's own "disconnected" mark live, and asking it is what
-  keeps the automatic reconnect pass from undoing a deliberate stop. `remove` asks
-  it too when it can, and otherwise unpairs here and revokes from the terminal.
-- A paired desktop is connected by the Desktop as it starts. A headless host
+  keeps the automatic reconnect pass from undoing a deliberate stop. `takeover`
+  is asked of it for the same reason: one device drives a machine at a time, a
+  standby machine stays connected and refuses every command (`superseded`), and
+  `list` draws that as "taken over" (naming the holder when it said who it is).
+  The command is the same `takeover` a phone sends; a machine this one already
+  drove answers that nothing moved, which is a success (`tookOver: false` in
+  `--json`). `remove` asks the Desktop too when it can, and otherwise unpairs
+  here and revokes from the terminal.
+- A paired desktop is connected by the Desktop as it starts. A host
   serves devices but does not drive other desktops, so the client role needs the
   window.
 
@@ -279,12 +304,12 @@ performs bounded resource cleanup.
   conversations, then stop the service.
 - **Independently running Agent:** leave it running. This Desktop's remote entry
   still closes.
-- **Saved login and completed pairing:** retain them for the next `future headless`
+- **Saved login and completed pairing:** retain them for the next `future host`
   launch. Exiting is not unpairing.
 
 Unix also handles SIGTERM and SIGHUP. Continuity after SSH disconnect is not
 promised. If you deliberately need it, use tmux or a service manager; this is not
-the default behavior of headless mode.
+the default behavior of host mode.
 
 ## 5. Server build without graphical dependencies
 
@@ -297,7 +322,7 @@ Build and install from the repository root without npm or Desktop:
 ```bash
 make build-cli
 make install-cli
-make run-headless ARGS=--help
+make run-host ARGS=--help
 # Compatibility aliases: make build-desktop-headless / install-desktop-headless
 ```
 
@@ -305,7 +330,7 @@ Or build explicitly:
 
 ```bash
 cargo build --release -p future-cli --bin future
-./target/release/future headless
+./target/release/future host
 ```
 
 The output is `target/release/future` (`future.exe` on Windows). No separate
@@ -334,7 +359,7 @@ logs and recovery.
 
 ## 6. Data, permissions and troubleshooting
 
-Headless mode uses the running user's existing directories, including
+Host mode uses the running user's existing directories, including
 `~/.future/agent/auth.json`, `~/.future/remote_pairing.json` and `~/.future/app/`.
 Being signed in on your laptop does not sign in the SSH server. Changing the
 system user or HOME does not automatically inherit credentials. For later service
@@ -350,20 +375,20 @@ hang.
 
 | Symptom | Action |
 |---|---|
-| `libwebkit2gtk-4.1.so.0` missing | This is the GUI binary; build and run `future headless` instead |
-| `--headless` option removed or unknown | Use `future headless` without that flag; `--re-pair`/`--no-qr` are gone — use `future remote devices add` and `remove --all` — while `--relay`/`--relay-ca` exist on both entry points |
+| `libwebkit2gtk-4.1.so.0` missing | This is the GUI binary; build and run `future host` instead |
+| `--headless` option removed or unknown | Use `future host` without that flag; `--re-pair`/`--no-qr` are gone — use `future remote devices add` and `remove --all` — while `--relay`/`--relay-ca` exist on both entry points |
 | Agent unavailable/incompatible or instance lock occupied | Read the reported owner/version, check the same user/data root, and upgrade or exit the external owner; never delete the lock or bypass it. Explicit endpoints and external mode are attach-only |
 | Built-in skills were not installed | Check the `[skills]` lines on stderr: maintenance runs this same executable as `future init` and needs a network route to the skill catalogue. The phone can still install skills itself |
-| Interactive terminal required | Complete initial login/pairing in a real terminal, without pipes, redirection or non-interactive service startup |
+| Interactive terminal required | Sign in from a real terminal, without pipes, redirection or non-interactive service startup; pairing a device needs no terminal |
 | Platform authorization denied or expired | Restart and sign in as instructed; the login code is not the app pairing code |
-| Pairing invitation expired | Run `future remote devices add` for a new one (or restart with no device paired); completed pairings do not require this |
-| `future remote devices add` times out | The running Desktop is asked, and it answers from *its own* build. If the message says nothing picked the request up, that process predates device requests — restart it with the current version (`futureos` or `future headless`) and try again |
-| Another Desktop owns the directory | Exit its GUI or headless process; do not delete the lock file to bypass mutual exclusion |
+| Pairing invitation expired | Run `future remote devices add` for a new one; completed pairings do not require this |
+| `future remote devices add` times out | The running Desktop is asked, and it answers from *its own* build. If the message says nothing picked the request up, that process predates device requests — restart it with the current version (`futureos` or `future host`) and try again |
+| Another Desktop owns the directory | Exit its GUI or host process; do not delete the lock file to bypass mutual exclusion |
 | The process disappears, or a node operator reports it was killed | A host OOM killer or a login node's per-user CPU/memory budget sends SIGKILL, which no process can report itself. Read `<root>/app/logs/desktop.log`: the last startup phase it recorded shows where it stopped; then check the host (`dmesg -T`, `journalctl -k`, or the node's own quota/job logs). If the legacy import is what trips the budget, move the data root off shared storage with `FUTURE_HOME` |
 | Phone cannot claim an invitation | Check matching production/test environments and that the invitation is unused and unexpired |
 | Platform logout, account switch or refresh authorization rejected | The entry closes or reports an actionable error; restore the correct login and restart |
 
 Phone-triggered tools run on the host under the existing approval and file-access
-rules. Headless mode does not grant extra permissions or provide additional
+rules. Host mode does not grant extra permissions or provide additional
 sandbox isolation. See [Phone remote access](../wiki/en/Remote.md) for transport and
 relay trust boundaries and [Sandbox](../wiki/en/Sandbox.md) for permissions.

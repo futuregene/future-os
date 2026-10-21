@@ -16,9 +16,13 @@ import { useTauriEvent } from "../../lib/useTauriEvent";
 import { MarkdownContent } from "../markdown/MarkdownContent";
 import { useTasks } from "./useTasks";
 
-/** Task times are epoch milliseconds; the date helpers take ISO strings. */
-function formatEpoch(ms: number | null, locale: string): string {
-  return ms == null ? "" : formatDateTime(new Date(ms).toISOString(), locale);
+/**
+ * Task times are epoch milliseconds; the date helpers take ISO strings.
+ * `timeZone` is the task's own zone: the same instant must read as the time the
+ * schedule means, even when the person looking at it sits elsewhere.
+ */
+function formatEpoch(ms: number | null, locale: string, timeZone?: string): string {
+  return ms == null ? "" : formatDateTime(new Date(ms).toISOString(), locale, timeZone);
 }
 
 const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
@@ -41,6 +45,62 @@ interface DraftTrigger {
   days: string[];
   day: number;
   month: number;
+}
+
+/**
+ * Zones offered by the time-zone picker: every zone this webview knows, which
+ * is the IANA database the runtime ships. `Intl.supportedValuesOf` is missing on
+ * an older webview, so a short list of common zones keeps the picker usable
+ * there instead of leaving one option; whatever the task already carries is
+ * added either way, so an edit never silently rewrites a zone the list lacks.
+ */
+let knownTimezones: string[] | null = null;
+
+/** The runtime's zone list, read once: it does not change within a session. */
+function allTimezones(): string[] {
+  if (knownTimezones)
+    return knownTimezones;
+  let zones: string[] = [];
+  try {
+    const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] })
+      .supportedValuesOf?.("timeZone");
+    if (Array.isArray(supported))
+      zones = supported;
+  }
+  catch {
+    // Treated as "not supported" below.
+  }
+  if (zones.length === 0) {
+    zones = [
+      "UTC",
+      "Asia/Shanghai",
+      "Asia/Tokyo",
+      "Asia/Singapore",
+      "Asia/Hong_Kong",
+      "Asia/Taipei",
+      "Asia/Seoul",
+      "Asia/Kolkata",
+      "Asia/Dubai",
+      "Europe/London",
+      "Europe/Paris",
+      "Europe/Berlin",
+      "Europe/Moscow",
+      "America/New_York",
+      "America/Chicago",
+      "America/Denver",
+      "America/Los_Angeles",
+      "America/Sao_Paulo",
+      "Australia/Sydney",
+    ];
+  }
+  knownTimezones = zones;
+  return zones;
+}
+
+/** Every zone, with whatever the task already carries added if the list lacks it. */
+function timezoneOptions(current: string): string[] {
+  const zones = allTimezones();
+  return current && !zones.includes(current) ? [current, ...zones] : zones;
 }
 
 const emptyTrigger: DraftTrigger = {
@@ -69,6 +129,12 @@ const emptyDraft = {
   cwd: "",
   modelId: "",
   thinkingLevel: "",
+  /**
+   * The zone the schedule's wall-clock times are read in. Empty means "this
+   * machine's zone", which the host resolves when it stores the task (Beijing
+   * when it cannot read one); every other value is a concrete IANA name.
+   */
+  timezone: "",
   sessionPolicy: "new",
   sessionRetention: "keep",
   conversationMode: "chat",
@@ -269,6 +335,7 @@ export function TasksView({
       cwd: task.cwd,
       modelId: task.modelId ?? "",
       thinkingLevel: task.thinkingLevel ?? "",
+      timezone: task.timezone ?? "",
       sessionPolicy: task.sessionPolicy,
       sessionRetention: task.sessionRetention,
       conversationMode: task.conversationMode,
@@ -284,6 +351,9 @@ export function TasksView({
       cwd: draft.cwd.trim(),
       modelId: draft.modelId || null,
       thinkingLevel: draft.thinkingLevel || null,
+      // Empty stands for "this machine's zone"; the host resolves and stores a
+      // concrete name so the schedule keeps its meaning.
+      timezone: draft.timezone,
       sessionPolicy: draft.sessionPolicy,
       // Only a per-run conversation can be deleted, so the form never sends the
       // combination that means nothing (see `parse_session_retention`).
@@ -418,7 +488,7 @@ export function TasksView({
                 </span>
                 <span className="truncate pl-3.5 text-xs text-ink-muted">
                   {summarizeTrigger(t, task, locale)}
-                  {task.nextDueAt ? ` · ${formatEpoch(task.nextDueAt, locale)}` : ""}
+                  {task.nextDueAt ? ` · ${formatEpoch(task.nextDueAt, locale, task.timezone)}` : ""}
                 </span>
               </button>
             );
@@ -499,6 +569,7 @@ function TaskForm({
 }) {
   const { t } = useTranslation("tasks");
   const [browseError, setBrowseError] = useState<string | null>(null);
+  const zones = useMemo(() => timezoneOptions(draft.timezone), [draft.timezone]);
   const trigger = draft.trigger;
   const workspaceConversation = draft.conversationMode === "workspace";
   const setTrigger = (patch: Partial<DraftTrigger>) => onChange({ trigger: { ...trigger, ...patch } });
@@ -640,6 +711,20 @@ function TaskForm({
             ? <p className="text-xs text-ink-muted">{t("agent:composer.thinkingUnsupported")}</p>
             : null}
         </label>
+      </div>
+
+      <div className="block space-y-1.5">
+        <span className="text-xs text-ink-soft">{t("form.timezone")}</span>
+        <Select value={draft.timezone} onChange={e => onChange({ timezone: e.target.value })}>
+          <option value="">{t("form.timezoneSystem")}</option>
+          {zones.map(zone => (
+            <option key={zone} value={zone}>{zone}</option>
+          ))}
+        </Select>
+        {/* The zone decides which clock the times above are read on, so the
+            hint says what an unset choice means rather than leaving the user
+            to guess whether it follows the machine or UTC. */}
+        <p className="text-xs text-ink-muted">{t("form.timezoneHint")}</p>
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -889,7 +974,7 @@ function TaskDetail({
           <h2 className="truncate text-sm font-semibold text-ink">{task.name}</h2>
           <p className="mt-1 text-xs text-ink-muted">
             {summarizeTrigger(t, task, locale)}
-            {task.nextDueAt ? ` · ${t("nextDue")} ${formatEpoch(task.nextDueAt, locale)}` : ""}
+            {task.nextDueAt ? ` · ${t("nextDue")} ${formatEpoch(task.nextDueAt, locale, task.timezone)}` : ""}
           </p>
         </div>
         <Button size="sm" variant="secondary" onClick={() => onEdit()}>{t("edit")}</Button>
@@ -954,6 +1039,10 @@ function TaskDetail({
                       // A chat task may name no directory at all: it runs in its own
                       // conversation's workspace, and an empty row would read as "missing".
                       [t("colCwd"), task.cwd.trim() || (task.conversationMode === "chat" ? t("cwdChatWorkspace") : "—")],
+                      // The trigger times are read on this clock: a detail page
+                      // that omits it cannot explain why 09:00 printed
+                      // differently than the user's own morning.
+                      [t("colTimezone"), task.timezone || t("form.timezoneSystem")],
                       [t("colConversation"), t(task.conversationMode === "chat" ? "form.conversationChat" : "form.conversationWorkspace")],
                       [t("form.session"), t(task.sessionPolicy === "existing" ? "form.sessionExisting" : "form.sessionNew")],
                       [
@@ -1013,7 +1102,7 @@ function TaskDetail({
                         : null}
                       <span aria-hidden className="text-line">·</span>
                       <span className="min-w-0 flex-1 truncate text-ink-muted">
-                        {run.startedAt ? formatEpoch(run.startedAt, locale) : ""}
+                        {run.startedAt ? formatEpoch(run.startedAt, locale, task.timezone) : ""}
                       </span>
                       {run.threadId
                         ? (

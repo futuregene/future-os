@@ -2,7 +2,7 @@
 
 FutureOS Mobile for Android/iOS controls sessions on your desktop. Tools execute
 on the **desktop computer**, not inside a phone sandbox. Keep that computer awake,
-Desktop running (graphical or explicitly headless), and both devices connected to the network.
+Desktop running (graphical, or explicitly in host mode), and both devices connected to the network.
 
 ## Pair a phone
 
@@ -19,16 +19,18 @@ Production and test builds must use matching service environments. A code issued
 by another environment is rejected; use a matching build rather than editing the
 code or endpoint.
 
-## Headless Desktop over SSH
+## Host mode over SSH
 
 Install the Linux `.deb` or portable package, or build from source, then run
-`future headless` to open phone remote access in the foreground without GUI
+`future host` to open phone remote access in the foreground without GUI
 libraries or a desktop UI. `futureos` is GUI-only; its former
-`--headless` option has been removed. When needed, it prints a browser login QR followed by a
-pairing invitation to scan or paste in the FutureOS app. Valid login and pairing
-are reused. Ctrl+C closes the entry and exits; the process does not daemonize.
+`--headless` option has been removed. When no valid login is stored it prints a
+browser login QR. It prints no pairing code of its own: pair the phone from a
+second terminal with `future remote devices add`, which shows the QR and the
+complete link to scan or paste in the FutureOS app. Valid login and pairing are
+reused. Ctrl+C closes the entry and exits; the process does not daemonize.
 
-See the [Headless Desktop guide](../../guide/desktop-headless.md) for complete startup
+See the [Host mode guide](../../guide/desktop-host.md) for complete startup
 steps, options, GUI-free server builds, Agent lifetime and troubleshooting.
 
 ## What you can do
@@ -72,7 +74,7 @@ code and link), `remove` drops one, `remove --all` drops every device, and `use`
 chooses the one in control. `list`/`remove`/`use` read and write the pairing book
 directly and need no running Desktop; `add` is the exception — an invitation can
 only be minted by the process serving that pairing, so it needs a live Desktop
-(the window or `future headless`) and fails with a non-zero exit if there is
+(the window or `future host`) and fails with a non-zero exit if there is
 none.
 
 ## Privacy and transport

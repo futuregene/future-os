@@ -37,6 +37,8 @@ interface RemoteTaskDetail extends RemoteTaskRow {
   cwd?: string;
   modelId?: string | null;
   thinkingLevel?: string | null;
+  /** IANA zone, resolved by the host (absent on a host that predates it). */
+  timezone?: string;
   sessionPolicy?: string;
   sessionRetention?: string;
   conversationMode?: string;
@@ -76,6 +78,7 @@ function taskView(detail: RemoteTaskDetail): TaskView {
     cwd: detail.cwd ?? "",
     modelId: detail.modelId ?? null,
     thinkingLevel: detail.thinkingLevel ?? null,
+    timezone: detail.timezone ?? "",
     sessionPolicy: detail.sessionPolicy ?? "new",
     sessionRetention: detail.sessionRetention ?? "keep",
     conversationMode: detail.conversationMode ?? "workspace",
@@ -101,6 +104,9 @@ function taskPayload(input: TaskInput): Record<string, unknown> {
     cwd: input.cwd,
     modelId: input.modelId ?? null,
     thinkingLevel: input.thinkingLevel ?? null,
+    // An empty string is the form's "this machine's zone"; the host resolves
+    // it to a concrete name. An older host ignores the field.
+    timezone: input.timezone ?? "",
     sessionPolicy: input.sessionPolicy,
     sessionRetention: input.sessionRetention,
     conversationMode: input.conversationMode,

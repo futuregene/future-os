@@ -14,15 +14,35 @@
       "stop": "Stop generating"
     },
     "composer": {
-      "focus": "Focus the composer"
+      "focus": "Focus the composer",
+      "model": {
+        "previous": "Previous model",
+        "next": "Next model"
+      },
+      "thinking": {
+        "previous": "Previous thinking level",
+        "next": "Next thinking level"
+      },
+      "approval": {
+        "previous": "Previous access level",
+        "next": "Next access level"
+      }
     },
     "thread": {
       "find": "Find in this conversation",
+      "usage": "Show this conversation's usage",
       "previous": "Previous conversation",
       "next": "Next conversation"
     },
     "rail": {
-      "search": "Filter the conversation list"
+      "search": "Filter the conversation list",
+      "view": {
+        "recent": "List recent conversations",
+        "workspace": "List workspaces"
+      },
+      "device": {
+        "next": "Switch to the next device"
+      }
     },
     "section": {
       "chat": "Go to Chats",

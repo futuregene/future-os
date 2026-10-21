@@ -35,7 +35,7 @@ token 不是多租户安全边界。
 
 `future relay`（本仓库）是同一个中继去掉平台部分：它签发同样的「按配对限定」
 NATS user JWT，走同样的 claim/token 端点，只是以 room 为单位而不是账号。桌面端
-用 `futureos --relay URL`（或 `future headless --relay URL`）按**每次启动**选择它，
+用 `futureos --relay URL`（或 `future host --relay URL`）按**每次启动**选择它，
 不写任何文件——不带这个参数就是官方平台；选择本身按配对记录，因此官方配对与自建
 配对可以在同一台机器上共存。运行手册、威胁模型与
 验证方法见 [../guide/self-hosted-relay.zh-CN.md](../guide/self-hosted-relay.zh-CN.md)。

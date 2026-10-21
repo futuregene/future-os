@@ -14,15 +14,29 @@ export function formatTime(value: string, locale?: string) {
 /**
  * Full date + time label ("2026/07/09 22:51"). Like `formatTime`, `locale` is
  * threaded through to `Intl` so a zh UI gets a localized year-month-day order.
+ *
+ * `timeZone` renders the instant on another clock — a scheduled task's own
+ * zone, so the time shown matches the time its trigger means rather than the
+ * viewer's reading of the same instant. An unknown zone falls back to the
+ * local one instead of throwing.
  */
-export function formatDateTime(value: string, locale?: string) {
-  return new Intl.DateTimeFormat(locale, {
+export function formatDateTime(value: string, locale?: string, timeZone?: string) {
+  const options: Intl.DateTimeFormatOptions = {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-  }).format(new Date(value));
+  };
+  if (timeZone)
+    options.timeZone = timeZone;
+  try {
+    return new Intl.DateTimeFormat(locale, options).format(new Date(value));
+  }
+  catch {
+    delete options.timeZone;
+    return new Intl.DateTimeFormat(locale, options).format(new Date(value));
+  }
 }
 
 const MINUTE_MS = 60_000;

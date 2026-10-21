@@ -87,15 +87,15 @@ def main():
             r'webkit|webview|gtk|gdk|appkit|qt[56]|libtauri|libwry', name, re.I)]
         if refused:
             raise RuntimeError(f'GUI dependencies in CLI artifact: {refused}')
-        with tempfile.TemporaryDirectory(prefix='future headless artifact ') as folder:
+        with tempfile.TemporaryDirectory(prefix='future host artifact ') as folder:
             home = Path(folder)
             state = home / '.future'
             env = os.environ.copy()
             env.update(HOME=str(home), USERPROFILE=str(home), FUTURE_HOME=str(state))
             for key in ('FUTURE_AGENT_GRPC_ADDR', 'FUTURE_AGENT_SOCKET', 'FUTURE_DESKTOP_AGENT_MODE'):
                 env.pop(key, None)
-            for flags, expected, code in [(['headless', '--help'], 'Usage: future headless', 0),
-                                          (['headless'], 'interactive terminal', 1)]:
+            for flags, expected, code in [(['host', '--help'], 'Usage: future host', 0),
+                                          (['host'], 'interactive terminal', 1)]:
                 result = subprocess.run([str(binary), *flags], stdin=subprocess.DEVNULL,
                                         capture_output=True, text=True, encoding='utf-8',
                                         errors='replace', env=env, timeout=25)

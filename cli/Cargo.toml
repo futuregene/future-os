@@ -14,7 +14,7 @@ name = "future_cli"
 path = "src/lib.rs"
 
 [dependencies]
-# Shared application backend, used directly by `future headless`.
+# Shared application backend, used directly by `future host`.
 future-host = { path = "../host" }
 tokio.workspace = true
 tonic.workspace = true
@@ -45,6 +45,7 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 reqwest = { workspace = true, features = ["json", "rustls-tls"] }
 chrono = { workspace = true, features = ["clock"] }
+chrono-tz.workspace = true
 dirs = "5"
 humantime = "2"
 base64.workspace = true

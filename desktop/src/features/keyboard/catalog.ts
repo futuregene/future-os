@@ -35,12 +35,22 @@ export type CommandId
   = | "chat.new"
     | "chat.stop"
     | "composer.focus"
+    | "composer.model.previous"
+    | "composer.model.next"
+    | "composer.thinking.previous"
+    | "composer.thinking.next"
+    | "composer.approval.previous"
+    | "composer.approval.next"
     | "thread.find"
+    | "thread.usage"
     | "group.previous"
     | "group.next"
     | "thread.previous"
     | "thread.next"
     | "rail.search"
+    | "rail.view.recent"
+    | "rail.view.workspace"
+    | "rail.device.next"
     | "panel.left"
     | "panel.right"
     | "section.chat"
@@ -164,6 +174,20 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "chat.new", category: "chat", defaultBinding: "mod+n", inTerminal: false },
   { id: "chat.stop", category: "chat", defaultBinding: "mod+period", inTerminal: false },
   { id: "composer.focus", category: "chat", defaultBinding: "mod+l", inTerminal: false },
+  // The composer's three pickers, from the keyboard: model, thinking level and
+  // who approves a tool call. Stepping the value rather than opening the menu —
+  // a `SelectMenu` has no roving focus, so opening it would only get a reader to
+  // a pointer target. One pair per picker so ⇧ walks back instead of making the
+  // reader go the long way round a ring of six thinking levels.
+  { id: "composer.model.previous", category: "chat", defaultBinding: "mod+alt+shift+m", inTerminal: false },
+  { id: "composer.model.next", category: "chat", defaultBinding: "mod+alt+m", inTerminal: false },
+  { id: "composer.thinking.previous", category: "chat", defaultBinding: "mod+alt+shift+t", inTerminal: false },
+  { id: "composer.thinking.next", category: "chat", defaultBinding: "mod+alt+t", inTerminal: false },
+  { id: "composer.approval.previous", category: "chat", defaultBinding: "mod+alt+shift+a", inTerminal: false },
+  { id: "composer.approval.next", category: "chat", defaultBinding: "mod+alt+a", inTerminal: false },
+  // The conversation's own account book: the same dialog the header's receipt
+  // opens, for a reader whose hands are on the keys.
+  { id: "thread.usage", category: "chat", defaultBinding: "mod+alt+u", inTerminal: false },
   { id: "thread.find", category: "chat", defaultBinding: "mod+f", inTerminal: false },
   // Two levels, because the list is two levels: a workspace holds conversations,
   // a conversation holds its forks. `thread.*` walks the conversation rows;
@@ -181,6 +205,18 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "group.previous", category: "navigation", defaultBinding: "mod+shift+bracketleft", inTerminal: false, repeat: true },
   { id: "group.next", category: "navigation", defaultBinding: "mod+shift+bracketright", inTerminal: false, repeat: true },
   { id: "rail.search", category: "navigation", defaultBinding: "mod+shift+f", inTerminal: false },
+  // Which list the rail draws, one key per answer rather than one toggle: a key
+  // labelled "the recent ones" must mean the recent ones on every press, and a
+  // toggle's second press would mean the opposite of what it says. `mod+alt+`
+  // rather than `mod+shift+`: the sections above are `mod+1`…`mod+5`, and the
+  // view is the layer *inside* a section, so it sits one notch deeper.
+  { id: "rail.view.recent", category: "navigation", defaultBinding: "mod+alt+1", inTerminal: false },
+  { id: "rail.view.workspace", category: "navigation", defaultBinding: "mod+alt+2", inTerminal: false },
+  // The device filter, as one ring: all machines → this one → each paired
+  // machine. `mod+shift+d` is the Vibe panel's own "which machine" key
+  // (`vibe.device`, a scoped command); outside the panel the same keys ask the
+  // same question of the conversation list, which is what a scope is for.
+  { id: "rail.device.next", category: "navigation", defaultBinding: "mod+shift+d", inTerminal: false, repeat: true },
   { id: "section.chat", category: "navigation", defaultBinding: "mod+1", inTerminal: false },
   { id: "section.workspace", category: "navigation", defaultBinding: "mod+2", inTerminal: false },
   { id: "section.skill", category: "navigation", defaultBinding: "mod+3", inTerminal: false },

@@ -1,8 +1,8 @@
-# Desktop 无头模式使用指南
+# 主机模式使用指南
 
-[English](desktop-headless.md)
+[English](desktop-host.md)
 
-无头模式让 FutureOS Desktop 在终端中提供手机远程入口，不打开窗口或 WebView。
+主机模式让 FutureOS Desktop 在终端中提供手机远程入口，不打开窗口或 WebView。
 适合通过 SSH 使用服务器，也适合不需要桌面 UI 的本机运行。它复用 Desktop 的会话、
 工作区、审批和文件处理，不是另一套 Remote 服务或 SDK。
 
@@ -13,42 +13,44 @@
 
 ## 1. 启动前准备
 
-- 安装统一 `future` CLI，CLI-only 压缩包也包含完整无头后端。
-  使用 `future headless`，无需单独安装 Desktop 或服务器程序。
+- 安装统一 `future` CLI，CLI-only 压缩包也包含完整主机后端。
+  使用 `future host`，无需单独安装 Desktop 或服务器程序。
 - 默认端点和数据目录没有外部服务占用时，完整 Agent 在当前进程内运行。
   维护直接调用当前 CLI；外部 Agent 仍需通过兼容性和 readiness 检查才会连接。
 - 手机安装匹配生产/测试环境的 FutureOS App。编译渠道与手机环境必须一致。
 - 主机能够访问 Future OS 平台和配置的 NATS 中继；手机也需要联网。
 - 使用普通系统用户运行。平台登录、主机配对和工具执行均属于该运行用户；不要为方便而使用 root。
-- 同一数据目录下只能运行一个 Desktop 后端：启动无头模式前，先退出使用该目录的 GUI。
+- 同一数据目录下只能运行一个 Desktop 后端：启动主机模式前，先退出使用该目录的 GUI。
 
 平台登录需要有效的 Future OS 账号凭证，但**不需要在服务器上打开浏览器**。
-首次登录和配对需要交互终端，不要将输出重定向到文件。
+登录需要交互终端（它会打印授权链接和用户码，绝不能写进重定向日志）；
+配设备不需要——`future remote devices add` 在运行它的终端里自己打印邀请。
 
 ## 2. 前台启动
 
-`.deb` 安装后可以直接运行 `future headless`；portable 或源码构建请进入该可执行程序所在目录。
+`.deb` 安装后可以直接运行 `future host`；portable 或源码构建请进入该可执行程序所在目录。
 
 Linux / macOS：
 
 ```bash
-./future headless
+./future host
 ```
 
 Windows PowerShell：
 
 ```powershell
-.\future.exe headless
+.\future.exe host
 ```
 
 不需要也不接受 `--headless` 参数。`futureos` 只启动图形 Desktop，原来的 `--headless` 选项已移除。
-旧命令如 `futureos --headless --no-qr` 应改成 `future headless`。
+旧命令如 `futureos --headless --no-qr` 应改成 `future host`。
 两个入口都不再接受配对相关参数：设备统一用 `future remote devices` 管理（见 3.1），
 由它在运行中的 Desktop 里完成配对。
 两个程序共享后端、数据和手机协议，不是另一套实现。
 
-无需额外指定 `--pair --qr`。程序会按当前登录与配对状态引导下一步；配对成功后也不会
-结束命令或返回 shell 提示符，而是继续处理手机请求。
+无需也没有 `--pair --qr` 这类参数：入口只服务已经配对到这台机器的设备，配一台新的是一步
+独立命令（`future remote devices add`，见 3.1）。配对不会结束命令或返回 shell 提示符，
+进程继续运行并处理手机请求。
 
 如果远程桌面开关是关闭的（在窗口的 Remote 页面关掉，或用 `future remote disable`），
 本进程启动后处于空转而不是服务：它仍作为这台机器的控制端点留在前台，
@@ -60,21 +62,28 @@ Windows PowerShell：
 
 1. 用手机系统相机或浏览器扫描二维码，或在自己电脑/手机的浏览器中打开授权网址。
 2. 登录 Future OS，按页面提示授权当前服务器；若页面要求用户码，输入终端显示的码。
-3. 服务器等待授权并通过 Agent 保存凭证，随后继续手机配对。
+3. 服务器等待授权并通过 Agent 保存凭证，随后开始服务已经配对到这台机器的设备。
 
 这一步授权的是“服务器访问你的平台账号”，不是手机对服务器的远程控制。
 不需要服务器浏览器、SSH 图形转发或入站浏览器回调端口。
 
 ### 第二步：手机 App 配对
 
-尚未配对时，远程入口与 Agent 就绪后，终端显示 **PHONE PAIRING**、第二个二维码和
-完整的 `futureos://remote/pair?...` 链接。
+主机入口自己**不会**打印配对码。配对由操作者显式发起：在同一台机器的另一个终端运行
+
+```bash
+future remote devices add
+```
+
+它会请运行中的主机签发一张邀请，并在**发起请求的那个终端**里打印出来：二维码、
+完整的 `futureos://remote/pair?...` 链接，以及剩余有效期。
 
 - 用 **FutureOS App 内的添加设备/扫码入口**扫描这个二维码。
 - 不方便扫码时，在 App 的“粘贴配对码”入口粘贴完整链接。
 
 这里的“配对码”是完整邀请链接，不是几位数字的短码。邀请五分钟内有效且只能使用一次。
-不要分享邀请、公开截图或将其保存到共享日志中。
+不要分享邀请、公开截图或将其保存到共享日志中。配对期间主机一直在运行，
+手机领取邀请后它立刻开始服务这台新设备——不需要重启，也不需要另外再启动什么。
 
 ### 已经登录或配对
 
@@ -84,7 +93,7 @@ Windows PowerShell：
 
 ### 服务器自行维护的工作
 
-无头模式提供与 GUI 相同的后端，所以手机上看到的是同一批会话、设置、技能、模型和任务。
+主机模式提供与 GUI 相同的后端，所以手机上看到的是同一批会话、设置、技能、模型和任务。
 有两步原本由 GUI 界面驱动的工作，改由这个入口自己完成 —— 服务器没有窗口来渲染它们：
 
 - **模型目录刷新。** 启动时拉取一次 Future 模型目录，之后每 24 小时刷新，与 GUI 的定时任务
@@ -108,12 +117,12 @@ GUI 的另外两个定时任务在服务器端没有对应物：应用更新检�
 例如：
 
 ```bash
-./future headless --relay https://relay.example.com
-./future headless --help
+./future host --relay https://relay.example.com
+./future host --help
 ```
 
-邀请会以二维码加完整链接的形式打印。终端过窄时自动回退为只打印链接并说明原因，
-因此不需要专门的开关；配对同样不再由启动参数完成，见下文。
+`future remote devices add` 会把邀请以二维码加完整链接的形式打印。终端过窄时自动回退为
+只打印链接并说明原因，因此不需要专门的开关；本入口自己也不再接受任何配对参数，见下文。
 
 ### 3.1 在终端管理已配对设备
 
@@ -143,17 +152,17 @@ future remote devices use <id|序号>        # 指定哪一台在控
   不需要 Desktop 在运行，自建中继也不需要账号。
 - `add`、`remove` 以及 `use` 的"立刻生效"那一半是例外，因为真正在服务一台设备的是运行中的进程：
   邀请只有在为该配对服务的桥已连接时才可用，而移除只有在把桥停掉时才立刻生效。三者都把请求交给
-  运行中的 Desktop（窗口或无头进程）并把它自己的答复带回来。`add` 在发起请求的终端里打印二维码与
+  运行中的 Desktop（窗口或主机进程）并把它自己的答复带回来。`add` 在发起请求的终端里打印二维码与
   链接。已有设备保持配对，这是"在旁边再加一台"；换手机则是 `remove --all` 之后 `add`，
   `add` 会先把移除遗留的旧桥停掉再签发新邀请。
 
 "当前连上了没有""设备自称什么名字"只在运行的 Desktop 进程里，不在配对文件中；
-一台设备都没有时，Desktop 启动就会打印一张邀请，这也是 `remove --all` 之后的恢复方式。
+配对簿为空时，机器不会自己产生邀请，直到有人运行 `add`——这也是 `remove --all` 之后的恢复方式。
 
 ### 3.2 远程桌面开关
 
 机器只有在远程桌面开关打开时才服务已配对设备。这是**一个**偏好值，窗口的 Remote 页面、
-`future headless` 和 CLI 共用它，同时决定"现在是否服务"和"下次启动是否恢复服务"：
+`future host` 和 CLI 共用它，同时决定"现在是否服务"和"下次启动是否恢复服务"：
 
 ```bash
 future remote status               # 现在开着吗？存下来的开关是什么？
@@ -164,7 +173,7 @@ future remote disable              # 现在关闭，并且以后保持关闭
 **先登录，再谈开关。** 不带 `--relay` 时，远程相关的每一步都跑在你的 Future OS 账号上：
 邀请、凭据、中继连接都由平台签发。所以 `future remote enable` 在动开关之前先查登录，
 没有登录就拒绝并让你执行 `future auth login`——开关开着但没登录的机器谁也服务不了。
-`future headless` 自己会先走完登录流程再开始服务（终端非交互时给出的也是同一句提示）。
+`future host` 自己会先走完登录流程再开始服务（终端非交互时给出的也是同一句提示）。
 `future remote disable` 不需要账号："停止服务"这件事不该被"本来就没法服务"挡住。
 带 `--relay` 时根本没有账号，上述都不适用。
 
@@ -176,8 +185,11 @@ future remote disable              # 现在关闭，并且以后保持关闭
   停掉桥，不需要重启；关掉时还会告诉已连接的设备"这台机器下线了"。
 - 没有 Desktop 运行时，没有桥可动，只把开关存下来给下次启动用。`disable` 退出码 0
   （"关"本来就是这次要的结果），`enable` 退出码 1 并明说此刻还没有任何东西在服务。
-- 开关关闭时，无头进程启动后会（或继续）**空转等待**而不是退出：它就是这台机器的控制端点，
+- 开关关闭时，主机进程启动后会（或继续）**空转等待**而不是退出：它就是这台机器的控制端点，
   所以 `future remote enable` 能把它直接叫回来，不用重启。开关是**开**时的停止仍按故障处理。
+  「开着但没有设备」本身不算故障——你自己 `remove` 掉最后一台设备后，入口继续运行，等着被
+  要求配新的——但平台**吊销**了设备就算：不可用的凭据会被丢弃，已经没有东西可服务，入口会
+  以 `CredentialRevoked` 为理由停下，而不是空等一个没人要的邀请。
 - 关闭开关不会解绑任何设备；解绑用 `future remote devices remove`。
 
 ### 3.3 让本机去驱动另一台桌面（客户端角色）
@@ -190,6 +202,7 @@ future remote peers                     # 本机连着的每一台远程桌面
 future remote peers add <邀请链接>       # 配一台：粘贴对方显示的链接
 future remote peers connect <id|序号>    # 现在就连接
 future remote peers disconnect <id|序号> # 断开连接，配对保留
+future remote peers takeover <id|序号>   # 从正驱动它的设备手里接管回来
 future remote peers rename <id|序号> <名字>  # 在本机起个名字（--clear 还原成机器 id）
 future remote peers remove <id|序号>     # 解绑：不再连接，并吊销
 ```
@@ -201,9 +214,13 @@ future remote peers remove <id|序号>     # 解绑：不再连接，并吊销
 - `list` 读那个文件；有 Desktop 在跑时，再读它持有的连接。没有 Desktop 时只报已配对
   的机器和「没有连接状态」——因为连接只存在于那个进程里，磁盘上没有。
 - `connect` 与 `disconnect` 交给运行中的 Desktop 执行：连接本身就是它的，用户主动断开
-  的标记也在它的内存里，只有问它才不会让自动重连把用户的决定撤销。`remove` 能问就问，
+  的标记也在它的内存里，只有问它才不会让自动重连把用户的决定撤销。`takeover` 同样交给它：
+  控制权在同一时间只属于一台设备，被别的设备驱动时本机仍连着、但仍会被退成待命，命令全部
+  以 `superseded` 拒绝——`list` 状态列写「已被接管」（知道名字时写「已被某某接管」），
+  `takeover` 发出的就是手机上同一条 `takeover` 命令，让对方退为待命；控制权没有移动时
+  回答也是成功，由 `--json` 的 `tookOver: false` 说明。`remove` 能问就问，
   问不到就在本机解绑，并从终端里吊销。
-- 已配对的桌面会在 Desktop 启动时被连上。`future headless` 只服务设备、不驱动别的桌面，
+- 已配对的桌面会在 Desktop 启动时被连上。`future host` 只服务设备、不驱动别的桌面，
   所以客户端角色需要窗口版。
 
 ## 4. Ctrl+C、SSH 断开与再次启动
@@ -212,11 +229,11 @@ Ctrl+C 在登录等待、配对、连接启动和正常运行阶段都可用。�
 取消连接恢复工作，再有界清理资源。
 
 - **内置 Agent**：取消所有客户端的活动和排队任务，包括 CLI/TUI 对话，然后停止服务。
-- **原本独立运行的 Agent**：不终止它。无头 Desktop 的远程入口仍会关闭。
-- **已保存的登录与完成的配对**：保留；下次 `future headless` 启动时可复用。退出不等于解绑。
+- **原本独立运行的 Agent**：不终止它。主机模式 Desktop 的远程入口仍会关闭。
+- **已保存的登录与完成的配对**：保留；下次 `future host` 启动时可复用。退出不等于解绑。
 
 Unix 也处理 SIGTERM 和 SIGHUP。SSH 断开后不承诺继续运行；若确实需要跨 SSH 会话保活，
-可以由用户显式选择 tmux 或系统服务托管，但这不是无头模式的默认行为。
+可以由用户显式选择 tmux 或系统服务托管，但这不是主机模式的默认行为。
 
 ## 5. 无图形依赖的服务器构建
 
@@ -228,7 +245,7 @@ Unix 也处理 SIGTERM 和 SIGHUP。SSH 断开后不承诺继续运行；若确�
 ```bash
 make build-cli
 make install-cli
-make run-headless ARGS=--help
+make run-host ARGS=--help
 # 兼容别名：make build-desktop-headless / install-desktop-headless
 ```
 
@@ -236,7 +253,7 @@ make run-headless ARGS=--help
 
 ```bash
 cargo build --release -p future-cli --bin future
-./target/release/future headless
+./target/release/future host
 ```
 
 默认产物为 `target/release/future`（Windows 为 `future.exe`），不再需要独立
@@ -263,7 +280,7 @@ Agent 归属、日志和恢复见[Desktop Agent 生命周期](desktop-agent.zh-C
 
 ## 6. 数据、权限与排障
 
-无头模式沿用运行用户的现有数据目录，包括 `~/.future/agent/auth.json`、
+主机模式沿用运行用户的现有数据目录，包括 `~/.future/agent/auth.json`、
 `~/.future/remote_pairing.json` 和 `~/.future/app/`。本机已经登录，不代表 SSH 服务器已登录；
 更换系统用户或 HOME 也不会自动继承原凭证。后台托管时应使用与首次交互设置相同的用户和目录。
 
@@ -274,19 +291,19 @@ Agent 会按阶段记录启动过程（模型目录、数据库、历史会话�
 
 | 现象 | 处理方式 |
 |---|---|
-| 缺少 `libwebkit2gtk-4.1.so.0` | 当前运行的是 GUI 二进制；请构建并运行 `future headless` |
-| 提示 `--headless` 已移除或未知参数 | 使用不带该参数的 `future headless`；`--re-pair`/`--no-qr` 已移除，改用 `future remote devices add` 与 `remove --all`；`--relay`/`--relay-ca` 两个入口都支持 |
+| 缺少 `libwebkit2gtk-4.1.so.0` | 当前运行的是 GUI 二进制；请构建并运行 `future host` |
+| 提示 `--headless` 已移除或未知参数 | 使用不带该参数的 `future host`；`--re-pair`/`--no-qr` 已移除，改用 `future remote devices add` 与 `remove --all`；`--relay`/`--relay-ca` 两个入口都支持 |
 | Agent 不可用、不兼容或实例锁占用 | 根据错误确认 owner、版本、用户和数据根，升级或正常退出外部服务；不删除锁或绕过互斥。显式端点与 external 模式只连接、不接管 |
 | 内置技能没有装上 | 查看 stderr 上的 `[skills]` 输出：维护使用当前程序执行 `future init`，需要能访问技能目录。手机仍可自行安装技能 |
-| 提示需要交互终端 | 首次登录/配对请在真实终端执行，不要使用管道、重定向或非交互服务启动 |
+| 提示需要交互终端 | 平台登录请在真实终端执行，不要使用管道、重定向或非交互服务启动；配设备不受此限制 |
 | 平台授权拒绝或过期 | 按提示重新启动并登录，不要把登录码当作 App 配对码 |
-| 配对邀请过期 | 用 `future remote devices add` 重新申请（或在一台设备都没有时重启）；已完成配对无需因此重配 |
-| `future remote devices add` 超时 | 它问的是运行中的 Desktop，而对方只能用自己的构建回答。若提示"没有任何进程领取请求"，说明那个进程早于"设备请求"这个功能——用当前版本（`futureos` 或 `future headless`）重启后再试 |
-| 已有 Desktop 占用目录 | 退出使用该数据目录的 GUI 或另一无头进程；不要删除锁文件来绕过互斥 |
+| 配对邀请过期 | 用 `future remote devices add` 重新申请；已完成配对无需因此重配 |
+| `future remote devices add` 超时 | 它问的是运行中的 Desktop，而对方只能用自己的构建回答。若提示"没有任何进程领取请求"，说明那个进程早于"设备请求"这个功能——用当前版本（`futureos` 或 `future host`）重启后再试 |
+| 已有 Desktop 占用目录 | 退出使用该数据目录的 GUI 或另一主机进程；不要删除锁文件来绕过互斥 |
 | 进程直接消失，或节点管理员反馈被清理 | 主机的 OOM killer 或登录节点按用户配额会直接发 SIGKILL，进程自身无法报告。先看 `<根目录>/app/logs/desktop.log` 最后记录到哪个启动阶段，再查主机侧记录（`dmesg -T`、`journalctl -k`，以及节点自己的配额/作业日志）。若触发配额的是历史会话导入，可用 `FUTURE_HOME` 把数据根目录移出共享存储 |
 | 手机无法领取邀请 | 检查手机与主机的生产/测试环境是否匹配，确认邀请未过期且未被使用 |
-| 平台账号退出、切换或续期授权被拒 | 无头入口会关闭或进入需处理的错误状态；恢复正确登录后重新启动 |
+| 平台账号退出、切换或续期授权被拒 | 主机入口会关闭或进入需处理的错误状态；恢复正确登录后重新启动 |
 
-手机操作的工具在主机上执行，沿用原有审批与文件访问规则。无头模式不会自动授予额外权限，
+手机操作的工具在主机上执行，沿用原有审批与文件访问规则。主机模式不会自动授予额外权限，
 也不等于额外的沙箱隔离。传输与中继信任边界见[手机远程](../wiki/zh/Remote.md)，
 权限说明见[审批与沙箱](../wiki/zh/Sandbox.md)。

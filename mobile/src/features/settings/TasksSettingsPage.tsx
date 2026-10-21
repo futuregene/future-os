@@ -46,6 +46,8 @@ interface Draft {
   cwd: string;
   modelId: string;
   thinkingLevel: string;
+  /** Empty = the desktop's own zone (resolved there, Beijing fallback). */
+  timezone: string;
   sessionPolicy: string;
   sessionRetention: string;
   conversationMode: string;
@@ -107,6 +109,7 @@ function draftFrom(detail: RemoteTaskDetail): Draft {
     cwd: detail.cwd,
     modelId: detail.modelId ?? "",
     thinkingLevel: detail.thinkingLevel ?? "",
+    timezone: detail.timezone ?? "",
     sessionPolicy: detail.sessionPolicy ?? "new",
     sessionRetention: detail.sessionRetention ?? "keep",
     conversationMode: detail.conversationMode ?? "workspace",
@@ -132,6 +135,7 @@ function newDraft(): Draft {
     cwd: "",
     modelId: "",
     thinkingLevel: "",
+    timezone: "",
     sessionPolicy: "new",
     sessionRetention: "keep",
     conversationMode: "chat",
@@ -151,6 +155,9 @@ function draftPayload(draft: Draft): Record<string, unknown> {
     // "default" choice is expressed. An omitted key would mean "leave it".
     modelId: draft.modelId || null,
     thinkingLevel: draft.thinkingLevel || null,
+    // Empty means "the desktop's own zone"; the desktop resolves and stores a
+    // concrete name, so the schedule keeps its meaning.
+    timezone: draft.timezone.trim(),
     sessionPolicy: draft.sessionPolicy,
     // Only a per-run conversation can be deleted; the server normalizes the
     // contradiction too, this just keeps the payload honest.
@@ -793,6 +800,42 @@ function TaskForm({
                     />
                   ))}
                 </View>
+              </SettingsField>
+
+              {/* The trigger times are read on the desktop's clock, not the
+                  phone's, so the empty choice says "desktop" rather than
+                  "this device". A zone the chips do not offer can be typed;
+                  the desktop refuses a name it cannot resolve. */}
+              <SettingsField
+                label={t("tasks.form.timezone")}
+                hint={t("tasks.form.timezoneHint")}
+              >
+                <View style={settingsStyles.actions}>
+                  <Choice
+                    disabled={busy}
+                    label={t("tasks.form.timezoneDesktop")}
+                    onPress={() => patch({ timezone: "" })}
+                    selected={draft.timezone.trim() === ""}
+                  />
+                  {["Asia/Shanghai", "UTC", "Europe/Berlin", "America/New_York"].map(zone => (
+                    <Choice
+                      disabled={busy}
+                      key={zone}
+                      label={zone}
+                      onPress={() => patch({ timezone: zone })}
+                      selected={draft.timezone.trim() === zone}
+                    />
+                  ))}
+                </View>
+                <TextInput
+                  accessibilityLabel={t("tasks.form.timezone")}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  placeholder={t("tasks.form.timezonePlaceholder")}
+                  style={settingsStyles.input}
+                  value={draft.timezone}
+                  onChangeText={timezone => patch({ timezone })}
+                />
               </SettingsField>
 
               <SettingsField label={t("tasks.form.session")} hint={draft.sessionPolicy === "existing" ? t("tasks.form.sessionExistingHint") : undefined}>

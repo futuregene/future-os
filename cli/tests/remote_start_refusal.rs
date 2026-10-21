@@ -16,10 +16,10 @@
 //!   headless entry exits non-zero **naming** the failure. The same child seeds a corrupt
 //!   pending-revoke file so `spawn_revoke_cleanup`'s error arm (`start.rs:653-655`) runs.
 //! * [`an_unreadable_revoke_queue_is_reported_and_the_refusal_still_stands`] — the same
-//!   corrupt queue on an unpaired root (a pty, because first-time setup prints an
-//!   invitation and that is refused into a redirected stream): `re_pair`'s settlement pass
-//!   and `create_pairing`'s retire step both report the unreadable file, and the start
-//!   after them is still refused.
+//!   corrupt queue on an unpaired root: the entry comes up serving nothing, and the
+//!   `add-device` request is what asks it to mint — `re_pair`'s settlement pass and
+//!   `create_pairing`'s retire step both report the unreadable file, and the start after
+//!   them is still refused.
 //! * [`a_device_request_is_answered_by_the_running_headless_desktop`] — `future remote
 //!   devices add`'s file protocol against a real child: the request is served, the answer
 //!   carries a scannable v2 invitation, and the request is consumed.
@@ -54,8 +54,8 @@
 //! server (the child's `auth.json` `base_url` is pointed at it), so no real account,
 //! relay, or NATS server is involved.
 //!
-//! Runs the actual unified CLI independently of Desktop. Unix fixtures own a PTY;
-//! Windows fixtures own a ConPTY or a separate console for native Ctrl+C delivery.
+//! Runs the actual unified CLI independently of Desktop. Windows fixtures get a separate
+//! console so native Ctrl+C delivery can be exercised.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -232,6 +232,18 @@ fn token_response(state: &Arc<Mutex<PlatformState>>) -> (u16, Value) {
             }),
         ),
     }
+}
+
+/// The phase the entry last printed, from its `Remote: <Phase> (...)` lines.
+///
+/// A child prints that line whenever the phase changes, so the last one is the
+/// state it settled in — which is the claim these children make.
+fn last_phase(transcript: &str) -> Option<String> {
+    let start = transcript.rmatch_indices("Remote: ").next()?.0 + "Remote: ".len();
+    transcript[start..]
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
 }
 
 /// The invitation the platform mints for the child's pairing request. `pairing_code` must be
@@ -458,7 +470,7 @@ impl ChildRun {
         // exits (see wait_for_web_port_free).
         wait_for_web_port_free();
         let mut command = Command::new(env!("CARGO_BIN_EXE_future"));
-        command.arg("headless");
+        command.arg("host");
         // Hermetic: the fixture controls every variable the child reads. A developer
         // shell (or cargo's own environment) must not decide whether this child attaches
         // to a real Agent or to a real Desktop.
@@ -493,7 +505,7 @@ impl ChildRun {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .expect("spawn future headless");
+            .expect("spawn future host");
         let transcript = Arc::new(Mutex::new(String::new()));
         for pipe in [
             child
@@ -662,137 +674,6 @@ fn windows_interrupt_helper() {
     }
 }
 
-#[cfg(windows)]
-#[path = "support/headless_windows_pty.rs"]
-mod windows_pty;
-#[cfg(windows)]
-use windows_pty::PtyRun;
-
-/// A child that prints invitation material needs a terminal, so it gets a pty on
-/// stdin/stdout/stderr. `openpty` is the platform call the launcher record's test achieves
-/// with `/usr/bin/script`; owning the child directly keeps signals simple.
-#[cfg(unix)]
-struct PtyRun {
-    child: Child,
-    transcript: Arc<Mutex<String>>,
-    home: PathBuf,
-}
-
-#[cfg(unix)]
-impl PtyRun {
-    fn spawn(home: PathBuf, args: &[&str]) -> Self {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_future"));
-        command.arg("headless");
-        command.args(args);
-        command.env_clear();
-        for key in [
-            "PATH",
-            "SHELL",
-            "TMPDIR",
-            "TEMP",
-            "TMP",
-            "SystemRoot",
-            "LANG",
-            "LLVM_PROFILE_FILE",
-            "RUST_BACKTRACE",
-        ] {
-            if let Some(value) = std::env::var_os(key) {
-                command.env(key, value);
-            }
-        }
-        command
-            .env("HOME", &home)
-            .env("USERPROFILE", &home)
-            .env("FUTURE_HOME", home.join(".future"));
-        let mut master: libc::c_int = -1;
-        let mut slave: libc::c_int = -1;
-        let rc = unsafe {
-            libc::openpty(
-                &mut master,
-                &mut slave,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            )
-        };
-        assert_eq!(rc, 0, "openpty failed: {}", std::io::Error::last_os_error());
-        use std::os::fd::FromRawFd;
-        let slave_file = unsafe { std::fs::File::from_raw_fd(slave) };
-        let master_file = unsafe { std::fs::File::from_raw_fd(master) };
-        command
-            .stdin(Stdio::from(
-                slave_file.try_clone().expect("clone the pty slave"),
-            ))
-            .stdout(Stdio::from(
-                slave_file.try_clone().expect("clone the pty slave"),
-            ))
-            .stderr(Stdio::from(slave_file));
-        let child = command.spawn().expect("spawn future headless on a pty");
-        let transcript = Arc::new(Mutex::new(String::new()));
-        let sink = transcript.clone();
-        std::thread::spawn(move || {
-            let mut master = master_file;
-            let mut buf = [0u8; 4096];
-            loop {
-                match master.read(&mut buf) {
-                    Ok(0) | Err(_) => return,
-                    Ok(n) => sink
-                        .lock()
-                        .unwrap()
-                        .push_str(&String::from_utf8_lossy(&buf[..n])),
-                }
-            }
-        });
-        Self {
-            child,
-            transcript,
-            home,
-        }
-    }
-
-    fn text(&self) -> String {
-        self.transcript.lock().unwrap().clone()
-    }
-
-    fn wait_for(&self, needle: &str, timeout: Duration) -> bool {
-        let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
-            if self.text().contains(needle) {
-                return true;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        self.text().contains(needle)
-    }
-
-    fn interrupt(&mut self) {
-        if matches!(self.child.try_wait(), Ok(Some(_))) {
-            return;
-        }
-        interrupt_child(&mut self.child);
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while Instant::now() < deadline {
-            if matches!(self.child.try_wait(), Ok(Some(_))) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-#[cfg(unix)]
-impl Drop for PtyRun {
-    fn drop(&mut self) {
-        if matches!(self.child.try_wait(), Ok(None)) {
-            let _ = self.child.kill();
-            let _ = self.child.wait();
-        }
-        let _ = std::fs::remove_dir_all(&self.home);
-    }
-}
-
 fn isolated_home(tag: &str) -> PathBuf {
     // The path must stay under 104 characters: the child's agent IPC endpoint is
     // `<home>/.future/run/agent.sock`, and macOS `sun_path` rejects longer paths with
@@ -941,12 +822,16 @@ fn a_broker_that_refuses_the_credential_is_reported() {
     child.interrupt(); // already exited; keep the Drop path uniform
 }
 
-/// An unpaired root whose queued revoke cannot be read: both the settlement pass and
-/// `create_pairing`'s `retire_pending_revoke` must **report** the unreadable file rather
-/// than panic, and the start that follows is still refused by the controlled broker.
+/// An unpaired root whose queued revoke cannot be read: the settlement pass and
+/// `create_pairing`'s `retire_pending_revoke` must **report** the unreadable file
+/// rather than panic, and the start they precede is still refused.
 ///
-/// The pty is what lets the child get this far: first-time setup prints an invitation, and
-/// an entry point refuses to do that into a redirected stream.
+/// Pairing is what reaches those two steps, and pairing is now a request rather
+/// than something a start does on its own: the child serves an empty book, the
+/// request file is what makes it mint. Its answer carries the refusal — the
+/// controlled broker will not accept the invitation's bridge — and the transcript
+/// carries the report, because a refusal alone would hide the file that needs
+/// fixing.
 ///
 /// `remote_host/pairing.rs:261-263` is the retire log; `start.rs:648` is the second
 /// `spawn_revoke_cleanup` (the worker is already running from the first start) returning early.
@@ -956,21 +841,47 @@ fn an_unreadable_revoke_queue_is_reported_and_the_refusal_still_stands() {
     let platform = Platform::start(vec![], Some(broker.url.clone()));
     let home = isolated_home("revokequeue");
     write_auth(&home, &platform.url);
-    // No pairing file: the child starts from an unpaired root, which is the path that mints
-    // an invitation — and therefore the path that retires a queued revoke.
+    // No pairing file: the child starts with nothing to serve, which is the state
+    // a host entry stays up in. The request below is what asks it to mint — and
+    // therefore the path that retires a queued revoke.
     std::fs::write(
         home.join(".future/remote_pending_revokes.json"),
         b"{ this is not json",
     )
     .expect("write corrupt revoke queue");
+    let answer = home.join("answer.json");
+    let requests = home.join(".future/run/remote-control");
+    std::fs::create_dir_all(&requests).expect("create the control directory");
+    std::fs::write(
+        requests.join("0001.request.json"),
+        json!({ "op": "add-device", "reply": answer.display().to_string() }).to_string(),
+    )
+    .expect("write the request");
 
-    let mut child = PtyRun::spawn(home, &[]);
-    let reported = child.wait_for("Remote connection stopped", Duration::from_secs(30));
-    let transcript = child.text();
+    let mut child = ChildRun::spawn(home.clone());
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !answer.is_file() {
+        assert!(
+            Instant::now() < deadline,
+            "no answer within 60s; transcript:\n{}",
+            child.text()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let reply: Value = serde_json::from_slice(&std::fs::read(&answer).expect("read the answer"))
+        .expect("the answer is JSON");
     assert!(
-        reported,
-        "the start must report the refusal; transcript:\n{transcript}"
+        reply["link"].is_null(),
+        "a refused broker must not hand out an invitation: {reply}"
     );
+    let error = reply["error"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the refusal is the answer: {reply}"));
+    assert!(
+        error.contains("not issued"),
+        "the answer must say the invitation was not issued: {error}"
+    );
+    let transcript = child.text();
     assert!(
         transcript.contains("could not retire the queued revoke"),
         "create_pairing must report the unreadable queued revoke; transcript:\n{transcript}"
@@ -1522,16 +1433,26 @@ fn a_reconnect_for_a_device_the_book_no_longer_holds_stops_that_runtime() {
         "the live refusal must reach the reconnect worker; transcript:\n{}",
         child.text()
     );
-    let stopped = child.wait_for("Remote connection stopped (None)", Duration::from_secs(40));
+    // The device is gone from the book, so there is nothing left to rebuild. The
+    // runtime stops and the entry settles on "on, serving nothing" — an emptied
+    // book is a state to pair again from (`future remote devices add`), not a
+    // reason to exit — so neither a rebuild failure nor the terminal `Stopped`
+    // may appear.
+    std::thread::sleep(Duration::from_secs(2));
     let transcript = child.text();
-    assert!(
-        stopped && transcript.contains("Remote: Stopped"),
-        "a missing credential must stop the runtime, not report a rebuild failure; \
+    assert_eq!(
+        last_phase(&transcript).as_deref(),
+        Some("Enabled"),
+        "a missing credential must stop its runtime and leave the entry serving nothing; \
          transcript:\n{transcript}"
     );
     assert!(
         !transcript.contains("automatic bridge reconnect failed"),
         "the worker's Err arm must not be the one that ran; transcript:\n{transcript}"
+    );
+    assert!(
+        !transcript.contains("Remote connection stopped"),
+        "an emptied book is not terminal for a host entry; transcript:\n{transcript}"
     );
     for path in [
         home.join(".future/remote_pairings.json"),
@@ -1605,10 +1526,13 @@ fn a_reconnect_with_a_pre_v2_slot_forgets_it() {
         "the live refusal must reach the reconnect worker; transcript:\n{}",
         child.text()
     );
-    let stopped = child.wait_for("Remote connection stopped (None)", Duration::from_secs(40));
+    // Forgetting the only slot leaves nothing to serve: the runtime stops and the
+    // entry reports "on, serving nothing" instead of exiting.
+    std::thread::sleep(Duration::from_secs(2));
     let transcript = child.text();
-    assert!(
-        stopped && transcript.contains("Remote: Stopped"),
+    assert_eq!(
+        last_phase(&transcript).as_deref(),
+        Some("Enabled"),
         "a pre-v2 credential must stop its runtime; transcript:\n{transcript}"
     );
     for path in [
