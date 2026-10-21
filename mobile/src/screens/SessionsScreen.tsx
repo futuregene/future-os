@@ -349,10 +349,11 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     if (busyDevice) return;
     const epoch = newDialogEpochRef.current;
     setNewDeviceId(desktopId);
-    if (tab !== "workspace") {
-      // Nothing else to pick for a chat, so the machine is the whole choice. The
-      // recency page is not a workspace page either: "new" there means a chat,
-      // which is the thing that has no workspace to choose.
+    if (tab === "chat") {
+      // Only the conversations page has nothing left to pick: it *is* a list of
+      // chats that belong to no workspace, so a new one there can only be a chat
+      // and the machine is the whole choice. The recency page lists both kinds,
+      // so it goes on to ask which — see `openNew`.
       startConversationOn(desktopId, "chat", "");
       return;
     }
@@ -520,7 +521,11 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     // The creation happens at the moment the user commits to it — browsing the
     // picker must not move the phone — and a machine that cannot be reached says
     // so instead of opening a draft that would be sent somewhere else.
-    startConversationOn(desktopId, newMode, workspaceId);
+    //
+    // The workspace rides along only with the workspace answer: a chat belongs
+    // to no workspace, and a selection left over from switching the answer back
+    // and forth is not one the reader chose for the draft they are making.
+    startConversationOn(desktopId, newMode, newMode === "workspace" ? workspaceId : "");
   };
 
   const closeNew = () => {
@@ -709,11 +714,12 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     setBusyDevice(null);
     setNewWorkspaceOpen(false);
     setNewWorkspaceError(null);
-    if (tab !== "workspace") {
-      // The conversations and recency pages have nothing left to pick, so a chat
-      // is created straight away — on the machine the list is showing when it
-      // names one, and otherwise without a dialog at all unless the machine is
-      // that choice.
+    if (tab === "chat") {
+      // The conversations page is a list of chats that belong to no workspace,
+      // so a new conversation started from it can only be a chat: there is
+      // nothing left to pick, and it is created straight away — on the machine
+      // the list is showing when it names one, and otherwise without a dialog at
+      // all unless the machine is that choice.
       setNewMode("chat");
       setWorkspaceId("");
       if (named !== null) {
@@ -728,6 +734,13 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
       setNewOpen(true);
       return;
     }
+    // The workspaces page and the recency page both list both kinds of
+    // conversation, so neither can answer "which kind" for the reader: the
+    // dialog opens on that choice, with a workspace's own list behind the
+    // workspace answer. The recency page used to create a chat here, which made
+    // the same button open a picker on one page and skip it on the page beside
+    // it — and left no way to start a *workspace* conversation from the one list
+    // that shows every workspace's conversations.
     setNewMode("workspace");
     setWorkspaceId(remote.workspaces[0]?.id ?? "");
     setNewStep(multiple || named !== null ? "device" : "target");

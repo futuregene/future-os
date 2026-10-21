@@ -3,7 +3,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import * as Clipboard from "expo-clipboard";
 import { TimelineCard } from "../TimelineCard";
 import type { TimelineItem, TimelineSegment } from "../../remote/types";
-import { setAppearance } from "../../theme/preferences";
+import { DEFAULT_APPEARANCE, setAppearance } from "../../theme/preferences";
 import "../../i18n";
 
 /**
@@ -46,9 +46,9 @@ const workedReply: TimelineSegment[] = [
   note("answer", "The plaintext relay works end to end."),
 ];
 
-/** Set the setting the way the appearance page does. */
-async function setFinalAnswerOnly(value: boolean) {
-  await act(async () => { await setAppearance({ finalAnswerOnly: value }); });
+/** Set the level the way the appearance page does. */
+async function setReplyDetail(value: "default" | "detailed") {
+  await act(async () => { await setAppearance({ replyDetail: value }); });
 }
 
 function render(item: TimelineItem) {
@@ -78,18 +78,27 @@ function pressable(prefix: string) {
 }
 
 beforeEach(async () => {
-  await setFinalAnswerOnly(false);
+  // The shipped default, whether or not this suite's earlier cases touched it.
+  await act(async () => { await setAppearance(DEFAULT_APPEARANCE); });
 });
 
-it("shows the whole reply when the setting is off", () => {
+it("folds a settled reply the way it ships, without anyone setting it", () => {
+  expect(DEFAULT_APPEARANCE.replyDetail).toBe("default");
+  render(message(workedReply));
+
+  expect(prose()).toEqual(["The plaintext relay works end to end."]);
+  expect(pressable("Show process")).toBeDefined();
+});
+
+it("shows the whole reply when the reader turns the setting off", async () => {
+  await setReplyDetail("detailed");
   render(message(workedReply));
 
   expect(prose()).toEqual(["I will read the relay implementation first.", "The plaintext relay works end to end."]);
   expect(pressable("Show process")).toBeUndefined();
 });
 
-it("folds the work into one counted row above the answer", async () => {
-  await setFinalAnswerOnly(true);
+it("folds the work into one counted row above the answer", () => {
   render(message(workedReply));
 
   expect(prose()).toEqual(["The plaintext relay works end to end."]);
@@ -101,8 +110,7 @@ it("folds the work into one counted row above the answer", async () => {
   expect(toggle.props.accessibilityLabel).toBe("Show process · Tool calls 1× · Thought 1×");
 });
 
-it("opens to the same blocks the setting hides, and closes again", async () => {
-  await setFinalAnswerOnly(true);
+it("opens to the same blocks the setting hides, and closes again", () => {
   render(message(workedReply));
 
   act(() => pressable("Show process")!.props.onPress());
@@ -113,8 +121,7 @@ it("opens to the same blocks the setting hides, and closes again", async () => {
   expect(prose()).toEqual(["The plaintext relay works end to end."]);
 });
 
-it("keeps a streaming reply whole, and folds it once it settles", async () => {
-  await setFinalAnswerOnly(true);
+it("keeps a streaming reply whole, and folds it once it settles", () => {
   render(message(workedReply, { streaming: true }));
   expect(prose()).toEqual(["I will read the relay implementation first.", "The plaintext relay works end to end."]);
   expect(pressable("Show process")).toBeUndefined();
@@ -123,19 +130,17 @@ it("keeps a streaming reply whole, and folds it once it settles", async () => {
   expect(prose()).toEqual(["The plaintext relay works end to end."]);
 });
 
-it("never folds a reply with no answer to isolate", async () => {
+it("never folds a reply with no answer to isolate", () => {
   const worked: TimelineSegment[] = [thought("thought"), call("call")];
   render(message(worked));
   const unfolded = prose();
 
-  await setFinalAnswerOnly(true);
   render(message(worked));
   expect(pressable("Show process")).toBeUndefined();
   expect(prose()).toEqual(unfolded);
 });
 
 it("copies the answer the row shows, not the prose the fold hides", async () => {
-  await setFinalAnswerOnly(true);
   render(message(workedReply));
 
   const copy = tree.root.findAll(candidate => typeof candidate.props.onPress === "function"

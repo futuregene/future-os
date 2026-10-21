@@ -790,20 +790,26 @@ async fn list_models(grpc_addr: &str, search: Option<&str>) -> Result<(), String
         };
         return Err(err);
     }
-    let result: serde_json::Value = serde_json::from_str(&resp.data).map_err(|e| e.to_string())?;
+    // Typed-first decode, like every sibling print-mode call site: command
+    // -response dual-write is retired, so a typed command answers with an
+    // empty `data` string and the payload only exists in the typed `payload`.
+    let result = future_rpc::decode::response_data(&resp);
 
     // Same wire shape the interactive client parses (`ModelInfo`): `label`
     // is the display name, and the agent sends no `maxTokens`, so the table
     // has no max-out column.
-    let mut models: Vec<ModelInfo> = result
+    //
+    // A response without a `models` array is a broken answer, not an empty
+    // catalogue: reporting "0 model(s)" would hide a payload the client cannot
+    // read, which is the failure this table exists to surface.
+    let rows = result
         .get("models")
         .and_then(serde_json::Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|m| serde_json::from_value(m.clone()).ok())
-                .collect()
-        })
-        .unwrap_or_default();
+        .ok_or_else(|| "Agent returned no model list".to_string())?;
+    let mut models: Vec<ModelInfo> = rows
+        .iter()
+        .filter_map(|m| serde_json::from_value(m.clone()).ok())
+        .collect();
 
     if let Some(search) = search {
         let search_lower = search.to_lowercase();
@@ -1758,6 +1764,11 @@ mod tests {
         unary_status_message_types: HashSet<String>,
         /// Delay before answering unary calls (slow-agent scenarios).
         unary_delay_ms: u64,
+        /// Answer these command types the way the real dispatcher does now:
+        /// a typed `payload` and an EMPTY `data` string. Command-response
+        /// dual-write is retired, so a mock that only ever sets `data` reports
+        /// success for clients that read `data` and breaks on the real Agent.
+        typed_only_types: HashSet<String>,
     }
 
     #[tonic::async_trait]
@@ -1813,6 +1824,31 @@ mod tests {
             };
             let success = !self.fail_types.contains(&cmd.r#type)
                 && !self.fail_silent_types.contains(&cmd.r#type);
+            if success && self.typed_only_types.contains(&cmd.r#type) {
+                // The real Agent's shape: typed payload, no `data` at all. The
+                // encode must succeed — a shape drift here would otherwise let
+                // the mock fall back to `data` and quietly stop being faithful.
+                let value: serde_json::Value = serde_json::from_str(&data).unwrap();
+                let payload = future_rpc::encode::response_payload(&cmd.r#type, &value)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "mock cannot encode a typed payload for {}; the fixture no longer \
+                             mirrors the wire",
+                            cmd.r#type
+                        )
+                    });
+                return Ok(tonic::Response::new(RpcResponse {
+                    id: cmd.id,
+                    r#type: "response".into(),
+                    command: cmd.r#type.clone(),
+                    success: true,
+                    data: String::new(),
+                    error: String::new(),
+                    error_code: String::new(),
+                    error_data: String::new(),
+                    payload: Some(payload),
+                }));
+            }
             Ok(tonic::Response::new(RpcResponse {
                 id: cmd.id,
                 r#type: "response".into(),
@@ -2072,18 +2108,44 @@ mod tests {
 
     // ─── list_models ──────────────────────────────────────────────────
 
+    /// The wire shape the Agent actually sends for `list_models`: the
+    /// `ListModelsPayload` camelCase fields, which `ModelEntryPayload` requires
+    /// in full. A partial fixture only survives on the legacy `data` path,
+    /// because `ModelInfo` defaults every optional field.
     fn models_json() -> String {
         serde_json::json!({
             "models": [
                 {"provider": "openai", "id": "gpt-4o", "label": "GPT-4o",
                  "supportsImages": true, "thinkingLevel": "off",
-                 "contextWindow": 128000, "isDefault": false},
+                 "contextWindow": 128000, "isDefault": false,
+                 "reasoning": true, "description": null, "descriptionEn": null,
+                 "recommended": false},
                 {"provider": "anthropic", "id": "claude-sonnet-4", "label": "Claude Sonnet 4",
                  "supportsImages": false, "thinkingLevel": "high",
-                 "contextWindow": 200000, "isDefault": true}
-            ]
+                 "contextWindow": 200000, "isDefault": true,
+                 "reasoning": true, "description": null, "descriptionEn": null,
+                 "recommended": false}
+            ],
+            "defaultModel": "anthropic/claude-sonnet-4",
+            "isScoped": false
         })
         .to_string()
+    }
+
+    #[tokio::test]
+    async fn list_models_reads_the_typed_payload_the_agent_actually_sends() {
+        // Command-response dual-write is retired: the real dispatcher answers
+        // `list_models` with a typed `payload` and an empty `data` string. The
+        // plain fixture above sets `data`, so it stayed green while the real
+        // `future tui --list-models` failed to parse an empty payload.
+        let addr = spawn_mock(MockAgent {
+            models_data: models_json(),
+            typed_only_types: HashSet::from(["list_models".to_string()]),
+            ..Default::default()
+        })
+        .await;
+        list_models(&addr, None).await.unwrap();
+        list_models(&addr, Some("gpt")).await.unwrap();
     }
 
     #[tokio::test]

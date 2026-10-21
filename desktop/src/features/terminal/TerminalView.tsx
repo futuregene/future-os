@@ -17,11 +17,10 @@ import { FitAddon } from "@xterm/addon-fit";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { Terminal } from "@xterm/xterm";
 import { useEffect, useRef } from "react";
-import { getResolvedTheme, useResolvedTheme } from "../../lib/theme";
 import { connectTicket, connectUrl, TerminalApiError, terminalServer, updateTerminal } from "./client";
 import { terminalKeyPolicy } from "./keyPolicy";
 import { installMacInputWorkaround } from "./macInput";
-import { terminalTheme } from "./theme";
+import { currentTerminalTheme, useTerminalTheme } from "./theme";
 import "@xterm/xterm/css/xterm.css";
 
 /** How long a resize waits for the drag to settle before telling the server. */
@@ -60,7 +59,9 @@ export function TerminalView(props: TerminalViewProps) {
   // The xterm instance, so a theme switch can repaint an already-open terminal
   // without re-running the mount effect (which would drop the socket).
   const terminalRef = useRef<Terminal | null>(null);
-  const resolvedTheme = useResolvedTheme();
+  // Both theme axes (rendition and palette) feed the terminal's colors, so one
+  // value tracks them together.
+  const terminalTheme = useTerminalTheme();
   // Latest callbacks without re-running the mount effect, which would tear the
   // socket down and reconnect on every parent render.
   const handlersRef = useRef(props);
@@ -96,7 +97,7 @@ export function TerminalView(props: TerminalViewProps) {
       scrollback: SCROLLBACK,
       allowTransparency: false,
       convertEol: false,
-      theme: terminalTheme(getResolvedTheme()),
+      theme: currentTerminalTheme(),
     });
     terminalRef.current = terminal;
     disposables.push(terminal);
@@ -420,9 +421,9 @@ export function TerminalView(props: TerminalViewProps) {
   useEffect(() => {
     const terminal = terminalRef.current;
     if (terminal) {
-      terminal.options.theme = terminalTheme(resolvedTheme);
+      terminal.options.theme = terminalTheme;
     }
-  }, [resolvedTheme]);
+  }, [terminalTheme]);
 
   return (
     <div

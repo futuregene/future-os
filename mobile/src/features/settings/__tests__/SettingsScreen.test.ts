@@ -369,11 +369,12 @@ test("the appearance level is reachable from the phone's own screen", async () =
   const radioLabels = tree.root
     .findAll(node => node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function")
     .map(node => node.props.accessibilityLabel);
-  // Both settings are phone-local, so they live on the phone's own screen —
-  // and both are one tap from it, not buried under the device's page.
+  // Every level here is phone-local, so they live on the phone's own screen —
+  // and all of them are one tap from it, not buried under the device's page.
   expect(radioLabels).toEqual([
     "appearance.themeMode.system", "appearance.themeMode.light", "appearance.themeMode.dark",
     "appearance.fontSizeName.small", "appearance.fontSizeName.medium", "appearance.fontSizeName.large", "appearance.fontSizeName.xlarge",
+    "appearance.replyDetail.default", "appearance.replyDetail.detailed",
   ]);
   expect(radioLabels).not.toContain("desktopSettings.boundDesktop: Work computer");
 });

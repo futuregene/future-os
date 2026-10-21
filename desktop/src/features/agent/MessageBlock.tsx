@@ -7,7 +7,7 @@ import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../components/ui/CopyButton";
 import { useCopyState } from "../../components/ui/useCopyState";
 import { cn } from "../../lib/cn";
-import { useFinalAnswerOnly } from "../../lib/replyDisplay";
+import { foldsSettledReply, useReplyDetail } from "../../lib/replyDisplay";
 import { STREAMED_BLOCK_CONTAINMENT } from "../markdown/LiveMarkdownContext";
 import { MarkdownContent, StreamingMarkdownContent } from "../markdown/MarkdownContent";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
@@ -72,10 +72,10 @@ function MessageBlockImpl({
 }: MessageBlockProps) {
   const { t } = useTranslation("agent");
   const { copiedKey, copy } = useCopyState();
-  // Reading preference: a settled reply keeps only the answer it ends on, with
-  // the work that produced it folded into one row above it. Expansion is the
-  // reader's, per reply — each row owns its own.
-  const finalAnswerOnly = useFinalAnswerOnly();
+  // Reading preference: the `default` level keeps a settled reply to the answer
+  // it ends on, with the work that produced it folded into one row above it.
+  // Expansion is the reader's, per reply — each row owns its own.
+  const finalAnswerOnly = foldsSettledReply(useReplyDetail());
   const [processExpanded, setProcessExpanded] = useState(false);
   const isUser = message.role === "user";
   // While the reply streams, the footer is pinned open and shows a live activity

@@ -4,8 +4,8 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "../../i18n";
 import { setFontSize } from "../../lib/fontSize";
-import { getFinalAnswerOnly, setFinalAnswerOnly } from "../../lib/replyDisplay";
-import { setThemeMode } from "../../lib/theme";
+import { DEFAULT_REPLY_DETAIL, getReplyDetail, setReplyDetail } from "../../lib/replyDisplay";
+import { setThemeMode, setThemePalette } from "../../lib/theme";
 import { GeneralPage } from "./GeneralPage";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -35,8 +35,10 @@ beforeEach(() => {
   mocks.isLinux = false;
   mocks.isWindows = true;
   setThemeMode("system");
+  setThemePalette("futureos");
   setFontSize("medium");
-  setFinalAnswerOnly(false);
+  // Back to the shipped level rather than whatever the last case left.
+  setReplyDetail(DEFAULT_REPLY_DETAIL);
   void i18n.changeLanguage("en");
 });
 
@@ -113,7 +115,7 @@ describe("generalPage language picker", () => {
   });
 });
 
-describe("generalPage theme picker", () => {
+describe("generalPage appearance picker", () => {
   it("reflects the active theme and switches the document palette", () => {
     const { container } = mount();
     const theme = select(container, 1);
@@ -131,6 +133,63 @@ describe("generalPage theme picker", () => {
 
     expect(container.ownerDocument.documentElement.classList.contains("dark")).toBe(false);
     expect(localStorage.getItem("future.theme")).toBe("light");
+  });
+});
+
+describe("generalPage color theme picker", () => {
+  it("offers every palette as a named radio, with the active one checked", () => {
+    const { container } = mount();
+    const group = container.querySelector("[role=radiogroup][aria-label='Color theme']")!;
+    const cards = [...group.querySelectorAll<HTMLButtonElement>("[role=radio]")];
+
+    expect(cards.map(card => card.getAttribute("aria-label")))
+      .toEqual(["FutureOS", "Ayu", "Catppuccin", "Dracula", "Everforest", "Gruvbox", "Kanagawa", "Nightfox", "Nord", "One Dark", "Rosé Pine", "Solarized", "Tokyo Night", "Vesper"]);
+    expect(cards.map(card => card.getAttribute("aria-checked")))
+      .toEqual(cards.map((_, index) => String(index === 0)));
+  });
+
+  it("paints each preview in its own palette while the app keeps the active one", () => {
+    const { container } = mount();
+    const cards = [...container.querySelectorAll<HTMLButtonElement>("[role=radio]")];
+
+    // A card previews a palette by carrying its `data-palette`: the CSS blocks
+    // match a nested preview as well as the root.
+    expect(cards.map(card => card.dataset.palette))
+      .toEqual(["futureos", "ayu", "catppuccin", "dracula", "everforest", "gruvbox", "kanagawa", "nightfox", "nord", "one-dark", "rose-pine", "solarized", "tokyo-night", "vesper"]);
+    // ...and the app itself is still on the default.
+    expect(document.documentElement.dataset.palette).toBe("futureos");
+  });
+
+  it("switches the palette and remembers it", () => {
+    const { container } = mount();
+    const nord = container.querySelector<HTMLButtonElement>("[role=radio][aria-label='Nord']")!;
+
+    act(() => nord.click());
+
+    expect(document.documentElement.dataset.palette).toBe("nord");
+    expect(localStorage.getItem("future.palette")).toBe("nord");
+    expect(nord.getAttribute("aria-checked")).toBe("true");
+    // The appearance choice is a separate axis and stays where it was.
+    expect(localStorage.getItem("future.theme")).toBe("system");
+    expect(select(container, 1).value).toBe("system");
+  });
+
+  it("leaves the light/dark palette alone when only the color theme changes", () => {
+    const { container } = mount();
+    const dark = container.querySelector<HTMLButtonElement>("[role=radio][aria-label='Catppuccin']")!;
+
+    act(() => dark.click());
+
+    expect(container.ownerDocument.documentElement.classList.contains("dark")).toBe(false);
+    expect(localStorage.getItem("future.palette")).toBe("catppuccin");
+  });
+
+  it("restores the stored palette on mount", () => {
+    setThemePalette("gruvbox");
+    const { container } = mount();
+    const checked = container.querySelector("[role=radio][aria-checked='true']")!;
+
+    expect(checked.getAttribute("aria-label")).toBe("Gruvbox");
   });
 });
 
@@ -156,22 +215,27 @@ describe("generalPage font size picker", () => {
   });
 });
 
-describe("generalPage final answer only switch", () => {
-  it("reflects and persists the reading setting", () => {
+describe("generalPage model output level", () => {
+  it("offers default and detailed, opens on default, and remembers the choice", () => {
     const { container } = mount();
-    const toggle = container.querySelector<HTMLButtonElement>("button[role='switch'][aria-label='Show only the final answer']")!;
+    // The fifth picker: language, theme, text size, model output, approval.
+    const level = select(container, 3);
 
-    expect(toggle.getAttribute("aria-checked")).toBe("false");
-    expect(container.textContent).toContain("fold its reasoning, tool calls and notes");
+    expect(level.value).toBe("default");
+    expect([...level.options].map(option => option.value)).toEqual(["default", "detailed"]);
+    expect([...level.options].map(option => option.textContent)).toEqual(["Default", "Detailed"]);
+    expect(container.textContent).toContain("shows its final answer");
 
-    act(() => toggle.click());
+    choose(level, "detailed");
 
-    expect(getFinalAnswerOnly()).toBe(true);
-    expect(localStorage.getItem("future.reply.finalAnswerOnly")).toBe("true");
-    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    expect(getReplyDetail()).toBe("detailed");
+    expect(localStorage.getItem("future.reply.detail")).toBe("detailed");
+    // The row's own words follow the level it is on.
+    expect(container.textContent).toContain("keeps everything");
 
-    act(() => toggle.click());
-    expect(getFinalAnswerOnly()).toBe(false);
+    choose(level, "default");
+    expect(getReplyDetail()).toBe("default");
+    expect(localStorage.getItem("future.reply.detail")).toBe("default");
   });
 });
 
@@ -179,7 +243,7 @@ describe("generalPage approval tier picker", () => {
   it("reports every tier change to the settings owner", () => {
     const onChangeApprovalTier = vi.fn();
     const { container } = mount({ approvalTier: "off", onChangeApprovalTier });
-    const tier = select(container, 3);
+    const tier = select(container, 4);
 
     expect(tier.value).toBe("off");
     expect([...tier.options].map(option => option.value)).toEqual(["manual", "sandbox", "auto", "off"]);
@@ -192,7 +256,7 @@ describe("generalPage approval tier picker", () => {
 
   it.each(["signed_out", "invalid", "checking"])("gates automatic review for %s without changing a pending preference", (futureSessionStatus) => {
     const { container } = mount({ approvalTier: "auto", futureSessionStatus });
-    const tier = select(container, 3);
+    const tier = select(container, 4);
     expect(tier.value).toBe(futureSessionStatus === "checking" ? "auto" : "sandbox");
     expect([...tier.options].find(option => option.value === "auto")!.disabled).toBe(true);
     expect([...tier.options].find(option => option.value === "sandbox")!.disabled).toBe(false);
@@ -200,7 +264,7 @@ describe("generalPage approval tier picker", () => {
 
   it("enables the sandbox option when the sandbox is available", () => {
     const { container } = mount({ approvalTier: "sandbox" });
-    const sandbox = [...select(container, 3).options].find(option => option.value === "sandbox")!;
+    const sandbox = [...select(container, 4).options].find(option => option.value === "sandbox")!;
 
     expect(sandbox.disabled).toBe(false);
     expect(sandbox.textContent).toBe("Sandboxed");
@@ -210,7 +274,7 @@ describe("generalPage approval tier picker", () => {
     mocks.availability = { available: false, code: null, resolved: false };
     const { container } = mount();
 
-    const sandbox = [...select(container, 3).options].find(option => option.value === "sandbox")!;
+    const sandbox = [...select(container, 4).options].find(option => option.value === "sandbox")!;
     expect(sandbox.disabled).toBe(true);
     expect(sandbox.textContent).toBe("Sandboxed (checking)");
   });
@@ -219,7 +283,7 @@ describe("generalPage approval tier picker", () => {
     mocks.availability = { available: false, code: "probe_failed", resolved: true };
     const { container } = mount();
 
-    const sandbox = [...select(container, 3).options].find(option => option.value === "sandbox")!;
+    const sandbox = [...select(container, 4).options].find(option => option.value === "sandbox")!;
     expect(sandbox.disabled).toBe(true);
     expect(sandbox.textContent).toBe("Sandboxed (unavailable)");
   });
@@ -317,14 +381,13 @@ describe("generalPage switches", () => {
 
     const switches = [...container.querySelectorAll<HTMLButtonElement>("[role=switch]")];
     expect(switches.map(item => item.getAttribute("aria-label"))).toEqual([
-      "Show only the final answer",
       "Auto-upgrade skills",
       "Skill recommendations",
       "Generate a title after the first answer",
       "Completion bell",
       "Continue interrupted conversations",
     ]);
-    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["false", "true", "false", "true", "false", "false"]);
+    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "true", "false", "false"]);
   });
 
   it("reports each toggle to its own callback, inverted", () => {

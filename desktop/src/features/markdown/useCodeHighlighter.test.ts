@@ -2,7 +2,7 @@ import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { setThemeMode } from "../../lib/theme";
+import { setThemeMode, setThemePalette } from "../../lib/theme";
 import { flushAsync, renderHook } from "../../test/renderHook";
 
 import { useCodeHighlighter } from "./useCodeHighlighter";
@@ -19,7 +19,8 @@ let codeToTokensImpl: (code: string) => { tokens: Array<Array<Record<string, unk
 const fakeHighlighter = {
   getLoadedLanguages: () => [...loadedLanguages],
   loadLanguage: vi.fn((lang: string) => loadLanguageImpl(lang)),
-  codeToTokens: vi.fn((code: string) => codeToTokensImpl(code)),
+  // The options the hook passes (`theme`) are what the palette tests assert on.
+  codeToTokens: vi.fn((code: string, _options?: { lang: string; theme: string }) => codeToTokensImpl(code)),
   getTheme: () => ({ bg: 0, fg: null }),
 };
 
@@ -134,6 +135,46 @@ describe("useCodeHighlighter", () => {
     expect(fakeHighlighter.codeToTokens).toHaveBeenLastCalledWith("{}", { lang: "json", theme: "github-dark" });
 
     act(() => setThemeMode("light"));
+    h.unmount();
+  });
+
+  it("uses the syntax palette of the active color theme, in both renditions", async () => {
+    loadedLanguages.push("json");
+    const h = renderHook(() => useCodeHighlighter());
+    await flushAsync();
+
+    // Distinct sources per step: a repeated (theme, language, code) triple is
+    // served from the highlight cache without tokenizing again, which would
+    // leave the last call pointing at the previous theme.
+    const themeFor = (code: string) => {
+      expect(h.current.highlight(code, "json")).not.toBeNull();
+      return fakeHighlighter.codeToTokens.mock.lastCall?.[1]?.theme;
+    };
+
+    // A theme that ships its own editor colors uses those, not a tinted
+    // GitHub theme: a Nord code block belongs in Nord's syntax colors.
+    act(() => setThemePalette("nord"));
+    expect(themeFor("{}")).toBe("nord");
+
+    // Palettes with a light and a dark editor theme pick by rendition.
+    act(() => setThemePalette("catppuccin"));
+    act(() => setThemeMode("dark"));
+    expect(themeFor("[]")).toBe("catppuccin-mocha");
+
+    act(() => setThemeMode("light"));
+    expect(themeFor("1")).toBe("catppuccin-latte");
+
+    // Back to the default palette: the GitHub pair, not the last theme's colors.
+    act(() => setThemePalette("futureos"));
+    expect(themeFor("2")).toBe("github-light");
+
+    act(() => setThemeMode("dark"));
+    expect(themeFor("3")).toBe("github-dark");
+
+    act(() => {
+      setThemeMode("light");
+      setThemePalette("futureos");
+    });
     h.unmount();
   });
 

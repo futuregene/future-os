@@ -876,36 +876,42 @@ describe("the rail's remote row controls", () => {
 });
 
 /**
- * The device picker and the search field share one row above the list.
+ * The device picker and the search share one row above the list.
  *
- * They shared it half-and-half, so opening search squeezed the picker down to
- * its glyph and the field down to a few characters — reported as "they are
- * squeezed together".
+ * The picker is drawn `compact` — glyph, name, chevron in a quarter of the row
+ * instead of a band of its own — and the search is a single magnifier that opens
+ * into a field in the same row. So what this checks is that the row holds exactly
+ * those two things, before and after the magnifier is clicked: a second row for
+ * either of them is the regression.
  */
-describe("the search field and the device picker", () => {
-  it("gives the whole row to search while it is open, and hands it back on close", async () => {
+describe("the search and the device picker", () => {
+  it("shares one row between the picker and the search, closed or open", async () => {
     const view = await mountRail({
       deviceFilter: { kind: "all" },
       onChangeDeviceFilter: vi.fn(),
       remotePeers: [peer],
     });
     const picker = () => view.container.querySelector("button[aria-label='All devices']");
-    expect(picker()).not.toBeNull();
-
-    await act(async () => view.container
-      .querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!
-      .click());
-
-    expect(picker()).toBeNull();
-    // Search still filters within the chosen device; only the control is gone
-    // while the field needs the room.
-    expect(view.container.querySelector("input[aria-label='Search conversations']")).not.toBeNull();
-
-    await act(async () => view.container
-      .querySelector<HTMLButtonElement>("button[aria-label='Close search']")!
-      .click());
+    const glyph = () => view.container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']");
+    const field = () => view.container.querySelector("input[aria-label='Search conversations']");
+    const tools = () => view.container.querySelector<HTMLElement>("[data-testid='rail-list-tools']")!;
 
     expect(picker()).not.toBeNull();
+    // A glyph, not a field — the rail keeps the row narrow until it is asked.
+    expect(glyph()).not.toBeNull();
+    expect(field()).toBeNull();
+    expect(tools().contains(picker())).toBe(true);
+    expect(tools().contains(glyph())).toBe(true);
+    // The picker is the compact one — it kept its name, it gave up the band.
+    expect(picker()!.className).toContain("max-w-30");
+
+    act(() => glyph()!.click());
+    await flushAsync();
+    expect(field()).not.toBeNull();
+    expect(tools().contains(field())).toBe(true);
+    // The picker stays where it was: opening the field does not push it out.
+    expect(tools().contains(picker())).toBe(true);
+
     view.unmount();
   });
 });

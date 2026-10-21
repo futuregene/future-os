@@ -32,7 +32,7 @@ it("enables title generation by default and allows opting out without context co
         onToggleAutoResumeInterrupted={() => {}}
       />,
     ));
-    expect(container.querySelectorAll("[role=switch]")).toHaveLength(6);
+    expect(container.querySelectorAll("[role=switch]")).toHaveLength(5);
     expect(container.textContent).not.toContain("Show thinking process");
     expect(DEFAULT_APP_SETTINGS).not.toHaveProperty("showThinking");
     const toggle = container.querySelector<HTMLButtonElement>("[role=switch][aria-label='Generate a title after the first answer']");

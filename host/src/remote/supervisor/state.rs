@@ -60,11 +60,11 @@ impl TaskExecutor for DesktopExecutor {
     ) -> futures::future::BoxFuture<'_, Result<ValidationSurface, future_remote_server::Error>>
     {
         Box::pin(async {
-            let listener = bind_web_listener().await?;
+            let (listener, port) = bind_web_listener().await?;
             Ok(ValidationSurface {
-                task: Box::pin(run_web_server(listener)),
-                url: format!("http://localhost:{WEB_PORT}"),
-                lan_url: lan_ip().map(|ip| format!("http://{ip}:{WEB_PORT}")),
+                task: Box::pin(run_web_server(listener, port)),
+                url: format!("http://localhost:{port}"),
+                lan_url: lan_ip().map(|ip| format!("http://{ip}:{port}")),
             })
         })
     }
