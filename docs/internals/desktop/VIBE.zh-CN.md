@@ -234,6 +234,24 @@ for key in members sorted by createdAt:
 这个值读的是该会话在 agent 缓存里的状态（这个会话**实际**在跑的），只在那份状态还没读过一次时
 才回落到外壳的选择。
 
+### 5.7 顶栏，以及它必须做对的两件事
+
+面板是 `fixed inset-0`：它是应用里唯一内容从 x = 0 开始的界面，而窗口是 macOS 的
+**overlay 标题栏**（`titleBarStyle: "Overlay"`、`trafficLightPosition: { x: 14, y: 26 }`），
+红黄绿三个按钮是**画在页面之上**的，大约占 x 14–72。由此两件事，都曾经错、现在有测试钉住：
+
+* **顶栏的内容从按钮右边开始。** macOS 且在非全屏时留 80px（`pl-20`，与左边栏同一个预留值），
+  其他情况（别的平台、以及全屏时系统会隐藏按钮）就是普通的 12px。规则在 `barChrome.ts` 里，
+  数字来自配置，不是手感。
+* **顶栏就是拖窗口的地方。** 面板打开时屏幕上看不到别的可拖区域，所以顶栏按下即开始拖窗口
+  （`startWindowDrag`，它会跳过按钮，所以栏里那三个控件照常可点）。
+
+还有一件和几何无关的全屏事实：**`set_fullscreen` 是要显式授权的能力**。`isFullscreen` 来自
+`core:default`，`setFullscreen` 不在里面 —— 这个按钮曾经就这样发出去过一次：能力层拒绝了调用，
+代码里的 `.catch(() => {})` 把拒绝吞了，按钮什么也不做。所以现在切换只有一个函数
+（`fullscreen.ts`），失败会**到达读者**（错误提示 + 控制台），并且
+`fullscreenCapability.test.ts` 就在用到它的代码旁边断言这条授权。
+
 ## 6. 阅读层：块光标，与一栏/两栏的放大
 
 阅读层里 `↑`/`↓` 移动一个**块光标** —— 用户消息、助手回复、工具调用、审批卡片各算一块。
@@ -400,6 +418,10 @@ mac 输入法的候选窗、语音输入法自己的浮层，都跟着光标出�
 | 设置行显示这一格自己的模型，阅读层与输入层都在，且输入层的输入框被要求"只要值" | `VibeStage.test.tsx`、`Composer.inputLayer.test.tsx` |
 | 菜单里那三行设置只对本机会话存在，`←`/`→` 可调，远程格没有 | `VibeStage.test.tsx` |
 | 第二栏：`auto` 跟随宽度、`pinned` 无视宽度、`hidden` 永不出现；`⌘\` 回到 `auto` 而不是 `pinned`；选择按会话记忆并能跨重启 | `readingPanel.test.ts`、`VibeStage.test.tsx` |
+| 顶栏在 macOS 非全屏时让出红黄绿的位置，其他情况用普通内缩 | `barChrome.test.ts`，以及 harness 实测 `padding-left: 80px`、标签在 x = 80 |
+| 顶栏是窗口拖拽面，且栏里三个按钮仍可点 | `VibeStage.test.tsx` |
+| `core:window:allow-set-fullscreen` 已授权给主窗口，且没有被 `deny-` 条目抵消 | `fullscreenCapability.test.ts` |
+| 被拒绝的全屏会以错误提示到达读者，而不是沉默 | `VibeStage.test.tsx` |
 | 队列：一格一条（第二条被拒）、格子上可见、跑完交还输入框、失败也留着、撤回是放回而不是丢弃 | `vibeQueue.test.ts`、`VibeStage.test.tsx` |
 | 输入框那一半：运行中发送交出文字并清空框，被拒时文字留在原处，空闲时的发送仍然是发送 | `Composer.inputLayer.test.tsx` |
 | 遥控器的按键在改绑、清空绑定之后仍然生效 | `shortcuts.test.ts`、`catalog.test.ts`、`keybinding.test.ts` |

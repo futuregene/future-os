@@ -13,7 +13,6 @@ import type { VibeAttentionReason } from "./attention";
 import type { VibeMenuRow } from "./menuNav";
 import type { ReadingPanelPreference } from "./readingPanel";
 import type { VibeCell, VibeDeviceFilter } from "./vibeCells";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Expand, MoreHorizontal, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -28,6 +27,8 @@ import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { cn } from "../../lib/cn";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { isMacOS } from "../../lib/platform";
+import { useIsFullscreen } from "../../lib/useIsFullscreen";
+import { startWindowDrag } from "../../lib/windowDrag";
 import { AgentThread } from "../agent/AgentThread";
 import { useCommand } from "../keyboard/commands";
 import { useShortcutScope } from "../keyboard/scopes";
@@ -35,6 +36,8 @@ import { bindingLabel, useShortcutOverrides } from "../keyboard/shortcuts";
 import { RemoteFilesPanel } from "../remote-peer/RemoteFilesPanel";
 import { AddToVibeDialog } from "./AddToVibeDialog";
 import { attentionOf, nextAttention } from "./attention";
+import { barStart, reserveTrafficLights as shouldReserveTrafficLights } from "./barChrome";
+import { toggleNativeFullscreen } from "./fullscreen";
 import { cellPosition, gridOf, MAX_CELLS, moveInGrid } from "./layout";
 import { moveInOrder, resolveOrder } from "./order";
 import { cyclePreference, PANEL_WIDTH, preferenceLabelKey, readPanelPreference, showReadingPanel, toggleHidden, togglePinned } from "./readingPanel";
@@ -158,6 +161,20 @@ export function VibeStage({
    * same layer when it closes.
    */
   const [menuOpen, setMenuOpen] = useState(false);
+  /**
+   * The window's own fullscreen state, and the one way to change it.
+   *
+   * Three surfaces ask for this (the bar's icon, the menu's row, `vibe.fullscreen`), so it
+   * is one function that also reports failure — the old version swallowed the rejection,
+   * which is why the button did nothing for a release and said nothing about why.
+   */
+  const isFullscreen = useIsFullscreen();
+  const toggleFullscreen = useCallback(() => {
+    void toggleNativeFullscreen().then((result) => {
+      if (!result.ok)
+        emitFutureEvent("toast", { message: t("fullscreenFailed"), tone: "error" });
+    });
+  }, [t]);
   /** Whether the "add a conversation" dialog is up. */
   const [addOpen, setAddOpen] = useState(false);
   const [focusKey, setFocusKey] = useState<string | null>(null);
@@ -459,10 +476,7 @@ export function VibeStage({
     setColumns(null);
     writeVibeColumns(null);
   });
-  useCommand("vibe.fullscreen", () => {
-    const win = getCurrentWindow();
-    void win.isFullscreen().then(full => win.setFullscreen(!full)).catch(() => {});
-  });
+  useCommand("vibe.fullscreen", toggleFullscreen);
   useCommand("vibe.remove", () => {
     if (focused)
       removeFromPanel(focused);
@@ -770,10 +784,7 @@ export function VibeStage({
       id: "fullscreen",
       group: true,
       label: t("menu.fullscreen"),
-      onRun: () => {
-        const win = getCurrentWindow();
-        void win.isFullscreen().then(full => win.setFullscreen(!full)).catch(() => {});
-      },
+      onRun: toggleFullscreen,
     },
     {
       id: "close",
@@ -930,7 +941,18 @@ export function VibeStage({
       data-vibe-focused={focused?.key ?? ""}
       data-vibe-layer={layer}
     >
-      <header className="flex h-9 shrink-0 select-none items-center gap-3 border-b border-line-soft/60 px-3">
+      {/* The bar starts at x=0 and is the only surface in the app that does, so it makes
+          the same traffic-light reservation the rail makes: on macOS, outside fullscreen,
+          its content starts past the lights (80px) instead of under them. It is also the
+          only place left to drag the window from while the panel covers everything. */}
+      <header
+        className={cn(
+          "flex h-9 shrink-0 select-none items-center gap-3 border-b border-line-soft/60 pr-3",
+          barStart(shouldReserveTrafficLights(isMac, isFullscreen)),
+        )}
+        data-vibe-drag="bar"
+        onMouseDown={startWindowDrag}
+      >
         <span className="text-xs font-semibold tracking-wide text-ink-soft">{t("title")}</span>
         <span className="text-xs text-ink-soft">
           {t("count", { count: shown.length })}
@@ -970,10 +992,7 @@ export function VibeStage({
             className="size-7"
             icon={<Expand className="size-3.5" />}
             label={t("fullscreen")}
-            onClick={() => {
-              const win = getCurrentWindow();
-              void win.isFullscreen().then(full => win.setFullscreen(!full)).catch(() => {});
-            }}
+            onClick={toggleFullscreen}
           />
           {/* The menu, for the pointer (and for the first-time reader): the
               remote's own way in is its `Menu` button. */}

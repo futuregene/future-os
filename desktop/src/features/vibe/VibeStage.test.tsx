@@ -33,6 +33,12 @@ const h = vi.hoisted(() => ({
   cached: { current: null as { model?: string; thinkingLevel?: string } | null },
   /** What the panel's queue answered when the stub composer handed a sentence over. */
   probe: { taken: undefined as boolean | undefined },
+  /** The one window object the panel sees (see the mock above). */
+  win: {
+    isFullscreen: vi.fn(async () => false),
+    onResized: vi.fn(async () => () => {}),
+    setFullscreen: vi.fn(async () => {}),
+  },
 }));
 
 vi.mock("../agent/AgentThread", () => ({
@@ -88,11 +94,16 @@ vi.mock("../../integrations/agent/agentStateCache", () => ({
   useCachedAgentState: () => h.cached.current,
 }));
 
+/**
+ * The window API as the panel uses it: `useIsFullscreen` reads `isFullscreen` and re-reads
+ * on `onResized`, and the bar/menu/command call `setFullscreen`.
+ *
+ * **One shared object**, not a fresh one per `getCurrentWindow()`: the panel asks for the
+ * window at the moment it needs it, so a test that wants to make a call fail has to be
+ * able to reach the same instance the panel will get.
+ */
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({
-    isFullscreen: async () => false,
-    setFullscreen: async () => {},
-  }),
+  getCurrentWindow: () => h.win,
 }));
 
 const VIEW: VibeThreadViewProps = {
@@ -227,6 +238,7 @@ beforeEach(() => {
   resetShortcutScopes();
   clearCommandHandlers();
   h.counts = new Map();
+  h.win.setFullscreen.mockClear();
   h.cached.current = null;
   container = document.body.appendChild(document.createElement("div"));
   root = createRoot(container);
@@ -964,6 +976,57 @@ describe("the reading layer's second column", () => {
     walkTo("panel");
     press({ code: "ArrowRight", key: "ArrowRight" });
     expect(readVibePreferences().panel["local:a"]).toBe("pinned");
+  });
+});
+
+describe("the panel's top bar", () => {
+  // macOS draws the traffic lights over the page's top-left (`titleBarStyle: "Overlay"`),
+  // and the panel is the only surface whose content starts at x=0. Two things follow, and
+  // both were broken: the content has to clear the lights, and the bar has to be the
+  // window's drag handle (nothing else is left visible while the panel covers it).
+  const bar = () => container.querySelector("header");
+
+  it("starts past the traffic lights", () => {
+    mount({ threads: [thread("a", 100)] });
+    // This suite runs as non-macOS (`isMacOS` is false in the test environment), so the
+    // ordinary inset is the expected one here; the macOS value is `barChrome.test.ts`.
+    expect(bar()!.className).toContain("pl-3");
+    expect(bar()!.className).not.toContain("pl-20");
+  });
+
+  it("is a drag handle", () => {
+    // `startWindowDrag` skips buttons itself, so marking the whole bar is safe: the three
+    // controls in it still receive their clicks.
+    mount({ threads: [thread("a", 100)] });
+    expect(bar()!.getAttribute("data-vibe-drag")).toBe("bar");
+  });
+});
+
+describe("fullscreen from the bar", () => {
+  // It did nothing for a release: the capability was missing, the rejection was swallowed,
+  // and no test noticed. The three call sites are now one function that reports failure.
+  it("reports a refused fullscreen instead of staying silent", async () => {
+    // The capability layer rejecting `set_fullscreen` is exactly what happened in the
+    // release, so that is the failure the test stages.
+    h.win.setFullscreen.mockRejectedValueOnce(new Error("window.set_fullscreen not allowed"));
+    const onToast = vi.fn();
+    const off = onFutureEvent("toast", onToast);
+    try {
+      mount({ threads: [thread("a", 100)] });
+      const button = container.querySelector<HTMLElement>("[aria-label=\"切换全屏\"], [aria-label=\"Toggle full screen\"]");
+      expect(button, "the bar's fullscreen button").not.toBeNull();
+      await act(async () => {
+        button!.click();
+        // The rejection is reported on a microtask; flush it.
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(h.win.setFullscreen).toHaveBeenCalled();
+      expect(onToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
+    }
+    finally {
+      off();
+    }
   });
 });
 
