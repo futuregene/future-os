@@ -44,7 +44,7 @@ future relay init --dir /opt/future-relay \
 | `operator.jwt` | nats-server 信任的 operator JWT |
 | `account.jwt` | account JWT，由 resolver 预加载 |
 | `nats.conf` | 可直接使用的 nats-server 配置：operator 模式、内存 resolver、无 JetStream；给了证书就带 TLS |
-| `relay.json` | 中继自身配置 |
+| `relay.json` | 中继自身配置；需要 `serve` 自己终结 TLS 时，里面会带 `tlsCert`/`tlsKey` |
 | `rooms.json` | 首次配对时创建，room 注册表 |
 
 `--tls-cert` 与 `--tls-key` 必须同时给出。不给则生成明文监听配置：HTTP、`ws://`
@@ -55,7 +55,9 @@ future relay init --dir /opt/future-relay \
 凭据响应都宣称了 TLS，桌面端要求 TLS、手机要求 `wss://`，配对必然失败。有证书却
 宣告明文同样被拒绝。如果中继前面另有一层做 TLS 终止（反向代理、负载均衡、service
 mesh），监听本来就应该是明文而对外地址不是：加 `--allow-plaintext-upstream` 跳过
-这条校验。**只有确认前面真的有一层 TLS 终止时才这么用**，否则凭据和元数据是裸奔的。
+这条校验。这个参数也会让证书不写进 `relay.json`，于是 `future relay serve` 不会在
+代理后面再起一层 TLS（见下面「由谁来终结 API 的 TLS」）。**只有确认前面真的有一层
+TLS 终止时才这么用**，否则凭据和元数据是裸奔的。
 
 两个监听端口取自 `--nats-url` / `--nats-ws-url`，因此中继发给客户端的地址就是它
 实际监听的地址。
@@ -128,6 +130,23 @@ future relay serve --config /opt/future-relay/relay.json
 `/client/v1/...` 这些路径**故意**与官方平台一致，JSON 形状也一致，因此手机和
 桌面端的 client 角色不需要任何特判：换成自建中继只改变请求**发往哪里**，不改变
 请求**说什么**。
+
+### 由谁来终结 API 的 TLS
+
+API 就是 `future relay serve` 自己提供的，所以证书决定了它怎么监听：
+
+| `--public-url` | `relay.json` 里有无证书 | `serve` 的行为 |
+| --- | --- | --- |
+| `https://…` | 有 | 用该证书直接提供 **HTTPS** |
+| `https://…` | 无 | 明文监听，假定前面有 TLS 终结器（启动时会提示） |
+| `http://…` | 有无均可 | 明文监听；证书只用于 NATS 监听器 |
+
+`init` 会把 `--tls-cert/--tls-key` 写进 `relay.json`（`tlsCert`、`tlsKey`），所以最常见的
+情况——一个公开地址、一份证书——根本不需要额外挂反向代理。真正把中继放在反向
+代理后面时，加 `--allow-plaintext-upstream`：此时证书不会写进 `relay.json`，因为
+做 TLS 的是前面那一跳，后面再套一层 TLS 会让每个请求都失败。
+
+证书与私钥不匹配时，`serve` 启动就报错，而不是等到第一次配对。
 
 ## 3. 让桌面端连上它
 
