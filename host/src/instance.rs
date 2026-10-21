@@ -76,6 +76,7 @@ impl InstanceGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::{Command, Stdio};
 
     #[test]
     fn distinct_future_homes_isolate_lock_namespace_and_storage_without_moving_legacy_data() {
@@ -259,8 +260,72 @@ mod tests {
 
         drop(guard);
         // Releasing the only owner makes the same directory available again.
-        let reacquired = InstanceGuard::acquire().expect("reacquire after release");
-        drop(reacquired);
+        //
+        // Checked in a fresh process, for the reason [`reacquire_fixture`]
+        // records: `flock` ownership follows the open file description, a fork
+        // lends this process's descriptions to the child until it execs, and a
+        // sibling test may spawn at any moment -- so an in-process re-lock right
+        // after `drop` can read as contended through no fault of the guard.
+        let output = Command::new(std::env::current_exe().expect("the running test binary"))
+            .args([
+                "--exact",
+                "instance::tests::reacquire_fixture",
+                "--test-threads=1",
+            ])
+            .env(REACQUIRE_FIXTURE_ENV, "1")
+            // Name the released directory instead of letting the fixture
+            // inherit it: `HOME` and `FUTURE_HOME` are process-global and other
+            // tests rewrite them outside this guard's control.
+            .env("HOME", &root)
+            .env("USERPROFILE", &root)
+            .env_remove("FUTURE_HOME")
+            .stdin(Stdio::null())
+            .output()
+            .expect("run the re-acquire fixture");
+        let report = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.status.success(),
+            "re-acquiring the released directory failed: {report}"
+        );
+        // A filter that matches nothing also exits successfully, so without this
+        // a rename would leave the check above vacuous.
+        assert!(
+            report.contains("1 passed"),
+            "the fixture did not run: {report}"
+        );
         drop(home);
+    }
+
+    /// Environment that turns [`reacquire_fixture`] on; absent in an ordinary
+    /// suite run, where the fixture is a no-op that returns at once.
+    const REACQUIRE_FIXTURE_ENV: &str = "FUTURE_HOST_INSTANCE_REACQUIRE_FIXTURE";
+
+    /// Acquire, release, acquire again -- in a process that owns nothing else.
+    ///
+    /// The sequence is what `acquire_resolves_the_home_directory_and_keeps_its_lock`
+    /// asserts about release, and it cannot be asserted reliably from the test
+    /// process itself: `flock` ownership follows the open file description, so a
+    /// sibling test's `Command::spawn` forks a child that keeps *this* process's
+    /// lock alive until it execs, and no amount of care in this process makes the
+    /// re-lock deterministic then. Here nothing forks while the lock is held
+    /// (measured while eight threads spawned 27,565 children: 3,098 rounds, no
+    /// failure, against 109 lost re-locks in 400 spawn-then-release rounds in a
+    /// process that held the lock across the spawn). A lock that really is never
+    /// released still fails, once.
+    #[test]
+    fn reacquire_fixture() {
+        if std::env::var_os(REACQUIRE_FIXTURE_ENV).is_none() {
+            return;
+        }
+        let guard = InstanceGuard::acquire().expect("the released directory is available again");
+        drop(guard);
+        // A guard that leaked its descriptor instead of closing it still fails
+        // here, on this one attempt.
+        let reacquired = InstanceGuard::acquire().expect("a second acquire after release");
+        drop(reacquired);
     }
 }
