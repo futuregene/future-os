@@ -560,7 +560,12 @@ its source icon; the device selector narrows it to one machine. The ordering key
 for **rows** is the one the local list already used —
 `pinned DESC, COALESCE(last_message_at, updated_at, created_at) DESC` — which is
 why the `state.sessions` snapshot gained an optional `lastMessageAt` (older
-clients ignore it). **A remote row's value is the host's own and is written only
+clients ignore it). The same snapshot also carries an optional `createdAt`
+(`threads.created_at`) for a different question: a run rewrites `lastMessageAt`
+about once a second, so a client that lists the *running* conversations by it
+reshuffles them under the reader's thumb — the mobile list ranks that stretch by
+when each conversation started instead, and falls back to recency on a host that
+does not send the field. **A remote row's value is the host's own and is written only
 by the host** — the snapshot when the list's structure moves, the `state.activity`
 packet when only the value did. A client that stamped a clock of its own on the
 row (the desktop's live-event handler once used `Date.now()`) put two clocks in

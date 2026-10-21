@@ -36,14 +36,23 @@ development and distribution maintenance.
 - Sessions support pin, rename, single delete, and multi-select batch delete;
   workspaces can be deleted wholesale (including their sessions; files inside
   the desktop's workspace directory are not deleted), and workspace
-  collapse state survives restarts.
-- The session list has three pages: workspaces (its conversations filed under
-  their workspace), conversations (the ones in no workspace), and recent (every
-  conversation, workspaces included, newest reply first). The recent page splits
-  into "active" — running, queued, or waiting on the reader's approval, which is
-  *not* streaming and would otherwise be filed under "earlier" — above
-  "earlier", each ordered by the last reply; a pin keeps its marker but not its
-  place, and a fork is a row of its own (the page draws no tree). A row's second
+  collapse state survives restarts. In a batch, a pinned conversation is left
+  out on the **workspace** and **conversation** pages, where it is a shortcut
+  lifted above the groups and a group's select-all must not sweep it up — and is
+  an ordinary tickable row on the **recent** page, which opens no shortcut
+  section of its own.
+- The session list opens on the **recent** page (`lastTab`), and returns there
+  when a chat is closed. Its three pages are workspaces (its conversations filed
+  under their workspace), conversations (the ones in no workspace), and recent
+  (every conversation, workspaces included, newest reply first). The recent page
+  splits into "active" — running, queued, or waiting on the reader's approval,
+  which is *not* streaming and would otherwise be filed under "earlier" — above
+  "earlier". The two stretches use different clocks: active is ordered by when
+  each conversation **started** (`createdAt`, falling back to recency on a host
+  that does not send it) because a running turn rewrites the last-reply stamp
+  every second and re-ranked its row under the reader's thumb; earlier stays on
+  the last reply. A pin keeps its marker but not its place, and a fork is a row
+  of its own (the page draws no tree). A row's second
   line names its workspace (or says "chat"), with the age on the right (just now
   / minutes / hours / yesterday / days / a date). A search flattens the page,
   drops its captions, and ignores the window below. "Earlier" draws twenty rows

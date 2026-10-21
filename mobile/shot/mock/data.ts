@@ -55,6 +55,10 @@ const session = (
   // The host sends the workspace's own name with every row; the recency page
   // prints it under the title, so the demo has to carry it too.
   workspaceName: demoWorkspaces.find(workspace => workspace.id === workspaceId)?.name ?? null,
+  // When the conversation was started. The recency page ranks the ones still
+  // running by it (a run's last-reply stamp moves every second), and the demo
+  // has to carry it for that order to be visible at all.
+  createdAt: now - 24 * 60 * minute,
   streaming: false,
   ...extra,
 });
@@ -124,12 +128,17 @@ export const manyRecentSessions = Array.from({ length: 40 }, (_, index) => {
  * waiting on them.
  */
 export const recentOnlySessions = [
+  // Started first, replied last: by start time it belongs *below* the approval
+  // row, which is the point of ranking this stretch by creation — a run that
+  // keeps producing output must not keep reordering the rows around it.
   session("sess_sc_marker_run", "ws_sc", "再跑一遍 marker 富集", {
     streaming: true,
+    createdAt: now - 3 * 60 * minute,
     lastMessageAt: now - 20_000,
   }),
   session("sess_dopamine_approve", "ws_dopamine", "把清洗脚本写到 ~/clean.py", {
     status: "waiting_approval",
+    createdAt: now - 40 * minute,
     lastMessageAt: ago(4),
   }),
 ];
