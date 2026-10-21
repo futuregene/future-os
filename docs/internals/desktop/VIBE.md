@@ -41,6 +41,13 @@ carries `pinned` per session, and the panel reads it — there is no local list 
 "remote conversations I want here". A cell therefore appears when that host says so
 and disappears when it stops saying so, on the same next read as everything else.
 
+**A host's row carries no lifecycle status.** The `status` a catalogue row has is the
+last **run**'s (`mergeConversations` files it under `runStatus`), so membership filters
+on the pin alone: reading it as "is this conversation live" drops a pinned conversation
+as soon as it has ever run, which is nearly all of them. The cost is that an archived
+conversation of a host's stays in the panel until it is unpinned — telling it apart
+needs a catalogue field that does not exist.
+
 **What a host's cell can say is what that host reports**, and the panel does not
 invent the rest: its catalogue has a title, a workspace, `streaming` and a pin. It has
 no creation time (so the cell is undated — see §2), no run failure and no unread

@@ -97,12 +97,14 @@ describe("recentChoices", () => {
   });
 
   it("leaves out what the panel already shows, and names the machine for a host's", () => {
+    // The host's rows carry its last run's status, not a lifecycle (`vibeCells.ts`), so
+    // a conversation that has already run is still a candidate to add.
     const choices = recentChoices(
       [],
       [catalog("desk_1", [
-        { lastMessageAt: 700, pinned: false, sessionId: "s1", status: "active", title: "Remote one" },
-        { lastMessageAt: 800, pinned: true, sessionId: "s2", status: "active", title: "Already pinned" },
-        { lastMessageAt: 900, pinned: false, sessionId: "s3", status: "active", title: "Gone" },
+        { lastMessageAt: 700, pinned: false, sessionId: "s1", status: "completed", title: "Remote one" },
+        { lastMessageAt: 800, pinned: true, sessionId: "s2", status: "completed", title: "Already pinned" },
+        { lastMessageAt: 900, pinned: false, sessionId: "s3", status: "completed", title: "Gone" },
       ])],
       new Set(["remote:desk_1:s3"]),
       new Map([["desk_1", "Studio"]]),

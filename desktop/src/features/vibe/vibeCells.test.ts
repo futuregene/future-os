@@ -49,31 +49,55 @@ describe("vibeCellsOf", () => {
     // A host's catalogue carries no creation time, so the cell says `null` rather than
     // inventing one: `order.ts` puts an undated member where the user can move it.
     const cells = vibeCellsOf([], [catalog("desk_1", [
-      { pinned: true, sessionId: "s1", status: "active", title: "Remote one", workspaceName: "Lab" },
+      { pinned: true, sessionId: "s1", status: "completed", title: "Remote one", workspaceName: "Lab" },
     ])], { kind: "all" }, workspaceNames);
     expect(cells).toEqual([{
       createdAt: null,
       desktopId: "desk_1",
       key: "remote:desk_1:s1",
       kind: "remote",
-      session: { pinned: true, sessionId: "s1", status: "active", title: "Remote one", workspaceName: "Lab" },
+      session: { pinned: true, sessionId: "s1", status: "completed", title: "Remote one", workspaceName: "Lab" },
       title: "Remote one",
       workspaceName: "Lab",
     }]);
   });
 
-  it("leaves out an unpinned or archived conversation on either machine", () => {
+  it("keeps a host's pin however its last run ended", () => {
+    // The row's `status` is the last **run**'s (`remote_host::catalog` reads it from
+    // the run table, `mergeConversations` files it under `runStatus`), not the
+    // conversation's lifecycle. Reading it as "is this live" dropped a pinned host
+    // conversation as soon as it had ever run — which is the state nearly every one
+    // of them is in, so the panel looked like it only knew this machine's pins.
+    const cells = vibeCellsOf([], [catalog("desk_1", [
+      { pinned: true, sessionId: "s1", status: "completed", title: "finished" },
+      { pinned: true, sessionId: "s2", status: "failed", title: "failed" },
+      { pinned: true, sessionId: "s3", status: "running", title: "running" },
+      { pinned: true, sessionId: "s4", status: "waiting_approval", title: "waiting" },
+      { pinned: true, sessionId: "s5", status: "cancelled", title: "cancelled" },
+    ])], { kind: "all" }, workspaceNames);
+    expect(cells.map(cell => cell.key)).toEqual([
+      "remote:desk_1:s1",
+      "remote:desk_1:s2",
+      "remote:desk_1:s3",
+      "remote:desk_1:s4",
+      "remote:desk_1:s5",
+    ]);
+  });
+
+  it("leaves out an unpinned conversation on either machine, and an archived one of this machine's", () => {
+    // `thread.status` on this machine is its lifecycle; a host's row has no such
+    // field, so an archived conversation of a host's cannot be told apart and stays
+    // until it is unpinned (see the test above).
     const cells = vibeCellsOf(
       [thread("live"), thread("unpinned", { pinned: false }), thread("archived", { status: "archived" })],
       [catalog("desk_1", [
         { pinned: false, sessionId: "s1", title: "unpinned remote" },
-        { pinned: true, sessionId: "s2", status: "archived", title: "archived remote" },
-        { pinned: true, sessionId: "s3", status: "active", title: "live remote" },
+        { pinned: true, sessionId: "s2", status: "completed", title: "remote" },
       ])],
       { kind: "all" },
       workspaceNames,
     );
-    expect(cells.map(cell => cell.key)).toEqual(["local:live", "remote:desk_1:s3"]);
+    expect(cells.map(cell => cell.key)).toEqual(["local:live", "remote:desk_1:s2"]);
   });
 
   it("keeps a host that reports no status", () => {
