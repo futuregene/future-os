@@ -10,6 +10,7 @@ import { Dialog } from "../../components/ui/Dialog";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
 import { defaultThinkingLevel, modelSupportsThinking, normalizeThinkingLevel } from "../../integrations/agent/agentClient";
+import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { formatDateTime } from "../../lib/date";
 import { useTauriEvent } from "../../lib/useTauriEvent";
 import { MarkdownContent } from "../markdown/MarkdownContent";
@@ -231,6 +232,9 @@ export function TasksView({
 }) {
   const { t, i18n } = useTranslation("tasks");
   const locale = i18n.language;
+  // Provider id → display name, so the model picker can say which vendor a
+  // model runs on (two providers often expose the same model name).
+  const providerNames = useProviderNames();
   const store = useTasks(backend);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -428,6 +432,7 @@ export function TasksView({
                   draft={draft}
                   error={saveError}
                   models={modelOptions}
+                  providerNames={providerNames}
                   onCancel={() => setEditing(false)}
                   onChange={patch => setDraft(current => ({ ...current, ...patch }))}
                   onSave={() => void save()}
@@ -477,6 +482,7 @@ function TaskForm({
   draft,
   error,
   models,
+  providerNames,
   onChange,
   onCancel,
   onSave,
@@ -485,6 +491,8 @@ function TaskForm({
   error: string | null;
   /** Enabled models only — the same list the composer offers. */
   models: AgentModelOption[];
+  /** Provider id → display name, so each model option can name its vendor. */
+  providerNames: Record<string, string>;
   onChange: (patch: Partial<Draft>) => void;
   onCancel: () => void;
   onSave: () => void;
@@ -604,7 +612,10 @@ function TaskForm({
             {pinned ? <option value={pinned}>{pinned}</option> : null}
             {models.map(model => (
               <option key={`${model.provider}/${model.id}`} value={`${model.provider}/${model.id}`}>
-                {model.label || model.id}
+                {/* The vendor goes on every row: two providers often expose the
+                    same model name, and a picker that only says the name cannot
+                    tell them apart. Same shape as the composer's menu. */}
+                {`${model.label || model.id} · ${providerNames[model.provider] ?? model.provider}`}
               </option>
             ))}
           </Select>
