@@ -2,8 +2,7 @@
 //!
 //! A unit test builds the library **with** `cfg(test)`, so it only ever sees the
 //! macOS-pinned twin of `host_sandbox_platform`; an integration test links the
-//! library *without* `cfg(test)` (the same reason `agent_sidecar_launch.rs` can
-//! drive the launch path at all), so `SandboxPlatform::current()` is compiled
+//! library *without* `cfg(test)`, so `SandboxPlatform::current()` is compiled
 //! into this target and `/sandbox` reaches it through the public interactive
 //! input path. Opening the panel needs no interactive session, no PTY and no
 //! agent — only `App::start` needs those, and this test deliberately does not

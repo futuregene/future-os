@@ -2158,6 +2158,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "dirs 5.0.1",
+ "future-host",
  "future-rpc",
  "futures-util",
  "libc",
