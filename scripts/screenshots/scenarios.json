@@ -4288,10 +4288,28 @@
             "wait": 1500
           },
           {
-            "eval": "(() => {\n  const labels = [...document.querySelectorAll('[role=radio]')].map(node => node.getAttribute('aria-label'));\n  for (const wanted of ['跟随系统', '浅色', '深色', '小', '中', '大', '特大']) {\n    if (!labels.includes(wanted)) throw new Error('the appearance page is missing ' + wanted + ': ' + JSON.stringify(labels));\n  }\n  // Each size chip is set at the size it picks, so the choice reads as a size.\n  const chipSize = label => getComputedStyle(document.querySelector(`[role=radio][aria-label=\"${label}\"]`).firstElementChild).fontSize;\n  const sizes = ['小', '中', '大', '特大'].map(chipSize);\n  if (new Set(sizes).size !== 4) throw new Error('the size chips are not all different: ' + JSON.stringify(sizes));\n  return 'appearance options ok: ' + JSON.stringify(sizes);\n})()"
+            "eval": "(() => {\n  const labels = [...document.querySelectorAll('[role=radio]')].map(node => node.getAttribute('aria-label'));\n  for (const wanted of ['跟随系统', '浅色', '深色', '小', '中', '大', '特大']) {\n    if (!labels.includes(wanted)) throw new Error('the appearance page is missing ' + wanted + ': ' + JSON.stringify(labels));\n  }\n  // Each size chip is set at the size it picks, so the choice reads as a size.\n  const chipSize = label => getComputedStyle(document.querySelector(`[role=radio][aria-label=\"${label}\"]`).firstElementChild).fontSize;\n  const sizes = ['小', '中', '大', '特大'].map(chipSize);\n  if (new Set(sizes).size !== 4) throw new Error('the size chips are not all different: ' + JSON.stringify(sizes));\n  // The reply reading setting is this phone's own, and starts off.\n  const reply = document.querySelector('[aria-label=\"只显示最终回答\"]');\n  if (!reply) throw new Error('the appearance page has no reply reading setting');\n  if (reply.checked !== false) throw new Error('the reply setting does not start off: ' + reply.checked);\n  return 'appearance options ok: ' + JSON.stringify(sizes);\n})()"
           },
           {
-            "eval": "(() => {\n  // The header is built from `desktopSettings.<level>`, so a level whose\n  // title key is missing paints the key itself instead of failing loudly.\n  const header = document.querySelector('[role=heading]');\n  if (!header) throw new Error('the appearance level has no header');\n  const title = (header.textContent || '').trim();\n  if (title !== '外观') throw new Error('the appearance header is not its title: ' + title);\n  // Each group shows exactly the stored choice, and nothing at all is stored\n  // until the reader chooses: the default is to follow the phone, at the\n  // size the app was designed at.\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance') || 'null') || { themeMode: 'system', fontSize: 'medium' };\n  const themeLabel = { system: '跟随系统', light: '浅色', dark: '深色' }[stored.themeMode];\n  const sizeLabel = { small: '小', medium: '中', large: '大', xlarge: '特大' }[stored.fontSize];\n  const accent = 'rgb(37, 99, 235)';\n  const chosen = [...document.querySelectorAll('[role=radio]')]\n    .filter(node => getComputedStyle(node).borderColor === accent)\n    .map(node => node.getAttribute('aria-label'));\n  if (JSON.stringify(chosen) !== JSON.stringify([themeLabel, sizeLabel])) {\n    throw new Error('the checked choices do not match the stored appearance ' + JSON.stringify(stored) + ': ' + JSON.stringify(chosen));\n  }\n  return 'header and checked appearance ok';\n})()"
+            "eval": "(() => {\n  // The header is built from `desktopSettings.<level>`, so a level whose\n  // title key is missing paints the key itself instead of failing loudly. It\n  // is the heading in the row that also holds the back control: the list\n  // behind the sheet has headings of its own and comes first in the document.\n  const back = document.querySelector('[aria-label=\"返回\"]');\n  const bar = back && back.parentElement && back.parentElement.parentElement;\n  const header = bar ? bar.querySelector('[role=heading]') : null;\n  if (!header) throw new Error('the appearance level has no header');\n  const title = (header.textContent || '').trim();\n  if (title !== '外观') throw new Error('the appearance header is not its title: ' + title);\n  // Each group shows exactly the stored choice, and nothing at all is stored\n  // until the reader chooses: the default is to follow the phone, at the\n  // size the app was designed at.\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance') || 'null') || { themeMode: 'system', fontSize: 'medium' };\n  const themeLabel = { system: '跟随系统', light: '浅色', dark: '深色' }[stored.themeMode];\n  const sizeLabel = { small: '小', medium: '中', large: '大', xlarge: '特大' }[stored.fontSize];\n  const accent = 'rgb(37, 99, 235)';\n  const chosen = [...document.querySelectorAll('[role=radio]')]\n    .filter(node => getComputedStyle(node).borderColor === accent)\n    .map(node => node.getAttribute('aria-label'));\n  if (JSON.stringify(chosen) !== JSON.stringify([themeLabel, sizeLabel])) {\n    throw new Error('the checked choices do not match the stored appearance ' + JSON.stringify(stored) + ': ' + JSON.stringify(chosen));\n  }\n  return 'header and checked appearance ok';\n})()"
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"只显示最终回答\"]').click(); 'reply on'"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance') || '{}');\n  if (stored.finalAnswerOnly !== true) throw new Error('the reply setting was not stored: ' + JSON.stringify(stored));\n  if (document.querySelector('[aria-label=\"只显示最终回答\"]').checked !== true) throw new Error('the reply setting did not switch on');\n  return 'reply setting stored and painted';\n})()"
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"只显示最终回答\"]').click(); 'reply off'"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance') || '{}');\n  if (stored.finalAnswerOnly !== false) throw new Error('the reply setting did not switch back: ' + JSON.stringify(stored));\n  if (document.querySelector('[aria-label=\"只显示最终回答\"]').checked !== false) throw new Error('the reply setting did not switch back on screen');\n  return 'reply setting off again';\n})()"
           },
           {
             "shot": "m-appearance-light.png"
@@ -4381,7 +4399,7 @@
             "wait": 1000
           },
           {
-            "eval": "(() => {\n  const stored = window.localStorage.getItem('future.mobile.appearance');\n  if (!stored || JSON.parse(stored).themeMode !== 'system' || JSON.parse(stored).fontSize !== 'medium') {\n    throw new Error('the appearance was left changed: ' + stored);\n  }\n  return 'profile left on the default appearance';\n})()"
+            "eval": "(() => {\n  const stored = window.localStorage.getItem('future.mobile.appearance');\n  const parsed = stored ? JSON.parse(stored) : {};\n  if (parsed.themeMode !== 'system' || parsed.fontSize !== 'medium' || parsed.finalAnswerOnly !== false) {\n    throw new Error('the appearance was left changed: ' + stored);\n  }\n  return 'profile left on the default appearance';\n})()"
           }
         ]
       },

@@ -593,6 +593,13 @@ test("the tab row is the list's whole width, with the page tools in the header",
     expect(label.props.numberOfLines).toBe(1);
     expect(label.props.adjustsFontSizeToFit).toBe(true);
   }
+  // Recency leads the row: it is the page the app opens on, and a list that
+  // opened in the middle of its own row read as if the row started there.
+  expect(tabs.map(tab => tab.props.accessibilityLabel)).toEqual([
+    "sessions.recent",
+    "sessions.workspace",
+    "sessions.conversations",
+  ]);
   // The page bar takes every point the row has: a third page has to fit beside
   // the other two without the labels shrinking, so nothing else shares the row.
   const tabBar = tabs[0]!.parent!;
@@ -602,42 +609,40 @@ test("the tab row is the list's whole width, with the page tools in the header",
   expect(toolbar.findAll(node => node.props.accessibilityLabel === "sessions.search")).toHaveLength(0);
   expect(toolbar.findAll(node => node.props.accessibilityLabel === "sessions.select")).toHaveLength(0);
   act(() => tabs[0]!.props.onPress());
-  expect(onTabChange).toHaveBeenCalledWith("workspace");
+  expect(onTabChange).toHaveBeenCalledWith("recent");
 });
 
 test("a horizontal swipe pages the list, and the row closes into a loop", () => {
-  const fromConversations = swipeHarness("chat");
-  // Conversations is the middle page: dragging right leaves it ...
-  expect(fromConversations.drag(120, 4)).toBe(true);
-  expect(fromConversations.tabChange).toHaveBeenCalledWith("workspace");
-  fromConversations.tabChange.mockClear();
-  // ... and dragging left opens the recency page beside it.
-  expect(fromConversations.drag(-120, 4)).toBe(true);
-  expect(fromConversations.tabChange).toHaveBeenCalledWith("recent");
-  act(() => fromConversations.rendered.unmount());
-
   const fromRecent = swipeHarness("recent");
-  // The rightmost page: dragging left wraps to the workspaces page. It still
-  // moves one page at a time in the other direction — reaching conversations
-  // from here is one drag right, not through the workspaces page.
+  // Recency is the leftmost page: dragging left opens the workspaces page ...
   expect(fromRecent.drag(-120, 4)).toBe(true);
   expect(fromRecent.tabChange).toHaveBeenCalledWith("workspace");
   fromRecent.tabChange.mockClear();
+  // ... and dragging right off the end of the row lands on the conversations
+  // page: the row closes into a loop, and the drag had nothing behind it before.
   expect(fromRecent.drag(120, 4)).toBe(true);
   expect(fromRecent.tabChange).toHaveBeenCalledWith("chat");
   act(() => fromRecent.rendered.unmount());
 
   const fromWorkspaces = swipeHarness("workspace");
-  // The leftmost page opens conversations with a drag left ...
+  // The middle page: one drag left reaches conversations ...
   expect(fromWorkspaces.drag(-120, 4)).toBe(true);
   expect(fromWorkspaces.tabChange).toHaveBeenCalledWith("chat");
   fromWorkspaces.tabChange.mockClear();
-  // ... and dragging right off the end of the row lands on the recency page:
-  // the row closes into a loop, because "what did I last touch" is the question
-  // a reader asks from this page and the drag had nothing behind it before.
+  // ... and one drag right reaches the recency page.
   expect(fromWorkspaces.drag(120, 4)).toBe(true);
   expect(fromWorkspaces.tabChange).toHaveBeenCalledWith("recent");
   act(() => fromWorkspaces.rendered.unmount());
+
+  const fromConversations = swipeHarness("chat");
+  // The rightmost page: dragging right leaves it for the workspaces page ...
+  expect(fromConversations.drag(120, 4)).toBe(true);
+  expect(fromConversations.tabChange).toHaveBeenCalledWith("workspace");
+  fromConversations.tabChange.mockClear();
+  // ... and dragging left wraps to the recency page at the other end.
+  expect(fromConversations.drag(-120, 4)).toBe(true);
+  expect(fromConversations.tabChange).toHaveBeenCalledWith("recent");
+  act(() => fromConversations.rendered.unmount());
 });
 
 test("a vertical drag stays with the list, and search/selection keep the tabs put", () => {

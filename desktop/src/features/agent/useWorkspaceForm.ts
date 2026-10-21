@@ -103,8 +103,8 @@ export function useWorkspaceForm({
   }
 
   // Cancelling the create-workspace dialog: fall back to the most-recently-used
-  // workspace when one exists (list is ordered last-opened first), otherwise
-  // there's nothing to land on, so switch to plain chat.
+  // workspace when one exists (the list is ordered by the most recent activity
+  // first), otherwise there's nothing to land on, so switch to plain chat.
   function cancel() {
     setWorkspaceFormMode(null);
     setWorkspaceError(null);
