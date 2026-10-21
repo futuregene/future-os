@@ -838,13 +838,13 @@ it("names the conversation's workspace, and omits it for a chat conversation", a
     entries: [entry("e1", "user", "hi")],
     workspaceName: "future-os",
   });
-  const badge = inWorkspace.container.querySelector("[data-testid='remote-thread-workspace']")!;
+  const badge = inWorkspace.container.querySelector("[data-testid='thread-workspace']")!;
   expect(badge.textContent).toBe("future-os");
   expect(badge.getAttribute("title")).toBe("future-os");
   await inWorkspace.unmount();
 
   const chat = await mount({ entries: [entry("e1", "user", "hi")] });
-  expect(chat.container.querySelector("[data-testid='remote-thread-workspace']")).toBeNull();
+  expect(chat.container.querySelector("[data-testid='thread-workspace']")).toBeNull();
   await chat.unmount();
 });
 

@@ -32,6 +32,12 @@ interface ThreadHeaderProps {
    * header draws where the badge goes, not what a machine is.
    */
   machine?: ReactNode;
+  /**
+   * Which workspace this conversation works in, when it is in one. A node for
+   * the same reason `machine` is: only the shell knows which workspace a
+   * conversation's id names, and a chat conversation has none to name.
+   */
+  workspace?: ReactNode;
 }
 
 export function ThreadHeader({
@@ -41,6 +47,7 @@ export function ThreadHeader({
   usage,
   action,
   machine,
+  workspace,
 }: ThreadHeaderProps) {
   const { t } = useTranslation("agent");
   const [usageOpen, setUsageOpen] = useState(false);
@@ -60,6 +67,7 @@ export function ThreadHeader({
         <div className="flex min-w-0 flex-1 items-center">
           <div className="min-w-0 truncate text-sm font-semibold text-ink">{thread?.title ?? t("thread.defaultTitle")}</div>
           {machine}
+          {workspace}
         </div>
       </div>
       {/* The conversation's own account book. An icon rather than the amount:

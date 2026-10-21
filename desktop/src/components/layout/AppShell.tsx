@@ -95,6 +95,7 @@ import { useWindowWidth } from "./hooks/useWindowWidth";
 import { useWorkspaceDialogs } from "./hooks/useWorkspaceDialogs";
 import { MachineBadge } from "./MachineBadge";
 import { OnboardingGate } from "./OnboardingGate";
+import { WorkspaceBadge } from "./WorkspaceBadge";
 import { WorkspaceDialogs } from "./WorkspaceDialogs";
 
 export type { AgentConnectionState } from "./hooks/useAgentConnection";
@@ -597,6 +598,25 @@ function ReadyAppShell({
           label={tRemotePeer("selector.local")}
         />
       )
+    : null;
+
+  /**
+   * Which workspace the open conversation works in, named the way the rail's
+   * heading names it.
+   *
+   * Read from the thread, not from `activeWorkspace`: that one falls back to the
+   * first workspace when the thread's own is gone, and a header naming somebody
+   * else's folder is worse than one that says nothing. The rail's own rule is
+   * the mode — a chat conversation is listed under the chat section however the
+   * agent's cwd has filed it, and a workspace conversation under its workspace —
+   * so a chat names nothing here either, and the two lists keep saying the same
+   * thing about the same conversation.
+   */
+  const activeThreadWorkspace = activeThread?.mode === "workspace"
+    ? workspaces.find(workspace => workspace.id === activeThread.workspaceId)
+    : undefined;
+  const localWorkspaceBadge = activeThreadWorkspace
+    ? <WorkspaceBadge name={activeThreadWorkspace.name} />
     : null;
 
   // Bridge the backend's deferred shadow-review notification (C1) onto the
@@ -1692,6 +1712,7 @@ function ReadyAppShell({
                                       futureBalance={futureBalance}
                                       headerAction={terminalHeaderAction}
                                       headerMachine={localMachineBadge}
+                                      headerWorkspace={localWorkspaceBadge}
                                       onPromptConsumed={consumePendingPrompt}
                                       onForked={(forkedThreadId: string) => {
                                         void refreshStore(forkedThreadId);
