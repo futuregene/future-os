@@ -2868,6 +2868,54 @@ describe("app shell collapsed-panel affordances", () => {
     });
 
     /**
+     * A draft on a host asks the same question as this machine's own composer:
+     * a workspace, or a plain conversation.
+     *
+     * It used to ask nothing: a draft opened in a workspace only when it was
+     * started from that workspace's heading, and the new-conversation path made
+     * a chat without saying so. The answer is carried to the host as an id (it
+     * resolves the folder), and the header names the workspace — a draft has no
+     * catalogue row, so that name comes from the same read the menu draws from.
+     */
+    it("lets a draft choose a workspace on the host, or a plain conversation", async () => {
+      mocks.invoke.mockImplementation(async command => command === "remote_peer_workspaces"
+        ? { workspaces: [{ id: "ws_1", name: "future-os", path: "/Users/me/code/future-os" }] }
+        : undefined);
+      const view = mount(<AppShell />);
+      act(() => rail().onNewChatOnRemote?.("desktop_a", null));
+      await act(async () => {
+        for (let i = 0; i < 4; i += 1) await Promise.resolve();
+      });
+
+      // A draft starts on a plain conversation, and says so.
+      expect(view.container.querySelector("[data-testid='remote-draft-target']")).not.toBeNull();
+      expect((children.remoteComposer as { workspaceId?: string | null }).workspaceId).toBeNull();
+      expect((children.remoteConversationView as { title?: string }).title).toBe("New conversation");
+
+      // The host's folder is what the menu offers, and choosing it moves the
+      // draft — the composer sends the id, the header names the workspace.
+      act(() => railButton(view.container, "Workspaces").click());
+      act(() => railButton(view.container, "future-os/Users/me/code/future-os").click());
+      expect((children.remoteComposer as { workspaceId?: string | null }).workspaceId).toBe("ws_1");
+      expect((children.remoteConversationView as { workspaceName?: string | null }).workspaceName)
+        .toBe("future-os");
+
+      // And back: the chat control beside it is the other half of the question.
+      act(() => railButton(view.container, "Chat").click());
+      expect((children.remoteComposer as { workspaceId?: string | null }).workspaceId).toBeNull();
+      view.unmount();
+    });
+
+    /** A conversation that exists has a place already: there is nothing to ask. */
+    it("asks nothing about the place of a conversation that already exists", () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+
+      expect(view.container.querySelector("[data-testid='remote-draft-target']")).toBeNull();
+      view.unmount();
+    });
+
+    /**
      * The conversation's account book is its own, on the host that spent it.
      *
      * Opened from the transcript's header, and quoting that host's figures: the

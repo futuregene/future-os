@@ -238,7 +238,7 @@
     "headerTitle": "新对话",
     "chatSubtitle": "普通对话",
     "welcome": "欢迎使用",
-    "placeholder": "描述任务，@文件 添加到上下文，按 / 使用技能",
+    "placeholder": "描述任务，@文件 添加到上下文，按 / 使用技能，按 # 引用会话",
     "workspace": "工作区",
     "noWorkspaces": "还没有工作区。",
     "openExisting": "打开工作区",
