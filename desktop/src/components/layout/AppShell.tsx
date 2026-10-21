@@ -486,6 +486,14 @@ function ReadyAppShell({
     visibleModelOptions,
     refreshStore,
   });
+  /**
+   * Set by the Vibe panel's add tile right before it opens the new-conversation screen.
+   *
+   * Read (and cleared) once, at the moment a thread is created, so "add a conversation" and
+   * "pin what you create" stay one promise without the panel having to watch the store for
+   * a thread it did not create.
+   */
+  const pinNextCreatedRef = useRef(false);
   const {
     pendingPrompt,
     startNewConversation,
@@ -495,6 +503,11 @@ function ReadyAppShell({
     syncSelection,
     setSection,
     setCenterMode,
+    pinCreated: () => {
+      const armed = pinNextCreatedRef.current;
+      pinNextCreatedRef.current = false;
+      return armed;
+    },
   });
   const {
     renameDialog,
@@ -1360,6 +1373,11 @@ function ReadyAppShell({
               onOpenRemoteInShell={(desktopId, sessionId) => {
                 openRemoteSession(desktopId, sessionId);
                 setVibeOpen(false);
+              }}
+              onNewConversation={() => {
+                pinNextCreatedRef.current = true;
+                setVibeOpen(false);
+                handleOpenNewChat();
               }}
               onPinLocal={(threadId, pinned) => void pinLocalThread(threadId, pinned)}
               onPinRemote={(desktopId, sessionId, pinned) => void pinRemoteSession(desktopId, sessionId, pinned)}

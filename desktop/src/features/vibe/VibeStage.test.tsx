@@ -162,6 +162,7 @@ function rerender(options: { runStatuses?: Record<string, { status: string }>; t
         catalogs={[]}
         onClose={() => {}}
         onOpenInShell={() => {}}
+        onNewConversation={() => {}}
         onOpenRemoteInShell={() => {}}
         onPinLocal={() => {}}
         onPinRemote={() => {}}
@@ -185,6 +186,7 @@ function mount(options: {
   onClose?: () => void;
   onOpenInShell?: (thread: StoredThread) => void;
   onOpenRemoteInShell?: (desktopId: string, sessionId: string) => void;
+  onNewConversation?: () => void;
   onPinLocal?: (threadId: string, pinned: boolean) => void;
   onPinRemote?: (desktopId: string, sessionId: string, pinned: boolean) => void;
 }) {
@@ -194,6 +196,7 @@ function mount(options: {
         catalogs={options.catalogs ?? []}
         onClose={options.onClose ?? (() => {})}
         onOpenInShell={options.onOpenInShell ?? (() => {})}
+        onNewConversation={options.onNewConversation ?? (() => {})}
         onOpenRemoteInShell={options.onOpenRemoteInShell ?? (() => {})}
         onPinLocal={options.onPinLocal ?? (() => {})}
         onPinRemote={options.onPinRemote ?? (() => {})}
@@ -692,6 +695,7 @@ describe("this cell's settings", () => {
           catalogs={[]}
           onClose={() => {}}
           onOpenInShell={() => {}}
+          onNewConversation={() => {}}
           onOpenRemoteInShell={() => {}}
           onPinLocal={() => {}}
           onPinRemote={() => {}}
@@ -746,6 +750,7 @@ describe("this cell's settings", () => {
           catalogs={[]}
           onClose={() => {}}
           onOpenInShell={() => {}}
+          onNewConversation={() => {}}
           onOpenRemoteInShell={() => {}}
           onPinLocal={() => {}}
           onPinRemote={() => {}}
@@ -1124,6 +1129,122 @@ describe("reading a cell without zooming into it", () => {
     Object.defineProperty(element!, "scrollHeight", { configurable: true, value: 4000 });
     press({ code: "BrowserHome", key: "BrowserHome" });
     expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ top: 4000 }));
+  });
+});
+
+describe("the empty square", () => {
+  // Reported from use: a 3×2 grid with five pinned conversations leaves one square empty,
+  // and that square is where a reader looks for "add one". It is a *slot* in the ring, so
+  // the arrows reach it and `⏎` opens the picker — not a floating button.
+  const tile = () => container.querySelector("[data-vibe-add-slot]");
+
+  it("fills a free square, and only when there is one", () => {
+    // Five cells are 3×2: one square free.
+    mount({ threads: [1, 2, 3, 4, 5].map(index => thread(`t${index}`, index * 100)) });
+    expect(tile()).not.toBeNull();
+    // Four cells are a full 2×2: no free square, so no tile (the menu's add row is the way
+    // in). This is what keeps the layout table honest.
+    mount({ threads: [1, 2, 3, 4].map(index => thread(`t${index}`, index * 100)) });
+    expect(tile()).toBeNull();
+  });
+
+  /**
+   * Put the ring on the tile by its printed number — the same rule a cell follows ("type
+   * the number on the square"), and the only way that works for every shape: on a 2×2 the
+   * tile is one `→` from the last cell, on a 3×2 it is `→` twice.
+   */
+  function focusTile(number: number) {
+    press({ code: `Digit${number}`, key: String(number) });
+    expect(container.querySelector("[data-vibe-focused]")?.getAttribute("data-vibe-focused")).toBe("__add__");
+  }
+
+  it("is reachable with the arrows and opens the picker on ⏎", () => {
+    mount({ threads: [1, 2, 3].map(index => thread(`t${index}`, index * 100)) });
+    // Three cells are 2×2, so the tile is the fourth slot.
+    focusTile(4);
+    press({ code: "Enter", key: "Enter" });
+    expect(container.querySelector("[role=\"menu\"]")).not.toBeNull();
+    // The picker always offers the two ways out, even with nothing recent to offer.
+    expect(container.querySelector("[data-vibe-menu-row=\"add:browse\"]")).not.toBeNull();
+    expect(container.querySelector("[data-vibe-menu-row=\"add:new\"]")).not.toBeNull();
+  });
+
+  it("lists recently active conversations, and pins the one chosen", () => {
+    const onPinLocal = vi.fn();
+    mount({
+      onPinLocal,
+      threads: [
+        thread("a", 100),
+        thread("b", 200),
+        thread("c", 300),
+        // Unpinned, so candidates: the most recently touched wins the first row.
+        thread("older", 50, { lastMessageAt: 300, pinned: false }),
+        thread("newer", 60, { lastMessageAt: 900, pinned: false }),
+      ],
+    });
+    // Three pinned cells are a 2×2 with one square free: the tile is the fourth slot. The
+    // two candidates below are unpinned, which is what makes them candidates at all.
+    focusTile(4);
+    press({ code: "Enter", key: "Enter" });
+    const rows = [...container.querySelectorAll("[data-vibe-menu-row]")].map(row => row.getAttribute("data-vibe-menu-row"));
+    expect(rows[0]).toBe("recent:local:newer");
+    expect(rows[1]).toBe("recent:local:older");
+    press({ code: "Enter", key: "Enter" });
+    expect(onPinLocal).toHaveBeenCalledWith("newer", true);
+  });
+
+  it("offers a way to the full picker and to a new conversation", () => {
+    const onNewConversation = vi.fn();
+    mount({ onNewConversation, threads: [thread("a", 100)] });
+    // One cell is a full 1×1, so reach the picker the way a reader would: the panel menu.
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    walkTo("add");
+    press({ code: "Enter", key: "Enter" });
+    // The browse dialog is the shell's; the new-conversation hand-off is the panel's.
+    expect(container.querySelector("[role=\"dialog\"]")).not.toBeNull();
+    press({ code: "Escape", key: "Escape" });
+    mount({ onNewConversation, threads: [thread("a", 100), thread("b", 200)] });
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    walkTo("add");
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+  });
+});
+
+describe("more than a page of pinned conversations", () => {
+  // Twelve cells was a silent cap: a thirteenth pinned conversation was unreachable and the
+  // bar said "1 more than the grid holds". The grid now pages.
+  const thirteen = () => Array.from({ length: 13 }, (_, index) => thread(`t${String(index).padStart(2, "0")}`, (index + 1) * 100));
+
+  it("shows twelve, says which page, and reaches the rest", () => {
+    mount({ threads: thirteen() });
+    expect(container.querySelectorAll("[data-vibe-cell]")).toHaveLength(12);
+    expect(container.querySelector("[data-vibe-page]")?.textContent).toContain("1/2");
+    press({ code: "ArrowRight", key: "ArrowRight", altKey: true });
+    expect(container.querySelectorAll("[data-vibe-cell]")).toHaveLength(1);
+    expect(container.querySelector("[data-vibe-page]")?.textContent).toContain("2/2");
+    // The thirteenth is the one on page two, and it is reachable.
+    press({ code: "Enter", key: "Enter" });
+    expect(drawn("input")).toEqual(["t12"]);
+  });
+
+  it("falls back a page when the reader unpins their way back to twelve", () => {
+    // An unpin on page two that leaves exactly one page must not strand the reader on an
+    // empty grid.
+    mount({ threads: thirteen() });
+    press({ code: "ArrowRight", key: "ArrowRight", altKey: true });
+    expect(container.querySelector("[data-vibe-page]")?.textContent).toContain("2/2");
+    mount({ threads: thirteen().slice(0, 12) });
+    expect(container.querySelectorAll("[data-vibe-cell]")).toHaveLength(12);
+    expect(container.querySelector("[data-vibe-page]")).toBeNull();
+  });
+
+  it("does not offer the page keys with a single page", () => {
+    // The panel's rule for every command: a key that could not do anything stays the app's.
+    mount({ threads: [thread("a", 100)] });
+    expect(container.querySelector("[data-vibe-page]")).toBeNull();
+    press({ code: "ArrowRight", key: "ArrowRight", altKey: true });
+    expect(drawn("read")).toEqual(["a"]);
   });
 });
 

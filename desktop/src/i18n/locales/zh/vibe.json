@@ -55,7 +55,11 @@
     "empty": "这里没有可加入的会话：这个位置里的会话都已经置顶了。",
     "add": "加入",
     "added": "已在面板",
-    "footer": "加入即置顶：它会出现在这里，也出现在左边栏的置顶区。"
+    "footer": "加入即置顶：它会出现在这里，也出现在左边栏的置顶区。",
+    "recent": "最近活跃",
+    "browse": "浏览全部会话…",
+    "newConversation": "新开一个会话…",
+    "newConversationHint": "打开新建会话界面，建好后自动置顶"
   },
   "devices": {
     "local": "本机",
@@ -85,5 +89,7 @@
     "hide": "隐藏右栏",
     "pin": "为这个会话固定右栏"
   },
-  "fullscreenFailed": "全屏被系统拒绝了 —— 原因见控制台"
+  "fullscreenFailed": "全屏被系统拒绝了 —— 原因见控制台",
+  "page": "第 {{page}}/{{pages}} 页",
+  "emptyTile": "加入会话"
 }

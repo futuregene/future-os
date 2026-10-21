@@ -37,8 +37,9 @@ import { RemoteFilesPanel } from "../remote-peer/RemoteFilesPanel";
 import { AddToVibeDialog } from "./AddToVibeDialog";
 import { attentionOf, nextAttention } from "./attention";
 import { barStart, reserveTrafficLights as shouldReserveTrafficLights } from "./barChrome";
+import { ADD_SLOT_KEY, clampPage, hasAddSlot, PAGE_SIZE, pageCount, pageSlice, recentChoices } from "./emptySlot";
 import { toggleNativeFullscreen } from "./fullscreen";
-import { cellPosition, gridOf, MAX_CELLS, moveInGrid } from "./layout";
+import { cellPosition, gridOf, moveInGrid } from "./layout";
 import { moveInOrder, resolveOrder } from "./order";
 import { cyclePreference, nextStickyDefault, PANEL_WIDTH, preferenceLabelKey, readPanelPreference, showReadingPanel, toggleHidden, togglePinned } from "./readingPanel";
 import { scrollToLiveEnd, scrollTranscript, transcriptOf } from "./scrollCell";
@@ -109,6 +110,14 @@ export interface VibeStageProps {
    */
   onPinLocal: (threadId: string, pinned: boolean) => void;
   onPinRemote: (desktopId: string, sessionId: string, pinned: boolean) => void;
+  /**
+   * Leave the panel for the new-conversation screen, and pin whatever is created there.
+   *
+   * The panel does not grow its own conversation-creation flow: a first message is what
+   * creates a thread, so the screen that already asks for one is the right place. The pin
+   * is the panel's promise ("adding is pinning") applied to the `+`.
+   */
+  onNewConversation: () => void;
 }
 
 /**
@@ -140,6 +149,7 @@ export function VibeStage({
   onClose,
   onOpenInShell,
   onOpenRemoteInShell,
+  onNewConversation,
   onPinLocal,
   onPinRemote,
   peers,
@@ -178,6 +188,14 @@ export function VibeStage({
   }, [t]);
   /** Whether the "add a conversation" dialog is up. */
   const [addOpen, setAddOpen] = useState(false);
+  /**
+   * Whether the add tile's own menu is up: the recent list, plus the two ways out of it.
+   *
+   * A menu rather than jumping straight into the three-column dialog, because the question
+   * a free slot asks is "which conversation", and the answer is usually one of the five the
+   * reader was just in — not "browse every workspace on every machine".
+   */
+  const [addMenuOpen, setAddMenuOpen] = useState(false);
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const preferences = useMemo(() => readVibePreferences(), []);
   const [order, setOrder] = useState<string[]>(preferences.order);
@@ -225,8 +243,33 @@ export function VibeStage({
     () => resolved.map(key => memberByKey.get(key)).filter((cell): cell is VibeCell => Boolean(cell)),
     [memberByKey, resolved],
   );
-  const overflow = Math.max(0, cells.length - MAX_CELLS);
-  const shown = cells.slice(0, MAX_CELLS);
+  /**
+   * Which page of the grid the reader is on.
+   *
+   * Past twelve pinned conversations the grid pages rather than scrolling or shrinking
+   * (`emptySlot.ts`): twelve is what fits at a readable size, and a thirteenth pinned
+   * conversation used to be silently unreachable.
+   */
+  const [pageIndex, setPageIndex] = useState(0);
+  const pages = pageCount(cells.length, PAGE_SIZE);
+  const page = clampPage(pageIndex, cells.length, PAGE_SIZE);
+  const shown = pageSlice(cells, page, PAGE_SIZE);
+  /**
+   * The add tile: it fills a **free square** of the shape the cells already need, which is
+   * where a reader looks when a corner of the grid is empty.
+   *
+   * That rule is why it does not disturb the layout table: three cells are 2×2 with one
+   * square free, so the tile takes it; four cells are a full 2×2 and get none (the menu's
+   * add row is the way in there). A tile that always existed would make every grid one slot
+   * bigger than its cell count and change the shape of four cells from 2×2 to 3×2.
+   */
+  const cellLayout = useMemo(
+    () => gridOf(Math.max(1, shown.length), size.width || window.innerWidth, size.height || window.innerHeight, columns),
+    [columns, shown.length, size.height, size.width],
+  );
+  const addSlot = hasAddSlot(shown.length, PAGE_SIZE)
+    && cellLayout.columns * cellLayout.rows > shown.length;
+  const slotCount = shown.length + (addSlot ? 1 : 0);
 
   // Focus is kept by key, not by index: a reorder, a new pin or an unpin must
   // not move the ring onto a different conversation than the one the reader was
@@ -234,11 +277,16 @@ export function VibeStage({
   const focusIndex = useMemo(() => {
     if (!focusKey)
       return 0;
+    if (focusKey === ADD_SLOT_KEY)
+      return addSlot ? shown.length : 0;
     const index = shown.findIndex(cell => cell.key === focusKey);
     return index === -1 ? 0 : index;
-  }, [focusKey, shown]);
-  const focused = shown[focusIndex] ?? null;
+  }, [addSlot, focusKey, shown]);
+  // The ring can be on the add tile, which is a slot and not a conversation: `focused`
+  // stays the conversation (or nothing), and `addFocused` says whether the tile has it.
+  const focused = focusIndex < shown.length ? shown[focusIndex]! : null;
   const focusedKey = focused?.key ?? null;
+  const addFocused = addSlot && focusIndex === shown.length;
   // The focused *local* conversation, if that is what the ring is on: the panel's
   // own approval queue and its input layer are this machine's, and a host's
   // conversation answers its own approvals inside its own cell.
@@ -257,9 +305,11 @@ export function VibeStage({
     thinkingLevel: view.thinkingLevel,
   });
 
+  // With the tile in place the shape is the one the cells already implied (the tile only
+  // fills a square that was empty), so this equals `cellLayout` whenever the tile exists.
   const layout = useMemo(
-    () => gridOf(shown.length, size.width || window.innerWidth, size.height || window.innerHeight, columns),
-    [columns, shown.length, size.height, size.width],
+    () => gridOf(Math.max(1, slotCount), size.width || window.innerWidth, size.height || window.innerHeight, columns),
+    [columns, size.height, size.width, slotCount],
   );
 
   // The grid area's real size, not the window's: the bar above it and the padding
@@ -371,18 +421,39 @@ export function VibeStage({
   const moveFocus = useCallback((direction: "up" | "down" | "left" | "right") => {
     if (!shown.length)
       return;
-    const next = moveInGrid(focusIndex, direction, shown.length, layout);
-    if (next !== focusIndex)
-      setFocus(shown[next] ?? null);
-  }, [focusIndex, layout, setFocus, shown]);
+    const next = moveInGrid(focusIndex, direction, slotCount, layout);
+    if (next === focusIndex)
+      return;
+    // The last slot can be the add tile, which is a slot and not a conversation: pointing
+    // the ring at it is how `⏎` reaches the picker.
+    const cell = shown[next];
+    setFocusKey(cell ? cell.key : ADD_SLOT_KEY);
+  }, [focusIndex, layout, shown, slotCount]);
 
   const stepFocus = useCallback((delta: number) => {
-    if (!shown.length)
+    if (slotCount === 0)
       return;
-    const next = Math.min(shown.length - 1, Math.max(0, focusIndex + delta));
-    if (next !== focusIndex)
-      setFocus(shown[next] ?? null);
-  }, [focusIndex, setFocus, shown]);
+    const next = Math.min(slotCount - 1, Math.max(0, focusIndex + delta));
+    if (next === focusIndex)
+      return;
+    const cell = shown[next];
+    setFocusKey(cell ? cell.key : ADD_SLOT_KEY);
+  }, [focusIndex, shown, slotCount]);
+
+  /**
+   * Turn the page, keeping the ring inside it.
+   *
+   * The same index within the page rather than "the first cell": a reader walking a grid by
+   * position expects the second column of page two to be where the second column was. An
+   * out-of-range index falls back to the last cell on that page.
+   */
+  const turnPage = useCallback((delta: -1 | 1) => {
+    const next = clampPage(page + delta, cells.length, PAGE_SIZE);
+    if (next === page)
+      return;
+    setPageIndex(next);
+    setFocusKey(null);
+  }, [cells.length, page]);
 
   // ── Scopes: exactly one layer owns the bare keys ──────────────────────────
   useShortcutScope("vibe", true);
@@ -400,6 +471,11 @@ export function VibeStage({
   // its reading layer for a host's: dictation is this machine's (`chrome="input"`
   // mounts a composer, and a remote cell deliberately has none — see `VIBE.md` §5).
   useCommand("vibe.open", () => {
+    // `OK` on the add tile asks the picker, which is what that square promises.
+    if (addFocused) {
+      setAddMenuOpen(true);
+      return;
+    }
     if (!focused)
       return;
     if (focused.thread)
@@ -411,6 +487,12 @@ export function VibeStage({
     const digit = Number.parseInt((binding?.code ?? "").replace("Digit", ""), 10);
     if (!Number.isInteger(digit) || digit < 1)
       return;
+    // `1`–`9` address slots, so a digit past the last cell lands on the add tile when it is
+    // showing — the same "type the number printed on it" rule for both kinds of square.
+    if (digit === slotCount && addSlot) {
+      setFocusKey(ADD_SLOT_KEY);
+      return;
+    }
     const target = shown[digit - 1];
     if (target)
       setFocus(target);
@@ -440,6 +522,10 @@ export function VibeStage({
   // The remote's `Home` (and the same command's documented meaning): back to the newest
   // message, which is where a reader who has scrolled away usually wants to be.
   useCommand("vibe.home", () => scrollToLiveEnd(transcriptOf(rootRef.current, focusedKey)));
+  // Turning the grid's page, registered only when there is more than one — the panel's rule
+  // for every command: a key that could not do anything stays the app's own.
+  useCommand("vibe.page.previous", () => turnPage(-1), pages > 1);
+  useCommand("vibe.page.next", () => turnPage(1), pages > 1);
   useCommand("vibe.panel.hide", () => setPanelPreference(toggleHidden(panelPreference)));
   useCommand("vibe.panel.pin", () => setPanelPreference(togglePinned(panelPreference)));
   useCommand("vibe.input.open", () => {
@@ -635,6 +721,59 @@ export function VibeStage({
     setDeviceFilter(entry);
     writeVibeDevice(entry);
   };
+
+  /**
+   * The add tile's menu: the five conversations the reader was in most recently, then the
+   * two ways out of the list.
+   *
+   * `recentChoices` already excludes what the panel shows, so every row here is an action
+   * that changes something. Adding is pinning, on the machine that owns the conversation —
+   * the same call the browse dialog makes.
+   */
+  const addMenuRows: VibeMenuRow[] = [
+    ...recentChoices(threads, catalogs, new Set(members.map(cell => cell.key)), peerLabels)
+      .map((choice, index) => ({
+        id: `recent:${choice.key}`,
+        label: choice.title,
+        value: choice.machine ?? undefined,
+        group: index === 0,
+        onRun: () => {
+          const cell = cells.find(item => item.key === choice.key);
+          const threadId = choice.key.startsWith("local:") ? choice.key.slice("local:".length) : null;
+          if (threadId) {
+            onPinLocal(threadId, true);
+          }
+          else {
+            const [desktopId, sessionId] = choice.key.slice("remote:".length).split(":");
+            if (desktopId && sessionId)
+              onPinRemote(desktopId, sessionId, true);
+          }
+          if (cell)
+            setFocus(cell);
+          setAddMenuOpen(false);
+        },
+      })),
+    {
+      id: "add:browse",
+      label: recentChoices(threads, catalogs, new Set(members.map(cell => cell.key)), peerLabels).length > 0
+        ? t("add.browse")
+        : t("empty.title"),
+      group: true,
+      onRun: () => {
+        setAddOpen(true);
+        setAddMenuOpen(false);
+      },
+    },
+    {
+      id: "add:new",
+      label: t("add.newConversation"),
+      description: t("add.newConversationHint"),
+      onRun: () => {
+        setAddMenuOpen(false);
+        onNewConversation();
+      },
+    },
+  ];
 
   const menuRows: VibeMenuRow[] = [
     // What needs a human, first: on a remote this is the screen's opening question,
@@ -842,6 +981,31 @@ export function VibeStage({
           gridTemplateRows: `repeat(${layout.rows}, minmax(0, 1fr))`,
         }}
       >
+        {/* The add tile: the first free square, which is where a reader looks when a corner
+            of the grid is empty. It is a slot in the ring, so `→`/`↓` reaches it and `⏎`
+            opens the picker, exactly like a cell (`emptySlot.ts`). */}
+        {excludeKey === null && addSlot
+          ? (
+              <button
+                className={cn(
+                  "flex min-h-0 min-w-0 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-ink-soft transition-colors",
+                  addFocused
+                    ? "border-accent bg-accent-soft/30 text-ink ring-2 ring-accent/35"
+                    : "border-line hover:bg-surface-subtle hover:text-ink",
+                )}
+                data-vibe-add-slot=""
+                // Placed after the last cell: the grid fills left to right, so the tile
+                // lands in the next free square of the current page.
+                style={{ gridColumn: cellPosition(visible.length, layout).column + 1 }}
+                onMouseDown={() => setFocusKey(ADD_SLOT_KEY)}
+                onClick={() => setAddMenuOpen(true)}
+                type="button"
+              >
+                <span aria-hidden className="text-2xl leading-none">+</span>
+                <span className="max-w-[80%] truncate text-xs">{t("emptyTile")}</span>
+              </button>
+            )
+          : null}
         {visible.map((cell, index) => {
           const focusedCell = cell.key === focusedKey;
           const approvals = cell.thread ? approvalCounts.get(cell.thread.id) ?? 0 : 0;
@@ -967,7 +1131,7 @@ export function VibeStage({
       // Which conversation the ring is on, and which layer is on top. Two facts the
       // panel's own keys move, and the only ones a capture can assert the way a
       // reader sees them (a screenshot cannot show focus).
-      data-vibe-focused={focused?.key ?? ""}
+      data-vibe-focused={focused?.key ?? (addFocused ? ADD_SLOT_KEY : "")}
       data-vibe-layer={layer}
     >
       {/* The bar starts at x=0 and is the only surface in the app that does, so it makes
@@ -984,9 +1148,17 @@ export function VibeStage({
       >
         <span className="text-xs font-semibold tracking-wide text-ink-soft">{t("title")}</span>
         <span className="text-xs text-ink-soft">
-          {t("count", { count: shown.length })}
-          {overflow > 0 ? ` · ${t("overflow", { count: overflow })}` : ""}
+          {t("count", { count: cells.length })}
         </span>
+        {/* Which page, only when there is more than one: a thirteenth pinned conversation
+            used to be unreachable and nothing said so. */}
+        {pages > 1
+          ? (
+              <span className="text-xs font-medium text-ink-muted" data-vibe-page="">
+                {t("page", { page: page + 1, pages })}
+              </span>
+            )
+          : null}
         {deviceFilter.kind === "device"
           ? (
               <span className="text-xs text-ink-muted" data-vibe-device={deviceFilter.desktopId}>
@@ -1060,7 +1232,11 @@ export function VibeStage({
                 <div ref={areaRef} className="min-h-0 flex-1 p-2">{grid(null, false)}</div>
                 {/* The grid's own hint line. It carries the scroll keys, which nothing
                     else on screen mentions — the ring keys are in the bar's key strip. */}
-                <VibeHintBar ids={["vibe.open", "vibe.scroll.down", "vibe.attention", "vibe.menu", "vibe.close"]} />
+                <VibeHintBar
+                  ids={pages > 1
+                    ? ["vibe.open", "vibe.page.next", "vibe.scroll.down", "vibe.attention", "vibe.menu", "vibe.close"]
+                    : ["vibe.open", "vibe.scroll.down", "vibe.attention", "vibe.menu", "vibe.close"]}
+                />
               </div>
             )
           : layer === "read"
@@ -1194,6 +1370,9 @@ export function VibeStage({
 
       {menuOpen
         ? <VibeMenu onClose={closeMenu} rows={menuRows} title={t("menu.title")} />
+        : null}
+      {addMenuOpen
+        ? <VibeMenu onClose={() => setAddMenuOpen(false)} rows={addMenuRows} title={t("emptyTile")} />
         : null}
       {/* The key self-check: a read-only readout for filling in the remote-control matrix
           (`VIBE-REMOTE-KEYS.md`). It is not a command and consumes nothing — see

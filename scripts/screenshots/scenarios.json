@@ -2623,6 +2623,70 @@
             "shot": "d-vibe-column-stays-closed.png"
           }
         ]
+      },
+      "vibe-add-tile": {
+        "url": "http://localhost:5299/shot/?pinned=th_data&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "JSON.stringify({cells: [...document.querySelectorAll('[data-vibe-cell]')].length, tile: !!document.querySelector('[data-vibe-add-slot]'), cols: document.querySelector('.grid') ? getComputedStyle(document.querySelector('.grid')).gridTemplateColumns : null})"
+          },
+          {
+            "eval": "(() => {const tile = document.querySelector('[data-vibe-add-slot]');const grid = document.querySelector('.grid');return JSON.stringify({tile: !!tile,tileText: tile ? tile.textContent : null,cells: document.querySelectorAll('[data-vibe-cell]').length,columns: grid ? getComputedStyle(grid).gridTemplateColumns.split(' ').length : null,tileColumn: tile ? getComputedStyle(tile).gridColumnStart : null,});})()"
+          },
+          {
+            "shot": "d-vibe-add-tile.png"
+          },
+          {
+            "eval": "(function(){window.dispatchEvent(new KeyboardEvent('keydown',{key:'4',code:'Digit4',bubbles:true,cancelable:true}));return document.querySelector('[data-vibe-focused]')?.getAttribute('data-vibe-focused');})()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => {const tile = document.querySelector('[data-vibe-add-slot]');const grid = document.querySelector('.grid');return JSON.stringify({tile: !!tile,tileText: tile ? tile.textContent : null,cells: document.querySelectorAll('[data-vibe-cell]').length,columns: grid ? getComputedStyle(grid).gridTemplateColumns.split(' ').length : null,tileColumn: tile ? getComputedStyle(tile).gridColumnStart : null,});})()"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "JSON.stringify({rows: [...document.querySelectorAll('[data-vibe-menu-row]')].map(r => r.getAttribute('data-vibe-menu-row')), title: document.querySelector('[role=\"menu\"] [aria-label], [role=menu]')?.getAttribute('aria-label') ?? null})"
+          },
+          {
+            "shot": "d-vibe-add-menu.png"
+          }
+        ]
+      },
+      "vibe-pages": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_fig,th_longformer,th_ablation,th_sc,th_temp,th_chat1,th_chat2,th_chat3,th_review_a,th_review_b,th_review_b1&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "JSON.stringify((() => ({cells: document.querySelectorAll('[data-vibe-cell]').length,page: document.querySelector('[data-vibe-page]')?.textContent ?? null,}))())"
+          },
+          {
+            "shot": "d-vibe-page-one.png"
+          },
+          {
+            "eval": "(function(){const mac=/Mac/i.test(navigator.platform||navigator.userAgent);window.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',code:'ArrowRight',altKey:true,bubbles:true,cancelable:true}));return 'next page';})()"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "JSON.stringify((() => ({cells: document.querySelectorAll('[data-vibe-cell]').length,page: document.querySelector('[data-vibe-page]')?.textContent ?? null,}))())"
+          },
+          {
+            "shot": "d-vibe-page-two.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",

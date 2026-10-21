@@ -102,6 +102,10 @@
       "scroll": {
         "up": "Scroll this conversation up",
         "down": "Scroll this conversation down"
+      },
+      "page": {
+        "previous": "Previous page of the grid",
+        "next": "Next page of the grid"
       }
     },
     "palette": {
