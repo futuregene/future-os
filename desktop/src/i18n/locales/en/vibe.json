@@ -37,7 +37,9 @@
     "approval": "Approval",
     "approvalHint": "Applies to every conversation, not just this cell",
     "panel": "Right column",
-    "panelHint": "Automatic follows the window; pinned stays for this conversation"
+    "panelHint": "Automatic follows the window; pinned stays for this conversation",
+    "add": "Add a conversation",
+    "addHint": "Adding pins it: it appears here and in the sidebar's pinned section"
   },
   "attention": {
     "badge": "{{count}} need you",

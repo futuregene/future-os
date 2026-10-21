@@ -127,6 +127,11 @@ pub fn map_connection_error(error: future_rpc::connection::ConnectionError) -> c
                 reason: error.to_string(),
             }
         }
+        // A held instance lock is not a fault: the holder owns the Agent and the
+        // caller has to wait for it. Typed so supervision never reads the string.
+        future_rpc::connection::ConnectionError::InstanceBusy(_) => {
+            crate::Error::AgentBusy(error.to_string())
+        }
         _ => crate::Error::AgentUnavailable(error.to_string()),
     }
 }

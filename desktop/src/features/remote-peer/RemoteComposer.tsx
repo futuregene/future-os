@@ -17,7 +17,7 @@ import { RemoteApprovalMenu } from "./RemoteApprovalMenu";
 import { buildRemoteSlashMenu, insertRemoteSkill, remoteSlashItems, slashQuery, withoutSlashWord } from "./remoteCommands";
 import { clearRemoteComposerDraft, loadRemoteComposerDraft, saveRemoteComposerDraft } from "./remoteComposerDraft";
 import { abortRemoteRun, listRemoteInstalledSkills, uploadRemoteFile } from "./remotePeerClient";
-import { getRemoteOutbox, isRecoverableSendError, sendRemotePrompt } from "./remotePromptOutbox";
+import { getRemoteOutbox, isRecoverableSendError, recoverRemoteOutbox, sendRemotePrompt } from "./remotePromptOutbox";
 import { RemoteSlashMenu } from "./RemoteSlashMenu";
 
 /** How many files one paste may stage. The rest are reported, not silently dropped. */
@@ -284,15 +284,15 @@ export function RemoteComposer({
   useEffect(() => {
     if (!peer?.connected)
       return;
+    // From the module, not a lazy `import()` of it: the composer and the host
+    // shell both import the outbox statically, so a dynamic import cannot move
+    // it into another chunk and only earns an INEFFECTIVE_DYNAMIC_IMPORT warning.
+    // The flag still guards the awaited recovery, which can settle after unmount.
     let active = true;
-    import("./remotePromptOutbox").then(({ recoverRemoteOutbox, getRemoteOutbox }): void => {
+    void recoverRemoteOutbox(desktopId, sessionId).then(() => {
       if (!active)
         return;
-      void recoverRemoteOutbox(desktopId, sessionId).then(() => {
-        const outbox = getRemoteOutbox(desktopId, sessionId);
-        if (active)
-          setPendingPrompt(outbox.prompt);
-      });
+      setPendingPrompt(getRemoteOutbox(desktopId, sessionId).prompt);
     });
     return () => {
       active = false;

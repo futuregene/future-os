@@ -179,6 +179,39 @@ impl GrpcClient {
         mpsc::UnboundedReceiver<AgentEvent>,
         watch::Receiver<bool>,
     ) {
+        let built = Self::build(addr);
+        built.0.start_tasks();
+        built
+    }
+
+    /// Create the client and its channels without starting the stream manager
+    /// or the heartbeat — [`Self::new`] is this plus [`Self::start_tasks`].
+    ///
+    /// Test-only, and it exists for one ordering: the manager's first act on an
+    /// empty session is to reach the idle branch, so a test that arms a gate at
+    /// the top of that branch must do it *before* the task can run. Started
+    /// from `new()` on a multi-thread runtime the task can reach the branch
+    /// first, take an empty slot, and park on a wakeup that never comes —
+    /// making the test's own `arrive` time out. That is how
+    /// `manager_loop_top_stop_with_idle_manager` failed.
+    #[cfg(test)]
+    fn new_dormant(
+        addr: &str,
+    ) -> (
+        GrpcClient,
+        mpsc::UnboundedReceiver<AgentEvent>,
+        watch::Receiver<bool>,
+    ) {
+        Self::build(addr)
+    }
+
+    fn build(
+        addr: &str,
+    ) -> (
+        GrpcClient,
+        mpsc::UnboundedReceiver<AgentEvent>,
+        watch::Receiver<bool>,
+    ) {
         let (event_tx, events) = mpsc::unbounded_channel();
         let (conn_tx, connection_changes) = watch::channel(false);
         let inner = Arc::new(Inner {
@@ -213,13 +246,9 @@ impl GrpcClient {
             backoff_ms: AtomicU64::new(RECONNECT_BACKOFF_BASE_MS),
         });
 
-        // Stream manager: subscribes to the current session's event stream,
-        // reconnects on failure (1 s tryConnect polling), restarts when the
-        // session changes or `connect_events` is called.
-        spawn_stream_manager(inner.clone());
-        // Heartbeat: detects silent disconnections (agent SIGKILL'd).
-        spawn_heartbeat(inner.clone());
-
+        // The stream manager and the heartbeat are started by the caller:
+        // `new()` starts them here, a test that must arm a gate before either
+        // task can run constructs with `new_dormant()` and starts them itself.
         (
             GrpcClient {
                 inner,
@@ -228,6 +257,18 @@ impl GrpcClient {
             events,
             connection_changes,
         )
+    }
+
+    /// Start the background tasks `build` leaves off: the stream manager
+    /// (subscribes to the current session's stream, reconnects on failure,
+    /// restarts on a session change or `connect_events`) and the heartbeat
+    /// (detects silent disconnections — agent SIGKILL'd).
+    ///
+    /// Not test-gated: `new()` is the only production caller, and the split
+    /// exists so a test can arm a gate in between (see `new_dormant`).
+    fn start_tasks(&self) {
+        spawn_stream_manager(self.inner.clone());
+        spawn_heartbeat(self.inner.clone());
     }
 
     /// Keep the CLI opt-out across /new, switch, fork and agent reconnects.
@@ -1884,9 +1925,20 @@ mod tests {
         wait_conn(conn, true, "never connected").await;
     }
 
-    /// Wait until `conn` reads `want` (bounded).
+    /// Bound on a connect/disconnect state wait in these tests.
+    ///
+    /// A fixture must not assert the host's speed. Measured 2026-10-19 on a
+    /// loaded host (32-core, 8 concurrent whole-suite copies, load 86), the
+    /// *same* handshake took 0.91 s in one copy and 14.96 s in another, so the
+    /// former 10 s bound sat inside the spread: `subscribe_failure_modes` red
+    /// with `never connected: Elapsed(())` here, and again on `main` and on
+    /// PR #1283's head on 2026-10-21. 60 s is 4x that worst value — a real
+    /// regression still reports, it just takes longer to say so.
+    const CONNECT_STATE_BOUND: Duration = Duration::from_secs(60);
+
+    /// Wait until `conn` reads `want` (bounded by [`CONNECT_STATE_BOUND`]).
     async fn wait_conn(conn: &mut watch::Receiver<bool>, want: bool, what: &str) {
-        tokio::time::timeout(Duration::from_secs(10), conn.wait_for(|v| *v == want))
+        tokio::time::timeout(CONNECT_STATE_BOUND, conn.wait_for(|v| *v == want))
             .await
             .expect(what)
             .expect("conn channel closed");
@@ -1938,7 +1990,7 @@ mod tests {
     /// event (`if (connectWatchdog) { clearTimeout(...) }`), never re-arms it.
     /// A port that re-armed the watchdog on every event flapped the
     /// connection every 5 s on an idle TUI (PTY smoke test found:
-    /// "Connection to agent lost — retrying every 1s..." right after the
+    /// "Connection to agent lost — reconnecting; …" right after the
     /// welcome screen, before any input).
     #[tokio::test(flavor = "multi_thread")]
     async fn idle_stream_does_not_flap_after_first_data() {
@@ -3427,9 +3479,10 @@ mod tests {
     #[tokio::test]
     async fn session_poke_between_empty_read_and_wait_is_not_lost() {
         let (tx, addr) = spawn_eventful_mock().await;
-        let (client, mut events, _conn) = GrpcClient::new(&addr);
+        let (client, mut events, _conn) = GrpcClient::new_dormant(&addr);
         let barrier = Arc::new(tokio::sync::Barrier::new(2));
         *client.inner.before_empty_wait.lock() = Some(barrier.clone());
+        client.start_tasks();
         barrier.wait().await;
         client.set_current_session_id("s1");
         barrier.wait().await;
@@ -3970,9 +4023,12 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn manager_loop_top_stop_with_idle_manager() {
-        let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
+        // Dormant first: the manager must not observe the idle branch before
+        // the gate is armed, or it takes an empty slot and parks.
+        let (client, _events, _conn) = GrpcClient::new_dormant("127.0.0.1:1");
         let gate = Arc::new(tokio::sync::Barrier::new(2));
         *client.inner.before_empty_wait.lock() = Some(gate.clone());
+        client.start_tasks();
         arrive(&gate).await;
         client.inner.stop.store(true, Ordering::SeqCst);
         client.connect_events();
@@ -4145,9 +4201,10 @@ mod tests {
 
     #[tokio::test]
     async fn disconnect_between_idle_check_and_wait_releases_the_client() {
-        let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
+        let (client, _events, _conn) = GrpcClient::new_dormant("127.0.0.1:1");
         let gate = Arc::new(tokio::sync::Barrier::new(2));
         *client.inner.before_empty_wait.lock() = Some(gate.clone());
+        client.start_tasks();
         arrive(&gate).await;
         client.disconnect();
         arrive(&gate).await;

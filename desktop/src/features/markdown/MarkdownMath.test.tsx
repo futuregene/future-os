@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { loadKatex } from "./lazyKatex";
 import { MarkdownContent } from "./MarkdownContent";
 
 vi.mock("../../integrations/storage/markdownReferences", () => ({
@@ -20,6 +21,13 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 describe("math rendering in MarkdownContent", () => {
+  // KaTeX arrives as its own chunk on the first formula (`./lazyKatex`). These
+  // assertions are about the markup it produces, so wait for it rather than
+  // measuring the placeholder the first paint shows.
+  beforeAll(async () => {
+    await loadKatex();
+  });
+
   it("renders block-level $$...$$ math as a KaTeX display element", () => {
     const html = renderToStaticMarkup(
       <MarkdownContent content={"$$L = -\\left[y \\log p + (1-y)\\log(1-p)\\right]$$"} />,

@@ -23,7 +23,122 @@ pub struct AgentStatus {
 pub fn start_agent_supervision<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<(), crate::AppError> {
-    ensure_agent_running(app)
+    ensure_agent_running(app)?;
+    spawn_agent_watchdog(app.clone());
+    Ok(())
+}
+
+/// Keep watching the Agent for the life of the app.
+///
+/// The launch above happens once, and the Agent may live in another process (an
+/// external `future agent`, or a headless host that started it). When it dies,
+/// the window's status page and every RPC would otherwise fail until the user
+/// restarts the app. This notices the absence, starts a replacement when nobody
+/// holds the instance lock, and waits for whoever does — bounded, and rate
+/// limited so an Agent the host keeps killing cannot become a restart loop.
+fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
+    #[cfg(test)]
+    {
+        let _ = app;
+    }
+    #[cfg(not(test))]
+    crate::runtime::spawn_native(move || {
+        use future_rpc::supervision::{
+            probe_local_agent, restart_delay, LocalAgentState, RestartBudget,
+        };
+        use std::time::{Duration, Instant};
+
+        const PROBE_INTERVAL: Duration = Duration::from_secs(3);
+        const PROBE_CONNECT: Duration = Duration::from_millis(400);
+        const PROBE_HANDSHAKE: Duration = Duration::from_secs(2);
+
+        let runtime = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                eprintln!("FutureOS Agent watchdog unavailable: {error}");
+                return;
+            }
+        };
+        let address = crate::agent_bridge::raw_agent_addr();
+        let mut budget = RestartBudget::new();
+        let mut lost_notice: Option<Instant> = None;
+        // When the Agent last became reachable again. The restart budget is only
+        // cleared once it stays reachable, so an Agent the host keeps killing
+        // cannot reset the breaker on every lap.
+        let mut reachable_since: Option<Instant> = None;
+        loop {
+            std::thread::sleep(PROBE_INTERVAL);
+            // A shutdown in progress owns the decision: never race it.
+            if crate::desktop_shutdown::is_stopping() {
+                return;
+            }
+            match runtime.block_on(probe_local_agent(&address, PROBE_CONNECT, PROBE_HANDSHAKE)) {
+                LocalAgentState::Attached => {
+                    let now = Instant::now();
+                    let since = *reachable_since.get_or_insert(now);
+                    if future_rpc::supervision::Attached::of(since, now)
+                        == future_rpc::supervision::Attached::Stable
+                    {
+                        budget.reset();
+                    }
+                    lost_notice = None;
+                }
+                LocalAgentState::Busy(detail) => {
+                    if lost_notice.is_none_or(|at| at.elapsed() >= Duration::from_secs(30)) {
+                        eprintln!(
+                            "FutureOS: waiting for the Agent another process is starting. {detail}"
+                        );
+                        lost_notice = Some(Instant::now());
+                    }
+                }
+                LocalAgentState::Blocked(reason) => {
+                    if lost_notice.is_none_or(|at| at.elapsed() >= Duration::from_secs(30)) {
+                        eprintln!("FutureOS: cannot use the Agent: {reason}");
+                        lost_notice = Some(Instant::now());
+                    }
+                }
+                LocalAgentState::Startable => {
+                    reachable_since = None;
+                    let now = Instant::now();
+                    if !budget.allow(now) {
+                        if lost_notice.is_none_or(|at| at.elapsed() >= Duration::from_secs(30)) {
+                            eprintln!(
+                                "FutureOS: the Agent keeps exiting right after it starts; not \
+                                 restarting it for {:?}. Check {}.",
+                                budget.open_for(now).unwrap_or_default(),
+                                future_host::environment::log_file_path().display()
+                            );
+                            lost_notice = Some(now);
+                        }
+                        continue;
+                    }
+                    // A host that only attached must let go first, or the
+                    // stale `Ready` makes the launch a no-op.
+                    crate::agent_host::host().detach_attached();
+                    match ensure_agent_running(&app) {
+                        Ok(()) => {
+                            eprintln!("FutureOS: the Agent was gone; started a new one.");
+                            // Not a success yet: only a lasting recovery clears
+                            // the budget (see `reachable_since` above).
+                            reachable_since = None;
+                            lost_notice = None;
+                        }
+                        Err(error) => {
+                            if lost_notice.is_none_or(|at| at.elapsed() >= Duration::from_secs(30))
+                            {
+                                eprintln!("FutureOS: could not start an Agent: {error}");
+                                lost_notice = Some(Instant::now());
+                            }
+                            std::thread::sleep(restart_delay(2));
+                        }
+                    }
+                }
+            }
+        }
+    });
 }
 pub fn ensure_agent_running<R: tauri::Runtime>(
     _app: &tauri::AppHandle<R>,
@@ -72,6 +187,13 @@ pub async fn agent_status() -> AgentStatus {
         }
         crate::agent_host::Phase::Failed(error) => {
             status.error = Some(error);
+        }
+        // A start that yielded to another process ends in `Stopped`, not
+        // `Failed`. The page still has to name that process rather than
+        // substitute the transport error a probe of the unserved endpoint
+        // produces.
+        crate::agent_host::Phase::Stopped => {
+            status.error = crate::agent_host::host().yield_reason();
         }
         _ => {}
     }

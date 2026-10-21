@@ -163,6 +163,125 @@
   --shadow-sidebar-floating: 6px 0 16px rgba(0, 0, 0, 0.3);
 }
 
+/* Load-older button entrance: a quick pop with a small overshoot bounce so the
+   "pause + confirm" affordance is unmissable when it settles at the top. */
+@keyframes pop-in {
+  0% {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.96);
+  }
+  70% {
+    opacity: 1;
+    transform: translateY(1px) scale(1.02);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-pop-in {
+  animation: pop-in 0.24s ease-out both;
+}
+
+/* Skills nav-entry attention pulse: fired when the user dismisses the
+   skill-guide banner — three quick accent rings so the notice's "reopen from
+   the Skills page" hint visibly points at the entry (steady accent tint stays
+   until the host clears the state). */
+@keyframes skill-entry-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+  50% {
+    box-shadow: 0 0 0 3px var(--color-accent-pulse);
+  }
+}
+
+.animate-skill-entry-pulse {
+  animation: skill-entry-pulse 0.9s ease-in-out 3;
+}
+
+/* Keep the selection toolbar on one row without sacrificing its checkbox
+   label. At narrow rail widths the two self-explanatory actions collapse to
+   icon buttons; their accessible names and title tooltips remain available. */
+.activity-rail-selection-toolbar {
+  container: activity-rail-selection-toolbar / inline-size;
+}
+
+@container activity-rail-selection-toolbar (max-width: 279px) {
+  .activity-rail-selection-action {
+    width: 2rem;
+    padding-inline: 0;
+  }
+
+  .activity-rail-selection-action-label {
+    display: none;
+  }
+}
+
+/* In-thread search hits, painted with the CSS Custom Highlight API
+   (`ThreadSearch.tsx` creates the registries these name). */
+::highlight(thread-search-match) {
+  color: var(--color-search-ink);
+  background: var(--color-search-match);
+}
+
+::highlight(thread-search-current) {
+  color: var(--color-search-ink);
+  background: var(--color-search-current);
+}
+
+/* ── Base rendition ─────────────────────────────────────────────────────────
+   Everything that is *not* a color: the font stack and its rendering, the
+   reader's text size, and the light shadows. `:root.dark` above outranks this
+   block by specificity, so the dark values win regardless of source order, and
+   the palette blocks below only reassign colors. */
+:root {
+  color-scheme: light;
+  color: var(--color-ink);
+  background: var(--color-canvas);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB",
+    "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC",
+    "Noto Sans SC", "Source Han Sans SC", "WenQuanYi Micro Hei", ui-sans-serif,
+    system-ui, sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  /* Without these, macOS paints subpixel-antialiased glyphs: every label reads
+     markedly heavier than the design intends (`text-sm font-medium` most of
+     all), which is how the rail's rows drifted after the type scale was
+     restyled. */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* Reader text size (`lib/fontSize.ts` writes this multiplier: 0.85 / 1 /
+     1.15 / 1.35). Every type token is its design-time size times the scale, so
+     `text-*` grows while spacing and widths — which read `--spacing` and px
+     values — stay fixed. The paired `--text-*--line-height` values are
+     unitless ratios (or `normal`), so they follow their font size
+     automatically. `@theme` declares the design-time sizes these override. */
+  --app-font-scale: 1;
+  --text-3xs: calc(0.625rem * var(--app-font-scale));
+  --text-2xs: calc(0.6875rem * var(--app-font-scale));
+  --text-13: calc(0.8125rem * var(--app-font-scale));
+  --text-xs: calc(0.75rem * var(--app-font-scale));
+  --text-sm: calc(0.875rem * var(--app-font-scale));
+  --text-base: calc(1rem * var(--app-font-scale));
+  --text-lg: calc(1.125rem * var(--app-font-scale));
+  --text-xl: calc(1.25rem * var(--app-font-scale));
+  --text-2xl: calc(1.5rem * var(--app-font-scale));
+  --text-3xl: calc(1.875rem * var(--app-font-scale));
+  --text-4xl: calc(2.25rem * var(--app-font-scale));
+
+  /* Light shadows (the dark overrides live in `:root.dark` above). */
+  --shadow-panel:
+    0 1px 2px rgba(23, 32, 51, 0.06), 0 12px 28px rgba(23, 32, 51, 0.07);
+  --shadow-dialog: 0 24px 60px rgba(15, 23, 42, 0.18);
+  --shadow-sidebar-divider: inset -8px 0 16px -16px rgba(23, 32, 51, 0.15);
+  --shadow-sidebar-floating: 6px 0 16px rgba(23, 32, 51, 0.05);
+}
+
 /* ── Theme palettes ─────────────────────────────────────────────────────────
    Appearance has two independent axes:
 
