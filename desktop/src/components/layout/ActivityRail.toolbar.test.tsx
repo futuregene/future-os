@@ -97,7 +97,7 @@ async function render(node: ReactElement) {
   return { container, root };
 }
 
-function band(container: HTMLElement, id: "rail-view-band" | "rail-list-tools") {
+function band(container: HTMLElement, id: "rail-search-band" | "rail-view-band" | "rail-list-actions") {
   return container.querySelector<HTMLElement>(`[data-testid="${id}"]`);
 }
 
@@ -130,10 +130,54 @@ function Rail(base: ComponentProps<typeof ActivityRail>) {
 
 const TABS = ["Workspaces", "Chats", "Recent"] as const;
 
+/** Switch to a tab the way a reader does. */
+async function showTab(container: HTMLElement, tab: typeof TABS[number]) {
+  act(() => [...container.querySelectorAll<HTMLButtonElement>("[data-testid^='rail-view-']")]
+    .find(button => button.title === tab)!
+    .click());
+  await flushAsync();
+}
+
 describe("the rail's bands", () => {
   beforeEach(() => {
     localStorage.clear();
     document.body.innerHTML = "";
+  });
+
+  /**
+   * The row order, top to bottom: the filter, then which list, then the list's
+   * own actions.
+   *
+   * The search and the machine picker sit *above* the list switch — above the
+   * workspace row — directly over the list they narrow, and that is where they
+   * have always been. A regression here is a control that filters a list from
+   * underneath the list's own switch, or a switch that no longer sits between the
+   * filter and the list.
+   */
+  it("stacks the filter above the list switch, and the list's actions below it", async () => {
+    const p = props();
+    p.remotePeers = [peer];
+    p.onChangeDeviceFilter = vi.fn();
+    p.onManageDesktops = vi.fn();
+    const { container } = await render(<Rail {...p} />);
+
+    const search = band(container, "rail-search-band")!;
+    const view = band(container, "rail-view-band")!;
+    const actions = band(container, "rail-list-actions")!;
+    expect(search).not.toBeNull();
+    expect(view).not.toBeNull();
+    expect(actions).not.toBeNull();
+
+    // In that order in the document: the filter, the switch, the actions.
+    expect(search.compareDocumentPosition(view) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(view.compareDocumentPosition(actions) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // And all three above the list they describe.
+    const list = container.querySelector("[data-activity-rail-scroll]")!;
+    expect(actions.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    // The machine picker and the search share the top row.
+    expect(search.contains(container.querySelector("button[aria-label='All devices']"))).toBe(true);
+    expect(search.contains(searchField(container))).toBe(true);
   });
 
   /**
@@ -144,28 +188,20 @@ describe("the rail's bands", () => {
    */
   it.each(TABS)("keeps the switch's band to the switch alone (%s)", async (tab) => {
     const { container } = await render(<Rail {...props()} />);
-    act(() => [...container.querySelectorAll<HTMLButtonElement>("[data-testid^='rail-view-']")]
-      .find(button => button.title === tab)!
-      .click());
-    await flushAsync();
+    await showTab(container, tab);
     expect(container.querySelector<HTMLButtonElement>("[data-testid='rail-view-switch'] button[aria-pressed='true']")!.title).toBe(tab);
 
     const viewBand = band(container, "rail-view-band")!;
     expect(viewBand.querySelector("[data-testid='rail-view-switch']")).not.toBeNull();
     // Nothing that belongs to the list: no search field, no list menu, no menu
-    // trigger of any kind.
+    // trigger of any kind. The filter has its own row above.
     expect(viewBand.querySelector("input")).toBeNull();
     expect(viewBand.querySelector("button[aria-haspopup='menu']")).toBeNull();
-    // The two lists that have a boundary keep their own menu — otherwise those
-    // assertions would be about a control that is not on screen at all. The
-    // recent list has none (see the "boundary" test below).
-    expect(listMenu(container, tab) === null).toBe(tab === "Recent");
   });
 
-  it("keeps the search field on screen, in the list's own band, with no interaction", async () => {
+  it("keeps the search field on screen, above the switch, with no interaction", async () => {
     const { container } = await render(<Rail {...props()} />);
-    const tools = band(container, "rail-list-tools")!;
-    const field = searchField(tools);
+    const field = searchField(band(container, "rail-search-band")!);
     expect(field).not.toBeNull();
     // Drain the click-into-a-mode path: the field used to appear only after a
     // glyph was clicked. If it is here with nothing done, that path is gone.
@@ -173,81 +209,90 @@ describe("the rail's bands", () => {
     expect(band(container, "rail-view-band")!.contains(field)).toBe(false);
   });
 
-  /**
-   * One row holds the search field and the list's own controls.
-   *
-   * The row is where the field lives (it filters the list drawn under it), and
-   * the list's menu — where the list has one — sits at that row's right end.
-   */
-  it.each(TABS)("keeps the search field in the list's row (%s)", async (tab) => {
+  it.each(TABS)("filters the list whose switch sits under it (%s)", async (tab) => {
     const { container } = await render(<Rail {...props()} />);
-    act(() => [...container.querySelectorAll<HTMLButtonElement>("[data-testid^='rail-view-']")]
-      .find(button => button.title === tab)!
-      .click());
-    await flushAsync();
+    await showTab(container, tab);
+    // The filter is above the switch in every tab — it narrows whichever list is
+    // drawn, so it cannot be a control of one of them.
+    expect(searchField(container)).not.toBeNull();
+  });
 
-    const tools = band(container, "rail-list-tools")!;
-    expect(tools.contains(searchField(tools))).toBe(true);
+  /**
+   * The list's own actions: on the two lists that have a boundary, and not on the
+   * recent one.
+   *
+   * "Everything, by time" is not a batch a reader can picture — the workspace and
+   * the chats list are where a reader goes to delete something — so the recent tab
+   * draws no trigger rather than one that promises a selection it cannot
+   * describe. With no batch and nothing to add to that list, its action row is not
+   * drawn at all.
+   */
+  it.each(TABS)("offers the list's own menu only where the list has a boundary (%s)", async (tab) => {
+    const { container } = await render(<Rail {...props()} />);
+    await showTab(container, tab);
 
-    const trigger = listMenu(tools, tab);
+    const trigger = listMenu(container, tab);
     if (tab === "Recent") {
       expect(trigger).toBeNull();
+      expect(band(container, "rail-list-actions")).toBeNull();
     }
     else {
       expect(trigger).not.toBeNull();
-      // At the row's right end, after the field.
-      expect(tools.lastElementChild!.contains(trigger)).toBe(true);
+      const actions = band(container, "rail-list-actions")!;
+      expect(actions.contains(trigger)).toBe(true);
+      // At the row's right end.
+      expect(actions.lastElementChild!.contains(trigger)).toBe(true);
     }
   });
 
-  it("orders the band: machine picker, search, the tab's create control, then the menu", async () => {
+  it("orders the action row: the tab's create control, then the list's menu", async () => {
     const p = props();
     p.remotePeers = [peer];
     p.onChangeDeviceFilter = vi.fn();
     p.onManageDesktops = vi.fn();
     const { container } = await render(<Rail {...p} />);
 
-    const tools = band(container, "rail-list-tools")!;
-    const children = Array.from(tools.children);
-    expect(children[0]!.textContent).toContain("All devices");
-    expect(children[1]!.contains(searchField(tools))).toBe(true);
-    // The workspace tab's "+" (new workspace) sits between them and the menu.
-    // The "+" is the band's own item, not something wrapped around one.
-    expect(children[2]!.getAttribute("aria-label")).toBe("New workspace");
-    expect(children[3]!.contains(listMenu(tools, "Workspaces"))).toBe(true);
+    const actions = band(container, "rail-list-actions")!;
+    const children = Array.from(actions.children);
+    // The workspace tab's "+" (new workspace) first, then the menu.
+    expect(children[0]!.getAttribute("aria-label")).toBe("New workspace");
+    expect(children[1]!.contains(listMenu(actions, "Workspaces"))).toBe(true);
   });
 
-  it("drops the list's band while a batch is being selected", async () => {
+  it("drops the list's action row while a batch is being selected", async () => {
     const { container } = await render(<Rail {...props()} />);
-    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Workspaces list actions']")!.click());
+    act(() => listMenu(container, "Workspaces")!.click());
     await flushAsync();
     act(() => [...container.querySelectorAll<HTMLButtonElement>("button")]
       .find(button => button.textContent?.includes("Select conversations in “Workspaces”"))!
       .click());
     await flushAsync();
 
-    // The selection toolbar replaces the list's controls; the switch stays, since
-    // which list the batch covers is still the question it answers.
-    expect(band(container, "rail-list-tools")).toBeNull();
+    // The selection toolbar replaces them; the switch and the filter row stay —
+    // which list the batch covers, and which machine's rows, are still asked.
+    expect(band(container, "rail-list-actions")).toBeNull();
     expect(band(container, "rail-view-band")).not.toBeNull();
   });
 
   /**
-   * The recent list draws no list-wide menu, and keeps the rest of its row.
+   * The recent list draws no list-wide menu, and keeps the rows above it.
    *
    * A batch is "the rows under this heading" — a workspace, the chats list. This
    * list's only boundary is time, so a selection here would mean every
    * conversation on the machine, which is not a batch a reader can picture. The
-   * row itself stays, because the search field lives in it: narrowing the recent
-   * list is exactly what a reader does with it.
+   * search row stays where it is: narrowing the recent list is exactly what a
+   * reader does with it, and its position is unchanged by this.
    */
-  it("draws no menu on the recent list, and keeps its search field", async () => {
+  it("draws no menu on the recent list, and keeps the search where it is", async () => {
     const { container } = await render(<Rail {...props()} />);
-    act(() => container.querySelector<HTMLButtonElement>("[data-testid='rail-view-recent']")!.click());
-    await flushAsync();
+    await showTab(container, "Recent");
 
     expect(listMenu(container, "Recent")).toBeNull();
-    expect(searchField(container)).not.toBeNull();
+    const search = band(container, "rail-search-band")!;
+    expect(searchField(search)).not.toBeNull();
+    // Still above the switch, not moved down into the gap the menu left.
+    expect(search.compareDocumentPosition(band(container, "rail-view-band")!) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
   });
 
   /**
