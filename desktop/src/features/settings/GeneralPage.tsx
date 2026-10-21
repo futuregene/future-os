@@ -9,6 +9,7 @@ import { automaticApprovalAvailable, effectiveApprovalTier } from "../../integra
 import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
 import { FONT_SIZES, setFontSize, useFontSize } from "../../lib/fontSize";
 import { isLinux, isWindows } from "../../lib/platform";
+import { setFinalAnswerOnly, useFinalAnswerOnly } from "../../lib/replyDisplay";
 import { setThemeMode, THEME_MODES, useThemeMode } from "../../lib/theme";
 import { linuxUnavailableReasonKey } from "./linuxSandboxStatus";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
@@ -41,6 +42,7 @@ export function GeneralPage({
   const { t } = useTranslation("settings");
   const themeMode = useThemeMode();
   const fontSize = useFontSize();
+  const finalAnswerOnly = useFinalAnswerOnly();
   const sandboxAvailability = useSandboxAvailability();
   const autoAvailable = automaticApprovalAvailable(futureSessionStatus);
   const visibleApprovalTier = effectiveApprovalTier(approvalTier, futureSessionStatus);
@@ -98,6 +100,12 @@ export function GeneralPage({
               </option>
             ))}
           </Select>
+        </SettingsRow>
+        <SettingsRow
+          title={t("finalAnswerOnly.title")}
+          description={t("finalAnswerOnly.description")}
+        >
+          <Switch checked={finalAnswerOnly} label={t("finalAnswerOnly.title")} onChange={setFinalAnswerOnly} />
         </SettingsRow>
         <SettingsRow
           title={t("approvalTier.title")}

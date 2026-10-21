@@ -31,6 +31,10 @@
     },
     "inspectRun": "点击查看运行详情"
   },
+  "process": {
+    "show": "查看过程",
+    "hide": "收起过程"
+  },
   "thread": {
     "loading": "正在加载 FutureOS 对话…",
     "noActiveThread": "没有活动对话。",

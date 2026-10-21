@@ -35,6 +35,10 @@
     },
     "inspectRun": "Click to inspect run"
   },
+  "process": {
+    "show": "Show process",
+    "hide": "Hide process"
+  },
   "thread": {
     "loading": "Loading FutureOS thread...",
     "noActiveThread": "No active thread.",

@@ -1,6 +1,6 @@
 import type { MessageSegment } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
-import { buildReplyBlocks, replyTailBlock } from "./replyBlocks";
+import { buildReplyBlocks, replyTailBlock, splitFinalAnswer } from "./replyBlocks";
 
 const thought: MessageSegment = { id: "thought", kind: "thinking", text: "Reasoning" };
 const tool: MessageSegment = { id: "tool", kind: "activity", item: { id: "tool", kind: "read", status: "completed", target: "file.ts" } };
@@ -49,6 +49,45 @@ it("folds tools-only and thoughts-only sequences and handles an empty reply", ()
   expect(buildReplyBlocks([])).toEqual([]);
   expect(buildReplyBlocks([tool, failed])).toEqual([{ kind: "steps", segments: [tool, failed] }]);
   expect(buildReplyBlocks([thought, thought])).toEqual([{ kind: "steps", segments: [thought, thought] }]);
+});
+
+describe("folding a settled reply onto its final answer", () => {
+  const split = (segments: MessageSegment[]) => splitFinalAnswer(buildReplyBlocks(segments));
+  const answerIds = (result: ReturnType<typeof split>) => result.answer.map(block => block.kind === "steps" ? `steps:${block.segments[0]!.id}` : block.segment.id);
+
+  it("keeps the last prose and folds everything before it", () => {
+    const early = { id: "early", kind: "text", text: "Looking around" } as MessageSegment;
+    const answer = { id: "answer", kind: "text", text: "It works" } as MessageSegment;
+    const result = split([early, thought, tool, answer]);
+    expect(answerIds(result)).toEqual(["answer"]);
+    expect(result.process.map(block => (block.kind === "steps" ? "steps" : block.segment.id))).toEqual(["early", "steps"]);
+  });
+
+  it("leaves a reply alone when its answer already comes first", () => {
+    const result = split([prose, thought, tool]);
+    expect(answerIds(result)).toEqual(["text", "steps:thought"]);
+    expect(result.process).toEqual([]);
+  });
+
+  it("has no answer to isolate when the reply holds no prose", () => {
+    expect(split([thought, tool]).process).toEqual([]);
+    expect(answerIds(split([thought, tool]))).toEqual(["steps:thought"]);
+    expect(split([thought]).process).toEqual([]);
+    expect(split([]).process).toEqual([]);
+  });
+
+  it("ignores blank prose — an empty slice is not an answer", () => {
+    const blank = { id: "blank", kind: "text", text: "  \n" } as MessageSegment;
+    const result = split([prose, blank]);
+    expect(answerIds(result)).toEqual(["text", "blank"]);
+    expect(result.process).toEqual([]);
+  });
+
+  it("keeps a trailing pause with the answer", () => {
+    const result = split([thought, tool, prose, thought]);
+    expect(answerIds(result)).toEqual(["text", "thought"]);
+    expect(result.process.map(block => (block.kind === "steps" ? "steps" : block.segment.id))).toEqual(["steps"]);
+  });
 });
 
 describe("the block a reply's tail rung lands on", () => {

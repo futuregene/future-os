@@ -19,6 +19,7 @@ Desktop-level options for the app:
 - **Skill recommendations** (on by default) — when you send a message, suggest at most one skill you don't have installed yet.
 - **Generate a title after the first answer** (on by default) — title a new conversation from its first successful answer; later answers don't retrigger it.
 - **Completion bell** — play a sound and attract the window's attention when the agent finishes.
+- **Show only the final answer** (off by default) — once a reply settles, fold its reasoning, tool calls and intermediate notes into a single **Show process** row above the answer; the work still shows while the answer streams, and the row opens it again.
 
 Reasoning starts collapsed in the conversation and can always be expanded by clicking its row. There is no separate setting to enable access.
 
