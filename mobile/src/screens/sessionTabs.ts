@@ -27,17 +27,23 @@ export function adjacentTab(tab: Tab, direction: PageDirection): Tab | null {
 }
 
 /**
- * The page a swipe opens: the neighbour, except that dragging right from the
- * leftmost page leaves the row of pages and lands on the rightmost one.
+ * The page a swipe opens. The row of pages closes into a loop.
  *
- * Swiping right from the workspaces page had no page behind it — the row simply
- * ended — and the recency page is the one a reader reaches for from there ("what
- * did I last touch"), so the row closes into a loop. Dragging the other way off
- * the rightmost page stays inert: it is a gesture with nothing behind it, not a
- * trip back to the other end.
+ * Both ends wrap: dragging left from the recency page lands on the workspaces
+ * page, dragging right from workspaces lands on the recency page. Each of those
+ * gestures had nothing behind it — the row simply ended — and each is the
+ * shortest way to the page a reader wants from there: the last things they
+ * touched from the workspace list, and the workspace list from that list of last
+ * things.
+ *
+ * A swipe always moves one page when it moves at all, so the loop never skips
+ * the middle: reaching conversations from recency is still one drag right, and
+ * reaching workspaces from conversations is still one drag right.
  */
 export function swipeTarget(tab: Tab, direction: PageDirection): Tab | null {
   const neighbour = adjacentTab(tab, direction);
   if (neighbour) return neighbour;
-  return direction === "prev" ? TABS[TABS.length - 1] ?? null : null;
+  return direction === "prev"
+    ? TABS[TABS.length - 1] ?? null
+    : TABS[0] ?? null;
 }

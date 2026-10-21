@@ -48,6 +48,14 @@ mark, so a host's conversation can be *in* the grid and still be absent from the
 attention queue (§9.5). Its own approvals do reach it, as events to that cell, and
 are answered in the cell.
 
+**Known limitation, not a backlog item**: a host's conversation cannot enter the
+attention queue or the send queue, because neither fact exists on the wire. The
+catalogue is that machine's own summary and carries no per-run outcome and no unread
+state, and a prompt to it is a different command with different preconditions. Making
+the panel show either would be a **catalogue-protocol change on the host side** —
+worth doing, but it is its own task with its own compatibility story, not something
+this panel can close by being cleverer.
+
 ## 2. Order: creation time, plus what the user moved
 
 Default order is **`createdAt` ascending** — the oldest pinned conversation in
@@ -109,11 +117,21 @@ which is why two cells become 1×2 rather than two slivers while five stay 3×2
 
 * **A short last row is left empty, not stretched.** Cell 2 is always the second
   place. The keys can override the column count (`⌘=` / `⌘-`, `⌘0` back to auto).
-* **No scrolling.** Twelve cells is the ceiling, and going past it says so
-  ("remove one, or switch the machine filter"). A grid you have to scroll is not
-  an overview.
-* A cell's 24px header — number, title, machine, run state, approval count,
-  unread dot — is outside the transcript and is what a click or `↩` targets.
+* **No scrolling; pages instead.** Twelve cells is one page, and a thirteenth pinned
+  conversation goes to page two rather than becoming unreachable — the bar says `1/2` and
+  `⌥←`/`⌥→` turn the page. Scrolling was rejected on purpose (a grid you have to scroll is
+  not an overview) and shrinking cells without limit is worse: at thirteen cells a 4×4 of
+  320px cells is unreadable.
+* A cell's 24px header — number, title, machine, run state, approval count, unread dot —
+  is outside the transcript and is what a click or `↩` targets.
+* **The empty square is the add tile.** Where the shape leaves a square free (three cells
+  are 2×2 with one empty), it holds a `+`: the ring reaches it like a cell, `↩` opens the
+  picker, and the picker's first rows are the five conversations the reader was in most
+  recently — that list answers "which one" far better than a full browser does. Its last two
+  rows are "browse every conversation…" (the machine → workspace → conversation dialog) and
+  "start a new conversation…", which leaves for the new-conversation screen and **pins what
+  is created there**. Either way, adding is pinning (§1). A full page has no free square, so
+  the menu's add row is the way in.
 * **Hover is never the only way to reach a control.** Every action a cell offers
   is reachable by the keys, because a remote has no pointer.
 
@@ -135,7 +153,7 @@ candidate. It is verified by a test, not by discipline
 | Layer | Scope | Who has the keyboard | The direction keys |
 | --- | --- | --- | --- |
 | Grid | `vibeGrid` | the panel (a selection ring) | move the ring |
-| Reading | `vibeZoom` | the panel (a block cursor) | `↑`/`↓` walk message blocks, `←`/`→` change conversation |
+| Reading | `vibeZoom` | the panel | `↑`/`↓` scroll the transcript, `←`/`→` change conversation |
 | Input | `vibeInput` | **the input method**, through one editor | the field's (candidates, caret) |
 
 `Esc`/`Back` always steps out one layer, and out of the panel from the grid.
@@ -203,22 +221,34 @@ this here on purpose: it is a capability that used to be one keystroke and is no
 two, and the next person to wonder where it went should find the answer instead
 of the feature half-restored by accident.
 
-### 5.4 A conversation that is already running
+### 5.4 A conversation that is already running: the send queue
 
-**What happens today, stated exactly**: there is no send queue, so pressing `⏎` on a
-conversation whose run is in flight does **nothing**. The composer's `submitValue`
-returns early on `sending`; the draft stays in the editor, and the only signals are
-that the send control has already turned into a **stop** button (`composer.stop`) and
-that the reply is visibly streaming. There is **no text** anywhere saying "this
-conversation is still running", and the panel adds none — an earlier draft of this
-document claimed it did, which was wrong.
+Pressing `⏎` on a conversation whose run is in flight **holds the sentence** instead of
+dropping it. The composer hands the draft over and clears its box; the panel shows
+`已排队` on the cell; when the run ends the text goes **back into that conversation's
+input box**, the cell says `已放回输入框`, and the reader presses `⏎` if they still
+mean it.
 
-That is the one interaction this panel cannot leave as it is: on a remote control a
-key that does nothing is indistinguishable from a key that is not bound, and the
-reader has no pointer to look for a reason with. P1 therefore adds a per-conversation
-queue (the existing `pendingPrompt` is a one-shot hand-off when a conversation is
-opened, not a queue): a dictated message waits for the current run and sends itself.
-Until then the draft is kept, and `Esc` never throws it away.
+**Nothing is ever sent by itself**, and that is the design, not a shortcut. Of the two
+possible queues — "send it when the run ends" and "hand it back and let the reader
+decide" — this is the safer one: a message dictated from a sofa gets one last look,
+there is no window in which a sentence they had second thoughts about is already gone,
+and there is no timer to tune.
+
+The five rules (`vibeQueue.ts`):
+
+| Rule | How it holds |
+| --- | --- |
+| **Visible** | A cell that holds a sentence shows `已排队`; a cell whose sentence just went back shows `已放回输入框` until the reader opens that conversation |
+| **Cancellable, and cancelling is not discarding** | The menu's cancel row, or `⌘⇧X` in the input layer, puts the text back in the box. If the box already holds something typed since, the cancellation is **refused** and the sentence stays queued — overwriting a message being written is the one thing worse than waiting |
+| **One per conversation** | A second `⏎` is **refused** (the composer keeps the text in its box) rather than replacing the held sentence. Replacing is how a sentence gets swallowed |
+| **The last moment is the reader's** | The queue has no send path at all: it only writes `composerDraft` |
+| **A failure keeps it** | A run that failed or was interrupted reaches the same "not running" check, so the sentence comes back — never re-sent as a second message |
+
+`Esc` in the input layer still means "leave the layer", and does **not** cancel the
+queue: leaving the layer is how a reader stops dictating, taking a sentence back is how
+they change their mind about one message. One key for both would mean `Esc` did two
+different things depending on a state the reader cannot read off the key.
 
 ### 5.5 The contract with the conversation views
 
@@ -283,21 +313,65 @@ The line is read from the agent's cached state for that thread (what the session
 *actually* running), falling back to the shell's selection only until that state has
 been read once.
 
+### 5.7 The bar, and the two things it has to get right
+
+The panel is `fixed inset-0`: it is the only surface in the app whose content starts at
+x = 0, and the window is a macOS **overlay title bar**
+(`titleBarStyle: "Overlay"`, `trafficLightPosition: { x: 14, y: 26 }`), so the traffic
+lights are drawn *over* the page at roughly x 14–72. Two consequences, both of which were
+wrong once and are now pinned by tests:
+
+* **The bar's content starts past the lights.** 80px (`pl-20`) — the same reserve the
+  activity rail uses — on macOS outside fullscreen, and the ordinary 12px everywhere else
+  (other platforms, and fullscreen, where the system hides the lights). `barChrome.ts`
+  holds the rule; the numbers come from the config, not from taste.
+* **The bar is the drag handle.** While the panel is open nothing else visible is
+  draggable, so the bar starts a window drag on a press (`startWindowDrag`, which skips
+  buttons — the three controls in it keep working).
+
+And one thing about fullscreen that is not geometry: **`set_fullscreen` is an explicit
+capability grant**. `isFullscreen` comes from `core:default`, `setFullscreen` does not, and
+the button shipped once with the grant missing — the capability layer rejected the call,
+the code's `.catch(() => {})` swallowed it, and the button did nothing at all. So the
+toggle lives in one function (`fullscreen.ts`), a refusal **reaches the reader** as an
+error toast and the console, and `fullscreenCapability.test.ts` asserts the grant next to
+the code that needs it.
+
 ## 6. Reading layer: blocks, and zoom at one or two columns
 
-`↑`/`↓` in the reading layer move a **block cursor** over the transcript — a user
-message, an assistant reply, a tool call, an approval card. The selected block
-gets a full-width highlight; `⏎` expands or collapses it (a tool call's
-arguments and output). The wheel and the trackpad still scroll by pixels; the
-block cursor is what a remote can operate.
+**Scrolling, stated as implemented**: `↑`/`↓` in the reading layer scroll the transcript by
+a page (`PageUp`/`PageDown` do the same), and in the **grid** `PageUp`/`PageDown` scroll the
+selected cell's transcript while the ring stays put — reading a cell is not the same act as
+moving to the next one. The wheel and the trackpad scroll as always.
 
-Opened from the grid, a cell fills the screen at **one column**: the transcript at
-its usual measure, unchanged from the main window. A **second column** is the
-existing context panel (`ContextPanel` for a local conversation,
-`RemoteFilesPanel` for a host's), and it has three states set per conversation —
-`hidden`, `auto` (appears when the window is wide enough), and `pinned` (stays
-open, remembered for that conversation). Reusing those panels is deliberate: what
-the right column shows must not depend on which surface opened it.
+The block cursor an earlier draft of this section described — a highlight over one message,
+`⏎` expanding a tool call — is **not implemented**. It is a different interaction (a
+selection, not a scroll position) and it is still the better answer for a remote control
+without page keys, so it is listed as remaining work in §14 rather than described as
+present.
+
+Opened from the grid, a conversation fills the screen at **one column** by default:
+the transcript at its usual measure, unchanged from the main window. A **second
+column** is the existing context panel (`ContextPanel` for a local conversation,
+`RemoteFilesPanel` for a host's). Reusing those panels is deliberate: what the right
+column shows must not depend on which surface opened it.
+
+It has three states, **remembered per conversation** by the panel's own key
+(`readingPanel.ts`):
+
+| State | When it shows |
+| --- | --- |
+| `auto` (default) | above 1100px: wide enough for a transcript at its measure plus a 400px column |
+| `hidden` | never — and **sticky**: the last `hidden`/`auto` choice becomes the fallback for a conversation with no entry of its own, so closing the column in one cell keeps it closed in the next |
+| `pinned` | always, whatever the window does — that is what pinning is for |
+
+`⌘\` toggles between `hidden` and `auto` (a toggle, not a cycle through three: one press
+that sometimes *shows* a column the reader was hiding is a press they stop trusting);
+`⌘⇧\` pins and unpins. `pinned` is **not** sticky — a pin is a decision about one
+conversation, and inheriting it would open a column nobody asked for. The menu has the same choice as a value row, so "which state is
+this conversation in" is answerable without pressing anything. The column's width is
+fixed at 400px and has no drag handle: the reading layer is a view of one conversation,
+not a window with three resizable columns.
 
 ## 7. The input layer's screen
 
@@ -349,6 +423,11 @@ method does. What the app owes it:
 
 See `KEYBINDINGS.md` → "Modes". The panel does not keep a second table.
 
+Two keys are worth repeating here because they are the panel's own grammar rather than a
+shortcut: the arrows move the selection, and **`h`/`j`/`k`/`l` move it the same way** —
+same commands, second bindings. They never fire over an editor (a modifier-less keystroke
+belongs to the field with the caret), so typing one while dictating is typing it.
+
 ### 9.2 The remote control
 
 A Xiaomi-style Bluetooth remote has about twelve physical buttons; only seven
@@ -362,6 +441,12 @@ to cover twenty-odd actions:
 | `Back` | close the panel | back to the grid | back to reading |
 | `Menu` | the layer's menu | the layer's menu | the layer's menu |
 | `Home` | first cell | jump to the live end | jump to the live end |
+
+**None of this has been verified on hardware.** The table above is the design, not a
+measurement: which button a given remote actually sends is recorded in
+[`VIBE-REMOTE-KEYS.md`](VIBE-REMOTE-KEYS.md), and that matrix is empty. The panel ships a
+**read-only key readout** for filling it in (`⌥⇧K` three times; see the same file) — it
+is not a command and consumes no press.
 
 **What the panel answers today.** Arrows, `OK`, `Back`, the digits and `Menu` work
 (P1-1 added the menu); `Home`, the attention queue, the add dialog and the machine
@@ -435,9 +520,10 @@ than an absent one — an empty answer is still an answer when it is what was as
 
 * No free-form split tree, no drag-resizing a cell (that is a window manager, not
   an overview).
-* No scrolling grid; twelve cells is the ceiling.
-* No new conversation from inside the panel: create it in the main window and it
-  appears here once pinned.
+* No scrolling grid: twelve cells per page, with pages past that (§4).
+* No conversation-creation *flow* inside the panel: the add tile's "start a new
+  conversation" leaves for the screen that already asks for a first message, and pins what
+  is created there.
 * No ordering or layout sync across machines; the order is per machine, like the
   other view preferences.
 * No automatic send after a pause, and no auto-approval.
@@ -464,6 +550,18 @@ Automatable — and where each one lives:
 | A host's view in a cell mounts no composer and does not narrow the host's event lane | `RemoteConversationView.chrome.test.tsx` |
 | The settings line shows the cell's own model, on both the reading and the input layer, and the input layer's composer is asked for values only | `VibeStage.test.tsx`, `Composer.inputLayer.test.tsx` |
 | The menu's three settings rows exist for a local cell, adjust with `←`/`→`, and are absent for a host's | `VibeStage.test.tsx` |
+| The second column: `auto` follows the width, `pinned` ignores it, `hidden` is never there; `⌘\` returns to `auto` rather than to `pinned`; the choice is per conversation and survives a relaunch | `readingPanel.test.ts`, `VibeStage.test.tsx` |
+| Closing the column in one cell keeps it closed in the next (the habit), and a pin does not travel | `readingPanel.sticky.test.ts`, `VibeStage.test.tsx` |
+| `PageUp`/`PageDown` scroll the selected cell's transcript without moving the ring; in the reading layer `↑`/`↓` scroll; the remote's `Home` jumps to the newest message | `VibeStage.test.tsx` |
+| The reading layer has more air than the main window at both ends, and a roomier gap between turns | `AgentThread.chrome.test.tsx` |
+| The add tile appears only in a free square, is reachable by the ring and its printed number, and its rows are the recent unpinned conversations in activity order | `emptySlot.test.ts`, `VibeStage.test.tsx` |
+| Twelve cells per page, `⌥←`/`⌥→` turn it, the bar names the page, and the keys are unclaimed with one page | `emptySlot.test.ts`, `VibeStage.test.tsx` |
+| The bar reserves the macOS traffic-light box on macOS outside fullscreen, and uses the ordinary inset otherwise | `barChrome.test.ts`, plus the harness reporting `padding-left: 80px` and the label at x = 80 |
+| The bar is the window's drag surface, and its three buttons still click | `VibeStage.test.tsx` |
+| `core:window:allow-set-fullscreen` is granted to the main window, and no `deny-` entry undercuts it | `fullscreenCapability.test.ts` |
+| A refused fullscreen reaches the reader as an error toast, not silence | `VibeStage.test.tsx` |
+| The queue: one per conversation (a second is refused), visible on the cell, handed back into the box when the run ends, kept across a failure, and cancelled into the box rather than discarded | `vibeQueue.test.ts`, `VibeStage.test.tsx` |
+| The composer's half: a send during a run hands the text over and clears the box, a refusal leaves the text in place, and an idle send is still a send | `Composer.inputLayer.test.tsx` |
 | A remote's buttons survive a rebinding and a cleared binding | `shortcuts.test.ts`, `catalog.test.ts`, `keybinding.test.ts` |
 
 Two of these were falsified by hand before landing (the assertions were removed,
@@ -480,13 +578,21 @@ Still open, and honestly not covered:
   menu; the editor's trigger is text-driven, so this needs a test at the editor's
   level.
 * **Per-conversation column preference** (the reading layer's second column) is
-  P1 and not implemented.
+  P2 and not implemented.
+* **The queue's own states are component-tested, not captured.** The screenshot
+  harness can report a run in flight to the *rail* (`?streaming=`), but a local
+  composer's "my run is in flight" comes from a streaming assistant bubble in that
+  conversation's message stream, which the fixture cannot produce without faking the
+  agent. The capture therefore asserts the neighbouring property instead — that the
+  queue does **not** steal an ordinary send — and the marker, the hand-back and the
+  cancel row are covered in `VibeStage.test.tsx` and `Composer.inputLayer.test.tsx`.
 
-On hardware (manual, recorded in the matrix below):
-
-| Remote model | Platform | `↑↓←→` | OK | Back | Menu | Home | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| *(to be filled on first hardware pass)* | macOS | | | | | | |
+**On hardware: not measured.** The matrix lives in
+[`VIBE-REMOTE-KEYS.md` §3](VIBE-REMOTE-KEYS.md), is empty, and every cell says "untested".
+Its §1 is the printable per-button checklist, and the panel's read-only key readout is
+what fills it in — three `⌥⇧K` presses, then press the remote. Nothing here or in
+`KEYBINDINGS.md` may claim a button works until a row there says so, and every row
+records who measured it, when, on which machine and which model.
 
 ## 12. Storage
 
@@ -498,6 +604,16 @@ On hardware (manual, recorded in the matrix below):
 
 The panel's view preferences follow the same rule as the theme, font size and
 panel widths: per machine, read on the render path, in `localStorage`.
+
+**Why the order is not in `app.db` yet, stated precisely** so the next person does not
+start in the wrong crate: the desktop's database and its migration chain live in
+`host/src/store/` (the desktop's `src-tauri/src/store.rs` is a re-export of
+`future_host::store`), and the settings document's schema lives in
+`packages/app-settings/` — both **outside `desktop/`**. Moving the order there is a
+schema change with a versioned migration, a fresh-install fixture and a bilingual
+`ER.md` update; it is a task of its own, not a line in this one. Until then the
+`localStorage` keys are the only ones the panel reads, and `vibePreferences.ts` is the
+only file that touches them.
 
 ## 13. Where the code goes
 
@@ -544,8 +660,9 @@ What P0 landed, and what it deliberately left:
 | Stage | Content |
 | --- | --- |
 | **P0 — done** | the panel and its grid; scale-respecting cell rendering for local conversations; membership = pin; order = `createdAt` + drag/keyboard reordering; the three layers and the single-editor invariant; the input layer with dictation, the target bar and the three state meanings; `⌘⇧V`, arrows, `⏎`, `Esc`, `1`–`9`; explicit "still running" refusal |
-| **P1 — in progress** | **done:** the menu (`Menu`, one column, `←`/`→` adjust a value in place) · the attention queue (§9.5) · the machine filter, a host's conversations as cells, the add dialog and removal across machines · the input layer's controls moved into the menu with the values left read-only on screen (§5.6) · the send queue (§5.4) · **next:** zoom at one or two columns with the panel's three states; degraded rendering for non-focused cells |
-| **P2** | order in `app.db`; layout presets and a column override; `⌘/` cheat sheet; `h/j/k/l`; a "learn this button" diagnostics page; optional text size on the volume buttons |
+| **P1 — done** | the menu (`Menu`, one column, `←`/`→` adjust a value in place) · the attention queue (§9.5) · the machine filter, a host's conversations as cells, the add dialog and removal across machines · the input layer's controls moved into the menu with the values left read-only on screen (§5.6) · the send queue (§5.4) |
+| **P2 — in progress** | **done:** `h`/`j`/`k`/`l` beside the arrows · the reading layer's second column with its three per-conversation states (§6) · scrolling a cell from the keyboard · the key checklist and read-only readout ([`VIBE-REMOTE-KEYS.md`](VIBE-REMOTE-KEYS.md), matrix still empty) · **remaining:** the block cursor of §6, order in `app.db`, and the measurement pass itself |
+| **P2 — later** | order in `app.db`; layout presets; a "learn this button" diagnostics page (the read-only readout is the first half); optional text size on the volume buttons |
 
 ## 15. Open questions
 

@@ -7,7 +7,7 @@ import { useTranslation } from "react-i18next";
 import i18n from "../../../i18n";
 import { updateCachedAgentState } from "../../../integrations/agent/agentStateCache";
 import { validateImageAttachment } from "../../../integrations/storage/files";
-import { createThread } from "../../../integrations/storage/threadStore";
+import { createThread, pinThread } from "../../../integrations/storage/threadStore";
 import { errorMessage } from "../../../lib/errors";
 import { emitFutureEvent } from "../../../lib/futureEvents";
 import { truncate } from "../../../lib/objects";
@@ -29,6 +29,18 @@ interface UseNewConversationParams {
   syncSelection: (modelId: string, thinkingLevel: string) => void;
   setSection: Dispatch<SetStateAction<ActivitySection>>;
   setCenterMode: Dispatch<SetStateAction<"thread" | "new-chat">>;
+  /**
+   * Whether the next thread created should be pinned, asked **after** it exists.
+   *
+   * The Vibe panel's add tile answers "start a new conversation" by opening this screen —
+   * a first message is what creates a thread, so the screen that asks for one is the right
+   * place — and its promise is that adding is pinning. The panel therefore arms a flag
+   * through `onNewConversation` and this asks it once, at creation, rather than the panel
+   * watching the store for a thread it did not create.
+   *
+   * Absent everywhere else, and asked at most once per creation.
+   */
+  pinCreated?: () => boolean;
 }
 
 export interface NewConversationFlow {
@@ -49,6 +61,7 @@ export function useNewConversation({
   syncSelection,
   setSection,
   setCenterMode,
+  pinCreated,
 }: UseNewConversationParams): NewConversationFlow {
   const { t } = useTranslation("layout");
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
@@ -79,6 +92,21 @@ export function useNewConversation({
         modelId: input.modelId,
         thinkingLevel: input.thinkingLevel,
       });
+      // The panel asked for this one to be pinned (`pinCreated`): do it here, where the
+      // thread first exists, so the pin cannot be lost between two screens.
+      if (pinCreated?.()) {
+        try {
+          await pinThread({ pinned: true, threadId: thread.id });
+        }
+        catch (error) {
+          // The conversation exists and is open; a pin that failed is worth saying and not
+          // worth failing the send for.
+          emitFutureEvent("toast", {
+            message: t("appShell.startConversationFailed", { error: errorMessage(error) }),
+            tone: "error",
+          });
+        }
+      }
       syncSelection(input.modelId, input.thinkingLevel);
       // Prime the agent state cache with the user's explicit selections so
       // AgentThread's activeThinkingLevel picks them up instead of falling

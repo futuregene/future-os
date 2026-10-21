@@ -53,6 +53,7 @@ export type CommandId
     // Search and help: the two entries that exist to *find* the others.
     | "palette.open"
     | "shortcuts.help"
+    | "shortcuts.settings"
     // The full-screen panel of pinned conversations ("Vibe"). Scoped: in it the
     // grid answers the bare keys, and a key it binds may shadow a global one.
     | "vibe.toggle"
@@ -85,8 +86,15 @@ export type CommandId
     // conversation is actually operated with.
     | "vibe.input.open"
     | "vibe.input.close"
-    | "vibe.block.previous"
-    | "vibe.block.next"
+    // Taking a held sentence back into the box: a change of mind about one message,
+    // not about the layer (which is why it is not on `Esc`).
+    | "vibe.queue.cancel"
+    | "vibe.page.previous"
+    | "vibe.page.next"
+    | "vibe.scroll.up"
+    | "vibe.scroll.down"
+    | "vibe.zoom.scroll.up"
+    | "vibe.zoom.scroll.down"
     | "vibe.menu"
     | "vibe.home";
 
@@ -184,6 +192,10 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "palette.open", category: "palette", defaultBinding: "mod+k", inTerminal: false },
   { id: "shortcuts.help", category: "palette", defaultBinding: "mod+slash", inTerminal: false },
   { id: "settings.open", category: "settings", defaultBinding: "mod+comma", inTerminal: false },
+  // Settings, but straight to the page that edits these bindings — the one place
+  // `mod+/` sends a reader who has just seen a key they want to change. `mod+,`
+  // keeps opening Settings on its first page: this is an addition, not a move.
+  { id: "shortcuts.settings", category: "settings", defaultBinding: "mod+shift+comma", inTerminal: false },
 
   // ---- Vibe panel (full-screen grid of pinned conversations) ----------------
   //
@@ -197,10 +209,15 @@ export const COMMANDS: readonly CommandSpec[] = [
   // mode's owner makes it mean, which is what the registry already does — the
   // rail is not mounted to own them there.
   { id: "vibe.toggle", category: "vibe", defaultBinding: "mod+shift+v", inTerminal: false },
-  { id: "vibe.focus.up", category: "vibe", defaultBinding: "arrowup", inTerminal: false, repeat: true, scope: "vibeGrid" },
-  { id: "vibe.focus.down", category: "vibe", defaultBinding: "arrowdown", inTerminal: false, repeat: true, scope: "vibeGrid" },
-  { id: "vibe.focus.left", category: "vibe", defaultBinding: "arrowleft", inTerminal: false, repeat: true, scope: "vibeGrid" },
-  { id: "vibe.focus.right", category: "vibe", defaultBinding: "arrowright", inTerminal: false, repeat: true, scope: "vibeGrid" },
+  // Each direction answers to its arrow **and** to `h`/`j`/`k`/`l`. Two bindings on one
+  // command rather than four more commands: the movement is the same movement, and the
+  // table already expresses "one command, several keys" (`vibe.cell`). The letters are
+  // fixed (the settings page lists them read-only) because a rebindable pair would let a
+  // reader shadow them without noticing what they shadowed.
+  { id: "vibe.focus.up", category: "vibe", defaultBinding: "arrowup", bindings: ["arrowup", "k"], inTerminal: false, repeat: true, scope: "vibeGrid" },
+  { id: "vibe.focus.down", category: "vibe", defaultBinding: "arrowdown", bindings: ["arrowdown", "j"], inTerminal: false, repeat: true, scope: "vibeGrid" },
+  { id: "vibe.focus.left", category: "vibe", defaultBinding: "arrowleft", bindings: ["arrowleft", "h"], inTerminal: false, repeat: true, scope: "vibeGrid" },
+  { id: "vibe.focus.right", category: "vibe", defaultBinding: "arrowright", bindings: ["arrowright", "l"], inTerminal: false, repeat: true, scope: "vibeGrid" },
   { id: "vibe.open", category: "vibe", defaultBinding: "enter", inTerminal: false, scope: "vibeGrid" },
   // "Back" leaves the panel from the grid: the same button that steps out of one
   // layer steps out of the last one.
@@ -210,14 +227,28 @@ export const COMMANDS: readonly CommandSpec[] = [
   // arrows are not live there, and the caret rule keeps them off a text field.
   // Distinct commands from the grid's because a command has one binding set: the
   // grid moves a selection ring, this changes what the cell shows.
-  { id: "vibe.zoom.previous", category: "vibe", defaultBinding: "arrowleft", inTerminal: false, repeat: true, scope: "vibeZoom" },
-  { id: "vibe.zoom.next", category: "vibe", defaultBinding: "arrowright", inTerminal: false, repeat: true, scope: "vibeZoom" },
-  // Up/down inside a zoomed cell walk the transcript **by block**, not by pixel:
-  // a remote control cannot scroll, so the reading layer moves a block cursor over
-  // messages and expands the one it is on. The wheel and the trackpad still scroll
-  // normally — this pair is what makes the same view readable from the sofa.
-  { id: "vibe.block.previous", category: "vibe", defaultBinding: "arrowup", inTerminal: false, repeat: true, scope: "vibeZoom" },
-  { id: "vibe.block.next", category: "vibe", defaultBinding: "arrowdown", inTerminal: false, repeat: true, scope: "vibeZoom" },
+  // `h`/`l` alongside the arrows here too: a reader whose hands are on home row should not
+  // have to move them to change conversation, and these two are the same pair of moves as
+  // the grid's left/right.
+  { id: "vibe.zoom.previous", category: "vibe", defaultBinding: "arrowleft", bindings: ["arrowleft", "h"], inTerminal: false, repeat: true, scope: "vibeZoom" },
+  { id: "vibe.zoom.next", category: "vibe", defaultBinding: "arrowright", bindings: ["arrowright", "l"], inTerminal: false, repeat: true, scope: "vibeZoom" },
+  // Scrolling a transcript that is **not** the one you are typing in: the grid's cells are
+  // small, and reading one of them means moving its text, not moving the ring. `PageUp` /
+  // `PageDown` in the grid, and the same keys (plus `↑`/`↓`, which the reading layer has
+  // nothing else for) in the zoomed view.
+  //
+  // `PageUp`/`PageDown` rather than `↑`/`↓` in the grid because the arrows are the ring:
+  // one key cannot both "go to the cell above" and "scroll this cell up", and the ring is
+  // the gesture a reader makes constantly.
+  // Turning the grid's page, past twelve pinned conversations (`VIBE.md` §4). `⌥←`/`⌥→`
+  // rather than the page keys, which now scroll the selected cell, and rather than
+  // `⌘⌥←`/`→`, which move a cell within its page.
+  { id: "vibe.page.previous", category: "vibe", defaultBinding: "alt+arrowleft", inTerminal: false, scope: "vibeGrid" },
+  { id: "vibe.page.next", category: "vibe", defaultBinding: "alt+arrowright", inTerminal: false, scope: "vibeGrid" },
+  { id: "vibe.scroll.up", category: "vibe", defaultBinding: "pageup", inTerminal: false, repeat: true, scope: "vibeGrid" },
+  { id: "vibe.scroll.down", category: "vibe", defaultBinding: "pagedown", inTerminal: false, repeat: true, scope: "vibeGrid" },
+  { id: "vibe.zoom.scroll.up", category: "vibe", defaultBinding: "arrowup", bindings: ["arrowup", "pageup"], inTerminal: false, repeat: true, scope: "vibeZoom" },
+  { id: "vibe.zoom.scroll.down", category: "vibe", defaultBinding: "arrowdown", bindings: ["arrowdown", "pagedown"], inTerminal: false, repeat: true, scope: "vibeZoom" },
   // ---- The input layer -----------------------------------------------------
   //
   // One editable element exists at a time in the panel, and this layer is the
@@ -232,6 +263,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   // therefore the composer's own, and an empty draft closes the layer from there
   // (`VIBE.md` §5.2).
   { id: "vibe.input.open", category: "vibe", defaultBinding: "enter", inTerminal: false, scope: "vibeZoom" },
+  // `⌘⇧X`: "take that back". A chord rather than a bare key, because the caret is in
+  // the editor when a sentence is queued (`VIBE.md` §5.4).
+  { id: "vibe.queue.cancel", category: "vibe", defaultBinding: "mod+shift+x", inTerminal: false, scope: "vibeInput" },
   { id: "vibe.input.close", category: "vibe", defaultBinding: "escape", aliases: ["browserback"], inTerminal: false, overEditable: true, scope: "vibeInput" },
   // ---- Keys the remote control has, and a keyboard does not ----------------
   //

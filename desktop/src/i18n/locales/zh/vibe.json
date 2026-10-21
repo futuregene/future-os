@@ -35,7 +35,9 @@
     "model": "模型",
     "thinking": "思考级别",
     "approval": "审批档位",
-    "approvalHint": "对整个应用生效，不只是这一格"
+    "approvalHint": "对整个应用生效，不只是这一格",
+    "panel": "右栏",
+    "panelHint": "自动跟随窗口；固定则在这个会话里一直留着"
   },
   "attention": {
     "badge": "{{count}} 个待处理",
@@ -53,12 +55,41 @@
     "empty": "这里没有可加入的会话：这个位置里的会话都已经置顶了。",
     "add": "加入",
     "added": "已在面板",
-    "footer": "加入即置顶：它会出现在这里，也出现在左边栏的置顶区。"
+    "footer": "加入即置顶：它会出现在这里，也出现在左边栏的置顶区。",
+    "recent": "最近活跃",
+    "browse": "浏览全部会话…",
+    "newConversation": "新开一个会话…",
+    "newConversationHint": "打开新建会话界面，建好后自动置顶"
   },
   "devices": {
     "local": "本机",
     "chats": "对话",
     "all": "全部设备",
     "label": "设备"
-  }
+  },
+  "queue": {
+    "queued": "已排队 — 等这一轮跑完",
+    "held": "排队那条先留着：这个会话的输入框里已经有内容了",
+    "returned": "已放回输入框",
+    "cancel": "撤回排队的那条"
+  },
+  "probe": {
+    "title": "按键自查（只读）",
+    "hint": "连按三次 ⌥⇧K 关闭；这里不影响任何按键。",
+    "copy": "复制",
+    "copied": "已复制",
+    "close": "关闭",
+    "empty": "按任意键，或按遥控器上的按键。"
+  },
+  "panel": {
+    "hidden": "隐藏",
+    "auto": "自动",
+    "pinned": "固定",
+    "show": "显示右栏",
+    "hide": "隐藏右栏",
+    "pin": "为这个会话固定右栏"
+  },
+  "fullscreenFailed": "全屏被系统拒绝了 —— 原因见控制台",
+  "page": "第 {{page}}/{{pages}} 页",
+  "emptyTile": "加入会话"
 }

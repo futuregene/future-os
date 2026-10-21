@@ -7,7 +7,9 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { onFutureEvent } from "../../lib/futureEvents";
+import { isMacOS } from "../../lib/platform";
 import { installShortcuts } from "../../test/installShortcuts";
+import { loadComposerDraft } from "../agent/composerDraft";
 import { clearCommandHandlers } from "../keyboard/commands";
 import { resetShortcutScopes } from "../keyboard/scopes";
 import { resetAllCommandBindings } from "../keyboard/shortcuts";
@@ -29,20 +31,58 @@ const h = vi.hoisted(() => ({
   approvals: { activeApproval: null as unknown, decideApproval: vi.fn(async () => {}) },
   counts: new Map<string, number>(),
   cached: { current: null as { model?: string; thinkingLevel?: string } | null },
+  /** What the panel's queue answered when the stub composer handed a sentence over. */
+  probe: { taken: undefined as boolean | undefined },
+  /** The one window object the panel sees (see the mock above). */
+  win: {
+    isFullscreen: vi.fn(async () => false),
+    onResized: vi.fn(async () => () => {}),
+    setFullscreen: vi.fn(async () => {}),
+  },
 }));
 
 vi.mock("../agent/AgentThread", () => ({
-  AgentThread: (props: { chrome?: string; composerControls?: string; thread: { id: string } }) => (
+  AgentThread: (props: {
+    chrome?: string;
+    composerControls?: string;
+    onQueue?: (payload: { attachments: unknown[]; content: string }) => boolean;
+    thread: { id: string };
+  }) => (
     <div
       data-chrome={props.chrome ?? "full"}
       data-composer-controls={props.composerControls ?? ""}
       data-thread={props.thread.id}
     >
+      {/* What the real composer does with `onQueue`: hand the sentence over, and it
+          answers whether the box may be cleared. */}
+      {props.onQueue
+        ? (
+            <button
+              data-queue-probe=""
+              onClick={() => {
+                const taken = props.onQueue!({ attachments: [], content: "held sentence" });
+                h.probe.taken = taken;
+              }}
+              type="button"
+            />
+          )
+        : null}
       {props.chrome === "input"
         ? <div contentEditable data-input-editor="" suppressContentEditableWarning />
         : null}
+      {/* The real view's transcript attribute. The panel addresses a cell's transcript by
+          it, so a stub without one would make every scroll test pass on nothing. */}
+      <div data-chat-scroll="" />
     </div>
   ),
+}));
+
+vi.mock("../../components/layout/ContextPanel", () => ({
+  ContextPanel: () => <div data-vibe-column-stub="" />,
+}));
+
+vi.mock("../remote-peer/RemoteFilesPanel", () => ({
+  RemoteFilesPanel: () => <div data-vibe-column-stub="" />,
 }));
 
 vi.mock("../../components/layout/hooks/useApprovals", () => ({
@@ -57,11 +97,16 @@ vi.mock("../../integrations/agent/agentStateCache", () => ({
   useCachedAgentState: () => h.cached.current,
 }));
 
+/**
+ * The window API as the panel uses it: `useIsFullscreen` reads `isFullscreen` and re-reads
+ * on `onResized`, and the bar/menu/command call `setFullscreen`.
+ *
+ * **One shared object**, not a fresh one per `getCurrentWindow()`: the panel asks for the
+ * window at the moment it needs it, so a test that wants to make a call fail has to be
+ * able to reach the same instance the panel will get.
+ */
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({
-    isFullscreen: async () => false,
-    setFullscreen: async () => {},
-  }),
+  getCurrentWindow: () => h.win,
 }));
 
 const VIEW: VibeThreadViewProps = {
@@ -109,6 +154,29 @@ let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 let uninstallShortcuts: () => void;
 
+/** Re-render the mounted panel with new inputs — what a run-status push does. */
+function rerender(options: { runStatuses?: Record<string, { status: string }>; threads: StoredThread[] }) {
+  act(() => {
+    root.render(
+      <VibeStage
+        catalogs={[]}
+        onClose={() => {}}
+        onOpenInShell={() => {}}
+        onNewConversation={() => {}}
+        onOpenRemoteInShell={() => {}}
+        onPinLocal={() => {}}
+        onPinRemote={() => {}}
+        peers={[]}
+        runStatuses={(options.runStatuses ?? {}) as never}
+        threads={options.threads}
+        unreadThreadIds={new Set()}
+        view={VIEW}
+        workspaces={WORKSPACES}
+      />,
+    );
+  });
+}
+
 function mount(options: {
   threads: StoredThread[];
   catalogs?: RemoteCatalog[];
@@ -118,6 +186,7 @@ function mount(options: {
   onClose?: () => void;
   onOpenInShell?: (thread: StoredThread) => void;
   onOpenRemoteInShell?: (desktopId: string, sessionId: string) => void;
+  onNewConversation?: () => void;
   onPinLocal?: (threadId: string, pinned: boolean) => void;
   onPinRemote?: (desktopId: string, sessionId: string, pinned: boolean) => void;
 }) {
@@ -127,6 +196,7 @@ function mount(options: {
         catalogs={options.catalogs ?? []}
         onClose={options.onClose ?? (() => {})}
         onOpenInShell={options.onOpenInShell ?? (() => {})}
+        onNewConversation={options.onNewConversation ?? (() => {})}
         onOpenRemoteInShell={options.onOpenRemoteInShell ?? (() => {})}
         onPinLocal={options.onPinLocal ?? (() => {})}
         onPinRemote={options.onPinRemote ?? (() => {})}
@@ -167,10 +237,14 @@ function walkTo(id: string) {
 
 beforeEach(() => {
   clearVibePreferences();
+  // The queue hands a sentence back by writing it into the conversation's composer
+  // draft, so a draft left by one case is state the next case would see.
+  sessionStorage.clear();
   resetAllCommandBindings();
   resetShortcutScopes();
   clearCommandHandlers();
   h.counts = new Map();
+  h.win.setFullscreen.mockClear();
   h.cached.current = null;
   container = document.body.appendChild(document.createElement("div"));
   root = createRoot(container);
@@ -182,6 +256,7 @@ afterEach(() => {
   container.remove();
   uninstallShortcuts();
   localStorage.clear();
+  sessionStorage.clear();
 });
 
 describe("the panel's layers", () => {
@@ -620,6 +695,7 @@ describe("this cell's settings", () => {
           catalogs={[]}
           onClose={() => {}}
           onOpenInShell={() => {}}
+          onNewConversation={() => {}}
           onOpenRemoteInShell={() => {}}
           onPinLocal={() => {}}
           onPinRemote={() => {}}
@@ -674,6 +750,7 @@ describe("this cell's settings", () => {
           catalogs={[]}
           onClose={() => {}}
           onOpenInShell={() => {}}
+          onNewConversation={() => {}}
           onOpenRemoteInShell={() => {}}
           onPinLocal={() => {}}
           onPinRemote={() => {}}
@@ -707,6 +784,467 @@ describe("this cell's settings", () => {
     press({ code: "ContextMenu", key: "ContextMenu" });
     expect(container.querySelector("[data-vibe-menu-row=\"model\"]")).toBeNull();
     expect(container.querySelector("[data-vibe-menu-row=\"approval\"]")).toBeNull();
+  });
+});
+
+describe("the send queue", () => {
+  // The five rules the queue was commissioned under, driven from the panel's side:
+  // visible, cancellable without losing the text, one per conversation, never sent by
+  // itself, kept across a failure. The pure half is `vibeQueue.test.ts`; here it is the
+  // cell markers, the menu row and the key.
+  function handOver() {
+    const probe = container.querySelector<HTMLElement>("[data-queue-probe]");
+    expect(probe, "a composer that can hand a sentence over").not.toBeNull();
+    act(() => probe!.click());
+    return h.probe.taken;
+  }
+
+  it("marks the cell as soon as a sentence is held", () => {
+    mount({ runStatuses: { a: { status: "running" } }, threads: [thread("a", 100)] });
+    expect(container.querySelector("[data-vibe-queued]")).toBeNull();
+    expect(handOver()).toBe(true);
+    expect(container.querySelector("[data-vibe-queued]")).not.toBeNull();
+  });
+
+  it("refuses a second one, so a held sentence is never overwritten", () => {
+    mount({ runStatuses: { a: { status: "running" } }, threads: [thread("a", 100)] });
+    expect(handOver()).toBe(true);
+    // The refusal is what keeps the composer's own text in the box (see
+    // `Composer.inputLayer.test.tsx`); here it only has to say "no".
+    expect(handOver()).toBe(false);
+  });
+
+  it("hands the sentence back when the run ends, and never sends it", () => {
+    mount({ runStatuses: { a: { status: "running" } }, threads: [thread("a", 100)] });
+    handOver();
+    // The run finishes. The panel now puts the text back in the box and says so — it
+    // does not send, which is why there is no send path anywhere in `vibeQueue.ts`.
+    rerender({ runStatuses: { a: { status: "completed" } }, threads: [thread("a", 100)] });
+    expect(container.querySelector("[data-vibe-queued]")).toBeNull();
+    expect(container.querySelector("[data-vibe-returned]")).not.toBeNull();
+    expect(loadComposerDraft("a")?.text).toBe("held sentence");
+  });
+
+  it("keeps the sentence across a failed run", () => {
+    // A failure is not a reason to lose it and not a reason to re-send it: it comes
+    // back to the box like any other ending.
+    mount({ runStatuses: { a: { status: "running" } }, threads: [thread("a", 100)] });
+    handOver();
+    rerender({ runStatuses: { a: { status: "failed" } }, threads: [thread("a", 100)] });
+    expect(loadComposerDraft("a")?.text).toBe("held sentence");
+    expect(container.querySelector("[data-vibe-returned]")).not.toBeNull();
+  });
+
+  it("offers the cancel row only while something is held, and puts the text back", () => {
+    mount({ runStatuses: { a: { status: "running" } }, threads: [thread("a", 100)] });
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    expect(container.querySelector("[data-vibe-menu-row=\"queue-cancel\"]")).toBeNull();
+    press({ code: "Escape", key: "Escape" });
+
+    handOver();
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    expect(container.querySelector("[data-vibe-menu-row=\"queue-cancel\"]")).not.toBeNull();
+    walkTo("queue-cancel");
+    press({ code: "Enter", key: "Enter" });
+    // Cancelling is "not now": the sentence is in the box, not gone.
+    expect(loadComposerDraft("a")?.text).toBe("held sentence");
+    expect(container.querySelector("[data-vibe-queued]")).toBeNull();
+  });
+
+  it("cancels from the input layer's own key", () => {
+    mount({ runStatuses: { a: { status: "running" } }, threads: [thread("a", 100)] });
+    handOver();
+    // Into the input layer: the key belongs to that scope (the caret is in the editor).
+    press({ code: "Enter", key: "Enter" });
+    // `mod+shift+x`: `meta` on the platform the test runs as (the dispatcher reads
+    // `mod` from `isMacOS`), and `ctrl` elsewhere.
+    press({ code: "KeyX", key: "x", metaKey: isMacOS, ctrlKey: !isMacOS, shiftKey: true });
+    expect(loadComposerDraft("a")?.text).toBe("held sentence");
+    expect(container.querySelector("[data-vibe-queued]")).toBeNull();
+  });
+
+  it("stops marking a handed-back sentence once the reader opens it", () => {
+    mount({ runStatuses: { a: { status: "running" } }, threads: [thread("a", 100)] });
+    handOver();
+    rerender({ runStatuses: { a: { status: "completed" } }, threads: [thread("a", 100)] });
+    expect(container.querySelector("[data-vibe-returned]")).not.toBeNull();
+    // Opening the conversation's input layer is what "I have seen it" means: the text
+    // is in the box in front of them.
+    press({ code: "Enter", key: "Enter" });
+    expect(container.querySelector("[data-vibe-returned]")).toBeNull();
+  });
+
+  it("does not queue for a host's conversation", () => {
+    // A remote cell has no composer at all, so there is nothing to hand over — the
+    // panel offers no queue for it rather than a queue nothing can fill.
+    mount({
+      catalogs: [{ desktopId: "desk_1", sessions: [{ pinned: true, sessionId: "s1", status: "active", title: "Remote" }] } as never],
+      peers: [{ desktopId: "desk_1", name: "Studio" } as never],
+      threads: [],
+    });
+    expect(container.querySelector("[data-queue-probe]")).toBeNull();
+  });
+});
+
+describe("the letters, beside the arrows", () => {
+  // `h`/`j`/`k`/`l` on the same commands as the arrows: same movement, second key. What
+  // matters is that they move the ring in the grid, switch conversation while reading, and
+  // never fire over an editor — the last one is `dispatch`'s caret rule, and it is the
+  // reason a letter may sit next to a bare arrow at all.
+  it("moves the ring with the letters", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300), thread("d", 400)] });
+    // 2×2: `l` right, `j` down.
+    press({ code: "KeyL", key: "l" });
+    press({ code: "KeyJ", key: "j" });
+    press({ code: "Enter", key: "Enter" });
+    expect(drawn("input")).toEqual(["d"]);
+  });
+
+  it("switches conversation with h and l while reading", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    press({ code: "KeyL", key: "l" });
+    press({ code: "KeyL", key: "l" });
+    press({ code: "KeyH", key: "h" });
+    press({ code: "Enter", key: "Enter" });
+    // a → b → c → b.
+    expect(drawn("input")).toEqual(["b"]);
+  });
+
+  it("leaves the letters to the editor while dictating", () => {
+    // Typing `h` in a dictation must be an `h`, and this is the rule that allows it:
+    // a modifier-less key belongs to the field that has the caret.
+    mount({ threads: [thread("a", 100), thread("b", 200)] });
+    press({ code: "Enter", key: "Enter" });
+    const before = container.querySelector("[data-vibe-layer]")?.getAttribute("data-vibe-layer");
+    // The caret is in the editor here; the layer must not change.
+    press({ code: "KeyL", key: "l" });
+    expect(container.querySelector("[data-vibe-layer]")?.getAttribute("data-vibe-layer")).toBe(before);
+    expect(drawn("input")).toEqual(["a"]);
+  });
+});
+
+describe("the reading layer's second column", () => {
+  // Three states, per conversation, remembered by the panel's own key. The column itself
+  // is the shell's existing `ContextPanel` (stubbed here): what this file owns is whether
+  // it is there, and what the keys and the menu row do to that answer.
+  function mountWithPanel(over: Record<string, unknown> = {}) {
+    mount({ threads: [thread("a", 100), thread("b", 200)], ...over });
+  }
+
+  /** The stub: `ContextPanel` is the shell's, and mounting it for real here would test it. */
+  const column = () => container.querySelector("[data-vibe-column-stub]");
+
+  it("shows it automatically on a wide window, and not on a narrow one", () => {
+    // jsdom reports 1024px by default, i.e. below PANEL_AUTO_WIDTH.
+    mountWithPanel();
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    expect(column()).toBeNull();
+  });
+
+  it("hides it with the panel's own key, and comes back to automatic", () => {
+    // `⌘\` twice: hidden, then back to automatic — not back to pinned.
+    mountWithPanel();
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    press({ code: "Backslash", key: "\\", ctrlKey: true });
+    expect(readVibePreferences().panel["local:a"]).toBe("hidden");
+    press({ code: "Backslash", key: "\\", ctrlKey: true });
+    expect(readVibePreferences().panel["local:a"]).toBe("auto");
+  });
+
+  it("pins it for this conversation only", () => {
+    mountWithPanel();
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    press({ code: "Backslash", key: "\\", ctrlKey: true, shiftKey: true });
+    expect(readVibePreferences().panel["local:a"]).toBe("pinned");
+    // The other conversation is untouched: pinning is a fact about one conversation.
+    expect(readVibePreferences().panel["local:b"]).toBeUndefined();
+  });
+
+  it("remembers what was chosen when the panel is opened again", () => {
+    mountWithPanel();
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    press({ code: "Backslash", key: "\\", ctrlKey: true, shiftKey: true });
+    // Re-mount from storage, the way a relaunch does.
+    mountWithPanel();
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    // Pinned beats the narrow test window, which is the whole point of pinning.
+    expect(readVibePreferences().panel["local:a"]).toBe("pinned");
+  });
+
+  it("offers the three states in the menu, adjustable with ← and →", () => {
+    mountWithPanel();
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    walkTo("panel");
+    press({ code: "ArrowRight", key: "ArrowRight" });
+    expect(readVibePreferences().panel["local:a"]).toBe("pinned");
+  });
+});
+
+describe("the panel's top bar", () => {
+  // macOS draws the traffic lights over the page's top-left (`titleBarStyle: "Overlay"`),
+  // and the panel is the only surface whose content starts at x=0. Two things follow, and
+  // both were broken: the content has to clear the lights, and the bar has to be the
+  // window's drag handle (nothing else is left visible while the panel covers it).
+  const bar = () => container.querySelector("header");
+
+  it("starts past the traffic lights", () => {
+    mount({ threads: [thread("a", 100)] });
+    // This suite runs as non-macOS (`isMacOS` is false in the test environment), so the
+    // ordinary inset is the expected one here; the macOS value is `barChrome.test.ts`.
+    expect(bar()!.className).toContain("pl-3");
+    expect(bar()!.className).not.toContain("pl-20");
+  });
+
+  it("is a drag handle", () => {
+    // `startWindowDrag` skips buttons itself, so marking the whole bar is safe: the three
+    // controls in it still receive their clicks.
+    mount({ threads: [thread("a", 100)] });
+    expect(bar()!.getAttribute("data-vibe-drag")).toBe("bar");
+  });
+});
+
+describe("fullscreen from the bar", () => {
+  // It did nothing for a release: the capability was missing, the rejection was swallowed,
+  // and no test noticed. The three call sites are now one function that reports failure.
+  it("reports a refused fullscreen instead of staying silent", async () => {
+    // The capability layer rejecting `set_fullscreen` is exactly what happened in the
+    // release, so that is the failure the test stages.
+    h.win.setFullscreen.mockRejectedValueOnce(new Error("window.set_fullscreen not allowed"));
+    const onToast = vi.fn();
+    const off = onFutureEvent("toast", onToast);
+    try {
+      mount({ threads: [thread("a", 100)] });
+      const button = container.querySelector<HTMLElement>("[aria-label=\"切换全屏\"], [aria-label=\"Toggle full screen\"]");
+      expect(button, "the bar's fullscreen button").not.toBeNull();
+      await act(async () => {
+        button!.click();
+        // The rejection is reported on a microtask; flush it.
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(h.win.setFullscreen).toHaveBeenCalled();
+      expect(onToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
+    }
+    finally {
+      off();
+    }
+  });
+});
+
+describe("the second column's state carries over", () => {
+  // Reported from use: closing the column in one cell then opening the next cell had it
+  // open again, so it was closed twice. Hiding is a habit, not a fact about one
+  // conversation — the *last* hidden/auto choice is the fallback for cells with no entry.
+  it("keeps the column closed in the next conversation", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200)] });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    press({ code: "Backslash", key: "\\\\", ctrlKey: true });
+    expect(readVibePreferences().panel["local:a"]).toBe("hidden");
+    // Next conversation, never decided about: it follows the habit.
+    press({ code: "ArrowRight", key: "ArrowRight" });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    expect(readVibePreferences().panelDefault).toBe("hidden");
+    // …and the panel is showing it as closed, which is the thing a player would see.
+    expect(container.querySelector("[data-vibe-panel-column]")).toBeNull();
+  });
+
+  it("opens again for the next conversation once the reader reopens it", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200)] });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    press({ code: "Backslash", key: "\\\\", ctrlKey: true });
+    press({ code: "Backslash", key: "\\\\", ctrlKey: true });
+    expect(readVibePreferences().panelDefault).toBe("auto");
+  });
+
+  it("does not inherit a pin", () => {
+    // A pin is a decision about one conversation; inheriting it would open a column
+    // nobody asked for in the next one.
+    mount({ threads: [thread("a", 100), thread("b", 200)] });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    press({ code: "Backslash", key: "\\\\", ctrlKey: true, shiftKey: true });
+    expect(readVibePreferences().panel["local:a"]).toBe("pinned");
+    expect(readVibePreferences().panelDefault).toBe("auto");
+  });
+});
+
+describe("reading a cell without zooming into it", () => {
+  // The grid is the point of the panel: several conversations at once. Reading one of them
+  // means moving *its* text, not the ring — so `PageUp`/`PageDown` scroll the focused cell.
+  function transcript(): HTMLElement | null {
+    return container.querySelector<HTMLElement>("[data-vibe-cell] [data-chat-scroll]");
+  }
+
+  it("scrolls the focused cell's transcript, not the ring", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200)] });
+    const element = transcript();
+    expect(element, "a transcript in the focused cell").not.toBeNull();
+    // jsdom has no layout, so the call itself is the assertion: it targets this element,
+    // by a page, and the ring does not move.
+    const scrollBy = vi.fn();
+    element!.scrollBy = scrollBy;
+    // jsdom reports a zero-height box; the ratio is applied to whatever it reports, so a
+    // fake height makes the expected delta explicit.
+    Object.defineProperty(element!, "clientHeight", { configurable: true, value: 800 });
+
+    press({ code: "PageDown", key: "PageDown" });
+    expect(scrollBy).toHaveBeenCalledWith(expect.objectContaining({ top: Math.round(800 * 0.85) }));
+    press({ code: "PageUp", key: "PageUp" });
+    expect(scrollBy).toHaveBeenLastCalledWith(expect.objectContaining({ top: -Math.round(800 * 0.85) }));
+    // The ring is still on the first cell: scrolling is not navigation.
+    press({ code: "Enter", key: "Enter" });
+    expect(drawn("input")).toEqual(["a"]);
+  });
+
+  it("scrolls with the arrows once the conversation fills the screen", () => {
+    // In the reading layer ↑/↓ have nothing else to do (`←`/`→` switch conversations), so
+    // they scroll — which is what a reader expects of a transcript they can see in full.
+    mount({ threads: [thread("a", 100)] });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    const element = container.querySelector<HTMLElement>("[data-vibe-transcript-for=\"local:a\"] [data-chat-scroll]");
+    expect(element).not.toBeNull();
+    const scrollBy = vi.fn();
+    element!.scrollBy = scrollBy;
+    Object.defineProperty(element!, "clientHeight", { configurable: true, value: 600 });
+    press({ code: "ArrowDown", key: "ArrowDown" });
+    expect(scrollBy).toHaveBeenCalledWith(expect.objectContaining({ top: Math.round(600 * 0.85) }));
+  });
+
+  it("jumps to the newest message on the remote's home button", () => {
+    mount({ threads: [thread("a", 100)] });
+    const element = transcript();
+    const scrollTo = vi.fn();
+    element!.scrollTo = scrollTo;
+    Object.defineProperty(element!, "scrollHeight", { configurable: true, value: 4000 });
+    press({ code: "BrowserHome", key: "BrowserHome" });
+    expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ top: 4000 }));
+  });
+});
+
+describe("the empty square", () => {
+  // Reported from use: a 3×2 grid with five pinned conversations leaves one square empty,
+  // and that square is where a reader looks for "add one". It is a *slot* in the ring, so
+  // the arrows reach it and `⏎` opens the picker — not a floating button.
+  const tile = () => container.querySelector("[data-vibe-add-slot]");
+
+  it("fills a free square, and only when there is one", () => {
+    // Five cells are 3×2: one square free.
+    mount({ threads: [1, 2, 3, 4, 5].map(index => thread(`t${index}`, index * 100)) });
+    expect(tile()).not.toBeNull();
+    // Four cells are a full 2×2: no free square, so no tile (the menu's add row is the way
+    // in). This is what keeps the layout table honest.
+    mount({ threads: [1, 2, 3, 4].map(index => thread(`t${index}`, index * 100)) });
+    expect(tile()).toBeNull();
+  });
+
+  /**
+   * Put the ring on the tile by its printed number — the same rule a cell follows ("type
+   * the number on the square"), and the only way that works for every shape: on a 2×2 the
+   * tile is one `→` from the last cell, on a 3×2 it is `→` twice.
+   */
+  function focusTile(number: number) {
+    press({ code: `Digit${number}`, key: String(number) });
+    expect(container.querySelector("[data-vibe-focused]")?.getAttribute("data-vibe-focused")).toBe("__add__");
+  }
+
+  it("is reachable with the arrows and opens the picker on ⏎", () => {
+    mount({ threads: [1, 2, 3].map(index => thread(`t${index}`, index * 100)) });
+    // Three cells are 2×2, so the tile is the fourth slot.
+    focusTile(4);
+    press({ code: "Enter", key: "Enter" });
+    expect(container.querySelector("[role=\"menu\"]")).not.toBeNull();
+    // The picker always offers the two ways out, even with nothing recent to offer.
+    expect(container.querySelector("[data-vibe-menu-row=\"add:browse\"]")).not.toBeNull();
+    expect(container.querySelector("[data-vibe-menu-row=\"add:new\"]")).not.toBeNull();
+  });
+
+  it("lists recently active conversations, and pins the one chosen", () => {
+    const onPinLocal = vi.fn();
+    mount({
+      onPinLocal,
+      threads: [
+        thread("a", 100),
+        thread("b", 200),
+        thread("c", 300),
+        // Unpinned, so candidates: the most recently touched wins the first row.
+        thread("older", 50, { lastMessageAt: 300, pinned: false }),
+        thread("newer", 60, { lastMessageAt: 900, pinned: false }),
+      ],
+    });
+    // Three pinned cells are a 2×2 with one square free: the tile is the fourth slot. The
+    // two candidates below are unpinned, which is what makes them candidates at all.
+    focusTile(4);
+    press({ code: "Enter", key: "Enter" });
+    const rows = [...container.querySelectorAll("[data-vibe-menu-row]")].map(row => row.getAttribute("data-vibe-menu-row"));
+    expect(rows[0]).toBe("recent:local:newer");
+    expect(rows[1]).toBe("recent:local:older");
+    press({ code: "Enter", key: "Enter" });
+    expect(onPinLocal).toHaveBeenCalledWith("newer", true);
+  });
+
+  it("offers a way to the full picker and to a new conversation", () => {
+    const onNewConversation = vi.fn();
+    mount({ onNewConversation, threads: [thread("a", 100)] });
+    // One cell is a full 1×1, so reach the picker the way a reader would: the panel menu.
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    walkTo("add");
+    press({ code: "Enter", key: "Enter" });
+    // The browse dialog is the shell's; the new-conversation hand-off is the panel's.
+    expect(container.querySelector("[role=\"dialog\"]")).not.toBeNull();
+    press({ code: "Escape", key: "Escape" });
+    mount({ onNewConversation, threads: [thread("a", 100), thread("b", 200)] });
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    walkTo("add");
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+  });
+});
+
+describe("more than a page of pinned conversations", () => {
+  // Twelve cells was a silent cap: a thirteenth pinned conversation was unreachable and the
+  // bar said "1 more than the grid holds". The grid now pages.
+  const thirteen = () => Array.from({ length: 13 }, (_, index) => thread(`t${String(index).padStart(2, "0")}`, (index + 1) * 100));
+
+  it("shows twelve, says which page, and reaches the rest", () => {
+    mount({ threads: thirteen() });
+    expect(container.querySelectorAll("[data-vibe-cell]")).toHaveLength(12);
+    expect(container.querySelector("[data-vibe-page]")?.textContent).toContain("1/2");
+    press({ code: "ArrowRight", key: "ArrowRight", altKey: true });
+    expect(container.querySelectorAll("[data-vibe-cell]")).toHaveLength(1);
+    expect(container.querySelector("[data-vibe-page]")?.textContent).toContain("2/2");
+    // The thirteenth is the one on page two, and it is reachable.
+    press({ code: "Enter", key: "Enter" });
+    expect(drawn("input")).toEqual(["t12"]);
+  });
+
+  it("falls back a page when the reader unpins their way back to twelve", () => {
+    // An unpin on page two that leaves exactly one page must not strand the reader on an
+    // empty grid.
+    mount({ threads: thirteen() });
+    press({ code: "ArrowRight", key: "ArrowRight", altKey: true });
+    expect(container.querySelector("[data-vibe-page]")?.textContent).toContain("2/2");
+    mount({ threads: thirteen().slice(0, 12) });
+    expect(container.querySelectorAll("[data-vibe-cell]")).toHaveLength(12);
+    expect(container.querySelector("[data-vibe-page]")).toBeNull();
+  });
+
+  it("does not offer the page keys with a single page", () => {
+    // The panel's rule for every command: a key that could not do anything stays the app's.
+    mount({ threads: [thread("a", 100)] });
+    expect(container.querySelector("[data-vibe-page]")).toBeNull();
+    press({ code: "ArrowRight", key: "ArrowRight", altKey: true });
+    expect(drawn("read")).toEqual(["a"]);
   });
 });
 

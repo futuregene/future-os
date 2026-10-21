@@ -23,6 +23,15 @@ export interface PaletteCommand {
   /** Already translated. */
   label: string;
   category: CommandCategory;
+  /**
+   * Extra search terms that do not appear in the label — "keybind" for the
+   * shortcut settings page, "hotkey", "keys".
+   *
+   * A palette is searched by the word in the user's head, and that word is often
+   * not the word the label happens to use. Aliases only ever *find* a row; they
+   * never rank it above a label match.
+   */
+  aliases?: readonly string[];
 }
 
 /** Somewhere the palette may go. */
@@ -43,6 +52,8 @@ export interface PaletteEntry {
   /** Second line: the category for a command, the location for a target. */
   hint?: string;
   commandId?: CommandId;
+  /** Extra search terms; see `PaletteCommand.aliases`. */
+  aliases?: readonly string[];
   run?: () => void;
 }
 
@@ -69,6 +80,26 @@ export interface PaletteLabels {
  * makes a prefix hit win over a mid-word one; inside one rank the caller's order
  * is kept, so the table's order and the rail's order survive.
  */
+/**
+ * The rank of one row: its label's, or one tier worse for an alias-only hit.
+ *
+ * The penalty is what keeps `shortcut` finding the command actually *named*
+ * "Keyboard shortcut settings" before a command that merely lists the word as an
+ * alias.
+ */
+export function entryRank(label: string, aliases: readonly string[], query: string): number {
+  if (query.length === 0)
+    return 0;
+  const own = matchRank(label, query);
+  if (own >= 0)
+    return own;
+  const alias = aliases
+    .map(candidate => matchRank(candidate, query))
+    .filter(rank => rank >= 0)
+    .sort((left, right) => left - right)[0];
+  return alias === undefined ? -1 : alias + 3;
+}
+
 export function matchRank(label: string, query: string): number {
   if (query.length === 0)
     return 0;
@@ -85,7 +116,7 @@ function rankBy(entries: PaletteEntry[], query: string): PaletteEntry[] {
   if (query.length === 0)
     return entries;
   return entries
-    .map(entry => ({ entry, rank: matchRank(entry.label, query) }))
+    .map(entry => ({ entry, rank: entryRank(entry.label, aliasesOf(entry), query) }))
     .filter(scored => scored.rank >= 0)
     .sort((left, right) => left.rank - right.rank)
     .map(scored => scored.entry);
@@ -116,6 +147,7 @@ export function paletteSections(
   const sections: PaletteSection[] = [
     {
       entries: rankBy(commands.map(command => ({
+        aliases: command.aliases,
         commandId: command.id,
         hint: labels.category(command.category),
         key: command.id,
@@ -136,6 +168,11 @@ export function paletteSections(
     },
   ];
   return sections.filter(section => section.entries.length > 0);
+}
+
+/** A row's aliases, or none — a target has no keyword list of its own. */
+function aliasesOf(entry: PaletteEntry): readonly string[] {
+  return entry.aliases ?? [];
 }
 
 /** Every row in reading order — what the arrow keys walk. */

@@ -486,6 +486,14 @@ function ReadyAppShell({
     visibleModelOptions,
     refreshStore,
   });
+  /**
+   * Set by the Vibe panel's add tile right before it opens the new-conversation screen.
+   *
+   * Read (and cleared) once, at the moment a thread is created, so "add a conversation" and
+   * "pin what you create" stay one promise without the panel having to watch the store for
+   * a thread it did not create.
+   */
+  const pinNextCreatedRef = useRef(false);
   const {
     pendingPrompt,
     startNewConversation,
@@ -495,6 +503,11 @@ function ReadyAppShell({
     syncSelection,
     setSection,
     setCenterMode,
+    pinCreated: () => {
+      const armed = pinNextCreatedRef.current;
+      pinNextCreatedRef.current = false;
+      return armed;
+    },
   });
   const {
     renameDialog,
@@ -1140,6 +1153,13 @@ function ReadyAppShell({
     setSettingsTab("general");
     setSettingsOpen(true);
   }, shortcutsLive);
+  // The same dialog on the page that edits the binds — what `⌘/` points at. A
+  // separate command rather than a flag on `settings.open`: two intents, two
+  // rebindable keys, and `⌘,` keeps opening the page it always did.
+  useCommand("shortcuts.settings", () => {
+    setSettingsTab("shortcuts");
+    setSettingsOpen(true);
+  }, shortcutsLive);
   useCommand("section.chat", () => handleSectionChange("chat"), shortcutsLive);
   useCommand("section.workspace", () => handleSectionChange("workspace"), shortcutsLive);
   useCommand("section.skill", () => handleSectionChange("skill"), shortcutsLive);
@@ -1165,6 +1185,7 @@ function ReadyAppShell({
     () => COMMANDS
       .filter(spec => spec.category !== "palette")
       .map(spec => ({
+        aliases: tShortcuts(`keywords.${spec.id}`, { defaultValue: [], returnObjects: true }) as unknown as string[],
         category: spec.category,
         id: spec.id,
         label: tShortcuts(`commands.${spec.id}`),
@@ -1352,6 +1373,11 @@ function ReadyAppShell({
               onOpenRemoteInShell={(desktopId, sessionId) => {
                 openRemoteSession(desktopId, sessionId);
                 setVibeOpen(false);
+              }}
+              onNewConversation={() => {
+                pinNextCreatedRef.current = true;
+                setVibeOpen(false);
+                handleOpenNewChat();
               }}
               onPinLocal={(threadId, pinned) => void pinLocalThread(threadId, pinned)}
               onPinRemote={(desktopId, sessionId, pinned) => void pinRemoteSession(desktopId, sessionId, pinned)}

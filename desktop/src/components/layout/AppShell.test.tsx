@@ -5,7 +5,7 @@ import type { ActivityRail } from "./ActivityRail";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { hasCommandHandler } from "../../features/keyboard/commands";
+import { hasCommandHandler, runCommand } from "../../features/keyboard/commands";
 import { resetAllCommandBindings, setCommandBinding } from "../../features/keyboard/shortcuts";
 import { forgetHostCatalogue, warmHostCatalogue } from "../../features/remote-peer/remoteHostCatalog";
 import { defaultAgentModelId } from "../../integrations/agent/agentClient";
@@ -2859,8 +2859,32 @@ describe("app shell keyboard commands", () => {
 
   it("opens settings on its own accelerator", () => {
     const view = mount(<AppShell />);
-    press({ ctrlKey: true, key: "," });
-    expect((children.settingsDialog as { open: boolean }).open).toBe(true);
+    press({ ctrlKey: true, code: "Comma", key: "," });
+    expect((children.settingsDialog as { open: boolean; initialTab: string }).open).toBe(true);
+    // The first page, unchanged: `⌘⇧,` is the one that goes to the shortcuts page.
+    expect((children.settingsDialog as { initialTab: string }).initialTab).toBe("general");
+    view.unmount();
+  });
+
+  it("opens settings straight on the shortcuts page on its own accelerator", () => {
+    const view = mount(<AppShell />);
+    press({ code: "Comma", ctrlKey: true, key: ",", shiftKey: true });
+    expect((children.settingsDialog as { open: boolean; initialTab: string }).open).toBe(true);
+    expect((children.settingsDialog as { initialTab: string }).initialTab).toBe("shortcuts");
+    view.unmount();
+  });
+
+  it("reaches the same page from the palette, as an ordinary command", () => {
+    // `⌘⇧,` is in the table like every other command, so the palette lists it and
+    // runs it through the registry — no second "open settings" path.
+    const view = mount(<AppShell />);
+    press({ code: "KeyK", ctrlKey: true, key: "k" });
+    const offered = (children.commandPalette as { commands: Array<{ id: string; label: string }> }).commands;
+    expect(offered).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "shortcuts.settings", label: "Keyboard shortcut settings" }),
+    ]));
+    act(() => runCommand("shortcuts.settings"));
+    expect((children.settingsDialog as { initialTab: string }).initialTab).toBe("shortcuts");
     view.unmount();
   });
 

@@ -3,6 +3,18 @@
 use anyhow::Result;
 use rusqlite::{params, Connection};
 
+/// Bump whenever [`ensure_history_index`] would produce a different index from
+/// the same journal. `history_index_state.projection_version` records which
+/// version built a session's rows, so a bump makes every session rebuild once,
+/// lazily, on its next read — the projection is derived data, never the journal.
+///
+/// 2: `entry_shape` keeps a `compaction` entry's checkpoint. Version 1 shaped
+/// every compaction row with `content: ""`, so `payload.checkpoint` was the
+/// empty string: the divider lost its numbers, its `phase` (which decides
+/// whether an in-turn checkpoint stays inside the exchange or splits it) and its
+/// identity. Those rows must be rebuilt, not patched — the shape is the input.
+pub(crate) const PROJECTION_VERSION: i64 = 2;
+
 /// Keep healthy reads on a read transaction. If reconstruction is needed,
 /// release that snapshot before reserving a writer and recheck under the lock.
 pub(crate) fn with_history_index<T>(
@@ -26,17 +38,18 @@ pub(crate) fn with_history_index<T>(
 
 fn history_index_ready(db: &Connection, session: &str) -> Result<bool> {
     Ok(db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM history_index_state WHERE session_id=?1 AND projection_version=1)",
-        [session], |row| row.get(0),
+        "SELECT EXISTS(SELECT 1 FROM history_index_state WHERE session_id=?1 AND projection_version=?2)",
+        params![session, PROJECTION_VERSION],
+        |row| row.get(0),
     )?)
 }
 
 pub(crate) fn mark_history_index_ready(db: &Connection, session: &str) -> Result<()> {
     db.execute(
         "INSERT INTO history_index_state(session_id,projection_version)
-        SELECT id,1 FROM sessions WHERE id=?1
+        SELECT id,?2 FROM sessions WHERE id=?1
         ON CONFLICT(session_id) DO UPDATE SET projection_version=excluded.projection_version",
-        [session],
+        params![session, PROJECTION_VERSION],
     )?;
     Ok(())
 }

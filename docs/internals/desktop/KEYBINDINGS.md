@@ -181,18 +181,21 @@ below). `mod` is `⌘` on macOS and `Ctrl` elsewhere:
 | Action | Default | Scope |
 | --- | --- | --- |
 | Open or close the panel | `mod+shift+v` | global |
-| Move the selection | `← ↑ → ↓` | vibeGrid |
+| Move the selection | `← ↑ → ↓`, or `h j k l` | vibeGrid |
 | Enter the selected cell → its **input layer** | `↩` | vibeGrid |
 | Close the panel | `Esc` / `Back` | vibeGrid |
 | Leave the zoomed cell | `Esc` / `Back` | vibeZoom |
-| Previous / next conversation in the zoomed cell | `←` / `→` | vibeZoom |
-| Previous / next message block | `↑` / `↓` | vibeZoom |
+| Previous / next conversation in the zoomed cell | `←` / `→`, or `h` / `l` | vibeZoom |
+| Scroll the conversation up / down | `↑` / `↓`, or `PageUp` / `PageDown` | vibeZoom |
+| Scroll the selected cell (without zooming in) | `PageUp` / `PageDown` | vibeGrid |
 | Open the input layer | `↩` | vibeZoom |
-| Send the dictation (empty draft: close) | `↩` — the composer's own fixed key, not a command | vibeInput |
+| Send the dictation (empty draft: close; a run in flight: queue it) | `↩` — the composer's own fixed key, not a command | vibeInput |
 | Leave the input layer | `Esc` / `Back` | vibeInput |
+| Take a queued sentence back into the box | `mod+shift+x` / the menu's cancel row | vibeInput / vibe |
 | The layer's menu | `mod+shift+k` / `Menu` | vibe |
 | Jump to the live end of the conversation | `Home` | vibe |
-| Go to a numbered cell | `1`–`9` | vibeGrid |
+| Go to a numbered cell, or the add tile | `1`–`9` | vibeGrid |
+| Previous / next page of the grid (registered only past twelve pinned) | `alt+←` / `alt+→` | vibeGrid |
 | Previous / next cell | `mod+[` / `mod+]` | (reuses `thread.previous`/`next`; the panel registers them, the rail does not) |
 | Cycle the grid layout | `mod+shift+g` | vibe |
 | More / fewer columns, automatic | `mod+=` / `mod+-` / `mod+0` | vibe |
@@ -227,6 +230,12 @@ Three notes on this table:
   panel registers `thread.next` as "next cell", outside it the rail registers it
   as "next conversation". The registry keeps one handler per command, so the two
   cannot both be live.
+* **`h`/`j`/`k`/`l` are second bindings on the four movement commands**, not four more
+  commands: the movement is the same movement. They are listed read-only in the settings
+  page (like `vibe.cell`), because a rebindable pair would let a reader shadow them
+  without seeing what they shadowed. They never fire over an editor — a modifier-less
+  keystroke belongs to the field that has the caret — so typing `h` in a dictation is
+  an `h`.
 * **`1`–`9` is one command with nine bindings** (`vibe.cell`), because a cell is
   chosen by the digit printed on it. The settings page shows them as a read-only
   key list: recording a single key for a nine-key command would ask a question the
@@ -242,12 +251,27 @@ and the rail's "next" are the same command on the same key.
 
 ## Finding a key: the palette and the cheat sheet
 
-Two entries exist to find the others, both global and both rebindable:
+Three entries exist around finding and changing the others, all global and all
+rebindable:
 
 | Action | Default | What it answers |
 | --- | --- | --- |
 | Jump to a command or conversation (`palette.open`) | `mod+k` | *do this* / *go there* |
 | Show all shortcuts (`shortcuts.help`) | `mod+/` | *what can I press* |
+| Keyboard shortcut settings (`shortcuts.settings`) | `mod+shift+,` | *change one* |
+
+`settings.open` keeps `mod+,` and keeps opening Settings on its **first** page:
+`mod+shift+,` is an addition, not a move, so the page a reader sees when they open
+settings is unchanged. The cheat sheet's header carries the one button it needs —
+*Edit shortcuts* — and that button **runs the `shortcuts.settings` command** rather
+than opening Settings itself, so there is one path to that page (`runCommand`),
+rebindable and reachable from the palette and the macOS menu like any other.
+
+It is also findable by words its label does not contain: the palette matches
+`keywords.<id>` as well as the label (`shortcuts.json`), so "keybind", "hotkey" and
+"rebind" reach the shortcut settings row. An alias only ever *finds* a row — a
+label match always ranks above one — so adding keywords cannot push the command
+someone searched for by name down the list.
 
 **The palette is not a second `mod+shift+f`.** `mod+shift+f` filters the rail's
 list in place — it narrows what is already on screen; the palette navigates,

@@ -144,6 +144,14 @@ export interface AgentThreadProps {
    * does by default", which is what keeps the main window untouched.
    */
   composerControls?: "full" | "none";
+  /**
+   * What a send means while this conversation's run is still in flight.
+   *
+   * Only the panel passes it: the draft is handed over and queued instead of being
+   * dropped, and `false` means "one is already queued" — the text then stays in the
+   * editor (`Composer.onQueue`).
+   */
+  onQueue?: (payload: ComposerSendPayload) => boolean;
 }
 
 export function AgentThread({
@@ -182,6 +190,7 @@ export function AgentThread({
   inputHeader,
   inputFooter,
   composerControls,
+  onQueue,
 }: AgentThreadProps) {
   const { t } = useTranslation("agent");
   const agentState = useCachedAgentState(thread?.id);
@@ -569,6 +578,7 @@ export function AgentThread({
           // also eat the next utterance's keys (`VIBE.md` §5.3).
           triggers={!isInput}
           controls={composerControls}
+          onQueue={onQueue}
           onSend={handleComposerSend}
           workspaceId={thread?.workspaceId}
           sessionMentions={sessionMentions}
@@ -636,7 +646,12 @@ export function AgentThread({
         data-chat-scroll="true"
         className={cn(
           "floating-scrollbar h-full overflow-auto overscroll-none",
-          chrome === "full" ? "px-8 pt-6" : "px-5 pt-4",
+          // The panel's reading layer is read from further away and has no composer band
+          // under it, so it gets more air at both ends than the main window's transcript:
+          // a conversation should not start flush against the bar above it. The main window
+          // keeps its own top inset and gains a bottom one, which it never had — the
+          // floating composer covered the last line instead of clearing it.
+          chrome === "full" ? "px-8 pt-8 pb-10" : "px-6 pt-10 pb-16",
           isInput && "opacity-55",
         )}
         style={{ overflowAnchor: "none" }}
@@ -663,6 +678,10 @@ export function AgentThread({
                 : (
                     <MessageList
                       messages={shownMessages}
+                      // More air between turns where the panel reads: same list, different
+                      // rhythm, because the reading layer has no composer competing for
+                      // the eye and is read from further away.
+                      spacing={isRead || isInput ? "roomy" : "default"}
                       workspaceId={renderWorkspace.workspaceId}
                       workspacePath={renderWorkspace.workspacePath}
                       onContinue={handleContinueMessage}

@@ -758,7 +758,7 @@ erDiagram
 | `message_blocks` | PK `(session_id,entry_position,ordinal)`；`kind/text/tool_call_id/tool_name/arguments_json/is_error/metadata_json` | 复合外键级联到 entry；ordinal 非负、is_error 为 NULL/0/1。`message_blocks_tool(session_id,tool_call_id,kind)` 服务工具结果检索；run 隔离经 entries 联接实现 |
 | `runs` | PK `(session_id,run_id)`；`status/run_sequence/epoch/started_at_ms/completed_at_ms/error` | 外键级联到 session；`runs_status(session_id,status,run_sequence)` 服务状态查询。输入/输出/cache token、duration 及 input/cache baseline 均为独立列，baseline 只用于累计用量转每轮用量 |
 | `run_events` | INTEGER PK `sequence`；`session_id/run_id/epoch/idx/event_id/payload` | 外键级联到 session；唯一 `(session_id,run_id,idx,epoch)` 防坐标冲突；非空自定义 event_id 使用 `(session_id,event_id)` 部分唯一索引。sequence 是物理写入顺序，不是客户端游标 |
-| `history_shapes` | PK `(session_id,position)`；`payload` | 外键级联到 entry；不含正文的派生结构，用于配对、去重、占位与运行注解 |
+| `history_shapes` | PK `(session_id,position)`；`payload` | 外键级联到 entry；不含正文的派生结构，用于配对、去重、占位、运行注解，以及 compaction 条目的 checkpoint（分隔线的身份、计数与 phase——它是投影的输入，整份保留，否则索引页会与直接投影不一致） |
 | `history_display` | PK `(session_id,ordinal)`；`source_position/is_user/payload` | 外键级联到 session；`history_users(session_id,is_user,ordinal)` 支持倒序整轮分页。source_position 可空，表示合成占位；不是第二份正文 |
 | `legacy_imports` | PK `session_id`；`status/fingerprint/error_file/error_line/error_kind/warnings` | status 限 imported/skipped/deleted；每会话导入结果及防复活墓碑，无正文 |
 | `storage_meta` | PK `key`；`value` | 库级控制标记，例如一次性导入完成状态 |

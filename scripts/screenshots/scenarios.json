@@ -2403,6 +2403,290 @@
             "shot": "d-vibe-settings-menu.png"
           }
         ]
+      },
+      "vibe-queue": {
+        "url": "http://localhost:5299/shot/?streaming=th_review&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const queued = document.querySelector('[data-vibe-queued]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,queued: queued ? queued.textContent : null,editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 800
+          },
+          {
+            "eval": "(() => {const ed = document.querySelector('[contenteditable=\"true\"]');if (!ed) return 'no editor';ed.focus();ed.textContent = '顺便把这批数据也清洗一下';const node = ed.firstChild; const r = document.createRange();r.setStart(node, node.textContent.length); r.collapse(true);const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);ed.dispatchEvent(new InputEvent('input', {bubbles: true, inputType: 'insertText', data: ed.textContent}));return 'typed';})()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const queued = document.querySelector('[data-vibe-queued]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,queued: queued ? queued.textContent : null,editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-queue.png"
+          }
+        ]
+      },
+      "vibe-keyprobe": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "(() => {const panel = document.querySelector('[data-vibe-key-probe]');if (!panel) return JSON.stringify({open: false});return JSON.stringify({open: true,lines: [...panel.querySelectorAll('div.font-mono > div')].map(l => l.textContent),});})()"
+          },
+          {
+            "eval": "(() => {for (let i = 0; i < 3; i++)  window.dispatchEvent(new KeyboardEvent('keydown', {key: 'k', code: 'KeyK', altKey: true, shiftKey: true, bubbles: true, cancelable: true}));return 'gesture';})()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => {const panel = document.querySelector('[data-vibe-key-probe]');if (!panel) return JSON.stringify({open: false});return JSON.stringify({open: true,lines: [...panel.querySelectorAll('div.font-mono > div')].map(l => l.textContent),});})()"
+          },
+          {
+            "eval": "(function(){const c='ArrowUp';window.dispatchEvent(new KeyboardEvent('keydown',{key:c,code:c,bubbles:true,cancelable:true}));return 'ArrowUp';})()"
+          },
+          {
+            "wait": 200
+          },
+          {
+            "eval": "(function(){const c='Home';window.dispatchEvent(new KeyboardEvent('keydown',{key:c,code:c,bubbles:true,cancelable:true}));return 'Home';})()"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "eval": "(() => {const panel = document.querySelector('[data-vibe-key-probe]');if (!panel) return JSON.stringify({open: false});return JSON.stringify({open: true,lines: [...panel.querySelectorAll('div.font-mono > div')].map(l => l.textContent),});})()"
+          },
+          {
+            "eval": "JSON.stringify({focused: document.querySelector('[data-vibe-layer]')?.getAttribute('data-vibe-focused') ?? null, probe: !!document.querySelector('[data-vibe-key-probe]')})"
+          },
+          {
+            "eval": "(function(){window.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',code:'ArrowRight',bubbles:true,cancelable:true}));return 'right';})()"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "eval": "JSON.stringify({focused: document.querySelector('[data-vibe-layer]')?.getAttribute('data-vibe-focused') ?? null, probe: !!document.querySelector('[data-vibe-key-probe]')})"
+          },
+          {
+            "shot": "d-vibe-keyprobe.png"
+          }
+        ]
+      },
+      "vibe-column": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "(() => {const col = document.querySelector('[data-vibe-panel-column]');const root = document.querySelector('[data-vibe-layer]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!col,width: col ? Math.round(col.getBoundingClientRect().width) : null,tabs: col ? [...col.querySelectorAll('button')].map(b => b.textContent.trim()).filter(Boolean).slice(0, 6) : [],editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 800
+          },
+          {
+            "key": "Escape"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => {const col = document.querySelector('[data-vibe-panel-column]');const root = document.querySelector('[data-vibe-layer]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!col,width: col ? Math.round(col.getBoundingClientRect().width) : null,tabs: col ? [...col.querySelectorAll('button')].map(b => b.textContent.trim()).filter(Boolean).slice(0, 6) : [],editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-column.png"
+          },
+          {
+            "eval": "(function(){const mac=/Mac/i.test(navigator.platform||navigator.userAgent);window.dispatchEvent(new KeyboardEvent('keydown',{key:'\\\\\\\\',code:'Backslash',metaKey:mac,ctrlKey:!mac,bubbles:true,cancelable:true}));return 'hide';})()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => {const col = document.querySelector('[data-vibe-panel-column]');const root = document.querySelector('[data-vibe-layer]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!col,width: col ? Math.round(col.getBoundingClientRect().width) : null,tabs: col ? [...col.querySelectorAll('button')].map(b => b.textContent.trim()).filter(Boolean).slice(0, 6) : [],editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-column-hidden.png"
+          }
+        ]
+      },
+      "vibe-bar": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "(() => {const bar = document.querySelector('header');const label = bar ? bar.querySelector('span') : null;return JSON.stringify({pad: bar ? getComputedStyle(bar).paddingLeft : null,labelLeft: label ? Math.round(label.getBoundingClientRect().left) : null,drag: bar ? bar.getAttribute('data-vibe-drag') : null,fullscreenButton: !!document.querySelector('[aria-label=\"切换全屏\"], [aria-label=\"Toggle full screen\"]'),});})()"
+          },
+          {
+            "eval": "document.querySelector('[data-vibe-layer]')?.getAttribute('data-vibe-layer')"
+          },
+          {
+            "shot": "d-vibe-bar.png"
+          }
+        ]
+      },
+      "vibe-usability": {
+        "url": "http://localhost:5299/shot/?pinned=th_review,th_data&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "key": "2"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "eval": "(() => {const s = document.querySelector('[data-vibe-transcript-for=\"local:th_review\"] [data-chat-scroll]');if (!s) return 'no transcript';return JSON.stringify({top: Math.round(s.scrollTop), height: s.scrollHeight, view: s.clientHeight,pad: getComputedStyle(s).paddingTop + '/' + getComputedStyle(s).paddingBottom});})()"
+          },
+          {
+            "eval": "(function(k){window.dispatchEvent(new KeyboardEvent('keydown',{key:k,code:k,bubbles:true,cancelable:true}));return k;})('PageUp')"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(function(k){window.dispatchEvent(new KeyboardEvent('keydown',{key:k,code:k,bubbles:true,cancelable:true}));return k;})('PageUp')"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => {const s = document.querySelector('[data-vibe-transcript-for=\"local:th_review\"] [data-chat-scroll]');if (!s) return 'no transcript';return JSON.stringify({top: Math.round(s.scrollTop), height: s.scrollHeight, view: s.clientHeight,pad: getComputedStyle(s).paddingTop + '/' + getComputedStyle(s).paddingBottom});})()"
+          },
+          {
+            "shot": "d-vibe-scroll-cell.png"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "key": "Escape"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => {const s = document.querySelector('[data-vibe-transcript-for=\"local:th_review\"] [data-chat-scroll]');if (!s) return 'no transcript';return JSON.stringify({layer: document.querySelector('[data-vibe-layer]')?.getAttribute('data-vibe-layer'),pad: getComputedStyle(s).paddingTop + '/' + getComputedStyle(s).paddingBottom,roomy: !!s.querySelector('.space-y-8'),tight: !!s.querySelector('.space-y-5'),});})()"
+          },
+          {
+            "shot": "d-vibe-reading-room.png"
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const prefs = JSON.parse(localStorage.getItem('future.vibe.prefs') || '{}');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!document.querySelector('[data-vibe-panel-column]'),panelDefault: prefs.panelDefault ?? null,entry: Object.entries(prefs.panel || {}).map(([k, v]) => k + '=' + v),});})()"
+          },
+          {
+            "eval": "(() => {const mac = /Mac/i.test(navigator.platform || navigator.userAgent);window.dispatchEvent(new KeyboardEvent('keydown', {key: '\\\\', code: 'Backslash',metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true}));return mac ? 'meta+backslash' : 'ctrl+backslash';})()"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const prefs = JSON.parse(localStorage.getItem('future.vibe.prefs') || '{}');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!document.querySelector('[data-vibe-panel-column]'),panelDefault: prefs.panelDefault ?? null,entry: Object.entries(prefs.panel || {}).map(([k, v]) => k + '=' + v),});})()"
+          },
+          {
+            "key": "ArrowRight"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const prefs = JSON.parse(localStorage.getItem('future.vibe.prefs') || '{}');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!document.querySelector('[data-vibe-panel-column]'),panelDefault: prefs.panelDefault ?? null,entry: Object.entries(prefs.panel || {}).map(([k, v]) => k + '=' + v),});})()"
+          },
+          {
+            "shot": "d-vibe-column-stays-closed.png"
+          }
+        ]
+      },
+      "vibe-add-tile": {
+        "url": "http://localhost:5299/shot/?pinned=th_data&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "JSON.stringify({cells: [...document.querySelectorAll('[data-vibe-cell]')].length, tile: !!document.querySelector('[data-vibe-add-slot]'), cols: document.querySelector('.grid') ? getComputedStyle(document.querySelector('.grid')).gridTemplateColumns : null})"
+          },
+          {
+            "eval": "(() => {const tile = document.querySelector('[data-vibe-add-slot]');const grid = document.querySelector('.grid');return JSON.stringify({tile: !!tile,tileText: tile ? tile.textContent : null,cells: document.querySelectorAll('[data-vibe-cell]').length,columns: grid ? getComputedStyle(grid).gridTemplateColumns.split(' ').length : null,tileColumn: tile ? getComputedStyle(tile).gridColumnStart : null,});})()"
+          },
+          {
+            "shot": "d-vibe-add-tile.png"
+          },
+          {
+            "eval": "(function(){window.dispatchEvent(new KeyboardEvent('keydown',{key:'4',code:'Digit4',bubbles:true,cancelable:true}));return document.querySelector('[data-vibe-focused]')?.getAttribute('data-vibe-focused');})()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => {const tile = document.querySelector('[data-vibe-add-slot]');const grid = document.querySelector('.grid');return JSON.stringify({tile: !!tile,tileText: tile ? tile.textContent : null,cells: document.querySelectorAll('[data-vibe-cell]').length,columns: grid ? getComputedStyle(grid).gridTemplateColumns.split(' ').length : null,tileColumn: tile ? getComputedStyle(tile).gridColumnStart : null,});})()"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "JSON.stringify({rows: [...document.querySelectorAll('[data-vibe-menu-row]')].map(r => r.getAttribute('data-vibe-menu-row')), title: document.querySelector('[role=\"menu\"] [aria-label], [role=menu]')?.getAttribute('aria-label') ?? null})"
+          },
+          {
+            "shot": "d-vibe-add-menu.png"
+          }
+        ]
+      },
+      "vibe-pages": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_fig,th_longformer,th_ablation,th_sc,th_temp,th_chat1,th_chat2,th_chat3,th_review_a,th_review_b,th_review_b1&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "JSON.stringify((() => ({cells: document.querySelectorAll('[data-vibe-cell]').length,page: document.querySelector('[data-vibe-page]')?.textContent ?? null,}))())"
+          },
+          {
+            "shot": "d-vibe-page-one.png"
+          },
+          {
+            "eval": "(function(){const mac=/Mac/i.test(navigator.platform||navigator.userAgent);window.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',code:'ArrowRight',altKey:true,bubbles:true,cancelable:true}));return 'next page';})()"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "JSON.stringify((() => ({cells: document.querySelectorAll('[data-vibe-cell]').length,page: document.querySelector('[data-vibe-page]')?.textContent ?? null,}))())"
+          },
+          {
+            "shot": "d-vibe-page-two.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",

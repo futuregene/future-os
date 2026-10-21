@@ -35,7 +35,9 @@
     "model": "Model",
     "thinking": "Thinking level",
     "approval": "Approval",
-    "approvalHint": "Applies to every conversation, not just this cell"
+    "approvalHint": "Applies to every conversation, not just this cell",
+    "panel": "Right column",
+    "panelHint": "Automatic follows the window; pinned stays for this conversation"
   },
   "attention": {
     "badge": "{{count}} need you",
@@ -53,12 +55,41 @@
     "empty": "Nothing here can be added. Every conversation in this place is already pinned.",
     "add": "Add",
     "added": "In the panel",
-    "footer": "Adding pins the conversation: it appears here and in the sidebar's pinned section."
+    "footer": "Adding pins the conversation: it appears here and in the sidebar's pinned section.",
+    "recent": "Recently active",
+    "browse": "Browse every conversation…",
+    "newConversation": "Start a new conversation…",
+    "newConversationHint": "Opens the new-conversation screen and pins what you create"
   },
   "devices": {
     "local": "This Mac",
     "chats": "Chats",
     "all": "All machines",
     "label": "Machines"
-  }
+  },
+  "queue": {
+    "queued": "Queued — waiting for this run",
+    "held": "The queued message stays queued: this conversation's box already has text",
+    "returned": "Back in the box",
+    "cancel": "Take the queued message back"
+  },
+  "probe": {
+    "title": "Key check (read-only)",
+    "hint": "Press ⌥⇧K three times to close. Nothing here blocks a key.",
+    "copy": "Copy",
+    "copied": "Copied",
+    "close": "Close",
+    "empty": "Press any key, or a button on the remote."
+  },
+  "panel": {
+    "hidden": "Hidden",
+    "auto": "Automatic",
+    "pinned": "Pinned",
+    "show": "Show the right column",
+    "hide": "Hide the right column",
+    "pin": "Pin the right column for this conversation"
+  },
+  "fullscreenFailed": "Full screen was refused — see the console for the reason",
+  "page": "Page {{page}}/{{pages}}",
+  "emptyTile": "Add a conversation"
 }

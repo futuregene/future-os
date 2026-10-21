@@ -36,14 +36,18 @@ let root: ReturnType<typeof createRoot>;
 async function mount(options: {
   controls?: "full" | "none";
   onEmptySubmit?: () => void;
+  onQueue?: (payload: { content: string }) => boolean;
   onSend?: (payload: unknown) => void;
+  sending?: boolean;
 } = {}) {
   await act(async () => root.render(
     <Composer
       controls={options.controls}
       modelOptions={[]}
       onEmptySubmit={options.onEmptySubmit}
+      onQueue={options.onQueue}
       onSend={options.onSend ?? (() => {})}
+      sending={options.sending}
     />,
   ));
 }
@@ -111,6 +115,48 @@ describe("the input layer's control row", () => {
     await mount({ controls: "none" });
     expect(editor()).not.toBeUndefined();
     expect(controlLabels()).toEqual([]);
+  });
+});
+
+describe("a sentence said while the run is still going", () => {
+  // The queue is the panel's (`vibeQueue.ts`); what the *composer* has to get right is
+  // the two halves it owns: hand the text over and clear the box, or hand nothing over
+  // and leave the text exactly where the reader can see it.
+  it("hands the sentence over and clears the box when the queue accepts it", async () => {
+    const onQueue = vi.fn(() => true);
+    const onSend = vi.fn();
+    await mount({ onQueue, onSend, sending: true });
+    dictate("顺便把测试补一下");
+    press({ code: "Enter", key: "Enter" });
+    expect(onQueue).toHaveBeenCalledWith(expect.objectContaining({ content: "顺便把测试补一下" }));
+    // Not sent: the whole point of holding it is that it is not on its way yet.
+    expect(onSend).not.toHaveBeenCalled();
+    // …and the box lets it go, because the text now lives in the queue (visible on the
+    // cell), not in two places.
+    expect(editor().textContent).toBe("");
+  });
+
+  it("keeps the text when one is already queued", async () => {
+    // A refusal is "there is already one": the message must stay in front of the reader
+    // rather than being swallowed by a second hand-over.
+    const onQueue = vi.fn(() => false);
+    const onSend = vi.fn();
+    await mount({ onQueue, onSend, sending: true });
+    dictate("第二句");
+    press({ code: "Enter", key: "Enter" });
+    expect(onQueue).toHaveBeenCalledTimes(1);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(editor().textContent).toBe("第二句");
+  });
+
+  it("does not queue while the run is idle — it sends", async () => {
+    const onQueue = vi.fn(() => true);
+    const onSend = vi.fn();
+    await mount({ onQueue, onSend, sending: false });
+    dictate("正常发送");
+    press({ code: "Enter", key: "Enter" });
+    expect(onQueue).not.toHaveBeenCalled();
+    expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ content: "正常发送" }));
   });
 });
 

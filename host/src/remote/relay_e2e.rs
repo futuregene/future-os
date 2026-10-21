@@ -21,7 +21,7 @@
 //! nats-server -c /tmp/relay/nats.conf
 //! future relay serve --config /tmp/relay/relay.json
 //! RELAY_E2E_RELAY_URL=http://127.0.0.1:8099 \
-//!   cargo test -p futureos --lib remote::relay_e2e -- --ignored --nocapture
+//!   cargo test -p future-host --lib remote::relay_e2e -- --ignored --nocapture
 //! ```
 //!
 //! This is a `cfg(test)` build, so the broker may be plaintext. That needs no
