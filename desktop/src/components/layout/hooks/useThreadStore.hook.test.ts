@@ -217,6 +217,37 @@ describe("useThreadStore", () => {
     h.unmount();
   });
 
+  it("patches one row's activity stamp from the backend push", async () => {
+    listThreads.mockResolvedValue([
+      { ...thread("t1"), lastMessageAt: 100 } as unknown as StoredThread,
+      { ...thread("t2"), lastMessageAt: 200 } as unknown as StoredThread,
+    ]);
+    const h = await mountStore();
+
+    act(() => {
+      listeners.get("thread-activity-updated")?.({ payload: { threadId: "t1", lastMessageAt: 900 } });
+    });
+    // The row is patched (its age label and place both read this), and the
+    // entries this app did not name keep their values.
+    expect(h.current.threads.map(t => [t.id, t.lastMessageAt])).toEqual([["t1", 900], ["t2", 200]]);
+
+    // A push never reloads the store: the list is patched in place, so the
+    // reader's list is not rebuilt (and SQLite is not re-read) per second.
+    expect(listThreads).toHaveBeenCalledTimes(1);
+
+    // An equal or older stamp, and a thread this list does not hold, keep the
+    // array's identity so React skips the render.
+    const unchanged = h.current.threads;
+    act(() => {
+      listeners.get("thread-activity-updated")?.({ payload: { threadId: "t1", lastMessageAt: 900 } });
+      listeners.get("thread-activity-updated")?.({ payload: { threadId: "t1", lastMessageAt: 500 } });
+      listeners.get("thread-activity-updated")?.({ payload: { threadId: "gone", lastMessageAt: 900 } });
+    });
+    expect(h.current.threads).toBe(unchanged);
+    expect(listThreads).toHaveBeenCalledTimes(1);
+    h.unmount();
+  });
+
   it("applies the initial streaming snapshot and later pushes", async () => {
     listStreamingThreadIds.mockResolvedValue(["t1"]);
     const h = await mountStore();

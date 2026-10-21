@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from "react";
-import type { ThreadRuntimeUpdate, ThreadRuntimeUpdateBatch } from "../../../integrations/agent/runtimeEvents";
+import type { ThreadActivityUpdate, ThreadRuntimeUpdate, ThreadRuntimeUpdateBatch } from "../../../integrations/agent/runtimeEvents";
 import type { StoredRun, StoredThread, StoredWorkspace } from "../../../integrations/storage/threadStore";
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -83,6 +83,32 @@ export function reduceThreadRunStatus(
 
 function streamingStatuses(threadIds: string[]): ThreadStreamingStatuses {
   return Object.fromEntries(threadIds.map(threadId => [threadId, true]));
+}
+
+/**
+ * Apply one backend activity push to the store's rows.
+ *
+ * A row patch, not a reload: the backend advances a running conversation's
+ * stamp about once a second, and re-listing the whole store that often would
+ * replace the array (and re-read SQLite) while the reader is typing or
+ * scrolling in it. The stamp itself is taken from the push — never invented
+ * here — and only a newer value for a row this list holds is written; anything
+ * else returns the same array so React skips the render.
+ */
+export function applyThreadActivity(
+  previous: StoredThread[],
+  threadId: string,
+  lastMessageAt: number,
+): StoredThread[] {
+  const index = previous.findIndex(thread => thread.id === threadId);
+  if (index < 0)
+    return previous;
+  const current = previous[index]!;
+  if (current.lastMessageAt !== null && current.lastMessageAt !== undefined && current.lastMessageAt >= lastMessageAt)
+    return previous;
+  const next = [...previous];
+  next[index] = { ...current, lastMessageAt };
+  return next;
 }
 
 /**
@@ -295,6 +321,24 @@ export function useThreadStore(): ThreadStore {
       setThreadRunStatuses(previous => event.payload.updates.reduce(
         (statuses, update) => reduceThreadRunStatus(statuses, update),
         previous,
+      ));
+    });
+    return () => {
+      void unlisten.then(stop => stop());
+    };
+  }, []);
+  // A conversation's activity stamp moved. Externally-driven runs (the CLI, a
+  // scheduler, another machine) arrive this way and nowhere else: their row's
+  // age label and its place in the list are read from `lastMessageAt`, which
+  // used to stay at the value from before the run for the whole reply. Patch
+  // the one row — a full `refreshStore` at push frequency would reload the
+  // list out from under the reader (see `applyThreadActivity`).
+  useEffect(() => {
+    const unlisten = listen<ThreadActivityUpdate>("thread-activity-updated", (event) => {
+      setThreads(previous => applyThreadActivity(
+        previous,
+        event.payload.threadId,
+        event.payload.lastMessageAt,
       ));
     });
     return () => {

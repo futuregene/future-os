@@ -13,6 +13,12 @@ pub enum Event<'a> {
     ReviewUpdated(&'a str),
     RemoteActivity(&'a str),
     ThreadsUpdated,
+    /// One conversation's activity stamp advanced. Carries the value so a GUI
+    /// can patch that row instead of re-listing every conversation.
+    ThreadActivity {
+        thread_id: &'a str,
+        last_message_at: i64,
+    },
     ThreadRuntimeUpdated {
         thread_id: String,
         run_id: String,
@@ -62,6 +68,12 @@ pub fn emit_remote_activity(thread_id: &str) {
 pub fn emit_threads_updated() {
     publish(Event::ThreadsUpdated);
 }
+pub fn emit_thread_activity(thread_id: &str, last_message_at: i64) {
+    publish(Event::ThreadActivity {
+        thread_id,
+        last_message_at,
+    });
+}
 pub fn emit_thread_runtime_updated(
     thread_id: String,
     run_id: String,
@@ -96,6 +108,13 @@ mod tests {
         publish_to(None, Event::ThreadsUpdated);
         publish_to(
             None,
+            Event::ThreadActivity {
+                thread_id: "thread",
+                last_message_at: 1_000,
+            },
+        );
+        publish_to(
+            None,
             Event::ThreadRuntimeUpdated {
                 thread_id: "thread".into(),
                 run_id: "run".into(),
@@ -115,6 +134,27 @@ mod tests {
             Event::Notification {
                 name: "app_settings_changed",
                 payload: serde_json::json!({}),
+            },
+        );
+    }
+
+    #[test]
+    fn presentation_receives_the_activity_stamp_it_must_patch() {
+        publish_to(
+            Some(|event| {
+                let Event::ThreadActivity {
+                    thread_id,
+                    last_message_at,
+                } = event
+                else {
+                    panic!("expected a thread activity update")
+                };
+                assert_eq!(thread_id, "thread");
+                assert_eq!(last_message_at, 1_700_000_000_000);
+            }),
+            Event::ThreadActivity {
+                thread_id: "thread",
+                last_message_at: 1_700_000_000_000,
             },
         );
     }
