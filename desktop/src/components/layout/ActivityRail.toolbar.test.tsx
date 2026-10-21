@@ -111,6 +111,12 @@ describe("the rail's bands", () => {
 
   it("keeps the switch's band to the switch alone", async () => {
     const { container } = await render(props());
+    // Read in the recent view, where the list's own menu exists at all: in the
+    // tree view there is no such menu to misplace, so a default-view assertion
+    // would pass on a layout that has it in the wrong band.
+    act(() => container.querySelector<HTMLButtonElement>("[data-testid='rail-view-recent']")!.click());
+    await flushAsync();
+
     const viewBand = band(container, "rail-view-band")!;
     expect(viewBand.querySelector("[data-testid='rail-view-switch']")).not.toBeNull();
     // Nothing that belongs to the list: no search field, no list menu. The menu
@@ -118,6 +124,9 @@ describe("the rail's bands", () => {
     expect(viewBand.querySelector("input")).toBeNull();
     expect(recentMenu(viewBand)).toBeNull();
     expect(viewBand.querySelector("button[aria-haspopup='menu']")).toBeNull();
+    // And the menu does exist — otherwise the assertions above would be about a
+    // control that is not on screen at all.
+    expect(recentMenu(container)).not.toBeNull();
   });
 
   it("keeps the search field on screen, in the list's own band, with no interaction", async () => {
