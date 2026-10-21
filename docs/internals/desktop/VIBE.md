@@ -132,6 +132,14 @@ which is why two cells become 1×2 rather than two slivers while five stay 3×2
   "start a new conversation…", which leaves for the new-conversation screen and **pins what
   is created there**. Either way, adding is pinning (§1). A full page has no free square, so
   the menu's add row is the way in.
+* **A cell's square is stated, never inferred.** Every child of the grid — a cell and the
+  add tile alike — gets an explicit `gridRow` *and* `gridColumn` from `gridAreaOf` (§13). A
+  child with only a column keeps an automatic row, so CSS places it with the auto-placement
+  cursor: the tile, drawn first, took row one, every cell moved down one row, and the last
+  ones fell into an *implicit* row while the declared rows collapsed — measured as
+  `rows: 346px 346px 70px` with the third cell 70px tall, and reported as "the top row has
+  no height". The template decides size; the index decides the square; nothing is left to
+  the auto-placement algorithm.
 * **Hover is never the only way to reach a control.** Every action a cell offers
   is reachable by the keys, because a remote has no pointer.
 
@@ -313,18 +321,24 @@ The line is read from the agent's cached state for that thread (what the session
 *actually* running), falling back to the shell's selection only until that state has
 been read once.
 
-### 5.7 The bar, and the two things it has to get right
+### 5.7 The bar, and the three things it has to get right
 
 The panel is `fixed inset-0`: it is the only surface in the app whose content starts at
 x = 0, and the window is a macOS **overlay title bar**
 (`titleBarStyle: "Overlay"`, `trafficLightPosition: { x: 14, y: 26 }`), so the traffic
-lights are drawn *over* the page at roughly x 14–72. Two consequences, both of which were
-wrong once and are now pinned by tests:
+lights are drawn *over* the page at roughly x 14–72. Three consequences, each of which was
+wrong once and is now pinned by tests:
 
 * **The bar's content starts past the lights.** 80px (`pl-20`) — the same reserve the
   activity rail uses — on macOS outside fullscreen, and the ordinary 12px everywhere else
   (other platforms, and fullscreen, where the system hides the lights). `barChrome.ts`
   holds the rule; the numbers come from the config, not from taste.
+* **The bar is as tall as every other top bar.** `h-12`, the height the rail's header, the
+  thread header, the context panel and the new-conversation header all share — and the line
+  the lights sit on. It shipped as `h-9`, which centred its text at 18px against their 24px;
+  a 6px lift is exactly what "the text after the dots is not aligned" looks like. The height
+  is a constant (`BAR_HEIGHT`) and `barChrome.test.ts` reads the other headers' source to
+  check they still agree, so the two cannot drift apart again.
 * **The bar is the drag handle.** While the panel is open nothing else visible is
   draggable, so the bar starts a window drag on a press (`startWindowDrag`, which skips
   buttons — the three controls in it keep working).
@@ -542,6 +556,7 @@ Automatable — and where each one lives:
 | Order: created-time default; a user order wins; a new pin lands by its `createdAt`; an unpin moves nobody; the ring follows the conversation, not the index | `order.test.ts`, `VibeStage.test.tsx` |
 | Membership: pinned and live only; a pinned workspace adds nothing; the remove key unpins the focused cell | `VibeStage.test.tsx` |
 | The grid table (1×1 … 4×3), the narrow-window stack, the explicit column override, no wrap at an edge | `layout.test.ts` |
+| Every grid child — cell or add tile — states both axes, no two children share a square, and none asks for a row the template does not have | `layout.test.ts`, `VibeStage.test.tsx`, and the harness measuring 4 × 628×379 with rows `379 379` |
 | The hint line lists exactly the commands with a handler **and** a binding | `hints.test.ts` |
 | Membership across machines: a host's `pinned` only, a status-less host still counts, a filtered machine shows only its own | `vibeCells.test.ts` |
 | The panel's machine filter: the menu row walks all → this machine → each host, and the choice is remembered | `VibeStage.test.tsx` |
@@ -557,6 +572,7 @@ Automatable — and where each one lives:
 | The add tile appears only in a free square, is reachable by the ring and its printed number, and its rows are the recent unpinned conversations in activity order | `emptySlot.test.ts`, `VibeStage.test.tsx` |
 | Twelve cells per page, `⌥←`/`⌥→` turn it, the bar names the page, and the keys are unclaimed with one page | `emptySlot.test.ts`, `VibeStage.test.tsx` |
 | The bar reserves the macOS traffic-light box on macOS outside fullscreen, and uses the ordinary inset otherwise | `barChrome.test.ts`, plus the harness reporting `padding-left: 80px` and the label at x = 80 |
+| The bar is the height of the app's other headers (24px text line), so it shares the lights' line | `barChrome.test.ts` (reads those headers' source), `VibeStage.test.tsx`, harness: bar 48px, label centre 24px |
 | The bar is the window's drag surface, and its three buttons still click | `VibeStage.test.tsx` |
 | `core:window:allow-set-fullscreen` is granted to the main window, and no `deny-` entry undercuts it | `fullscreenCapability.test.ts` |
 | A refused fullscreen reaches the reader as an error toast, not silence | `VibeStage.test.tsx` |

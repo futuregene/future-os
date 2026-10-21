@@ -1008,6 +1008,56 @@ describe("the panel's top bar", () => {
     mount({ threads: [thread("a", 100)] });
     expect(bar()!.getAttribute("data-vibe-drag")).toBe("bar");
   });
+
+  it("is as tall as every other top bar, so its text shares the lights' line", () => {
+    // Reported from use: the text after the traffic lights looked misaligned. The bar was
+    // `h-9` — text centred at 18px — while every other header in the app is `h-12` (24px),
+    // which is the line the lights sit on. `barChrome.test.ts` holds the cross-file half;
+    // this is the panel's own side of it.
+    mount({ threads: [thread("a", 100)] });
+    expect(bar()!.className).toContain("h-12");
+    expect(bar()!.className).not.toContain("h-9");
+  });
+});
+
+describe("where the grid puts its children", () => {
+  // Reported from use as "the top row has no height". A child with only `gridColumn` keeps
+  // an automatic row, so CSS placed the children with the auto-placement cursor — the add
+  // tile took row one, the cells were pushed down, and the last of them landed in an
+  // *implicit* row while the declared rows collapsed to 0. Measured on a real render:
+  // `rows: 346px 346px 70px`. Every child now states both axes.
+  const children = () => [...container.querySelectorAll<HTMLElement>(".grid > *")];
+
+  it("states a row and a column for every cell and for the add tile", () => {
+    // Three pinned conversations: a 2×2 with one free square, so the add tile is part of
+    // the grid and is exactly the child that used to be placed first.
+    mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
+    const items = children();
+    expect(items.length).toBeGreaterThan(1);
+    for (const item of items) {
+      expect(item.style.gridRow, `${item.tagName} needs an explicit row`).toBeTruthy();
+      expect(item.style.gridColumn, `${item.tagName} needs an explicit column`).toBeTruthy();
+    }
+  });
+
+  it("never asks for a row the template does not have", () => {
+    // An implicit row is the failure mode, so the highest row any child claims must be one
+    // the template declares (`rows`, from the layout the panel computed).
+    mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
+    const grid = container.querySelector<HTMLElement>(".grid")!;
+    const rows = Number(grid.style.gridTemplateRows.match(/repeat\((\d+)/)![1]);
+    const columns = Number(grid.style.gridTemplateColumns.match(/repeat\((\d+)/)![1]);
+    for (const item of children()) {
+      expect(Number(item.style.gridRow)).toBeLessThanOrEqual(rows);
+      expect(Number(item.style.gridColumn)).toBeLessThanOrEqual(columns);
+    }
+  });
+
+  it("gives no two children the same square", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
+    const squares = children().map(item => `${item.style.gridRow}:${item.style.gridColumn}`);
+    expect(new Set(squares).size).toBe(squares.length);
+  });
 });
 
 describe("fullscreen from the bar", () => {

@@ -2738,6 +2738,20 @@
             "shot": "d-rail-recent.png"
           }
         ]
+      },
+      "vibe-add-slot": {
+        "url": "http://localhost:5299/shot/?pinned=th_data&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 2600
+          },
+          {
+            "eval": "(() => {\n  const grid = document.querySelector('.grid');\n  const bar = document.querySelector('[data-vibe-drag=\"bar\"]');\n  const label = bar ? bar.querySelector('span') : null;\n  const barBox = bar.getBoundingClientRect();\n  const labelBox = label.getBoundingClientRect();\n  const items = [...grid.children].map((el) => {\n    const box = el.getBoundingClientRect();\n    const style = getComputedStyle(el);\n    return {\n      kind: el.getAttribute('data-vibe-cell') ? 'cell' + el.getAttribute('data-vibe-cell') : 'add',\n      size: [Math.round(box.width), Math.round(box.height)],\n      row: style.gridRowStart,\n      column: style.gridColumnStart,\n    };\n  });\n  const template = getComputedStyle(grid).gridTemplateRows.split(' ').map(v => Math.round(parseFloat(v)));\n  return JSON.stringify({\n    bar: { height: Math.round(barBox.height), labelCentre: Math.round(labelBox.top + labelBox.height / 2 - barBox.top) },\n    templateRows: template,\n    items,\n  });\n})()"
+          },
+          {
+            "shot": "d-vibe-add-slot.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",
