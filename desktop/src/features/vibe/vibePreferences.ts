@@ -27,6 +27,14 @@ export interface VibePreferences {
    */
   panel: Record<string, string>;
   /**
+   * The panel's sticky `hidden`/`auto` choice for the reading layer's second column.
+   *
+   * The fallback for a conversation that has no entry of its own, so closing the column in
+   * one cell keeps it closed in the next (`readingPanel.ts`). `pinned` is stored per
+   * conversation only — inheriting a pin would open a column nobody asked for.
+   */
+  panelDefault: "auto" | "hidden";
+  /**
    * Which machines the panel shows, as last chosen.
    *
    * A view preference like the columns: per machine, read on the render path, and
@@ -46,7 +54,7 @@ export interface VibePreferences {
 const ORDER_KEY = "future.vibe.order";
 const PREFS_KEY = "future.vibe.prefs";
 
-const EMPTY: VibePreferences = { columns: null, device: { kind: "all" }, order: [], panel: {} };
+const EMPTY: VibePreferences = { columns: null, device: { kind: "all" }, order: [], panel: {}, panelDefault: "auto" };
 
 function readOrder(): string[] {
   try {
@@ -127,13 +135,44 @@ function readPanelMap(): Record<string, string> {
   }
 }
 
-export function readVibePreferences(): VibePreferences {
-  return { columns: readColumns(), device: readDevice(), order: readOrder(), panel: readPanelMap() };
+function readPanelDefault(): "auto" | "hidden" {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (!raw)
+      return "auto";
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null)
+      return "auto";
+    const value = (parsed as { panelDefault?: unknown }).panelDefault;
+    return value === "hidden" ? "hidden" : "auto";
+  }
+  catch {
+    return "auto";
+  }
 }
 
-/** Remember one conversation's second-column choice. */
-export function writeVibePanel(key: string, preference: string): void {
-  writePrefs(current => ({ ...current, panel: { ...current.panel, [key]: preference } }));
+export function readVibePreferences(): VibePreferences {
+  return {
+    columns: readColumns(),
+    device: readDevice(),
+    order: readOrder(),
+    panel: readPanelMap(),
+    panelDefault: readPanelDefault(),
+  };
+}
+
+/**
+ * Remember one conversation's second-column choice, **and** the sticky default it implies.
+ *
+ * Both writes in one call and one storage write: a reader who hides the column in one cell
+ * expects the next cell to respect that, and two separate writes could land apart.
+ */
+export function writeVibePanel(key: string, preference: string, panelDefault: "auto" | "hidden"): void {
+  writePrefs(current => ({
+    ...current,
+    panel: { ...current.panel, [key]: preference },
+    panelDefault,
+  }));
 }
 
 export function writeVibeOrder(order: readonly string[]): void {
@@ -167,7 +206,13 @@ function writePrefs(update: (current: {
   columns: number | null;
   device: VibeDeviceFilter;
   panel: Record<string, string>;
-}) => { columns: number | null; device: VibeDeviceFilter; panel: Record<string, string> }): void {
+  panelDefault: "auto" | "hidden";
+}) => {
+  columns: number | null;
+  device: VibeDeviceFilter;
+  panel: Record<string, string>;
+  panelDefault: "auto" | "hidden";
+}): void {
   try {
     const raw = localStorage.getItem(PREFS_KEY);
     const parsed: unknown = raw ? JSON.parse(raw) : {};
@@ -176,6 +221,7 @@ function writePrefs(update: (current: {
       columns: typeof current.columns === "number" ? current.columns : null,
       device: readDevice(),
       panel: readPanelMap(),
+      panelDefault: readPanelDefault(),
     });
     localStorage.setItem(PREFS_KEY, JSON.stringify(next));
   }

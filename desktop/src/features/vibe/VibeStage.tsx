@@ -40,7 +40,8 @@ import { barStart, reserveTrafficLights as shouldReserveTrafficLights } from "./
 import { toggleNativeFullscreen } from "./fullscreen";
 import { cellPosition, gridOf, MAX_CELLS, moveInGrid } from "./layout";
 import { moveInOrder, resolveOrder } from "./order";
-import { cyclePreference, PANEL_WIDTH, preferenceLabelKey, readPanelPreference, showReadingPanel, toggleHidden, togglePinned } from "./readingPanel";
+import { cyclePreference, nextStickyDefault, PANEL_WIDTH, preferenceLabelKey, readPanelPreference, showReadingPanel, toggleHidden, togglePinned } from "./readingPanel";
+import { scrollToLiveEnd, scrollTranscript, transcriptOf } from "./scrollCell";
 import { vibeCellsOf } from "./vibeCells";
 import { setVibeCellModel, setVibeCellThinkingLevel, useVibeCellSettings } from "./vibeCellSettings";
 import { VibeHintBar } from "./VibeHintBar";
@@ -183,11 +184,21 @@ export function VibeStage({
   const [columns, setColumns] = useState<number | null>(preferences.columns);
   /** Each conversation's second-column choice (`readingPanel.ts`), remembered by key. */
   const [panelPrefs, setPanelPrefs] = useState<Record<string, string>>(preferences.panel);
+  /**
+   * The sticky `hidden`/`auto` choice for the second column.
+   *
+   * What makes "close it here, it stays closed in the next cell" true: a conversation with
+   * no entry of its own follows this, instead of falling back to `auto` every time
+   * (`readingPanel.ts` explains why `pinned` is not sticky).
+   */
+  const [panelDefault, setPanelDefault] = useState<"auto" | "hidden">(preferences.panelDefault);
   /** The right column's tab, for the panel's own reading layer. */
   const [contextTab, setContextTab] = useState<ContextTab>("files");
   const windowWidth = useWindowWidth();
   const [size, setSize] = useState({ height: 0, width: 0 });
   const areaRef = useRef<HTMLDivElement>(null);
+  /** The panel's own root, so a cell's transcript is looked up inside it and nowhere else. */
+  const rootRef = useRef<HTMLDivElement>(null);
 
   // Members: pinned conversations of the machines the filter lets through, this
   // one's and paired hosts' alike (`vibeCells.ts` owns the rule, `order.ts` the
@@ -334,18 +345,19 @@ export function VibeStage({
    * Asked three times per render (the render, the keys, the menu row) from one rule, so a
    * key and the thing it changes cannot disagree.
    */
-  const panelPreference: ReadingPanelPreference = readPanelPreference(panelPrefs, focusedKey ?? "");
+  const panelPreference: ReadingPanelPreference = readPanelPreference(panelPrefs, focusedKey ?? "", panelDefault);
   const panelVisible = layer === "read" && showReadingPanel(panelPreference, windowWidth);
 
   const setPanelPreference = useCallback((next: ReadingPanelPreference) => {
     if (!focusedKey)
       return;
-    setPanelPrefs((current) => {
-      const updated = { ...current, [focusedKey]: next };
-      writeVibePanel(focusedKey, next);
-      return updated;
-    });
-  }, [focusedKey]);
+    // One write for both facts: this conversation's choice, and the default the next
+    // conversation follows. Splitting them would let a relaunch land between the two.
+    const stickyDefault = nextStickyDefault(panelDefault, next);
+    setPanelPrefs(current => ({ ...current, [focusedKey]: next }));
+    setPanelDefault(stickyDefault);
+    writeVibePanel(focusedKey, next, stickyDefault);
+  }, [focusedKey, panelDefault]);
 
   const persistOrder = useCallback((next: string[]) => {
     setOrder(next);
@@ -412,6 +424,22 @@ export function VibeStage({
   // The second column: `⌘\` shows/hides it, `⌘⇧\` pins it. Both were in the table from the
   // first day and had no handler until the column existed — which is why they were never
   // drawn in the hint line (`VIBE.md` §9).
+  /**
+   * Reading a cell without zooming into it: `PageUp` / `PageDown` move its transcript by a
+   * page, and the ring stays where it is. The wheel does the same thing with a pointer;
+   * these keys are what makes it work from the keyboard (and from a remote control, if it
+   * has page keys — `VIBE-REMOTE-KEYS.md` records whether it does).
+   */
+  const scrollFocused = useCallback((direction: -1 | 1) => {
+    scrollTranscript(transcriptOf(rootRef.current, focusedKey), direction);
+  }, [focusedKey]);
+  useCommand("vibe.scroll.up", () => scrollFocused(-1));
+  useCommand("vibe.scroll.down", () => scrollFocused(1));
+  useCommand("vibe.zoom.scroll.up", () => scrollFocused(-1), layer === "read");
+  useCommand("vibe.zoom.scroll.down", () => scrollFocused(1), layer === "read");
+  // The remote's `Home` (and the same command's documented meaning): back to the newest
+  // message, which is where a reader who has scrolled away usually wants to be.
+  useCommand("vibe.home", () => scrollToLiveEnd(transcriptOf(rootRef.current, focusedKey)));
   useCommand("vibe.panel.hide", () => setPanelPreference(toggleHidden(panelPreference)));
   useCommand("vibe.panel.pin", () => setPanelPreference(togglePinned(panelPreference)));
   useCommand("vibe.input.open", () => {
@@ -913,7 +941,7 @@ export function VibeStage({
                     : null;
                 })()}
               </header>
-              <div className="min-h-0 flex-1">
+              <div className="min-h-0 flex-1" data-vibe-transcript-for={cell.key}>
                 {cellBody(cell, false)}
               </div>
             </section>
@@ -929,11 +957,12 @@ export function VibeStage({
    * doing nothing.
    */
   const readHintIds: Parameters<typeof VibeHintBar>[0]["ids"] = focused?.kind === "local"
-    ? ["vibe.zoom.previous", "vibe.attention", "vibe.panel.hide", "vibe.input.open", "vibe.menu", "vibe.back"]
-    : ["vibe.zoom.previous", "vibe.attention", "vibe.panel.hide", "vibe.menu", "vibe.back"];
+    ? ["vibe.zoom.previous", "vibe.zoom.scroll.down", "vibe.attention", "vibe.panel.hide", "vibe.input.open", "vibe.menu", "vibe.back"]
+    : ["vibe.zoom.previous", "vibe.zoom.scroll.down", "vibe.attention", "vibe.panel.hide", "vibe.menu", "vibe.back"];
 
   return (
     <div
+      ref={rootRef}
       className="fixed inset-0 z-40 flex flex-col bg-canvas text-ink"
       // Which conversation the ring is on, and which layer is on top. Two facts the
       // panel's own keys move, and the only ones a capture can assert the way a
@@ -1026,7 +1055,14 @@ export function VibeStage({
             </div>
           )
         : layer === "grid"
-          ? <div ref={areaRef} className="min-h-0 flex-1 p-2">{grid(null, false)}</div>
+          ? (
+              <div className="flex min-h-0 flex-1 flex-col">
+                <div ref={areaRef} className="min-h-0 flex-1 p-2">{grid(null, false)}</div>
+                {/* The grid's own hint line. It carries the scroll keys, which nothing
+                    else on screen mentions — the ring keys are in the bar's key strip. */}
+                <VibeHintBar ids={["vibe.open", "vibe.scroll.down", "vibe.attention", "vibe.menu", "vibe.close"]} />
+              </div>
+            )
           : layer === "read"
             ? (
                 <div className="flex min-h-0 flex-1 flex-col p-2">
@@ -1049,6 +1085,7 @@ export function VibeStage({
                   <div className="flex min-h-0 flex-1 gap-2">
                     <div
                       className="min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-line-soft bg-surface"
+                      data-vibe-transcript-for={focused?.key ?? ""}
                       onDoubleClick={() => {
                         if (!focused)
                           return;

@@ -52,8 +52,8 @@ vi.mock("./Composer", () => ({
   ),
 }));
 vi.mock("./MessageList", () => ({
-  MessageList: (props: { messages: AgentMessage[] }) => (
-    <div data-count={props.messages.length} data-list="" />
+  MessageList: (props: { messages: AgentMessage[]; spacing?: string }) => (
+    <div data-count={props.messages.length} data-list="" data-spacing={props.spacing ?? "default"} />
   ),
 }));
 vi.mock("./ApprovalPrompt", () => ({
@@ -165,6 +165,31 @@ describe("chrome: full", () => {
     expect(count("[data-list]")).toBe(1);
     // The whole history, not a tail.
     expect(container.querySelector("[data-list]")!.getAttribute("data-count")).toBe("4");
+  });
+});
+
+describe("breathing room", () => {
+  // Reported from use: a conversation in the panel's reading layer read as a solid column —
+  // it started flush against the bar and ended flush against the hint line, and its turns
+  // sat at the main window's (densely tuned) rhythm. The panel has more room and no composer
+  // band under it, so it asks for more air; the main window is untouched apart from a bottom
+  // inset it never had.
+  it("gives the reading layer a roomier transcript than the main window", () => {
+    render();
+    expect(container.querySelector("[data-list]")!.getAttribute("data-spacing")).toBe("default");
+    expect(container.querySelector("[data-chat-scroll]")!.className).toContain("pt-8");
+
+    render({ chrome: "read" });
+    expect(container.querySelector("[data-list]")!.getAttribute("data-spacing")).toBe("roomy");
+    const scroll = container.querySelector("[data-chat-scroll]")!.className;
+    // Top and bottom both: the column starts below the bar and stops before the hint line.
+    expect(scroll).toContain("pt-10");
+    expect(scroll).toContain("pb-16");
+  });
+
+  it("gives the input layer the same room, because it is the same transcript", () => {
+    render({ chrome: "input", onLeaveInput: () => {} });
+    expect(container.querySelector("[data-list]")!.getAttribute("data-spacing")).toBe("roomy");
   });
 });
 

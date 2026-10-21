@@ -143,7 +143,7 @@ candidate. It is verified by a test, not by discipline
 | Layer | Scope | Who has the keyboard | The direction keys |
 | --- | --- | --- | --- |
 | Grid | `vibeGrid` | the panel (a selection ring) | move the ring |
-| Reading | `vibeZoom` | the panel (a block cursor) | `↑`/`↓` walk message blocks, `←`/`→` change conversation |
+| Reading | `vibeZoom` | the panel | `↑`/`↓` scroll the transcript, `←`/`→` change conversation |
 | Input | `vibeInput` | **the input method**, through one editor | the field's (candidates, caret) |
 
 `Esc`/`Back` always steps out one layer, and out of the panel from the grid.
@@ -329,11 +329,16 @@ the code that needs it.
 
 ## 6. Reading layer: blocks, and zoom at one or two columns
 
-`↑`/`↓` in the reading layer move a **block cursor** over the transcript — a user
-message, an assistant reply, a tool call, an approval card. The selected block
-gets a full-width highlight; `⏎` expands or collapses it (a tool call's
-arguments and output). The wheel and the trackpad still scroll by pixels; the
-block cursor is what a remote can operate.
+**Scrolling, stated as implemented**: `↑`/`↓` in the reading layer scroll the transcript by
+a page (`PageUp`/`PageDown` do the same), and in the **grid** `PageUp`/`PageDown` scroll the
+selected cell's transcript while the ring stays put — reading a cell is not the same act as
+moving to the next one. The wheel and the trackpad scroll as always.
+
+The block cursor an earlier draft of this section described — a highlight over one message,
+`⏎` expanding a tool call — is **not implemented**. It is a different interaction (a
+selection, not a scroll position) and it is still the better answer for a remote control
+without page keys, so it is listed as remaining work in §14 rather than described as
+present.
 
 Opened from the grid, a conversation fills the screen at **one column** by default:
 the transcript at its usual measure, unchanged from the main window. A **second
@@ -347,12 +352,13 @@ It has three states, **remembered per conversation** by the panel's own key
 | State | When it shows |
 | --- | --- |
 | `auto` (default) | above 1100px: wide enough for a transcript at its measure plus a 400px column |
-| `hidden` | never |
+| `hidden` | never — and **sticky**: the last `hidden`/`auto` choice becomes the fallback for a conversation with no entry of its own, so closing the column in one cell keeps it closed in the next |
 | `pinned` | always, whatever the window does — that is what pinning is for |
 
 `⌘\` toggles between `hidden` and `auto` (a toggle, not a cycle through three: one press
 that sometimes *shows* a column the reader was hiding is a press they stop trusting);
-`⌘⇧\` pins and unpins. The menu has the same choice as a value row, so "which state is
+`⌘⇧\` pins and unpins. `pinned` is **not** sticky — a pin is a decision about one
+conversation, and inheriting it would open a column nobody asked for. The menu has the same choice as a value row, so "which state is
 this conversation in" is answerable without pressing anything. The column's width is
 fixed at 400px and has no drag handle: the reading layer is a view of one conversation,
 not a window with three resizable columns.
@@ -534,6 +540,9 @@ Automatable — and where each one lives:
 | The settings line shows the cell's own model, on both the reading and the input layer, and the input layer's composer is asked for values only | `VibeStage.test.tsx`, `Composer.inputLayer.test.tsx` |
 | The menu's three settings rows exist for a local cell, adjust with `←`/`→`, and are absent for a host's | `VibeStage.test.tsx` |
 | The second column: `auto` follows the width, `pinned` ignores it, `hidden` is never there; `⌘\` returns to `auto` rather than to `pinned`; the choice is per conversation and survives a relaunch | `readingPanel.test.ts`, `VibeStage.test.tsx` |
+| Closing the column in one cell keeps it closed in the next (the habit), and a pin does not travel | `readingPanel.sticky.test.ts`, `VibeStage.test.tsx` |
+| `PageUp`/`PageDown` scroll the selected cell's transcript without moving the ring; in the reading layer `↑`/`↓` scroll; the remote's `Home` jumps to the newest message | `VibeStage.test.tsx` |
+| The reading layer has more air than the main window at both ends, and a roomier gap between turns | `AgentThread.chrome.test.tsx` |
 | The bar reserves the macOS traffic-light box on macOS outside fullscreen, and uses the ordinary inset otherwise | `barChrome.test.ts`, plus the harness reporting `padding-left: 80px` and the label at x = 80 |
 | The bar is the window's drag surface, and its three buttons still click | `VibeStage.test.tsx` |
 | `core:window:allow-set-fullscreen` is granted to the main window, and no `deny-` entry undercuts it | `fullscreenCapability.test.ts` |
@@ -639,7 +648,7 @@ What P0 landed, and what it deliberately left:
 | --- | --- |
 | **P0 — done** | the panel and its grid; scale-respecting cell rendering for local conversations; membership = pin; order = `createdAt` + drag/keyboard reordering; the three layers and the single-editor invariant; the input layer with dictation, the target bar and the three state meanings; `⌘⇧V`, arrows, `⏎`, `Esc`, `1`–`9`; explicit "still running" refusal |
 | **P1 — done** | the menu (`Menu`, one column, `←`/`→` adjust a value in place) · the attention queue (§9.5) · the machine filter, a host's conversations as cells, the add dialog and removal across machines · the input layer's controls moved into the menu with the values left read-only on screen (§5.6) · the send queue (§5.4) |
-| **P2 — in progress** | **done:** `h`/`j`/`k`/`l` beside the arrows · the reading layer's second column with its three per-conversation states (§6) · the key checklist and read-only readout ([`VIBE-REMOTE-KEYS.md`](VIBE-REMOTE-KEYS.md), matrix still empty) · **remaining:** order in `app.db`, and the measurement pass itself |
+| **P2 — in progress** | **done:** `h`/`j`/`k`/`l` beside the arrows · the reading layer's second column with its three per-conversation states (§6) · scrolling a cell from the keyboard · the key checklist and read-only readout ([`VIBE-REMOTE-KEYS.md`](VIBE-REMOTE-KEYS.md), matrix still empty) · **remaining:** the block cursor of §6, order in `app.db`, and the measurement pass itself |
 | **P2 — later** | order in `app.db`; layout presets; a "learn this button" diagnostics page (the read-only readout is the first half); optional text size on the volume buttons |
 
 ## 15. Open questions

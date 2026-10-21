@@ -58,7 +58,11 @@
       "close": "Close the Vibe panel",
       "zoom": {
         "previous": "Previous conversation in the zoomed cell",
-        "next": "Next conversation in the zoomed cell"
+        "next": "Next conversation in the zoomed cell",
+        "scroll": {
+          "up": "Scroll up",
+          "down": "Scroll down"
+        }
       },
       "cell": "Go to the numbered cell",
       "columns": {
@@ -94,6 +98,10 @@
       },
       "queue": {
         "cancel": "Take the queued message back into the box"
+      },
+      "scroll": {
+        "up": "Scroll this conversation up",
+        "down": "Scroll this conversation down"
       }
     },
     "palette": {

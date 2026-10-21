@@ -70,6 +70,9 @@ vi.mock("../agent/AgentThread", () => ({
       {props.chrome === "input"
         ? <div contentEditable data-input-editor="" suppressContentEditableWarning />
         : null}
+      {/* The real view's transcript attribute. The panel addresses a cell's transcript by
+          it, so a stub without one would make every scroll test pass on nothing. */}
+      <div data-chat-scroll="" />
     </div>
   ),
 }));
@@ -1027,6 +1030,100 @@ describe("fullscreen from the bar", () => {
     finally {
       off();
     }
+  });
+});
+
+describe("the second column's state carries over", () => {
+  // Reported from use: closing the column in one cell then opening the next cell had it
+  // open again, so it was closed twice. Hiding is a habit, not a fact about one
+  // conversation — the *last* hidden/auto choice is the fallback for cells with no entry.
+  it("keeps the column closed in the next conversation", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200)] });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    press({ code: "Backslash", key: "\\\\", ctrlKey: true });
+    expect(readVibePreferences().panel["local:a"]).toBe("hidden");
+    // Next conversation, never decided about: it follows the habit.
+    press({ code: "ArrowRight", key: "ArrowRight" });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    expect(readVibePreferences().panelDefault).toBe("hidden");
+    // …and the panel is showing it as closed, which is the thing a player would see.
+    expect(container.querySelector("[data-vibe-panel-column]")).toBeNull();
+  });
+
+  it("opens again for the next conversation once the reader reopens it", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200)] });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    press({ code: "Backslash", key: "\\\\", ctrlKey: true });
+    press({ code: "Backslash", key: "\\\\", ctrlKey: true });
+    expect(readVibePreferences().panelDefault).toBe("auto");
+  });
+
+  it("does not inherit a pin", () => {
+    // A pin is a decision about one conversation; inheriting it would open a column
+    // nobody asked for in the next one.
+    mount({ threads: [thread("a", 100), thread("b", 200)] });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    press({ code: "Backslash", key: "\\\\", ctrlKey: true, shiftKey: true });
+    expect(readVibePreferences().panel["local:a"]).toBe("pinned");
+    expect(readVibePreferences().panelDefault).toBe("auto");
+  });
+});
+
+describe("reading a cell without zooming into it", () => {
+  // The grid is the point of the panel: several conversations at once. Reading one of them
+  // means moving *its* text, not the ring — so `PageUp`/`PageDown` scroll the focused cell.
+  function transcript(): HTMLElement | null {
+    return container.querySelector<HTMLElement>("[data-vibe-cell] [data-chat-scroll]");
+  }
+
+  it("scrolls the focused cell's transcript, not the ring", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200)] });
+    const element = transcript();
+    expect(element, "a transcript in the focused cell").not.toBeNull();
+    // jsdom has no layout, so the call itself is the assertion: it targets this element,
+    // by a page, and the ring does not move.
+    const scrollBy = vi.fn();
+    element!.scrollBy = scrollBy;
+    // jsdom reports a zero-height box; the ratio is applied to whatever it reports, so a
+    // fake height makes the expected delta explicit.
+    Object.defineProperty(element!, "clientHeight", { configurable: true, value: 800 });
+
+    press({ code: "PageDown", key: "PageDown" });
+    expect(scrollBy).toHaveBeenCalledWith(expect.objectContaining({ top: Math.round(800 * 0.85) }));
+    press({ code: "PageUp", key: "PageUp" });
+    expect(scrollBy).toHaveBeenLastCalledWith(expect.objectContaining({ top: -Math.round(800 * 0.85) }));
+    // The ring is still on the first cell: scrolling is not navigation.
+    press({ code: "Enter", key: "Enter" });
+    expect(drawn("input")).toEqual(["a"]);
+  });
+
+  it("scrolls with the arrows once the conversation fills the screen", () => {
+    // In the reading layer ↑/↓ have nothing else to do (`←`/`→` switch conversations), so
+    // they scroll — which is what a reader expects of a transcript they can see in full.
+    mount({ threads: [thread("a", 100)] });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    const element = container.querySelector<HTMLElement>("[data-vibe-transcript-for=\"local:a\"] [data-chat-scroll]");
+    expect(element).not.toBeNull();
+    const scrollBy = vi.fn();
+    element!.scrollBy = scrollBy;
+    Object.defineProperty(element!, "clientHeight", { configurable: true, value: 600 });
+    press({ code: "ArrowDown", key: "ArrowDown" });
+    expect(scrollBy).toHaveBeenCalledWith(expect.objectContaining({ top: Math.round(600 * 0.85) }));
+  });
+
+  it("jumps to the newest message on the remote's home button", () => {
+    mount({ threads: [thread("a", 100)] });
+    const element = transcript();
+    const scrollTo = vi.fn();
+    element!.scrollTo = scrollTo;
+    Object.defineProperty(element!, "scrollHeight", { configurable: true, value: 4000 });
+    press({ code: "BrowserHome", key: "BrowserHome" });
+    expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ top: 4000 }));
   });
 });
 

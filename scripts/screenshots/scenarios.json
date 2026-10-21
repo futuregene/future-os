@@ -2546,6 +2546,83 @@
             "shot": "d-vibe-bar.png"
           }
         ]
+      },
+      "vibe-usability": {
+        "url": "http://localhost:5299/shot/?pinned=th_review,th_data&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "key": "2"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "eval": "(() => {const s = document.querySelector('[data-vibe-transcript-for=\"local:th_review\"] [data-chat-scroll]');if (!s) return 'no transcript';return JSON.stringify({top: Math.round(s.scrollTop), height: s.scrollHeight, view: s.clientHeight,pad: getComputedStyle(s).paddingTop + '/' + getComputedStyle(s).paddingBottom});})()"
+          },
+          {
+            "eval": "(function(k){window.dispatchEvent(new KeyboardEvent('keydown',{key:k,code:k,bubbles:true,cancelable:true}));return k;})('PageUp')"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(function(k){window.dispatchEvent(new KeyboardEvent('keydown',{key:k,code:k,bubbles:true,cancelable:true}));return k;})('PageUp')"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => {const s = document.querySelector('[data-vibe-transcript-for=\"local:th_review\"] [data-chat-scroll]');if (!s) return 'no transcript';return JSON.stringify({top: Math.round(s.scrollTop), height: s.scrollHeight, view: s.clientHeight,pad: getComputedStyle(s).paddingTop + '/' + getComputedStyle(s).paddingBottom});})()"
+          },
+          {
+            "shot": "d-vibe-scroll-cell.png"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "key": "Escape"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => {const s = document.querySelector('[data-vibe-transcript-for=\"local:th_review\"] [data-chat-scroll]');if (!s) return 'no transcript';return JSON.stringify({layer: document.querySelector('[data-vibe-layer]')?.getAttribute('data-vibe-layer'),pad: getComputedStyle(s).paddingTop + '/' + getComputedStyle(s).paddingBottom,roomy: !!s.querySelector('.space-y-8'),tight: !!s.querySelector('.space-y-5'),});})()"
+          },
+          {
+            "shot": "d-vibe-reading-room.png"
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const prefs = JSON.parse(localStorage.getItem('future.vibe.prefs') || '{}');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!document.querySelector('[data-vibe-panel-column]'),panelDefault: prefs.panelDefault ?? null,entry: Object.entries(prefs.panel || {}).map(([k, v]) => k + '=' + v),});})()"
+          },
+          {
+            "eval": "(() => {const mac = /Mac/i.test(navigator.platform || navigator.userAgent);window.dispatchEvent(new KeyboardEvent('keydown', {key: '\\\\', code: 'Backslash',metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true}));return mac ? 'meta+backslash' : 'ctrl+backslash';})()"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const prefs = JSON.parse(localStorage.getItem('future.vibe.prefs') || '{}');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!document.querySelector('[data-vibe-panel-column]'),panelDefault: prefs.panelDefault ?? null,entry: Object.entries(prefs.panel || {}).map(([k, v]) => k + '=' + v),});})()"
+          },
+          {
+            "key": "ArrowRight"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const prefs = JSON.parse(localStorage.getItem('future.vibe.prefs') || '{}');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!document.querySelector('[data-vibe-panel-column]'),panelDefault: prefs.panelDefault ?? null,entry: Object.entries(prefs.panel || {}).map(([k, v]) => k + '=' + v),});})()"
+          },
+          {
+            "shot": "d-vibe-column-stays-closed.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",

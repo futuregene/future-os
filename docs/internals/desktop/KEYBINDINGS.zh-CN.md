@@ -154,7 +154,8 @@ desktop/src/features/settings/
 | 关闭面板 | `Esc` / `返回` | vibeGrid |
 | 退出放大 | `Esc` / `返回` | vibeZoom |
 | 放大视图里的上一个 / 下一个对话 | `←` / `→`，或 `h` / `l` | vibeZoom |
-| 上一段 / 下一段消息 | `↑` / `↓` | vibeZoom |
+| 把会话往上 / 往下滚 | `↑` / `↓`，或 `PageUp` / `PageDown` | vibeZoom |
+| 滚动选中的那一格（不进入放大） | `PageUp` / `PageDown` | vibeGrid |
 | 进入输入层 | `↩` | vibeZoom |
 | 把这次输入发出去（空草稿：收起；正在跑：排进队列） | `↩` —— 输入框自己的固定键，不是命令 | vibeInput |
 | 退出输入层 | `Esc` / `返回` | vibeInput |

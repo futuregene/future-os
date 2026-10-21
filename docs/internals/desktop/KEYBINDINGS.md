@@ -186,7 +186,8 @@ below). `mod` is `⌘` on macOS and `Ctrl` elsewhere:
 | Close the panel | `Esc` / `Back` | vibeGrid |
 | Leave the zoomed cell | `Esc` / `Back` | vibeZoom |
 | Previous / next conversation in the zoomed cell | `←` / `→`, or `h` / `l` | vibeZoom |
-| Previous / next message block | `↑` / `↓` | vibeZoom |
+| Scroll the conversation up / down | `↑` / `↓`, or `PageUp` / `PageDown` | vibeZoom |
+| Scroll the selected cell (without zooming in) | `PageUp` / `PageDown` | vibeGrid |
 | Open the input layer | `↩` | vibeZoom |
 | Send the dictation (empty draft: close; a run in flight: queue it) | `↩` — the composer's own fixed key, not a command | vibeInput |
 | Leave the input layer | `Esc` / `Back` | vibeInput |
