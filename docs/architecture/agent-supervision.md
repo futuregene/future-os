@@ -48,7 +48,7 @@ All three funnel through [`select_agent`](../../packages/rpc/src/connection.rs):
 
 The two entries marked "awaiting the user" are **not settled**. This document does not design code paths for them; it states the options, their costs, and what they affect.
 
-An entry marked "landed" has code and tests behind it; "approved" is still only a plan. D10 cannot run today (the assistant-tail guard is still there) and D8's cause distinction is not implemented.
+An entry marked "landed" has code and tests behind it; "approved" is still only a plan. D8's cause distinction is not implemented.
 
 ## 3 Inputs to a decision
 
