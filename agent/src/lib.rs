@@ -97,6 +97,39 @@ pub(crate) mod test_support {
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
+    /// Isolate tests that replace process-wide shell state and cached probes.
+    #[cfg(not(target_os = "windows"))]
+    pub(crate) fn reexec_env_test() -> bool {
+        let thread = std::thread::current();
+        let name = thread.name().expect("named libtest thread");
+        const CHILD: &str = "FUTURE_AGENT_ISOLATED_ENV_TEST";
+        if std::env::var(CHILD).as_deref() == Ok(name) {
+            return false;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let child = {
+            let _lock = home_env_lock();
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", name, "--nocapture"])
+                .env(CHILD, name)
+                .env("HOME", home.path())
+                .env("USERPROFILE", home.path())
+                .env_remove("FUTURE_HOME")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn isolated shell test")
+        };
+        let output = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed; 0 failed"),
+            "isolated {name}: {stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        true
+    }
+
     /// Unique temp path for a test fixture: timestamp plus a process-wide
     /// atomic sequence. The macOS clock ticks at ~µs granularity, so bare
     /// nanosecond stamps collide when two parallel tests draw the same

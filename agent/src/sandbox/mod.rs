@@ -2159,6 +2159,9 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn hydrate_skips_when_shell_spawn_fails() {
+        if crate::test_support::reexec_env_test() {
+            return;
+        }
         let _lock = hydrate_test_lock();
         let _subscriber = tracing::subscriber::set_default(
             tracing_subscriber::fmt()
@@ -2183,6 +2186,9 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn hydrate_ignores_dump_without_marker() {
+        if crate::test_support::reexec_env_test() {
+            return;
+        }
         let _lock = hydrate_test_lock();
         // Pre-set SHELL so the guard's restore arm with a previous value runs.
         let original = std::env::var_os("SHELL");
@@ -2207,6 +2213,9 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn hydrate_times_out_and_kills_hung_shell() {
+        if crate::test_support::reexec_env_test() {
+            return;
+        }
         let _lock = hydrate_test_lock();
         let _subscriber = tracing::subscriber::set_default(
             tracing_subscriber::fmt()
@@ -2245,6 +2254,9 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[test]
     fn hydrate_merges_env_from_login_shell_dump() {
+        if crate::test_support::reexec_env_test() {
+            return;
+        }
         let _lock = hydrate_test_lock();
         let _subscriber = tracing::subscriber::set_default(
             tracing_subscriber::fmt()
