@@ -27,7 +27,7 @@ Start the graphical Desktop.
 Pairing, unpairing and choosing which device drives this machine all live in the
 window's Remote page, and in the terminal via `future remote devices` (list /
 add / remove / use). That command asks a running Desktop, so start it first.
-For phone remote access without GUI dependencies, run future headless.";
+For phone remote access without GUI dependencies, run future host.";
 
 /// The parsed command line. `Help` is not a mode of running: it means the process
 /// prints [`HELP`] and exits without touching any state.
@@ -63,8 +63,7 @@ impl Launch {
                 // they wanted.
                 "--headless" => {
                     return Err(
-                        "The --headless option has been removed. Run future headless instead."
-                            .into(),
+                        "The --headless option has been removed. Run future host instead.".into(),
                     );
                 }
                 // macOS Finder can pass its process serial number at launch, and
@@ -82,7 +81,7 @@ impl Launch {
 /// Apply `--relay` / `--relay-ca` from this process's command line.
 ///
 /// Runs once, before anything reads the pairing store: an invitation minted by
-/// this launch has to know which relay it points at. `future headless` reads
+/// this launch has to know which relay it points at. `future host` reads
 /// the same flags from its own parser; applying them twice is harmless because
 /// the values are identical.
 pub(crate) fn apply_relay_from_argv() {
@@ -111,7 +110,7 @@ pub(crate) fn apply_relay_from_argv() {
 ///
 /// Both entry points call this before the remote runtime starts, so the choice
 /// means the same thing whether it arrived through the GUI's command line or
-/// through `future headless`. Nothing is written down: these flags decide
+/// through `future host`. Nothing is written down: these flags decide
 /// where *this launch* mints its invitations, and a launch that names no relay
 /// uses the Future platform for new pairings. Existing pairings keep the relay
 /// that issued them either way.
@@ -165,7 +164,7 @@ mod tests {
         );
         assert!(HELP.contains("Usage: futureos"));
         assert!(HELP.contains("future remote devices"));
-        assert!(HELP.contains("future headless"));
+        assert!(HELP.contains("future host"));
     }
 
     /// The two flags this entry point no longer has are refused by name, with the
@@ -190,7 +189,7 @@ mod tests {
     fn the_headless_flag_is_refused_and_named() {
         for args in [vec!["--headless"], vec!["--help", "--headless"]] {
             let error = parse(&args).expect_err("not this entry point");
-            assert!(error.contains("future headless"), "{args:?}: {error}");
+            assert!(error.contains("future host"), "{args:?}: {error}");
         }
         assert!(parse(&["--repair"]).is_err());
     }

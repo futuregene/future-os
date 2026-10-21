@@ -2,7 +2,7 @@
 //!
 //! This is the Agent's own half of restart recovery. The Desktop has always done
 //! a version of this for its own conversations, but a machine that only runs
-//! `future agent` or `future headless` had nothing: after a restart the session
+//! `future agent` or `future host` had nothing: after a restart the session
 //! sat at `interrupted_by_restart` forever, with the work unfinished and nobody
 //! to notice.
 //!

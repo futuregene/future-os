@@ -1,6 +1,6 @@
 //! The TUI hosts a complete Agent in its own process.
 //!
-//! Same policy as `future headless` and the desktop: attach to an Agent that is
+//! Same policy as `future host` and the desktop: attach to an Agent that is
 //! already serving; when none is and the instance lock is free, run the Agent in
 //! this process. The Agent is therefore not a child of the terminal, which
 //! removes the whole class of problems a child process brought: a terminal signal

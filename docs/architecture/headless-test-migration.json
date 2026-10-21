@@ -38658,7 +38658,7 @@
   "entryMigration": {
     "status": "implemented-pending-unified-validation",
     "sharedBackend": "future-host",
-    "entry": "future headless",
+    "entry": "future host",
     "retiredEntry": "futureos-headless",
     "notes": [
       "Original source/line/name/attributes/hashes remain baseline records.",

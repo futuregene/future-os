@@ -55,7 +55,7 @@ fn start_desktop() -> std::process::ExitCode {
     }
     #[cfg(not(feature = "gui"))]
     {
-        eprintln!("This build has no graphical interface. Run future headless instead.");
+        eprintln!("This build has no graphical interface. Run future host instead.");
         std::process::ExitCode::FAILURE
     }
 }

@@ -8,7 +8,7 @@
 > the user's sign-off — see [§2](#2-approved-design-vs-product-decisions); open items are in
 > [§12](#12-open-questions) and the measurements are in [§13](#13-measured-behaviour).
 
-Three entry points can bring an Agent up today: `future agent`, `future headless`, and `future tui`. All three honour the same instance lock, but **who starts it, who owns it, and what happens when it dies** each has its own answer. That layer is what is missing, and it is what this document adds. It changes neither the instance lock, the storage format, nor the RPC contract.
+Three entry points can bring an Agent up today: `future agent`, `future host`, and `future tui`. All three honour the same instance lock, but **who starts it, who owns it, and what happens when it dies** each has its own answer. That layer is what is missing, and it is what this document adds. It changes neither the instance lock, the storage format, nor the RPC contract.
 
 ## 1 Current state
 
@@ -17,7 +17,7 @@ Three entry points can bring an Agent up today: `future agent`, `future headless
 | Entry | Runs the Agent in-process | Launches an external Agent | Locks held |
 |---|---|---|---|
 | `future agent` | Itself | — | `~/.future/agent/agent-instance.lock` (service lock) + the socket's `.owner.lock` (endpoint lease) |
-| `future headless` | Yes, when it gets the service lock | No | `~/.future/app/desktop.lock` (host lock) + the service lock, conditionally |
+| `future host` | Yes, when it gets the service lock | No | `~/.future/app/desktop.lock` (host lock) + the service lock, conditionally |
 | `future tui` | No | Yes: a `future agent --grpc-addr auto` child | Neither |
 
 All three funnel through [`select_agent`](../../packages/rpc/src/connection.rs): handshake an external service first; only on failure plus a confirmed-absent local endpoint (`NotFound`/`ConnectionRefused`) plus a passing [`check_instance_lock`](../../packages/rpc/src/connection.rs) does it issue a `LocalStartPermit`, and the real arbitration is the `try_write()` inside [`AgentService::with_instance`](../../agent/src/service/mod.rs).
@@ -87,12 +87,12 @@ Corollary: **lock held but endpoint not ready yet = someone else is starting**. 
 
 | Entry | May embed | May spawn a child | Self-heals |
 |---|---|---|---|
-| `future headless` | Yes | No (it can embed; a second process buys nothing) | Yes |
+| `future host` | Yes | No (it can embed; a second process buys nothing) | Yes |
 | Desktop GUI | Yes | No | Yes |
 | `future tui` | See D6 | Today yes; no once D6 is adopted | Yes |
 | channels / goal / `future run` / mobile | No | No | Attach only |
 
-For production, keep `future headless` under systemd / launchd / NSSM: a process manager does not die with itself, so client self-healing is only the fallback.
+For production, keep `future host` under systemd / launchd / NSSM: a process manager does not die with itself, so client self-healing is only the fallback.
 
 ### 4.3 Four kinds of death
 
@@ -110,7 +110,7 @@ For production, keep `future headless` under systemd / launchd / NSSM: a process
 | Entry | Probe cadence | Cap | What the UI/terminal shows meanwhile | Effect on its own runs | After the cap |
 |---|---|---|---|---|---|
 | `future tui` | 250ms, widening to 1s | **180s** (matches `AgentHost::START_TIMEOUT`) | Status line: `waiting for the Agent started by another client (pid 1234 @ host-a)… 12s`; past 30s, add "a cold data root can take minutes; progress: `<log path>`" | Input stays editable; a send is refused with the same sentence — **never queued, never faked** | The UI stays usable and switches to a background probe every 30s, with the status line permanently visible |
-| `future headless` | 250ms→1s | **180s** | One stderr line every 30s, same content | Accepts nothing (it never came up) | **Exit with an error** (exit 1), printing the holder's pid/host and the log path, and let the process manager retry |
+| `future host` | 250ms→1s | **180s** | One stderr line every 30s, same content | Accepts nothing (it never came up) | **Exit with an error** (exit 1), printing the holder's pid/host and the log path, and let the process manager retry |
 | Desktop GUI | 250ms→1s | **180s** | The Agent status page shows "waiting for the Agent started by another client", with pid/host | Agent-dependent pages unavailable | Enter `Failed` with a Retry button; never start a second instance |
 
 Three supporting rules:

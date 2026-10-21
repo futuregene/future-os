@@ -28,7 +28,7 @@
 #      pid that holds anything under the real data root. Anything it skips is
 #      printed with its reason.
 #
-# This script is never on a real entry point's path: `future headless`,
+# This script is never on a real entry point's path: `future host`,
 # `future agent` and `future tui` do not read it. Only a lab script opts in.
 #
 #   lab-guard.sh check <FUTURE_HOME>

@@ -35,7 +35,7 @@ the test targets; Tests uses the same package selection and profile to execute
 them. There is no preceding standalone dev-profile build. Documentation tests
 can still compile examples during Tests. Desktop precompiles only its default GUI
 test targets, including `desktop_entry` argument/startup checks. Actual
-`future headless` process tests belong to CLI. The GUI-disabled Desktop entry
+`future host` process tests belong to CLI. The GUI-disabled Desktop entry
 compatibility test and Clippy run only in Misc (`desktop-entry-compat`). Regular
 CI has no standalone product or combined CLI/GUI build. Packaging and signing
 belong to the release workflows.

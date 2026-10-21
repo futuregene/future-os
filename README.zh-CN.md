@@ -43,7 +43,7 @@
 
 | 类别 | 说明 |
 |---|---|
-| **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、移动端 App（Android · iOS）、命令行 (CLI)、IM 机器人——一个 Agent，无处不在。桌面后端还可**无头运行在服务器上**（`future headless`，无需窗口或 WebView，可跑在 SSH 会话里），手机与桌面之间的通道是**端到端加密**的——Noise 握手 + ChaCha20-Poly1305 记录，中继只看到密文（[无头模式](docs/guide/desktop-headless.zh-CN.md)、[远程](docs/wiki/zh/Remote.md)） |
+| **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、移动端 App（Android · iOS）、命令行 (CLI)、IM 机器人——一个 Agent，无处不在。桌面后端还可**以主机模式运行在服务器上**（`future host`，无需窗口或 WebView，可跑在 SSH 会话里），手机与桌面之间的通道是**端到端加密**的——Noise 握手 + ChaCha20-Poly1305 记录，中继只看到密文（[主机模式](docs/guide/desktop-host.zh-CN.md)、[远程](docs/wiki/zh/Remote.md)） |
 | **可配置工具安全** | read, write, edit, shell——审批规则与沙箱分级（`off` / `manual` / `sandbox`）；支持 macOS Seatbelt、Linux 系统 Bubblewrap、Windows 受限令牌写保护。各平台可用性与保护范围不同（[指南](docs/wiki/zh/Sandbox.md)） |
 | **模型灵活** | **自带 API Key（BYOK）**：[内置目录](docs/wiki/zh/Models.md)覆盖主流 Provider，任何 OpenAI 或 Anthropic 兼容端点都可通过 `models.json` 接入。也可以登录 **FutureOS 托管 Provider**（`future auth login`），由平台直接配好 Key 与模型列表。两者可同时使用，并自行限定选择器里出现的模型（[配置](#配置模型)） |
 | **Goal 工程** | 持久化目标/todos/门禁/监控，支撑 24+ 小时长程任务连续执行——确定性 should-run 内核、事件溯源状态、硬校验（证据下限/验收契约/verify 闸门）、租约活性自愈、多 agent（[指南](docs/architecture/goal-control-plane.zh-CN.md)） |

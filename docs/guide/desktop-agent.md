@@ -2,7 +2,7 @@
 
 [中文](desktop-agent.zh-CN.md)
 
-GUI and `future headless` run the complete Agent in their own process by default.
+GUI and `future host` run the complete Agent in their own process by default.
 CLI, TUI, mobile and other clients retain the same RPC interface and existing
 configuration, database, session and credential formats. The packaged `future`
 CLI remains available for skills, maintenance and independent `future agent`
@@ -62,7 +62,7 @@ stale sockets can be reclaimed. Listener cleanup removes only its own endpoint.
   disconnect or another run's terminal is not success. Unconfirmed runs preserve
   diagnostics and block update, reset and restart. Forcing Desktop to exit cannot
   guarantee cancellation on an unreachable external service.
-- Headless Ctrl+C and Unix SIGTERM/SIGHUP perform bounded shutdown. Credentials
+- Host-mode Ctrl+C and Unix SIGTERM/SIGHUP perform bounded shutdown. Credentials
   and completed pairing remain available for the next launch.
 - Updates download, verify signatures and confirm interruption before full
   cleanup. Failed cleanup forbids installation and another Agent in the same
@@ -80,7 +80,7 @@ Desktop versions. See [Windows installer preflight](../internals/desktop-windows
 
 Exit, updates, reset and restart share one stop operation. Later requests neither
 repeat cleanup nor extend its deadline. Cleanup runs in the background while the
-main window remains responsive and displays stages; headless reports stages to
+main window remains responsive and displays stages; host mode reports stages to
 stderr. The stop result has a twenty-second overall deadline. Timeout reports
 failure and continues blocking installation/in-process restart; it does not
 force-kill writers or unlock early. Normal exit offers a process-exit decision
@@ -110,7 +110,7 @@ access its Desktop data; an override selects its own isolated Desktop state.
 | Symptom | Action |
 | --- | --- |
 | External version incompatibility | Check the reported version/protocol; exit or upgrade the external service, then reopen Desktop |
-| Held lock, unavailable service | Identify GUI/headless/independent owners of this data root; exit normally or reboot if necessary; never delete the lock |
+| Held lock, unavailable service | Identify GUI/host/independent owners of this data root; exit normally or reboot if necessary; never delete the lock |
 | Explicit endpoint unreachable | Check its address, service and user environment; remove an unwanted explicit override before reopening |
 | CLI missing but Agent works | Restore a matching CLI beside Desktop or on absolute PATH; skills/maintenance require it, embedded hosting does not require another Agent process |
 | Cleanup failure prevents update | Preserve diagnostics; exit related clients and retry; if persistent, reboot and use the full installer |
@@ -175,8 +175,8 @@ be reproducible even while Cargo continues replaying its saved result.
 Quit from the app for coordinated cleanup. Development-script Ctrl+C interrupts
 the toolchain. Unix cleanup targets only this launch's process group and can
 force termination after its deadline; it does not guarantee normal app cleanup,
-scan/stop external Agents or edit databases/locks. The actual headless binary
-handles Ctrl+C directly; see [headless mode](desktop-headless.md).
+scan/stop external Agents or edit databases/locks. The actual host entry point
+handles Ctrl+C directly; see [host mode](desktop-host.md).
 
 ## Change notes and acceptance
 

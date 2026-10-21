@@ -1509,7 +1509,7 @@ validated independently; do not mark unfinished phases delivered.
 - [RPC architecture](rpc.md), [shared packages](packages.md),
   [SQLite operations](sqlite-migration.md).
 - [Build and install](../guide/build-and-install.md),
-  [headless Desktop](../guide/desktop-headless.md),
+  [headless Desktop](../guide/desktop-host.md),
   [directory layout](../guide/directory-layout.md).
 - [Windows updates](../internals/desktop-windows.md),
   [Linux sandbox](../internals/desktop/SANDBOX/LINUX.md),

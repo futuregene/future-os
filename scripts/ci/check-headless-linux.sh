@@ -34,10 +34,10 @@ timeout --signal=TERM --kill-after=10s 180s docker run --rm --name "$container_n
   --env FUTURE_HOME=/tmp/headless-home/.future \
   rockylinux:8 sh -eu -c '
     mkdir -p "$HOME"
-    timeout 20s future headless --help
+    timeout 20s future host --help
     test ! -e "$HOME/.future"
     set +e
-    output=$(timeout 20s future headless </dev/null 2>&1)
+    output=$(timeout 20s future host </dev/null 2>&1)
     status=$?
     set -e
     printf "%s\n" "$output"

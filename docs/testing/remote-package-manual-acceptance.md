@@ -10,7 +10,7 @@ Record the complete commit, branch, CI URL/result, host OS/architecture, phone O
 
 Build in the isolated worktree. Use a test account, dedicated workspace and nonsensitive files. Do not overwrite daily data or stop an existing Agent. Upgrade compatibility uses old-version data owned by a dedicated test system user, backed up before upgrading. Test fresh pairing separately. Run GUI/headless sequentially for a shared data directory. External-Agent checks use a dedicated FutureOS home and an unused endpoint according to existing Agent instructions.
 
-Source entry points: GUI `make run-desktop`; Android `make run-mobile-android`; iOS `make run-mobile-ios`; headless and matching CLI `make build-desktop-headless`, then execute the resulting `futureos-headless` in an interactive terminal (`.exe` on Windows). Follow the [headless guide](../guide/desktop-headless.md) for login, pairing and exit. Building does not establish runtime success.
+Source entry points: GUI `make run-desktop`; Android `make run-mobile-android`; iOS `make run-mobile-ios`; headless and matching CLI `make build-desktop-headless`, then execute the resulting `futureos-headless` in an interactive terminal (`.exe` on Windows). Follow the [headless guide](../guide/desktop-host.md) for login, pairing and exit. Building does not establish runtime success.
 
 ## Actions and expectations
 

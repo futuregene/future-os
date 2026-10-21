@@ -250,7 +250,7 @@ Nothing here is data: it is how a running process and a terminal find each other
   directory holds no secrets beyond invitations that are about to be printed, and
   it is never part of a backup: a restored request would name a file whose reader
   is long gone. Requests older than two minutes are deleted by the Desktop rather
-  than answered. See [desktop-headless.md](desktop-headless.md) §3.1.
+  than answered. See [desktop-host.md](desktop-host.md) §3.1.
 
 ## `~/.future/workspaces/chat/` — chat workspaces
 

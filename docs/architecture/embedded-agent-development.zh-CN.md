@@ -836,7 +836,7 @@ PR 使用工作分支；提交前获取并合并最新远程主干，解决冲�
 ## 13 相关资料
 
 - [RPC 架构](rpc.zh-CN.md)、[共享包](packages.zh-CN.md)、[SQLite 运维](sqlite-migration.zh-CN.md)。
-- [构建与安装](../guide/build-and-install.zh-CN.md)、[无头 Desktop](../guide/desktop-headless.zh-CN.md)、[目录布局](../guide/directory-layout.zh-CN.md)。
+- [构建与安装](../guide/build-and-install.zh-CN.md)、[无头 Desktop](../guide/desktop-host.zh-CN.md)、[目录布局](../guide/directory-layout.zh-CN.md)。
 - [Windows 安装更新](../internals/desktop-windows.zh-CN.md)、[Linux 沙箱](../internals/desktop/SANDBOX/LINUX.zh-CN.md)、[Windows 沙箱](../internals/desktop/SANDBOX/WINDOWS.zh-CN.md)。
 - [Tauri updater API](https://v2.tauri.app/reference/javascript/updater/) 描述 Windows 安装后退出的行为。
 - [Tokio runtime](https://docs.rs/tokio/latest/tokio/runtime/struct.Runtime.html) 描述 runtime shutdown 与阻塞工作的限制。
