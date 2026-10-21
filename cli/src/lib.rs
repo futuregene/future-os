@@ -10,6 +10,7 @@ pub mod constants;
 pub mod headless;
 pub mod help;
 pub mod output;
+pub mod prompt;
 pub mod relay;
 pub mod rpc;
 #[cfg(test)]
@@ -379,19 +380,25 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
 /// code is the max of the command result and any `process.exitCode` set
 /// during the run (`installBuiltinSkills` sets it on catalog failure and
 /// continues), exactly like Node.
-async fn catch<F>(out: &Output, fut: F) -> i32
+fn catch<'a, F>(out: &'a Output, fut: F) -> impl Future<Output = i32> + 'a
 where
-    F: Future<Output = Result<(), String>>,
+    F: Future<Output = Result<(), String>> + 'a,
 {
-    let code = match fut.await {
-        Ok(()) => 0,
-        Err(msg) if msg == HANDLED_EXIT => 1,
-        Err(msg) => {
-            out.log_err(&msg);
-            1
-        }
-    };
-    code.max(out.exit_code())
+    // Box before constructing the await wrapper. Keeping each command's full
+    // HTTP/RPC future inline in dispatch overflows the Windows main stack in
+    // debug builds (auth/config subprocesses fail with STATUS_STACK_OVERFLOW).
+    let fut = Box::pin(fut);
+    async move {
+        let code = match fut.await {
+            Ok(()) => 0,
+            Err(msg) if msg == HANDLED_EXIT => 1,
+            Err(msg) => {
+                out.log_err(&msg);
+                1
+            }
+        };
+        code.max(out.exit_code())
+    }
 }
 
 #[cfg(test)]

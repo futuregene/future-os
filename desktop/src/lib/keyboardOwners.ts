@@ -6,10 +6,11 @@ import { useEffect } from "react";
  *
  * A global handler for an unmodified key has to ask this before acting, because
  * a plain key has no modifier to make it obviously someone else's. The
- * transcript's ↑/↓ pair is the first such handler (see `questionNavKeys`): the
- * activity rail's menus move focus with the arrows, the terminal sends them to
- * the shell, and the composer's caret uses them — a jump underneath any of
- * those is the app fighting the user for one keystroke.
+ * transcript's PageUp/PageDown pair is the first such handler (see
+ * `questionNavKeys`): the activity rail's menus walk their rows with the arrows,
+ * the terminal sends the page keys to the shell, and the composer's field
+ * scrolls itself — a jump underneath any of those is the app fighting the user
+ * for one keystroke.
  *
  * Registration is by **presence, not focus**: WebKit does not focus a button on
  * click, so a menu opened from a toolbar leaves the caret wherever it was. A

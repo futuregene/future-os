@@ -95,9 +95,12 @@ socket 上：
   光标交还给输入框：面板控制器发出 `futureos:focus-composer`，Composer 响应它
   （在无法持有光标时拒绝）。否则焦点会停在一个已卸载的终端上，接下来的按键将
   无处可去。
-* 快捷键（`Ctrl+J`，macOS 为 `⌘J`）属于应用，不属于 shell。`TerminalView` 把它从
-  xterm 的按键处理中释放出来，使终端持有焦点时窗口监听器仍能看到它——否则 xterm
-  会取消该事件并给 shell 发一个换行。唯一定义在 `features/terminal/shortcut.ts`。
+* 快捷键（`Ctrl+J`，macOS 为 `⌘J`，可在「设置 → 快捷键」中改）属于应用，不属于
+  shell。`TerminalView` 把它从 xterm 的按键处理中释放出来，使终端持有焦点时窗口
+  监听器仍能看到它——否则 xterm 会取消该事件并给 shell 发一个换行。键位来自命令表
+  （`terminal.toggle`），放行判定在 `features/terminal/shortcut.ts`；它是终端**唯一**
+  放行的命令——其余快捷键在终端内一律忽略，这样 `Ctrl+B`、`Ctrl+F`、`Ctrl+A`、
+  `Ctrl+K` 仍交给 readline。见 [KEYBINDINGS.zh-CN.md](KEYBINDINGS.zh-CN.md)。
 * **输入法组合期间键盘归 IME。** 同样的自定义按键处理器对所有标记 `isComposing`
   的事件也退让，使组合中的按键到达输入法而不是终端。xterm 自带的组合启发式只懂
   Chromium 的"此键属于 IME"约定（`keyCode === 229`）；WebKit——桌面 webview 在

@@ -17,20 +17,20 @@
 │[39m  [38;5;245mescape   close popup[39m                                                        [38;5;245m│
 │[39m                                                                              [38;5;245m│
 │[39m  [38;5;151m/commands:[39m                                                                  [38;5;245m│
-│[39m  [38;5;245m/agent                  agent version and instance info[39m                     [38;5;245m│
-│[39m  [38;5;245m/approve                approve pending tool execution[39m                      [38;5;245m│
-│[39m  [38;5;245m/autocompact [on|off]   toggle automatic compaction[39m                         [38;5;245m│
-│[39m  [38;5;245m/autoretry [on|off]     toggle automatic retry[39m                              [38;5;245m│
-│[39m  [38;5;245m/cancel <run-id>        cancel a queued run[39m                                 [38;5;245m│
-│[39m  [38;5;245m/clone                  clone the current session[39m                           [38;5;245m│
-│[39m  [38;5;245m/compact                compress conversation context[39m                       [38;5;245m│
-│[39m  [38;5;245m/context [on|off]       list or toggle the workspace context files[39m          [38;5;245m│
-│[39m  [38;5;245m/copy                   copy the last assistant message[39m                     [38;5;245m│
-│[39m  [38;5;245m/cwd                    change the working directory[39m                        [38;5;245m│
-│[39m  [38;5;245m/delete [--yes]         delete the current session[39m                          [38;5;245m│
-│[39m  [38;5;245m/editor                 edit the draft in $VISUAL/$EDITOR[39m                   [38;5;245m│
-│[39m  [38;5;245m/export                 export the session to an HTML file[39m                  [38;5;245m│
-│[39m  [38;5;245m/fork                   fork the current session[39m                            [38;5;245m│
-│[39m  [38;5;245m/help                   show all commands and shortcuts[39m                     [38;5;245m│
-│[39m  [38;5;245m  ↓ 28 more · ↑↓ scroll[39m                                                     [38;5;245m│
+│[39m  [38;5;245m/agent                            agent version and instance info[39m           [38;5;245m│
+│[39m  [38;5;245m/approve [id]                     allow the pending approval (front of the q│
+│[39m  [38;5;245m/autocompact [on|off]             toggle automatic compaction[39m               [38;5;245m│
+│[39m  [38;5;245m/autoretry [on|off]               toggle automatic retry[39m                    [38;5;245m│
+│[39m  [38;5;245m/cancel <run-id>                  cancel a queued run[39m                       [38;5;245m│
+│[39m  [38;5;245m/clone                            clone the current session[39m                 [38;5;245m│
+│[39m  [38;5;245m/compact                          compress conversation context[39m             [38;5;245m│
+│[39m  [38;5;245m/context [on|off]                 list or toggle the workspace context files│
+│[39m  [38;5;245m/copy                             copy the last assistant message[39m           [38;5;245m│
+│[39m  [38;5;245m/cwd                              change the working directory[39m              [38;5;245m│
+│[39m  [38;5;245m/delete [--yes]                   delete the current session[39m                [38;5;245m│
+│[39m  [38;5;245m/editor                           edit the draft in $VISUAL/$EDITOR[39m         [38;5;245m│
+│[39m  [38;5;245m/export                           export the session to an HTML file[39m        [38;5;245m│
+│[39m  [38;5;245m/fork                             fork the current session[39m                  [38;5;245m│
+│[39m  [38;5;245m/help                             show all commands and shortcuts[39m           [38;5;245m│
+│[39m  [38;5;245m  ↓ 29 more · ↑↓ scroll[39m                                                     [38;5;245m│
 └──────────────────────────────────────────────────────────────────────────────┘

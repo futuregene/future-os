@@ -13,6 +13,7 @@
 | 文档 | 内容 |
 |---|---|
 | [构建与安装](guide/build-and-install.zh-CN.md)（[en](guide/build-and-install.md)） | 前置条件、各平台工具链（macOS / Linux / Windows）、`make` 目标、GUI 打包、`future-goal` 安装、技能安装 |
+| [持续集成](guide/ci.zh-CN.md) ([English](guide/ci.md)) | 影响范围检测、依赖图、共享 runner、合并门禁与手动专项验证 |
 | [TUI](guide/tui.zh-CN.md)（[en](guide/tui.md)） | 终端界面（`future-tui`）：斜杠命令、快捷键、设置 |
 | [渠道配置](guide/channels-config.zh-CN.md)（[en](guide/channels-config.md)） | `~/.future/channels/config.json` 统一参考（agent / providers / Feishu / DingTalk 块、默认值） |
 | [通道 provider 参考](guide/channels-providers.zh-CN.md)（[en](guide/channels-providers.md)） | 共享桥上的通道：能力矩阵、逐通道配置、成熟度、诊断、主动外发 |

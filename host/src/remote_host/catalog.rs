@@ -232,6 +232,13 @@ fn read_sessions(pair_id: &str) -> Option<Value> {
             // built before this field fall back to the snapshot order, and a
             // row whose thread has no timestamps at all omits it.
             "lastMessageAt": t.last_message_at.unwrap_or(t.updated_at),
+            // When the conversation was *started*, which is what a client needs to
+            // rank the ones still running without their rows swapping places every
+            // second: an active run rewrites `lastMessageAt` about once a second,
+            // and a list ordered by that re-shuffles under the reader's thumb.
+            // Optional by contract: a client built before this field falls back to
+            // the recency key, which is what it ordered by before.
+            "createdAt": t.created_at,
         }));
     }
 
@@ -301,6 +308,34 @@ mod tests {
             by_id("sess-older")["lastMessageAt"],
             json!(older.updated_at)
         );
+    }
+
+    /// When the conversation was started, so a client can rank the ones still
+    /// running by a key that does not move.
+    ///
+    /// `lastMessageAt` is rewritten about once a second while a run streams, and
+    /// a phone ordering its "active" list by it re-shuffles rows under the
+    /// reader's thumb. The creation time is stable for the life of the thread and
+    /// is what that list is ordered by. Optional by contract: clients that predate
+    /// this field keep ordering by recency.
+    #[test]
+    fn sessions_snapshot_carries_the_creation_time() {
+        let _home = crate::remote::test_support::HomeGuard::new("catalog-created-at");
+        crate::remote::test_support::init_store();
+
+        let thread = new_thread("sess-started", "Started");
+        record_thread_message_activity(&thread.id, 2_000).expect("record activity");
+
+        let (payload, _signature) = sessions("pair_test").expect("snapshot");
+        let row = payload["sessions"]
+            .as_array()
+            .expect("sessions array")
+            .iter()
+            .find(|row| row["sessionId"] == json!("sess-started"))
+            .expect("session in snapshot");
+        assert_eq!(row["createdAt"], json!(thread.created_at));
+        // It does not move with the run's activity, which is the whole point.
+        assert_ne!(row["createdAt"], row["lastMessageAt"]);
     }
 
     /// The workspace's *name*, not its id: the merged list groups remote sessions

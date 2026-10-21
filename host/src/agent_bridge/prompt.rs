@@ -174,7 +174,7 @@ pub async fn agent_prompt_with_acceptance(
         let sensitive = {
             let capture_thread = request.thread_id.clone();
             let capture_run = run_id.clone();
-            tokio::task::spawn_blocking(move || {
+            crate::runtime::run_blocking(move || {
                 review::capture_after(&capture_thread, &capture_run)
             })
             .await
@@ -182,10 +182,10 @@ pub async fn agent_prompt_with_acceptance(
         };
         // C1: the diff materialization is a read-only diff between fixed commits,
         // so defer it off the IPC path. The GUI is notified when it lands.
-        tokio::spawn(async move {
+        crate::runtime::spawn(async move {
             let materialize_thread = request.thread_id.clone();
             let materialize_run = run_id.clone();
-            let _ = tokio::task::spawn_blocking(move || {
+            let _ = crate::runtime::run_blocking(move || {
                 review::materialize_changeset(&materialize_thread, &materialize_run, sensitive);
             })
             .await;
@@ -488,7 +488,7 @@ pub(super) fn auto_name_thread(thread_id: &str, first_message: &str) {
         .filter(|id| !id.is_empty())
         .unwrap_or(&thread.id)
         .to_string();
-    tokio::spawn(async move {
+    crate::runtime::spawn(async move {
         if let Ok(mut client) = crate::agent_bridge::connect_agent().await {
             let cmd = crate::agent_bridge::set_session_name_command(title, session_id);
             let _ = client.execute_command(cmd).await;

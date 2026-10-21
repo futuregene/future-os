@@ -5,6 +5,8 @@ import type { ActivityRail } from "./ActivityRail";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { hasCommandHandler, runCommand } from "../../features/keyboard/commands";
+import { resetAllCommandBindings, setCommandBinding } from "../../features/keyboard/shortcuts";
 import { forgetHostCatalogue, warmHostCatalogue } from "../../features/remote-peer/remoteHostCatalog";
 import { defaultAgentModelId } from "../../integrations/agent/agentClient";
 import { AppShell } from "./AppShell";
@@ -55,7 +57,9 @@ const children = vi.hoisted(() => ({
   remoteComposer: null as unknown,
   remoteConversationView: null as unknown,
   remoteHub: null as unknown,
+  commandPalette: null as unknown,
   settingsDialog: null as unknown,
+  shortcutCheatSheet: null as unknown,
   skillsView: null as unknown,
   tasksView: null as unknown,
   terminalPanel: null as unknown,
@@ -179,6 +183,24 @@ vi.mock("../../features/remote-peer/RemoteFilesPanel", async () => {
       // expanded one is the panel itself. The shell's test reads which it asked
       // for from the props it recorded.
       return createElement("div", { "data-child": "remote-files", "data-expanded": String(props.expanded) });
+    },
+  };
+});
+vi.mock("../../features/palette/CommandPalette", async () => {
+  const { createElement } = await import("react");
+  return {
+    CommandPalette: (props: { open: boolean }) => {
+      children.commandPalette = props;
+      return props.open ? createElement("div", { "data-child": "command-palette" }) : null;
+    },
+  };
+});
+vi.mock("../../features/palette/ShortcutCheatSheet", async () => {
+  const { createElement } = await import("react");
+  return {
+    ShortcutCheatSheet: (props: { open: boolean }) => {
+      children.shortcutCheatSheet = props;
+      return props.open ? createElement("div", { "data-child": "shortcut-cheat-sheet" }) : null;
     },
   };
 });
@@ -1526,6 +1548,13 @@ describe("app shell event bridges", () => {
   it("opens Settings on the About tab from the macOS menu event", () => {
     const view = mount(<AppShell />);
     act(() => tauri("open-settings")(undefined));
+    // … and the menu's own items name a command id, so they run whatever binding it
+    // has today: the macOS menu carries no accelerator (see `menu.rs`).
+    act(() => tauri("menu-command")("chat.new"));
+    expect(view.container.querySelector("[data-child=\"new-conversation\"]")).not.toBeNull();
+    // An id this build does not know is ignored instead of guessed at.
+    act(() => tauri("menu-command")("vibe.nonsense"));
+    expect(view.container.querySelector("[data-child=\"new-conversation\"]")).not.toBeNull();
     expect(children.settingsDialog).toMatchObject({ initialTab: "about", open: true });
     view.unmount();
   });
@@ -2718,5 +2747,163 @@ describe("app shell collapsed-panel affordances", () => {
       expect(types.filter(type => type === "get_session_entries").length).toBeGreaterThan(0);
       view.unmount();
     });
+  });
+});
+
+/**
+ * The shell registers the commands that are its own (navigation, panels,
+ * settings) and installs the one dispatcher. What each command *does* is covered
+ * where it lives; this measures that the wiring exists and points at the right
+ * state — a shell that forgot to register `section.tasks` would otherwise pass
+ * every other test in this file.
+ */
+describe("app shell keyboard commands", () => {
+  function press(init: KeyboardEventInit) {
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+    });
+  }
+
+  beforeEach(() => {
+    // A rebinding test would otherwise leak its binding into the next one.
+    resetAllCommandBindings();
+  });
+
+  it("opens a new conversation on the accelerator", () => {
+    const view = mount(<AppShell />);
+    press({ ctrlKey: true, key: "n" });
+    expect(view.container.querySelector("[data-child=\"new-conversation\"]")).not.toBeNull();
+    view.unmount();
+  });
+
+  it("switches sections with the number row", () => {
+    const view = mount(<AppShell />);
+    press({ ctrlKey: true, key: "3" });
+    expect(view.container.querySelector("[data-child=\"skills-view\"]")).not.toBeNull();
+    press({ ctrlKey: true, key: "2" });
+    expect(view.container.querySelector("[data-child=\"skills-view\"]")).toBeNull();
+    expect(rail().active).toBe("workspace");
+    view.unmount();
+  });
+
+  it("toggles the sidebar and the context panel", () => {
+    const view = mount(<AppShell />);
+    expect(view.container.querySelector("[data-child=\"activity-rail\"]")).not.toBeNull();
+    press({ ctrlKey: true, key: "b" });
+    expect(view.container.querySelector("[data-child=\"activity-rail\"]")).toBeNull();
+    press({ ctrlKey: true, key: "b" });
+    expect(view.container.querySelector("[data-child=\"activity-rail\"]")).not.toBeNull();
+
+    const panelExpanded = () => (children.contextPanel as { expanded: boolean }).expanded;
+    expect(panelExpanded()).toBe(false);
+    press({ ctrlKey: true, shiftKey: true, key: "b" });
+    expect(panelExpanded()).toBe(true);
+    view.unmount();
+  });
+
+  it("opens the command palette on mod+k, and closes it again", () => {
+    const view = mount(<AppShell />);
+    press({ code: "KeyK", ctrlKey: true, key: "k" });
+    expect(view.container.querySelector("[data-child=\"command-palette\"]")).not.toBeNull();
+    expect((children.commandPalette as { open: boolean }).open).toBe(true);
+
+    act(() => (children.commandPalette as { onClose: () => void }).onClose());
+    expect(view.container.querySelector("[data-child=\"command-palette\"]")).toBeNull();
+    view.unmount();
+  });
+
+  it("offers the commands whose handlers are live, and the conversations and workspaces", () => {
+    const view = mount(<AppShell />);
+    press({ code: "KeyK", ctrlKey: true, key: "k" });
+    const props = children.commandPalette as {
+      commands: Array<{ id: string; label: string }>;
+      targets: Array<{ kind: string; title: string }>;
+    };
+    // A shell command and a rail command: the rail is mounted, so its row order
+    // commands are live too.
+    expect(props.commands.map(command => command.id)).toEqual(expect.arrayContaining(["chat.new", "panel.left", "thread.next"]));
+    // … while the palette's own two entries are left out: a command palette entry
+    // inside the command palette is noise.
+    expect(props.commands.map(command => command.id)).not.toContain("palette.open");
+    expect(props.commands.map(command => command.id)).not.toContain("shortcuts.help");
+
+    expect(props.targets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "conversation", title: expect.any(String) }),
+      expect.objectContaining({ kind: "workspace" }),
+    ]));
+    view.unmount();
+  });
+
+  it("opens the cheat sheet on mod+/, and closes it again", () => {
+    const view = mount(<AppShell />);
+    press({ code: "Slash", ctrlKey: true, key: "/" });
+    expect(view.container.querySelector("[data-child=\"shortcut-cheat-sheet\"]")).not.toBeNull();
+
+    act(() => (children.shortcutCheatSheet as { onClose: () => void }).onClose());
+    expect(view.container.querySelector("[data-child=\"shortcut-cheat-sheet\"]")).toBeNull();
+    view.unmount();
+  });
+
+  it("follows a rebinding of the palette's own key", () => {
+    // The palette is an ordinary command: a user who moves it off ⌘K must find it
+    // on the new key and nowhere else.
+    act(() => setCommandBinding("palette.open", "mod+shift+p"));
+    const view = mount(<AppShell />);
+    press({ code: "KeyK", ctrlKey: true, key: "k" });
+    expect(view.container.querySelector("[data-child=\"command-palette\"]")).toBeNull();
+
+    press({ code: "KeyP", ctrlKey: true, key: "P", shiftKey: true });
+    expect(view.container.querySelector("[data-child=\"command-palette\"]")).not.toBeNull();
+    view.unmount();
+  });
+
+  it("opens settings on its own accelerator", () => {
+    const view = mount(<AppShell />);
+    press({ ctrlKey: true, code: "Comma", key: "," });
+    expect((children.settingsDialog as { open: boolean; initialTab: string }).open).toBe(true);
+    // The first page, unchanged: `⌘⇧,` is the one that goes to the shortcuts page.
+    expect((children.settingsDialog as { initialTab: string }).initialTab).toBe("general");
+    view.unmount();
+  });
+
+  it("opens settings straight on the shortcuts page on its own accelerator", () => {
+    const view = mount(<AppShell />);
+    press({ code: "Comma", ctrlKey: true, key: ",", shiftKey: true });
+    expect((children.settingsDialog as { open: boolean; initialTab: string }).open).toBe(true);
+    expect((children.settingsDialog as { initialTab: string }).initialTab).toBe("shortcuts");
+    view.unmount();
+  });
+
+  it("reaches the same page from the palette, as an ordinary command", () => {
+    // `⌘⇧,` is in the table like every other command, so the palette lists it and
+    // runs it through the registry — no second "open settings" path.
+    const view = mount(<AppShell />);
+    press({ code: "KeyK", ctrlKey: true, key: "k" });
+    const offered = (children.commandPalette as { commands: Array<{ id: string; label: string }> }).commands;
+    expect(offered).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "shortcuts.settings", label: "Keyboard shortcut settings" }),
+    ]));
+    act(() => runCommand("shortcuts.settings"));
+    expect((children.settingsDialog as { initialTab: string }).initialTab).toBe("shortcuts");
+    view.unmount();
+  });
+
+  it("does nothing behind the onboarding gate", () => {
+    mocks.store.hasProviders = {
+      ...(mocks.store.hasProviders as Record<string, unknown>),
+      forceOnboarding: true,
+      hasAnyProvider: false,
+      initPending: true,
+      showGate: true,
+    };
+    const view = mount(<AppShell />);
+    expect(view.container.querySelector("[data-child=\"onboarding-gate\"]")).not.toBeNull();
+    // No conversation exists to start, so the shell registers nothing: the key is
+    // unclaimed rather than answered by a handler with nowhere to put the result.
+    expect(hasCommandHandler("chat.new")).toBe(false);
+    expect(hasCommandHandler("panel.left")).toBe(false);
+    press({ ctrlKey: true, key: "n" });
+    expect(view.container.querySelector("[data-child=\"new-conversation\"]")).toBeNull();
+    view.unmount();
   });
 });

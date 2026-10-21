@@ -9,7 +9,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { hasOpenOverlay } from "../../components/ui/overlayStack";
 import { emitFutureEvent } from "../../lib/futureEvents";
-import { isPanelToggleShortcut, panelToggleShortcutLabel } from "./shortcut";
+import { useBindingLabel } from "../keyboard/shortcuts";
+import { isPanelToggleShortcut } from "./shortcut";
 
 const PREFS_KEY = "future.terminal.panel.v1";
 /** Default share of the viewport. */
@@ -66,7 +67,7 @@ export interface TerminalPanelController {
   toggle: () => void;
   setOpen: (open: boolean) => void;
   setHeight: (height: number) => void;
-  /** Shortcut label for tooltips, platform-correct. */
+  /** Shortcut label for tooltips, platform-correct and live. */
   shortcut: string;
 }
 
@@ -115,8 +116,13 @@ export function useTerminalPanel(threadId: string | null): TerminalPanelControll
     update(previous => ({ ...previous, height: next }));
   }, [update]);
 
+  // Subscribed rather than read once: a rebinding in Settings must reach the
+  // tooltip without a reload (the key itself is read at press time).
+  const shortcut = useBindingLabel("terminal.toggle");
+
   // Global shortcut, so it also works while the composer (or anything else in
-  // the window) has focus. Ctrl+J on Windows/Linux, Cmd+J on macOS — the
+  // the window) has focus. The binding is the command table's — `Ctrl+J` on
+  // Windows/Linux, `⌘J` on macOS by default, rebindable in Settings — and the
   // terminal never receives it (the design records that trade-off explicitly;
   // Enter submits a command line). Inside the terminal, `TerminalView` releases
   // the key from xterm so it reaches this listener; see `./shortcut`.
@@ -144,6 +150,6 @@ export function useTerminalPanel(threadId: string | null): TerminalPanelControll
     toggle,
     setOpen,
     setHeight,
-    shortcut: panelToggleShortcutLabel(),
+    shortcut,
   };
 }

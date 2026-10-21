@@ -1,0 +1,348 @@
+name: Misc
+
+# Explicit opt-in only: none of these suites run on a PR or push.
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Specialty validation to run
+        type: choice
+        required: true
+        default: generated
+        options:
+          - generated
+          - remote-interop
+          - windows-update
+          - macos-notarization
+          - flaky-stress
+          - agent-lifecycle
+          - remote-compile-measurement
+          - headless-measurement
+          - desktop-entry-compat
+          - full-regression
+      measurement_candidate:
+        description: Optional full candidate SHA for Headless observation
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  actions: read
+
+# Stress samples intentionally have no concurrency cancellation. A second
+# dispatch is an independent observation, even for the same ref/suite.
+jobs:
+  full-regression:
+    if: inputs.suite == 'full-regression'
+    uses: ./.github/workflows/ci.yml
+    with:
+      full: true
+
+  desktop-entry-compat:
+    name: Desktop GUI-disabled entry compatibility (${{ matrix.os }})
+    if: inputs.suite == 'desktop-entry-compat'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      CARGO_PROFILE_TEST_DEBUG: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: node scripts/ci/setup-rust.mjs
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-ci-desktop
+          save-if: false
+          workspaces: .
+          cache-all-crates: true
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: bash scripts/ci/install-apt-packages.sh build-essential binutils mold pkg-config
+      - name: Check GUI-disabled targets
+        run: cargo clippy --locked -p futureos --no-default-features --all-targets -- -D warnings
+      - name: Compile GUI-disabled entry test
+        run: cargo test --locked --no-run -p futureos --no-default-features --test desktop_entry
+      - name: Verify refusal, CLI hint and absence of startup state
+        run: cargo test --locked --no-fail-fast -p futureos --no-default-features --test desktop_entry
+
+  remote-compile-measurement:
+    name: Matched Windows Rust compilation
+    if: inputs.suite == 'remote-compile-measurement'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: candidate
+      - uses: actions/checkout@v7
+        with:
+          # Last integrated main, before extraction; same compiler/config.
+          ref: 7eb94d52db36b288a295ae33cb4f654ea1994044
+          path: baseline
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Setup shared pinned Rust toolchain
+        run: node candidate/scripts/ci/setup-rust.mjs
+      - name: Compare empty-target compilation on one runner
+        run: python candidate/scripts/ci/remote-compile-measurement.py --baseline baseline --candidate candidate --output measurement
+      - name: Upload compilation evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: remote-windows-compilation-${{ github.sha }}
+          path: measurement/
+          if-no-files-found: error
+
+  # Optional evidence only. Raw binaries and real Store samples; no packaging,
+  # signing or product installation. Run after the user's manual-test handoff.
+  # A separate tools checkout can observe an already frozen full candidate SHA.
+
+  headless-measurement:
+    name: Matched Headless build and startup observation
+    if: inputs.suite == 'headless-measurement'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: measurement-tools
+      - uses: actions/checkout@v7
+        with:
+          ref: 904eab2b1ebc8b7c963ddfb15dd9468c420e3f35
+          path: baseline
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.measurement_candidate || github.sha }}
+          path: candidate
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Setup pinned Rust toolchain
+        run: node candidate/scripts/ci/setup-rust.mjs
+      - name: Install native build dependencies
+        run: |
+          bash candidate/scripts/ci/install-apt-packages.sh \
+            build-essential binutils mold pkg-config \
+            libayatana-appindicator3-dev libgtk-3-dev librsvg2-dev libwebkit2gtk-4.1-dev
+      - name: Observe matched empty-target builds and real persistence sample
+        run: |
+          python3 measurement-tools/scripts/ci/headless-measurement.py \
+            --baseline baseline --candidate candidate --output measurement
+      - name: Upload raw measurement evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: headless-measurement-${{ github.sha }}
+          path: measurement/
+          if-no-files-found: error
+          retention-days: 30
+
+  macos-notarization:
+    if: inputs.suite == 'macos-notarization'
+    name: macOS notarization recovery
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Test submission recovery and publication policy
+        run: node --test scripts/tests/notarize-macos-dmg.test.mjs
+
+  windows-update:
+    name: Windows update fixtures
+    if: inputs.suite == 'windows-update'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}/NSIS/makensis.exe")) {
+            choco install nsis --yes --no-progress
+            if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed.' }
+          }
+
+      # Offline throwaway executables exercise the actual hooks and observer;
+      # no signed release, user Agent, user data or production ACL is involved.
+      - name: Installer preflight and update recovery
+        shell: powershell
+        run: |
+          & ./scripts/tests/test-windows-installer-preflight.ps1
+
+      - name: Packaged lifecycle assertion regressions
+        shell: powershell
+        run: |
+          & ./scripts/tests/test-windows-lifecycle-assertions.ps1
+
+      - name: Install script failure guidance
+        shell: powershell
+        run: |
+          & ./scripts/tests/test-install.ps1
+
+  remote-interop:
+    name: Rust / TypeScript interoperability
+    if: inputs.suite == 'remote-interop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      REMOTE_RUST: '[]'
+      REMOTE_TS: '[]'
+      REMOTE_INTEROP: 'true'
+      CARGO_PROFILE_TEST_DEBUG: 1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: Setup Rust
+        run: node scripts/ci/setup-rust.mjs
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: remote-packages
+          save-if: false
+          workspaces: .
+          cache-on-failure: true
+          cache-all-crates: true
+      - name: Install compilation dependencies
+        run: bash scripts/ci/install-apt-packages.sh build-essential binutils mold pkg-config
+      - name: Install fixture broker
+        run: bash scripts/ci/install-apt-packages.sh nats-server
+      - name: Install Node dependencies
+        run: npm ci
+      - name: Package checks and acceptance
+        run: node scripts/ci/remote-checks.mjs
+
+  stress:
+    if: inputs.suite == 'flaky-stress'
+    name: flaky-stress
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - name: Setup Rust
+        run: node scripts/ci/setup-rust.mjs
+
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+          workspaces: |
+            .
+          cache-on-failure: true
+          cache-all-crates: true
+
+      # Same minimal dep set as the workspace rust-tests groups: mold is
+      # pinned by .cargo/config.toml, pkg-config/build-essential/binutils
+      # cover build scripts and linkers.
+      - name: Install Linux deps
+        run: |
+          bash scripts/ci/install-apt-packages.sh \
+            build-essential \
+            binutils \
+            mold \
+            pkg-config
+
+      # agent: the observed flake cluster (sync_future_models_cache
+      # Option::unwrap on None + two approval PoisonErrors) lives here.
+      - name: Stress agent tests
+        env:
+          CARGO_PROFILE_TEST_DEBUG: 1
+        run: |
+          for i in 1 2; do
+            echo "=== agent pass $i ==="
+            cargo test -p future-agent
+          done
+
+      # tui + cli: the documented embedded-agent singleton-lock flake
+      # (cli/tests/bin.rs) surfaces under intra-binary parallelism here.
+      - name: Stress tui+cli tests
+        env:
+          CARGO_PROFILE_TEST_DEBUG: 1
+        run: |
+          for i in 1 2; do
+            echo "=== tui+cli pass $i ==="
+            cargo test -p future-tui -p future-cli
+          done
+
+  generated:
+    name: Proto and schema generated sources
+    if: inputs.suite == 'generated'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: node scripts/ci/setup-rust.mjs
+      - name: Install native build tools and protoc
+        run: bash scripts/ci/install-apt-packages.sh build-essential binutils mold pkg-config protobuf-compiler
+      - name: Regenerate protobuf sources
+        run: |
+          (cd packages/rpc && REGENERATE_PROTO=1 cargo build --locked)
+          (cd channels && REGENERATE_PROTO=1 cargo build --locked)
+          git diff --exit-code packages/rpc/src/generated/proto.rs channels/src/generated/
+      - name: Check Remote schema generation
+        run: python3 packages/remote-protocol/scripts/generate.py --check
+
+  agent-lifecycle:
+    name: Embedded Agent lifecycle (${{ matrix.os }})
+    if: inputs.suite == 'agent-lifecycle'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      CARGO_PROFILE_TEST_DEBUG: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - run: node scripts/ci/setup-rust.mjs
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          bash scripts/ci/install-apt-packages.sh build-essential binutils mold pkg-config \
+            libayatana-appindicator3-dev libgtk-3-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev
+      - name: Observe isolated native lifecycle
+        run: python scripts/ci/check-embedded-agent.py
+      - name: Fetch combined feature dependency metadata
+        run: cargo fetch --locked
+      - name: Host and CLI architecture boundaries
+        run: python scripts/ci/host-boundaries.py
+      - name: Host public library documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc -p future-host --no-deps --locked
+      - name: Upload lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: embedded-agent-${{ runner.os }}
+          path: target/embedded-agent-ci/
+          if-no-files-found: error

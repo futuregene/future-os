@@ -52,7 +52,7 @@ describe("isEditableTarget", () => {
 
   it("hands an empty editor's keys back to the surrounding view", () => {
     // The composer autofocuses into an empty editor; the marker it sets while
-    // empty is what frees ↑/↓ for the transcript.
+    // empty is what frees PageUp/PageDown for the transcript.
     const editor = propertyOnlyEditor();
     editor.setAttribute(EMPTY_EDITOR_ATTR, "");
     expect(isEditableTarget(editor)).toBe(false);

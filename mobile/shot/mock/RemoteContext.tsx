@@ -52,7 +52,9 @@ import {
   demoUnpricedSessionUsage,
   demoWorkspaces,
   multiTurnEntries,
+  manyRecentSessions,
   multiTurnOlderEntries,
+  recentOnlySessions,
   sessions,
 } from "./data";
 
@@ -121,6 +123,18 @@ export function RemoteProvider({ children }: PropsWithChildren) {
   // machine step, which only exists while more than one machine can take the
   // conversation.
   const withPeers = new URLSearchParams(window.location.search).get("peers") === "1";
+  // `?recent=1` adds the states the recency page exists to separate: a second
+  // run producing output, and a run blocked on the reader's approval. Every
+  // other capture keeps the catalogue it had.
+  const withRecent = new URLSearchParams(window.location.search).get("recent") === "1";
+  // `?recentMany=1` adds forty older conversations, which is what the recency
+  // page's window is for: it draws the newest and offers the rest.
+  const withRecentMany = new URLSearchParams(window.location.search).get("recentMany") === "1";
+  const catalogue = [
+    ...(withRecent ? recentOnlySessions : []),
+    ...sessions,
+    ...(withRecentMany ? manyRecentSessions : []),
+  ];
   const [compactionFinished, setCompactionFinished] = useState(false);
   const scriptedCompaction = compactionFinished || new URLSearchParams(window.location.search).get("compacted") === "1";
   // `?multiTurnOlder=1` keeps one page of history above the multi-turn
@@ -253,7 +267,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
 
     // Catalogue
     catalogSync: { state: "ready", epoch: "epoch_1" },
-    sessions: sessions.map(session =>
+    sessions: catalogue.map(session =>
       sessionPins[session.sessionId] === undefined
         ? session
         : { ...session, pinned: sessionPins[session.sessionId] },

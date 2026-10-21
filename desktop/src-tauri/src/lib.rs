@@ -24,6 +24,8 @@ mod git_review;
 mod host_environment;
 mod instance;
 pub mod launch;
+#[cfg(all(test, windows, feature = "gui"))]
+mod test_process;
 
 /// Sandbox children enter the existing Agent helper before constructing GUI
 /// or headless state. The helper never starts a service or takes its lock.
@@ -236,8 +238,10 @@ mod gui {
         let area_x = area_x / scale;
         let area_y = area_y / scale;
 
-        let width = (area_w * 0.94).clamp(1024.0, area_w);
-        let height = (area_h * 0.94).clamp(720.0, area_h);
+        // A small display can be below the preferred minimum; the work area
+        // remains the upper bound, and clamp must never receive min > max.
+        let width = (area_w * 0.94).clamp(1024.0_f64.min(area_w), area_w);
+        let height = (area_h * 0.94).clamp(720.0_f64.min(area_h), area_h);
         let x = area_x + (area_w - width) / 2.0;
         let y = area_y + (area_h - height) * 0.35;
         (width, height, x, y)
@@ -880,6 +884,23 @@ mod gui {
                             // No native About dialog — open the in-app Settings page.
                             let _ = app.emit("open-settings", ());
                         }
+                        menu::MENU_NEW_CONVERSATION | menu::MENU_SETTINGS => {
+                            // The window runs the *command*, by id — the same command
+                            // the palette, the rail's button and a keystroke reach,
+                            // through the same `useCommand` handler. The menu names no
+                            // key (see `menu.rs`), so a rebinding cannot leave a stale
+                            // label behind, and the item works on whatever key the
+                            // command has today.
+                            //
+                            // A window that is not up yet has no handler registered,
+                            // and `runCommand` on the other side is then a no-op.
+                            let command = if event.id().as_ref() == menu::MENU_NEW_CONVERSATION {
+                                "chat.new"
+                            } else {
+                                "settings.open"
+                            };
+                            let _ = app.emit("menu-command", command);
+                        }
                         menu::MENU_RESTART_WEBVIEW => {
                             // Reload a hung/crashed webview in place (native reload,
                             // so it recovers even when the JS context is dead)
@@ -1355,6 +1376,12 @@ mod gui {
             // shape once before approvals so an Agent run that survived
             // the GUI restart is reanimated instead of staying hidden.
             agent_bridge::reconcile_interrupted_runs().await;
+            // A conversation whose run this process's predecessor cut short
+            // (the embedded Agent dies with the app) is continued here, before
+            // the watchdog's first pass settles that row as interrupted: the
+            // Agent's own `interruptedRun` marker is the evidence, and the user
+            // reopening the app is what asks for the work to go on.
+            agent_bridge::resume_interrupted_runs_at_launch(store::now_millis()).await;
             agent_bridge::reconcile_pending_approvals().await;
         });
         // Shadow-review maintenance (consistency check + crash recovery) runs
@@ -1498,6 +1525,14 @@ mod gui {
             let (width, height, _, _) = main_window_geometry(1.0, 1050.0, 730.0, 0.0, 0.0);
             assert_eq!(width, 1024.0);
             assert_eq!(height, 720.0);
+        }
+
+        #[test]
+        fn main_window_geometry_fits_a_work_area_below_the_preferred_minimum() {
+            // A scaled or virtual display can have only 674 logical pixels of
+            // usable height. Fit both dimensions rather than panicking at startup.
+            let geometry = main_window_geometry(2.0, 1600.0, 1348.0, 100.0, 50.0);
+            assert_eq!(geometry, (800.0, 674.0, 50.0, 25.0));
         }
 
         #[test]

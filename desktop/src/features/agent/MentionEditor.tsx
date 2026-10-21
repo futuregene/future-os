@@ -1,6 +1,6 @@
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent, Ref } from "react";
 import type { WorkspaceFileResult } from "../../integrations/storage/threadStore";
-import type { SessionMentionGroup, SessionMentionOption } from "./sessionMention";
+import type { SessionMentionOption } from "./sessionMention";
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { searchWorkspaceFiles } from "../../integrations/storage/threadStore";
@@ -11,7 +11,7 @@ import { localPathsFromUriList } from "./clipboardAttachments";
 import { hashContext, isEditorEmpty, mentionContext, PILL_ATTR, serialize, slashContext } from "./composer/mentionDom";
 import { FileMenu, SessionMenu, SlashMenu } from "./composer/MentionMenus";
 import { parseMentionSegments } from "./mentionMarkdown";
-import { filterSessionMentions, groupSessionMentions } from "./sessionMention";
+import { filterSessionMentions } from "./sessionMention";
 import { buildSlashMenuGroups } from "./slashMenu";
 
 /** A skill offered by the `/` menu; `name` is the English slash-command name. */
@@ -68,6 +68,15 @@ interface MentionEditorProps {
   /** Conversations offered by the `#` menu, in menu order; omit/empty to disable it. */
   sessions?: SessionMentionOption[];
   disabled?: boolean;
+  /**
+   * Whether `@` / `/` / `#` open their menus while typing.
+   *
+   * Off for the Vibe panel's input layer (`VIBE.md` §5.3): a dictated sentence
+   * arrives as one inserted run, and a recognized "slash" or a path would put a
+   * menu over the transcript — worse, the next utterance's keys would feed the
+   * menu instead of the sentence. The text still lands; only the popups go.
+   */
+  triggers?: boolean;
   placeholder: string;
   className?: string;
   /** Enter pressed (not Shift, not during IME): parent reads getContent, sends, clears. */
@@ -104,6 +113,7 @@ export function MentionEditor({
   onContextToolSelect,
   sessions = [],
   disabled,
+  triggers = true,
   placeholder,
   className,
   onSubmit,
@@ -142,16 +152,11 @@ export function MentionEditor({
   ], [slashGroups]);
   const slashMenuOpen = slashQuery !== null && (contextTools.length > 0 || (skills?.length ?? 0) > 0);
   const sessionMenuOpen = hashQuery !== null && sessions.length > 0;
-  // The `#` menu is grouped by workspace (chats first), unlike the flat `/` menu.
-  const sessionGroups = useMemo<SessionMentionGroup[]>(
-    () => (hashQuery === null ? [] : groupSessionMentions(filterSessionMentions(sessions, hashQuery))),
+  // The `#` menu is one list ordered by recency (see `sessionMentionOptions`),
+  // unlike the rail's workspace tree — the row most recently worked in leads.
+  const sessionItems = useMemo<SessionMentionOption[]>(
+    () => (hashQuery === null ? [] : filterSessionMentions(sessions, hashQuery)),
     [hashQuery, sessions],
-  );
-  // One flat row list, so keyboard navigation walks the same order the menu
-  // renders (group headings are not rows).
-  const sessionItems = useMemo(
-    () => sessionGroups.flatMap(group => group.sessions),
-    [sessionGroups],
   );
 
   // Live mirror of the skills prop so the imperative restore() can rebuild
@@ -234,6 +239,14 @@ export function MentionEditor({
   // Refresh the active trigger (`@` file mention, `/` skill or `#` conversation)
   // at the caret.
   function updateTrigger() {
+    if (!triggers) {
+      // Nothing may open: see the prop's comment. Clearing the three is also what
+      // closes a menu that was already open when the layer took the editor over.
+      setQuery(null);
+      setSlashQuery(null);
+      setHashQuery(null);
+      return;
+    }
     const editor = editorRef.current;
     const mention = mentionContext(editor);
     if (mention) {
@@ -701,11 +714,9 @@ export function MentionEditor({
       {sessionMenuOpen
         ? (
             <SessionMenu
-              groups={sessionGroups}
               items={sessionItems}
               selectedIndex={selectedSession}
               emptyLabel={t("composer.noSessionMatches")}
-              chatsLabel={t("composer.sessionsSection")}
               workspaceLabel={t("composer.workspaceSection")}
               onSelect={insertSession}
             />

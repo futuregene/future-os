@@ -23,14 +23,20 @@ impl EventJournalHealth {
     }
 
     pub(super) fn fail(&self, message: String) {
-        *self.last_error.lock() = Some(message);
+        // Publish the error and interrupt as one health transition. Readers
+        // that observe the error must also observe the cancellation signal.
+        let mut error = self.last_error.lock();
+        *error = Some(message);
         if let Some(flag) = self.interrupt_flag.lock().as_ref() {
             flag.store(true, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
     pub(super) fn set_interrupt(&self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) {
-        if self.error().is_some() {
+        // Use the same lock order as fail so installing the signal cannot
+        // race an error between the health check and flag registration.
+        let error = self.last_error.lock();
+        if error.is_some() {
             flag.store(true, std::sync::atomic::Ordering::SeqCst);
         }
         *self.interrupt_flag.lock() = Some(flag);

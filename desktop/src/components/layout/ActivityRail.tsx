@@ -23,11 +23,13 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { mergeConversations, rowKey } from "../../features/remote-peer/mergeConversations";
+import { useCommand } from "../../features/keyboard/commands";
+import { groupMergedRows, mergeConversations, rowKey } from "../../features/remote-peer/mergeConversations";
 import { peersDotState } from "../../features/remote-peer/peerStatus";
 import { SkillIntroBubble } from "../../features/skills/SkillIntroBubble";
 import { listInstalledSkills } from "../../integrations/skills/skillsClient";
 import { cn } from "../../lib/cn";
+import { formatMessageTimestamp } from "../../lib/date";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { isMacOS } from "../../lib/platform";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
@@ -43,8 +45,11 @@ import { DeviceSelector } from "./DeviceSelector";
 import { useCollapsedWorkspaces } from "./hooks/useCollapsedWorkspaces";
 import { usePendingApprovalCounts } from "./hooks/usePendingApprovalCounts";
 import { useRailSelection } from "./hooks/useRailSelection";
+import { useRailView } from "./hooks/useRailView";
 import { MergedRows } from "./MergedRows";
 import { RailDisclosure, RailHeaderButton } from "./RailChrome";
+import { RailViewSwitch } from "./RailViewSwitch";
+import { isActiveRun, RECENT_PAGE_SIZE, recentSplit } from "./recentOrder";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, buildTree, threadParentIds, visibleThreadRows, visibleTreeRows } from "./threadTree";
 
@@ -193,7 +198,7 @@ export function ActivityRail({
   skillIntroDismissed,
   onDismissSkillIntro,
 }: ActivityRailProps) {
-  const { t } = useTranslation("layout");
+  const { i18n, t } = useTranslation("layout");
   const noMatchesText = t("activityRail.noMatches");
   // Pending approvals across all threads — badged on rail items so a background
   // conversation's approval is visible without opening it.
@@ -280,6 +285,12 @@ export function ActivityRail({
   const [chatSectionCollapsed, setChatSectionCollapsed] = useState(false);
   // Chat section header menu.
   const [chatSectionMenuOpen, setChatSectionMenuOpen] = useState(false);
+  // The recent view's own actions menu (its only way into a batch).
+  const [recentMenuOpen, setRecentMenuOpen] = useState(false);
+  // Which list the rail shows: the tree (its own shape, and the default) or the
+  // recent view. Persisted — it is how this window lists things, and a restart
+  // should bring back the list the reader left.
+  const { setView: setRailView, view: railView } = useRailView();
   // Text search for the conversation list. Not persisted: the list is huge
   // and a leftover query after restart would feel like a stale filter.
   const [searchQuery, setSearchQuery] = useState("");
@@ -520,6 +531,88 @@ export function ActivityRail({
     [visibleThreads, threadMatchesQuery],
   );
 
+  /**
+   * How much of the recent view's "earlier" stretch is drawn.
+   *
+   * Held here rather than in the list because the keyboard walk steps the same
+   * order the list draws: two copies of "how far down the list goes" would be
+   * two answers to "which row is next". It starts over when the view is left and
+   * returned to, since coming back to "the recent ones" means the recent ones.
+   */
+  const [recentLimit, setRecentLimit] = useState(RECENT_PAGE_SIZE);
+
+  /**
+   * The recent view's rows: every conversation the device filter admits, in one
+   * list, with the two facts it is ordered and split by.
+   *
+   * `remoteRows` already holds this machine's threads and every listed host's
+   * sessions, under the same filter the tree draws with — so the two views cannot
+   * disagree about *which* conversations exist, only about how they are ranked.
+   * A run's state is read per row: this machine's threads from the rail's own
+   * per-thread run statuses (the same source the row's indicator uses), a host's
+   * from what it reports on its row.
+   */
+  const recent = useMemo(() => {
+    const rows = remoteRows.filter(rowMatchesQuery).map(row => ({
+      ...row,
+      active: row.desktopId === null
+        ? isActiveRun(
+            threadRunStatuses[row.id]?.status,
+            threadStreamingStatuses[row.id],
+          )
+        : isActiveRun(row.runStatus, row.streaming),
+      createdAt: row.createdAt ?? null,
+      lastActivityAt: row.lastMessageAt,
+    }));
+    return recentSplit(rows, recentLimit);
+  }, [recentLimit, remoteRows, rowMatchesQuery, threadRunStatuses, threadStreamingStatuses]);
+
+  /**
+   * The age each recent row shows, by row key.
+   *
+   * The activity stamp, not the start time: a row's age answers "how long since
+   * this last moved", which is what the reader is scanning the list for. The
+   * start time only decides *where* the running rows sit (see `recentOrder.ts`).
+   */
+  const recentAgeLabels = useMemo(() => {
+    const labels = new Map<string, string>();
+    const now = Date.now();
+    for (const row of recent.rows) {
+      if (row.lastMessageAt === null)
+        continue;
+      labels.set(row.key, formatMessageTimestamp(new Date(row.lastMessageAt).toISOString(), i18n.language, {
+        now,
+        justNowLabel: t("activityRail.recentJustNow"),
+      }));
+    }
+    return labels;
+  }, [i18n.language, recent.rows, t]);
+
+  /**
+   * The scopes a recent-view batch is assembled from.
+   *
+   * One scope for the whole view: it is one flat list, and the tree's scopes
+   * (the chat section, one workspace) do not exist here. Pinning is a marker on
+   * this view rather than a section, so a pinned conversation is an ordinary row
+   * and joins the batch — the opposite of the tree, where a pin lifts a row out
+   * of its group (see `useRailSelection`).
+   */
+  const recentThreadScopes = useMemo(
+    () => new Map(visibleThreads.map(thread => [thread.id, "recent"] as const)),
+    [visibleThreads],
+  );
+  const recentRemoteScopes = useMemo(
+    () => new Map(remoteRows.filter(row => row.desktopId !== null).map(row => [row.key, "recent"] as const)),
+    [remoteRows],
+  );
+  /** This machine's threads the recent view lists — the batch's local half. */
+  const recentThreads = filteredVisibleThreads;
+  /** The hosts' rows the recent view lists — the batch's remote half. */
+  const recentRemoteRows = useMemo(
+    () => recent.rows.filter(row => row.desktopId !== null),
+    [recent.rows],
+  );
+
   const {
     deleteSelected,
     deselectAll,
@@ -540,10 +633,23 @@ export function ActivityRail({
     onBatchDeleteThreads,
     onDeleteRemoteConversations,
     onSelectThread,
-    remoteScopes,
-    threadScopes,
-    visibleRemoteRows: mergedMode ? filteredRemoteRows : visibleRemoteRows,
-    visibleThreads: mergedMode ? filteredVisibleThreads : visibleThreads,
+    // The batch is assembled from what the current view draws, in that view's
+    // own scopes: one workspace or the chat section in the tree, and the whole
+    // flat list in the recent view — where a pin is a marker rather than a
+    // section, so a pinned row joins the batch instead of being lifted out of it.
+    pinnedAreShortcuts: railView !== "recent",
+    remoteScopes: railView === "recent" ? recentRemoteScopes : remoteScopes,
+    threadScopes: railView === "recent" ? recentThreadScopes : threadScopes,
+    visibleRemoteRows: railView === "recent"
+      ? recentRemoteRows
+      : mergedMode
+        ? filteredRemoteRows
+        : visibleRemoteRows,
+    visibleThreads: railView === "recent"
+      ? recentThreads
+      : mergedMode
+        ? filteredVisibleThreads
+        : visibleThreads,
   });
 
   /** Whether this thread should show a selection checkbox. */
@@ -594,24 +700,56 @@ export function ActivityRail({
     [chatThreads, threadMatchesQuery],
   );
 
-  const visibleWorkspaceGroups = workspaceSectionCollapsed ? [] : workspaceGroups;
-  const visiblePinnedThreads = searchOpen || queryActive ? filteredPinnedThreads : pinnedThreads;
-  const visibleChatThreads = chatSectionCollapsed ? [] : filteredChatThreads;
+  // Memoized rather than computed inline: these three are dependencies of the
+  // walkable-row list below (and of the row builders), and a fresh array every
+  // render would rebuild all of it on every keystroke elsewhere in the app.
+  const visibleWorkspaceGroups = useMemo(
+    () => (workspaceSectionCollapsed ? [] : workspaceGroups),
+    [workspaceSectionCollapsed, workspaceGroups],
+  );
+  const visiblePinnedThreads = useMemo(
+    () => (searchOpen || queryActive ? filteredPinnedThreads : pinnedThreads),
+    [filteredPinnedThreads, pinnedThreads, queryActive, searchOpen],
+  );
+  const visibleChatThreads = useMemo(
+    () => (chatSectionCollapsed ? [] : filteredChatThreads),
+    [chatSectionCollapsed, filteredChatThreads],
+  );
   const hasAnyVisibleRow = useMemo(() => {
     if (!queryActive)
       return true;
+    // The recent view draws every row of the filtered list, so it is the one
+    // place that can answer this without asking its sections: a row the tree
+    // folds away is still a row here.
+    if (railView === "recent")
+      return recent.rows.length > 0;
     if (mergedMode)
       return filteredRemoteRows.length > 0;
     return filteredPinnedThreads.length > 0
       || filteredChatThreads.length > 0
       || workspaceGroups.some(group => group.rows.length > 0);
-  }, [queryActive, mergedMode, filteredRemoteRows, filteredPinnedThreads, filteredChatThreads, workspaceGroups]);
+  }, [
+    queryActive,
+    mergedMode,
+    railView,
+    recent.rows.length,
+    filteredRemoteRows,
+    filteredPinnedThreads,
+    filteredChatThreads,
+    workspaceGroups,
+  ]);
 
   /**
-   * Which row is "current". A local thread is current while the chat section is
-   * open; a remote row is current once its conversation is the one on screen.
+   * Which row is "current". A local thread is current while a list is showing
+   * (both the chat and the workspace section draw conversation rows); a remote
+   * row is current once its conversation is the one on screen.
+   *
+   * The workspace section used to be excluded, so a workspace thread was never
+   * "current": the keyboard walk had no place to start and always jumped to the
+   * first (or last) row — which is exactly the "within a workspace" step this
+   * navigation needs.
    */
-  const activeConversationKey = active === "chat" && activeThreadId
+  const activeConversationKey = (active === "chat" || active === "workspace") && activeThreadId
     ? `local::${activeThreadId}`
     : activeRemoteKey;
 
@@ -625,10 +763,12 @@ export function ActivityRail({
     depth = 0,
     hasChildren = false,
     compact = false,
+    ageLabel?: string,
   ): React.ReactNode {
     return (
       <ThreadListItem
-        active={thread.id === activeThreadId && active === "chat"}
+        active={thread.id === activeThreadId && (active === "chat" || railView === "recent")}
+        ageLabel={ageLabel}
         archived={thread.status === "archived"}
         key={thread.id}
         compact={compact}
@@ -659,6 +799,213 @@ export function ActivityRail({
     () => new Map(visibleThreads.map(thread => [thread.id, thread])),
     [visibleThreads],
   );
+
+  /**
+   * Open a merged-list row: this machine's thread, or the host's conversation.
+   *
+   * A callback rather than a function declaration, because both walks below are
+   * memoized rows producers and this is what they call to act.
+   */
+  const openRow = useCallback((row: MergedConversation) => {
+    if (row.desktopId === null) {
+      const thread = threadById.get(row.id);
+      if (thread)
+        onSelectThread(thread);
+      return;
+    }
+    onOpenRemoteConversation?.(row);
+  }, [onOpenRemoteConversation, onSelectThread, threadById]);
+
+  /**
+   * What the list draws, as the two navigation levels read it.
+   *
+   * **One description, two views.** A block is a conversation together with the
+   * forks drawn under it — the unit the list ranks. A workspace's block is the
+   * whole workspace, because that is how it is drawn: one heading, its
+   * conversations under it.
+   *
+   * The fine move (`thread.*`) flattens the blocks that the current section shows;
+   * the coarse move (`group.*`) steps between all of them, because a chat and a
+   * workspace are siblings in the user's model even though the rail draws them in
+   * two sections. Both read this one array, so they cannot disagree about what
+   * comes next — the first version derived them separately and, in the merged
+   * list, the fine move followed the tree order while the coarse move followed
+   * the grouped order, so a step down and a step sideways disagreed about where a
+   * workspace began.
+   */
+  const walkBlocks = useMemo(() => {
+    type Section = "pinned" | "workspace" | "chat" | "recent";
+    interface WalkBlock {
+      section: Section;
+      rows: { key: string; open: () => void }[];
+      /** What the coarse move opens: the block's first conversation. */
+      open: () => void;
+    }
+    /** Split consecutive rows that share a root into one block each. */
+    const byRoot = <T,>(rows: T[], rootOf: (row: T) => string): T[][] => {
+      const blocks: T[][] = [];
+      let root: string | null = null;
+      for (const row of rows) {
+        const owner = rootOf(row);
+        if (owner !== root || blocks.length === 0) {
+          root = owner;
+          blocks.push([]);
+        }
+        blocks[blocks.length - 1]!.push(row);
+      }
+      return blocks;
+    };
+    const toBlock = (section: Section, rows: { key: string; open: () => void }[], open?: () => void): WalkBlock => ({
+      section,
+      rows,
+      open: open ?? (() => rows[0]?.open()),
+    });
+
+    if (railView === "recent") {
+      // One block per drawn row, in the order the view draws them: the recent
+      // list is flat, so every conversation is a stop of its own and the two
+      // moves (fine and coarse) agree about where it begins — as they do for a
+      // chat in the tree, which is also a single-row block.
+      return recent.rows.map(row => toBlock("recent", [{
+        key: row.key,
+        open: () => openRow(row),
+      }]));
+    }
+
+    if (mergedMode) {
+      // The merged list's own grouping decides its blocks — pinned, then the
+      // workspaces, then the chats — so this cannot be a second opinion about
+      // where a workspace begins.
+      const { chats, pinned, workspaces } = groupMergedRows(mergedRowTree.rows, mergedRowTree.roots);
+      const rootOf = (row: MergedConversation) => mergedRowTree.roots.get(row.key)?.key ?? row.key;
+      const toRows = (row: MergedConversation) => ({ key: row.key, open: () => openRow(row) });
+      return [
+        ...byRoot(pinned, rootOf).map(rows => toBlock("pinned", rows.map(toRows))),
+        ...workspaces.map(group => toBlock("workspace", group.rows.map(toRows))),
+        ...byRoot(chats, rootOf).map(rows => toBlock("chat", rows.map(toRows))),
+      ];
+    }
+
+    // This machine's list: a fork's root is decided by the thread tree, so a
+    // pinned conversation and its forks are one block, and so is a chat.
+    const rootOf = (id: string): string => {
+      let current = id;
+      for (let guard = 0; guard < 64; guard += 1) {
+        const parent = threadParents.get(current);
+        if (!parent)
+          return current;
+        current = parent;
+      }
+      return current;
+    };
+    const toRows = (row: { thread: StoredThread }) => ({
+      key: `local::${row.thread.id}`,
+      open: () => onSelectThread(row.thread),
+    });
+    return [
+      ...byRoot(visiblePinnedThreads, row => rootOf(row.thread.id))
+        .map(rows => toBlock("pinned", rows.map(toRows))),
+      ...visibleWorkspaceGroups.map(group => toBlock(
+        "workspace",
+        group.rows.map(toRows),
+        // A workspace with no conversations is still a stop, and opening it
+        // selects the workspace rather than a row it does not have.
+        () => (group.rows[0]
+          ? onSelectThread(group.rows[0].thread)
+          : onSelectWorkspace(group.workspace, [])),
+      )),
+      ...byRoot(visibleChatThreads, row => rootOf(row.thread.id))
+        .map(rows => toBlock("chat", rows.map(toRows))),
+    ];
+  }, [
+    mergedMode,
+    mergedRowTree.rows,
+    mergedRowTree.roots,
+    onSelectThread,
+    onSelectWorkspace,
+    openRow,
+    railView,
+    recent.rows,
+    threadParents,
+    visibleChatThreads,
+    visiblePinnedThreads,
+    visibleWorkspaceGroups,
+  ]);
+
+  /** The rows the fine move walks: the blocks the current section draws. */
+  const walkableRows = useMemo(
+    () => walkBlocks
+      .filter(block =>
+        // The recent view is not split into the rail's sections — it is one list
+        // whichever section the shell thinks is open — so every block it built
+        // is walkable.
+        block.section === "recent"
+        || block.section === "pinned"
+        || (active === "workspace" ? block.section === "workspace" : block.section === "chat"))
+      .flatMap(block => block.rows),
+    [active, walkBlocks],
+  );
+
+  /**
+   * The coarse stops: **a workspace, or one conversation** — the two kinds of
+   * thing the rail lists, and the level "which workspace / which chat" answers.
+   *
+   * This list spans *both* sections on purpose; opening a conversation is what
+   * switches the section, because the shell derives it from the conversation's own
+   * mode. Each stop carries the conversation ids that count as "on" it, so
+   * stepping backwards from a fork returns to its own workspace rather than to
+   * the next one over.
+   */
+  const groupStops = useMemo(
+    () => walkBlocks.map(block => ({ keys: new Set(block.rows.map(row => row.key)), open: block.open })),
+    [walkBlocks],
+  );
+
+  /** Move the selection by one row; from nothing, `next` opens the first row. */
+  const stepConversation = useCallback((delta: 1 | -1) => {
+    if (walkableRows.length === 0)
+      return;
+    const index = walkableRows.findIndex(row => row.key === activeConversationKey);
+    const target = index === -1
+      ? walkableRows[delta === 1 ? 0 : walkableRows.length - 1]
+      : walkableRows[index + delta];
+    target?.open();
+  }, [activeConversationKey, walkableRows]);
+
+  /**
+   * Move to the next workspace or conversation.
+   *
+   * It lands on that stop's first conversation in both directions: the coarse
+   * move means "take me to that workspace / that conversation", and the fine
+   * move is then available to walk inside it. With nothing selected it starts
+   * from the first (or last) stop, like the fine move does.
+   */
+  const stepGroup = useCallback((delta: 1 | -1) => {
+    if (groupStops.length === 0)
+      return;
+    const index = activeConversationKey === null
+      ? -1
+      : groupStops.findIndex(stop => stop.keys.has(activeConversationKey));
+    if (index === -1) {
+      groupStops[delta === 1 ? 0 : groupStops.length - 1]?.open();
+      return;
+    }
+    groupStops[index + delta]?.open();
+  }, [activeConversationKey, groupStops]);
+
+  // Only while the rail is showing a list: on Skills, Tasks or Remote there is no
+  // order to walk, and the keys stay unclaimed instead of moving an invisible
+  // selection.
+  const listShowing = active === "chat" || active === "workspace";
+  useCommand("thread.previous", () => stepConversation(-1), listShowing && walkableRows.length > 0);
+  useCommand("thread.next", () => stepConversation(1), listShowing && walkableRows.length > 0);
+  // A single stop has nowhere to step to, so the keys stay free rather than being
+  // consumed for nothing.
+  useCommand("group.previous", () => stepGroup(-1), listShowing && groupStops.length > 1);
+  useCommand("group.next", () => stepGroup(1), listShowing && groupStops.length > 1);
+  // Filtering the list is a jump to the field, not a search of its own: the
+  // command palette (a separate, later entry) navigates, this narrows.
+  useCommand("rail.search", () => setSearchOpen(true), listShowing);
 
   /**
    * One workspace's heading, built once and used by both list modes.
@@ -878,6 +1225,28 @@ export function ActivityRail({
                         />
                       )}
                 </div>
+                {/* Which list this is. Above the list rather than inside it,
+                    and with both names written out: the tree is the default and
+                    the reader has no other way to learn a second view exists. */}
+                <div className="mb-2 flex shrink-0 items-center gap-1">
+                  <div className="min-w-0 flex-1">
+                    <RailViewSwitch onChange={setRailView} view={railView} />
+                  </div>
+                  {/* The recent view's own way into a batch. The tree reaches it
+                      from a section's menu (the chat section, a workspace); this
+                      view has no such heading — it is one flat list — so its one
+                      menu sits here, and marks the whole list as the batch. */}
+                  {railView === "recent" && !selectionMode
+                    ? (
+                        <ChatSectionMenu
+                          label={t("activityRail.recentActions")}
+                          onOpenChange={setRecentMenuOpen}
+                          onSelect={() => enterSelectionMode("recent")}
+                          open={recentMenuOpen}
+                        />
+                      )
+                    : null}
+                </div>
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="group relative -mx-2 flex min-h-0 flex-1">
                     <div
@@ -892,10 +1261,15 @@ export function ActivityRail({
                               <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches">{noMatchesText}</div>
                             )
                           : null}
-                        {mergedMode
+                        {/* One list component for both views and both list modes:
+                            the recent view holds a host's rows and this machine's
+                            together, which is exactly the merge, and the tree view
+                            is the merge grouped by workspace. */}
+                        {mergedMode || railView === "recent"
                           ? (
                               <MergedRows
                                 activeKey={activeConversationKey}
+                                ageLabels={railView === "recent" ? recentAgeLabels : undefined}
                                 chatSectionCollapsed={chatSectionCollapsed}
                                 collapsedWorkspaces={collapsedWorkspaces}
                                 filter={deviceFilter}
@@ -928,14 +1302,18 @@ export function ActivityRail({
                                   return found ? renderWorkspaceHeader(found.workspace, found.threads) : null;
                                 }}
                                 renderLocalRow={renderLocalRow}
-                                rows={mergedRowTree.rows}
+                                recentMore={railView === "recent" ? recent.more : undefined}
+                                recentSections={railView === "recent" ? recent.sections : undefined}
+                                rows={railView === "recent" ? recent.rows : mergedRowTree.rows}
                                 selectionMode={selectionMode}
                                 threadById={threadById}
+                                view={railView === "recent" ? "recent" : "tree"}
                                 workspaceSectionCollapsed={workspaceSectionCollapsed}
+                                onShowMoreRecent={() => setRecentLimit(current => current + RECENT_PAGE_SIZE)}
                               />
                             )
                           : null}
-                        {mergedMode
+                        {railView === "recent" || mergedMode
                           ? null
                           : (
                               <>

@@ -31,6 +31,10 @@
     },
     "inspectRun": "点击查看运行详情"
   },
+  "process": {
+    "show": "查看过程",
+    "hide": "收起过程"
+  },
   "thread": {
     "loading": "正在加载 FutureOS 对话…",
     "noActiveThread": "没有活动对话。",
@@ -147,6 +151,7 @@
   },
   "composer": {
     "placeholder": "描述任务，@文件 添加到上下文，按 / 使用工具或技能",
+    "placeholderPlain": "说点什么，说完按回车发送",
     "skillRecommend": {
       "cardTitle": "推荐技能",
       "installAndUse": "安装并使用",
@@ -185,7 +190,6 @@
     "noSlashMatches": "没有匹配的工具或技能。",
     "skillsSection": "技能",
     "noSessionMatches": "没有匹配的对话。",
-    "sessionsSection": "对话",
     "workspaceSection": "工作区",
     "compactContext": "压缩",
     "compactContextDescription": "压缩此对话的上下文",
@@ -199,7 +203,7 @@
     "approvalTier": {
       "manual": "手动审批",
       "sandbox": "沙箱保护",
-      "off": "完全放开",
+      "off": "完全访问",
       "auto": "自动审批"
     },
     "approvalTierDesc": {

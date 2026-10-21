@@ -52,25 +52,95 @@ const session = (
   title,
   mode: "workspace" as const,
   workspaceId,
+  // The host sends the workspace's own name with every row; the recency page
+  // prints it under the title, so the demo has to carry it too.
+  workspaceName: demoWorkspaces.find(workspace => workspace.id === workspaceId)?.name ?? null,
+  // When the conversation was started. The recency page ranks the ones still
+  // running by it (a run's last-reply stamp moves every second), and the demo
+  // has to carry it for that order to be visible at all.
+  createdAt: now - 24 * 60 * minute,
   streaming: false,
   ...extra,
 });
 
+/**
+ * When a conversation last produced a reply, as the host reports it: the
+ * recency page ranks by this and nothing else, and the ages it prints are read
+ * against it. Staggered so the page has a readable order — pinned first in the
+ * catalogue, but *not* in time, which is what the recency page must show.
+ */
+const ago = (minutes: number) => now - minutes * minute;
+
 export const sessions = [
-  session("sess_dopamine_review", "ws_dopamine", "整理两篇文献的结论对比表", { pinned: true }),
-  session("sess_dopamine_clean", "ws_dopamine", "把这份问卷数据清洗一下"),
-  session("sess_sparse_baseline", "ws_sparse", "跑通 Longformer 的 baseline", { streaming: true }),
-  session("sess_sc_marker", "ws_sc", "找一下这批细胞的 marker 基因"),
+  session("sess_dopamine_review", "ws_dopamine", "整理两篇文献的结论对比表", {
+    pinned: true,
+    lastMessageAt: ago(2),
+  }),
+  session("sess_dopamine_clean", "ws_dopamine", "把这份问卷数据清洗一下", { lastMessageAt: ago(8) }),
+  session("sess_sparse_baseline", "ws_sparse", "跑通 Longformer 的 baseline", {
+    streaming: true,
+    lastMessageAt: ago(3),
+  }),
+  session("sess_sc_marker", "ws_sc", "找一下这批细胞的 marker 基因", { lastMessageAt: ago(40) }),
   // A conversation tree: two follow-ups forked from the first conversation.
   session("sess_branch_risk", "ws_dopamine", "只看风险偏好那一段", {
     parentSessionId: "sess_dopamine_review",
+    lastMessageAt: ago(12),
   }),
   session("sess_branch_table", "ws_dopamine", "把结论改成中文表格", {
     parentSessionId: "sess_dopamine_review",
+    lastMessageAt: ago(15),
   }),
   // Chat-mode conversations (no workspace context).
-  session("sess_chat_grant", "ws_temp", "基金申报书的创新点怎么写", { mode: "chat" }),
-  session("sess_chat_pvalue", "ws_temp", "解释一下 p 值的常见误用", { mode: "chat" }),
+  session("sess_chat_grant", "ws_temp", "基金申报书的创新点怎么写", {
+    mode: "chat",
+    lastMessageAt: ago(90),
+  }),
+  session("sess_chat_pvalue", "ws_temp", "解释一下 p 值的常见误用", {
+    mode: "chat",
+    lastMessageAt: ago(3 * 60),
+  }),
+];
+
+/**
+ * `?recentMany=1`: a phone that has been in use for a while.
+ *
+ * Forty finished conversations spread over a fortnight, so the recency page's
+ * window has something to hold back — the page draws the newest of them and
+ * offers the rest rather than scrolling for a screen and a half.
+ */
+export const manyRecentSessions = Array.from({ length: 40 }, (_, index) => {
+  const hours = 5 + index * 9;
+  return session(
+    `sess_old_${index}`,
+    index % 2 ? "ws_dopamine" : "ws_sc",
+    `历史会话 ${index + 1}`,
+    { lastMessageAt: ago(hours * 60) },
+  );
+});
+
+/**
+ * `?recent=1`: the two states the recency page exists to separate.
+ *
+ * A second run producing output, and a run blocked on the reader's approval —
+ * the latter is *not* streaming, and a page that read `streaming` alone would
+ * file it under "earlier" and make the reader hunt for the one thing that is
+ * waiting on them.
+ */
+export const recentOnlySessions = [
+  // Started first, replied last: by start time it belongs *below* the approval
+  // row, which is the point of ranking this stretch by creation — a run that
+  // keeps producing output must not keep reordering the rows around it.
+  session("sess_sc_marker_run", "ws_sc", "再跑一遍 marker 富集", {
+    streaming: true,
+    createdAt: now - 3 * 60 * minute,
+    lastMessageAt: now - 20_000,
+  }),
+  session("sess_dopamine_approve", "ws_dopamine", "把清洗脚本写到 ~/clean.py", {
+    status: "waiting_approval",
+    createdAt: now - 40 * minute,
+    lastMessageAt: ago(4),
+  }),
 ];
 
 /**

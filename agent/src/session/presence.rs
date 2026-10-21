@@ -1,4 +1,5 @@
 //! Durable catalogue evidence; absence is never a deletion event.
+use super::history;
 use super::Manager;
 use anyhow::{ensure, Result};
 use serde_json::json;
@@ -16,11 +17,20 @@ impl Manager {
                 ("failedImports", "SELECT count(*) FROM legacy_imports WHERE status='skipped'"),
                 ("unrecoverableQueuedInputs", "SELECT count(*) FROM queued_run_receipts WHERE status='recovery_failed'"),
                 ("pendingQueuedInputs", "SELECT count(*) FROM queued_run_receipts WHERE status IN ('queued','cancel_requested')"),
-                ("pendingHistoryIndexes", "SELECT count(*) FROM sessions s WHERE revision>=0 AND NOT EXISTS(SELECT 1 FROM history_index_state h WHERE h.session_id=s.id AND h.projection_version=1)"),
                 ("catalogueConflicts", "SELECT count(*) FROM session_tombstones t JOIN sessions s ON s.id=t.session_id WHERE s.revision>=0"),
             ] {
                 result[key] = tx.query_row(query, [], |row| row.get::<_,i64>(0))?.into();
             }
+            // Parameterized rather than spelled out in the list above: a stale
+            // literal here reports every session as pending the moment the
+            // projection version moves.
+            result["pendingHistoryIndexes"] = tx
+                .query_row(
+                    "SELECT count(*) FROM sessions s WHERE revision>=0 AND NOT EXISTS(SELECT 1 FROM history_index_state h WHERE h.session_id=s.id AND h.projection_version=?1)",
+                    [history::PROJECTION_VERSION],
+                    |row| row.get::<_, i64>(0),
+                )?
+                .into();
             for (key,stored) in [("databaseId","database_id"),("restoreGeneration","restore_generation")] {
                 result[key] = tx.query_row("SELECT value FROM storage_meta WHERE key=?1",[stored],|row|row.get::<_,String>(0))?.into();
             }

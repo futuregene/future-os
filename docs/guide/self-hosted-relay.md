@@ -48,15 +48,46 @@ That writes, into `--dir`:
 | `operator.jwt` | the operator JWT nats-server trusts |
 | `account.jwt` | the account JWT, preloaded by the resolver |
 | `nats.conf` | a ready `nats-server` configuration: operator mode, memory resolver, no JetStream, TLS when a certificate was given |
-| `relay.json` | the relay's own settings |
+| `relay.json` | the relay's own settings; carries `tlsCert`/`tlsKey` when `serve` is to terminate TLS itself |
 | `rooms.json` | created at the first pairing; the room registry |
 
 `--tls-cert`/`--tls-key` go together. Without them the generated config listens
 in plaintext: HTTP, `ws://` and `nats://`. That path is for a relay on a local
 network — see below.
 
+The advertised scheme and the listeners have to agree, and `init` enforces it:
+a `tls://` or `wss://` endpoint with no `--tls-cert`/`--tls-key` is refused,
+because the generated `nats.conf` would then listen in plaintext while every
+credential response promised TLS — the desktop requires TLS, the phone requires
+`wss://`, and the pairing simply fails. A certificate with a plaintext endpoint
+is refused for the same reason. If the relay sits behind something else that
+terminates TLS (a reverse proxy, a load balancer, a service mesh), the listener
+is *meant* to stay plaintext while the advertised URL is not: pass
+`--allow-plaintext-upstream` to skip the check. That flag also keeps the
+certificate out of `relay.json`, so `future relay serve` does not start a second
+TLS layer behind the proxy (see "Who terminates TLS for the API" below). Only do
+that when you know a TLS-terminating hop is really in front of the relay —
+otherwise the credentials and metadata travel in the clear.
+
 Both listeners take their port from `--nats-url`/`--nats-ws-url`, so the
 address the relay hands to clients is the address it actually listens on.
+
+With a certificate, `future relay serve` terminates TLS for the API itself, so
+nothing in front of `relay.example.com` has to terminate TLS. The example above
+listens on `127.0.0.1:8099`, so it still needs something to reach that port from
+the public name — a port forward, a NAT rule or a load balancer — but that hop
+only has to move bytes.
+
+The generated `nats.conf` leaves nats-server's HTTP monitoring endpoint off —
+the relay never reads it, and its fixed port would keep a second relay on the
+same machine from starting. Uncomment the `http:` line in the file when you
+want those stats.
+
+`--listen` defaults to `127.0.0.1:8099` and `--public-url` to
+`http://127.0.0.1:8099`, which is right for the desktop on the same machine. A
+phone on the LAN needs the relay to listen on an address it can reach: pass
+`--listen 0.0.0.0:8099 --public-url http://<this machine's LAN address>:8099`,
+because the address in `--public-url` is copied verbatim into every invitation.
 
 ### Plaintext or TLS
 
@@ -88,6 +119,22 @@ declares `https://` must still answer `wss://`, and the Future platform always
 requires `https://` and `wss://`. A public deployment with a public CA is
 unaffected.
 
+A certificate reaches every listener. `--tls-cert/--tls-key` are written into
+the generated `nats.conf` **twice**: once for the client port, and again inside
+the `websocket` block, because nats-server does not let websocket traffic
+inherit the top-level `tls` and refuses to start when a `wss://` deployment has
+no websocket TLS configuration at all. Keep both blocks when editing the file
+by hand; a `websocket` block with `tls {}` and no certificate paths starts up
+and then rejects every handshake with `tls: no certificates configured`.
+
+A private CA reaches both hops of a TLS deployment. `--relay-ca` /
+`FUTURE_RELAY_CA` adds that root to the NATS connector **and** to the HTTP
+client that registers the room and claims the invitation, so an API served from
+the same private CA works without installing the CA into the operating system.
+It is an addition to the trust set, never a relaxation: certificates that do
+not chain to it are still refused. On macOS the root is still worth adding to
+the keychain if other tools on that machine need it.
+
 ## 2. Run it
 
 ```bash
@@ -96,7 +143,7 @@ future relay serve --config /opt/future-relay/relay.json
 ```
 
 `future relay serve` needs nothing else: no database, no account, no network
-access of its own. It listens on `--listen` and answers four routes:
+access of its own. It listens on `--listen` and answers these routes:
 
 | route | auth | purpose |
 | --- | --- | --- |
@@ -106,11 +153,33 @@ access of its own. It listens on `--listen` and answers four routes:
 | `DELETE /v1/rooms/{pair}` | host NKey signature | delete the room |
 | `POST /client/v1/remote/pair/claim` | one-time join token | a phone becomes a device of a room |
 | `POST /client/v1/remote/auth/token` | host signature (bridge) or refresh credential (client) | rotate a short-lived NATS JWT |
+| `POST /client/v1/remote/pair/revoke` | the device's own refresh credential | a device drops itself from its room (unpairing from the phone) |
 
 The `/client/v1/...` paths are deliberately the official platform's, with its
 JSON shapes, so the phone and the desktop's client role need no special case:
 going through a self-hosted relay changes *where* the request goes, not what it
 says.
+
+### Who terminates TLS for the API
+
+The API is served by `future relay serve` itself, so the certificate decides how
+it listens:
+
+| `--public-url` | certificate in `relay.json` | what `serve` does |
+| --- | --- | --- |
+| `https://…` | yes | serves **HTTPS** with that certificate |
+| `https://…` | no | serves plaintext and assumes a TLS terminator in front (says so at startup) |
+| `http://…` | either | serves plaintext; the certificate is for the NATS listeners only |
+
+`init` copies `--tls-cert/--tls-key` into `relay.json` (`tlsCert`, `tlsKey`), so
+the common case — one public URL, one certificate — needs no proxy at all. When
+the relay really does sit behind a reverse proxy, pass
+`--allow-plaintext-upstream`: the certificate is then left out of `relay.json`,
+because the hop in front is the one doing TLS and a second TLS layer behind it
+would break every request.
+
+A certificate that does not match its key is refused when `serve` starts, not at
+the first pairing.
 
 ## 3. Point a desktop at it
 
@@ -207,8 +276,8 @@ What it cannot do, because of how the rooms and credentials are scoped:
 * publish as the bridge from a client connection, or read a client's reply
   inbox;
 * reuse a join token for a second device. It is single-use per device (the same
-  device may retry a lost response), expires after five minutes, and the relay
-  keeps only its SHA-256.
+  device may retry a lost response), expires after five minutes by default
+  (`invitationTtlSeconds`), and the relay keeps only its SHA-256.
 
 Residual risks you should decide about before exposing one publicly:
 
@@ -226,11 +295,12 @@ Residual risks you should decide about before exposing one publicly:
   place for ciphertext and metadata to accumulate on a machine that is not
   supposed to keep either.
 * **The room file is not a secret store.** `rooms.json` holds pair ids, public
-  NKeys, device names, timestamps and two SHA-256 hashes per device. A stolen
-  copy cannot be used to connect: every credential is bound to a public key
-  whose seed never leaves the endpoint. Deleting the file invalidates every
-  pairing at once, which is a valid "start over" and the reason a corrupt file
-  is an error rather than an empty registry.
+  NKeys, device names and timestamps, the room's invitation hash, and one
+  refresh-credential hash per device. A stolen copy cannot be used to connect:
+  every credential is bound to a public key whose seed never leaves the
+  endpoint. Deleting the file invalidates every pairing at once, which is a
+  valid "start over" and the reason a corrupt file is an error rather than an
+  empty registry.
 * **Restarts are free.** The desktop re-registers its own room on the next
   credential rotation (signed with its pairing NKey), and its already-paired
   phone reconnects. The pairing lives in the endpoints' credentials, not in the
@@ -268,10 +338,29 @@ nats-server -c /tmp/relay/nats.conf
 future relay serve --config /tmp/relay/relay.json
 
 RELAY_E2E_RELAY_URL=http://127.0.0.1:8099 \
-  cargo test -p futureos --lib remote::relay_e2e -- --ignored --nocapture
+  cargo test -p future-host --lib remote::relay_e2e -- --ignored --nocapture
 ```
 
 That test is the real thing: `remote::start()` mints a v3 invitation through the
 relay, the client role claims it and connects with `Noise XXpsk0`, presence and
 `list_sessions` cross the encrypted channel, the relay's room roster matches
 what happened, and unpairing deletes the room.
+
+To run the same test over TLS, give `init` a certificate and an `https://`
+public URL, then point the test at that origin with the CA that signed it:
+
+```bash
+future relay init --dir /tmp/relay-tls \
+  --public-url https://127.0.0.1:8099 \
+  --nats-url tls://127.0.0.1:14222 --nats-ws-url wss://127.0.0.1:19090 \
+  --tls-cert cert.pem --tls-key key.pem
+nats-server -c /tmp/relay-tls/nats.conf
+future relay serve --config /tmp/relay-tls/relay.json
+
+RELAY_E2E_RELAY_URL=https://127.0.0.1:8099 FUTURE_RELAY_CA=ca.pem \
+  cargo test -p future-host --lib remote::relay_e2e -- --ignored --nocapture
+```
+
+No external TLS terminator is involved: the certificate in `relay.json` is the
+one `serve` presents, and `FUTURE_RELAY_CA` is what makes the test's own HTTP
+and NATS clients trust it.

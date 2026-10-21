@@ -112,6 +112,46 @@ where
     task
 }
 
+/// Run blocking Host I/O with ownership independent of its async waiter.
+/// Tokio cannot abort an already-running blocking closure. Keep its completion
+/// registered until the closure itself drops, even if an observer/prompt is
+/// cancelled while awaiting it; cleanup must not publish another HOME meanwhile.
+#[track_caller]
+pub fn run_blocking<F, R>(
+    job: F,
+) -> impl std::future::Future<Output = Result<R, crate::Error>> + Send
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let task = {
+        let mut registry = TASKS.lock().unwrap_or_else(|p| p.into_inner());
+        if registry.closed {
+            None
+        } else {
+            let (abort, _registration) = futures::future::AbortHandle::new_pair();
+            let (done, completed) = std::sync::mpsc::channel();
+            let completion = TaskCompletion(done);
+            registry.prune_finished();
+            registry
+                .tasks
+                .push((abort, completed, std::panic::Location::caller()));
+            Some(tokio::task::spawn_blocking(move || {
+                let _completion = completion;
+                job()
+            }))
+        }
+    };
+    async move {
+        match task {
+            Some(task) => task
+                .await
+                .map_err(|error| format!("Host blocking task failed: {error}").into()),
+            None => Err("Host background task admission is closed.".into()),
+        }
+    }
+}
+
 /// Stop every process-lifetime test task and wait until its future has been
 /// dropped. Call this before changing HOME: otherwise a task created by an
 /// earlier test can resolve the newly published HOME and lock its database.
@@ -257,6 +297,85 @@ mod tests {
             .contains("ledger failed"));
         // This injected failure belongs to this fixture only.
         super::TASKS.lock().unwrap().errors.clear();
+    }
+
+    #[test]
+    fn blocking_work_stays_registered_after_its_waiter_is_dropped() {
+        let _registry = RegistryGuard::new();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _context = runtime.enter();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("blocking-writer.db");
+        let reader = rusqlite::Connection::open(&path).unwrap();
+        reader.busy_timeout(std::time::Duration::ZERO).unwrap();
+        reader
+            .execute_batch("CREATE TABLE committed(value INTEGER)")
+            .unwrap();
+        let (release, wait) = std::sync::mpsc::channel();
+        let (started, running) = std::sync::mpsc::channel();
+        let (finished, completed) = std::sync::mpsc::channel();
+        let waiter = super::run_blocking(move || {
+            let writer = rusqlite::Connection::open(path).unwrap();
+            writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+            started.send(()).unwrap();
+            wait.recv().unwrap();
+            writer
+                .execute_batch("INSERT INTO committed VALUES (42); COMMIT")
+                .unwrap();
+            drop(writer);
+            finished.send(()).unwrap();
+        });
+        running
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        // Dropping the JoinHandle/awaiting future cannot cancel native I/O.
+        drop(waiter);
+        let error = super::cancel_all_tasks(std::time::Duration::from_millis(5))
+            .expect_err("a live blocking writer must hold the cleanup barrier");
+        assert!(error
+            .to_string()
+            .contains("did not stop before cleanup deadline"));
+        assert!(
+            reader.execute_batch("BEGIN IMMEDIATE").is_err(),
+            "the cancelled waiter's writer still owns the SQLite lock"
+        );
+        release.send(()).unwrap();
+        completed
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .unwrap();
+        assert_eq!(
+            reader
+                .query_row("SELECT value FROM committed", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            42
+        );
+        reader
+            .execute_batch("BEGIN IMMEDIATE; ROLLBACK")
+            .expect("writer lock released before fixture reuse");
+        super::TASKS.lock().unwrap().errors.clear();
+    }
+
+    #[test]
+    fn cleanup_waits_for_blocking_work_and_rejects_new_blocking_jobs() {
+        let _registry = RegistryGuard::new();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _context = runtime.enter();
+        let (done, completed) = std::sync::mpsc::channel();
+        drop(super::run_blocking(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            done.send(()).unwrap();
+        }));
+        super::cancel_all_tasks(std::time::Duration::from_secs(3)).unwrap();
+        completed
+            .try_recv()
+            .expect("blocking I/O finishes before cleanup returns");
+        let (started, running) = std::sync::mpsc::channel();
+        let error = runtime
+            .block_on(super::run_blocking(move || started.send(()).unwrap()))
+            .expect_err("shutdown refuses new blocking jobs");
+        assert!(error.to_string().contains("admission is closed"));
+        assert!(running.try_recv().is_err(), "refused job must never run");
     }
 
     #[test]

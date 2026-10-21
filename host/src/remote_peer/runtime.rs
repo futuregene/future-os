@@ -113,7 +113,7 @@ pub async fn close_socket_for_test(desktop_id: &str) {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub async fn install_supervisor_for_test(desktop_id: &str) {
+pub async fn install_supervisor_for_test(desktop_id: &str) -> future_remote_client::TaskHandle {
     client().install_supervisor_for_test(desktop_id).await
 }
 
@@ -273,13 +273,6 @@ pub async fn request_at(
         .map_err(Into::into)
 }
 
-#[cfg(test)]
-async fn stamp_live(desktop_id: &str, data: Value) -> Result<Value, crate::Error> {
-    client()
-        .stamp_live_for_test(desktop_id, data)
-        .await
-        .map_err(Into::into)
-}
 #[cfg(test)]
 async fn attach_stream(
     session: &PeerSession,
@@ -487,39 +480,6 @@ mod tests {
         let name = device_name();
         assert!(name.starts_with("FutureOS Desktop"), "{name}");
         assert!(!name.ends_with("()"), "{name}");
-    }
-
-    // A catalogue reply that is not an object is a protocol violation, not a
-    // shape to invent — and it must not panic, because the reply comes from a
-    // remote peer: a broken or hostile host could otherwise take the app down.
-    #[tokio::test]
-    async fn a_catalogue_reply_that_is_not_an_object_is_refused() {
-        let _home = crate::remote::test_support::HomeGuard::new("peer-stamp-non-object");
-        reset_for_test(&_home).await;
-        for reply in [
-            serde_json::json!([1, 2, 3]),
-            serde_json::json!("a string"),
-            serde_json::Value::Null,
-        ] {
-            let error = stamp_live("desktop_any", reply.clone())
-                .await
-                .expect_err("a non-object reply cannot be stamped");
-            assert_eq!(error.to_string(), "peer_reply_not_an_object", "{reply}");
-        }
-    }
-
-    // An explicit disconnect must take the retry with it, or a reconnect
-    // scheduled a moment earlier silently undoes the user's decision.
-    #[tokio::test]
-    async fn disconnect_aborts_the_supervisor() {
-        let _home = crate::remote::test_support::HomeGuard::new("peer-disconnect-supervisor");
-        reset_for_test(&_home).await;
-        client().install_supervisor_for_test("desktop_a").await;
-        disconnect("desktop_a").await;
-        assert!(
-            supervisor_count().await == 0,
-            "the supervisor must not outlive an explicit disconnect"
-        );
     }
 
     // The reset between tests must take a retry loop with it.

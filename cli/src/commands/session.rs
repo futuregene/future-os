@@ -14,7 +14,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const SESSION_HELP: &str = "future session — manage agent sessions
 
 Usage:
-  future session list [--json]                       List all sessions
+  future session list [--parent <id>] [--json]        List all sessions
   future session new [options]                       Create a session
   future session set <id> [options]                  Change settings on an existing session
   future session info <id> [--json]                  Show session details + stats
@@ -183,7 +183,7 @@ fn now_ms() -> i64 {
 // ─── List ─────────────────────────────────────────────────────────────────
 
 /// `listSessions(jsonFlag)`.
-async fn list_sessions(json_flag: bool, out: &Output) -> Result<(), String> {
+async fn list_sessions(json_flag: bool, parent: Option<&str>, out: &Output) -> Result<(), String> {
     let client = RunClient::new(&grpc_addr());
     // Not wrapped in try/catch — errors propagate to main().catch.
     let data = client.list_sessions().await?;
@@ -193,7 +193,15 @@ async fn list_sessions(json_flag: bool, out: &Output) -> Result<(), String> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-
+    // Filtered here rather than server-side: the list is already in memory, and
+    // a parent's children are a handful of rows inside it.
+    let sessions: Vec<Value> = match parent {
+        Some(parent) => sessions
+            .into_iter()
+            .filter(|s| s.get("parentSessionId").and_then(Value::as_str) == Some(parent))
+            .collect(),
+        None => sessions,
+    };
     if json_flag {
         // Serializing plain JSON values is infallible.
         out.log(&serde_json::to_string_pretty(&json_value(&sessions)).expect("json serializes"));
@@ -201,7 +209,10 @@ async fn list_sessions(json_flag: bool, out: &Output) -> Result<(), String> {
     }
 
     if sessions.is_empty() {
-        out.log("No sessions found.");
+        match parent {
+            Some(parent) => out.log(&format!("No sessions found under {parent}.")),
+            None => out.log("No sessions found."),
+        }
         return Ok(());
     }
 
@@ -737,6 +748,7 @@ async fn new_session_command(args: &[String], out: &Output) -> Result<(), String
     let mut cwd = None;
     let mut name = String::new();
     let mut append_system_prompt = None;
+    let mut parent = None;
     let mut json = false;
     let mut index = 0;
     while index < args.len() {
@@ -746,7 +758,10 @@ async fn new_session_command(args: &[String], out: &Output) -> Result<(), String
             index += 1;
             continue;
         }
-        if !matches!(flag, "--cwd" | "--name" | "--append-system-prompt") {
+        if !matches!(
+            flag,
+            "--cwd" | "--name" | "--append-system-prompt" | "--parent"
+        ) {
             out.log_err(&format!("Unknown option: {flag}"));
             return Err(crate::HANDLED_EXIT.to_string());
         }
@@ -757,6 +772,7 @@ async fn new_session_command(args: &[String], out: &Output) -> Result<(), String
         match flag {
             "--cwd" => cwd = Some(value.clone()),
             "--name" => name = value.clone(),
+            "--parent" => parent = Some(value.clone()),
             _ => append_system_prompt = Some(value.clone()),
         }
         index += 2;
@@ -769,7 +785,12 @@ async fn new_session_command(args: &[String], out: &Output) -> Result<(), String
             .to_string(),
     };
     let result = RunClient::new(&grpc_addr())
-        .new_named_session(&cwd, &name, append_system_prompt.as_deref())
+        .new_named_session(
+            &cwd,
+            &name,
+            append_system_prompt.as_deref(),
+            parent.as_deref(),
+        )
         .await?;
     let session_id = result["sessionId"].as_str().unwrap_or("").to_string();
     if json {
@@ -780,6 +801,9 @@ async fn new_session_command(args: &[String], out: &Output) -> Result<(), String
         });
         if let Some(append) = &append_system_prompt {
             document["appendSystemPrompt"] = json!(append);
+        }
+        if let Some(parent) = &parent {
+            document["parentSessionId"] = json!(parent);
         }
         out.log(&serde_json::to_string(&document).expect("json serializes"));
         return Ok(());
@@ -792,9 +816,13 @@ async fn new_session_command(args: &[String], out: &Output) -> Result<(), String
     if let Some(append) = &append_system_prompt {
         out.log(&format!("  Append prompt: {append}"));
     }
+    if let Some(parent) = &parent {
+        out.log(&format!("  Parent: {parent}"));
+    }
     out.log(
-        "\nThe session is not listed until its first run produces an entry; \
-         use `future run --session <id> <prompt>` to start it.",
+        "\nThe session is listed right away — `future session list` finds it, and \
+         `future session list --parent <id>` finds it under its parent when it has \
+         one. Start it with `future run --session <id> <prompt>`.",
     );
     Ok(())
 }
@@ -826,22 +854,48 @@ Forks and clones are new sessions: a fork keeps the parent's lineage, and
 pub const NEW_HELP: &str = "future session new — create a session
 
 Usage:
-  future session new [--cwd <dir>] [--name <text>] [--append-system-prompt <text>] [--json]
+  future session new [--cwd <dir>] [--name <text>] [--parent <session-id>] [--append-system-prompt <text>] [--json]
 
 Options:
   --cwd <dir>    Working directory for the new session (default: the current
                  directory). The agent resolves ~ and relative paths.
   --name <text>  Initial title.
+  --parent <session-id>
+                 Record another session as this session's parent — what makes a
+                 session a sub-session of the one that created it. The parent
+                 must exist. Lineage only: no history is copied (that is
+                 `fork`), but the parent's conversation will list this session
+                 under it, and this session's prompt will not offer to delegate
+                 further — one jump is as far as delegation goes, and the agent
+                 refuses a deeper chain. A user can move a session out of such a
+                 chain with `future session set <id> --parent \"\"`.
+                 `future session list --parent <id>` finds its children.
   --append-system-prompt <text>
                  Rules appended to the end of this session's system prompt on
                  every run. Stored with the session, so it survives an agent
                  restart. Same storage as `future session set <id>
                  --append-system-prompt`; the environment block stays after it.
-  --json         Print {sessionId, cwd, sessionName} instead of prose.
+  --json         Print {sessionId, cwd, sessionName, parentSessionId?} instead
+                 of prose.
 
-A newly created session has no records, so it does not appear in
-`future session list` until its first run produces an entry. Start it with
-`future run --session <id> <prompt>`.";
+A newly created session is persisted at once, so `future session list` shows it
+immediately (with no messages yet); `future run --session <id> <prompt>` starts
+it.";
+
+pub const LIST_HELP: &str = "future session list — list sessions
+
+Usage:
+  future session list [--parent <session-id>] [--json]
+
+Options:
+  --parent <session-id>  Only the sessions whose recorded parent is this one —
+                         the sub-sessions it created, each with its
+                         isStreaming flag. Reads the same parent `session
+                         status` reports, so a later
+                         `session set <id> --parent` moves a session between
+                         lists.
+  --json                 Machine-readable output.
+  -h, --help             Show this help";
 
 // ─── Fork / clone / title / export ───────────────────────────────────────
 
@@ -1245,7 +1299,39 @@ async fn set_session_command(args: &[String], out: &Output) -> Result<(), String
     }
     if let Some(tier) = &parsed.sandbox {
         match client.set_sandbox_policy(tier, &target_id).await {
-            Ok(_) => applied.push(("sandboxTier", tier.clone())),
+            Ok(_) => {
+                applied.push(("sandboxTier", tier.clone()));
+                // `manual`/`sandbox`/`auto` only ask while the approval gate is
+                // armed: at the legacy `all` level the agent returns from
+                // `before_tool_call` before any approval rule is consulted, so
+                // reporting the mode alone would promise prompts that never
+                // come. The permission block above already ran, so a
+                // `--permission` value is the post-state.
+                if matches!(tier.as_str(), "manual" | "sandbox" | "auto") {
+                    let level = match &parsed.permission {
+                        Some(level) => Some(level.clone()),
+                        None => client
+                            .get_state(Some(&target_id))
+                            .await
+                            .ok()
+                            .and_then(|state| {
+                                state
+                                    .get("permissionLevel")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string)
+                            }),
+                    };
+                    // Only a level we actually know to be `all` earns the
+                    // warning: a failed `get_state` (or an older agent that
+                    // omits the field) leaves the level unknown, and the note
+                    // would then assert a fact this command never learned.
+                    if level.as_deref() == Some("all") {
+                        notes.push(format!(
+                            "approval mode `{tier}` cannot ask while the tool permission is `all` — add `--permission workspace`"
+                        ));
+                    }
+                }
+            }
             Err(err) => failures.push(("sandboxTier", missing_session_error(err, &target_id))),
         }
     }
@@ -1329,7 +1415,7 @@ fn option_label(key: &str) -> String {
         "systemPrompt" => "SystemPro",
         "appendSystemPrompt" => "AppendSys",
         "permissionLevel" => "Permission",
-        "sandboxTier" => "Sandbox",
+        "sandboxTier" => "Approval",
         "contextFiles" => "CtxFiles",
         "autoCompaction" => "AutoCompact",
         "autoRetry" => "AutoRetry",
@@ -1399,7 +1485,36 @@ pub async fn session(
     }
 
     if subcommand == "list" {
-        list_sessions(args.iter().any(|a| a == "--json"), out).await?;
+        // `--parent` narrows the list to one session's children, so an agent can
+        // see what it already started without filtering the whole list itself.
+        let mut json_flag = false;
+        let mut parent: Option<String> = None;
+        let mut index = 0;
+        while index < args.len() {
+            match args[index].as_str() {
+                "--json" => {
+                    json_flag = true;
+                    index += 1;
+                }
+                "--parent" => {
+                    let Some(value) = args.get(index + 1).filter(|v| !v.starts_with("--")) else {
+                        out.log_err("Missing value for --parent");
+                        return Err(crate::HANDLED_EXIT.to_string());
+                    };
+                    parent = Some(value.clone());
+                    index += 2;
+                }
+                "--help" | "-h" => {
+                    out.log(LIST_HELP);
+                    return Ok(());
+                }
+                other => {
+                    out.log_err(&format!("Unknown option: {other}"));
+                    return Err(crate::HANDLED_EXIT.to_string());
+                }
+            }
+        }
+        list_sessions(json_flag, parent.as_deref(), out).await?;
         return Ok(());
     }
 
@@ -1569,7 +1684,7 @@ mod tests {
             std::ffi::OsString::from("127.0.0.1:1"),
         )]);
         let (out, cap) = Output::memory();
-        let result = list_sessions(false, &out).await;
+        let result = list_sessions(false, None, &out).await;
         assert!(result.is_err());
         assert_eq!(
             String::from_utf8(cap.out.lock().unwrap().clone()).unwrap(),
@@ -1626,27 +1741,122 @@ mod tests {
         let env = crate::test_env::EnvGuard::set(&[(
             "FUTURE_AGENT_GRPC_ADDR",
             std::ffi::OsString::from(addr),
-        )]);
+        )])
+        .with_temp_home();
         // `session set --cwd` files the conversation in the desktop app's own
         // store (`~/.future/app/app.db`), so every one of these tests must run
         // against a throwaway home: without this they would read — and, on a
         // machine where the desktop app has imported the session, *write* — the
         // real app database.
-        isolate_home();
         (agent, env)
     }
 
-    /// Point HOME at a fresh temporary directory for the rest of this test,
-    /// keeping the directory alive in a thread-local so the guard's drop leaves
-    /// nothing behind and no test deletes a directory another one is using.
-    fn isolate_home() {
-        use std::cell::RefCell;
-        thread_local! {
-            static HOMES: RefCell<Vec<tempfile::TempDir>> = const { RefCell::new(Vec::new()) };
-        }
-        let home = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("HOME", home.path());
-        HOMES.with(|homes| homes.borrow_mut().push(home));
+    /// `--parent` in the create step is what makes a child a child: without it
+    /// the new session is an unrelated conversation that merely happens to be
+    /// busy, and neither the rail nor `session list --parent` would find it.
+    #[tokio::test]
+    async fn session_new_records_the_parent_in_the_same_step() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent =
+            crate::test_server::MockAgent::respond("new_session", "{\"sessionId\":\"child-1\"}");
+        let (agent, _env) = mock_env(agent).await;
+
+        let (out, cap) = Output::memory();
+        session(
+            Some("new"),
+            &[
+                "--cwd".into(),
+                "/tmp/proj".into(),
+                "--parent".into(),
+                "parent-9".into(),
+                "--json".into(),
+            ],
+            &out,
+        )
+        .await
+        .expect("new --parent");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["sessionId"], "child-1");
+        assert_eq!(
+            parsed["parentSessionId"], "parent-9",
+            "a script needs the recorded lineage back: {stdout}"
+        );
+        // The lineage travels on the create command itself, so the link exists
+        // even if the child's first run never happens.
+        assert_eq!(agent.seen_of("new_session")[0].parent_session, "parent-9");
+
+        // Prose output reports it too; without it the caller cannot tell a
+        // child from a root session.
+        let (out, cap) = Output::memory();
+        session(
+            Some("new"),
+            &[
+                "--cwd".into(),
+                "/tmp/proj".into(),
+                "--parent".into(),
+                "parent-9".into(),
+            ],
+            &out,
+        )
+        .await
+        .expect("new --parent");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("  Parent: parent-9"), "{stdout}");
+    }
+
+    /// `list --parent` answers "what did I already start" without making the
+    /// caller filter the whole list (and without jq, which Windows lacks).
+    #[tokio::test]
+    async fn session_list_filters_by_parent() {
+        let _guard = crate::test_env::lock_env().await;
+        let agent = crate::test_server::MockAgent::respond(
+            "list_sessions",
+            "{\"sessions\":[{\"id\":\"child-a\",\"parentSessionId\":\"me\",\"isStreaming\":true},\
+                            {\"id\":\"child-b\",\"parentSessionId\":\"me\"},\
+                            {\"id\":\"unrelated\",\"parentSessionId\":\"other\"},\
+                            {\"id\":\"root\"}]}",
+        );
+        let (_agent, _env) = mock_env(agent).await;
+
+        let (out, cap) = Output::memory();
+        session(Some("list"), &["--parent".into(), "me".into()], &out)
+            .await
+            .expect("list --parent");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.contains("child-a"), "{stdout}");
+        assert!(stdout.contains("child-b"), "{stdout}");
+        // Neither a sibling under another parent nor a root session belongs in
+        // the answer, however similar its row looks.
+        assert!(!stdout.contains("unrelated"), "{stdout}");
+        assert!(!stdout.contains("root  "), "{stdout}");
+
+        // JSON carries the same filter, so a script sees only children.
+        let (out, cap) = Output::memory();
+        session(
+            Some("list"),
+            &["--parent".into(), "me".into(), "--json".into()],
+            &out,
+        )
+        .await
+        .expect("list --parent --json");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        let ids: Vec<&str> = parsed["sessions"]
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|s| s["id"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(ids, vec!["child-a", "child-b"]);
+
+        // A parent with no children says so instead of printing an empty table.
+        let (out, cap) = Output::memory();
+        session(Some("list"), &["--parent".into(), "lonely".into()], &out)
+            .await
+            .expect("list --parent");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert_eq!(stdout, "No sessions found under lonely.\n");
     }
 
     #[tokio::test]
@@ -2599,6 +2809,63 @@ mod tests {
         }
     }
 
+    /// A protected approval mode only asks while the tool permission level is
+    /// `workspace`; at the legacy `all` the agent never consults the approval
+    /// rules. The CLI says so instead of reporting a mode that will not prompt.
+    #[tokio::test]
+    async fn set_warns_that_a_protected_mode_needs_the_workspace_level() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent
+            .responses
+            .insert("get_state".into(), r#"{"permissionLevel":"all"}"#.into());
+        let (_agent, _env) = mock_env(agent).await;
+
+        let (out, cap) = Output::memory();
+        session(
+            Some("set"),
+            &[
+                "sess-1".into(),
+                "--sandbox".into(),
+                "manual".into(),
+                "--json".into(),
+            ],
+            &out,
+        )
+        .await
+        .expect("set");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["updated"]["sandboxTier"], "manual");
+        let notes = parsed["notes"].as_array().expect("a note");
+        assert!(
+            notes.iter().any(|note| note
+                .as_str()
+                .is_some_and(|note| note.contains("--permission workspace"))),
+            "{notes:?}"
+        );
+
+        // The explicit level is the post-state: no note once it gates.
+        let (out, cap) = Output::memory();
+        session(
+            Some("set"),
+            &[
+                "sess-1".into(),
+                "--sandbox".into(),
+                "manual".into(),
+                "--permission".into(),
+                "workspace".into(),
+                "--json".into(),
+            ],
+            &out,
+        )
+        .await
+        .expect("set");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert!(parsed.get("notes").is_none(), "{parsed}");
+    }
+
     #[tokio::test]
     async fn set_accepts_the_boolean_spellings() {
         for value in ["on", "true", "yes", "1"] {
@@ -2768,7 +3035,7 @@ mod tests {
     /// `session status` reads it back — so the create step is back, and the
     /// command has to hand the agent the cwd and name.
     #[tokio::test]
-    async fn session_new_creates_a_session_and_warns_it_is_unlisted() {
+    async fn session_new_creates_a_listable_session_with_its_metadata() {
         let _guard = crate::test_env::lock_env().await;
         let agent =
             crate::test_server::MockAgent::respond("new_session", "{\"sessionId\":\"fresh-1\"}");
@@ -2792,8 +3059,9 @@ mod tests {
         assert!(stdout.contains("/tmp/proj"));
         assert!(stdout.contains("  Name: T"));
         assert!(
-            stdout.contains("not listed until its first run"),
-            "a new session is absent from `list` until it runs: {stdout}"
+            stdout.contains("listed right away"),
+            "a new session is listable at once — it is persisted with its metadata \
+             before any run produces an entry: {stdout}"
         );
 
         let sent = agent.seen_of("new_session");
@@ -3341,7 +3609,7 @@ mod tests {
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         assert_eq!(
             stdout,
-            "Updated session sess-1\n  Sandbox:      auto\n  CtxFiles:     on\n  AutoCompact:  off\n  AutoRetry:    on\n"
+            "Updated session sess-1\n  Approval:     auto\n  CtxFiles:     on\n  AutoCompact:  off\n  AutoRetry:    on\n"
         );
     }
 

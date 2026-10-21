@@ -80,7 +80,9 @@ none.
 Commands, conversation events and requested file content pass through the
 configured NATS relay. Mobile uses per-device credentials, short-lived JWTs and
 refresh tokens, with secrets in platform secure storage, and requires `wss://`;
-the desktop requires TLS for its relay connection. Once a phone is paired, the
+the desktop requires TLS for its relay connection, with one exception: a
+self-hosted relay may declare a plaintext origin (see the self-hosted relay
+runbook), which only its own pairings follow. Once a phone is paired, the
 desktop↔phone channel is end-to-end encrypted (a Noise handshake with
 ChaCha20-Poly1305 records), so the relay carries ciphertext and can neither read
 it nor forge an accepted message. The pairing handshake is the one exception: its
@@ -97,7 +99,7 @@ Only pair devices and use relay deployments you trust.
 - **Reconnect/pairing error:** follow the displayed reason/code; expired or revoked
   pairing requires a new pairing, while a temporary network failure can reconnect.
 - **Approval pending:** inspect the requested scope and approve or reject explicitly;
-  do not switch to Unrestricted merely to dismiss a security prompt.
+  do not switch to Full access merely to dismiss a security prompt.
 
 See [[Installation]], [[Using FutureOS|Using-FutureOS]] and [[Sandbox]]. Mobile
 source-build and TestFlight maintainer instructions live in the repository's

@@ -47,7 +47,7 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 ├── windows-capabilities.json  # Windows 沙箱 ACL 清理元数据
 ├── run/
 │   ├── agent.sock             # Unix IPC 端点（Windows 不使用）
-│   └── remote-control/        # 瞬态设备请求（`future remote devices add|remove`）
+│   └── remote-control/        # 瞬态设备请求（`future remote devices add|remove|use`）
 └── bin/                       # CLI / agent 链接：`future`、`future-agent`（见下）
 ```
 
@@ -178,7 +178,9 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
   可选的 `ca` PEM 路径）。现在自建中继按**每次启动**选择（`--relay` / `--relay-ca`），
   进程退出即忘，因此不带参数启动永远是官方平台。老版本留下的这个文件不再起作用，
   可以安全删除；每个配对会把签发它的中继记进 `remote_pairings.json` 的 `controlUrl`，
-  所以官方配对与自建配对仍可共存。见
+  所以官方配对与自建配对仍可共存。这是**客户端**的遗留文件；`future relay init --dir`
+  目录里的 `relay.json` 是另一回事——那是中继服务端自己的配置，仍由
+  `future relay serve` 写入和读取。见
   [self-hosted-relay.zh-CN.md](self-hosted-relay.zh-CN.md)。
 - `relay-root-certs.pem` — 平台信任根的 PEM 快照，仅作为远程桥连接中转的 TLS 信任库。
   每次连接都会重写，可以安全删除：下次连接会重建。见
@@ -196,7 +198,7 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
 这里没有数据，只有「运行中的进程」和「终端」互相找到对方的方式。
 
 - `agent.sock` —— Agent 的 Unix IPC 端点（Windows 用命名管道；指定 `--grpc-addr` 时走 TCP）。见上文的端点章节。
-- `remote-control/` —— `future remote devices add|remove` 用来请求运行中的 Desktop 签发邀请、或停止服务某台设备的请求/回复文件。请求里写的是发起进程自己在系统临时目录建好的回复路径，所以这个目录除了「即将被打印出来的邀请」之外没有别的秘密，也从不进入备份：被恢复的请求只指向一个早已退出的读者。超过两分钟的请求会被 Desktop 删除而不是执行。见 [desktop-headless.zh-CN.md](desktop-headless.zh-CN.md) §3.1。
+- `remote-control/` —— `future remote devices add|remove|use` 用来请求运行中的 Desktop 签发邀请、停止服务某台设备、或把机器交给某台设备的请求/回复文件。请求里写的是发起进程自己在系统临时目录建好的回复路径，所以这个目录除了「即将被打印出来的邀请」之外没有别的秘密，也从不进入备份：被恢复的请求只指向一个早已退出的读者。超过两分钟的请求会被 Desktop 删除而不是执行。见 [desktop-headless.zh-CN.md](desktop-headless.zh-CN.md) §3.1。
 
 ## `~/.future/workspaces/chat/` — 聊天工作区
 

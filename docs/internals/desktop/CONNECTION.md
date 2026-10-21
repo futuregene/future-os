@@ -179,25 +179,33 @@ short numeric code. The graphical `futureos` entrypoint no longer accepts
 
 **Pairing is managed from the terminal, through the running Desktop.** Neither
 entry point takes a pairing flag. `future remote devices` (the `future` CLI) is the
-terminal half of the Remote page: `list` and `use` read and edit the pairing book
-directly, because those are changes to the book alone and must work with nothing
-running. `add` and `remove` cannot be: an invitation is only usable while the
-bridge for its pairing is connected, and a removal only stops the device being
-served if that bridge is stopped — both belong to the process that owns the data
-directory.
+terminal half of the Remote page: `list` reads the pairing book and `use` writes
+it, because that is the machine's record of who drives it and must work with
+nothing running. `add`, `remove` and the immediate half of `use` cannot be: an
+invitation is only usable while the bridge for its pairing is connected, a removal
+only stops the device being served if that bridge is stopped, and the live
+controller is an in-memory pointer that only a takeover moves — all three belong
+to the process that owns the data directory.
 
-That request travels as a file. `future remote devices add|remove` writes
-`{"op":"add-device","reply":"<path>"}` or
-`{"op":"remove-device","pairId":"<device>","reply":"<path>"}` into
+That request travels as a file. `future remote devices add|remove|use` writes
+`{"op":"add-device","reply":"<path>"}`,
+`{"op":"remove-device","pairId":"<device>","reply":"<path>"}` or
+`{"op":"takeover","pairId":"<device>","reply":"<path>"}` into
 `~/.future/run/remote-control/`, then polls the reply path for its answer; the
 running Desktop — window or headless, both start `remote::control::spawn_host` —
 claims the request by renaming it, performs the operation and writes
-`{pairId, link, expiresAt}`, `{pairId, removed}` or `{error}` back. A removal is
+`{pairId, link, expiresAt}`, `{pairId, removed}`, a `{status}` snapshot or
+`{error}` back. A removal is
 answered only after `unpair_slot` has revoked the credential, forgotten the slot,
 stopped that bridge and told the device it was unpaired; a terminal that had to
 edit the book itself (no Desktop running, or one too old to know the operation)
 says so, because the device then keeps being served until its credential comes up
-for renewal. The reply
+for renewal. A takeover is answered after the pointer moved, the previous
+controller was published `standby` and the new one `active` — the same move a
+phone makes when it asks to take over — so `use` takes effect at once instead of at
+the next start; a device with no bridge here cannot be handed the machine (there is
+nothing to send it commands), and the terminal then reports the recorded choice as
+applying at the next start, which is what a book-only edit always did. The reply
 path is a temporary file the asking process created for itself, so two terminals
 asking at once cannot read each other's invitation, and a request older than two
 minutes is deleted rather than served: its asker has given up. The Desktop refuses
@@ -552,7 +560,12 @@ its source icon; the device selector narrows it to one machine. The ordering key
 for **rows** is the one the local list already used —
 `pinned DESC, COALESCE(last_message_at, updated_at, created_at) DESC` — which is
 why the `state.sessions` snapshot gained an optional `lastMessageAt` (older
-clients ignore it). **A remote row's value is the host's own and is written only
+clients ignore it). The same snapshot also carries an optional `createdAt`
+(`threads.created_at`) for a different question: a run rewrites `lastMessageAt`
+about once a second, so a client that lists the *running* conversations by it
+reshuffles them under the reader's thumb — the mobile list ranks that stretch by
+when each conversation started instead, and falls back to recency on a host that
+does not send the field. **A remote row's value is the host's own and is written only
 by the host** — the snapshot when the list's structure moves, the `state.activity`
 packet when only the value did. A client that stamped a clock of its own on the
 row (the desktop's live-event handler once used `Date.now()`) put two clocks in
@@ -1151,7 +1164,7 @@ conflated with the immediacy of the Desktop's local entry close.
 | Desktop sleep/wake | power events integrated on macOS/Windows/Linux; recovery depends on the startup, credential, and sync chains |
 | NATS restart, long unreachable | retries exist; authorization-config faults and over-budget critical-task faults stop auto-recovery |
 | Platform HTTP fault, NATS still normal | existing chains may keep serving while credentials are valid; startup/renewal affected, phone requests lack bounded cancellation |
-| Desktop normal exit, process rebuild | remote disconnects; the owned sidecar exits, conversations end. Reopening can only recover the entry per the user's connection policy; old tasks are not auto-resumed |
+| Desktop normal exit, process rebuild | remote disconnects; the owned sidecar exits, conversations end. Reopening can only recover the entry per the user's connection policy; old *remote* tasks are not auto-resumed, while a local conversation the exit interrupted continues on the next launch per [ER](ER.md) (the `autoResumeInterrupted` setting turns that off) |
 | Agent unavailable, Desktop heartbeat normal | may show connected while business fails; needs separately published Agent availability |
 | Claim succeeded but response lost | self-recovery not guaranteed; currently the invitation may have to be regenerated |
 | User active disconnect/unbind | must stop, not self-recover; current cancel, late-result, and revocation compensation still need completion per the target contract |

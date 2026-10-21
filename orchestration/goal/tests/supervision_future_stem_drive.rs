@@ -172,7 +172,11 @@ fn a_future_named_binary_spawns_its_watchdog_with_the_goal_group_verb() {
     };
     let copy = future_named_copy(dir.path());
 
-    let output = Command::new(&copy)
+    // A detached watcher can outlive the register command. Capture to files so
+    // inherited Windows handles cannot keep Command::output waiting for EOF.
+    let stdout_path = dir.path().join("register.stdout");
+    let stderr_path = dir.path().join("register.stderr");
+    let mut child = Command::new(&copy)
         .args([
             "goal",
             "supervisor",
@@ -189,12 +193,30 @@ fn a_future_named_binary_spawns_its_watchdog_with_the_goal_group_verb() {
         // Nothing here may reach a developer's real agent.
         .env("FUTURE_GOAL_AGENT_ADDR", "127.0.0.1:1")
         .env("FUTURE_AGENT_SOCKET", dir.path().join("agent.sock"))
-        .output()
+        .stdin(std::process::Stdio::null())
+        .stdout(std::fs::File::create(&stdout_path).unwrap())
+        .stderr(std::fs::File::create(&stderr_path).unwrap())
+        .spawn()
         .expect("the future-named copy runs");
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll register command") {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            child.kill().expect("stop stuck register command");
+            child.wait().expect("reap register command");
+            let stdout = std::fs::read_to_string(&stdout_path).unwrap();
+            let stderr = std::fs::read_to_string(&stderr_path).unwrap();
+            let watcher_log = watch_log(&root).and_then(|path| std::fs::read_to_string(path).ok());
+            panic!("register did not exit within 30 seconds: {stdout}\n{stderr}\nwatcher: {watcher_log:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let stdout = std::fs::read_to_string(&stdout_path).unwrap();
+    let stderr = std::fs::read_to_string(&stderr_path).unwrap();
     assert!(
-        output.status.success(),
+        status.success(),
         "a future-stem binary must register its supervisor (and its watchdog): \
          {stdout}\n{stderr}"
     );

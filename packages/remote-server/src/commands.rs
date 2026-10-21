@@ -486,17 +486,17 @@ async fn handle_command_singleflight(
     };
 
     let request: Value = serde_json::from_slice(&msg.payload).expect("command already decoded");
-    let (slot, inserted) = {
+    let slot = {
         let mut slots = reply_slots.0.lock().unwrap();
         match slots.get(&command_id) {
-            Some(slot) => (slot.clone(), false),
+            Some(slot) => slot.clone(),
             None => {
                 let slot = Arc::new(CachedReply {
                     request: request.clone(),
                     response: Arc::new(tokio::sync::Mutex::new(None)),
                 });
                 slots.insert(command_id.clone(), slot.clone());
-                (slot, true)
+                slot
             }
         }
     };
@@ -532,7 +532,10 @@ async fn handle_command_singleflight(
         )
         .await;
     *cached = capture.lock().unwrap().clone();
-    if inserted {
+    // The delivery that executes the uncached command owns its expiry. The
+    // slot's creator can lose the response-mutex race to a later delivery and
+    // return through the cached-response arm above without scheduling anything.
+    {
         let slots = reply_slots.clone();
         let id = command_id.clone();
         let expected = slot.clone();
@@ -731,10 +734,17 @@ async fn handle_command_inner(
         // backgrounded would be a different product decision — so it only stops
         // being reported as present, exactly as a lapsed beat would.
         //
-        // Acknowledged first: the sender closes its connection right after, and
-        // a reply nobody reads costs nothing.
+        // The departure is applied *before* the acknowledgement. Publishing the
+        // reply first would let whoever reads it — the leaving client, another
+        // device asking this machine for its presence, the test that drives the
+        // goodbye — still see the device present: the reply is flushed onto the
+        // wire while the state change is still waiting for its turn on this
+        // task. Acknowledging last makes "the reply arrived" mean "the machine
+        // has already stopped counting it here", which is the only reading a
+        // caller can act on. Nothing here awaits (a promotion publishes from a
+        // spawned task), so the departing client is not made to wait on the
+        // network for it: a reply nobody reads still costs nothing.
         "client_disconnect" => {
-            reply(client, &msg, true, json!({}), None).await;
             if cmd.reason == "background" {
                 if let Some(link) = handshake.runtime.client_link(&handshake.creds.pair_id) {
                     link.depart();
@@ -742,6 +752,7 @@ async fn handle_command_inner(
             } else {
                 handshake.runtime.client_left(&handshake.creds.pair_id);
             }
+            reply(client, &msg, true, json!({}), None).await;
         }
         // A phone-initiated unpair first reaches the desktop over the existing
         // authenticated command channel. Acknowledge before stopping the

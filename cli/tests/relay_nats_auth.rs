@@ -135,6 +135,9 @@ async fn start_relay(nats_url: &str, account_seed: &str, rooms: Option<&Path>) -
         subs_limit: -1,
         payload_limit: jwt::DEFAULT_PAYLOAD_LIMIT,
         http_timeout_seconds: 15,
+        // This test drives the broker, not the API transport.
+        tls_cert: None,
+        tls_key: None,
     };
     let relay = std::sync::Arc::new(Relay::new(config, rooms).unwrap());
     let app = future_cli::relay::router(relay.clone());

@@ -68,6 +68,13 @@ terminal_size = "0.4"
 # surface is small (four routes, no middleware stack), so axum's default features
 # are enough; `nkeys` signs the NATS user JWTs it issues.
 axum = "0.7"
+# `future relay serve` terminates TLS itself when relay.json carries a
+# certificate. axum 0.7's `serve` only takes a `TcpListener`, so the accept loop
+# and the TLS handshake are done here with the crates the rest of the binary
+# already links: hyper-util's connection builder over a tokio-rustls stream.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"] }
 nkeys = "0.4"
 rand = "0.8"
 
@@ -87,3 +94,8 @@ portable-pty = "0.9"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console"] }
+
+# `prompt::ask_yes_no` reads one key at a time on a terminal: termios is what
+# turns the line wait and the echo off, and what puts them back.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

@@ -217,6 +217,7 @@ Settable keys (camelCase, as the desktop API spells them):
   titleLanguage           en|zh              Language used for generated titles
   communityEdition        true|false         Use the community-edition UI
   skillRecommend          true|false         Recommend one uninstalled skill
+  autoResumeInterrupted   true|false         Continue interrupted conversations on app open
 
 A list value is a JSON array or a comma-separated list; an empty value clears it."#;
 
@@ -305,7 +306,7 @@ serves again after a restart. Run `future remote status --help` for its fields,
 its --json document and its exit codes.
 
 enable and disable are that switch, from a terminal: they take effect at once
-when a Desktop is running (the window, or futureos-headless) and are stored for
+when a Desktop is running (the window, or `future headless`) and are stored for
 the next launch either way, so neither needs a restart.
 
 Every action takes --json and prints the same document `future remote devices
@@ -313,18 +314,20 @@ Every action takes --json and prints the same document `future remote devices
 expiresAt).
 
 A device is a phone or another computer that paired with this machine's remote
-desktop — the Remote page in the window, or future headless. The list and use
-read and write the pairing book the Desktop itself reads
-(~/.future/remote_pairings.json), so they need no running Desktop; a self-hosted
-relay needs no account either.
+desktop — the Remote page in the window, or future headless. The list reads the
+pairing book the Desktop itself reads (~/.future/remote_pairings.json), and use
+writes it, so neither needs a running Desktop; a self-hosted relay needs no
+account either.
 
-add and remove are the exceptions, because the Desktop is what actually serves a
-device. An invitation is only usable while the bridge for that pairing is
-connected, and a removal only takes effect *now* if that bridge is stopped — so
-both ask the running Desktop (the window, or future headless) and carry its
-answer back. With no Desktop running, remove edits the book itself, which is what
-the next start reads. A machine with no device at all prints an invitation as the
-Desktop starts.
+add, remove and use are the exceptions to "the book is enough", because the
+Desktop is what actually serves a device. An invitation is only usable while the
+bridge for that pairing is connected, and a removal only takes effect *now* if
+that bridge is stopped — so both ask the running Desktop (the window, or future
+headless) and carry its answer back. use asks it too: control is an in-memory
+pointer in that process, so handing the machine over is what makes the choice
+take effect before the next restart. With no Desktop running, remove and use edit
+the book itself, which is what the next start reads. A machine with no device at
+all prints an invitation as the Desktop starts.
 
 Self-hosted relays work the same way, and a machine may hold an official device
 and a self-hosted one at the same time: `list` names each device's endpoint, and
@@ -339,9 +342,15 @@ platform revoke that cannot be delivered now is queued and retried by the next
 Desktop that runs; a relay has no account to queue against, so an undeliverable
 room deletion is reported and the room expires on its own.
 
-use writes the same pointer the window's "Let this control" writes. A running
-Desktop keeps its current controller until it restarts: control is an in-memory
-decision there, and a device asking to take over moves it too.
+use writes the same pointer the window's "Let this control" writes, and with a
+Desktop running it moves the controller at once: the Desktop is asked to hand the
+machine over, which publishes the new controller, stands the previous one down
+and persists the same choice. A device this Desktop has no bridge for cannot be
+handed the machine (there is no channel to send it commands), and with the switch
+off nobody is being served — in both cases the pointer is recorded and applies when
+the Desktop next starts serving. A device whose bridge is up but whose client is
+closed is handed the machine too, and the answer says that nothing will command it
+until that device reconnects.
 
 Run `future remote devices --help` for the ids remove and use accept."#;
 
@@ -365,7 +374,7 @@ Usage:
 Two facts, printed separately because they are different facts:
 
   Remote desktop      Whether this machine is serving its devices right now.
-                      Only a running Desktop (the window, or futureos-headless)
+                      Only a running Desktop (the window, or `future headless`)
                       can answer; with none running this reads "off — no
                       Desktop is running for this machine".
   Saved switch        autoConnectRemote, the same value the window's Remote page
@@ -388,6 +397,7 @@ self-hosted relay).
   reason                     why it is not serving (network, credential_expired, …)
   recovery                   a retry in progress: attempt, maxAttempts, nextRetryAt
   switch.autoConnectRemote   the stored switch
+  signedIn                   this machine has an account (or a relay) to serve with
   agentAvailable             this machine's Agent, or null when unknown
   transport                  where it connects, with any credential in the URL removed
   active                     the device in control, or null
@@ -419,7 +429,7 @@ Usage:
 Turns on the same switch the window's Remote page has, and stores it: the
 machine keeps serving its paired devices at the next launch.
 
-With a Desktop running (the window, or futureos-headless) it takes effect
+With a Desktop running (the window, or `future headless`) it takes effect
 immediately — the request goes to that process, which starts the bridge, so
 nothing has to be restarted. With none running there is no bridge to start: the
 switch is stored, the command says so, and it exits 1 because the machine is not
@@ -513,9 +523,11 @@ Credentials are never part of it.
 Live connection state — who is connected at this moment, and the name a device
 gave itself — is known only to a running Desktop: it is not in the pairing book.
 
-The list says what the machine is actually doing: serving, not serving because no
-Desktop is running, or not serving because the remote desktop switch is off — in
-which case it names `future remote enable`, the command that turns it back on."#;
+The list says what is knowable without asking the Desktop: not serving because the
+remote desktop switch is off — in which case it names `future remote enable`, the
+command that turns it back on — nothing serving because no Desktop is running, or a
+Desktop holding this data directory. Whether that Desktop is actually serving is
+runtime state only it can answer: `future remote status` asks it."#;
 
 /// `future remote devices remove --help` output.
 pub const REMOTE_REMOVE_HELP: &str = r#"future remote devices remove — unpair one device, leaving the others paired
@@ -533,7 +545,8 @@ add`.
 
 Asks for confirmation from the terminal unless --yes is given, and refuses to
 read an answer from a redirected stdin: a prompt nobody saw must not become
-"yes".
+"yes". One key answers — `y` or `Y` unpairs, `n`, `N`, Enter or Esc cancels —
+so nothing has to be followed by Enter.
 
 The device is revoked before the local slot is dropped — at the Future platform,
 or by deleting its room at the relay that minted it. A running Desktop is asked to
@@ -562,9 +575,22 @@ window's "Let this control" writes and the runtime restores at start. Control
 moves the way an explicit takeover moves it, so the previous controller is no
 longer allowed to command this machine.
 
-A running Desktop keeps its current controller until it restarts — control is an
-in-memory decision there, and a device asking to take over moves it too. The
-written value is what the next start uses.
+With a Desktop running (the window, or future headless) it also asks that Desktop
+to hand the machine over now, which is what makes the change immediate: control is
+an in-memory pointer there, and only a takeover — the same one a phone performs —
+moves it. Publishing the new controller and standing the previous one down is the
+Desktop's own work, so a device this Desktop has no bridge for cannot be handed the
+machine; the choice is still recorded, and the command says it applies when the
+Desktop next starts serving. Nothing needs a restart otherwise.
+
+Two notes can follow, on stderr, and neither means the choice was lost:
+
+  - the device is not connected right now — the pointer moved, and nothing will
+    command this machine until that device reconnects (the previous controller is
+    in standby);
+  - the running Desktop did not hand the machine over (no bridge for that device,
+    or a build that predates the request) — the choice is recorded, applies at the
+    next start, and the exit code is 1.
 
 --json prints the resulting device document, like `future remote devices --json`."#;
 

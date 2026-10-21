@@ -1,5 +1,5 @@
-//! `future remote devices add|remove` — a terminal asking the running Desktop to
-//! change what it serves.
+//! `future remote devices add|remove|use` — a terminal asking the running Desktop
+//! to change what it serves.
 //!
 //! A device can only be *added* by the process that will serve it: the invitation
 //! carries a single-use secret and the pair-scoped credential, and the bridge for
@@ -14,6 +14,10 @@
 //! back to it when no Desktop answers — but while one is running, the device keeps
 //! talking to a machine that has already forgotten it.
 //!
+//! *Choosing the controller* is the same shape one step further: the book holds
+//! the decision, the running process holds the live pointer, and only a takeover
+//! performed here moves the pointer without a restart.
+//!
 //! This is the same one-shot hand-off the launcher's old `--re-pair` performed
 //! through the single-instance plugin, with two differences that are the reason
 //! it moved here: it works for a headless Desktop too (which has no plugin), and
@@ -21,8 +25,9 @@
 //!
 //! The files are a request/reply pair in `~/.future/run/remote-control/`:
 //!
-//! * `*.request.json` — `{"op": "add-device", "reply": "<absolute path>"}`, or
-//!   `{"op": "remove-device", "pairId": "<device>", "reply": "<absolute path>"}`;
+//! * `*.request.json` — `{"op": "add-device", "reply": "<absolute path>"}`,
+//!   `{"op": "remove-device", "pairId": "<device>", "reply": "<absolute path>"}`,
+//!   or `{"op": "takeover", "pairId": "<device>", "reply": "<absolute path>"}`;
 //! * the reply goes to the path the *asker* named, which it created for itself as
 //!   a temporary file — so two terminals asking at once cannot read each other's
 //!   invitation, and a process that exits takes its answer path with it.
@@ -39,17 +44,21 @@
 //! authority, and the directory is created `0700`-under-the-user's data root only
 //! so that other users cannot reach it at all.
 //!
-//! What this deliberately is *not* is a general control API. Choosing the
-//! controller is a change to the pairing book alone, which is why `future remote
-//! devices use` edits it directly and needs nothing running.
+//! What this deliberately is *not* is a general control API.
 //!
-//! Adding and removing are the two operations that need code executed inside the
-//! Desktop, for the same reason from both sides: the Desktop owns the bridges. An
-//! invitation is only usable while the bridge for its pairing is up, and a removal
-//! is only *immediate* if that bridge is stopped now. Editing the book from the
-//! terminal leaves a running bridge serving a device the book no longer lists,
-//! which goes quiet only when its credential comes up for renewal — up to the
-//! lifetime of the JWT it holds, minutes later.
+//! Three operations need code executed inside the Desktop, for one reason from
+//! both sides: the running process is what serves the devices.
+//!
+//! * An invitation is only usable while the bridge for its pairing is up.
+//! * A removal is only *immediate* if that bridge is stopped now. Editing the book
+//!   from the terminal leaves a running bridge serving a device the book no longer
+//!   lists, which goes quiet only when its credential comes up for renewal — up to
+//!   the lifetime of the JWT it holds, minutes later.
+//! * Choosing the controller is an in-memory pointer in the running process, and
+//!   every command is checked against *that*. The book decides it for the next
+//!   start, so a `use` that only edited it would take effect at a restart; asking
+//!   the Desktop for a takeover is what moves the pointer now, and tells the
+//!   previous controller to stand by exactly as a device taking over does.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -88,6 +97,18 @@ const OP_ENABLE: &str = "enable";
 /// Turn the switch off: the same graceful stop the window's switch performs,
 /// which also stops the Desktop serving (and persists the switch).
 const OP_DISABLE: &str = "disable";
+/// Make the named device the one that drives this machine, now.
+///
+/// The book alone would only be read at the next start, because the live pointer
+/// lives in this process and commands are checked against it. This is the same
+/// move a device makes when it asks to take over
+/// ([`crate::remote::takeover`]), reached from a terminal: the previous
+/// controller is published `standby` and the new one `active`, and the pointer is
+/// persisted so the next start agrees.
+///
+/// It names the same operation the window's Remote page calls ("let this
+/// control") rather than inventing a second meaning for the word.
+const OP_TAKEOVER: &str = "takeover";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,7 +117,8 @@ pub(crate) struct Request {
     pub(crate) op: String,
     /// Absolute path the asker is polling for its answer.
     pub(crate) reply: String,
-    /// The device a removal names. Absent for `add-device`, which creates one.
+    /// The device a removal or a takeover names. Absent for `add-device`, which
+    /// creates one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) pair_id: Option<String>,
 }
@@ -530,6 +552,50 @@ fn perform(
             // projection, so a terminal sees exactly what the window's Remote
             // page sees.
             OP_STATUS => Ok(crate::remote::status()),
+            OP_TAKEOVER => {
+                // The pointer a terminal can write on its own lives in the book,
+                // and the book is read once, at start. A running Desktop keeps the
+                // live pointer in memory and checks every command against it, so
+                // handing the machine over here is what makes `future remote
+                // devices use` take effect now instead of at the next restart.
+                let pair_id = pair_id
+                    .filter(|pair_id| !pair_id.trim().is_empty())
+                    .ok_or_else(|| {
+                        crate::Error::Message(
+                            "the takeover names no device (`pairId` is missing)".to_string(),
+                        )
+                    })?;
+                // With the switch off nothing is being served, so there is no
+                // bridge to hand the machine to and no device to tell. Saying so
+                // beats the `device_offline` refusal below, which would name the
+                // symptom instead of the cause a terminal can undo.
+                if matches!(
+                    crate::remote::status().phase,
+                    crate::remote::RemotePhase::Stopped
+                ) {
+                    return Err(crate::Error::Message(
+                        "the remote desktop is off, so nobody is being served to hand the \
+                         machine to. Turn it on with `future remote enable` (or the Remote \
+                         page's switch) and the recorded controller takes over at once."
+                            .to_string(),
+                    ));
+                }
+                // A device with no runtime here cannot take control: there is no
+                // bridge to send it commands, and moving the pointer to it would
+                // strand the device that *is* connected. The window hides the
+                // action for such a device; this is the same rule where the
+                // pointer moves.
+                match crate::remote::takeover(&pair_id).await {
+                    Ok(status) => Ok(status),
+                    Err(crate::Error::Message(code)) if code == "device_offline" => {
+                        Err(crate::Error::Message(format!(
+                            "{pair_id} is not connected to this Desktop, so there is no channel \
+                             to hand it the machine"
+                        )))
+                    }
+                    Err(error) => Err(error),
+                }
+            }
             // The switch, from a terminal. It is deliberately the same pair of
             // calls the window's switch makes: one machine, one meaning of
             // "on", and the preference is stored by the same rule — an enable
@@ -569,7 +635,12 @@ pub(crate) async fn answer(
     let removal = match request.op.as_str() {
         OP_ADD_DEVICE => false,
         OP_REMOVE_DEVICE => true,
-        OP_STATUS | OP_ENABLE | OP_DISABLE => {
+        // Everything that answers with the Desktop's own state, with no
+        // invitation to extract and no removal to report: the switch's two
+        // halves, the runtime snapshot, and the takeover that moves the
+        // controller (its answer names the device now in control, which is what
+        // the terminal verifies before saying the machine changed hands).
+        OP_STATUS | OP_ENABLE | OP_DISABLE | OP_TAKEOVER => {
             return match result.await {
                 Ok(status) => Reply::of_snapshot(&status),
                 Err(error) => Reply::of_error(error.to_string()),
@@ -802,6 +873,88 @@ mod tests {
             "the invitation: {wire}"
         );
         assert!(!wire.contains("pairingCode"), "{wire}");
+    }
+
+    /// A takeover answers with the Desktop's own state, and the answer names the
+    /// device that now controls — which is what the terminal checks before it
+    /// reports the machine as handed over.
+    #[tokio::test]
+    async fn a_takeover_answers_with_the_device_now_in_control() {
+        let request = Request {
+            op: OP_TAKEOVER.into(),
+            reply: "/tmp/unused".into(),
+            pair_id: Some("pair_BBBB".into()),
+        };
+        let device = |pair_id: &str, control| future_remote_server::types::RemoteDevice {
+            pair_id: pair_id.to_string(),
+            desktop_id: "desktop_test".into(),
+            phase: RemotePhase::Ready,
+            control,
+            connected: true,
+            present: true,
+            client: None,
+            pairing_code: None,
+            pairing_code_expires_at: None,
+        };
+        let moved = RemoteStatus {
+            devices: vec![
+                device("pair_BBBB", crate::remote::DeviceControl::Active),
+                device("pair_AAAA", crate::remote::DeviceControl::Standby),
+            ],
+            ..status(RemotePhase::Ready, None)
+        };
+        let reply = answer(&request, async { Ok(moved) }).await;
+        assert_eq!(reply.error, None, "{reply:?}");
+        assert!(reply.link.is_none(), "a takeover issues no invitation");
+        assert!(!reply.removed, "and removes nothing");
+        let snapshot = reply.status.expect("a snapshot");
+        assert_eq!(snapshot.active.as_deref(), Some("pair_BBBB"));
+        assert_eq!(
+            snapshot
+                .devices
+                .iter()
+                .find(|device| device.pair_id == "pair_AAAA")
+                .map(|device| device.control.as_str()),
+            Some("standby"),
+            "the device that lost the machine is reported as standby"
+        );
+    }
+
+    /// A takeover that names no device is refused before the pointer could move
+    /// anywhere — handing the machine to nobody is not an operation.
+    #[tokio::test]
+    async fn a_takeover_without_a_device_is_refused() {
+        let request = Request {
+            op: OP_TAKEOVER.into(),
+            reply: "/tmp/unused".into(),
+            pair_id: None,
+        };
+        let error = perform(&request)
+            .await
+            .expect_err("a nameless takeover must not run");
+        assert!(error.to_string().contains("names no device"), "{error}");
+    }
+
+    /// A takeover this Desktop refused says why and carries no snapshot: the
+    /// terminal must not print "handed over" for a pointer that never moved.
+    #[tokio::test]
+    async fn a_refused_takeover_reports_the_reason_and_no_state() {
+        let request = Request {
+            op: OP_TAKEOVER.into(),
+            reply: "/tmp/unused".into(),
+            pair_id: Some("pair_BBBB".into()),
+        };
+        let reply = answer(&request, async {
+            Err(crate::Error::Message(
+                "pair_BBBB is not connected to this Desktop, so there is no channel to hand it \
+                 the machine"
+                    .into(),
+            ))
+        })
+        .await;
+        assert!(reply.status.is_none(), "{reply:?}");
+        let error = reply.error.expect("a refusal must say why");
+        assert!(error.contains("not connected"), "{error}");
     }
 
     /// The switch is reachable from a terminal: both operations reach the

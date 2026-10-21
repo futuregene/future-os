@@ -38,10 +38,11 @@ use windows_sys::Win32::System::StationsAndDesktops::{
 use windows_sys::Win32::System::Threading::{
     CreateProcessAsUserW, DeleteProcThreadAttributeList, GetExitCodeProcess,
     InitializeProcThreadAttributeList, ResumeThread, TerminateProcess, UpdateProcThreadAttribute,
-    WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
+    WaitForSingleObject, CREATE_NEW_CONSOLE, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT,
     EXTENDED_STARTUPINFO_PRESENT, INFINITE, PROCESS_INFORMATION, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-    STARTF_USESTDHANDLES, STARTUPINFOEXW,
+    STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
+use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 use super::runner::CapabilityLease;
 use super::token::RestrictedToken;
@@ -89,7 +90,11 @@ impl RestrictedChild {
 
         let mut startup: STARTUPINFOEXW = unsafe { std::mem::zeroed() };
         startup.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
-        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+        // A hidden console on the private desktop lets the shell bootstrap set
+        // its code page before PowerShell initializes its cached output writer.
+        // CREATE_NO_WINDOW has no console code page for chcp to configure.
+        startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        startup.StartupInfo.wShowWindow = SW_HIDE as u16;
         startup.StartupInfo.hStdInput = stdin.raw();
         startup.StartupInfo.hStdOutput = stdout_write.raw();
         startup.StartupInfo.hStdError = stderr_write.raw();
@@ -113,7 +118,7 @@ impl RestrictedChild {
                 1,
                 CREATE_SUSPENDED
                     | CREATE_UNICODE_ENVIRONMENT
-                    | CREATE_NO_WINDOW
+                    | CREATE_NEW_CONSOLE
                     | EXTENDED_STARTUPINFO_PRESENT,
                 environment.as_ptr().cast(),
                 cwd_wide.as_ptr(),

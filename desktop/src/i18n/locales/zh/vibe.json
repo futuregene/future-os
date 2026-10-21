@@ -1,0 +1,95 @@
+{
+  "title": "Vibe",
+  "count": "{{count}} 个置顶",
+  "overflow": "另有 {{count}} 个超出网格上限",
+  "manualLayout": "手动",
+  "fullscreen": "切换全屏",
+  "shortcuts": "全部快捷键",
+  "close": "关闭面板",
+  "running": "正在运行",
+  "unread": "有未读",
+  "of": "共 {{total}} 个",
+  "input": {
+    "to": "正在对",
+    "local": "本机"
+  },
+  "empty": {
+    "title": "还没有置顶的会话",
+    "body": "置顶的会话会出现在这里。可以在左边栏的行菜单里置顶，或等面板有了「加入」键再用它。"
+  },
+  "shortcutHint": "快捷键：",
+  "menu": {
+    "title": "面板菜单",
+    "layout": "列数",
+    "layoutHint": "左右键切换；自动会跟随窗口",
+    "auto": "自动",
+    "columns": "{{count}} 列",
+    "moveEarlier": "把这格往前挪",
+    "moveLater": "把这格往后挪",
+    "remove": "移出面板",
+    "removeHint": "这会取消置顶：左边栏里也不再置顶",
+    "openInShell": "在主窗口打开",
+    "fullscreen": "切换系统全屏",
+    "close": "关闭面板",
+    "more": "更多…",
+    "model": "模型",
+    "thinking": "思考级别",
+    "approval": "审批档位",
+    "approvalHint": "对整个应用生效，不只是这一格",
+    "panel": "右栏",
+    "panelHint": "自动跟随窗口；固定则在这个会话里一直留着"
+  },
+  "attention": {
+    "badge": "{{count}} 个待处理",
+    "approval": "待批准",
+    "failed": "失败",
+    "finished": "已完成",
+    "none": "没有需要你处理的会话"
+  },
+  "add": {
+    "title": "加入会话",
+    "close": "关闭",
+    "machine": "设备",
+    "workspace": "工作区",
+    "filter": "按标题筛选",
+    "empty": "这里没有可加入的会话：这个位置里的会话都已经置顶了。",
+    "add": "加入",
+    "added": "已在面板",
+    "footer": "加入即置顶：它会出现在这里，也出现在左边栏的置顶区。",
+    "recent": "最近活跃",
+    "browse": "浏览全部会话…",
+    "newConversation": "新开一个会话…",
+    "newConversationHint": "打开新建会话界面，建好后自动置顶"
+  },
+  "devices": {
+    "local": "本机",
+    "chats": "对话",
+    "all": "全部设备",
+    "label": "设备"
+  },
+  "queue": {
+    "queued": "已排队 — 等这一轮跑完",
+    "held": "排队那条先留着：这个会话的输入框里已经有内容了",
+    "returned": "已放回输入框",
+    "cancel": "撤回排队的那条"
+  },
+  "probe": {
+    "title": "按键自查（只读）",
+    "hint": "连按三次 ⌥⇧K 关闭；这里不影响任何按键。",
+    "copy": "复制",
+    "copied": "已复制",
+    "close": "关闭",
+    "empty": "按任意键，或按遥控器上的按键。"
+  },
+  "panel": {
+    "hidden": "隐藏",
+    "auto": "自动",
+    "pinned": "固定",
+    "show": "显示右栏",
+    "hide": "隐藏右栏",
+    "pin": "为这个会话固定右栏"
+  },
+  "fullscreenFailed": "全屏被系统拒绝了 —— 原因见控制台",
+  "page": "第 {{page}}/{{pages}} 页",
+  "emptyTile": "加入会话"
+}

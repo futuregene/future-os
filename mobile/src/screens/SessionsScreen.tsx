@@ -37,17 +37,27 @@ import { mergeSessions, type DesktopFilter } from "../remote/mergeSessions";
 import type { DesktopCommands } from "../remote/desktopCommands";
 import { iconGlyph } from "../remote/peerIcons";
 import type { RemoteSession, RemoteWorkspace } from "../remote/types";
-import { SessionList } from "./SessionList";
+import { SessionList, type SessionListHandle } from "./SessionList";
+import { SessionListActions } from "./SessionListActions";
+import { listTargets, selectableTargets } from "./sessionSelection";
+import { type Tab } from "./sessionTabs";
 import { DesktopPicker } from "./DesktopPicker";
 import { DisconnectedScreen } from "./DisconnectedScreen";
 import { StandbyScreen } from "./StandbyScreen";
 import { layout, radius, spacing } from "../theme/tokens";
-import { createThemedStyles, useTheme } from "../theme/ThemeContext";
+import { createThemedStyles, useAppearance, useTheme } from "../theme/ThemeContext";
 import { promptUpgrade } from "../update/prompt";
 import { checkForUpdate } from "../update/update";
 import { SettingsScreen, type SettingsScreenHandle } from "../features/settings/SettingsScreen";
 
-type Tab = "workspace" | "chat";
+/**
+ * What the new-conversation dialog can create.
+ *
+ * A page of the list and a conversation's mode are different questions: the
+ * recency page creates chats, but "recent" is not something a conversation can
+ * be.
+ */
+type NewConversationMode = "workspace" | "chat";
 
 /** A conversation row, with the machine that owns it. */
 interface SessionRow {
@@ -56,9 +66,16 @@ interface SessionRow {
   desktopId: string | null;
 }
 
-// Persist the selected tab across screen transitions (SessionsScreen is
-// unmounted when entering a chat and remounted when returning).
-let lastTab: Tab = "chat";
+/**
+ * The page the list opens on, and the one it returns to.
+ *
+ * The recency page, because the first question a phone answers is "what was I
+ * doing": it holds the runs still going, then everything by how recently it
+ * moved — where the two tree pages need the reader to know which workspace a
+ * conversation lives in first. Kept for the life of the app, so coming back out
+ * of a conversation lands where the reader left the list.
+ */
+let lastTab: Tab = "recent";
 
 /**
  * The "every desktop" scope, as one shared object.
@@ -81,6 +98,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
 }) {
   const styles = useStyles();
   const { colors } = useTheme();
+  const { fontSize } = useAppearance();
   const Alert = useAppDialog(active);
   const { t, i18n } = useTranslation();
   const remote = useRemote();
@@ -222,7 +240,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     setTabState(next);
   };
   const [newOpen, setNewOpen] = useState(false);
-  const [newMode, setNewMode] = useState<Tab>("chat");
+  const [newMode, setNewMode] = useState<NewConversationMode>("chat");
   const [workspaceId, setWorkspaceId] = useState("");
   /**
    * Which view of the creation dialog is up: the machine picker, or what to
@@ -266,6 +284,14 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsRef = useRef<SettingsScreenHandle>(null);
+  /**
+   * The list, for the two modes its own header no longer carries.
+   *
+   * Search and batch selection are still the list's — they hold its rows' state
+   * — while the header above it belongs to this screen. The handle is the way
+   * in, the same shape the settings screen is driven by.
+   */
+  const listRef = useRef<SessionListHandle>(null);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [menuSession, setMenuSession] = useState<SessionRow | null>(null);
   // Which conversation a dialog is editing, and which machine owns it: every
@@ -323,8 +349,10 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     if (busyDevice) return;
     const epoch = newDialogEpochRef.current;
     setNewDeviceId(desktopId);
-    if (tab === "chat") {
-      // Nothing else to pick for a chat, so the machine is the whole choice.
+    if (tab !== "workspace") {
+      // Nothing else to pick for a chat, so the machine is the whole choice. The
+      // recency page is not a workspace page either: "new" there means a chat,
+      // which is the thing that has no workspace to choose.
       startConversationOn(desktopId, "chat", "");
       return;
     }
@@ -681,10 +709,11 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     setBusyDevice(null);
     setNewWorkspaceOpen(false);
     setNewWorkspaceError(null);
-    if (tab === "chat") {
-      // The conversations tab has nothing left to pick, so a chat is created
-      // straight away — on the machine the list is showing when it names one,
-      // and otherwise without a dialog at all unless the machine is that choice.
+    if (tab !== "workspace") {
+      // The conversations and recency pages have nothing left to pick, so a chat
+      // is created straight away — on the machine the list is showing when it
+      // names one, and otherwise without a dialog at all unless the machine is
+      // that choice.
       setNewMode("chat");
       setWorkspaceId("");
       if (named !== null) {
@@ -882,6 +911,34 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
    * list is describing as unreachable.
    */
   const canStartConversation = scopedPeerId === null ? scopeAnswers : canCommand(scopedPeerId);
+  /**
+   * Whether the header gives the machine its own line.
+   *
+   * At the largest text size the name no longer fits beside the list's tools,
+   * the status dot and settings on a phone-sized width — measured at 20px text
+   * on a 360pt phone, "实验室的 MacBook Pro" needs about 340pt of line and 140pt
+   * is left — and the name is the one thing here that must stay whole. So the
+   * machine takes a line of its own and the tools move under it, which is the
+   * shape this header had before its two rows were merged.
+   */
+  const stackHeader = fontSize === "xlarge";
+  /**
+   * Whether entering a batch selection has anything to hold.
+   *
+   * Read through the same two functions the list selects rows by — the list's
+   * rows, then the machines that can answer a delete — so the header's item
+   * cannot offer a selection the list would refuse to make. It is the list's
+   * *catalogue* rather than its drawn rows: a folded group's conversations are
+   * still selectable, which is why the list answers this question the same way.
+   * The page matters as much as on the list: pinned conversations are shortcuts
+   * only on the tree pages, so a catalogue of nothing but pins can be selected
+   * from the recency page and not from the other two.
+   */
+  const canSelect = selectableTargets(
+    listTargets(showMerged ? mergedRows : undefined, remote.sessions),
+    commandsFor,
+    tab !== "recent",
+  ).length > 0;
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -912,7 +969,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
             { label: t("sessions.delete"), icon: <Trash2 size={18} color={colors.danger} />, destructive: true, disabled: !canManage, onPress: () => confirmDelete(menuSession) },
           ] : []}
         />
-        <View style={styles.deviceBar}>
+        <View style={[styles.deviceBar, stackHeader && styles.deviceBarStacked]}>
           <DesktopPicker
             desktops={remote.desktops}
             filter={scopedFilter}
@@ -920,6 +977,12 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
             onChange={setDesktopFilter}
             onManage={onManageDesktops}
             onTakeControl={remote.catalogs.takeControlFor}
+            fullWidth={stackHeader}
+          />
+          <SessionListActions
+            canSelect={canSelect}
+            onSearch={() => listRef.current?.startSearch()}
+            onSelect={() => listRef.current?.startSelecting()}
           />
           <View style={styles.topActions}>
             <ConnectionBadge
@@ -963,6 +1026,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
             onTakeControl={remote.takeControl}
           />
         ) : <SessionList
+          ref={listRef}
           key={tab}
           tab={tab}
           active={active}
@@ -1120,7 +1184,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                     </Pressable>
                   </View>
                   <View style={styles.modeOptions}>
-                    {(["workspace", "chat"] as Tab[]).map((mode) => (
+                    {(["workspace", "chat"] as NewConversationMode[]).map((mode) => (
                       <Pressable
                         key={mode}
                         accessibilityRole="radio"
@@ -1235,7 +1299,7 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   deviceBar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.md,
+    gap: spacing.sm,
     paddingHorizontal: layout.gutter,
     paddingVertical: spacing.sm,
   },
@@ -1260,7 +1324,10 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   desktopIdentity: { flex: 1, minWidth: 0, color: theme.colors.ink, fontSize: theme.font(15), fontWeight: "600" },
   safe: { flex: 1, backgroundColor: theme.colors.surface },
   page: { flex: 1, width: "100%", maxWidth: layout.contentMaxWidth, alignSelf: "center", backgroundColor: theme.colors.surface },
-  topActions: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
+  // A line of its own for the machine when the reader's text size says so; the
+  // tools wrap under it, still inside this row (see `stackHeader`).
+  deviceBarStacked: { flexWrap: "wrap" },
+  topActions: { flexDirection: "row", alignItems: "center", gap: spacing.xs, marginLeft: "auto" },
   settingsButton: {
     width: 44,
     height: 44,

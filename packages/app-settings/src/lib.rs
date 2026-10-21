@@ -55,6 +55,10 @@ pub struct AppSettings {
     /// Recommend at most one uninstalled skill when the user sends a message
     /// (PRD v1.6 §3). **On by default**; the user can turn it off in Settings.
     pub skill_recommend: bool,
+    /// Continue, on the next launch, the conversations a run was interrupted in
+    /// when the app was closed. On by default: the embedded Agent dies with the
+    /// app, so without this the work stops until the user types "继续".
+    pub auto_resume_interrupted: bool,
 }
 
 /// A partial update: only `Some` fields are written.
@@ -73,6 +77,7 @@ pub struct UpdateAppSettingsInput {
     pub title_language: Option<String>,
     pub community_edition: Option<bool>,
     pub skill_recommend: Option<bool>,
+    pub auto_resume_interrupted: Option<bool>,
 }
 
 pub const KEY_APPROVAL_TIER: &str = "approval_tier";
@@ -88,6 +93,7 @@ pub const KEY_AUTO_TITLE_FIRST_TURN: &str = "auto_compact_first_turn";
 pub const KEY_TITLE_LANGUAGE: &str = "title_language";
 pub const KEY_COMMUNITY_EDITION: &str = "community_edition";
 pub const KEY_SKILL_RECOMMEND: &str = "skill_recommend";
+pub const KEY_AUTO_RESUME_INTERRUPTED: &str = "auto_resume_interrupted";
 pub const KEY_DEVICE_ID: &str = "device_id";
 
 /// Errors from reading, validating or writing the settings document.
@@ -264,6 +270,12 @@ pub const SETTINGS: &[Setting] = &[
         kind: ValueKind::Bool,
         help: "Recommend one uninstalled skill per conversation",
     },
+    Setting {
+        key: "autoResumeInterrupted",
+        stored: KEY_AUTO_RESUME_INTERRUPTED,
+        kind: ValueKind::Bool,
+        help: "Continue interrupted conversations when the app opens again",
+    },
 ];
 
 /// The `Setting` for a key, or `None` when this crate does not know it.
@@ -421,6 +433,7 @@ pub fn defaults() -> AppSettings {
         title_language: "en".to_string(),
         community_edition: false,
         skill_recommend: true,
+        auto_resume_interrupted: true,
     }
 }
 
@@ -479,6 +492,9 @@ pub fn read(conn: &Connection) -> Result<AppSettings, Error> {
     let skill_recommend = read_value(conn, KEY_SKILL_RECOMMEND)?
         .map(|value| value == "true")
         .unwrap_or(true); // On by default (PRD v1.6 §3); the Settings toggle opts out.
+    let auto_resume_interrupted = read_value(conn, KEY_AUTO_RESUME_INTERRUPTED)?
+        .map(|value| value == "true")
+        .unwrap_or(true); // On by default: closing the app should not end the work.
     Ok(AppSettings {
         approval_tier,
         hidden_models,
@@ -491,6 +507,7 @@ pub fn read(conn: &Connection) -> Result<AppSettings, Error> {
         title_language,
         community_edition,
         skill_recommend,
+        auto_resume_interrupted,
     })
 }
 
@@ -570,6 +587,14 @@ pub fn apply(
     if let Some(skill_recommend) = input.skill_recommend {
         write_value(conn, KEY_SKILL_RECOMMEND, bool_str(skill_recommend), now)?;
     }
+    if let Some(auto_resume_interrupted) = input.auto_resume_interrupted {
+        write_value(
+            conn,
+            KEY_AUTO_RESUME_INTERRUPTED,
+            bool_str(auto_resume_interrupted),
+            now,
+        )?;
+    }
     read(conn)
 }
 
@@ -647,6 +672,7 @@ mod tests {
             title_language: None,
             community_edition: Some(true),
             skill_recommend: None,
+            auto_resume_interrupted: None,
         }
     }
 
@@ -744,6 +770,7 @@ mod tests {
                 "titleLanguage": input.title_language,
                 "communityEdition": input.community_edition,
                 "skillRecommend": input.skill_recommend,
+                "autoResumeInterrupted": input.auto_resume_interrupted,
             });
             let set: Vec<&str> = serialized
                 .as_object()

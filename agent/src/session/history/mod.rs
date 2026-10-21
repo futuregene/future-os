@@ -7,6 +7,7 @@ mod paging;
 mod recall;
 mod recovery;
 
+pub(crate) use recovery::PROJECTION_VERSION;
 pub(super) use recovery::{ensure_history_index, mark_history_index_ready, with_history_index};
 
 pub(super) use display_index::{

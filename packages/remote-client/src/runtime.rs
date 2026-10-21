@@ -1230,14 +1230,15 @@ impl Client {
     /// The state a transport failure leaves behind, so a test can drive "a connect
     /// found a retry loop and replaced it" without first having to induce the
     /// failure and wait for the loop to be installed.
-    pub async fn install_supervisor_for_test(&self, desktop_id: &str) {
+    pub async fn install_supervisor_for_test(&self, desktop_id: &str) -> TaskHandle {
+        // Register before the task can attempt a connection. A transient
+        // failure otherwise sees no owner and starts a second retry loop.
+        let mut state = self.inner.state.lock().await;
         let handle = self.spawn_supervisor(desktop_id.to_string(), None);
-        self.inner
-            .state
-            .lock()
-            .await
+        state
             .supervisors
-            .insert(desktop_id.to_string(), handle);
+            .insert(desktop_id.to_string(), handle.clone());
+        handle
     }
     /// Renew the grant and persist it.
     ///

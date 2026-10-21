@@ -28,12 +28,14 @@ vi.mock("./GeneralPage", () => ({
       data-bell={String(props.bellOnComplete)}
       data-auto-upgrade={String(props.autoUpgradeSkills)}
       data-skill-recommend={String(props.skillRecommend)}
+      data-auto-resume={String(props.autoResumeInterrupted)}
     >
       <button data-approval-manual onClick={() => (props.onChangeApprovalTier as (v: string) => void)("manual")}>approval</button>
       <button data-toggle-title onClick={() => (props.onToggleAutoTitleFirstTurn as (v: boolean) => void)(false)}>title</button>
       <button data-toggle-bell onClick={() => (props.onToggleBellOnComplete as (v: boolean) => void)(false)}>bell</button>
       <button data-toggle-upgrade onClick={() => (props.onToggleAutoUpgradeSkills as (v: boolean) => void)(true)}>upgrade</button>
       <button data-toggle-recommend onClick={() => (props.onToggleSkillRecommend as (v: boolean) => void)(false)}>recommend</button>
+      <button data-toggle-resume onClick={() => (props.onToggleAutoResumeInterrupted as (v: boolean) => void)(false)}>resume</button>
     </div>
   ),
 }));
@@ -95,6 +97,7 @@ const APP_SETTINGS: AppSettings = {
   communityEdition: true,
   hiddenModels: ["deepseek/deepseek-chat"],
   skillRecommend: false,
+  autoResumeInterrupted: true,
 };
 
 const roots: { root: ReturnType<typeof createRoot>; container: HTMLElement }[] = [];
@@ -291,7 +294,7 @@ describe("settingsDialog dev-only environment tab", () => {
     const { container } = mount();
 
     expect(navLabels(container)).not.toContain("Environment");
-    expect(navLabels(container)).toEqual(["General", "Account", "Check for updates", "About", "Providers", "Models", "Reset"]);
+    expect(navLabels(container)).toEqual(["General", "Keyboard shortcuts", "Account", "Check for updates", "About", "Providers", "Models", "Reset"]);
   });
 
   it("shows the environment tab (and its community-edition section) on a dev build", () => {
@@ -391,6 +394,7 @@ describe("settingsDialog settings wiring", () => {
       container.querySelector<HTMLButtonElement>("[data-toggle-bell]")!.click();
       container.querySelector<HTMLButtonElement>("[data-toggle-upgrade]")!.click();
       container.querySelector<HTMLButtonElement>("[data-toggle-recommend]")!.click();
+      container.querySelector<HTMLButtonElement>("[data-toggle-resume]")!.click();
     });
 
     expect(onChangeSettings.mock.calls.map(([patch]) => patch)).toEqual([
@@ -399,6 +403,7 @@ describe("settingsDialog settings wiring", () => {
       { bellOnComplete: false },
       { autoUpgradeSkills: true },
       { skillRecommend: false },
+      { autoResumeInterrupted: false },
     ]);
   });
 

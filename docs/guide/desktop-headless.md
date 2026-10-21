@@ -166,19 +166,26 @@ future remote devices use <id|#>       # choose the one in control
   the book is edited here and the device is served until its next credential
   refresh. A revoke that cannot be delivered is queued for the next Desktop to
   retry; the local unpair still happens.
-- `use` writes the same pointer the window's "Let this control" writes. With a
-  Desktop running, control is an in-memory decision (a device asking to take over
-  moves it too), so a running Desktop keeps its current controller and the written
-  value applies at the next start.
-- `list` and `use` read and write `~/.future/remote_pairings.json` (an older
-  single-pairing file is read as one slot), so they need no running Desktop and,
-  on a self-hosted relay, no account.
-- `add` and `remove` are the exceptions, because the running process is what
-  actually serves a device. An invitation is only usable while the bridge for that
-  pairing is connected, and a removal only takes effect now if that bridge is
-  stopped, so both ask the running Desktop — window or headless — and carry its
-  answer back. `add` prints the invitation it returns as a QR code and link in the
-  terminal that asked. Existing devices stay paired; this adds beside them.
+- `use` writes the same pointer the window's "Let this control" writes, and with a
+  Desktop running it also asks it to hand the machine over: control there is an
+  in-memory decision (a device asking to take over moves it too), so a takeover is
+  what makes the choice apply now rather than at the next start. The Desktop
+  publishes the new controller, stands the previous one down and stores the same
+  pointer. A device this Desktop has no bridge for cannot be handed the machine —
+  there is no channel to send it commands — and the choice is still recorded and
+  applies when the Desktop next starts serving. A device whose bridge is up but
+  whose app is closed is handed the machine too, and the answer says that nothing
+  will command it until it reconnects.
+- `list` reads and `use` writes `~/.future/remote_pairings.json` (an older
+  single-pairing file is read as one slot), so both work with no running Desktop
+  and, on a self-hosted relay, no account.
+- `add` and `remove` (and the immediate half of `use`) are the exceptions, because
+  the running process is what actually serves a device. An invitation is only
+  usable while the bridge for that pairing is connected, and a removal only takes
+  effect now if that bridge is stopped, so all three ask the running Desktop —
+  window or headless — and carry its answer back. `add` prints the invitation it
+  returns as a QR code and link in the terminal that asked. Existing devices stay
+  paired; this adds beside them.
   `remove --all` followed by `add` is how a machine's pairing is replaced, and the
   `add` stops any stale bridge left by the removal before minting the replacement.
 

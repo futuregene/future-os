@@ -326,3 +326,68 @@ mod shared_credentials;
 
 #[path = "shared_recovery_tests.rs"]
 mod shared_recovery;
+
+// Application-independent cases migrated from Host remote_peer. Each owns
+// its Client and memory credential book; no HOME/store/bridge fixture.
+#[tokio::test]
+async fn a_catalogue_reply_that_is_not_an_object_is_refused() {
+    let client = Client::new(Arc::new(MemoryHost::default()));
+    for reply in [
+        serde_json::json!([1, 2, 3]),
+        serde_json::json!("a string"),
+        serde_json::Value::Null,
+    ] {
+        let error = client
+            .stamp_live("desktop_any", reply.clone())
+            .await
+            .expect_err("a non-object reply cannot be stamped");
+        assert_eq!(error.to_string(), "peer_reply_not_an_object", "{reply}");
+    }
+}
+
+#[tokio::test]
+async fn disconnect_aborts_the_supervisor() {
+    let client = Client::new(Arc::new(MemoryHost::default()));
+    client.install_supervisor_for_test("desktop_a").await;
+    client.disconnect("desktop_a").await;
+    assert!(
+        client.supervisor_count().await == 0,
+        "the supervisor must not outlive an explicit disconnect"
+    );
+}
+
+#[tokio::test]
+async fn connecting_an_unknown_host_is_an_error_not_an_invention() {
+    let host = Arc::new(MemoryHost::default());
+    host.upsert(creds()).unwrap();
+    let client = Client::new(host);
+    let error = client
+        .connect("desktop_nobody")
+        .await
+        .expect_err("an unpaired host cannot connect");
+    assert!(error.to_string().contains("peer_not_paired"), "{error}");
+}
+
+#[tokio::test]
+async fn unpairing_an_unknown_host_is_a_no_op() {
+    let host = Arc::new(MemoryHost::default());
+    host.upsert(creds()).unwrap();
+    let client = Client::new(host);
+    let error = client
+        .unpair("desktop_nobody")
+        .await
+        .expect_err("there is nothing to revoke");
+    assert!(error.to_string().contains("peer_not_paired"), "{error}");
+}
+
+#[tokio::test]
+async fn a_catalogue_read_for_an_unpaired_host_fails() {
+    let host = Arc::new(MemoryHost::default());
+    host.upsert(creds()).unwrap();
+    let client = Client::new(host);
+    let error = client
+        .sessions("desktop_nobody")
+        .await
+        .expect_err("an unpaired host has no catalogue");
+    assert!(error.to_string().contains("peer_not_paired"), "{error}");
+}

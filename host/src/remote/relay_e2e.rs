@@ -21,12 +21,15 @@
 //! nats-server -c /tmp/relay/nats.conf
 //! future relay serve --config /tmp/relay/relay.json
 //! RELAY_E2E_RELAY_URL=http://127.0.0.1:8099 \
-//!   cargo test -p futureos --lib remote::relay_e2e -- --ignored --nocapture
+//!   cargo test -p future-host --lib remote::relay_e2e -- --ignored --nocapture
 //! ```
 //!
-//! This is a `cfg(test)` build, so the broker may be plaintext — the same
-//! carve-out `remote/real_network.rs` uses. A release build refuses a non-TLS
-//! relay, which is what a deployment gets.
+//! This is a `cfg(test)` build, so the broker may be plaintext. That needs no
+//! test-only carve-out: `connect_nats` waives required TLS for exactly one case
+//! — a relay-issued pairing (`control_url.is_some()`) whose endpoint is
+//! `nats://` — and keeps verified TLS for the Future platform and for any
+//! `tls://` endpoint (`future_remote_server::connect_nats`, `plaintext_relay`).
+//! A release build against this same relay behaves the same way.
 
 #![cfg(test)]
 
@@ -233,7 +236,14 @@ async fn wait_for_room_count(relay: &str, expected: u64, budget: Duration) -> bo
 }
 
 async fn rooms_at(relay: &str) -> u64 {
-    let health: serde_json::Value = reqwest::get(format!("{relay}/v1/health"))
+    // The host's own client, not a fresh `reqwest::get`: a relay that serves its
+    // API from a private CA (`FUTURE_RELAY_CA`) also needs that root here, or
+    // this probe fails while the code under test would not. The test exists to
+    // exercise shipping behaviour, so it asks with shipping trust.
+    let health: serde_json::Value = crate::remote_platform::http_client()
+        .expect("HTTP client")
+        .get(format!("{relay}/v1/health"))
+        .send()
         .await
         .expect("relay health")
         .json()
@@ -257,7 +267,8 @@ async fn describe_room(relay: &str, pair_id: &str) -> serde_json::Value {
     let signature = key
         .sign(super::relay::canonical_request("GET", &path, timestamp, &[]).as_bytes())
         .expect("sign the request");
-    let response = reqwest::Client::new()
+    let response = crate::remote_platform::http_client()
+        .expect("HTTP client")
         .get(format!("{relay}{path}"))
         .header("x-future-public-key", key.public_key())
         .header("x-future-timestamp", timestamp.to_string())

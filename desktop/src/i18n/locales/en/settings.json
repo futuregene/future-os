@@ -18,19 +18,23 @@
     "large": "Large",
     "xlarge": "Extra large"
   },
+  "finalAnswerOnly": {
+    "title": "Show only the final answer",
+    "description": "Once an answer settles, fold its reasoning, tool calls and notes into one row and keep the final answer. Work is still shown while it streams; “Show process” opens it again."
+  },
   "approvalTier": {
     "title": "Approval mode",
     "manual": "Manual",
     "sandbox": "Sandboxed",
     "sandboxChecking": "Sandboxed (checking)",
     "sandboxUnavailable": "Sandboxed (unavailable)",
-    "off": "Unrestricted",
+    "off": "Full access",
     "description": {
       "manual": "File access follows approval rules; allowlisted read-only commands run automatically, other commands ask. No OS sandbox.",
       "sandbox": "Commands run in the macOS sandbox and ask for approval when needed.",
       "sandboxWindows": "Commands run with Windows write protection and ask for approval when needed.",
       "sandboxLinux": "Commands run in the Linux sandbox and ask for approval when needed.",
-      "off": "No prompts, no sandbox — everything runs.",
+      "off": "No prompts, no sandbox — every command runs with full access to this machine.",
       "auto": "Automatically reviews actions with sandbox protection."
     },
     "fallbackNotice": "Sandbox protection is unavailable (diagnostic: {{code}}). Switched to Manual mode: approved or allowlisted commands run without an OS sandbox.",
@@ -109,6 +113,7 @@
     },
     "tabs": {
       "general": "General",
+      "shortcuts": "Keyboard shortcuts",
       "account": "Account",
       "update": "Check for updates",
       "about": "About",
@@ -307,5 +312,9 @@
     "followCopyName": "Copy account name",
     "followCopied": "Copied",
     "followReadArticle": "Read an article"
+  },
+  "autoResumeInterrupted": {
+    "title": "Continue interrupted conversations",
+    "description": "Closing FutureOS stops the conversations that were running (the agent runs inside the app). When on, the next launch continues them by itself; when off, they stay interrupted until you continue them."
   }
 }

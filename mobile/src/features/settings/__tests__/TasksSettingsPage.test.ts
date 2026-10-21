@@ -29,6 +29,10 @@ const mockRemote = {
   getTask: jest.fn(async () => ({ ...detail })),
   listTaskRuns: jest.fn(async () => [...runs]),
   listSettingsModels: jest.fn(async () => [...models]),
+  listProviders: jest.fn(async () => ({
+    builtin: [{ id: "future", name: "Future 平台", baseUrl: "", hasApiKey: true, modelCount: models.length, requiresBaseUrl: false }],
+    custom: [],
+  })),
   updateTask: jest.fn<Promise<unknown>, unknown[]>(async () => ({ ...detail })),
   createTask: jest.fn<Promise<unknown>, unknown[]>(async () => ({ ...detail })),
   deleteTask: jest.fn(async () => undefined),
@@ -515,7 +519,7 @@ test("creates a chat task that needs no directory and returns to the list", asyn
 
   await act(async () => input("tasks.form.name").props.onChangeText("weekly digest"));
   await act(async () => input("tasks.form.prompt").props.onChangeText("summarise the week"));
-  await act(async () => chip("DeepSeek V4 Pro").props.onPress());
+  await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
   await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
   await act(async () => chip("tasks.triggerMode.daily").props.onPress());
   await act(async () => button("tasks.form.save").props.onPress());
@@ -559,7 +563,7 @@ test("refuses to save a task that cannot run, and says which field is missing", 
   // The model and the thinking level are the user's explicit decisions: the
   // form asks for both rather than inheriting an app default.
   expect(texts()).toContain("tasks.form.problem.model");
-  await act(async () => chip("gpt-5").props.onPress());
+  await act(async () => chip("gpt-5 · openai").props.onPress());
   expect(texts()).toContain("tasks.form.problem.thinking");
   await act(async () => chip("tasks.thinkingLabels.medium").props.onPress());
 
@@ -577,7 +581,7 @@ test("asks for a directory only for a workspace conversation, and is refused wit
   await act(async () => button("tasks.new").props.onPress());
   await act(async () => input("tasks.form.name").props.onChangeText("named"));
   await act(async () => input("tasks.form.prompt").props.onChangeText("work"));
-  await act(async () => chip("DeepSeek V4 Pro").props.onPress());
+  await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
   await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
   expect(button("tasks.form.save").props.disabled).toBe(false);
 
@@ -614,7 +618,7 @@ test("reports a create that the desktop refused, and keeps the draft", async () 
   await act(async () => button("tasks.new").props.onPress());
   await act(async () => input("tasks.form.name").props.onChangeText("doomed"));
   await act(async () => input("tasks.form.prompt").props.onChangeText("work"));
-  await act(async () => chip("DeepSeek V4 Pro").props.onPress());
+  await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
   await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
   mockRemote.createTask.mockRejectedValueOnce(new Error("desktop refused"));
   await act(async () => button("tasks.form.save").props.onPress());
@@ -634,10 +638,10 @@ test("edits the name, the model and the thinking level", async () => {
 
   // The picker offers the enabled models — the same list the composer uses.
   // A catalogue id is only unique within its provider, so the pair is what the
-  // task stores.
-  expect(chip("DeepSeek V4 Pro")).toBeTruthy();
-  expect(chip("gpt-5")).toBeTruthy();
-  await act(async () => chip("gpt-5").props.onPress());
+  // task stores. Each chip names its vendor (see the picker change).
+  expect(chip("DeepSeek V4 Pro · Future 平台")).toBeTruthy();
+  expect(chip("gpt-5 · openai")).toBeTruthy();
+  await act(async () => chip("gpt-5 · openai").props.onPress());
   await act(async () => chip("tasks.thinkingLabels.low").props.onPress());
   await act(async () => button("tasks.form.save").props.onPress());
 
@@ -655,7 +659,8 @@ test("offers only the enabled models, and keeps a disabled one selectable", asyn
   await openTask();
 
   // A disabled model is not in the enabled list, but a task already pointing at
-  // it keeps it on screen — editing another field must not rewrite the task.
+  // it keeps it on screen (by its bare key, without a vendor suffix) — editing
+  // another field must not rewrite the task.
   expect(chip("openai/gpt-5")).toBeTruthy();
   expect(chip("openai/gpt-5").props.accessibilityState.selected).toBe(true);
   await act(async () => input("tasks.form.name").props.onChangeText("kept"));
@@ -667,9 +672,9 @@ test("offers only the enabled models, and keeps a disabled one selectable", asyn
   // Re-open the form: a model the user has hidden is not offered as a new
   // choice, even though the task keeps the one it already points at.
   await act(async () => settingsToggle().props.onPress());
-  expect(chip("DeepSeek V4 Pro")).toBeTruthy();
+  expect(chip("DeepSeek V4 Pro · Future 平台")).toBeTruthy();
   expect(tree.root.findAll(node => node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function")
-    .filter(node => node.findAllByType(Text).some(text => text.props.children === "openai/gpt-5"))).toHaveLength(1);
+    .filter(node => node.findAllByType(Text).some(text => String(text.props.children).includes("openai/gpt-5")))).toHaveLength(1);
 });
 
 test("a task without a model cannot be saved until one is chosen", async () => {
@@ -681,7 +686,7 @@ test("a task without a model cannot be saved until one is chosen", async () => {
   expect(texts()).toContain("tasks.form.problem.model");
   expect(button("tasks.form.save").props.disabled).toBe(true);
 
-  await act(async () => chip("DeepSeek V4 Pro").props.onPress());
+  await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
   expect(texts()).toContain("tasks.form.problem.thinking");
   await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
   expect(button("tasks.form.save").props.disabled).toBe(false);
@@ -708,7 +713,7 @@ test("creates a task that starts disabled", async () => {
   await act(async () => button("tasks.new").props.onPress());
   await act(async () => input("tasks.form.name").props.onChangeText("later"));
   await act(async () => input("tasks.form.prompt").props.onChangeText("work"));
-  await act(async () => chip("DeepSeek V4 Pro").props.onPress());
+  await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
   await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
   await act(async () => chip("tasks.form.disabled").props.onPress());
   await act(async () => button("tasks.form.save").props.onPress());
@@ -882,6 +887,7 @@ test("keys a model without a provider by its bare id", async () => {
 
   await act(async () => firstTask().props.onPress());
   await act(async () => settingsToggle().props.onPress());
+  // No provider means no vendor suffix: the label is the bare id.
   await act(async () => chip("bare-model").props.onPress());
   await act(async () => button("tasks.form.save").props.onPress());
   expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({ modelId: "bare-model" }));

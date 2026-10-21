@@ -327,6 +327,27 @@ session-level `session_idx`, a cross-run `run_sequence`, and an `event_id`; GUI
 observers verify by cursor before fanning out (replay dedup, gaps trigger
 reconnect replay), guaranteeing no disorder and no duplicates.
 
+The session scope (`run_id` empty, `epoch = -1`, `session_idx` ordered) is a
+second, never-compacted log: a standalone manual compaction and every settings
+change between runs land there. A newly created observer starts at
+`session_cursor = -1` and therefore reads that log from its beginning — which is
+what makes a cold observer catch up, and also what makes a replayed event look
+identical to a live one. Two consequences are load-bearing:
+
+- The replay lane is narrowed: `compaction_*` is not forwarded to the webview as
+  `agent-event`. A client turns that payload into a transcript divider it
+  appends at the end of the message list, so a replayed copy would draw a
+  compaction from days ago below the newest message — and it disappears on the
+  next thread open, because the transcript already draws that compaction where
+  it happened. Everything else in the whitelist restates a value
+  (`model_changed`, `cwd_changed`, `permission_level_changed`, …) and converges
+  on the last copy, so replaying it is harmless.
+- The NATS mirror (`publish_event`) still publishes replayed events. It has no
+  `event_id` de-duplication, so remote clients may receive the same replayed
+  `compaction_*` sequence. That is an inference from reading the code, not
+  end-to-end verified; treat it as open when working on the phone's compaction
+  markers.
+
 Event types (consistent with the proto vocabulary):
 
 - `agent_start` / `agent_end` — Run lifecycle (`agent_end` carries the
@@ -487,6 +508,19 @@ Notes:
   the Agent was still working on that run (an accepted-but-queued prompt returns
   its invoke response at the ack) is restored, or settled `completed` once the
   Agent has finished it. A user abort and a `completed` row are never re-read.
+- **A conversation the exit interrupted continues on the next launch.** The
+  Agent is embedded, so quitting ends the run it was streaming: its journal keeps
+  a `run_started` with no terminal, `get_run_state` reports it as
+  `interruptedRun`, and the local row is left non-terminal. Once per launch,
+  after the Agent is reachable, `resume_interrupted_runs_at_launch` asks the
+  Agent about each conversation's **newest** run and, only when the answer is
+  that marker (not a live/queued run the watchdog reattaches, not a durable
+  terminal), settles the row `cancelled`+`interrupted` and submits one
+  continuation prompt through the headless pipeline — the same path a prompt
+  from a paired phone takes, with `runs.trigger_message_id = resume:<run id>` so
+  a second pass finds the continuation instead of asking again. Runs older than
+  a week, conversations parked on an approval, and every conversation when the
+  `autoResumeInterrupted` setting is off are skipped.
 - If an approval later produces file changes, Review Changeset shows the actual
   modification comparison.
 - P2 introduces structured `action_payload` and `sandbox_boundary` fields
@@ -1205,7 +1239,7 @@ are not the same as the public history RPC's optional fields.
 | `message_blocks` | PK `(session_id,entry_position,ordinal)`; `kind/text/tool_call_id/tool_name/arguments_json/is_error/metadata_json` | composite foreign key cascades to the entry; ordinal non-negative, is_error NULL/0/1. `message_blocks_tool(session_id,tool_call_id,kind)` serves tool-result retrieval; run isolation via entries joins |
 | `runs` | PK `(session_id,run_id)`; `status/run_sequence/epoch/started_at_ms/completed_at_ms/error` | foreign key cascades to session; `runs_status(session_id,status,run_sequence)` serves status queries. Input/output/cache tokens, duration, and input/cache baselines are independent columns; baselines only convert cumulative usage into per-round usage |
 | `run_events` | INTEGER PK `sequence`; `session_id/run_id/epoch/idx/event_id/payload` | foreign key cascades to session; unique `(session_id,run_id,idx,epoch)` prevents coordinate conflicts; non-empty custom event_ids use the `(session_id,event_id)` partial unique index. sequence is the physical write order, not a client cursor |
-| `history_shapes` | PK `(session_id,position)`; `payload` | foreign key cascades to the entry; body-free derived structures for pairing, dedup, placeholders, and run annotations |
+| `history_shapes` | PK `(session_id,position)`; `payload` | foreign key cascades to the entry; body-free derived structures for pairing, dedup, placeholders, run annotations, and a compaction entry's checkpoint (the divider's identity, counts and phase — the projection's input, kept whole so an indexed page cannot disagree with the direct projection) |
 | `history_display` | PK `(session_id,ordinal)`; `source_position/is_user/payload` | foreign key cascades to session; `history_users(session_id,is_user,ordinal)` serves reverse-order whole-round paging. source_position nullable, meaning a synthetic placeholder; not a second body copy |
 | `legacy_imports` | PK `session_id`; `status/fingerprint/error_file/error_line/error_kind/warnings` | status limited to imported/skipped/deleted; per-session import result and anti-resurrection tombstone, no bodies |
 | `storage_meta` | PK `key`; `value` | database identity, restore generation and database-level control flags |

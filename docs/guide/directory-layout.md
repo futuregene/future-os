@@ -51,7 +51,7 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 ├── windows-capabilities.json  # Windows sandbox ACL cleanup metadata
 ├── run/
 │   ├── agent.sock             # Unix IPC endpoint (not used by Windows)
-│   └── remote-control/        # transient device requests (`future remote devices add|remove`)
+│   └── remote-control/        # transient device requests (`future remote devices add|remove|use`)
 └── bin/                       # CLI / agent links: `future`, `future-agent` (see below)
 ```
 
@@ -218,8 +218,10 @@ Owned by the Tauri desktop app (see `desktop/`):
   process exits, so a launch with no flag always means the Future platform. A
   file left by an older build is inert and safe to delete; each pairing records
   the relay that issued it in `remote_pairings.json` (`controlUrl`), so official
-  and self-hosted pairings coexist. See
-  [self-hosted-relay.md](self-hosted-relay.md).
+  and self-hosted pairings coexist. This is the *client's* leftover file: a
+  `relay.json` inside a `future relay init --dir` directory is a different file
+  — the relay server's own settings, still written and read by
+  `future relay serve`. See [self-hosted-relay.md](self-hosted-relay.md).
 - `relay-root-certs.pem` — PEM snapshot of the platform trust anchors, used
   only as the trust store for the remote bridge's TLS connection to the relay.
   Rewritten on every connect, and safe to delete: the next connect rebuilds it.
@@ -239,8 +241,9 @@ Nothing here is data: it is how a running process and a terminal find each other
 
 - `agent.sock` — the agent's Unix IPC endpoint (Windows uses a named pipe; and
   with `--grpc-addr`, TCP). See the endpoint section above.
-- `remote-control/` — the request/reply files `future remote devices add|remove`
-  uses to ask the running Desktop to pair a device, or to stop serving one. A
+- `remote-control/` — the request/reply files `future remote devices add|remove|use`
+  uses to ask the running Desktop to pair a device, stop serving one, or hand the
+  machine to one. A
   request names a reply path
   the asking process created for itself in the OS temp directory, so the
   directory holds no secrets beyond invitations that are about to be printed, and

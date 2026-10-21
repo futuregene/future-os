@@ -2,7 +2,7 @@
 //! tokens, and the suspended Windows process driver.
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -245,8 +245,32 @@ fn spawn_with_plan_inner(
         }
     };
     let (program, args) = shell_invocation(command);
-    let args = args.into_iter().map(OsString::from).collect::<Vec<_>>();
-    let mut child = RestrictedChild::spawn(&token, OsStr::new(program), &args, cwd, env_overrides)?;
+    // PowerShell's constrained language mode can reject the encoding setter.
+    // Configure the private console before starting PowerShell, so its first
+    // stdout writer already uses UTF-8. The fixed flags and base64 command from
+    // shell_invocation contain no cmd metacharacters or user command text.
+    let bootstrap = format!("chcp 65001 >nul && {program} {}", args.join(" "));
+    let args = [
+        OsString::from("/d"),
+        OsString::from("/s"),
+        OsString::from("/c"),
+        OsString::from(bootstrap),
+    ];
+    let system_root = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "absolute SystemRoot is required")
+        })?;
+    // Do not let CreateProcess search an untrusted cwd for the bootstrap.
+    let bootstrap_program = system_root.join("System32").join("cmd.exe");
+    let mut child = RestrictedChild::spawn(
+        &token,
+        bootstrap_program.as_os_str(),
+        &args,
+        cwd,
+        env_overrides,
+    )?;
     child.attach_capability_lease(lease);
     Ok(child)
 }

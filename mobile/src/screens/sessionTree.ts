@@ -72,6 +72,22 @@ export type CatalogRow =
      */
     desktopId?: string;
   }
+  /**
+   * A caption inside the list rather than a row in it: the recency page's two
+   * stretches ("active", then the rest).
+   *
+   * It is a row of the same list on purpose — the FlatList scrolls it with the
+   * conversations, and a sticky header would be a second scrolling structure for
+   * two short captions.
+   */
+  | {
+    kind: "section";
+    key: string;
+    /** What the caption says; the component translates it. */
+    titleKey: "sessions.activeSection" | "sessions.earlierSection";
+    /** How many conversations hang under it, as drawn. */
+    count: number;
+  }
   | {
     kind: "session";
     key: string;
@@ -97,6 +113,14 @@ export type CatalogRow =
      * row that lost its source would be opened against the wrong machine.
      */
     desktopId?: string;
+    /**
+     * Which stretch of the recency page a row belongs to.
+     *
+     * Only that page sets it: its two stretches are drawn by one row renderer,
+     * and the screenshot scenario addresses rows by it (how many the window
+     * draws). The other two pages have no such split.
+     */
+    section?: "active" | "earlier";
     /**
      * Whether a heading above this row already names its machine.
      *

@@ -238,7 +238,9 @@ fn the_idle_reclaim_reports_a_lock_it_cannot_wait_for_and_then_recovers() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("worker.db");
     let store = Database::open(&path).unwrap();
-    store.db_call_filler("f", 40).unwrap();
+    // Only a nonempty freelist is needed. Keep the fixture small so Windows
+    // durable writes do not turn the idle-recovery assertion into a throughput test.
+    store.db_call_filler("f", 4).unwrap();
 
     // Preconditions (see the note above): with either of these false the reclaim
     // loop returns before the padding vacuum and the arm cannot be reached.

@@ -36,7 +36,37 @@ development and distribution maintenance.
 - Sessions support pin, rename, single delete, and multi-select batch delete;
   workspaces can be deleted wholesale (including their sessions; files inside
   the desktop's workspace directory are not deleted), and workspace
-  collapse state survives restarts.
+  collapse state survives restarts. In a batch, a pinned conversation is left
+  out on the **workspace** and **conversation** pages, where it is a shortcut
+  lifted above the groups and a group's select-all must not sweep it up — and is
+  an ordinary tickable row on the **recent** page, which opens no shortcut
+  section of its own.
+- The session list opens on the **recent** page (`lastTab`), and returns there
+  when a chat is closed. Its three pages are workspaces (its conversations filed
+  under their workspace), conversations (the ones in no workspace), and recent
+  (every conversation, workspaces included, newest reply first). The recent page
+  splits into "active" — running, queued, or waiting on the reader's approval,
+  which is *not* streaming and would otherwise be filed under "earlier" — above
+  "earlier". The two stretches use different clocks: active is ordered by when
+  each conversation **started** (`createdAt`, falling back to recency on a host
+  that does not send it) because a running turn rewrites the last-reply stamp
+  every second and re-ranked its row under the reader's thumb; earlier stays on
+  the last reply. A pin keeps its marker but not its place, and a fork is a row
+  of its own (the page draws no tree). A row's second
+  line names its workspace (or says "chat"), with the age on the right (just now
+  / minutes / hours / yesterday / days / a date). A search flattens the page,
+  drops its captions, and ignores the window below. "Earlier" draws twenty rows
+  at a time, with a "show N more" row under them opening the next stretch; the
+  caption counts the whole stretch rather than the drawn part, so "Earlier 47"
+  with twenty rows and "show 27 more" agree. Active is never windowed — that is
+  what the reader came for — and a caption is drawn only over rows that exist.
+- The session list's header is two rows: a desktop picker (a chosen machine shows
+  its own glyph and name, the name on up to two lines, and the row takes a line
+  of its own at the reader's largest text size), the list-actions menu `⋯`
+  (search, batch selection), the connection dot and settings; the row under it
+  belongs entirely to the page switch (workspaces / conversations). The search
+  field and the batch bar still replace that lower row, so the header — machine,
+  connection, settings — stays visible while typing or selecting.
 - The workspace picker in the new-conversation dialog can register a directory
   on the connected desktop as a workspace. The user types the host path (the
   phone has no folder picker for the desktop); the directory must already exist,
@@ -211,8 +241,11 @@ offline push.
   title column without covering the title).
   Workspace group headers use a 4px folder→name gap so the group name lines up
   with its first-level conversation titles.
-  The workspace and conversation lists are the two pages of one horizontal
-  swipe: left from workspaces into conversations, right back into workspaces.
+  The list's three pages are the pages of one horizontal swipe, and they form a
+  loop: workspaces → conversations → recency by dragging left, with both ends
+  wrapping (right from workspaces lands on recency, left from recency lands on
+  workspaces). A swipe still moves one page, so the loop never skips
+  conversations.
   A drag that is not clearly horizontal stays a list scroll, and the swipe is
   off while the toolbar is searching or selecting (the tab bar is hidden then,
   so the swipe would change mode unseen); the tabs themselves still switch on

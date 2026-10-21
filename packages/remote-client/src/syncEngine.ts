@@ -604,7 +604,7 @@ export class SyncEngine {
         // The run can finish between get_state and history. Its durable terminal
         // reply is newer evidence: never replace it with a cached active prefix.
         if (settledReply && activeRunId === targetRunId) activeRunId = "";
-        let base: TimelineState = { ...mergeLiveInto(history, lane.timeline), streaming: !!activeRunId, compacting: state.isCompacting === true };
+        let base: TimelineState = { ...mergeLiveInto(history, lane.timeline, targetRunId || activeRunId), streaming: !!activeRunId, compacting: state.isCompacting === true };
         // Refresh durable rows/attachments even on warm opens, but do not
         // download the already-proven active prefix again. Its projector and
         // visible items must be retained together, not just the cursor.
@@ -762,7 +762,7 @@ export class SyncEngine {
           ...stripped,
           // A snapshot can carry the same user_message already supplied by
           // durable history. Keep its authoritative row/attachments once.
-          items: mergeLiveInto(stripped, projected).items,
+          items: mergeLiveInto(stripped, projected, runId).items,
           liveRuns: new Map([...(stripped.liveRuns ?? []), ...(projected.liveRuns ?? [])]),
           seenEvents: new Set([...stripped.seenEvents, ...projected.seenEvents]),
           currentRunId: projected.currentRunId,
@@ -1084,8 +1084,22 @@ function retainRunPrefix(base: TimelineState, cached: TimelineState, runId: stri
  * the active run (optimistic bubbles, notices, approval cards) so they survive
  * the rebuild. Live messages already represented by a durable message of the
  * same role and run are dropped, even when their live and entry ids differ.
+ *
+ * `centredRunId` is the run this reconcile is about (the requested run, else the
+ * one `get_state` reports active). The history read is a contiguous tail, so a
+ * message from a run the window does not carry is older than everything in it:
+ * paging up serves it again, and appending it here claimed it was the newest
+ * thing on screen. Measured on a phone (2026-10-20): a 31-minute run streamed
+ * live, the app slept across newer exchanges, and the first refresh afterwards
+ * drew that old exchange *below* the newest one, so the tail of the transcript
+ * read backwards. What may still follow the window is the run in flight, whose
+ * rows the window cannot carry whole.
  */
-function mergeLiveInto(history: TimelineState, live: TimelineState | null): TimelineState {
+function mergeLiveInto(
+  history: TimelineState,
+  live: TimelineState | null,
+  centredRunId: string,
+): TimelineState {
   if (!live) return { ...history, streaming: history.streaming };
   // A durable checkpoint supersedes the live placeholder of the same
   // compaction wherever the placeholder landed (its frames never enter any
@@ -1097,6 +1111,13 @@ function mergeLiveInto(history: TimelineState, live: TimelineState | null): Time
   const historyMessageRuns = new Set(
     historyItems.flatMap((item) =>
       item.kind === "message" && item.runId ? [`${item.role}:${item.runId}`] : [],
+    ),
+  );
+  /** Every run the window carries, in any role: its prompt may be durable while
+   * the reply row is not (or arrives through a different subscription). */
+  const historyRuns = new Set(
+    historyItems.flatMap((item) =>
+      item.kind === "message" && item.runId ? [item.runId] : [],
     ),
   );
   // Keep only transient items the durable history does not carry: optimistic bubbles, notices,
@@ -1117,6 +1138,25 @@ function mergeLiveInto(history: TimelineState, live: TimelineState | null): Time
     ) {
       return false;
     }
+    // Same rule for a message whose run the window does not carry at all: it is
+    // older than the whole window (the window is a contiguous tail), so paging
+    // up is what brings it back. Only the run in flight — which the window
+    // cannot carry whole — and the window's own runs (their prompt may be
+    // durable before the reply row is) are drawn after the window. An empty
+    // window is not evidence of anything: a session with no durable rows keeps
+    // what it has. Nor is a prompt this client minted itself (`local:<id>`): it
+    // is the only record of a send whose durable row the window may not carry
+    // yet (a run still queued behind another), so it is local intent rather
+    // than a history row that paging already serves.
+    const staleMessageOutsideWindow =
+      historyItems.length > 0 &&
+      item.kind === "message" &&
+      !!item.runId &&
+      item.runId !== centredRunId &&
+      !historyRuns.has(item.runId) &&
+      item.streaming !== true &&
+      !(item.role === "user" && !item.id.startsWith("m_"));
+    if (staleMessageOutsideWindow) return false;
     return true;
   });
   const settledReplies = new Map(liveItems.flatMap(item =>

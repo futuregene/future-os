@@ -306,10 +306,11 @@ compaction is forbidden to touch. It is a dry run unless you pass `--yes`, only
 the Agent writes history, and an apply writes a lossless backup of the complete
 pre-reset entry list first and prints its path.
 
-One gap is worth knowing rather than discovering: **a never-run session stores a
-change only when it first runs.** A title or cwd on a session that already has a
-record is written immediately; one that has never produced an entry stores it
-with its first run, so a new session is absent from `session list` until it runs.
+One gap is worth knowing rather than discovering: **a never-run session is
+created with its metadata but no messages.** `future session new` persists the
+session row straight away, so it appears in `session list` immediately and a
+`session set` on it is stored at once; what it lacks is any conversation until
+its first run.
 
 Two commands spend or act rather than read, and are explicit for that reason:
 `future session title <id>` asks the session's model for a title (a model call —
@@ -349,6 +350,31 @@ A long or non-ASCII payload should be written to a file and passed as
 first: on Windows PowerShell 5.1 `Get-Content` decodes a BOM-less UTF-8 file
 with the ANSI code page, so what arrives in the other conversation is mojibake
 (the same wart as the `read`-tool-not-`Get-Content` rule for the shell).
+
+Delegation is the same machinery aimed at a conversation of your own — a
+sub-session, which users may also call a subagent, a sub-agent or 子agent/子代理:
+
+```sh
+future session new --parent <your-session-id> --name "<short task>" --json
+future run --no-wait --session <child> "<self-contained prompt>"
+```
+
+Recording the parent on the create command is what makes the child a child: the
+lineage exists even if its first run never happens, it is drawn under this
+conversation in the app, and the prompt that runs there is told it cannot
+delegate further. Everything in the section above — `--no-wait` and `wait`,
+`--steer`, `status`, `transcript`, provenance and intent — applies unchanged;
+`future session list --parent <id>` lists one session's children,
+`abort`/`delete` stop and remove one, and `future session approvals <child>`
+says whether a child is parked on an approval, which from the outside is
+indistinguishable from being slow.
+
+One jump is the limit, and it is enforced rather than asked for: a session that
+already has a parent cannot become one (`new_session` and `set_parent_session`
+both refuse), so a child cannot spawn a grandchild. Each hop re-summarises the
+hop below it, and past one hop the session that asked for the work can no longer
+check the answer against what it asked for. A user can still move a session out
+of a lineage deliberately, with `future session set <id> --parent ""`.
 
 Changing a setting changes how every later session behaves, so the skill treats
 it as the user's decision: state the old value and the new one, and make the
