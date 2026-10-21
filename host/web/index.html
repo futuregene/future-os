@@ -62,6 +62,8 @@
   }
   .srow:hover { background:#161a22; }
   .srow.active { background:#1b2436; box-shadow: inset 3px 0 0 #2b6cff; }
+  /* 键盘游标：方向键选中的行，尚未进入（未 active） */
+  .srow.cursor { outline:2px solid #5b9bff; outline-offset:-2px; }
   .srow .st { font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .srow .ss { font-size:11px; color:#6b7482; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   .hint { padding:16px 12px; color:#6b7482; font-size:12px; }
@@ -180,6 +182,11 @@ let nc = null, pair = "", session = "", bubble = null, thinkEl = null;
 let curRun = null; const seenEvents = new Set();
 const toolChips = new Map();
 let sessions = []; let sessionsSig = ""; // 最近一次 list_sessions 结果，用于标题查找 + 高亮
+// 键盘导航（方向键选行 → 回车进入 → 再回车聚焦输入框）
+// cursorSid 是游标所在会话，与已进入的 session 不是一回事：方向键只移动游标，
+// 不打开会话；回车才把游标所在的会话切到对话区。
+let cursorSid = "";
+let kbNav = false; // 用过方向键后才显示游标，鼠标操作时不引入额外的框
 let presence = null; // 桌面在线状态 + 每 session streaming
 let isStreaming = false; // 当前选中会话是否在流式中（从事件或 presence 推断）
 let sending = false;     // 正在等待 prompt 的 ack：防双击/超时重发产生重复消息
@@ -701,7 +708,8 @@ function renderSessionList() {
   if (!sessions.length) { box.innerHTML = `<div class="hint">暂无会话，点右上「新建」</div>`; return; }
   for (const s of sessions) {
     const row = document.createElement("div");
-    row.className = "srow" + (s.sessionId === session ? " active" : "");
+    row.className = "srow" + (s.sessionId === session ? " active" : "")
+      + (kbNav && s.sessionId === cursorSid ? " cursor" : "");
     row.dataset.sid = s.sessionId;
     const t = document.createElement("div"); t.className = "st";
     // presence 里有该 session 的 streaming 态 → 显示蓝点
@@ -748,6 +756,8 @@ async function selectSession(sid) {
   $("app").classList.add("show-chat"); // 移动端进入对话；宽屏无副作用
   // 高亮列表
   document.querySelectorAll(".srow").forEach((r) => r.classList.toggle("active", r.dataset.sid === sid));
+  cursorSid = sid; // 游标跟着进入的会话走，再次回车就能落到输入框
+  paintCursor();
   await loadHistory(sid);
   // Only backfill the in-progress run — completed runs are already fully rendered
   // by loadHistory (the agent persists the final assistant message). Replaying
@@ -757,6 +767,84 @@ async function selectSession(sid) {
   }
   await loadSessionState(sid); // 填充模型/思考等级选择器 + 显示重命名按钮
 }
+
+// ── 键盘导航：方向键选行 → 回车进入会话 → 再回车聚焦输入框 → Esc 退回列表 ──
+// 游标只负责「选」不负责「打开」：每移一行就发一轮 get_messages 没必要，所以
+// selectSession 仍然只在回车/点击时跑。
+const narrowPane = () => window.matchMedia("(max-width: 719px)").matches;
+// 窄屏是单栏切换（列表 ↔ 对话），宽屏两栏同显
+const listPaneVisible = () => !narrowPane() || !$("app").classList.contains("show-chat");
+const chatPaneVisible = () => !narrowPane() || $("app").classList.contains("show-chat");
+
+function paintCursor() {
+  document.querySelectorAll(".srow").forEach((r) => {
+    const on = kbNav && r.dataset.sid === cursorSid;
+    r.classList.toggle("cursor", on);
+    if (on) r.scrollIntoView?.({ block: "nearest" });
+  });
+}
+
+function moveCursor(delta) {
+  if (!sessions.length) return;
+  let i = sessions.findIndex((s) => s.sessionId === cursorSid);
+  // 还没有游标：从已进入的会话接着走，否则从列表头/尾开始
+  if (i < 0) i = sessions.findIndex((s) => s.sessionId === session);
+  if (i < 0) i = delta > 0 ? -1 : 0;
+  cursorSid = sessions[Math.max(0, Math.min(sessions.length - 1, i + delta))].sessionId;
+  kbNav = true;
+  paintCursor();
+}
+
+// 第一次回车：进入游标所在会话，只切到对话区、不聚焦输入框（移动端不会直接
+// 弹键盘）；会话已经进入了，回车才是「打开输入框」。
+function enterSessionOrComposer() {
+  const sid = sessions.some((s) => s.sessionId === cursorSid) ? cursorSid : "";
+  if (sid && sid !== session) { selectSession(sid); return; }
+  if (!chatPaneVisible()) { $("app").classList.add("show-chat"); return; }
+  const msg = $("msg");
+  if (msg.disabled) return;
+  msg.focus();
+}
+
+// 输入框里按 Esc：交还焦点（窄屏上同时收起软键盘），游标回到当前会话那一行，
+// 方向键重新可用——键盘进出对话区的入口（回车）与出口（Esc）就此对称。列表
+// 导航只在列表可见时成立，所以宽屏只失焦，窄屏退回列表（与「‹ 会话」同效）。
+function leaveComposer() {
+  const msg = $("msg");
+  if (document.activeElement === msg) msg.blur();
+  if (session) cursorSid = session; // 游标停在进入的会话上，箭头从这里继续走
+  kbNav = !!cursorSid;
+  if (!listPaneVisible()) $("app").classList.remove("show-chat");
+  paintCursor();
+}
+
+// 输入控件（输入框/下拉/按钮）拥有焦点时完全交给浏览器：textarea 里的 Enter
+// 仍是换行，发送仍是 Cmd/Ctrl+Enter。
+function controlsFocus(el) {
+  const tag = el?.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || !!el?.isContentEditable;
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+  // Esc 是「退出输入框」：必须在 controlsFocus 拦下之前处理，否则草稿框把一切
+  // 按键都占给浏览器。审批框的 Esc（拒绝）在 #log 里自己处理，不经过这里。
+  if (e.key === "Escape" && document.activeElement === $("msg")) {
+    e.preventDefault(); leaveComposer(); return;
+  }
+  if (controlsFocus(document.activeElement)) return;
+  // 对话区里自己处理按键的可聚焦元素（审批框的 Esc/Cmd+Enter、消息里的链接）
+  if (document.activeElement?.closest?.("#log")) return;
+  if (e.key === "ArrowDown" || e.key === "ArrowRight") {
+    if (!listPaneVisible()) return;
+    e.preventDefault(); moveCursor(1);
+  } else if (e.key === "ArrowUp" || e.key === "ArrowLeft") {
+    if (!listPaneVisible()) return;
+    e.preventDefault(); moveCursor(-1);
+  } else if (e.key === "Enter") {
+    e.preventDefault(); enterSessionOrComposer();
+  }
+});
 
 // P1c：若该会话正有一轮在进行，回放其缓冲事件（从 idx 0），补齐中途加入丢掉的前缀。
 // 事件带的 runId/idx 与实时事件一致，seenEvents 去重，实时流接着往下走。

@@ -1876,6 +1876,57 @@ describe("app shell collapsed-panel affordances", () => {
     });
 
     /**
+     * The list is one machine's, and the picker follows the conversation.
+     *
+     * A conversation can be opened from a place that knows only ids — a task
+     * run, the palette, a notification — and it is still a conversation on a
+     * machine. Leaving the picker on another one would put rows belonging to a
+     * machine the column is not talking to above the open conversation, which is
+     * exactly the "which machine am I on" question the picker exists to answer.
+     */
+    it("moves the device picker to the machine a conversation is opened on", () => {
+      mocks.remotePeers = {
+        catalogs: [],
+        peers: [{ desktopId: "desktop_a", name: "Studio iMac" }],
+      };
+      const view = mount(<AppShell />);
+      // The list opens on this machine: creating and opening both start from a
+      // device, and this one needs no connection to answer.
+      expect(rail().deviceFilter).toEqual({ desktopId: null, kind: "device" });
+
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+      expect(rail().deviceFilter).toEqual({ desktopId: "desktop_a", kind: "device" });
+
+      // And back again when the conversation is local.
+      act(() => rail().onSelectThread(thread("th_local", { agentSessionId: "sess_local" })));
+      expect(rail().deviceFilter).toEqual({ desktopId: null, kind: "device" });
+      view.unmount();
+    });
+
+    /**
+     * ⌘N makes the conversation on the machine the picker names.
+     *
+     * The new-chat screen writes on *this* machine's disk, so a machine selected
+     * above the list has to take the draft instead — the empty session id is the
+     * host's own signal to create one. The shortcut used to make a local
+     * conversation while the list above it showed another machine.
+     */
+    it("starts a new conversation on the selected machine with ⌘N", () => {
+      mocks.remotePeers = {
+        catalogs: [],
+        peers: [{ desktopId: "desktop_a", name: "Studio iMac" }],
+      };
+      const view = mount(<AppShell />);
+      act(() => rail().onChangeDeviceFilter({ desktopId: "desktop_a", kind: "device" }));
+      act(() => runCommand("chat.new"));
+
+      expect(document.querySelector("[data-child='new-conversation']")).toBeNull();
+      expect((children.remoteComposer as { desktopId?: string }).desktopId).toBe("desktop_a");
+      expect(composer().sessionId).toBe("");
+      view.unmount();
+    });
+
+    /**
      * The open conversation is titled from the *host's* catalogue, not from the
      * row the user clicked.
      *

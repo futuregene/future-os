@@ -46,7 +46,7 @@ async function mount(filter: DeviceFilter, peers: RemotePeer[] = [peer]) {
 
 /** Open the picker and read each machine's entry note, by machine id. */
 async function notes(peers: RemotePeer[]): Promise<Record<string, string>> {
-  const view = await mount({ kind: "all" }, peers);
+  const view = await mount({ desktopId: null, kind: "device" }, peers);
   const button = view.container.querySelector("button[aria-haspopup='listbox']")!;
   await act(async () => {
     button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -68,20 +68,28 @@ function iconName(node: Element | null): string | null {
   return names[0] ?? null;
 }
 
-it("shows the same icon for the selection as for the entry that selects it", async () => {
-  for (const [filter, expected] of [
-    [{ kind: "all" } as DeviceFilter, "lucide-monitor-smartphone"],
-    [{ kind: "device", desktopId: null } as DeviceFilter, "lucide-monitor"],
-  ] as const) {
+/**
+ * The picture a control leads with: a lucide icon, or the glyph a machine
+ * carries when it has one (a paired machine's icon is an emoji, not an SVG).
+ */
+function picture(node: Element | null): string | null {
+  const leading = node ? node.querySelector("span") : null;
+  return iconName(leading) ?? leading?.textContent ?? null;
+}
+
+it("shows the same picture for the selection as for the entry that selects it", async () => {
+  for (const filter of [
+    { desktopId: null, kind: "device" } as DeviceFilter,
+    { desktopId: "desktop_a", kind: "device" } as DeviceFilter,
+  ]) {
     const view = await mount(filter);
     const button = view.container.querySelector("button[aria-haspopup='listbox']")!;
-    expect(iconName(button)).toBe(expected);
 
     await act(async () => {
       button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     const selected = view.container.querySelector("[role='option'][aria-selected='true']");
-    expect(iconName(selected)).toBe(iconName(button));
+    expect(picture(selected)).toBe(picture(button));
     await view.root.unmount();
   }
 });
@@ -94,7 +102,7 @@ it("shows the same icon for the selection as for the entry that selects it", asy
  * same defect the collapsed button had.
  */
 it("gives each entry the machine's name, not its glyph", async () => {
-  const view = await mount({ kind: "all" });
+  const view = await mount({ desktopId: null, kind: "device" });
   const button = view.container.querySelector("button[aria-haspopup='listbox']")!;
   await act(async () => {
     button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -149,8 +157,58 @@ it("says when another paired device is driving a machine", async () => {
   expect(found.desktop_c).toBe("");
 });
 
+/**
+ * A held machine carries the way out on its own entry.
+ *
+ * The note explains why its conversations are missing; the button answers it
+ * without the trip to the Remote page. Clicking it is not a pick: the entry is
+ * still a choice, and taking the machine is the one row action that does not
+ * change which list is on screen.
+ */
+it("offers to take a held machine from its own entry, without picking it", async () => {
+  const onTakeControl = vi.fn<(desktopId: string) => Promise<void>>().mockResolvedValue(undefined);
+  const view = await openPicker([
+    { ...peer, desktopId: "desktop_a", name: "Held", control: "standby", holder: { name: "Hui's phone" } },
+    { ...peer, desktopId: "desktop_b", name: "Ours", control: "active" },
+  ], onTakeControl);
+  try {
+    const take = view.container.querySelector<HTMLButtonElement>("button[aria-label='Take over Held']");
+    expect(take).not.toBeNull();
+    // A machine this desktop drives needs no takeover, and says so by drawing none.
+    expect(view.container.querySelector("button[aria-label='Take over Ours']")).toBeNull();
+
+    await act(async () => take!.click());
+
+    expect(onTakeControl).toHaveBeenCalledWith("desktop_a");
+    expect(view.onChange).not.toHaveBeenCalled();
+    // The list stays open: the machine's rows appear under it once it answers.
+    expect(view.container.querySelector("[role='listbox']")).not.toBeNull();
+  }
+  finally {
+    await act(async () => view.root.unmount());
+  }
+});
+
+/** Without a caller able to send the request, the entry keeps its note only. */
+it("draws no takeover when the caller has none to send", async () => {
+  const view = await openPicker([
+    { ...peer, desktopId: "desktop_a", name: "Held", control: "standby" },
+  ]);
+  try {
+    expect(view.container.querySelector("button[aria-label='Take over Held']")).toBeNull();
+    expect(view.container.querySelector("[data-testid='option-note']")?.textContent)
+      .toBe("In use by another device");
+  }
+  finally {
+    await act(async () => view.root.unmount());
+  }
+});
+
 /** Open the picker on a mutable view, so each case can click an entry. */
-async function openPicker(peers: RemotePeer[] = [peer]) {
+async function openPicker(
+  peers: RemotePeer[] = [peer],
+  onTakeControl?: (desktopId: string) => Promise<void> | void,
+) {
   const onManage = vi.fn();
   const onChange = vi.fn();
   const container = document.createElement("div");
@@ -158,7 +216,13 @@ async function openPicker(peers: RemotePeer[] = [peer]) {
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <DeviceSelector filter={{ kind: "all" }} onChange={onChange} onManage={onManage} peers={peers} />,
+      <DeviceSelector
+        filter={{ desktopId: null, kind: "device" }}
+        onChange={onChange}
+        onManage={onManage}
+        onTakeControl={onTakeControl}
+        peers={peers}
+      />,
     );
   });
   const trigger = container.querySelector<HTMLButtonElement>("button[aria-haspopup='listbox']")!;
@@ -175,23 +239,20 @@ it("applies the filter each entry stands for, and closes the picker", async () =
   const view = await openPicker();
   try {
     const options = [...view.container.querySelectorAll<HTMLElement>("[role='option']")];
-    // Every machine on screen, this one included — plus the "all" entry.
+    // This machine and every paired one — and nothing above them, because the
+    // list is always exactly one machine's.
     expect(options.map(node => node.getAttribute("aria-label")))
-      .toEqual(["All devices", "This computer", "Studio iMac"]);
+      .toEqual(["This computer", "Studio iMac"]);
 
-    await act(async () => view.option("All devices").click());
-    expect(view.onChange).toHaveBeenLastCalledWith({ kind: "all" });
+    await act(async () => view.option("This computer").click());
+    expect(view.onChange).toHaveBeenLastCalledWith({ desktopId: null, kind: "device" });
     expect(view.container.querySelector("[role='listbox']")).toBeNull();
     expect(view.trigger.getAttribute("aria-expanded")).toBe("false");
 
     // Re-open for the next entry: the picker is a choice, not a toggle left on.
     await act(async () => view.trigger.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    await act(async () => view.option("This computer").click());
-    expect(view.onChange).toHaveBeenLastCalledWith({ kind: "device", desktopId: null });
-
-    await act(async () => view.trigger.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     await act(async () => view.option("Studio iMac").click());
-    expect(view.onChange).toHaveBeenLastCalledWith({ kind: "device", desktopId: "desktop_a" });
+    expect(view.onChange).toHaveBeenLastCalledWith({ desktopId: "desktop_a", kind: "device" });
     expect(view.container.querySelector("[role='listbox']")).toBeNull();
   }
   finally {

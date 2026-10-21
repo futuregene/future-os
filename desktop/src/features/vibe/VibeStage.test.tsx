@@ -531,11 +531,14 @@ describe("other machines", () => {
   const peer = (desktopId: string, name: string) => ({ desktopId, name } as RemotePeer);
 
   function mountMixed(over: Record<string, unknown> = {}) {
+    // The `status` on a host's row is its last run's, not a lifecycle
+    // (`remote_host::catalog`); a finished run is the ordinary state of a pinned
+    // conversation, so these rows carry one.
     mount({
       catalogs: [
         catalog("desk_1", [
-          { pinned: true, sessionId: "s1", status: "active", title: "Remote one" },
-          { pinned: false, sessionId: "s2", status: "active", title: "Remote unpinned" },
+          { pinned: true, sessionId: "s1", status: "completed", title: "Remote one" },
+          { pinned: false, sessionId: "s2", status: "completed", title: "Remote unpinned" },
         ]),
       ],
       peers: [peer("desk_1", "Studio")],
@@ -614,7 +617,7 @@ describe("adding a conversation", () => {
   function mountForAdd(onPinLocal: (id: string, pinned: boolean) => void, onPinRemote: (desktopId: string, sessionId: string, pinned: boolean) => void) {
     mount({
       catalogs: [catalog("desk_1", [
-        { pinned: false, sessionId: "s1", status: "active", title: "Remote candidate" },
+        { pinned: false, sessionId: "s1", status: "completed", title: "Remote candidate" },
       ])],
       onPinLocal,
       onPinRemote,
@@ -660,7 +663,7 @@ describe("adding a conversation", () => {
   it("does not offer a conversation that is already in the panel", () => {
     const threads = [thread("a", 100)];
     mount({
-      catalogs: [catalog("desk_1", [{ pinned: true, sessionId: "s1", status: "active", title: "Already" }])],
+      catalogs: [catalog("desk_1", [{ pinned: true, sessionId: "s1", status: "completed", title: "Already" }])],
       threads,
     });
     openAdd();
@@ -777,7 +780,7 @@ describe("this cell's settings", () => {
   it("keeps the model row out of a host's conversation", () => {
     // A host's model is that machine's; the panel changes what it owns.
     mount({
-      catalogs: [{ desktopId: "desk_1", sessions: [{ pinned: true, sessionId: "s1", status: "active", title: "Remote" }] } as never],
+      catalogs: [{ desktopId: "desk_1", sessions: [{ pinned: true, sessionId: "s1", status: "completed", title: "Remote" }] } as never],
       peers: [{ desktopId: "desk_1", name: "Studio" } as never],
       threads: [],
     });
@@ -878,7 +881,7 @@ describe("the send queue", () => {
     // A remote cell has no composer at all, so there is nothing to hand over — the
     // panel offers no queue for it rather than a queue nothing can fill.
     mount({
-      catalogs: [{ desktopId: "desk_1", sessions: [{ pinned: true, sessionId: "s1", status: "active", title: "Remote" }] } as never],
+      catalogs: [{ desktopId: "desk_1", sessions: [{ pinned: true, sessionId: "s1", status: "completed", title: "Remote" }] } as never],
       peers: [{ desktopId: "desk_1", name: "Studio" } as never],
       threads: [],
     });
