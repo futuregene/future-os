@@ -13,9 +13,16 @@ import { MenuPanel } from "../ui/MenuPanel";
 /**
  * The device picker above the conversation list.
  *
- * Two states the user needs to tell apart at a glance: "all machines" (a merged
- * list) and "one machine" (that machine's list). The button label says which,
- * because the list below it is otherwise identical-looking either way.
+ * The list below it is always one machine's, and the button names which: a
+ * conversation is created on, and opened from, the machine shown here, so the
+ * picker is the first step of both. There used to be an "all machines" entry
+ * that merged every paired machine's rows into one list, and choosing it was
+ * how the other two flows got their machine — the rail no longer offers that
+ * state at all (see `AppShell`'s `deviceFilter`).
+ *
+ * The collapsed button and the expanded entries must show the same picture for
+ * the same choice: the button has to show the entry the user picked, or it
+ * looks like the selection did not take.
  */
 export function DeviceSelector({
   compact = false,
@@ -124,13 +131,6 @@ export function DeviceSelector({
               ref={menuRef}
               role="listbox"
             >
-              <SelectorOption
-                active={filter.kind === "all"}
-                label={t("selector.all")}
-                onClick={() => choose({ kind: "all" })}
-              >
-                {filterIcon({ kind: "all" }, peers)}
-              </SelectorOption>
               <SelectorOption
                 active={filter.kind === "device" && filter.desktopId === null}
                 label={t("selector.local")}
