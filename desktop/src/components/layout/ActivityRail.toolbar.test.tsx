@@ -110,6 +110,47 @@ describe("the rail's rows above the list", () => {
     document.body.innerHTML = "";
   });
 
+  /**
+   * The search's row is **above** the switch's row.
+   *
+   * Reported as "why is the search under workspaces/recent — shouldn't it be
+   * above?". It was: the filter row has always sat directly over the list it
+   * filters, with the switch under it. A revert put the two rows back in the
+   * other order and nothing noticed, because every test read one row at a time.
+   * So this reads their *order* in the document, which is the only shape that
+   * goes red when they are swapped.
+   */
+  it("puts the search's row above the switch's row", async () => {
+    const p = props();
+    p.remotePeers = [peer];
+    p.onChangeDeviceFilter = vi.fn();
+    p.onManageDesktops = vi.fn();
+    const { container } = await render(p);
+
+    const searchRow = band(container, "rail-list-tools")!;
+    const switchRow = band(container, "rail-view-band")!;
+    expect(searchRow).not.toBeNull();
+    expect(switchRow).not.toBeNull();
+
+    // The search row comes first: the switch follows it in the document.
+    expect(searchRow.compareDocumentPosition(switchRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Both are above the list they describe.
+    const list = container.querySelector("[data-activity-rail-scroll]")!;
+    expect(switchRow.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // And the search itself is in that top row, not beside the switch.
+    expect(searchRow.querySelector("button[aria-label='Search conversations']")).not.toBeNull();
+    expect(switchRow.querySelector("button[aria-label='Search conversations']")).toBeNull();
+  });
+
+  /** The same order with no machine paired, where the row holds only the search. */
+  it("keeps that order when the search is the row's only control", async () => {
+    const { container } = await render(props());
+    const searchRow = band(container, "rail-list-tools")!;
+    const switchRow = band(container, "rail-view-band")!;
+    expect(searchRow.children).toHaveLength(1);
+    expect(searchRow.compareDocumentPosition(switchRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   /** The switch's own row holds the switch, and nothing else — in both lists. */
   it.each(["workspace", "recent"] as const)("keeps the switch's row to the switch (%s)", async (view) => {
     const { container } = await render(props());
