@@ -287,8 +287,21 @@ fn host_fixture() {
             .open(root.join("agent/agent-instance.lock"))
             .unwrap();
         fs2::FileExt::try_lock_exclusive(&file).unwrap();
-        assert!(host.start("auto".into()).is_err());
+        // A held lock is a yield, not a cancellation: the caller gets the typed
+        // busy refusal (so it can wait for the holder) and the host stays
+        // restartable instead of turning into a terminal `Failed`.
+        let error = host.start("auto".into()).unwrap_err();
+        assert!(
+            matches!(error, crate::Error::AgentBusy(_)),
+            "a held lock must refuse the start as a yield: {error}"
+        );
+        assert!(
+            host.yield_reason()
+                .is_some_and(|reason| reason.contains("already running")),
+            "the holder's own refusal is kept for the status page: {error}"
+        );
         assert!(!host.owns_agent());
+        assert_eq!(host.phase(), Phase::Stopped);
         assert!(!root.join("agent/agent.db").exists());
         assert!(!root.join("agent/auth.json").exists());
         return;
