@@ -1,4 +1,5 @@
 import type { AgentConnectionState } from "../../components/layout/AppShell";
+import type { ContextTab } from "../../components/layout/ContextPanel";
 import type { ThreadRunInfo } from "../../components/layout/hooks/useThreadStore";
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
@@ -10,13 +11,16 @@ import type { RemoteCatalog } from "../remote-peer/mergeConversations";
 import type { RemotePeer } from "../remote-peer/remotePeerClient";
 import type { VibeAttentionReason } from "./attention";
 import type { VibeMenuRow } from "./menuNav";
+import type { ReadingPanelPreference } from "./readingPanel";
 import type { VibeCell, VibeDeviceFilter } from "./vibeCells";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Expand, MoreHorizontal, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { ContextPanel } from "../../components/layout/ContextPanel";
 import { useApprovals } from "../../components/layout/hooks/useApprovals";
 import { usePendingApprovalCounts } from "../../components/layout/hooks/usePendingApprovalCounts";
+import { useWindowWidth } from "../../components/layout/hooks/useWindowWidth";
 import { Badge } from "../../components/ui/Badge";
 import { IconButton } from "../../components/ui/IconButton";
 import { modelKey, thinkingLevels } from "../../integrations/agent/agentClient";
@@ -28,16 +32,18 @@ import { AgentThread } from "../agent/AgentThread";
 import { useCommand } from "../keyboard/commands";
 import { useShortcutScope } from "../keyboard/scopes";
 import { bindingLabel, useShortcutOverrides } from "../keyboard/shortcuts";
+import { RemoteFilesPanel } from "../remote-peer/RemoteFilesPanel";
 import { AddToVibeDialog } from "./AddToVibeDialog";
 import { attentionOf, nextAttention } from "./attention";
 import { cellPosition, gridOf, MAX_CELLS, moveInGrid } from "./layout";
 import { moveInOrder, resolveOrder } from "./order";
+import { cyclePreference, PANEL_WIDTH, preferenceLabelKey, readPanelPreference, showReadingPanel, toggleHidden, togglePinned } from "./readingPanel";
 import { vibeCellsOf } from "./vibeCells";
 import { setVibeCellModel, setVibeCellThinkingLevel, useVibeCellSettings } from "./vibeCellSettings";
 import { VibeHintBar } from "./VibeHintBar";
 import { VibeKeyProbe } from "./VibeKeyProbe";
 import { VibeMenu } from "./VibeMenu";
-import { readVibePreferences, writeVibeColumns, writeVibeDevice, writeVibeOrder } from "./vibePreferences";
+import { readVibePreferences, writeVibeColumns, writeVibeDevice, writeVibeOrder, writeVibePanel } from "./vibePreferences";
 import { useVibeQueue } from "./vibeQueue";
 import { VibeRemoteCell } from "./VibeRemoteCell";
 import { VibeSettingsLine } from "./VibeSettings";
@@ -158,6 +164,11 @@ export function VibeStage({
   const preferences = useMemo(() => readVibePreferences(), []);
   const [order, setOrder] = useState<string[]>(preferences.order);
   const [columns, setColumns] = useState<number | null>(preferences.columns);
+  /** Each conversation's second-column choice (`readingPanel.ts`), remembered by key. */
+  const [panelPrefs, setPanelPrefs] = useState<Record<string, string>>(preferences.panel);
+  /** The right column's tab, for the panel's own reading layer. */
+  const [contextTab, setContextTab] = useState<ContextTab>("files");
+  const windowWidth = useWindowWidth();
   const [size, setSize] = useState({ height: 0, width: 0 });
   const areaRef = useRef<HTMLDivElement>(null);
 
@@ -300,6 +311,25 @@ export function VibeStage({
       onPinRemote(cell.desktopId, cell.session.sessionId, false);
   }, [onPinLocal, onPinRemote]);
 
+  /**
+   * The focused conversation's second-column choice, and whether it is on screen now.
+   *
+   * Asked three times per render (the render, the keys, the menu row) from one rule, so a
+   * key and the thing it changes cannot disagree.
+   */
+  const panelPreference: ReadingPanelPreference = readPanelPreference(panelPrefs, focusedKey ?? "");
+  const panelVisible = layer === "read" && showReadingPanel(panelPreference, windowWidth);
+
+  const setPanelPreference = useCallback((next: ReadingPanelPreference) => {
+    if (!focusedKey)
+      return;
+    setPanelPrefs((current) => {
+      const updated = { ...current, [focusedKey]: next };
+      writeVibePanel(focusedKey, next);
+      return updated;
+    });
+  }, [focusedKey]);
+
   const persistOrder = useCallback((next: string[]) => {
     setOrder(next);
     writeVibeOrder(next);
@@ -362,6 +392,11 @@ export function VibeStage({
   useCommand("vibe.back", () => setLayer("grid"), onRead);
   useCommand("vibe.zoom.previous", () => stepFocus(-1), onRead);
   useCommand("vibe.zoom.next", () => stepFocus(1), onRead);
+  // The second column: `⌘\` shows/hides it, `⌘⇧\` pins it. Both were in the table from the
+  // first day and had no handler until the column existed — which is why they were never
+  // drawn in the hint line (`VIBE.md` §9).
+  useCommand("vibe.panel.hide", () => setPanelPreference(toggleHidden(panelPreference)));
+  useCommand("vibe.panel.pin", () => setPanelPreference(togglePinned(panelPreference)));
   useCommand("vibe.input.open", () => {
     if (focusedLocal)
       queue.acknowledge(focusedLocal.id);
@@ -674,6 +709,16 @@ export function VibeStage({
           },
         ]
       : []),
+    // The reading layer's second column: a value row, so "is this one's files open, and
+    // will it stay open" is answerable without pressing anything.
+    {
+      id: "panel",
+      label: t("menu.panel"),
+      value: t(preferenceLabelKey(panelPreference)),
+      onRun: () => setPanelPreference(toggleHidden(panelPreference)),
+      onAdjust: delta => setPanelPreference(cyclePreference(panelPreference, delta)),
+      description: t("menu.panelHint"),
+    },
     // Taking a held sentence back, when there is one. A row rather than only a key:
     // the remote's reader is the one this queue exists for, and `Menu` is how they
     // reach anything that is not on a direction key.
@@ -873,8 +918,8 @@ export function VibeStage({
    * doing nothing.
    */
   const readHintIds: Parameters<typeof VibeHintBar>[0]["ids"] = focused?.kind === "local"
-    ? ["vibe.zoom.previous", "vibe.attention", "vibe.input.open", "vibe.menu", "vibe.back"]
-    : ["vibe.zoom.previous", "vibe.attention", "vibe.menu", "vibe.back"];
+    ? ["vibe.zoom.previous", "vibe.attention", "vibe.panel.hide", "vibe.input.open", "vibe.menu", "vibe.back"]
+    : ["vibe.zoom.previous", "vibe.attention", "vibe.panel.hide", "vibe.menu", "vibe.back"];
 
   return (
     <div
@@ -978,18 +1023,59 @@ export function VibeStage({
                     {focusedLocal ? <VibeSettingsLine settings={focusedSettings} /> : null}
                     <span className="ml-auto text-ink-faint">{t("of", { total: shown.length })}</span>
                   </div>
-                  <div
-                    className="min-h-0 flex-1 overflow-hidden rounded-lg border border-line-soft bg-surface"
-                    onDoubleClick={() => {
-                      if (!focused)
-                        return;
-                      if (focused.thread)
-                        onOpenInShell(focused.thread);
-                      else if (focused.desktopId && focused.session)
-                        onOpenRemoteInShell(focused.desktopId, focused.session.sessionId);
-                    }}
-                  >
-                    {focused ? cellBody(focused, true) : null}
+                  {/* One column, or two: the transcript keeps its own measure and the
+                      column beside it is the *existing* panel — `ContextPanel` here,
+                      `RemoteFilesPanel` for a host — so what the right side shows cannot
+                      depend on which surface opened it (`VIBE.md` §6). */}
+                  <div className="flex min-h-0 flex-1 gap-2">
+                    <div
+                      className="min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-line-soft bg-surface"
+                      onDoubleClick={() => {
+                        if (!focused)
+                          return;
+                        if (focused.thread)
+                          onOpenInShell(focused.thread);
+                        else if (focused.desktopId && focused.session)
+                          onOpenRemoteInShell(focused.desktopId, focused.session.sessionId);
+                      }}
+                    >
+                      {focused ? cellBody(focused, true) : null}
+                    </div>
+                    {panelVisible && focused
+                      ? (
+                          <div
+                            className="h-full min-h-0 shrink-0 overflow-hidden rounded-lg border border-line-soft bg-surface"
+                            data-vibe-panel-column=""
+                            style={{ width: PANEL_WIDTH }}
+                          >
+                            {focused.thread
+                              ? (
+                                  <ContextPanel
+                                    activeThread={focusedLocal}
+                                    activeWorkspace={workspaces.find(workspace => workspace.id === focusedLocal?.workspaceId) ?? null}
+                                    activeTab={contextTab}
+                                    expanded
+                                    // Fixed: the reading layer is a view of a conversation, not a
+                                    // window with three resizable columns (`VIBE.md` §6).
+                                    width={PANEL_WIDTH}
+                                    onResizeNudge={() => {}}
+                                    onResizeStart={() => {}}
+                                    onTabChange={setContextTab}
+                                    onToggleExpanded={() => setPanelPreference("hidden")}
+                                  />
+                                )
+                              : (
+                                  <RemoteFilesPanel
+                                    desktopId={focused.desktopId!}
+                                    expanded
+                                    onToggleExpanded={() => setPanelPreference("hidden")}
+                                    peer={peers.find(peer => peer.desktopId === focused.desktopId)}
+                                    sessionId={focused.session!.sessionId}
+                                  />
+                                )}
+                          </div>
+                        )
+                      : null}
                   </div>
                   <VibeHintBar ids={readHintIds} />
                 </div>

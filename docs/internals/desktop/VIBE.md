@@ -311,13 +311,27 @@ gets a full-width highlight; `⏎` expands or collapses it (a tool call's
 arguments and output). The wheel and the trackpad still scroll by pixels; the
 block cursor is what a remote can operate.
 
-Opened from the grid, a cell fills the screen at **one column**: the transcript at
-its usual measure, unchanged from the main window. A **second column** is the
-existing context panel (`ContextPanel` for a local conversation,
-`RemoteFilesPanel` for a host's), and it has three states set per conversation —
-`hidden`, `auto` (appears when the window is wide enough), and `pinned` (stays
-open, remembered for that conversation). Reusing those panels is deliberate: what
-the right column shows must not depend on which surface opened it.
+Opened from the grid, a conversation fills the screen at **one column** by default:
+the transcript at its usual measure, unchanged from the main window. A **second
+column** is the existing context panel (`ContextPanel` for a local conversation,
+`RemoteFilesPanel` for a host's). Reusing those panels is deliberate: what the right
+column shows must not depend on which surface opened it.
+
+It has three states, **remembered per conversation** by the panel's own key
+(`readingPanel.ts`):
+
+| State | When it shows |
+| --- | --- |
+| `auto` (default) | above 1100px: wide enough for a transcript at its measure plus a 400px column |
+| `hidden` | never |
+| `pinned` | always, whatever the window does — that is what pinning is for |
+
+`⌘\` toggles between `hidden` and `auto` (a toggle, not a cycle through three: one press
+that sometimes *shows* a column the reader was hiding is a press they stop trusting);
+`⌘⇧\` pins and unpins. The menu has the same choice as a value row, so "which state is
+this conversation in" is answerable without pressing anything. The column's width is
+fixed at 400px and has no drag handle: the reading layer is a view of one conversation,
+not a window with three resizable columns.
 
 ## 7. The input layer's screen
 
@@ -495,6 +509,7 @@ Automatable — and where each one lives:
 | A host's view in a cell mounts no composer and does not narrow the host's event lane | `RemoteConversationView.chrome.test.tsx` |
 | The settings line shows the cell's own model, on both the reading and the input layer, and the input layer's composer is asked for values only | `VibeStage.test.tsx`, `Composer.inputLayer.test.tsx` |
 | The menu's three settings rows exist for a local cell, adjust with `←`/`→`, and are absent for a host's | `VibeStage.test.tsx` |
+| The second column: `auto` follows the width, `pinned` ignores it, `hidden` is never there; `⌘\` returns to `auto` rather than to `pinned`; the choice is per conversation and survives a relaunch | `readingPanel.test.ts`, `VibeStage.test.tsx` |
 | The queue: one per conversation (a second is refused), visible on the cell, handed back into the box when the run ends, kept across a failure, and cancelled into the box rather than discarded | `vibeQueue.test.ts`, `VibeStage.test.tsx` |
 | The composer's half: a send during a run hands the text over and clears the box, a refusal leaves the text in place, and an idle send is still a send | `Composer.inputLayer.test.tsx` |
 | A remote's buttons survive a rebinding and a cleared binding | `shortcuts.test.ts`, `catalog.test.ts`, `keybinding.test.ts` |
@@ -585,8 +600,9 @@ What P0 landed, and what it deliberately left:
 | Stage | Content |
 | --- | --- |
 | **P0 — done** | the panel and its grid; scale-respecting cell rendering for local conversations; membership = pin; order = `createdAt` + drag/keyboard reordering; the three layers and the single-editor invariant; the input layer with dictation, the target bar and the three state meanings; `⌘⇧V`, arrows, `⏎`, `Esc`, `1`–`9`; explicit "still running" refusal |
-| **P1 — in progress** | **done:** the menu (`Menu`, one column, `←`/`→` adjust a value in place) · the attention queue (§9.5) · the machine filter, a host's conversations as cells, the add dialog and removal across machines · the input layer's controls moved into the menu with the values left read-only on screen (§5.6) · the send queue (§5.4) · **next (P2):** the remote-control hardware matrix first, then the reading layer's one/two columns, per-conversation column preference, `h/j/k/l`, `⌘/` cheat sheet, order in `app.db` |
-| **P2** | order in `app.db`; layout presets and a column override; `⌘/` cheat sheet; `h/j/k/l`; a "learn this button" diagnostics page; optional text size on the volume buttons |
+| **P1 — done** | the menu (`Menu`, one column, `←`/`→` adjust a value in place) · the attention queue (§9.5) · the machine filter, a host's conversations as cells, the add dialog and removal across machines · the input layer's controls moved into the menu with the values left read-only on screen (§5.6) · the send queue (§5.4) |
+| **P2 — in progress** | **done:** `h`/`j`/`k`/`l` beside the arrows · the reading layer's second column with its three per-conversation states (§6) · the key checklist and read-only readout ([`VIBE-REMOTE-KEYS.md`](VIBE-REMOTE-KEYS.md), matrix still empty) · **remaining:** order in `app.db`, and the measurement pass itself |
+| **P2 — later** | order in `app.db`; layout presets; a "learn this button" diagnostics page (the read-only readout is the first half); optional text size on the volume buttons |
 
 ## 15. Open questions
 

@@ -35,7 +35,9 @@
     "model": "Model",
     "thinking": "Thinking level",
     "approval": "Approval",
-    "approvalHint": "Applies to every conversation, not just this cell"
+    "approvalHint": "Applies to every conversation, not just this cell",
+    "panel": "Right column",
+    "panelHint": "Automatic follows the window; pinned stays for this conversation"
   },
   "attention": {
     "badge": "{{count}} need you",
@@ -74,5 +76,13 @@
     "copied": "Copied",
     "close": "Close",
     "empty": "Press any key, or a button on the remote."
+  },
+  "panel": {
+    "hidden": "Hidden",
+    "auto": "Automatic",
+    "pinned": "Pinned",
+    "show": "Show the right column",
+    "hide": "Hide the right column",
+    "pin": "Pin the right column for this conversation"
   }
 }

@@ -20,6 +20,13 @@ export interface VibePreferences {
   /** The panel order as the user left it, oldest first. See `order.ts`. */
   order: string[];
   /**
+   * Each conversation's answer about the reading layer's second column, by panel key.
+   *
+   * Per conversation and not per machine: "I am reading this one's files" is a fact about
+   * one conversation, and remembering it globally would make every other cell pay for it.
+   */
+  panel: Record<string, string>;
+  /**
    * Which machines the panel shows, as last chosen.
    *
    * A view preference like the columns: per machine, read on the render path, and
@@ -39,7 +46,7 @@ export interface VibePreferences {
 const ORDER_KEY = "future.vibe.order";
 const PREFS_KEY = "future.vibe.prefs";
 
-const EMPTY: VibePreferences = { columns: null, device: { kind: "all" }, order: [] };
+const EMPTY: VibePreferences = { columns: null, device: { kind: "all" }, order: [], panel: {} };
 
 function readOrder(): string[] {
   try {
@@ -100,8 +107,33 @@ function readColumns(): number | null {
 }
 
 /** The stored preferences, for a caller that is not a component. */
+function readPanelMap(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (!raw)
+      return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null)
+      return {};
+    const panel = (parsed as { panel?: unknown }).panel;
+    if (typeof panel !== "object" || panel === null)
+      return {};
+    // Values are validated by the reader (`readingPanel.readPanelPreference`), so a value
+    // this build does not know falls back to `auto` instead of being dropped here.
+    return { ...panel as Record<string, string> };
+  }
+  catch {
+    return {};
+  }
+}
+
 export function readVibePreferences(): VibePreferences {
-  return { columns: readColumns(), device: readDevice(), order: readOrder() };
+  return { columns: readColumns(), device: readDevice(), order: readOrder(), panel: readPanelMap() };
+}
+
+/** Remember one conversation's second-column choice. */
+export function writeVibePanel(key: string, preference: string): void {
+  writePrefs(current => ({ ...current, panel: { ...current.panel, [key]: preference } }));
 }
 
 export function writeVibeOrder(order: readonly string[]): void {
@@ -131,7 +163,11 @@ export function writeVibeDevice(device: VibeDeviceFilter): void {
  * different fields from two different keys and a write that carried only its own
  * field would erase the other one on the next launch.
  */
-function writePrefs(update: (current: { columns: number | null; device: VibeDeviceFilter }) => { columns: number | null; device: VibeDeviceFilter }): void {
+function writePrefs(update: (current: {
+  columns: number | null;
+  device: VibeDeviceFilter;
+  panel: Record<string, string>;
+}) => { columns: number | null; device: VibeDeviceFilter; panel: Record<string, string> }): void {
   try {
     const raw = localStorage.getItem(PREFS_KEY);
     const parsed: unknown = raw ? JSON.parse(raw) : {};
@@ -139,6 +175,7 @@ function writePrefs(update: (current: { columns: number | null; device: VibeDevi
     const next = update({
       columns: typeof current.columns === "number" ? current.columns : null,
       device: readDevice(),
+      panel: readPanelMap(),
     });
     localStorage.setItem(PREFS_KEY, JSON.stringify(next));
   }

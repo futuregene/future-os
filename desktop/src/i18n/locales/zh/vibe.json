@@ -35,7 +35,9 @@
     "model": "模型",
     "thinking": "思考级别",
     "approval": "审批档位",
-    "approvalHint": "对整个应用生效，不只是这一格"
+    "approvalHint": "对整个应用生效，不只是这一格",
+    "panel": "右栏",
+    "panelHint": "自动跟随窗口；固定则在这个会话里一直留着"
   },
   "attention": {
     "badge": "{{count}} 个待处理",
@@ -74,5 +76,13 @@
     "copied": "已复制",
     "close": "关闭",
     "empty": "按任意键，或按遥控器上的按键。"
+  },
+  "panel": {
+    "hidden": "隐藏",
+    "auto": "自动",
+    "pinned": "固定",
+    "show": "显示右栏",
+    "hide": "隐藏右栏",
+    "pin": "为这个会话固定右栏"
   }
 }

@@ -68,6 +68,14 @@ vi.mock("../agent/AgentThread", () => ({
   ),
 }));
 
+vi.mock("../../components/layout/ContextPanel", () => ({
+  ContextPanel: () => <div data-vibe-column-stub="" />,
+}));
+
+vi.mock("../remote-peer/RemoteFilesPanel", () => ({
+  RemoteFilesPanel: () => <div data-vibe-column-stub="" />,
+}));
+
 vi.mock("../../components/layout/hooks/useApprovals", () => ({
   useApprovals: () => h.approvals,
 }));
@@ -894,6 +902,68 @@ describe("the letters, beside the arrows", () => {
     press({ code: "KeyL", key: "l" });
     expect(container.querySelector("[data-vibe-layer]")?.getAttribute("data-vibe-layer")).toBe(before);
     expect(drawn("input")).toEqual(["a"]);
+  });
+});
+
+describe("the reading layer's second column", () => {
+  // Three states, per conversation, remembered by the panel's own key. The column itself
+  // is the shell's existing `ContextPanel` (stubbed here): what this file owns is whether
+  // it is there, and what the keys and the menu row do to that answer.
+  function mountWithPanel(over: Record<string, unknown> = {}) {
+    mount({ threads: [thread("a", 100), thread("b", 200)], ...over });
+  }
+
+  /** The stub: `ContextPanel` is the shell's, and mounting it for real here would test it. */
+  const column = () => container.querySelector("[data-vibe-column-stub]");
+
+  it("shows it automatically on a wide window, and not on a narrow one", () => {
+    // jsdom reports 1024px by default, i.e. below PANEL_AUTO_WIDTH.
+    mountWithPanel();
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    expect(column()).toBeNull();
+  });
+
+  it("hides it with the panel's own key, and comes back to automatic", () => {
+    // `⌘\` twice: hidden, then back to automatic — not back to pinned.
+    mountWithPanel();
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    press({ code: "Backslash", key: "\\", ctrlKey: true });
+    expect(readVibePreferences().panel["local:a"]).toBe("hidden");
+    press({ code: "Backslash", key: "\\", ctrlKey: true });
+    expect(readVibePreferences().panel["local:a"]).toBe("auto");
+  });
+
+  it("pins it for this conversation only", () => {
+    mountWithPanel();
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    press({ code: "Backslash", key: "\\", ctrlKey: true, shiftKey: true });
+    expect(readVibePreferences().panel["local:a"]).toBe("pinned");
+    // The other conversation is untouched: pinning is a fact about one conversation.
+    expect(readVibePreferences().panel["local:b"]).toBeUndefined();
+  });
+
+  it("remembers what was chosen when the panel is opened again", () => {
+    mountWithPanel();
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    press({ code: "Backslash", key: "\\", ctrlKey: true, shiftKey: true });
+    // Re-mount from storage, the way a relaunch does.
+    mountWithPanel();
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    // Pinned beats the narrow test window, which is the whole point of pinning.
+    expect(readVibePreferences().panel["local:a"]).toBe("pinned");
+  });
+
+  it("offers the three states in the menu, adjustable with ← and →", () => {
+    mountWithPanel();
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    walkTo("panel");
+    press({ code: "ArrowRight", key: "ArrowRight" });
+    expect(readVibePreferences().panel["local:a"]).toBe("pinned");
   });
 });
 

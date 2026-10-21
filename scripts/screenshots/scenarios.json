@@ -2488,6 +2488,47 @@
             "shot": "d-vibe-keyprobe.png"
           }
         ]
+      },
+      "vibe-column": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "(() => {const col = document.querySelector('[data-vibe-panel-column]');const root = document.querySelector('[data-vibe-layer]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!col,width: col ? Math.round(col.getBoundingClientRect().width) : null,tabs: col ? [...col.querySelectorAll('button')].map(b => b.textContent.trim()).filter(Boolean).slice(0, 6) : [],editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "key": "Enter"
+          },
+          {
+            "wait": 800
+          },
+          {
+            "key": "Escape"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => {const col = document.querySelector('[data-vibe-panel-column]');const root = document.querySelector('[data-vibe-layer]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!col,width: col ? Math.round(col.getBoundingClientRect().width) : null,tabs: col ? [...col.querySelectorAll('button')].map(b => b.textContent.trim()).filter(Boolean).slice(0, 6) : [],editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-column.png"
+          },
+          {
+            "eval": "(function(){const mac=/Mac/i.test(navigator.platform||navigator.userAgent);window.dispatchEvent(new KeyboardEvent('keydown',{key:'\\\\\\\\',code:'Backslash',metaKey:mac,ctrlKey:!mac,bubbles:true,cancelable:true}));return 'hide';})()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => {const col = document.querySelector('[data-vibe-panel-column]');const root = document.querySelector('[data-vibe-layer]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,column: !!col,width: col ? Math.round(col.getBoundingClientRect().width) : null,tabs: col ? [...col.querySelectorAll('button')].map(b => b.textContent.trim()).filter(Boolean).slice(0, 6) : [],editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-column-hidden.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",
