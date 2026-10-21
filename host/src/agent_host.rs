@@ -338,13 +338,26 @@ impl AgentHost {
                     // serving begins. Keep polling both serving and drain;
                     // channel closure alone is not a cleanup failure.
                     if let Ok(identity) = ready {
+                        // Publish readiness *before* either report: `report`
+                        // writes to stderr and the host log, so a blocked log
+                        // handle must never sit between a serving Agent and the
+                        // Ready phase the launch is waiting on. Reordering these
+                        // back (log first, phase second) reintroduces exactly
+                        // that: the launch stays in `Starting` while the log
+                        // write hangs, and nothing downstream can tell why.
+                        let became_ready = {
+                            let mut state = self.0.state.lock().unwrap();
+                            let became_ready = state.phase == Phase::Starting;
+                            if became_ready {
+                                state.phase = Phase::Ready;
+                            }
+                            became_ready
+                        };
+                        self.0.changed.notify_all();
                         crate::environment::report(&format!("Agent identity version={} instance={}", identity.version, identity.agent_instance_id));
-                        let mut state = self.0.state.lock().unwrap();
-                        if state.phase == Phase::Starting {
-                            state.phase = Phase::Ready;
+                        if became_ready {
                             crate::environment::report("embedded Agent ready");
                         }
-                        self.0.changed.notify_all();
                     }
                 }
             }
