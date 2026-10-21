@@ -910,7 +910,9 @@ GUI colors uniformly use the **semantic tokens** defined in
 status triple, diff, shadows) — no raw Tailwind named colors written in
 components. The look has two independent Settings → General choices:
 **appearance** (Light / Dark / Follow system) and **color theme** (FutureOS by
-default, plus Nord, Solarized, Gruvbox, Rosé Pine, Catppuccin). Every token of
+default, plus Ayu, Catppuccin, Dracula, Everforest, Gruvbox, Kanagawa, Nightfox,
+Nord, One Dark, Rosé Pine, Solarized, Tokyo Night and Vesper — fourteen in all,
+each a data object in `desktop/src/theme/palettes.json`). Every token of
 every color theme has a light and a dark value, so a chosen theme still follows
 the system appearance and switching color themes never re-asks for brightness.
 Status badges uniformly use the `<Badge tone>` component; colors

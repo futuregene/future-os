@@ -1,8 +1,8 @@
 import type { BundledLanguage, BundledTheme, HighlighterGeneric } from "shiki";
-import type { ResolvedTheme, ThemePalette } from "../../lib/theme";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { bundledLanguagesInfo, createHighlighter } from "shiki";
-import { useResolvedTheme, useThemePalette } from "../../lib/theme";
+import { THEME_PALETTES, useResolvedTheme, useThemePalette } from "../../lib/theme";
+import { paletteShiki } from "../../theme/palettes";
 
 type CodeHighlighter = HighlighterGeneric<BundledLanguage, BundledTheme>;
 
@@ -22,30 +22,30 @@ export interface HighlightResult {
 }
 
 /**
- * Shiki theme per palette and rendition.
+ * Code block colors come from the theme's own data (`src/theme/palettes.json`),
+ * so a palette supplies its syntax-highlighting theme the same way it supplies
+ * its surfaces.
  *
- * Code block colors are the one place the app hands syntax highlighting to a
- * third party, so each palette reuses the highlighting theme its authors ship
- * instead of a hand-rolled derivative — a Nord code block next to Nord chrome
- * should look like code in Nord, not like GitHub Dark tinted cold. The two
- * GitHub themes stay the default palette's, because FutureOS's light/dark
- * palette was drawn from them.
+ * Each palette reuses the editor theme its upstream project ships (`nord`,
+ * `solarized-light` / `solarized-dark`, `gruvbox-light-medium` /
+ * `gruvbox-dark-medium`, `rose-pine-dawn` / `rose-pine-moon`,
+ * `catppuccin-latte` / `catppuccin-mocha`, `tokyo-night`, `dracula`,
+ * `one-dark-pro` / `one-light`, `everforest-dark` / `everforest-light`,
+ * `kanagawa-wave` / `kanagawa-lotus`, `ayu-dark` / `ayu-light`, `vesper`): a
+ * Nord code block next to Nord chrome should look like code in Nord, not like
+ * GitHub Dark tinted cold. Where the project ships only one rendition, the
+ * palette names the nearest available editor theme for the other (Dracula →
+ * Rosé Pine Dawn, Nightfox → Nord, Vesper/Tokyo Night → One Light); the
+ * mapping is visible in the JSON and listed in `COLOR.md`.
  *
- * Every palette needs both renditions: a palette with only one would leave code
- * blocks on the wrong background half the time.
+ * Every bundled theme is loaded up front (a few KB of JSON each) so switching
+ * the app theme never leaves code blocks on the old palette.
  */
-const THEMES: Record<ThemePalette, Record<ResolvedTheme, BundledTheme>> = {
-  "futureos": { light: "github-light", dark: "github-dark" },
-  "nord": { light: "nord", dark: "nord" },
-  "solarized": { light: "solarized-light", dark: "solarized-dark" },
-  "gruvbox": { light: "gruvbox-light-medium", dark: "gruvbox-dark-medium" },
-  "rose-pine": { light: "rose-pine-dawn", dark: "rose-pine-moon" },
-  "catppuccin": { light: "catppuccin-latte", dark: "catppuccin-mocha" },
-};
-
-/** Every bundled theme, deduplicated: the highlighter loads them all up front. */
 const BUNDLED_THEMES: BundledTheme[] = [
-  ...new Set(Object.values(THEMES).flatMap(perRendition => Object.values(perRendition))),
+  ...new Set(THEME_PALETTES.flatMap(palette => [
+    paletteShiki(palette, "light"),
+    paletteShiki(palette, "dark"),
+  ])),
 ];
 
 let highlighterPromise: Promise<CodeHighlighter> | null = null;
@@ -197,7 +197,7 @@ export function useCodeHighlighter() {
         return null;
       }
 
-      const shikiTheme = THEMES[palette][resolvedTheme];
+      const shikiTheme = paletteShiki(palette, resolvedTheme);
       const cacheKey = `${shikiTheme}\u0000${normalizedLang}\u0000${code}`;
       const cached = highlightCache.get(cacheKey);
       if (cached) {

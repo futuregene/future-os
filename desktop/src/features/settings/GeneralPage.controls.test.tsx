@@ -143,9 +143,9 @@ describe("generalPage color theme picker", () => {
     const cards = [...group.querySelectorAll<HTMLButtonElement>("[role=radio]")];
 
     expect(cards.map(card => card.getAttribute("aria-label")))
-      .toEqual(["FutureOS", "Nord", "Solarized", "Gruvbox", "Rosé Pine", "Catppuccin"]);
+      .toEqual(["FutureOS", "Ayu", "Catppuccin", "Dracula", "Everforest", "Gruvbox", "Kanagawa", "Nightfox", "Nord", "One Dark", "Rosé Pine", "Solarized", "Tokyo Night", "Vesper"]);
     expect(cards.map(card => card.getAttribute("aria-checked")))
-      .toEqual(["true", "false", "false", "false", "false", "false"]);
+      .toEqual(cards.map((_, index) => String(index === 0)));
   });
 
   it("paints each preview in its own palette while the app keeps the active one", () => {
@@ -155,7 +155,7 @@ describe("generalPage color theme picker", () => {
     // A card previews a palette by carrying its `data-palette`: the CSS blocks
     // match a nested preview as well as the root.
     expect(cards.map(card => card.dataset.palette))
-      .toEqual(["futureos", "nord", "solarized", "gruvbox", "rose-pine", "catppuccin"]);
+      .toEqual(["futureos", "ayu", "catppuccin", "dracula", "everforest", "gruvbox", "kanagawa", "nightfox", "nord", "one-dark", "rose-pine", "solarized", "tokyo-night", "vesper"]);
     // ...and the app itself is still on the default.
     expect(document.documentElement.dataset.palette).toBe("futureos");
   });

@@ -18,25 +18,57 @@
         "name": "FutureOS",
         "description": "默认主题：冷调中性灰，只用一个蓝色强调色。"
       },
-      "nord": {
-        "name": "Nord",
-        "description": "来自 Nord 项目的极地蓝与灰。"
+      "ayu": {
+        "name": "Ayu",
+        "description": "近黑底上的暖琥珀色，另有一套柔和的浅色。"
       },
-      "solarized": {
-        "name": "Solarized",
-        "description": "Ethan Schoonover 的暖纸色调，配蓝色强调色。"
+      "catppuccin": {
+        "name": "Catppuccin",
+        "description": "粉彩底色，配蓝色强调色。"
+      },
+      "dracula": {
+        "name": "Dracula",
+        "description": "炭灰底上的紫与粉，辨识度最高的深色主题。"
+      },
+      "everforest": {
+        "name": "Everforest",
+        "description": "森林绿配暖灰，刻意做得柔和低对比。"
       },
       "gruvbox": {
         "name": "Gruvbox",
         "description": "复古暖灰配青绿强调色。"
       },
+      "kanagawa": {
+        "name": "Kanagawa",
+        "description": "水墨感的蓝与炭黑，取意于北斋的配色。"
+      },
+      "nightfox": {
+        "name": "Nightfox",
+        "description": "蓝灰的夜晚与暖纸色的白天。"
+      },
+      "nord": {
+        "name": "Nord",
+        "description": "来自 Nord 项目的极地蓝与灰。"
+      },
+      "one-dark": {
+        "name": "One Dark",
+        "description": "Atom 的中性灰，只用一个蓝色强调色。"
+      },
       "rose-pine": {
         "name": "Rosé Pine",
         "description": "柔和的梅紫与玫瑰色，刻意做得低对比。"
       },
-      "catppuccin": {
-        "name": "Catppuccin",
-        "description": "粉彩底色，配蓝色强调色。"
+      "solarized": {
+        "name": "Solarized",
+        "description": "Ethan Schoonover 的暖纸色调，配蓝色强调色。"
+      },
+      "tokyo-night": {
+        "name": "Tokyo Night",
+        "description": "夜之城的蓝与紫，另有一套浅白的日间版。"
+      },
+      "vesper": {
+        "name": "Vesper",
+        "description": "近黑底配暖橙强调色，几乎没有多余装饰。"
       }
     }
   },

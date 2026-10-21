@@ -3,8 +3,9 @@
 > ([中文](COLOR.zh-CN.md)) All GUI colors go through the **semantic tokens**
 > defined in [`desktop/src/styles/globals.css`](../../../desktop/src/styles/globals.css)
 > (`@theme` holds the default light palette, a `:root.dark` block overrides the
-> same variables, and each color theme adds a `[data-palette="…"]` block that
-> does the same), never raw Tailwind named colors (`blue-300` / `green-50` …).
+> same variables, and each color theme adds a generated `[data-palette="…"]`
+> block that does the same), never raw Tailwind named colors
+> (`blue-300` / `green-50` …).
 > When picking a color for a new or changed component, choose from the semantic
 > tokens below — by *what the color expresses*, not by "I want a blue".
 
@@ -16,7 +17,7 @@ persisted in `localStorage` before the first paint:
 | axis | values | applied as | picks |
 | --- | --- | --- | --- |
 | **Appearance** | Light / Dark / Follow system | `.dark` on `<html>` | which rendition is painted |
-| **Color theme** | FutureOS (default) · Nord · Solarized · Gruvbox · Rosé Pine · Catppuccin | `data-palette` on `<html>` | the hues |
+| **Color theme** | 14 palettes — FutureOS (default), Ayu, Catppuccin, Dracula, Everforest, Gruvbox, Kanagawa, Nightfox, Nord, One Dark, Rosé Pine, Solarized, Tokyo Night, Vesper | `data-palette` on `<html>` | the hues |
 
 They are separate because they answer different questions: "how bright" and
 "what does it feel like". Every color theme ships **both** renditions, so a
@@ -34,9 +35,28 @@ token with one value is identical in both renditions.
 
 ## Palettes
 
-Each palette is a block in `styles/globals.css` that reassigns **the same
-`--color-*` variables** `@theme` / `:root.dark` declare. Two selector forms per
-palette:
+Each palette is **data**: `src/theme/palettes.json` holds one object per theme
+with its token values for both renditions, its terminal palette and its Shiki
+theme. Everything that needs to know a theme reads that file —
+
+- `desktop/scripts/gen-theme-palettes.mjs` renders the `[data-palette="…"]` blocks in
+  `styles/globals.css`. They are **generated**, between the
+  `/* <theme-palettes> */` markers: edit the JSON, then
+  `node desktop/scripts/gen-theme-palettes.mjs`.
+- `src/theme/palettes.ts` is the typed accessor (ids, terminal palettes, Shiki
+  themes) used by the harness-free consumers: the embedded terminal and code
+  highlighting.
+- `lib/theme.ts` owns the *choice* (which id, persisted) and applies it as a
+  `data-palette` attribute on `<html>`.
+
+Nothing else repeats a color, and `styles/globals.test.ts` fails with the
+regeneration command when the stylesheet and the JSON disagree, so a forgotten
+run is caught rather than shipped. This is the same shape opencode uses for its
+built-in themes (one data object per theme, semantic roles with a light and a
+dark value): with fourteen palettes, hand-written CSS in three places would
+drift the first time somebody edited one of them.
+
+Each generated rule still has two selector forms:
 
 ```css
 [data-palette="nord"] { … }                      /* light rendition */
@@ -62,12 +82,56 @@ Deliberately **not** per-palette:
   the shared values stay.
 - `--shadow-*` — depth belongs to the rendition, not the hue.
 
-Each palette is derived from its upstream project's own colors (Nord's Polar
-Night / Snow Storm / Frost, Solarized's base03 / base3, Gruvbox's bg0 / bg1,
-Rosé Pine Dawn / Moon, Catppuccin Latte / Mocha) and then adjusted until it
-meets the contrast floors below. A new palette must define the same token set —
-`styles/globals.test.ts` fails otherwise, and `features/terminal/theme.ts` will
-not compile without its terminal colors.
+### The shipped themes
+
+`futureos` (the default) then alphabetical: `ayu`, `catppuccin`, `dracula`,
+`everforest`, `gruvbox`, `kanagawa`, `nightfox`, `nord`, `one-dark`,
+`rose-pine`, `solarized`, `tokyo-night`, `vesper`.
+
+Each is derived from its upstream project's own colors (Nord's Polar Night /
+Snow Storm / Frost, Solarized's base03 / base3, Gruvbox's bg0 / bg1, Rosé Pine
+Dawn / Moon, Catppuccin Latte / Mocha, Tokyo Night Night / Day, Dracula /
+Alucard, One Dark / One Light, Everforest Medium, Kanagawa Wave / Lotus,
+Nightfox / Dayfox, Ayu Mirage / Light, Vesper). Where an upstream palette is
+deliberately low-contrast (Everforest and Kanagawa most of all), its ink ramp is
+nudged until it clears the floors below — the hue stays, the legibility does
+not.
+
+**Syntax highlighting** comes from the editor theme the upstream project ships,
+so a code block belongs to the window around it rather than being a tinted
+GitHub theme. Where the project ships only one rendition, the palette names the
+nearest available editor theme for the other half:
+
+| palette | light | dark |
+| --- | --- | --- |
+| `futureos` | `github-light` | `github-dark` |
+| `ayu` | `ayu-light` | `ayu-dark` |
+| `catppuccin` | `catppuccin-latte` | `catppuccin-mocha` |
+| `dracula` | `rose-pine-dawn` (closest) | `dracula` |
+| `everforest` | `everforest-light` | `everforest-dark` |
+| `gruvbox` | `gruvbox-light-medium` | `gruvbox-dark-medium` |
+| `kanagawa` | `kanagawa-lotus` | `kanagawa-wave` |
+| `nightfox` | `one-light` (closest) | `nord` (closest) |
+| `nord` | `nord` | `nord` |
+| `one-dark` | `one-light` | `one-dark-pro` |
+| `rose-pine` | `rose-pine-dawn` | `rose-pine-moon` |
+| `solarized` | `solarized-light` | `solarized-dark` |
+| `tokyo-night` | `one-light` (closest) | `tokyo-night` |
+| `vesper` | `one-light` (closest) | `vesper` |
+
+### Adding a theme
+
+1. Add one object to `src/theme/palettes.json` (the token names are the
+   `--color-*` names from `@theme`, minus `search-*`; both renditions; a
+   terminal palette; a Shiki light/dark pair).
+2. Add its id to `THEME_PALETTES` in `lib/theme.ts` (picker order — default
+   first, then alphabetical) and its name/description to
+   `i18n/locales/{en,zh}/settings.json` under `theme.palettes`.
+3. `node desktop/scripts/gen-theme-palettes.mjs`.
+
+`src/theme/palettes.test.ts` then checks the things a hand-written palette gets
+wrong: every token present in both renditions, the contrast floors, the ANSI
+colours on the terminal's background, and that the Shiki ids actually exist.
 
 ### Contrast floors
 
@@ -211,21 +275,19 @@ Two places cannot use CSS variables and resolve the theme in JavaScript, so each
 needs a palette × rendition entry — they are the only place a new color theme
 can be forgotten silently:
 
-- **Terminal** (`features/terminal/theme.ts`): one xterm palette per color theme
-  per rendition, selected by `terminalTheme(palette, theme)` — or
+- **Terminal** (`features/terminal/theme.ts`): the xterm palette stored beside
+  the theme's tokens in `palettes.json`, read through `paletteTerminal(id,
+  rendition)` — selected by `terminalTheme(palette, theme)`, or
   `currentTerminalTheme()` when xterm is constructed, which cannot read a hook
-  value. The `Record<ThemePalette, Record<ResolvedTheme, …>>` table makes a
-  missing entry a type error, and `theme.test.ts` pins a minimum WCAG contrast
-  for every ANSI color in **every** palette.
-- **Code highlighting** (`features/markdown/useCodeHighlighter.ts`): a Shiki
-  theme per palette per rendition, chosen from `useThemePalette()` +
-  `useResolvedTheme()` and bundled up front. Each palette reuses the editor
-  theme its upstream project ships (`nord`, `solarized-light` / `solarized-dark`,
-  `gruvbox-light-medium` / `gruvbox-dark-medium`, `rose-pine-dawn` /
-  `rose-pine-moon`, `catppuccin-latte` / `catppuccin-mocha`); the default theme
-  keeps `github-light` / `github-dark`, which its palette was drawn from.
+  value. `theme.test.ts` walks every palette.
+- **Code highlighting** (`features/markdown/useCodeHighlighter.ts`): the Shiki
+  light/dark pair stored in the same object, read through `paletteShiki(id,
+  rendition)` and bundled up front. The mapping table under "The shipped
+  themes" above lists which editor theme each palette reuses.
 
-When adding a color to one of them, add it to every palette's variants.
+Both are covered by `src/theme/palettes.test.ts` (ANSI contrast on the
+terminal's own background, and that every Shiki id actually exists), so neither
+can be forgotten when a theme is added.
 
 ## Color-picking quick reference
 
@@ -255,11 +317,15 @@ When adding a color to one of them, add it to every palette's variants.
 
 ## Source
 
-Token values are defined in
-[`desktop/src/styles/globals.css`](../../../desktop/src/styles/globals.css):
-`@theme` for the default light palette, `:root.dark` for its dark rendition, the
-`[data-palette="…"]` blocks for the other color themes, and `:root` /
-`:root.dark` `--shadow-*` for shadows. **Change colors there only**; never scatter
-raw colors across components. The palette ids themselves
-(`lib/theme.ts` `THEME_PALETTES`) are the single source for the picker, the
-terminal table and the Shiki table.
+Token values live in two places, and which one depends on the kind of color:
+
+- **The default palette and shadows** —
+  [`desktop/src/styles/globals.css`](../../../desktop/src/styles/globals.css):
+  `@theme` for the light rendition, `:root.dark` for the dark one, `:root` /
+  `:root.dark` `--shadow-*` for shadows.
+- **Every other color theme** —
+  [`desktop/src/theme/palettes.json`](../../../desktop/src/theme/palettes.json),
+  rendered into the stylesheet by `desktop/scripts/gen-theme-palettes.mjs`. Do not edit
+  the generated blocks by hand; edit the JSON and regenerate.
+
+Never scatter raw colors across components.

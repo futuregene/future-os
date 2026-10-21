@@ -18,25 +18,57 @@
         "name": "FutureOS",
         "description": "The default: cool neutral greys with a single blue accent."
       },
-      "nord": {
-        "name": "Nord",
-        "description": "Arctic blues and greys from the Nord project."
+      "ayu": {
+        "name": "Ayu",
+        "description": "Warm amber on near-black, with a soft light variant."
       },
-      "solarized": {
-        "name": "Solarized",
-        "description": "Ethan Schoonover's warm paper tones with a blue accent."
+      "catppuccin": {
+        "name": "Catppuccin",
+        "description": "Pastel surfaces with a blue accent."
+      },
+      "dracula": {
+        "name": "Dracula",
+        "description": "Purple and pink on charcoal — the most recognizable dark theme."
+      },
+      "everforest": {
+        "name": "Everforest",
+        "description": "Forest greens and warm greys, deliberately low contrast."
       },
       "gruvbox": {
         "name": "Gruvbox",
         "description": "Retro warm greys with a teal accent."
       },
+      "kanagawa": {
+        "name": "Kanagawa",
+        "description": "Ink-wash blues and charcoal, after Hokusai's palette."
+      },
+      "nightfox": {
+        "name": "Nightfox",
+        "description": "Blue-grey nights and warm parchment days."
+      },
+      "nord": {
+        "name": "Nord",
+        "description": "Arctic blues and greys from the Nord project."
+      },
+      "one-dark": {
+        "name": "One Dark",
+        "description": "Atom's neutral greys with a single blue accent."
+      },
       "rose-pine": {
         "name": "Rosé Pine",
         "description": "Soft plum and rose, muted and low-contrast by design."
       },
-      "catppuccin": {
-        "name": "Catppuccin",
-        "description": "Pastel surfaces with a blue accent."
+      "solarized": {
+        "name": "Solarized",
+        "description": "Ethan Schoonover's warm paper tones with a blue accent."
+      },
+      "tokyo-night": {
+        "name": "Tokyo Night",
+        "description": "Night-city blues and violets, with a pale day variant."
+      },
+      "vesper": {
+        "name": "Vesper",
+        "description": "Near-black with a warm orange accent — almost no chrome."
       }
     }
   },

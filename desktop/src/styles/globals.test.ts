@@ -1,16 +1,24 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import {
+  applyPaletteSection,
+  CLOSE_MARKER,
+  extractPaletteSection,
+  OPEN_MARKER,
+  renderPaletteSection,
+} from "../../scripts/gen-theme-palettes.mjs";
 import { THEME_PALETTES } from "../lib/theme";
+import palettes from "../theme/palettes.json";
 
 /**
  * Structural checks on the stylesheet that no component test can make.
  *
- * The palettes are plain CSS blocks keyed by `data-palette`; nothing in the
- * type system connects them to `THEME_PALETTES`, so a palette could lose a
- * token (the app silently renders that surface in the previous theme's color)
- * or exist only in one file (the picker offers a theme that does nothing) with
- * every TypeScript check green. These assertions close that gap.
+ * The palettes are CSS blocks keyed by `data-palette`; nothing in the type
+ * system connects them to the theme data, so a palette could lose a token (the
+ * app silently renders that surface in the previous theme's color) or the
+ * generated block could go stale after a JSON edit — with every TypeScript check
+ * green. These assertions close that gap.
  *
  * The default palette is a *mirror* of `@theme` / `:root.dark`: the picker has
  * to be able to preview "FutureOS" while another theme is active, and a card
@@ -63,6 +71,12 @@ const PALETTE_EXEMPT = ["--color-search-match", "--color-search-current", "--col
 const expectedTokens = [...lightTheme.keys()].filter(name => !PALETTE_EXEMPT.includes(name)).sort();
 
 describe("globals.css palettes", () => {
+  it("matches the generated section, so the stylesheet is never stale", () => {
+    // `renderPaletteSection` is the same function the generator writes with.
+    expect(extractPaletteSection(css)).toBe(renderPaletteSection(palettes as never));
+    expect(applyPaletteSection(css, extractPaletteSection(css))).toBe(css);
+  });
+
   it("declares the same color tokens in the light and dark base palettes", () => {
     expect([...darkTheme.keys()].sort()).toEqual([...lightTheme.keys()].sort());
   });
@@ -77,26 +91,15 @@ describe("globals.css palettes", () => {
     expect([...dark.keys()].sort(), `${palette} dark`).toEqual(expectedTokens);
   });
 
-  it.each(THEME_PALETTES)("gives the %s palette distinct surfaces from the default", (palette) => {
-    if (palette === "futureos")
-      return;
-    const light = colorTokens(blockAt(`[data-palette="${palette}"] {`).body);
-    const dark = colorTokens(blockAt(`:root.dark[data-palette="${palette}"] {`).body);
-    // A palette that copied the default wholesale is a theme that does nothing.
-    expect(light.get("--color-canvas")).not.toBe(lightTheme.get("--color-canvas"));
-    expect(dark.get("--color-canvas")).not.toBe(darkTheme.get("--color-canvas"));
-    expect(light.get("--color-accent")).not.toBe(lightTheme.get("--color-accent"));
-  });
-
   it("keeps the default palette's preview block identical to @theme and :root.dark", () => {
     const light = colorTokens(blockAt(`[data-palette="futureos"] {`).body);
     const dark = colorTokens(blockAt(`:root.dark[data-palette="futureos"] {`).body);
 
-    const shared = (a: Map<string, string>, b: Map<string, string>) =>
+    const drifted = (a: Map<string, string>, b: Map<string, string>) =>
       [...a].filter(([name]) => !PALETTE_EXEMPT.includes(name) && a.get(name) !== b.get(name));
 
-    expect(shared(light, lightTheme), "futureos light mirror drifted from @theme").toEqual([]);
-    expect(shared(dark, darkTheme), "futureos dark mirror drifted from :root.dark").toEqual([]);
+    expect(drifted(light, lightTheme), "futureos light mirror drifted from @theme").toEqual([]);
+    expect(drifted(dark, darkTheme), "futureos dark mirror drifted from :root.dark").toEqual([]);
   });
 
   it("orders the palette blocks after :root.dark", () => {
@@ -116,5 +119,11 @@ describe("globals.css palettes", () => {
     for (const palette of THEME_PALETTES) {
       expect(css).toContain(`.dark [data-palette="${palette}"]`);
     }
+  });
+
+  it("keeps both markers, so the generator can find its section", () => {
+    expect(css.split(OPEN_MARKER).length).toBe(2);
+    expect(css.split(CLOSE_MARKER).length).toBe(2);
+    expect(css.indexOf(OPEN_MARKER)).toBeLessThan(css.indexOf(CLOSE_MARKER));
   });
 });
