@@ -4,6 +4,8 @@ import type { StoredThread } from "../../integrations/storage/threadStore";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetAllCommandBindings } from "../../features/keyboard/shortcuts";
+import { installShortcuts } from "../../test/installShortcuts";
 import { ActivityRail } from "./ActivityRail";
 import { RECENT_PAGE_SIZE } from "./recentOrder";
 
@@ -96,6 +98,17 @@ function props(
     workspaces: [],
     ...overrides,
   };
+}
+
+/**
+ * The rows' own checkboxes, by label.
+ *
+ * The batch's toolbar has its own select-all box; these are the rows'.
+ */
+function rowCheckboxes(container: HTMLElement): string[] {
+  return [...container.querySelectorAll("input[type=\"checkbox\"]")]
+    .map(box => box.getAttribute("aria-label") ?? "")
+    .filter(label => label.startsWith("Select "));
 }
 
 /** Switch the rail to the second view, the way a reader does. */
@@ -299,6 +312,105 @@ describe("the recent view's window", () => {
     // Nothing left to offer, so the control goes with it.
     expect(view.container.querySelector("[data-testid=\"recent-show-more\"]")).toBeNull();
     view.unmount();
+  });
+});
+
+describe("a batch in the recent view", () => {
+  it("reaches a pinned conversation, which the tree leaves out", () => {
+    // The tree lifts a pin above its groups, so a group's "select all" must not
+    // sweep it up and it carries no checkbox. This view opens no such section —
+    // the pin is a marker — so the row is one of the list's own rows, and leaving
+    // it unselectable would put one row of this very list beyond the batch.
+    const threads = [
+      thread("pinned", { title: "Pinned one", pinned: true, lastMessageAt: now - minute }),
+      thread("plain", { title: "Plain one", lastMessageAt: now - hour }),
+    ];
+    const view = mount(<ActivityRail {...props(threads)} />);
+
+    // The tree: the pinned row is its own section, outside every group, so the
+    // chat section's batch leaves it out.
+    act(() => view.container.querySelector<HTMLButtonElement>("[aria-label=\"Chat section actions\"]")!.click());
+    act(() => [...view.container.querySelectorAll<HTMLElement>("button")]
+      .find(element => element.textContent === "Select chats")!
+      .click());
+    expect(rowCheckboxes(view.container)).toEqual(["Select Plain one"]);
+    view.unmount();
+  });
+
+  it("offers every drawn row once the recent view is the list", () => {
+    const threads = [
+      thread("pinned", { title: "Pinned one", pinned: true, lastMessageAt: now - minute }),
+      thread("plain", { title: "Plain one", lastMessageAt: now - hour }),
+    ];
+    const view = mount(<ActivityRail {...props(threads)} />);
+    showRecent(view.container);
+    act(() => view.container.querySelector<HTMLButtonElement>("[aria-label=\"Recent list actions\"]")!.click());
+    act(() => [...view.container.querySelectorAll<HTMLElement>("button")]
+      .find(element => element.textContent === "Select chats")!
+      .click());
+    expect(rowCheckboxes(view.container)).toEqual([
+      "Select Pinned one",
+      "Select Plain one",
+    ]);
+    view.unmount();
+  });
+});
+
+describe("the recent view from the keyboard", () => {
+  it("walks the drawn order, not the tree's", async () => {
+    // The rail's walk and the list it walks are one order: a view that drew one
+    // list and stepped another would move the selection somewhere the reader
+    // cannot see. The two orders must *differ* in this fixture or a walk that
+    // still used the tree's would pass: `busy` started last and spoke longest
+    // ago, so it is last in the tree and first here.
+    resetAllCommandBindings();
+    const uninstallShortcuts = installShortcuts();
+    const onSelectThread = vi.fn();
+    const view = mount(
+      <ActivityRail {...props(
+        [
+          thread("busy", { title: "Busy", createdAt: now - minute, lastMessageAt: now - 3 * hour }),
+          thread("fresh", { title: "Fresh", createdAt: now - 5 * hour, lastMessageAt: now - minute }),
+          thread("idle-old", { title: "Idle old", createdAt: now - 6 * hour, lastMessageAt: now - 5 * hour }),
+        ],
+        { onSelectThread, threadRunStatuses: { busy: { status: "running", endedAt: null } } },
+      )}
+      />,
+    );
+    showRecent(view.container);
+
+    const press = (init: KeyboardEventInit) => act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+    });
+    // Nothing selected: the fine move starts at the first drawn row, which is the
+    // active one — the same order the list draws.
+    press({ code: "BracketRight", ctrlKey: true, key: "]", shiftKey: true });
+    expect(onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "busy" }));
+
+    // From the active row, the next stop is the finished one under it.
+    view.rerender(
+      <ActivityRail {...props(
+        [
+          thread("busy", { title: "Busy", createdAt: now - minute, lastMessageAt: now - 3 * hour }),
+          thread("fresh", { title: "Fresh", createdAt: now - 5 * hour, lastMessageAt: now - minute }),
+          thread("idle-old", { title: "Idle old", createdAt: now - 6 * hour, lastMessageAt: now - 5 * hour }),
+        ],
+        {
+          activeThreadId: "busy",
+          onSelectThread,
+          threadRunStatuses: { busy: { status: "running", endedAt: null } },
+        },
+      )}
+      />,
+    );
+    press({ code: "BracketRight", ctrlKey: true, key: "]", shiftKey: true });
+    // The next stop is the row drawn under it — the newest *finished* conversation,
+    // which is the tree's first row.
+    expect(onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "fresh" }));
+
+    view.unmount();
+    uninstallShortcuts();
+    resetAllCommandBindings();
   });
 });
 
