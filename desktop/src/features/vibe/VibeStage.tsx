@@ -35,6 +35,7 @@ import { moveInOrder, resolveOrder } from "./order";
 import { vibeCellsOf } from "./vibeCells";
 import { setVibeCellModel, setVibeCellThinkingLevel, useVibeCellSettings } from "./vibeCellSettings";
 import { VibeHintBar } from "./VibeHintBar";
+import { VibeKeyProbe } from "./VibeKeyProbe";
 import { VibeMenu } from "./VibeMenu";
 import { readVibePreferences, writeVibeColumns, writeVibeDevice, writeVibeOrder } from "./vibePreferences";
 import { useVibeQueue } from "./vibeQueue";
@@ -1052,6 +1053,10 @@ export function VibeStage({
       {menuOpen
         ? <VibeMenu onClose={closeMenu} rows={menuRows} title={t("menu.title")} />
         : null}
+      {/* The key self-check: a read-only readout for filling in the remote-control matrix
+          (`VIBE-REMOTE-KEYS.md`). It is not a command and consumes nothing — see
+          `keyProbe.ts` — and a build without the opt-in renders nothing at all. */}
+      <VibeKeyProbe />
       {addOpen
         ? (
             <AddToVibeDialog

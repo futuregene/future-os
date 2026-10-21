@@ -66,5 +66,13 @@
     "held": "The queued message stays queued: this conversation's box already has text",
     "returned": "Back in the box",
     "cancel": "Take the queued message back"
+  },
+  "probe": {
+    "title": "Key check (read-only)",
+    "hint": "Press ⌥⇧K three times to close. Nothing here blocks a key.",
+    "copy": "Copy",
+    "copied": "Copied",
+    "close": "Close",
+    "empty": "Press any key, or a button on the remote."
   }
 }

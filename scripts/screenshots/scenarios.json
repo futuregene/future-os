@@ -2438,6 +2438,56 @@
             "shot": "d-vibe-queue.png"
           }
         ]
+      },
+      "vibe-keyprobe": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_longformer,th_sc&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "(() => {const panel = document.querySelector('[data-vibe-key-probe]');if (!panel) return JSON.stringify({open: false});return JSON.stringify({open: true,lines: [...panel.querySelectorAll('div.font-mono > div')].map(l => l.textContent),});})()"
+          },
+          {
+            "eval": "(() => {for (let i = 0; i < 3; i++)  window.dispatchEvent(new KeyboardEvent('keydown', {key: 'k', code: 'KeyK', altKey: true, shiftKey: true, bubbles: true, cancelable: true}));return 'gesture';})()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "eval": "(() => {const panel = document.querySelector('[data-vibe-key-probe]');if (!panel) return JSON.stringify({open: false});return JSON.stringify({open: true,lines: [...panel.querySelectorAll('div.font-mono > div')].map(l => l.textContent),});})()"
+          },
+          {
+            "eval": "(function(){const c='ArrowUp';window.dispatchEvent(new KeyboardEvent('keydown',{key:c,code:c,bubbles:true,cancelable:true}));return 'ArrowUp';})()"
+          },
+          {
+            "wait": 200
+          },
+          {
+            "eval": "(function(){const c='Home';window.dispatchEvent(new KeyboardEvent('keydown',{key:c,code:c,bubbles:true,cancelable:true}));return 'Home';})()"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "eval": "(() => {const panel = document.querySelector('[data-vibe-key-probe]');if (!panel) return JSON.stringify({open: false});return JSON.stringify({open: true,lines: [...panel.querySelectorAll('div.font-mono > div')].map(l => l.textContent),});})()"
+          },
+          {
+            "eval": "JSON.stringify({focused: document.querySelector('[data-vibe-layer]')?.getAttribute('data-vibe-focused') ?? null, probe: !!document.querySelector('[data-vibe-key-probe]')})"
+          },
+          {
+            "eval": "(function(){window.dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',code:'ArrowRight',bubbles:true,cancelable:true}));return 'right';})()"
+          },
+          {
+            "wait": 300
+          },
+          {
+            "eval": "JSON.stringify({focused: document.querySelector('[data-vibe-layer]')?.getAttribute('data-vibe-focused') ?? null, probe: !!document.querySelector('[data-vibe-key-probe]')})"
+          },
+          {
+            "shot": "d-vibe-keyprobe.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",

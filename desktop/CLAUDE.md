@@ -17,6 +17,7 @@ FutureOS desktop app: Tauri + React + TypeScript, frontend `src/`, Tauri backend
 | `docs/internals/desktop/embedded-terminal.md` | Embedded terminal: architecture, wire protocol, security model, lifecycle, platform status | **Read** before touching `src-tauri/src/terminal/` or `src/features/terminal/`; **modify** when the protocol or its boundaries change |
 | `docs/internals/desktop/KEYBINDINGS.md` | Keyboard shortcuts: the command table, dispatch rules, where each command is registered, storage, defaults, what the recorder refuses | **Read** before adding or changing a shortcut, or touching `lib/keybinding.ts` / `src/features/keyboard/` |
 | `docs/internals/desktop/VIBE.md` | The Vibe panel (full-screen grid of pinned conversations): membership, order, the three layers and the single-editable invariant, dictation, the remote control's keys and what degrades without one, staging | **Read** before touching `src/features/vibe/`, the panel's scopes, or anything that focuses a composer |
+| `docs/internals/desktop/VIBE-REMOTE-KEYS.md` | The remote-control key checklist and the measured matrix (empty: untested), plus the panel's read-only key readout that fills it in | **Read** before claiming a remote button works, and **modify** when a measurement arrives |
 
 > `docs/internals/desktop/PRODUCT.md` / `docs/internals/desktop/ER.md` are large: use `Read` with `offset/limit` to read **specific sections** from the chapter index below — don't load the whole file.
 

@@ -383,6 +383,12 @@ to cover twenty-odd actions:
 | `Menu` | the layer's menu | the layer's menu | the layer's menu |
 | `Home` | first cell | jump to the live end | jump to the live end |
 
+**None of this has been verified on hardware.** The table above is the design, not a
+measurement: which button a given remote actually sends is recorded in
+[`VIBE-REMOTE-KEYS.md`](VIBE-REMOTE-KEYS.md), and that matrix is empty. The panel ships a
+**read-only key readout** for filling it in (`⌥⇧K` three times; see the same file) — it
+is not a command and consumes no press.
+
 **What the panel answers today.** Arrows, `OK`, `Back`, the digits and `Menu` work
 (P1-1 added the menu); `Home`, the attention queue, the add dialog and the machine
 filter are still P1 and are **not** drawn in the hint line until they have a
@@ -511,11 +517,12 @@ Still open, and honestly not covered:
   queue does **not** steal an ordinary send — and the marker, the hand-back and the
   cancel row are covered in `VibeStage.test.tsx` and `Composer.inputLayer.test.tsx`.
 
-On hardware (manual, recorded in the matrix below):
-
-| Remote model | Platform | `↑↓←→` | OK | Back | Menu | Home | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| *(to be filled on first hardware pass)* | macOS | | | | | | |
+**On hardware: not measured.** The matrix lives in
+[`VIBE-REMOTE-KEYS.md` §3](VIBE-REMOTE-KEYS.md), is empty, and every cell says "untested".
+Its §1 is the printable per-button checklist, and the panel's read-only key readout is
+what fills it in — three `⌥⇧K` presses, then press the remote. Nothing here or in
+`KEYBINDINGS.md` may claim a button works until a row there says so, and every row
+records who measured it, when, on which machine and which model.
 
 ## 12. Storage
 
