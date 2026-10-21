@@ -39,5 +39,22 @@
     "failed": "Failed",
     "finished": "Finished",
     "none": "Nothing is waiting for you"
+  },
+  "add": {
+    "title": "Add a conversation",
+    "close": "Close",
+    "machine": "Machine",
+    "workspace": "Workspace",
+    "filter": "Filter by title",
+    "empty": "Nothing here can be added. Every conversation in this place is already pinned.",
+    "add": "Add",
+    "added": "In the panel",
+    "footer": "Adding pins the conversation: it appears here and in the sidebar's pinned section."
+  },
+  "devices": {
+    "local": "This Mac",
+    "chats": "Chats",
+    "all": "All machines",
+    "label": "Machines"
   }
 }

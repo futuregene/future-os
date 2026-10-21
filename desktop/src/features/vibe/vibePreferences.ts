@@ -14,9 +14,19 @@
  * than guessed at.
  */
 
+import type { VibeDeviceFilter } from "./vibeCells";
+
 export interface VibePreferences {
   /** The panel order as the user left it, oldest first. See `order.ts`. */
   order: string[];
+  /**
+   * Which machines the panel shows, as last chosen.
+   *
+   * A view preference like the columns: per machine, read on the render path, and
+   * worth remembering — a reader who pinned their attention to one host should not
+   * have to say so again on the next launch.
+   */
+  device: VibeDeviceFilter;
   /**
    * An explicit column count, or `null` for the automatic layout.
    *
@@ -29,7 +39,7 @@ export interface VibePreferences {
 const ORDER_KEY = "future.vibe.order";
 const PREFS_KEY = "future.vibe.prefs";
 
-const EMPTY: VibePreferences = { columns: null, order: [] };
+const EMPTY: VibePreferences = { columns: null, device: { kind: "all" }, order: [] };
 
 function readOrder(): string[] {
   try {
@@ -45,6 +55,31 @@ function readOrder(): string[] {
   }
   catch {
     return [];
+  }
+}
+
+function readDevice(): VibeDeviceFilter {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    if (!raw)
+      return { kind: "all" };
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null)
+      return { kind: "all" };
+    const device = (parsed as { device?: unknown }).device;
+    if (typeof device !== "object" || device === null)
+      return { kind: "all" };
+    const { kind, desktopId } = device as { kind?: unknown; desktopId?: unknown };
+    if (kind === "all")
+      return { kind: "all" };
+    // A machine id is only meaningful with `device`; anything else is dropped rather
+    // than guessed at, and "all" is the answer that shows something either way.
+    if (kind === "device" && typeof desktopId === "string" && desktopId)
+      return { desktopId, kind: "device" };
+    return { kind: "all" };
+  }
+  catch {
+    return { kind: "all" };
   }
 }
 
@@ -66,7 +101,7 @@ function readColumns(): number | null {
 
 /** The stored preferences, for a caller that is not a component. */
 export function readVibePreferences(): VibePreferences {
-  return { columns: readColumns(), order: readOrder() };
+  return { columns: readColumns(), device: readDevice(), order: readOrder() };
 }
 
 export function writeVibeOrder(order: readonly string[]): void {
@@ -81,11 +116,34 @@ export function writeVibeOrder(order: readonly string[]): void {
 }
 
 export function writeVibeColumns(columns: number | null): void {
+  writePrefs(current => ({ ...current, columns }));
+}
+
+/** Remember which machines the panel shows. */
+export function writeVibeDevice(device: VibeDeviceFilter): void {
+  writePrefs(current => ({ ...current, device }));
+}
+
+/**
+ * Merge one field into the preferences document.
+ *
+ * Read-modify-write rather than a whole-object write, because the panel writes two
+ * different fields from two different keys and a write that carried only its own
+ * field would erase the other one on the next launch.
+ */
+function writePrefs(update: (current: { columns: number | null; device: VibeDeviceFilter }) => { columns: number | null; device: VibeDeviceFilter }): void {
   try {
-    localStorage.setItem(PREFS_KEY, JSON.stringify({ columns }));
+    const raw = localStorage.getItem(PREFS_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : {};
+    const current = typeof parsed === "object" && parsed !== null ? parsed as Record<string, unknown> : {};
+    const next = update({
+      columns: typeof current.columns === "number" ? current.columns : null,
+      device: readDevice(),
+    });
+    localStorage.setItem(PREFS_KEY, JSON.stringify(next));
   }
   catch {
-    // As above.
+    // Best effort: the session keeps working from state.
   }
 }
 

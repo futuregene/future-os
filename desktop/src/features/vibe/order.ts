@@ -29,8 +29,14 @@
 export interface VibeMemberKey {
   /** `local:<threadId>` / `remote:<desktopId>:<sessionId>` — see `vibeKeyOf`. */
   key: string;
-  /** Unix millis; the default position comes from this. */
-  createdAt: number;
+  /**
+   * Unix millis, or `null` when the source cannot say.
+   *
+   * A host's catalogue reports no creation time, so a remote member has none. It
+   * still has a place — the one the user gave it, or the end of the list — and a
+   * `null` never reorders a member that already has one.
+   */
+  createdAt: number | null;
 }
 
 /**
@@ -66,15 +72,26 @@ export function resolveOrder(
   }
   const unplaced = members
     .filter(member => !ordered.includes(member.key))
-    .sort((left, right) => left.createdAt - right.createdAt || left.key.localeCompare(right.key));
+    .sort((left, right) => timeOf(left) - timeOf(right) || left.key.localeCompare(right.key));
   for (const member of unplaced) {
-    const index = ordered.findIndex(key => byKey.get(key)!.createdAt > member.createdAt);
+    // An unknown time never inserts *before* a known one: "I cannot say when this
+    // was made" must not claim to be older than everything, and the end of the list
+    // is where a reader expects a new member they can then move.
+    const at = timeOf(member);
+    const index = at === Number.POSITIVE_INFINITY
+      ? -1
+      : ordered.findIndex(key => timeOf(byKey.get(key)!) > at);
     if (index === -1)
       ordered.push(member.key);
     else
       ordered.splice(index, 0, member.key);
   }
   return ordered;
+}
+
+/** A member's time for ordering; unknown sorts last. */
+function timeOf(member: VibeMemberKey): number {
+  return member.createdAt ?? Number.POSITIVE_INFINITY;
 }
 
 /**
