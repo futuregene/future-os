@@ -14,8 +14,22 @@ impl TaskExecutor for DesktopExecutor {
         crate::runtime::spawn_native(job);
     }
     fn connection_options(&self) -> future_remote_server::connection::ConnectionOptions {
-        let mut options = future_remote_server::connection::ConnectionOptions::default();
-        options.root_bundle = trust::root_bundle();
+        // Built through the type's own setter rather than a struct literal.
+        // With `test-support` the struct also carries a private
+        // `loopback_fixture` field, so neither a literal nor the
+        // `..Default::default()` update syntax is constructible from this crate
+        // (`E0451`); without it the struct has one field and the update syntax
+        // is `needless_update`. One literal cannot satisfy both, and a blanket
+        // `allow` would hide the second case forever.
+        //
+        // The setter also removes the lint that started this: `let mut x =
+        // Default::default(); x.field = …` is `field_reassign_with_default`, and
+        // the crate's own `test-support` feature was hiding it — with that
+        // feature off, `-p future-host --lib` saw the lint while the
+        // workspace-wide pass, where a dev-dependency enables the feature for
+        // the whole graph, did not.
+        let options = future_remote_server::connection::ConnectionOptions::default()
+            .with_root_bundle(trust::root_bundle());
         #[cfg(any(test, feature = "test-support"))]
         let options = if crate::remote::fixture_mode() {
             options.for_loopback_fixture()
