@@ -1,0 +1,36 @@
+ [38;5;245mImage support: yes[39m
+ [38;5;245mContext window: 128K[39m
+ [38;5;245mSession: mock-session-1[39m
+ [38;5;245mCWD: /mock[39m
+ [38;5;245mThinking: off[39m
+ [38;5;245mPermission: all[39m
+ [38;5;245mApproval mode: (not set)[39m
+ [38;5;245mQueries: 42[39m
+ [38;5;245mAuto compaction: off[39m
+ [38;5;245mStreaming: no[39m
+ [38;5;245mContext: 48000 / 128000 (37.5%)[39m
+ [38;5;245m  file: /mock/session.jsonl[39m
+ [38;5;245m  messages: 139[39m
+ [38;5;245m  user/assistant: 42/40[39m
+ [38;5;245m  tool calls/results: 57/57[39m
+ [38;5;245m  tokens in/out: 812000/12000[39m
+ [38;5;245m  tokens cache read/write: 780000/12000
+[39m [38;5;245m  tokens total: 824000[39m
+ [38;5;245m  cost: 8.42[39m
+
+ [38;5;245mTool permission level raised to Workspace — the approval mode only asks while[39m
+ [38;5;245mthe gate is armed.[39m
+
+   [38;5;245m┌────────────────────────────────────────────────────────────────────────┐[39m
+   [38;5;245m│ [1m[38;5;39mTool use[0m[38;5;245m  ·  MEDIUM risk[39m                                               [38;5;245m│[39m
+   [38;5;245m│ [39m                                                                       [38;5;245m│[39m
+   [38;5;245m│ [39m  [38;5;252mApprove shell command[39m                                                [38;5;245m│[39m
+   [38;5;245m│ [39m  [38;5;143m$ curl -s https://example.com | head -c 2000[39m                         [38;5;245m│[39m
+   [38;5;245m│ [39m  [38;5;245mAgent wants to run a shell command.[39m                                  [38;5;245m│[39m
+   [38;5;245m│ [39m                                                                       [38;5;245m│[39m
+   [38;5;245m│ [38;5;252mDo you want to proceed?[39m                                                [38;5;245m│[39m
+   [38;5;245m│ [38;5;39m❯[39m 1. [38;5;252mYes[39m                                                               [38;5;245m│[39m
+   [38;5;245m│ [39m  2. [38;5;245mNo[39m                                                                [38;5;245m│[39m
+   [38;5;245m│ [39m                                                                       [38;5;245m│[39m
+   [38;5;245m│ ↑/↓ select · enter confirm · esc cancel[39m                                [38;5;245m│[39m
+   [38;5;245m└────────────────────────────────────────────────────────────────────────┘[39m

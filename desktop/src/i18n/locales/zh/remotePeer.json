@@ -163,13 +163,13 @@
   "approvalTierLabel.sandboxUnavailable": "沙箱保护（不可用）",
   "approvalTierLabel.auto": "自动审批",
   "approvalTierLabel.autoUnsupported": "自动审批（那台电脑不支持）",
-  "approvalTierLabel.off": "完全放开",
+  "approvalTierLabel.off": "完全访问",
   "approvalTierDescription": {
     "default": "文件访问遵循审批规则；只读白名单命令直接放行，其余命令需批准。不启用 OS 沙箱。",
     "manual": "文件访问遵循审批规则；只读白名单命令直接放行，其余命令需批准。不启用 OS 沙箱。",
     "sandbox": "命令在那台电脑的沙箱中运行，必要时请求批准。",
     "auto": "自动判断是否放行，保留沙箱保护。",
-    "off": "全部放开，不再询问，也不启用沙箱。"
+    "off": "跳过所有审批，也不启用沙箱——命令以那台电脑的完整权限执行。"
   },
   "tasksManage": "管理",
   "tasksRunGone": "那次运行的会话已经不在了。",

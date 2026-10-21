@@ -37,4 +37,4 @@ Three steps take you from download to your first answer:
 
 ---
 
-FutureOS desktop runs on **macOS, Windows and Linux**. Android/iOS clients connect through [[Remote]]. Configure [[approvals and sandboxing|Sandbox]] before running untrusted tasks; the desktop defaults to Unrestricted.
+FutureOS desktop runs on **macOS, Windows and Linux**. Android/iOS clients connect through [[Remote]]. Configure [[approvals and sandboxing|Sandbox]] before running untrusted tasks; the desktop defaults to Full access.

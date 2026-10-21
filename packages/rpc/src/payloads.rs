@@ -62,8 +62,11 @@ pub struct GetStatePayload {
     pub requested_run: Option<Value>,
     /// Approval-request card payloads the session is parked on.
     pub pending_approvals: Vec<Value>,
-    /// The sandbox tier this session's policy was set to. `None` means no
-    /// policy was ever set, which is not the same as `Some("off")`.
+    /// The approval mode this session's policy was set to —
+    /// `"manual" | "sandbox" | "auto" | "off"` (the agent's
+    /// `SandboxPolicy::mode()`; `auto` is the sandbox tier plus the model
+    /// reviewer). `None` means no policy was ever set, which is not the same as
+    /// `Some("off")`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_tier: Option<String>,
     /// The session's persistent system-prompt append segment; empty when unset.

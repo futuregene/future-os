@@ -23,7 +23,7 @@ Agent；默认端点不存在且实例锁空闲时，在自身进程内运行完
 futureos 只启动 GUI，原 --headless 选项已移除。
 
 【可选沙箱】
-桌面默认不受限，请在设置中按需选择手动或沙箱模式。
+桌面默认是完全访问模式，请在设置中按需选择手动或沙箱模式。
 Linux 沙箱需要可信系统 Bubblewrap >= 0.9.0（应用不捆绑）：
     Debian/Ubuntu: sudo apt install bubblewrap
     Fedora:        sudo dnf install bubblewrap

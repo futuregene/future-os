@@ -14,7 +14,7 @@
 - **Approval mode(批准模式)** —— agent 在操作前询问的程度:
   - **Manual(手动)** —— 文件访问遵循 Allow/Ask/Deny 路径规则；shell 除只读白名单外先询问。
   - **Sandboxed(沙箱)** —— 可用时使用 macOS Seatbelt、Linux 系统 Bubblewrap 或 Windows 受限令牌写保护；文件访问仍遵循路径规则，各平台保护范围不同。
-  - **Unrestricted(不受限，默认)** —— 不询问、不沙箱，一切照跑。
+  - **Full access（完全访问，默认）** —— 不询问、不沙箱，一切照跑。
 - **Auto-upgrade skills(技能自动升级)** —— 每次应用打开时,静默把已安装技能升级到最新版本。
 - **Skill recommendations（技能推荐）**（默认开启）—— 发送消息时，最多推荐一个你尚未安装的技能。
 - **Generate a title after the first answer（首轮回答后生成标题）**（默认开启）—— 新会话首次成功回答后自动命名；之后的回答不会再次触发。
