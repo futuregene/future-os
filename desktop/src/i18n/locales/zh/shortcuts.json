@@ -100,7 +100,8 @@
       "open": "跳转到命令或对话"
     },
     "shortcuts": {
-      "help": "查看全部快捷键"
+      "help": "查看全部快捷键",
+      "settings": "快捷键设置"
     }
   },
   "page": {
@@ -141,6 +142,15 @@
   "cheatSheet": {
     "ariaLabel": "全部快捷键",
     "title": "快捷键",
-    "hint": "这里列出的是当前生效的键位"
+    "hint": "这里列出的是当前生效的键位",
+    "edit": "编辑快捷键"
+  },
+  "keywords": {
+    "shortcuts.settings": [
+      "改键",
+      "按键设置",
+      "热键",
+      "绑定"
+    ]
   }
 }

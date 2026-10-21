@@ -9,12 +9,20 @@
  * A section per category, in the table's order. A command that is scoped to a mode
  * says so on its group, not on every row; a command the user unbound is simply
  * absent (there is nothing to press).
+ *
+ * The header's one button goes to the page that *edits* these binds. It runs the
+ * `shortcuts.settings` **command** rather than opening Settings itself: the
+ * command is in the table, so it is rebindable and reachable from the palette and
+ * the menu, and a second "open settings on the shortcuts page" path here would be
+ * a second thing to keep in step.
  */
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { Button } from "../../components/ui/Button";
 import { Overlay } from "../../components/ui/Overlay";
 import { isMacOS } from "../../lib/platform";
 import { CATEGORIES, COMMANDS, scopeOf } from "../keyboard/catalog";
+import { hasCommandHandler, runCommand } from "../keyboard/commands";
 import { bindingLabel, useShortcutOverrides } from "../keyboard/shortcuts";
 
 export function ShortcutCheatSheet({ onClose, open }: { onClose: () => void; open: boolean }) {
@@ -43,9 +51,30 @@ export function ShortcutCheatSheet({ onClose, open }: { onClose: () => void; ope
         className="relative z-10 flex max-h-[80vh] w-full max-w-2xl flex-col overflow-hidden rounded-xl border border-line-soft bg-surface shadow-dialog"
         role="dialog"
       >
-        <header className="flex shrink-0 items-baseline justify-between border-b border-line-soft px-5 py-3">
-          <h2 className="text-base font-semibold text-ink">{t("cheatSheet.title")}</h2>
-          <span className="text-xs text-ink-muted">{t("cheatSheet.hint")}</span>
+        <header className="flex shrink-0 items-center justify-between gap-3 border-b border-line-soft px-5 py-3">
+          <div className="flex min-w-0 items-baseline gap-3">
+            <h2 className="text-base font-semibold text-ink">{t("cheatSheet.title")}</h2>
+            <span className="truncate text-xs text-ink-muted">{t("cheatSheet.hint")}</span>
+          </div>
+          {/* Only while the command has an owner: on the onboarding gate there is no
+              settings page to reach, and a button that does nothing is worse than
+              none. `available` is read per render, and this dialog renders on open. */}
+          {hasCommandHandler("shortcuts.settings")
+            ? (
+                <Button
+                  onClick={() => {
+                    // Close first: the settings dialog is the next overlay, and two
+                    // stacked the wrong way round is a dialog nobody can see.
+                    onClose();
+                    runCommand("shortcuts.settings");
+                  }}
+                  size="xs"
+                  variant="secondary"
+                >
+                  {t("cheatSheet.edit")}
+                </Button>
+              )
+            : null}
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
           {groups.map(group => (

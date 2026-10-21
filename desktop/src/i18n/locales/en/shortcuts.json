@@ -100,7 +100,8 @@
       "open": "Jump to a command or conversation"
     },
     "shortcuts": {
-      "help": "Show all keyboard shortcuts"
+      "help": "Show all keyboard shortcuts",
+      "settings": "Keyboard shortcut settings"
     }
   },
   "page": {
@@ -141,6 +142,17 @@
   "cheatSheet": {
     "ariaLabel": "All keyboard shortcuts",
     "title": "Keyboard shortcuts",
-    "hint": "These are the keys in effect now"
+    "hint": "These are the keys in effect now",
+    "edit": "Edit shortcuts"
+  },
+  "keywords": {
+    "shortcuts.settings": [
+      "keybind",
+      "keybinding",
+      "hotkey",
+      "keys",
+      "rebind",
+      "shortcut settings"
+    ]
   }
 }

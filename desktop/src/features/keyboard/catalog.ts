@@ -53,6 +53,7 @@ export type CommandId
     // Search and help: the two entries that exist to *find* the others.
     | "palette.open"
     | "shortcuts.help"
+    | "shortcuts.settings"
     // The full-screen panel of pinned conversations ("Vibe"). Scoped: in it the
     // grid answers the bare keys, and a key it binds may shadow a global one.
     | "vibe.toggle"
@@ -187,6 +188,10 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "palette.open", category: "palette", defaultBinding: "mod+k", inTerminal: false },
   { id: "shortcuts.help", category: "palette", defaultBinding: "mod+slash", inTerminal: false },
   { id: "settings.open", category: "settings", defaultBinding: "mod+comma", inTerminal: false },
+  // Settings, but straight to the page that edits these bindings — the one place
+  // `mod+/` sends a reader who has just seen a key they want to change. `mod+,`
+  // keeps opening Settings on its first page: this is an addition, not a move.
+  { id: "shortcuts.settings", category: "settings", defaultBinding: "mod+shift+comma", inTerminal: false },
 
   // ---- Vibe panel (full-screen grid of pinned conversations) ----------------
   //

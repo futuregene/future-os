@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { clearCommandHandlers, registerCommand } from "../keyboard/commands";
 import { resetAllCommandBindings, setCommandBinding } from "../keyboard/shortcuts";
 import { ShortcutCheatSheet } from "./ShortcutCheatSheet";
 
@@ -23,6 +24,7 @@ function keysFor(label: string): string | null {
 
 beforeEach(() => {
   localStorage.clear();
+  clearCommandHandlers();
   resetAllCommandBindings();
   container = document.createElement("div");
   document.body.append(container);
@@ -32,6 +34,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  clearCommandHandlers();
   resetAllCommandBindings();
 });
 
@@ -73,6 +76,30 @@ describe("keyboard shortcut cheat sheet", () => {
     mount();
     // The Vibe panel's rows are bare keys, so the group says when they apply.
     expect(container.textContent).toContain("Only while the Vibe panel is open");
+  });
+
+  it("sends a reader to the page that edits these keys", () => {
+    // The button is the command, not a second way into Settings: a rebinding of
+    // `shortcuts.settings` moves the key, and this button still says what it does.
+    const onClose = vi.fn();
+    const edit = vi.fn();
+    const unregister = registerCommand("shortcuts.settings", edit);
+    act(() => root.render(<ShortcutCheatSheet onClose={onClose} open />));
+
+    const button = [...container.querySelectorAll("button")].find(node => node.textContent === "Edit shortcuts");
+    expect(button).toBeTruthy();
+    act(() => button!.click());
+    expect(edit).toHaveBeenCalledTimes(1);
+    // Closed first, so the settings dialog is the overlay on top.
+    expect(onClose).toHaveBeenCalledTimes(1);
+    unregister();
+  });
+
+  it("offers no edit button while nothing owns that command", () => {
+    // On the onboarding gate there is no settings page to reach; a button that
+    // does nothing is worse than none.
+    mount();
+    expect([...container.querySelectorAll("button")].some(node => node.textContent === "Edit shortcuts")).toBe(false);
   });
 
   it("renders nothing when closed", () => {

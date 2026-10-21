@@ -249,12 +249,27 @@ and the rail's "next" are the same command on the same key.
 
 ## Finding a key: the palette and the cheat sheet
 
-Two entries exist to find the others, both global and both rebindable:
+Three entries exist around finding and changing the others, all global and all
+rebindable:
 
 | Action | Default | What it answers |
 | --- | --- | --- |
 | Jump to a command or conversation (`palette.open`) | `mod+k` | *do this* / *go there* |
 | Show all shortcuts (`shortcuts.help`) | `mod+/` | *what can I press* |
+| Keyboard shortcut settings (`shortcuts.settings`) | `mod+shift+,` | *change one* |
+
+`settings.open` keeps `mod+,` and keeps opening Settings on its **first** page:
+`mod+shift+,` is an addition, not a move, so the page a reader sees when they open
+settings is unchanged. The cheat sheet's header carries the one button it needs —
+*Edit shortcuts* — and that button **runs the `shortcuts.settings` command** rather
+than opening Settings itself, so there is one path to that page (`runCommand`),
+rebindable and reachable from the palette and the macOS menu like any other.
+
+It is also findable by words its label does not contain: the palette matches
+`keywords.<id>` as well as the label (`shortcuts.json`), so "keybind", "hotkey" and
+"rebind" reach the shortcut settings row. An alias only ever *finds* a row — a
+label match always ranks above one — so adding keywords cannot push the command
+someone searched for by name down the list.
 
 **The palette is not a second `mod+shift+f`.** `mod+shift+f` filters the rail's
 list in place — it narrows what is already on screen; the palette navigates,
