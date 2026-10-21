@@ -46,7 +46,7 @@ async function mount(filter: DeviceFilter, peers: RemotePeer[] = [peer]) {
 
 /** Open the picker and read each machine's entry note, by machine id. */
 async function notes(peers: RemotePeer[]): Promise<Record<string, string>> {
-  const view = await mount({ desktopId: null, kind: "device" }, peers);
+  const view = await mount({ kind: "all" }, peers);
   const button = view.container.querySelector("button[aria-haspopup='listbox']")!;
   await act(async () => {
     button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -68,28 +68,20 @@ function iconName(node: Element | null): string | null {
   return names[0] ?? null;
 }
 
-/**
- * The picture a control leads with: a lucide icon, or the glyph a machine
- * carries when it has one (a paired machine's icon is an emoji, not an SVG).
- */
-function picture(node: Element | null): string | null {
-  const leading = node ? node.querySelector("span") : null;
-  return iconName(leading) ?? leading?.textContent ?? null;
-}
-
-it("shows the same picture for the selection as for the entry that selects it", async () => {
-  for (const filter of [
-    { desktopId: null, kind: "device" } as DeviceFilter,
-    { desktopId: "desktop_a", kind: "device" } as DeviceFilter,
-  ]) {
+it("shows the same icon for the selection as for the entry that selects it", async () => {
+  for (const [filter, expected] of [
+    [{ kind: "all" } as DeviceFilter, "lucide-monitor-smartphone"],
+    [{ kind: "device", desktopId: null } as DeviceFilter, "lucide-monitor"],
+  ] as const) {
     const view = await mount(filter);
     const button = view.container.querySelector("button[aria-haspopup='listbox']")!;
+    expect(iconName(button)).toBe(expected);
 
     await act(async () => {
       button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     const selected = view.container.querySelector("[role='option'][aria-selected='true']");
-    expect(picture(selected)).toBe(picture(button));
+    expect(iconName(selected)).toBe(iconName(button));
     await view.root.unmount();
   }
 });
@@ -102,7 +94,7 @@ it("shows the same picture for the selection as for the entry that selects it", 
  * same defect the collapsed button had.
  */
 it("gives each entry the machine's name, not its glyph", async () => {
-  const view = await mount({ desktopId: null, kind: "device" });
+  const view = await mount({ kind: "all" });
   const button = view.container.querySelector("button[aria-haspopup='listbox']")!;
   await act(async () => {
     button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -217,7 +209,7 @@ async function openPicker(
   await act(async () => {
     root.render(
       <DeviceSelector
-        filter={{ desktopId: null, kind: "device" }}
+        filter={{ kind: "all" }}
         onChange={onChange}
         onManage={onManage}
         onTakeControl={onTakeControl}
@@ -239,20 +231,23 @@ it("applies the filter each entry stands for, and closes the picker", async () =
   const view = await openPicker();
   try {
     const options = [...view.container.querySelectorAll<HTMLElement>("[role='option']")];
-    // This machine and every paired one — and nothing above them, because the
-    // list is always exactly one machine's.
+    // Every machine on screen, this one included — plus the "all" entry.
     expect(options.map(node => node.getAttribute("aria-label")))
-      .toEqual(["This computer", "Studio iMac"]);
+      .toEqual(["All devices", "This computer", "Studio iMac"]);
 
-    await act(async () => view.option("This computer").click());
-    expect(view.onChange).toHaveBeenLastCalledWith({ desktopId: null, kind: "device" });
+    await act(async () => view.option("All devices").click());
+    expect(view.onChange).toHaveBeenLastCalledWith({ kind: "all" });
     expect(view.container.querySelector("[role='listbox']")).toBeNull();
     expect(view.trigger.getAttribute("aria-expanded")).toBe("false");
 
     // Re-open for the next entry: the picker is a choice, not a toggle left on.
     await act(async () => view.trigger.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => view.option("This computer").click());
+    expect(view.onChange).toHaveBeenLastCalledWith({ kind: "device", desktopId: null });
+
+    await act(async () => view.trigger.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     await act(async () => view.option("Studio iMac").click());
-    expect(view.onChange).toHaveBeenLastCalledWith({ desktopId: "desktop_a", kind: "device" });
+    expect(view.onChange).toHaveBeenLastCalledWith({ kind: "device", desktopId: "desktop_a" });
     expect(view.container.querySelector("[role='listbox']")).toBeNull();
   }
   finally {

@@ -1,5 +1,5 @@
 {
-  "description": "Connect this computer to another one. Pick it at the top of the conversation list to see its conversations, and its tools run there.",
+  "description": "Connect this computer to another one. Its conversations appear in the shared list, and its tools run there.",
   "addTitle": "Add a desktop",
   "addHint": "On the other computer, open Remote → Let other devices connect here, copy the pairing link, then paste it here.",
   "add": "Connect",
