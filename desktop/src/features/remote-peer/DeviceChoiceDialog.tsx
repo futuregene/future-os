@@ -127,7 +127,14 @@ function DeviceRow({
       onClick={onClick}
       type="button"
     >
-      <span className="shrink-0">{glyph}</span>
+      {/* One slot for both kinds of mark. This machine is drawn with a 16px
+          line icon and a host with an emoji, whose glyph box is wider than that
+          at the same font size — so without a reserved width each row's name
+          started at its own x, and the two rows read as two columns with the
+          emoji hanging into the first one. */}
+      <span aria-hidden className="flex size-5 shrink-0 items-center justify-center leading-none">
+        {glyph}
+      </span>
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {note
         ? <span className="shrink-0 text-3xs text-ink-muted" data-testid="option-note">{note}</span>
