@@ -44,7 +44,7 @@ All three funnel through [`select_agent`](../../packages/rpc/src/connection.rs):
 | **D7** | After the **user** stops the Agent, should other clients restart it? ([§4.3](#43-four-kinds-of-death)) | Product decision | Recommendation: no; **awaiting confirmation** |
 | **D8** | Post-restart continuation: who runs it, and when is a run resumable? (§9.1, §9.2) | Design | **Partly landed**: the continuation criterion is implemented; the `cause` distinction is not (see §12) |
 | **D9** | The trigger lives in the Agent too (proposed by the user, 2026-10-21) | Product decision | **Landed**: the Agent triggers it after starting; the switch is `resumeInterruptedOnStart` in `~/.future/agent/settings.json` (**on by default**, matching the desktop's `autoResumeInterrupted`); the desktop's one-shot pass is retired |
-| **D10** | Continuation sends no user message; it continues inside the loop via a request-only directive (§9.3, proposed by the user, 2026-10-21) | Product decision → design | **Adopted** (as a plan); needs the assistant-tail guard relaxed, and **implementation is a separate task** |
+| **D10** | Continuation sends no user message; it continues inside the loop via a request-only directive (§9.3, proposed by the user, 2026-10-21) | Product decision → design | **Landed** in three steps: the accepting path + directive, the placeholder tool result, then the relaxed assistant tail |
 
 The two entries marked "awaiting the user" are **not settled**. This document does not design code paths for them; it states the options, their costs, and what they affect.
 
@@ -354,7 +354,7 @@ What one restart costs the user = detection (probe cadence, ≤1s) + waiting/sta
 
 ### 9.3 Sending no user message: continue inside the loop
 
-Answer: **yes, and the shape already exists in the code**, but two things block it today. **This section fixes the plan only; relaxing the guard and adding placeholder results are implementation work that has not started.**
+Answer: **yes, and the shape already exists in the code**; two things blocked it. **Landed**: the accepting path, the placeholder tool result and the relaxed guard are in place, and the plan below is the order they were built in so each step could be verified on its own.
 
 #### The precedent: a request-only message
 
@@ -413,6 +413,8 @@ The third is the easiest to miss: the cancel path already knows this (run_loop w
 #### Recommendation
 
 D10 ahead of the original "send a prompt" shape: do the "tail is a tool result" and "assistant with tool_calls, add placeholders" cases first (smallest change, **no need to relax the guard**), then relax it for a plain assistant tail.
+
+As built, the guard needed one intermediate shape before the last step: an assistant turn carrying unanswered tool calls *is* an assistant tail, so step 2 allowed that shape only — while continuing, and only when the turn had calls the placeholder could answer. Step 3 then widened the allowance to any assistant tail on the resuming path. The relaxation is never general: `continue_interrupted_run` re-reads `unterminated_run_id` and refuses anything the journal does not still show as open, and the old "send a prompt" path remains as the fallback for a provider that takes neither.
 
 ## 10 Implementation checklist
 

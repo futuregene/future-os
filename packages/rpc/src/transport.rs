@@ -260,16 +260,163 @@ fn local_socket_path_from(
     future_home: Option<std::path::PathBuf>,
     home: Option<std::ffi::OsString>,
 ) -> std::path::PathBuf {
+    // An explicit override is the user's decision and is used verbatim: it takes
+    // no part in the length fallback below, because silently relocating a path
+    // somebody named by hand is worse than letting bind(2) say it is too long.
     if let Some(path) = explicit.filter(|v| !v.is_empty()) {
         return path.into();
     }
-    if let Some(future_home) = future_home {
-        return future_home.join("run").join("agent.sock");
+    let wanted = match future_home {
+        Some(future_home) => future_home.join("run").join("agent.sock"),
+        None => home
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(".future")
+            .join("run")
+            .join("agent.sock"),
+    };
+    if fits_sun_path(&wanted) {
+        return wanted;
     }
-    let home = home
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    home.join(".future").join("run").join("agent.sock")
+    short_local_socket_path(&wanted)
+}
+
+/// `sun_path` holds 104 bytes on macOS and 108 on Linux, terminator included, so
+/// 103 (macOS) is already too long. `std` refuses above that without reaching the
+/// kernel: `InvalidInput`, "path must be shorter than SUN_LEN" — *not* `EPERM`,
+/// and not `ENAMETOOLONG`. The smaller of the two platforms governs, so one
+/// answer covers both.
+#[cfg(unix)]
+const SUN_PATH_MAX: usize = 103;
+
+/// Whether `path` can be bound as a unix socket.
+///
+/// The comparison is on the path as *computed*, never canonicalized: every
+/// process derives it from the same environment inputs, and resolving symlinks
+/// (`/tmp` is one on macOS, `/var` -> `/private/var` is another) could make two
+/// processes disagree and end up with two endpoints for one home.
+#[cfg(unix)]
+fn fits_sun_path(path: &std::path::Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    path.as_os_str().as_bytes().len() <= SUN_PATH_MAX
+}
+
+/// The short endpoint used instead of one that cannot fit in `sun_path`.
+///
+/// A `FUTURE_HOME` deep enough to overrun the limit (a git worktree, a nested
+/// project directory, a CI checkout) made the Agent fail to bind at all: startup
+/// stopped at "binding the gRPC endpoint" with a message that never mentioned the
+/// home. Those homes have another property that makes relocating safe: the old
+/// path **cannot be bound by the previous release either**, so there is no "old
+/// Agent still serving on the long path" to stay compatible with.
+///
+/// The name is recomputable from `(uid, wanted)`, with no randomness and no
+/// timestamp, so two processes that derive it independently get the same string.
+///
+/// The base is the fixed `/tmp`, deliberately not `$TMPDIR`: on macOS `$TMPDIR`
+/// is per-session (launchd and a terminal shell can get different directories),
+/// and a GUI-hosted Agent and a terminal client would then compute two different
+/// endpoints for one home. `/tmp` is a symlink to `/private/tmp` there, and both
+/// sides spell `/tmp/...` rather than resolving it, which is what makes them
+/// agree. (Do not switch this to `$TMPDIR` without solving that.)
+#[cfg(unix)]
+fn short_local_socket_path(wanted: &std::path::Path) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut hasher = Sha256::new();
+    hasher.update(effective_uid().to_le_bytes());
+    hasher.update(wanted.as_os_str().as_bytes());
+    let digest = hasher.finalize();
+    let stem: String = digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    endpoint_dir().join(format!("{stem}.sock"))
+}
+
+/// The owned directory short endpoints live in: `/tmp/future-<uid>`.
+///
+/// `/tmp` is world-writable, so this path can be pre-created by anybody. A
+/// symlink there would redirect our socket somewhere the attacker chooses, and a
+/// directory owned by another user would let them read or replace it. Every
+/// condition is therefore checked with `lstat` and enforced by refusing, never by
+/// "fixing it up": chmod'ing a directory someone else made is exactly the mistake
+/// this avoids, and it also fails anyway when the parent (`/tmp` itself) is not
+/// ours to chmod.
+#[cfg(unix)]
+fn effective_uid() -> u32 {
+    // SAFETY: `geteuid` has no preconditions and only reads the process's own
+    // credentials; it cannot fail.
+    unsafe { libc::geteuid() }
+}
+
+#[cfg(unix)]
+pub fn endpoint_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("/tmp").join(format!("future-{}", effective_uid()))
+}
+
+/// Prepare [`endpoint_dir`] and return it, or say why it is unsafe to use.
+///
+/// Called on the Agent's bind path (through [`bind_local`]) so a squatted
+/// directory is refused before anything is written into it.
+#[cfg(unix)]
+pub fn ensure_endpoint_dir() -> std::io::Result<std::path::PathBuf> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let dir = endpoint_dir();
+    let uid = effective_uid();
+    match std::fs::symlink_metadata(&dir) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "refusing to use {}: it is a symbolic link; remove it (or point \
+                         FUTURE_AGENT_SOCKET elsewhere) so future can create its own directory",
+                        dir.display()
+                    ),
+                ));
+            }
+            if !meta.is_dir() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("refusing to use {}: it is not a directory", dir.display()),
+                ));
+            }
+            if meta.uid() != uid {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "refusing to use {}: it is owned by uid {}, not {uid}",
+                        dir.display(),
+                        meta.uid()
+                    ),
+                ));
+            }
+            let mode = meta.permissions().mode() & 0o777;
+            if mode != 0o700 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "refusing to use {}: mode is {mode:o}, expected 700; run `chmod 700 {}`",
+                        dir.display(),
+                        dir.display()
+                    ),
+                ));
+            }
+            Ok(dir)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(&dir)?;
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+            // Re-check what actually appeared: create_dir is atomic against a
+            // concurrent creator, but the winner's object is what we must trust.
+            ensure_endpoint_dir()
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(unix)]
@@ -400,6 +547,27 @@ pub type LocalIncoming = Pin<Box<dyn Stream<Item = Result<LocalIo, io::Error>> +
 /// Attach actionable guidance when the socket directory cannot be created or
 /// inspected: a FutureOS home on NFS (or any filesystem that does not support
 /// Unix-domain sockets) or without write permission is the common cause.
+/// An endpoint that cannot fit in `sun_path` at all.
+///
+/// Reached only when even the short fallback is too long, or when the caller
+/// bound an explicit path that is. `std` says "path must be shorter than
+/// SUN_LEN", which names neither the setting responsible nor a way out; a home
+/// deep enough to trigger this is usually one somebody configured on purpose.
+#[cfg(unix)]
+fn sun_path_error(path: &std::path::Path) -> io::Error {
+    use std::os::unix::ffi::OsStrExt;
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!(
+            "the Agent's local endpoint is too long for a unix socket ({} bytes, limit {SUN_PATH_MAX}): {}; \
+             shorten FUTURE_HOME (and so the default endpoint under <home>/run), or set \
+             FUTURE_AGENT_SOCKET to a short path yourself",
+            path.as_os_str().as_bytes().len(),
+            path.display()
+        ),
+    )
+}
+
 #[cfg(unix)]
 fn bind_dir_error(error: io::Error, parent: &std::path::Path) -> io::Error {
     io::Error::new(
@@ -432,6 +600,15 @@ pub async fn bind_local() -> io::Result<LocalIncoming> {
 
 #[cfg(unix)]
 async fn bind_local_at(path: std::path::PathBuf) -> io::Result<LocalIncoming> {
+    // A short fallback endpoint lives in a world-writable directory, so verify it
+    // before anything is created inside; an explicit or in-home path needs no
+    // such check (its directory is the instance's own).
+    if path.parent() == Some(endpoint_dir().as_path()) {
+        ensure_endpoint_dir()?;
+    }
+    if !fits_sun_path(&path) {
+        return Err(sun_path_error(&path));
+    }
     LocalEndpointReservation::acquire(path).await?.bind().await
 }
 
@@ -648,6 +825,124 @@ mod tests {
                 .join("run")
                 .join("agent.sock")
         );
+    }
+
+    /// C's central promise: a home that cannot fit keeps its endpoint inside the
+    /// home, byte for byte. Turning the fallback on unconditionally would move
+    /// every existing installation's socket.
+    #[cfg(unix)]
+    #[test]
+    fn a_home_that_fits_keeps_the_layout_unchanged() {
+        let home = std::path::PathBuf::from("/tmp/short-home");
+        assert_eq!(
+            local_socket_path_from(None, Some(home.clone()), None),
+            home.join("run").join("agent.sock")
+        );
+        assert_eq!(
+            local_socket_path_from(None, None, Some("/home/user".into())),
+            std::path::PathBuf::from("/home/user/.future/run/agent.sock")
+        );
+    }
+
+    /// An explicit override is the user's choice: never relocated, even when it
+    /// is too long. Silently moving it would be worse than the error bind gives.
+    #[cfg(unix)]
+    #[test]
+    fn an_explicit_socket_override_is_never_relocated() {
+        let long = format!("/tmp/{}/explicit.sock", "d/".repeat(60));
+        let path = local_socket_path_from(Some(long.clone().into()), None, None);
+        assert_eq!(path, std::path::PathBuf::from(&long));
+        assert!(!fits_sun_path(&path), "the fixture must exceed the limit");
+    }
+
+    /// A home too deep for `sun_path` gets a short endpoint that (a) fits,
+    /// (b) is recomputable — two processes must agree — and (c) is still
+    /// per-home, so two instances never share one socket.
+    #[cfg(unix)]
+    #[test]
+    fn a_home_too_deep_gets_a_recomputable_short_endpoint() {
+        let deep = std::path::PathBuf::from(format!("/tmp/{}", "d/".repeat(60)));
+        let first = local_socket_path_from(None, Some(deep.clone()), None);
+        assert!(fits_sun_path(&first), "still too long: {}", first.display());
+        assert_eq!(
+            first,
+            local_socket_path_from(None, Some(deep), None),
+            "the short name must not depend on randomness or time"
+        );
+        assert!(
+            first.parent() == Some(endpoint_dir().as_path()),
+            "a short endpoint belongs in the owned temp directory: {}",
+            first.display()
+        );
+        let other = std::path::PathBuf::from(format!("/tmp/{}x", "d/".repeat(60)));
+        assert_ne!(
+            first,
+            local_socket_path_from(None, Some(other), None),
+            "two homes must not share an endpoint"
+        );
+        // The lease file sits beside it and is a plain file, so `PATH_MAX`, not
+        // `sun_path`, governs it; assert it is far below that and not silently
+        // assumed to share the socket's budget.
+        let lease = format!("{}.owner.lock", first.display());
+        assert!(lease.len() < 200, "lease path unexpectedly long: {lease}");
+    }
+
+    /// `/tmp` is world-writable: a pre-created directory there can belong to
+    /// anybody, or be a symlink pointing anywhere. Both are refused rather than
+    /// repaired — chmod'ing someone else's directory is the attack, not the fix.
+    #[cfg(unix)]
+    #[test]
+    fn a_squatted_endpoint_directory_is_refused() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let dir = endpoint_dir();
+        let _ = std::fs::remove_file(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // 1. A symlink where the directory should be.
+        let target = std::env::temp_dir().join("future-squat-target-test");
+        std::fs::create_dir_all(&target).unwrap();
+        if symlink(&target, &dir).is_ok() {
+            let error = ensure_endpoint_dir().expect_err("a symlink must be refused");
+            assert!(
+                error.to_string().contains("symbolic link"),
+                "the refusal must name the cause: {error}"
+            );
+            std::fs::remove_file(&dir).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&target);
+
+        // 2. A directory with the wrong mode.
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = ensure_endpoint_dir().expect_err("a 0755 directory must be refused");
+        assert!(
+            error.to_string().contains("expected 700"),
+            "the refusal must say what to fix: {error}"
+        );
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        // 3. The legitimate case still works, and creates it when absent.
+        let _ = std::fs::remove_dir_all(&dir);
+        let made = ensure_endpoint_dir().expect("a fresh owned directory is fine");
+        assert_eq!(made, dir);
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "the created directory must be private");
+    }
+
+    /// The fallback's stated limit: one byte over is enough to relocate.
+    #[cfg(unix)]
+    #[test]
+    fn the_limit_is_where_measured() {
+        let prefix = "/tmp/";
+        let suffix = "/run/agent.sock";
+        let make = |total: usize| {
+            let pad = total - prefix.len() - suffix.len();
+            std::path::PathBuf::from(format!("{prefix}{}{suffix}", "h".repeat(pad)))
+        };
+        let at_limit = make(SUN_PATH_MAX);
+        assert!(fits_sun_path(&at_limit), "{} must fit", at_limit.display());
+        let over = make(SUN_PATH_MAX + 1);
+        assert!(!fits_sun_path(&over), "{} must not fit", over.display());
     }
 
     #[cfg(windows)]

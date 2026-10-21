@@ -46,12 +46,13 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 ├── remote_pairings.json       # remote bridge credential book: one slot per paired device
 ├── remote_pairing.json        # legacy single-device bridge identity (read as a one-slot book, then left in place)
 ├── remote_pending_revokes.json # desktop revoke compensation (pair IDs + platform, no tokens)
+├── remote_peers.json          # client-role credential book: one entry per remote desktop this machine drives
 ├── relay.json               # inert legacy file: the relay is chosen per launch (--relay)
 ├── approval_rule.json         # user-level path approval rules
 ├── windows-capabilities.json  # Windows sandbox ACL cleanup metadata
 ├── run/
 │   ├── agent.sock             # Unix IPC endpoint (not used by Windows)
-│   └── remote-control/        # transient device requests (`future remote devices add|remove|use`)
+│   └── remote-control/        # transient device requests (`future remote devices add|remove|use`, `future remote peers connect|disconnect|remove`)
 └── bin/                       # CLI / agent links: `future`, `future-agent` (see below)
 ```
 
@@ -241,7 +242,7 @@ Nothing here is data: it is how a running process and a terminal find each other
 
 - `agent.sock` — the agent's Unix IPC endpoint (Windows uses a named pipe; and
   with `--grpc-addr`, TCP). See the endpoint section above.
-- `remote-control/` — the request/reply files `future remote devices add|remove|use`
+- `remote-control/` — the request/reply files `future remote devices add|remove|use`, `future remote peers connect|disconnect|remove`
   uses to ask the running Desktop to pair a device, stop serving one, or hand the
   machine to one. A
   request names a reply path

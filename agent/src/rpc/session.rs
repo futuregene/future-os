@@ -1494,15 +1494,28 @@ impl ServerSession {
 
     pub(crate) fn ensure_history_loaded(&mut self) -> Result<()> {
         if !self.history_loaded {
-            let session = self.session_manager.load(&self.session_id)?;
-            let supports_images = self
-                .model_registry
-                .read()
-                .request_model_accepts_images(&self.model);
-            *self.messages.write() =
-                crate::session::entries_to_agent_messages(&session.entries, supports_images);
-            self.history_loaded = true;
+            self.load_history()?;
         }
+        Ok(())
+    }
+
+    /// Load this session's durable history into the in-memory message list,
+    /// whether or not this handle thinks it already has it.
+    ///
+    /// A continuation needs this unconditionally: what it continues is the
+    /// journal on disk, and a handle that was minted for the session (rather
+    /// than hydrated through `switch_session`) holds an empty list while
+    /// claiming to be loaded. Continuing that would send the model a
+    /// conversation with no history — the interrupted turn included.
+    pub(crate) fn load_history(&mut self) -> Result<()> {
+        let session = self.session_manager.load(&self.session_id)?;
+        let supports_images = self
+            .model_registry
+            .read()
+            .request_model_accepts_images(&self.model);
+        *self.messages.write() =
+            crate::session::entries_to_agent_messages(&session.entries, supports_images);
+        self.history_loaded = true;
         Ok(())
     }
 

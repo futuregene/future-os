@@ -236,6 +236,39 @@ and none of this applies.
 - Switching off keeps every pairing. `future remote devices remove` is what
   unpairs.
 
+### 3.3 Driving another desktop (the client role)
+
+The commands above manage devices paired *into* this machine. The mirror image is
+a desktop this machine drives: pair it once from an invitation, and this Desktop
+keeps a connection to it.
+
+```bash
+future remote peers                     # every remote desktop this machine drives
+future remote peers add <invitation>    # pair with one: paste the link it shows
+future remote peers connect <id|#>      # connect now
+future remote peers disconnect <id|#>   # drop the connection, keep the pairing
+future remote peers rename <id|#> <n>   # name it here (--clear for the machine id)
+future remote peers remove <id|#>       # unpair it: stop connecting, revoke
+```
+
+- `add` runs here rather than in the Desktop. A pairing is a one-time claim plus a
+  handshake with the other machine, and nothing local has to be serving for it, so
+  a machine can be paired before its Desktop is ever opened. Paste the invitation
+  that machine shows for connecting another computer: it is single-use and
+  short-lived. The pairing is stored in `~/.future/remote_peers.json` and the
+  command connects once, so a broken pairing is reported now instead of at the
+  next start.
+- `list` reads that file and, with a Desktop running, the connections that process
+  holds. Without one it reports the stored pairings and no connection state,
+  because a connection lives in that process and nowhere on disk.
+- `connect` and `disconnect` are asked of the running Desktop: that is where the
+  connection and the user's own "disconnected" mark live, and asking it is what
+  keeps the automatic reconnect pass from undoing a deliberate stop. `remove` asks
+  it too when it can, and otherwise unpairs here and revokes from the terminal.
+- A paired desktop is connected by the Desktop as it starts. A headless host
+  serves devices but does not drive other desktops, so the client role needs the
+  window.
+
 ## 4. Ctrl+C, SSH disconnects and restarting
 
 Ctrl+C works while waiting for login, pairing, connection startup and normal

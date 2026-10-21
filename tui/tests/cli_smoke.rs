@@ -41,8 +41,7 @@ fn unknown_option_exits_one() {
 }
 
 /// An agent that only answers the readiness handshake — enough to be discovered
-/// on an explicit `--grpc-addr`, so the binary never enters its sidecar-launch
-/// path. A TCP endpoint has no expected home, so any 64-hex data root validates.
+/// on an explicit `--grpc-addr`, so the binary never tries to host an Agent. A TCP endpoint has no expected home, so any 64-hex data root validates.
 struct ReadinessMock;
 
 #[tonic::async_trait]
@@ -91,9 +90,9 @@ impl future_rpc::proto::future_agent_server::FutureAgent for ReadinessMock {
     }
 }
 
-/// Exit code 1 in print mode has **two** possible causes: with a sidecar that
-/// starts, `index::run` reaches its own "No prompt provided" check; without one,
-/// agent discovery fails first and the same code comes back. Asserting only
+/// Exit code 1 in print mode has **two** possible causes: when an Agent is
+/// reachable, `index::run` reaches its own "No prompt provided" check; when
+/// discovery fails first, the same code comes back from that path instead. Asserting only
 /// `Some(1)` therefore accepts either path, and the difference is visible only
 /// in coverage counters — an infrastructure accident, not a behaviour.
 ///

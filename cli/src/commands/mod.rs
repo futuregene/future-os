@@ -18,6 +18,7 @@ pub mod mcp_client;
 pub mod mcp_servers;
 pub mod models;
 pub mod remote;
+pub mod remote_peers;
 pub mod run;
 pub mod session;
 mod session_compact;
