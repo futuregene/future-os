@@ -685,7 +685,7 @@ async fn record_message_activity(
         }
     }
     let thread_id = shared.thread_id.clone();
-    match tokio::task::spawn_blocking(move || {
+    match crate::runtime::run_blocking(move || {
         crate::store::record_thread_message_activity(&thread_id, timestamp)
     })
     .await
