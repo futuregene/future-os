@@ -56,6 +56,18 @@ pub(crate) fn make_app_state_with(
     session_dir: std::path::PathBuf,
     queue_budget: Arc<crate::runtime::GlobalQueueBudget>,
 ) -> AppState {
+    make_app_state_with_provider(Arc::new(EmptyProvider), session_dir, queue_budget)
+}
+
+/// The same state, with a provider the test controls.
+///
+/// Restart recovery is the one path that decides *and* calls the model without
+/// a client, so the test has to see what the model was asked.
+pub(crate) fn make_app_state_with_provider(
+    provider: Arc<dyn LLMProvider>,
+    session_dir: std::path::PathBuf,
+    queue_budget: Arc<crate::runtime::GlobalQueueBudget>,
+) -> AppState {
     let cwd = test_workspace();
     let model_registry = Arc::new(parking_lot::RwLock::new(crate::models::Registry::new()));
     let session_manager = Arc::new(crate::session::Manager::new(session_dir));
@@ -65,7 +77,7 @@ pub(crate) fn make_app_state_with(
     let session = ServerSession::new_with_queue_budget(
         "default".to_string(),
         Arc::new(tokio::sync::RwLock::new(Loop::new(
-            Arc::new(EmptyProvider),
+            provider.clone(),
             "mock",
         ))),
         session_manager.clone(),
@@ -98,7 +110,7 @@ pub(crate) fn make_app_state_with(
         shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         service_work: Arc::new(crate::service::work::ServiceWork::default()),
         model_registry: model_registry.clone(),
-        loop_template: Arc::new(Loop::new(Arc::new(EmptyProvider), "mock")),
+        loop_template: Arc::new(Loop::new(provider, "mock")),
     }
 }
 

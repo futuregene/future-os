@@ -516,6 +516,22 @@ impl Loop {
                 work_messages.push(recovery);
             }
 
+            // Continuing a run this process died in. Request-only, because the
+            // durable transcript is not rewritten: the instruction says why the
+            // transcript stops mid-turn, and without it the model reads its own
+            // unfinished turn with no explanation and restarts the task.
+            if turn == 0 {
+                if let Some(resume) = &ctx.resume {
+                    let mut notice = AgentMessage {
+                        role: "user".into(),
+                        content: vec![ContentBlock::text(resume.instruction.as_str())],
+                        ..Default::default()
+                    };
+                    notice.ensure_journal_entry_id();
+                    work_messages.push(notice);
+                }
+            }
+
             // Emit message_start
 
             // Convert to LLM format
@@ -2950,6 +2966,151 @@ mod tests {
         // Bare grep's exit 1 is its normal no-match signal; the cargo failure
         // is a real one. Same shell tool, different verdicts.
         assert_eq!(tool_result_flags(&messages), vec![false, true]);
+    }
+
+    fn continuation(instruction: &str) -> super::super::StreamContext {
+        super::super::StreamContext {
+            resume: Some(super::super::ResumeContext {
+                interrupted_run_id: "run-interrupted".to_string(),
+                instruction: instruction.to_string(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// The instruction reaches the model and nothing else. It is request-only
+    /// context on the first turn — if it were pushed onto the durable list it
+    /// would be persisted and rendered as a user bubble, which is the whole
+    /// thing this path avoids.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_continuation_instruction_is_request_only() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_stop()])]);
+        let loop_ = Loop::new(provider.clone(), "mock");
+        let mut messages = user_messages("hi");
+        messages.push(AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::ToolCall {
+                id: "c1".to_string(),
+                name: "shell".to_string(),
+                args: serde_json::json!({}),
+                provider_metadata: Default::default(),
+            }],
+            ..Default::default()
+        });
+        messages.push(AgentMessage {
+            role: "tool".to_string(),
+            content: vec![ContentBlock::tool_result("c1", "done", false)],
+            name: "shell".to_string(),
+            ..Default::default()
+        });
+        let (_, durable) = loop_
+            .run_streaming_with_messages(
+                messages,
+                &continuation("CONTINUE-THE-TASK"),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let requests = provider.requests.lock();
+        let sent = requests.first().expect("the run made one request");
+        assert!(
+            sent.iter().any(|message| message.content.iter().any(
+                |block| matches!(block, ContentBlock::Text { text } if text == "CONTINUE-THE-TASK")
+            )),
+            "the model must be told why the turn stopped"
+        );
+        assert!(
+            !durable.iter().any(|message| message.content.iter().any(
+                |block| matches!(block, ContentBlock::Text { text } if text == "CONTINUE-THE-TASK")
+            )),
+            "the instruction must not become a durable user message"
+        );
+    }
+
+    /// A crashed tail whose tool call already has its result is a valid request
+    /// as it stands; the continuation only adds the directive.
+    #[tokio::test(flavor = "current_thread")]
+    async fn each_crashed_tail_shape_produces_a_valid_continuation_request() {
+        let tool_call = || ContentBlock::ToolCall {
+            id: "c1".to_string(),
+            name: "shell".to_string(),
+            args: serde_json::json!({}),
+            provider_metadata: Default::default(),
+        };
+        let cases = [(
+            "a tool result",
+            vec![
+                AgentMessage {
+                    role: "assistant".to_string(),
+                    content: vec![tool_call()],
+                    ..Default::default()
+                },
+                AgentMessage {
+                    role: "tool".to_string(),
+                    content: vec![ContentBlock::tool_result("c1", "done", false)],
+                    name: "shell".to_string(),
+                    ..Default::default()
+                },
+            ],
+        )];
+        for (shape, tail) in cases {
+            let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_stop()])]);
+            let loop_ = Loop::new(provider.clone(), "mock");
+            let mut messages = user_messages("hi");
+            messages.extend(tail);
+            loop_
+                .run_streaming_with_messages(
+                    messages,
+                    &continuation("CONTINUE-THE-TASK"),
+                    noop_on_text,
+                    noop_on_event,
+                    None,
+                )
+                .await
+                .unwrap_or_else(|error| panic!("{shape} must be continuable: {error}"));
+
+            let requests = provider.requests.lock();
+            let sent = requests.first().expect("one request");
+            // The directive ends the request and appears exactly once.
+            assert_eq!(
+                sent.last().map(|message| message.text()),
+                Some("CONTINUE-THE-TASK".to_string()),
+                "{shape}: the instruction must end the request"
+            );
+            let mentions = sent
+                .iter()
+                .filter(|message| message.text() == "CONTINUE-THE-TASK")
+                .count();
+            assert_eq!(mentions, 1, "{shape}: the instruction is sent once");
+            // Every tool call is answered exactly once — a call with no result
+            // is the shape providers reject with HTTP 400.
+            let calls: Vec<String> = sent
+                .iter()
+                .flat_map(|message| message.content.iter())
+                .filter_map(|block| match block {
+                    ContentBlock::ToolCall { id, .. } => Some(id.clone()),
+                    _ => None,
+                })
+                .collect();
+            let results: Vec<String> = sent
+                .iter()
+                .flat_map(|message| message.content.iter())
+                .filter_map(|block| match block {
+                    ContentBlock::ToolResult { tool_call_id, .. } => Some(tool_call_id.clone()),
+                    _ => None,
+                })
+                .collect();
+            for id in &calls {
+                assert_eq!(
+                    results.iter().filter(|result| *result == id).count(),
+                    1,
+                    "{shape}: tool call {id} must have exactly one result"
+                );
+            }
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
