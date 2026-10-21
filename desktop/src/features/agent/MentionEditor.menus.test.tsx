@@ -566,16 +566,27 @@ describe("mentionEditor # session menu", () => {
     { sessionId: "s-a2", title: "Retry policy", workspace: { id: "w1", name: "Payments" } },
   ];
 
-  it("groups the conversations by workspace, chats first", () => {
+  /** The conversation titles in menu order (a row also names its workspace). */
+  function sessionTitles() {
+    return menuRows().map(row => row.querySelector(".flex-1")?.textContent);
+  }
+
+  /** The workspace each row names, or null for a chat. */
+  function sessionWorkspaces() {
+    return menuRows().map(row => row.querySelector("[data-session-workspace]")?.textContent ?? null);
+  }
+
+  it("draws one recency-ordered list, naming each conversation's workspace", () => {
     render({ sessions: SESSIONS });
     editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
     type("#");
 
-    expect(menuLabels()).toEqual(["Loose chat", "Fix the flaky test", "Retry policy"]);
-    // Both workspace groups and the chat group are named, so a title alone
-    // never has to be guessed at.
-    expect(menu()!.textContent).toContain("Chats");
-    expect(menu()!.textContent).toContain("Payments");
+    // The order is the list it was handed — the caller ordered it by recency
+    // (`sessionMentionOptions`) — and no heading interrupts it.
+    expect(sessionTitles()).toEqual(["Loose chat", "Fix the flaky test", "Retry policy"]);
+    // A workspace's name rides on its rows, so a query that matched it has a
+    // visible reason; a chat has no workspace to name.
+    expect(sessionWorkspaces()).toEqual([null, "Payments", "Payments"]);
   });
 
   it("narrows by title and by the workspace a conversation is filed under", () => {
@@ -583,11 +594,12 @@ describe("mentionEditor # session menu", () => {
     editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
 
     type("#flaky");
-    expect(menuLabels()).toEqual(["Fix the flaky test"]);
+    expect(sessionTitles()).toEqual(["Fix the flaky test"]);
 
-    // A workspace name matches its whole group — the way to narrow by scope.
+    // A workspace name matches the conversations filed under it — the way to
+    // narrow by scope — and the narrowed list keeps its recency order.
     type("#payments");
-    expect(menuLabels()).toEqual(["Fix the flaky test", "Retry policy"]);
+    expect(sessionTitles()).toEqual(["Fix the flaky test", "Retry policy"]);
   });
 
   it("reports no matches instead of hiding the menu", () => {
@@ -694,10 +706,10 @@ describe("mentionEditor # session menu", () => {
     expect(menu()).toBeNull();
   });
 
-  it("names a workspace group whose workspace has no name to show", () => {
+  it("names a workspace the store has no name for", () => {
     // A conversation whose workspace was deleted still belongs to that
-    // workspace, so the menu labels the group generically instead of leaving a
-    // blank heading (or worse, reading as the chats section).
+    // workspace, so its row labels the workspace generically instead of
+    // trailing blank text.
     render({
       sessions: [
         { sessionId: "c1", title: "A chat", workspace: null },
@@ -706,8 +718,9 @@ describe("mentionEditor # session menu", () => {
     });
     editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
     type("#");
-    const headings = [...menu()!.querySelectorAll("div > div.text-xs")].map(node => node.textContent);
-    expect(headings).toEqual(["Chats", "Workspace"]);
+    expect(menu()!.textContent).toContain("Workspace");
+    // The chat's row carries no workspace label at all: it lives nowhere.
+    expect(menuRows()[0]!.textContent).toBe("A chat");
   });
 });
 
