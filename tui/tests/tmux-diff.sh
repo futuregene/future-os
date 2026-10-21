@@ -698,26 +698,35 @@ expect_pane_has permission-applied "Tool permission level: Workspace" \
 
 close_overlay
 
-# ── Approvals: the parked run and the answer keys ──
+# ── Approvals: the parked run and the modal card ──
 # The mock parks the run behind an `approval_request` (no `agent_end` until it
-# is answered), so this screen pins the card, the prompt line above the input
-# and the fact that the editor is NOT prefilled with a command.
-submit_cmd "ask me to run something"
-step_when approval-prompt "[1/y] allow"
+# is answered), so this screen pins the card: the command, the two options and
+# the fact that the editor is NOT prefilled with a command.
+# `submit_cmd` sends two Enters (some slash commands need the second to settle
+# their own overlay); here the second would land on the approval card and
+# confirm it before the harness can look. One Enter, then wait for the card.
+send_lit "ask me to run something"
+sleep 0.5
+tmux send-keys -t "$RUST_PANE" Enter
+step_when approval-prompt "Do you want to proceed?"
 
-# `1` answers the front of the queue: the prompt line disappears, the outcome
+# Enter confirms the default selection (Yes): the card goes away, the outcome
 # lands in the transcript, and the run finishes (the mock plays the agent's
 # own `approval_decision` broadcast plus `agent_end`).
-tmux send-keys -t "$RUST_PANE" 1
+tmux send-keys -t "$RUST_PANE" Enter
 step_when approval-allowed "Allowed: Approve shell command"
-expect_pane_lacks approval-allowed "[1/y] allow" "the prompt line left with the queue"
+expect_pane_lacks approval-allowed "Do you want to proceed?" "the card left with the queue"
 
-# A second request, denied with `2` this time — the deny path and its copy.
-submit_cmd "ask me again"
-step_when approval-prompt-2 "[1/y] allow"
-tmux send-keys -t "$RUST_PANE" 2
+# A second request, denied by moving the cursor down and confirming — the
+# arrow-key path the desktop's numbered card does not have.
+send_lit "ask me again"
+sleep 0.5
+tmux send-keys -t "$RUST_PANE" Enter
+step_when approval-prompt-2 "Do you want to proceed?"
+tmux send-keys -t "$RUST_PANE" Down
+tmux send-keys -t "$RUST_PANE" Enter
 step_when approval-denied "Denied: Approve shell command"
-expect_pane_lacks approval-denied "[1/y] allow" "the prompt line left with the queue"
+expect_pane_lacks approval-denied "Do you want to proceed?" "the card left with the queue"
 
 close_overlay
 

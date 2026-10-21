@@ -151,24 +151,43 @@ refuses `remove`/`prune`/`reset`/`clean`/`checkout`/`gc`/`reflog` outright.
 
 When the agent wants to run something the approval gate does not clear (a
 shell command outside the allowlist, a write outside the workspace, …), it
-parks the run and asks. The request appears as a card in the transcript and
-as one prompt line above the input:
+parks the run and asks. A card takes over the lower part of the screen:
 
 ```
-Approve: Approve shell command  [1/y] allow · [2/n] deny · esc denies
+┌──────────────────────────────────────────────────────────────────┐
+│ Tool use  ·  MEDIUM risk                                         │
+│                                                                  │
+│   Approve shell command                                          │
+│   $ curl -s https://example.com | head -c 2000                   │
+│   Agent wants to run a shell command.                            │
+│                                                                  │
+│ Do you want to proceed?                                          │
+│ ❯ 1. Yes                                                         │
+│   2. No                                                          │
+│                                                                  │
+│ ↑/↓ select · enter confirm · esc cancel                          │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-While the input line is empty, `1` (or `y`) allows the request and `2` (or
-`n`), or `escape`, denies it. More than one pending request shows a count and
-the keys act on the oldest. Typing a draft disables the shortcut keys — the
-editor keeps every keystroke — but the prompt line stays visible, and the
-queued message is delivered after the approval resolves either way.
+| Key | Action |
+|---|---|
+| `↑↓` / `k` `j` | Move between the two options |
+| `enter` / `space` | Confirm the highlighted option |
+| `1` / `y`, `2` / `n` | Answer without moving the cursor |
+| `escape` | Deny (the run is parked — leaving without an answer would hang it) |
 
-The `/approve` and `/reject` commands are the scriptable path: bare they act
-on the front of the queue, with an id on a specific request. Another client
-(the desktop, the phone) answering first is announced in the transcript and
-the prompt line disappears; a reconnect rebuilds the queue from the agent's
-state, so a dropped connection cannot strand a parked run.
+The card shows the tool-use details the agent curated for it: the command for
+a shell request, the affected paths for a file write, and the risk level.
+Your editor draft is untouched — the card owns the keys while it is open, and
+the message you queued is delivered once the run resumes.
+
+More than one request pending adds a count to the footer and the card walks
+the queue in order. The `/approve` and `/reject` commands remain the
+scriptable path: bare they act on the front of the queue, with an id on a
+specific request. Another client (the desktop, the phone) answering first is
+announced in the transcript and the card moves on; a reconnect rebuilds the
+queue from the agent's state, so a dropped connection cannot strand a parked
+run.
 
 ## Pop-up menus and the pager
 

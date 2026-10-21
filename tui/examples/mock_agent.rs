@@ -572,13 +572,13 @@ impl MockAgent {
             ];
             if approval {
                 // The same payload shape the real agent's `ApprovalGate`
-                // broadcasts (`approval.rs`): the TUI reads
-                // `approval_request_id`, `kind`, `risk_level`, `title`,
-                // `summary` and `requested_action`.
+                // broadcasts (`approval.rs`): the card renders the curated
+                // `action` (`command`), and falls back to `requested_action`
+                // only when it carries no detail.
                 events.push((
                     "approval_request".to_string(),
                     format!(
-                        r#"{{"type":"approval_request","approval_request_id":"{APPROVAL_REQUEST_ID}","session_id":"{SESSION_ID}","tool_id":"tool_mock_1","tool_name":"shell","kind":"shell_command","risk_level":"medium","title":"Approve shell command","summary":"Agent wants to run a shell command.","requested_action":"curl -s https://example.com | head -c 2000","reviewer":"user"}}"#
+                        r#"{{"type":"approval_request","approval_request_id":"{APPROVAL_REQUEST_ID}","session_id":"{SESSION_ID}","tool_id":"tool_mock_1","tool_name":"shell","kind":"shell_command","risk_level":"medium","title":"Approve shell command","summary":"Agent wants to run a shell command.","action":{{"tool":"shell","category":"shell_command","summary":"curl -s https://example.com | head -c 2000","command":"curl -s https://example.com | head -c 2000","scope":{{"cwd":"/mock","inside_workspace":true,"estimated_blast_radius":"medium"}}}},"requested_action":{{"command":"curl -s https://example.com | head -c 2000","timeout":30}},"reviewer":"user"}}"#
                     ),
                 ));
             } else if burst {

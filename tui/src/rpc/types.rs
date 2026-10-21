@@ -213,6 +213,9 @@ pub struct PendingApprovalState {
     pub title: String,
     #[serde(default)]
     pub summary: String,
+    /// The agent's curated action view (command, paths, writes, targets).
+    #[serde(default)]
+    pub action: Option<serde_json::Value>,
     #[serde(default, alias = "requested_action")]
     pub requested_action: Option<serde_json::Value>,
 }

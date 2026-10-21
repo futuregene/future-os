@@ -1,30 +1,30 @@
+ [38;5;245m  user/assistant: 42/40[39m
+ [38;5;245m  tool calls/results: 57/57[39m
+ [38;5;245m  tokens in/out: 812000/12000[39m
+ [38;5;245m  tokens cache read/write: 780000/12000
+[39m [38;5;245m  tokens total: 824000[39m
+ [38;5;245m  cost: 8.42[39m
+
+ [38;5;245mTool permission level raised to Workspace — the approval mode only asks while[39m
+ [38;5;245mthe gate is armed.[39m
+
+ [38;5;245mApproval mode: Manual — File access follows approval rules; allowlisted[39m
+ [38;5;245mread-only commands run automatically, other commands ask. No OS sandbox.[39m
+
+ [38;5;245mUsage: /permission [all|workspace|none]
+
+[39m [38;5;245mTool permission level: Workspace. Tool calls ask for approval before they[39m
  [38;5;245mrun; the grant is scoped to this workspace.[39m
 
 [48;5;59m ask me to run something
 
 [49m Approved and finished.
 
- [38;5;245m⚠ Approval required · MEDIUM risk[39m
- [38;5;245mApprove shell command[39m
- [38;5;245mAgent wants to run a shell command.[39m
- [38;5;245m  curl -s https://example.com | head -c 2000[39m
- [38;5;245mChoose at the prompt below: 1 allow · 2 deny[39m
-
- [38;5;245mApproving: Approve shell command[39m
-
  [38;5;245mAllowed: Approve shell command[39m
 
 [48;5;59m ask me again
 
 [49m Denied and finished.
-
- [38;5;245m⚠ Approval required · MEDIUM risk[39m
- [38;5;245mApprove shell command[39m
- [38;5;245mAgent wants to run a shell command.[39m
- [38;5;245m  curl -s https://example.com | head -c 2000[39m
- [38;5;245mChoose at the prompt below: 1 allow · 2 deny[39m
-
- [38;5;245mDenying: Approve shell command[39m
 
  [38;5;245mDenied: Approve shell command[39m
 

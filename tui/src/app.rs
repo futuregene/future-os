@@ -18,6 +18,7 @@
 //!   - The terminal is abstracted behind `TerminalIo` so the diff pipeline can
 //!     be driven against a fake terminal in tests.
 
+use crate::components::approval_view::{ApprovalAction, ApprovalView};
 use crate::components::autocomplete::{
     AttachmentProvider, AutocompleteItem, AutocompleteManager, AutocompletePopup, FilePathProvider,
     SessionReferenceItem, SessionReferenceProvider, SlashCommand, SlashCommandProvider,
@@ -68,7 +69,7 @@ use crate::terminal_image::{
 use crate::theme::{bold, fg, Chrome, Theme, DARK_THEME};
 use crate::tui::{
     apply_theme_to_component, is_focusable, resolve_overlay_layout, set_component_focused,
-    Component, OverlayOptions, SizeValue, SYNC_BEGIN, SYNC_END,
+    Component, OverlayAnchor, OverlayOptions, SizeValue, SYNC_BEGIN, SYNC_END,
 };
 // `utils::extract_segments` is deliberately not imported any more: the overlay
 // row belongs to the overlay (see `App::composite_line_at`), so compositing no
@@ -459,6 +460,12 @@ pub enum UiCmd {
         result: Result<(), String>,
         kind: String, // "approved" | "rejected"
         request_id: String,
+    },
+    /// The approval card (or an id-addressed command) asked for a decision;
+    /// the app turns it into the `approval_decision` RPC.
+    ApprovalDecided {
+        request_id: String,
+        approved: bool,
     },
     StopDone(Result<(), String>),
     QueuedCancelled {
@@ -1124,6 +1131,10 @@ struct PendingApproval {
     title: String,
     summary: String,
     risk_level: String,
+    /// The agent's curated action view (`command`, `paths`, `writes`,
+    /// `targets`, `justification`) — what the card renders.
+    action: Option<Value>,
+    /// The raw tool arguments; only a fallback when `action` has no detail.
     requested_action: Option<Value>,
 }
 
@@ -1686,10 +1697,15 @@ pub struct App<T: TerminalIo> {
     /// Approvals waiting for a decision, oldest first. The front of the queue
     /// is what the prompt line and the bare `/approve` act on.
     pending_approvals: VecDeque<PendingApproval>,
-    /// Request ids with a decision in flight (the RPC answered, the agent's
-    /// confirmation has not arrived yet). Guards against a key held down
-    /// firing `approval_decision` twice for the same request.
-    pending_decisions: Vec<String>,
+    /// The approval card's overlay id while one is in front (one at a time —
+    /// the queue advances through the same card).
+    approval_overlay_id: Option<u64>,
+    /// Requests with a decision in flight, as `(id, title)`. Guards against a
+    /// key held down firing `approval_decision` twice for the same request,
+    /// and keeps the display title reachable after the queue entry is gone —
+    /// the agent's `approval_decision` broadcast can beat the RPC's own
+    /// answer, and the result line must still name the request, not its id.
+    pending_decisions: Vec<(String, String)>,
     cached_models: Vec<String>,
     /// Model id → `ModelInfo.supports_images`, from the `list_models` the TUI
     /// has seen (startup, `/model`, the autocomplete fetch). The paste path
@@ -1888,6 +1904,7 @@ impl<T: TerminalIo> App<T> {
             previous_kitty_image_ids: BTreeSet::new(),
             full_redraw_count: 0,
             pending_approvals: VecDeque::new(),
+            approval_overlay_id: None,
             pending_decisions: Vec::new(),
             cached_models: Vec::new(),
             model_image_support: HashMap::new(),
@@ -2678,25 +2695,48 @@ impl<T: TerminalIo> App<T> {
                 }
                 Err(err) => self.add_system_message(format!("Failed to change directory: {err}")),
             },
+            UiCmd::ApprovalDecided {
+                request_id,
+                approved,
+            } => self.decide_approval(&request_id, approved),
             UiCmd::ApprovalDone {
                 result,
                 kind,
                 request_id,
             } => {
+                // The title travels with the decision: the agent's
+                // `approval_decision` broadcast can clear the queue entry
+                // before this answer lands, and the result line must still
+                // name the request.
                 let title = self
-                    .pending_approvals
+                    .pending_decisions
                     .iter()
-                    .find(|pending| pending.request_id == request_id)
-                    .map(|pending| pending.title.clone())
+                    .find(|(id, _)| *id == request_id)
+                    .map(|(_, title)| title.clone())
+                    .or_else(|| {
+                        self.pending_approvals
+                            .iter()
+                            .find(|pending| pending.request_id == request_id)
+                            .map(|pending| pending.title.clone())
+                    })
                     .unwrap_or_else(|| request_id.clone());
                 match result {
                     Ok(()) => {
-                        let verb = if kind == "approved" {
-                            "Allowed"
-                        } else {
-                            "Denied"
-                        };
-                        self.add_system_message(format!("{verb}: {title}"));
+                        let already_gone = !self
+                            .pending_approvals
+                            .iter()
+                            .any(|pending| pending.request_id == request_id);
+                        self.pending_decisions.retain(|(id, _)| *id != request_id);
+                        // A decision the broadcast already announced is not
+                        // announced twice.
+                        if !already_gone {
+                            let verb = if kind == "approved" {
+                                "Allowed"
+                            } else {
+                                "Denied"
+                            };
+                            self.add_system_message(format!("{verb}: {title}"));
+                        }
                         self.finish_pending_approval(&request_id);
                     }
                     Err(err) => {
@@ -2709,7 +2749,7 @@ impl<T: TerminalIo> App<T> {
                         // The request stays queued: the failure is transport
                         // noise (a reconnect, a refused connect), and the
                         // decision can simply be sent again.
-                        self.pending_decisions.retain(|id| *id != request_id);
+                        self.pending_decisions.retain(|(id, _)| *id != request_id);
                         self.request_render(false);
                     }
                 }
@@ -3955,7 +3995,7 @@ impl<T: TerminalIo> App<T> {
                 if !self.pending_approvals.is_empty() {
                     self.pending_approvals.clear();
                     self.pending_decisions.clear();
-                    self.request_render(false);
+                    self.hide_approval_card();
                 }
                 let text = event.text();
                 if !text.is_empty() {
@@ -4113,6 +4153,7 @@ impl<T: TerminalIo> App<T> {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string(),
+                    action: e.get("action").cloned(),
                     requested_action: e.get("requested_action").cloned(),
                 });
             }
@@ -4138,7 +4179,10 @@ impl<T: TerminalIo> App<T> {
                     return;
                 }
                 let status = e.get("status").and_then(Value::as_str).unwrap_or("");
-                let decided_here = self.pending_decisions.contains(&id);
+                let decided_here = self
+                    .pending_decisions
+                    .iter()
+                    .any(|(pending, _)| *pending == id);
                 // Our own decision's transcript line comes from `ApprovalDone`
                 // (it knows the outcome of the RPC); this branch only speaks
                 // for decisions made elsewhere.
@@ -4551,11 +4595,6 @@ impl<T: TerminalIo> App<T> {
                 }
                 self.hide_overlay();
                 self.request_render(false);
-            } else if self.approval_keys_active() && self.input.get_value().is_empty() {
-                // Empty editor + pending approval: escape denies. With a draft
-                // the editor keeps the key (it clears the draft — the queued
-                // message matters more than the prompt line's shortcut).
-                self.decide_front_approval(false);
             } else {
                 self.input.set_value("", None);
                 self.autocomplete.hide();
@@ -4588,29 +4627,6 @@ impl<T: TerminalIo> App<T> {
             if key == Key::ENTER {
                 self.apply_autocomplete_selection();
                 return;
-            }
-        }
-
-        // A pending approval takes the answer keys while the editor is empty.
-        // Checked at the same layer as the skill-reco `a` (after overlays so a
-        // panel in front still wins, before the keybinding manager so a user
-        // binding cannot shadow it) — but only when there is nothing to lose:
-        // a draft means the user is typing a queued message, and those keys
-        // belong to the editor.
-        if self.approval_keys_active()
-            && self.input.get_value().is_empty()
-            && !self.autocomplete.is_visible()
-        {
-            match key {
-                "1" | "y" | "Y" => {
-                    self.decide_front_approval(true);
-                    return;
-                }
-                "2" | "n" | "N" => {
-                    self.decide_front_approval(false);
-                    return;
-                }
-                _ => {}
             }
         }
 
@@ -4911,120 +4927,160 @@ impl<T: TerminalIo> App<T> {
         self.request_render(false);
     }
 
-    // ─── Approval prompt ──────────────────────────────────────────────
+    // ─── Approval card ─────────────────────────────────────────────────
 
-    /// An `approval_request` arrived: queue it, print the card, and let the
-    /// prompt line above the input collect the decision. The input itself is
-    /// left alone — an approval never costs the user their draft.
+    /// An `approval_request` arrived: queue it and put the modal card in
+    /// front. The input line is never touched — an approval never costs the
+    /// user their draft, and the card is modal because the agent has parked
+    /// the whole run until it is answered.
     fn handle_approval_request(&mut self, req: ApprovalEvent) {
-        self.pending_approvals.push_back(PendingApproval {
-            request_id: req.request_id.clone(),
-            tool_name: req.tool_name.clone(),
-            kind: req.kind.clone(),
-            title: req.title.clone(),
-            summary: req.summary.clone(),
-            risk_level: req.risk_level.clone(),
-            requested_action: req.requested_action.clone(),
-        });
-
-        // The card is plain text: system messages are not markdown-rendered,
-        // so bold markers would show up as literal asterisks.
-        let action_preview = match &req.requested_action {
-            Some(Value::String(s)) => s.clone(),
-            Some(v) => serde_json::to_string_pretty(v).unwrap_or_default(),
-            None => String::new(),
-        };
-        let risk = req.risk_level.to_uppercase();
-        let preview_lines = if action_preview.is_empty() {
-            String::new()
-        } else {
-            let clipped = truncate_to_width(
-                &action_preview,
-                500,
-                &TruncateOptions {
-                    ellipsis: false,
-                    pad: false,
-                },
-            );
-            clipped
-                .lines()
-                .map(|line| format!("  {line}"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
-        let mut content = format!(
-            "⚠ Approval required · {risk} risk\n{}\n{}",
-            req.title, req.summary
-        );
-        if !preview_lines.is_empty() {
-            content.push('\n');
-            content.push_str(&preview_lines);
+        let already_queued = self
+            .pending_approvals
+            .iter()
+            .any(|pending| pending.request_id == req.request_id);
+        if !already_queued {
+            self.pending_approvals.push_back(PendingApproval {
+                request_id: req.request_id.clone(),
+                tool_name: req.tool_name.clone(),
+                kind: req.kind.clone(),
+                title: req.title.clone(),
+                summary: req.summary.clone(),
+                risk_level: req.risk_level.clone(),
+                action: req.action.clone(),
+                requested_action: req.requested_action.clone(),
+            });
         }
-        content.push_str("\nChoose at the prompt below: 1 allow · 2 deny");
-        self.chat
-            .add_message(ChatMessage::new(random_id(), ChatRole::System, &content));
 
         // Tell the user even if the window is not focused: an approval request
         // parks the whole run until they answer, which is exactly the case the
         // desktop notifications exist for.
-        let body = format!(
-            "{} — answer at the TUI prompt (1 allow · 2 deny)",
-            req.title
-        );
+        let body = format!("{} — answer the approval card", req.title);
         self.notify_event(NotifyKind::ApprovalNeeded, &body);
-        self.request_render(false);
+
+        self.show_approval_card();
     }
 
-    /// Whether the approval answer keys are live: a request is queued, none of
-    /// its decisions is in flight, and no overlay is in front. (Autocomplete
-    /// visibility is checked separately at the call sites that need it.)
-    fn approval_keys_active(&self) -> bool {
-        !self.pending_approvals.is_empty() && self.overlay_stack.is_empty()
-    }
+    /// Put the card for the front of the queue in front. An already-open card
+    /// is updated in place when it is asking about the same request —
+    /// recreating it on every `get_state` refresh would reset the user's
+    /// cursor mid-decision.
+    fn show_approval_card(&mut self) {
+        let Some(front) = self.pending_approvals.front().cloned() else {
+            self.hide_approval_card();
+            return;
+        };
+        let request = crate::components::approval_view::ApprovalRequest {
+            request_id: front.request_id.clone(),
+            title: front.title.clone(),
+            summary: front.summary.clone(),
+            kind: front.kind.clone(),
+            risk_level: front.risk_level.clone(),
+            action: front.action.clone(),
+            requested_action: front.requested_action.clone(),
+        };
+        let queue_len = self.pending_approvals.len();
 
-    /// The prompt line above the input while approvals are pending, or `None`
-    /// when the queue is empty. One row, truncated to the width by the caller.
-    fn approval_prompt_line(&self) -> Option<String> {
-        let front = self.pending_approvals.front()?;
-        let title = truncate_to_width(
-            &front.title,
-            44,
-            &TruncateOptions {
-                ellipsis: true,
-                pad: false,
+        // One card at a time: an open card either follows the queue (new
+        // request, same panel) or is replaced.
+        if let Some(id) = self.approval_overlay_id {
+            if let Some(index) = self.overlay_stack.iter().position(|entry| entry.id == id) {
+                if let Some(overlay) = self.overlay_stack[index]
+                    .component
+                    .as_any_mut()
+                    .downcast_mut::<ApprovalOverlay>()
+                {
+                    overlay.view.set_request(request, queue_len);
+                    self.request_render(false);
+                    return;
+                }
+            }
+            // The id is stale (the panel was closed some other way).
+            self.approval_overlay_id = None;
+        }
+
+        let overlay = ApprovalOverlay::new(
+            ApprovalView::new(request, queue_len),
+            Self::approval_sink(self.op_tx.clone()),
+        );
+        let rows = (self.terminal.rows() as usize).max(3);
+        let width = (self.terminal.columns() as usize)
+            .saturating_sub(6)
+            .clamp(30, 100);
+        let id = self.show_overlay(
+            Box::new(overlay),
+            OverlayOptions {
+                width: Some(SizeValue::Fixed(width)),
+                max_height: Some(SizeValue::Fixed(rows.saturating_sub(2))),
+                anchor: Some(OverlayAnchor::BottomCenter),
+                ..Default::default()
             },
         );
-        let count = if self.pending_approvals.len() > 1 {
-            format!("  ({} pending)", self.pending_approvals.len())
-        } else {
-            String::new()
-        };
-        Some(format!(
-            "Approve: {title}  [1/y] allow · [2/n] deny · esc denies{count}"
-        ))
+        self.approval_overlay_id = Some(id);
+        self.request_render(true);
     }
 
-    /// Send a decision for the front of the queue. The queue keeps the entry
-    /// until the RPC answers (`ApprovalDone` removes it): removing it here
-    /// would hide the prompt before the agent confirmed, and a failed RPC
-    /// would have to re-insert it at the front — both worse than one frame of
-    /// double-answering protection from `pending_decisions`.
-    fn decide_front_approval(&mut self, approved: bool) {
-        let Some(front) = self.pending_approvals.front().cloned() else {
+    /// Remove the approval card, if one is open. Leaves the queue alone.
+    fn hide_approval_card(&mut self) {
+        let Some(id) = self.approval_overlay_id.take() else {
             return;
         };
-        if self.pending_decisions.contains(&front.request_id) {
+        if let Some(index) = self.overlay_stack.iter().position(|entry| entry.id == id) {
+            let entry = self.overlay_stack.remove(index);
+            if self.focused == FocusTarget::Overlay(entry.id) {
+                self.restore_focus(&entry);
+            }
+            if self.overlay_stack.is_empty() {
+                self.terminal.hide_cursor();
+            }
+            self.request_render(true);
+        }
+    }
+
+    /// The card's callback: a decision becomes the RPC, everything else is
+    /// redraw noise.
+    fn approval_sink(tx: mpsc::UnboundedSender<UiCmd>) -> Box<dyn FnMut(ApprovalAction)> {
+        Box::new(move |action: ApprovalAction| match action {
+            ApprovalAction::Decide {
+                request_id,
+                approved,
+            } => {
+                let _ = tx.send(UiCmd::ApprovalDecided {
+                    request_id,
+                    approved,
+                });
+            }
+            ApprovalAction::None | ApprovalAction::Moved => {}
+        })
+    }
+
+    /// Send a decision for one request. The queue keeps the entry until the
+    /// RPC answers (`ApprovalDone` removes it): removing it here would close
+    /// the card before the agent confirmed, and a failed RPC would have to
+    /// re-open it — both worse than one frame of double-answering protection
+    /// from `pending_decisions`. The card itself is the "in flight" feedback;
+    /// only the outcome reaches the transcript.
+    fn decide_approval(&mut self, request_id: &str, approved: bool) {
+        if self
+            .pending_decisions
+            .iter()
+            .any(|(id, _)| id == request_id)
+        {
             return;
         }
-        let verb = if approved { "Approving" } else { "Denying" };
-        self.add_system_message(format!("{verb}: {}", front.title));
-        self.send_approval_decision(&front.request_id, approved);
+        let title = self
+            .pending_approvals
+            .iter()
+            .find(|pending| pending.request_id == request_id)
+            .map(|pending| pending.title.clone())
+            .unwrap_or_else(|| request_id.to_string());
+        self.send_approval_decision(request_id, &title, approved);
     }
 
     /// The `approval_decision` RPC and its result plumbing. Shared by the
-    /// prompt line, the bare `/approve`, and the id-addressed form.
-    fn send_approval_decision(&mut self, request_id: &str, approved: bool) {
-        self.pending_decisions.push(request_id.to_string());
+    /// card, the bare `/approve`, and the id-addressed form.
+    fn send_approval_decision(&mut self, request_id: &str, title: &str, approved: bool) {
+        self.pending_decisions
+            .push((request_id.to_string(), title.to_string()));
         let client = self.client.clone();
         let tx = self.op_tx.clone();
         let id = request_id.to_string();
@@ -5043,12 +5099,16 @@ impl<T: TerminalIo> App<T> {
     }
 
     /// Remove an answered request from the queue (this client's RPC result or
-    /// the agent's own broadcast — another client may have decided first).
+    /// the agent's own broadcast — another client may have decided first),
+    /// then show the next request's card or dismiss the card.
     fn finish_pending_approval(&mut self, request_id: &str) {
-        self.pending_decisions.retain(|id| id != request_id);
         self.pending_approvals
             .retain(|pending| pending.request_id != request_id);
-        self.request_render(false);
+        if self.pending_approvals.is_empty() {
+            self.hide_approval_card();
+        } else {
+            self.show_approval_card();
+        }
     }
 }
 
@@ -5061,7 +5121,60 @@ pub struct ApprovalEvent {
     pub risk_level: String,
     pub title: String,
     pub summary: String,
+    /// The agent's curated action view (`command`, `paths`, `writes`, …).
+    pub action: Option<Value>,
     pub requested_action: Option<Value>,
+}
+
+/// Overlay wrapper for [`ApprovalView`].
+///
+/// Like every other panel wrapper here: the view is I/O-free and reports
+/// intent, this layer turns it into a `UiCmd`. The card is modal (an approval
+/// parks the run), and it owns `escape` — the key denies the request rather
+/// than closing a panel and leaving the run parked.
+struct ApprovalOverlay {
+    view: ApprovalView,
+    on_action: Box<dyn FnMut(ApprovalAction)>,
+}
+
+impl ApprovalOverlay {
+    fn new(view: ApprovalView, on_action: Box<dyn FnMut(ApprovalAction)>) -> Self {
+        ApprovalOverlay { view, on_action }
+    }
+
+    fn set_theme(&mut self, theme: Theme) {
+        self.view.set_theme(&theme);
+    }
+}
+
+impl Component for ApprovalOverlay {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        // The card wants to be as tall as its content; the app caps the
+        // window with `max_height`, so a generous bound here is enough.
+        self.view.render(width, 40)
+    }
+
+    fn handle_input(&mut self, data: &str) {
+        let action = self.view.handle_key(data);
+        if action != ApprovalAction::None {
+            (self.on_action)(action);
+        }
+    }
+
+    /// Escape is the card's own cancel/deny (see `ApprovalView::handle_key`):
+    /// closing the panel instead would hide the prompt and leave the agent
+    /// parked with nothing asking.
+    fn wants_escape(&self) -> bool {
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 // ─── /sandbox and /skills overlay wrappers ──────────────────────────────────
 
@@ -5321,6 +5434,8 @@ fn fit_overlay_row(row: &str, width: usize) -> String {
 /// its single call site.
 fn apply_theme_to_new_overlay(component: &mut dyn Component, theme: Theme) {
     if let Some(overlay) = component.as_any_mut().downcast_mut::<SandboxOverlay>() {
+        overlay.set_theme(theme);
+    } else if let Some(overlay) = component.as_any_mut().downcast_mut::<ApprovalOverlay>() {
         overlay.set_theme(theme);
     } else if let Some(overlay) = component.as_any_mut().downcast_mut::<SkillsOverlay>() {
         overlay.set_theme(theme);
@@ -6167,19 +6282,16 @@ impl<T: TerminalIo> App<T> {
                 // id-addressable path.
                 "approve" | "reject" => {
                     let approved = cmd == "approve";
-                    let Some(id) = (if arg.is_empty() {
+                    let arg = arg.trim().trim_matches('`').to_string();
+                    let id = if arg.is_empty() {
                         self.pending_approvals
                             .front()
                             .map(|front| front.request_id.clone())
                     } else {
-                        // Not the bare `/approve id` + `/reject id` note form.
-                        Some(arg.trim().trim_matches(|c| c == '`').to_string())
-                    }) else {
-                        self.add_system_message(if arg.is_empty() {
-                            format!("No pending approval to {cmd}")
-                        } else {
-                            format!("No pending approval with id '{arg}'")
-                        });
+                        Some(arg.clone())
+                    };
+                    let Some(id) = id else {
+                        self.add_system_message(format!("No pending approval to {cmd}"));
                         return;
                     };
                     if !self
@@ -6190,7 +6302,7 @@ impl<T: TerminalIo> App<T> {
                         self.add_system_message(format!("No pending approval with id '{arg}'"));
                         return;
                     }
-                    self.send_approval_decision(&id, approved);
+                    self.decide_approval(&id, approved);
                 }
                 "stop" => {
                     let client = self.client.clone();
@@ -9437,6 +9549,7 @@ impl<T: TerminalIo> App<T> {
                         pending.title.clone()
                     },
                     summary: pending.summary.clone(),
+                    action: pending.action.clone(),
                     requested_action: pending.requested_action.clone(),
                 });
             }
@@ -9447,6 +9560,10 @@ impl<T: TerminalIo> App<T> {
         if self.pending_approvals.is_empty() {
             self.pending_decisions.clear();
         }
+        // Keep the card in step with the rebuilt queue: it follows the front
+        // (a new request replaces the question in place) and is dismissed when
+        // nothing is parked any more.
+        self.show_approval_card();
         for queued in &s.queued_runs {
             self.chat.upsert_queued_run(
                 &queued.run_id,
@@ -10269,22 +10386,6 @@ impl<T: TerminalIo> App<T> {
         self.input
             .set_image_support(self.current_model_image_support());
         let mut editor_lines = self.input.render(w);
-        // The approval prompt sits directly above the input box for the same
-        // reason the recommendation prompt does (counted as editor height, so
-        // the chat viewport shrinks by exactly the row it takes). Approvals
-        // outrank recommendations: a run is parked until the user answers.
-        if let Some(line) = self.approval_prompt_line() {
-            let colour = if self
-                .pending_approvals
-                .front()
-                .is_some_and(|front| front.risk_level == "high")
-            {
-                self.theme.error as u8
-            } else {
-                self.theme.accent as u8
-            };
-            editor_lines.insert(0, crate::theme::fg(colour, &fit_overlay_row(&line, w)));
-        }
         // The recommendation prompt sits directly above the input box and is
         // counted as editor height, so the chat viewport shrinks by exactly the
         // row it takes instead of being overdrawn by it (PRD v1.6 §6.1).
@@ -13893,14 +13994,17 @@ mod tests {
         app.handle_agent_event(&make_event("tool_end", r#"{"tool_id":"t2"}"#));
         pump(&mut app, &mut rx).await; // tool_end's spawn_refresh fails silently
 
-        // approval_request → chat card + prompt line; the editor is untouched.
+        // approval_request → modal card; the editor is untouched.
         app.handle_agent_event(&make_event(
             "approval_request",
-            r#"{"approval_request_id":"a1","tool_id":"t9","tool_name":"shell","kind":"exec","risk_level":"high","summary":"rm -rf","requested_action":"rm -rf /"}"#,
+            r#"{"approval_request_id":"a1","tool_id":"t9","tool_name":"shell","kind":"exec","risk_level":"high","summary":"rm -rf","action":{"command":"rm -rf /"},"requested_action":{"command":"rm -rf /"}}"#,
         ));
-        assert!(last_system(&app).contains("Approval required"));
         assert!(app.input.get_value().is_empty());
         assert_eq!(app.pending_approvals.len(), 1);
+        assert!(
+            top_overlay_is::<ApprovalOverlay>(&app),
+            "the card is in front"
+        );
         // The agent's own decision broadcast removes it (another client
         // answered first — the `approval_decision` event carries the id).
         app.handle_agent_event(&make_event(
@@ -13908,7 +14012,7 @@ mod tests {
             r#"{"approval_request_id":"a1","status":"approved"}"#,
         ));
         assert!(app.pending_approvals.is_empty());
-        assert!(app.approval_prompt_line().is_none());
+        assert!(!top_overlay_is::<ApprovalOverlay>(&app), "the card is gone");
 
         // error event.
         app.handle_agent_event(&make_event("error", r#"{"error":"boom"}"#));
@@ -16701,19 +16805,26 @@ mod tests {
         app.apply_autocomplete_selection();
         assert_eq!(app.input.get_value(), "/model x");
 
-        // Approval with an object requested_action (pretty-printed) and a
-        // missing one (no preview block).
+        // Two approval requests in a row: the card is shown once (it follows
+        // the queue) rather than stacked, and neither hijacks the editor.
         app.handle_agent_event(&make_event(
             "approval_request",
             r#"{"approval_request_id":"a2","requested_action":{"cmd":"ls"}}"#,
         ));
-        assert!(last_system(&app).contains("Approval required"));
+        assert!(top_overlay_is::<ApprovalOverlay>(&app));
         app.handle_agent_event(&make_event(
             "approval_request",
             r#"{"approval_request_id":"a3"}"#,
         ));
-        assert!(last_system(&app).contains("Approval required"));
         assert_eq!(app.pending_approvals.len(), 2);
+        assert_eq!(
+            app.overlay_stack
+                .iter()
+                .filter(|entry| entry.component.as_any().is::<ApprovalOverlay>())
+                .count(),
+            1,
+            "one card, not one per request"
+        );
 
         // /model selector refused while streaming.
         app.state.streaming = true;
@@ -19326,18 +19437,21 @@ mod tests {
         assert!(short.starts_with('…'), "{short}");
     }
 
-    /// An approval request must notify, because the run parks until answered.
+    /// An approval request must notify, because the run parks until answered,
+    /// and it must put the card in front without touching the editor.
     #[tokio::test]
-    async fn approval_request_notifies_the_user() {
+    async fn approval_request_notifies_and_opens_the_card() {
         let (mut app, _rx) = make_app(100, 30);
+        app.input.set_value("draft in progress", None);
         app.handle_approval_request(ApprovalEvent {
             request_id: "req-1".into(),
             tool_id: "t1".into(),
             tool_name: "shell".into(),
-            kind: "shell".into(),
+            kind: "shell_command".into(),
             risk_level: "high".into(),
             title: "Run rm -rf".into(),
             summary: "destructive command".into(),
+            action: Some(serde_json::json!({"command": "rm -rf /"})),
             requested_action: Some(Value::String("rm -rf /".into())),
         });
         let writes = terminal_writes(&app);
@@ -19350,13 +19464,16 @@ mod tests {
             "the notification names the request"
         );
         assert_eq!(app.pending_approvals.len(), 1);
-        // The editor is never hijacked: a draft the user was typing survives
-        // the request (the answer keys only live while it is empty).
-        assert!(app.input.get_value().is_empty());
-        assert_eq!(
-            app.approval_prompt_line().as_deref(),
-            Some("Approve: Run rm -rf  [1/y] allow · [2/n] deny · esc denies")
-        );
+        // The editor is never hijacked: the draft survives the request.
+        assert_eq!(app.input.get_value(), "draft in progress");
+        // The card is the visible surface, with the command and both options.
+        assert!(top_overlay_is::<ApprovalOverlay>(&app));
+        let text = top_overlay_text(&mut app, 80);
+        assert!(text.contains("Tool use"), "{text}");
+        assert!(text.contains("$ rm -rf /"), "{text}");
+        assert!(text.contains("Do you want to proceed?"), "{text}");
+        assert!(text.contains("1. Yes"), "{text}");
+        assert!(text.contains("2. No"), "{text}");
     }
 
     /// Notifications respect the settings gate: disabling them silences the
@@ -19374,10 +19491,11 @@ mod tests {
             request_id: "req-2".into(),
             tool_id: "t1".into(),
             tool_name: "shell".into(),
-            kind: "shell".into(),
+            kind: "shell_command".into(),
             risk_level: "high".into(),
             title: "Run rm -rf".into(),
             summary: "destructive command".into(),
+            action: None,
             requested_action: None,
         });
         assert!(
@@ -19391,39 +19509,45 @@ mod tests {
         app.handle_agent_event(&make_event(
             "approval_request",
             &format!(
-                r#"{{"approval_request_id":"{id}","tool_id":"t1","tool_name":"shell","kind":"shell_command","risk_level":"medium","title":"{title}","summary":"s"}}"#
+                r#"{{"approval_request_id":"{id}","tool_id":"t1","tool_name":"shell","kind":"shell_command","risk_level":"medium","title":"{title}","summary":"s","action":{{"command":"echo {id}"}}}}"#
             ),
         ));
     }
 
-    /// The answer keys decide the front of the queue while the editor is
-    /// empty; a draft disables them; a decision in flight swallows repeats.
+    /// The card's keys move the selection and answer it; a decision in flight
+    /// swallows repeats, and the card advances through the queue.
     #[tokio::test(flavor = "multi_thread")]
-    async fn approval_answer_keys_decide_the_front_of_the_queue() {
+    async fn the_approval_card_selects_and_advances_the_queue() {
         let (mut app, mut rx) = make_app(100, 30);
         queue_approval(&mut app, "a1", "First command");
         queue_approval(&mut app, "a2", "Second command");
 
-        // `1` (and `y`) approve the front — but only once: the second press
-        // is swallowed while the decision is in flight (the dead client's
-        // answer never comes, which is exactly the window that matters).
-        app.handle_key("1");
-        assert_eq!(app.pending_decisions, vec!["a1".to_string()]);
-        app.handle_key("y");
-        assert_eq!(
-            app.pending_decisions,
-            vec!["a1".to_string()],
-            "a repeat press must not fire a second RPC"
-        );
-        // The queue keeps the request until the answer arrives; the prompt
-        // line still shows the front (with the count).
-        assert_eq!(app.pending_approvals.len(), 2);
-        assert!(app
-            .approval_prompt_line()
-            .expect("still pending")
-            .contains("(2 pending)"));
+        // One card, showing the front of the queue and its size.
+        assert!(top_overlay_is::<ApprovalOverlay>(&app));
+        let text = top_overlay_text(&mut app, 80);
+        assert!(text.contains("First command"), "{text}");
+        assert!(text.contains("2 pending"), "{text}");
 
-        // The answer removes it; the next request moves to the front.
+        // Enter on the default selection allows the front.
+        press_on_overlay(&mut app, &mut rx, "enter");
+        assert_eq!(
+            app.pending_decisions
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a1"]
+        );
+        // A repeat press while the RPC is in flight fires nothing.
+        press_on_overlay(&mut app, &mut rx, "enter");
+        assert_eq!(
+            app.pending_decisions
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a1"]
+        );
+
+        // The answer removes it; the card moves on to the next request.
         app.handle_cmd(UiCmd::ApprovalDone {
             result: Ok(()),
             kind: "approved".into(),
@@ -19431,41 +19555,68 @@ mod tests {
         });
         assert_eq!(app.pending_approvals.len(), 1);
         assert_eq!(app.pending_approvals[0].request_id, "a2");
-        assert!(app
-            .approval_prompt_line()
-            .expect("still pending")
-            .contains("Second command"));
+        assert!(top_overlay_is::<ApprovalOverlay>(&app));
+        assert!(last_system(&app).contains("Allowed: First command"));
+        let text = top_overlay_text(&mut app, 80);
+        assert!(text.contains("Second command"), "{text}");
+        assert!(!text.contains("pending"), "one request left: {text}");
 
-        // `2` (and `n`) deny; `esc` on an empty editor denies too.
-        app.handle_key("2");
+        // Down moves the highlight to No; enter denies it.
+        press_on_overlay(&mut app, &mut rx, "down");
+        press_on_overlay(&mut app, &mut rx, "enter");
         app.handle_cmd(UiCmd::ApprovalDone {
             result: Ok(()),
             kind: "rejected".into(),
             request_id: "a2".into(),
         });
         assert!(app.pending_approvals.is_empty());
-        assert!(app.approval_prompt_line().is_none());
-        // Nothing pending: the keys fall through to the editor (`1` types).
+        assert!(!top_overlay_is::<ApprovalOverlay>(&app), "the card is gone");
+        assert!(last_system(&app).contains("Denied: Second command"));
+        // With nothing pending the keys belong to the editor again.
         app.handle_key("1");
         assert_eq!(app.input.get_value(), "1");
-        app.input.set_value("", None);
+        let _ = rx.try_recv();
+    }
 
-        // A draft outranks the shortcuts: the keys type into the editor and
-        // the request stays queued.
-        queue_approval(&mut app, "a3", "Third command");
-        app.input.set_value("answering later", None);
-        app.handle_key("y");
-        assert_eq!(app.input.get_value(), "answering latery");
-        assert!(app.pending_decisions.is_empty());
-        app.input.set_value("", None);
-
-        // `esc` with a draft clears the draft (existing behaviour), not the
-        // request; with an empty editor it denies.
+    /// Escape on the card denies the request: the run is parked, so closing
+    /// the panel without an answer would hang it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn escape_on_the_card_denies_the_request() {
+        let (mut app, mut rx) = make_app(100, 30);
+        queue_approval(&mut app, "a1", "First command");
+        // Escape goes through the app's overlay routing (the card claims it
+        // via `wants_escape`), like a real keypress.
         app.handle_key(Key::ESCAPE);
+        while let Ok(cmd) = rx.try_recv() {
+            app.handle_cmd(cmd);
+        }
+        assert_eq!(
+            app.pending_decisions
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a1"]
+        );
+        // The card stays while the decision is in flight — it is the record
+        // of what the run is parked on.
+        assert!(top_overlay_is::<ApprovalOverlay>(&app));
+        // The editor keeps its content: the card owns its keys, not the box.
         assert!(app.input.get_value().is_empty());
-        assert_eq!(app.pending_approvals.len(), 1);
-        app.handle_key(Key::ESCAPE);
-        assert_eq!(app.pending_decisions, vec!["a3".to_string()]);
+    }
+
+    /// The number and letter keys answer directly, without a cursor trip.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn number_and_letter_keys_answer_the_card() {
+        let (mut app, mut rx) = make_app(100, 30);
+        queue_approval(&mut app, "a1", "First command");
+        press_on_overlay(&mut app, &mut rx, "y");
+        assert_eq!(
+            app.pending_decisions
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a1"]
+        );
         let _ = rx.try_recv();
     }
 
@@ -19486,16 +19637,32 @@ mod tests {
         assert_eq!(app.pending_approvals.len(), 1);
         assert_eq!(app.pending_approvals[0].request_id, "a2");
         assert!(last_system(&app).contains("Allowed elsewhere: First command"));
+        // The card moved on to the remaining request.
+        assert!(top_overlay_text(&mut app, 80).contains("Second command"));
 
         // Our own decision (in flight) resolves via the broadcast without a
-        // second transcript line from this branch.
-        app.send_approval_decision("a2", false);
+        // second transcript line from this branch. The in-flight record stays
+        // until the RPC's own answer lands: it carries the title the result
+        // line needs after the queue entry is gone.
+        app.send_approval_decision("a2", "Second command", false);
         app.handle_agent_event(&make_event(
             "approval_decision",
             r#"{"approval_request_id":"a2","status":"rejected"}"#,
         ));
         assert!(app.pending_approvals.is_empty());
+        assert_eq!(app.pending_decisions.len(), 1);
+        assert!(!top_overlay_is::<ApprovalOverlay>(&app));
+        app.handle_cmd(UiCmd::ApprovalDone {
+            result: Ok(()),
+            kind: "rejected".into(),
+            request_id: "a2".into(),
+        });
         assert!(app.pending_decisions.is_empty());
+        // The broadcast spoke for it, so the RPC's answer does not repeat the
+        // outcome — and never falls back to printing the raw id.
+        assert!(!system_messages(&app)
+            .iter()
+            .any(|m| m.contains("approval_") || m.contains("Denied: a2")));
 
         // A broadcast for an id we never held is ignored (another session's).
         app.handle_agent_event(&make_event(
@@ -19505,15 +19672,17 @@ mod tests {
         assert!(last_system(&app).contains("Denied") || last_system(&app).contains("elsewhere"));
     }
 
-    /// `agent_end` clears the queue: a finished run leaves nothing parked.
+    /// `agent_end` clears the queue and dismisses the card: a finished run
+    /// parks nothing.
     #[tokio::test]
     async fn agent_end_clears_pending_approvals() {
         let (mut app, _rx) = make_app(100, 30);
         queue_approval(&mut app, "a1", "First command");
         assert_eq!(app.pending_approvals.len(), 1);
+        assert!(top_overlay_is::<ApprovalOverlay>(&app));
         app.handle_agent_event(&make_event("agent_end", r#"{"state":"completed"}"#));
         assert!(app.pending_approvals.is_empty());
-        assert!(app.approval_prompt_line().is_none());
+        assert!(!top_overlay_is::<ApprovalOverlay>(&app));
     }
 
     /// A reconnect rebuilds the queue from `get_state`'s `pendingApprovals`:
@@ -19535,6 +19704,7 @@ mod tests {
                 risk_level: "medium".into(),
                 title: "Second command".into(),
                 summary: "s".into(),
+                action: None,
                 requested_action: None,
             },
             // A new one the agent holds that we have never seen (queued while
@@ -19547,6 +19717,7 @@ mod tests {
                 risk_level: "medium".into(),
                 title: "Third command".into(),
                 summary: "s".into(),
+                action: None,
                 requested_action: None,
             },
         ];
@@ -19557,16 +19728,15 @@ mod tests {
             .map(|pending| pending.request_id.as_str())
             .collect();
         assert_eq!(ids, vec!["a2", "a3"], "a1 resolved while away; no dupes");
-        assert!(app
-            .approval_prompt_line()
-            .expect("still pending")
-            .contains("(2 pending)"));
+        assert!(top_overlay_is::<ApprovalOverlay>(&app));
+        assert!(top_overlay_text(&mut app, 80).contains("2 pending"));
 
         // An empty snapshot empties the queue (nothing parked any more).
         let mut empty = sample_state();
         empty.pending_approvals = vec![];
         app.handle_cmd(UiCmd::Refreshed(Ok(empty)));
         assert!(app.pending_approvals.is_empty());
+        assert!(!top_overlay_is::<ApprovalOverlay>(&app));
     }
 
     #[tokio::test]
