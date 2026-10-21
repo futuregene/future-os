@@ -369,6 +369,11 @@ method does. What the app owes it:
 
 See `KEYBINDINGS.md` → "Modes". The panel does not keep a second table.
 
+Two keys are worth repeating here because they are the panel's own grammar rather than a
+shortcut: the arrows move the selection, and **`h`/`j`/`k`/`l` move it the same way** —
+same commands, second bindings. They never fire over an editor (a modifier-less keystroke
+belongs to the field with the caret), so typing one while dictating is typing it.
+
 ### 9.2 The remote control
 
 A Xiaomi-style Bluetooth remote has about twelve physical buttons; only seven

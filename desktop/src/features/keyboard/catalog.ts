@@ -200,10 +200,15 @@ export const COMMANDS: readonly CommandSpec[] = [
   // mode's owner makes it mean, which is what the registry already does — the
   // rail is not mounted to own them there.
   { id: "vibe.toggle", category: "vibe", defaultBinding: "mod+shift+v", inTerminal: false },
-  { id: "vibe.focus.up", category: "vibe", defaultBinding: "arrowup", inTerminal: false, repeat: true, scope: "vibeGrid" },
-  { id: "vibe.focus.down", category: "vibe", defaultBinding: "arrowdown", inTerminal: false, repeat: true, scope: "vibeGrid" },
-  { id: "vibe.focus.left", category: "vibe", defaultBinding: "arrowleft", inTerminal: false, repeat: true, scope: "vibeGrid" },
-  { id: "vibe.focus.right", category: "vibe", defaultBinding: "arrowright", inTerminal: false, repeat: true, scope: "vibeGrid" },
+  // Each direction answers to its arrow **and** to `h`/`j`/`k`/`l`. Two bindings on one
+  // command rather than four more commands: the movement is the same movement, and the
+  // table already expresses "one command, several keys" (`vibe.cell`). The letters are
+  // fixed (the settings page lists them read-only) because a rebindable pair would let a
+  // reader shadow them without noticing what they shadowed.
+  { id: "vibe.focus.up", category: "vibe", defaultBinding: "arrowup", bindings: ["arrowup", "k"], inTerminal: false, repeat: true, scope: "vibeGrid" },
+  { id: "vibe.focus.down", category: "vibe", defaultBinding: "arrowdown", bindings: ["arrowdown", "j"], inTerminal: false, repeat: true, scope: "vibeGrid" },
+  { id: "vibe.focus.left", category: "vibe", defaultBinding: "arrowleft", bindings: ["arrowleft", "h"], inTerminal: false, repeat: true, scope: "vibeGrid" },
+  { id: "vibe.focus.right", category: "vibe", defaultBinding: "arrowright", bindings: ["arrowright", "l"], inTerminal: false, repeat: true, scope: "vibeGrid" },
   { id: "vibe.open", category: "vibe", defaultBinding: "enter", inTerminal: false, scope: "vibeGrid" },
   // "Back" leaves the panel from the grid: the same button that steps out of one
   // layer steps out of the last one.
@@ -213,8 +218,11 @@ export const COMMANDS: readonly CommandSpec[] = [
   // arrows are not live there, and the caret rule keeps them off a text field.
   // Distinct commands from the grid's because a command has one binding set: the
   // grid moves a selection ring, this changes what the cell shows.
-  { id: "vibe.zoom.previous", category: "vibe", defaultBinding: "arrowleft", inTerminal: false, repeat: true, scope: "vibeZoom" },
-  { id: "vibe.zoom.next", category: "vibe", defaultBinding: "arrowright", inTerminal: false, repeat: true, scope: "vibeZoom" },
+  // `h`/`l` alongside the arrows here too: a reader whose hands are on home row should not
+  // have to move them to change conversation, and these two are the same pair of moves as
+  // the grid's left/right.
+  { id: "vibe.zoom.previous", category: "vibe", defaultBinding: "arrowleft", bindings: ["arrowleft", "h"], inTerminal: false, repeat: true, scope: "vibeZoom" },
+  { id: "vibe.zoom.next", category: "vibe", defaultBinding: "arrowright", bindings: ["arrowright", "l"], inTerminal: false, repeat: true, scope: "vibeZoom" },
   // Up/down inside a zoomed cell walk the transcript **by block**, not by pixel:
   // a remote control cannot scroll, so the reading layer moves a block cursor over
   // messages and expands the one it is on. The wheel and the trackpad still scroll

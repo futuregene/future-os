@@ -181,11 +181,11 @@ below). `mod` is `⌘` on macOS and `Ctrl` elsewhere:
 | Action | Default | Scope |
 | --- | --- | --- |
 | Open or close the panel | `mod+shift+v` | global |
-| Move the selection | `← ↑ → ↓` | vibeGrid |
+| Move the selection | `← ↑ → ↓`, or `h j k l` | vibeGrid |
 | Enter the selected cell → its **input layer** | `↩` | vibeGrid |
 | Close the panel | `Esc` / `Back` | vibeGrid |
 | Leave the zoomed cell | `Esc` / `Back` | vibeZoom |
-| Previous / next conversation in the zoomed cell | `←` / `→` | vibeZoom |
+| Previous / next conversation in the zoomed cell | `←` / `→`, or `h` / `l` | vibeZoom |
 | Previous / next message block | `↑` / `↓` | vibeZoom |
 | Open the input layer | `↩` | vibeZoom |
 | Send the dictation (empty draft: close; a run in flight: queue it) | `↩` — the composer's own fixed key, not a command | vibeInput |
@@ -228,6 +228,12 @@ Three notes on this table:
   panel registers `thread.next` as "next cell", outside it the rail registers it
   as "next conversation". The registry keeps one handler per command, so the two
   cannot both be live.
+* **`h`/`j`/`k`/`l` are second bindings on the four movement commands**, not four more
+  commands: the movement is the same movement. They are listed read-only in the settings
+  page (like `vibe.cell`), because a rebindable pair would let a reader shadow them
+  without seeing what they shadowed. They never fire over an editor — a modifier-less
+  keystroke belongs to the field that has the caret — so typing `h` in a dictation is
+  an `h`.
 * **`1`–`9` is one command with nine bindings** (`vibe.cell`), because a cell is
   chosen by the digit printed on it. The settings page shows them as a read-only
   key list: recording a single key for a nine-key command would ask a question the

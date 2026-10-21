@@ -858,6 +858,45 @@ describe("the send queue", () => {
   });
 });
 
+describe("the letters, beside the arrows", () => {
+  // `h`/`j`/`k`/`l` on the same commands as the arrows: same movement, second key. What
+  // matters is that they move the ring in the grid, switch conversation while reading, and
+  // never fire over an editor — the last one is `dispatch`'s caret rule, and it is the
+  // reason a letter may sit next to a bare arrow at all.
+  it("moves the ring with the letters", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300), thread("d", 400)] });
+    // 2×2: `l` right, `j` down.
+    press({ code: "KeyL", key: "l" });
+    press({ code: "KeyJ", key: "j" });
+    press({ code: "Enter", key: "Enter" });
+    expect(drawn("input")).toEqual(["d"]);
+  });
+
+  it("switches conversation with h and l while reading", () => {
+    mount({ threads: [thread("a", 100), thread("b", 200), thread("c", 300)] });
+    press({ code: "Enter", key: "Enter" });
+    press({ code: "Escape", key: "Escape" });
+    press({ code: "KeyL", key: "l" });
+    press({ code: "KeyL", key: "l" });
+    press({ code: "KeyH", key: "h" });
+    press({ code: "Enter", key: "Enter" });
+    // a → b → c → b.
+    expect(drawn("input")).toEqual(["b"]);
+  });
+
+  it("leaves the letters to the editor while dictating", () => {
+    // Typing `h` in a dictation must be an `h`, and this is the rule that allows it:
+    // a modifier-less key belongs to the field that has the caret.
+    mount({ threads: [thread("a", 100), thread("b", 200)] });
+    press({ code: "Enter", key: "Enter" });
+    const before = container.querySelector("[data-vibe-layer]")?.getAttribute("data-vibe-layer");
+    // The caret is in the editor here; the layer must not change.
+    press({ code: "KeyL", key: "l" });
+    expect(container.querySelector("[data-vibe-layer]")?.getAttribute("data-vibe-layer")).toBe(before);
+    expect(drawn("input")).toEqual(["a"]);
+  });
+});
+
 describe("membership", () => {
   it("shows only pinned, live conversations of this machine", () => {
     mount({
