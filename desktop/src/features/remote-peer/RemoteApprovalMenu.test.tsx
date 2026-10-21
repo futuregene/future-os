@@ -90,7 +90,7 @@ it("keeps the host's mode when the request fails", async () => {
   set.mockRejectedValue(new Error("refused"));
   const view = await mount();
   await view.open();
-  await act(async () => view.item("Unrestricted")!.click());
+  await act(async () => view.item("Full access")!.click());
   expect(view.trigger().textContent).toContain("Manual");
   await view.unmount();
 });
@@ -126,7 +126,7 @@ it("closes the menu on a second click of the trigger", async () => {
   // "open" is read from a row that only exists inside it.
   // A row carries its label *and* its description, so the row is found by the
   // label's presence rather than by the whole text.
-  const open = () => [...view.container.querySelectorAll("button")].some(node => node.textContent?.includes("Unrestricted"));
+  const open = () => [...view.container.querySelectorAll("button")].some(node => node.textContent?.includes("Full access"));
   await view.open();
   expect(open()).toBe(true);
   await act(async () => view.trigger().click());

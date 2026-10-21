@@ -21,6 +21,7 @@
 //! Like the TS client, transport failures and `success:false` responses
 //! surface as plain `String` messages.
 
+use crate::components::sandbox_view::ApprovalMode;
 use crate::rpc::provider_types::{
     parse_providers_response, validate_provider_input, ProviderInfo, ProviderInput,
 };
@@ -744,17 +745,24 @@ impl GrpcClient {
             .await
     }
 
-    /// `setSandboxPolicy(tier)` — `off` | `manual` | `sandbox` | `auto`.
+    /// `setSandboxPolicy(mode)` — one of the four product approval modes.
+    ///
+    /// `auto` is not a wire tier: it maps to `tier = sandbox, reviewer =
+    /// model` (the agent's `SandboxPolicy::mode()` spelling), like the CLI's
+    /// `--sandbox auto` and the desktop bridge.
     ///
     /// Returns the agent's *own* summary rather than `()`: the agent answers
     /// `tier:"manual"` with `requestedTier:"sandbox"` when the probe found no
-    /// usable backend, and reporting that as an applied request would lie to
-    /// the user. Callers must read `tier`/`requestedTier` from the response.
-    pub async fn set_sandbox_policy(&self, tier: &str) -> Result<Value, String> {
+    /// usable backend, and `effectiveMode:"sandbox"` with
+    /// `configuredMode:"auto"` when the account is missing — reporting those
+    /// as applied requests would lie to the user. Callers must read
+    /// `effectiveMode`/`configuredMode` from the response.
+    pub async fn set_sandbox_policy(&self, mode: ApprovalMode) -> Result<Value, String> {
+        let (tier, reviewer) = mode.to_wire();
         let cmd = RpcCommand {
             sandbox_policy: Some(future_rpc::proto::SandboxPolicy {
-                tier: if tier == "auto" { "sandbox" } else { tier }.to_string(),
-                reviewer: if tier == "auto" { "model" } else { "user" }.to_string(),
+                tier: tier.to_string(),
+                reviewer: reviewer.to_string(),
             }),
             ..Default::default()
         };
@@ -2613,7 +2621,10 @@ mod tests {
             "platform_unsupported"
         );
         // The downgrade survives the wrapper: requested sandbox, got manual.
-        let policy = client.set_sandbox_policy("sandbox").await.unwrap();
+        let policy = client
+            .set_sandbox_policy(ApprovalMode::Sandbox)
+            .await
+            .unwrap();
         assert_eq!(policy["tier"], "manual");
         assert_eq!(policy["requestedTier"], "sandbox");
         assert_eq!(
