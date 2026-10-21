@@ -306,7 +306,7 @@ serves again after a restart. Run `future remote status --help` for its fields,
 its --json document and its exit codes.
 
 enable and disable are that switch, from a terminal: they take effect at once
-when a Desktop is running (the window, or futureos-headless) and are stored for
+when a Desktop is running (the window, or `future headless`) and are stored for
 the next launch either way, so neither needs a restart.
 
 Every action takes --json and prints the same document `future remote devices
@@ -374,7 +374,7 @@ Usage:
 Two facts, printed separately because they are different facts:
 
   Remote desktop      Whether this machine is serving its devices right now.
-                      Only a running Desktop (the window, or futureos-headless)
+                      Only a running Desktop (the window, or `future headless`)
                       can answer; with none running this reads "off — no
                       Desktop is running for this machine".
   Saved switch        autoConnectRemote, the same value the window's Remote page
@@ -429,7 +429,7 @@ Usage:
 Turns on the same switch the window's Remote page has, and stores it: the
 machine keeps serving its paired devices at the next launch.
 
-With a Desktop running (the window, or futureos-headless) it takes effect
+With a Desktop running (the window, or `future headless`) it takes effect
 immediately — the request goes to that process, which starts the bridge, so
 nothing has to be restarted. With none running there is no bridge to start: the
 switch is stored, the command says so, and it exits 1 because the machine is not
