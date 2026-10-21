@@ -97,12 +97,23 @@ pub struct Settings {
     /// spends their credits while nobody is watching. A machine that restarts
     /// on its own (a server, a supervised process) must not start paying for
     /// work because it came back up.
-    #[serde(default, skip_serializing_if = "is_false")]
+    /// Continue, on startup, the conversations a run was interrupted in.
+    ///
+    /// On by default, matching the consent the desktop already recorded
+    /// (`autoResumeInterrupted`, also on by default): moving the continuation
+    /// here must not silently drop a behaviour users already rely on. The
+    /// desktop's settings switch writes this key, so the one control still
+    /// governs the one executor.
+    #[serde(default = "default_true_bool", skip_serializing_if = "is_true")]
     pub resume_interrupted_on_start: bool,
 }
 
-fn is_false(value: &bool) -> bool {
-    !*value
+fn default_true_bool() -> bool {
+    true
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 // ─── Defaults ──────────────────────────────────────────────────────────────
@@ -203,7 +214,7 @@ impl Default for Settings {
             max_turns: 0,
             default_permission_level: default_permission_level(),
             default_model: String::new(),
-            resume_interrupted_on_start: false,
+            resume_interrupted_on_start: true,
         }
     }
 }

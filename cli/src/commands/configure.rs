@@ -47,12 +47,20 @@ impl Prompter for StdioPrompter {
     }
 
     fn read_secret(&mut self) -> Result<String, String> {
-        // CONIN$ can remain usable independently of redirected stdin. Never
-        // wait on that unrelated console when the questionnaire is piped.
+        // The questionnaire may be answered from a pipe (`future config <
+        // answers`), but a secret must come from a console. Refuse *before*
+        // asking the platform, on every platform: `rpassword` reads the
+        // controlling terminal on unix, so on a machine where this process has
+        // one it would wait there forever while the script has already supplied
+        // every answer — the run looks hung and the error the caller needs
+        // ("an interactive console is required") never appears. Windows has the
+        // same hazard through CONIN$; there the console code page is the extra
+        // check, because a pipe can leave CONIN$ usable.
+        if !io::IsTerminal::is_terminal(&io::stdin()) {
+            return Err("Failed to read API key: an interactive console is required.".into());
+        }
         #[cfg(windows)]
-        if !io::IsTerminal::is_terminal(&io::stdin())
-            || unsafe { windows_sys::Win32::System::Console::GetConsoleCP() } == 0
-        {
+        if unsafe { windows_sys::Win32::System::Console::GetConsoleCP() } == 0 {
             return Err("Failed to read API key: an interactive console is required.".into());
         }
         rpassword::read_password()

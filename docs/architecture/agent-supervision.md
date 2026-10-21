@@ -43,7 +43,7 @@ All three funnel through [`select_agent`](../../packages/rpc/src/connection.rs):
 | **P2** | Let the Agent outlive the TUI: detached sidecar + `--ephemeral` idle exit ([§8](#8-lifetime-and-ownership)) | **Product decision** | **Awaiting the user** |
 | **D7** | After the **user** stops the Agent, should other clients restart it? ([§4.3](#43-four-kinds-of-death)) | Product decision | Recommendation: no; **awaiting confirmation** |
 | **D8** | Post-restart continuation: who runs it, and when is a run resumable? (§9.1, §9.2) | Design | **Partly landed**: the continuation criterion is implemented; the `cause` distinction is not (see §12) |
-| **D9** | The trigger lives in the Agent too (proposed by the user, 2026-10-21) | Product decision | **Landed**: the Agent triggers it after starting; the switch is `resumeInterruptedOnStart` in `~/.future/agent/settings.json` (**off by default**) |
+| **D9** | The trigger lives in the Agent too (proposed by the user, 2026-10-21) | Product decision | **Landed**: the Agent triggers it after starting; the switch is `resumeInterruptedOnStart` in `~/.future/agent/settings.json` (**on by default**, matching the desktop's `autoResumeInterrupted`); the desktop's one-shot pass is retired |
 | **D10** | Continuation sends no user message; it continues inside the loop via a request-only directive (§9.3, proposed by the user, 2026-10-21) | Product decision → design | **Adopted** (as a plan); needs the assistant-tail guard relaxed, and **implementation is a separate task** |
 
 The two entries marked "awaiting the user" are **not settled**. This document does not design code paths for them; it states the options, their costs, and what they affect.
@@ -201,7 +201,7 @@ Under either option, **the idle decision must be made by the Agent from real sta
 
 ### 9.1 What happens to the conversation after a restart
 
-[#1277](../../host/src/agent_bridge/resume.rs) supplies the right foundation, but its boundaries decide whether "a restart is just jitter" actually holds. This design must depend on it explicitly, or self-healing turns "the conversation continues" into "the conversation stops half way".
+[#1277](../../agent/src/rpc/resume.rs) (the implementation of its day, since taken over by the Agent) supplies the right foundation, but its boundaries decide whether "a restart is just jitter" actually holds. This design must depend on it explicitly, or self-healing turns "the conversation continues" into "the conversation stops half way".
 
 #### What it actually does
 
@@ -219,7 +219,7 @@ So the accurate statement is: **the conversation does not end and history is not
 
 | Condition | Today | What this design must do |
 |---|---|---|
-| Someone runs the continuation pass in the restarted session | **Only Desktop does** ([lib.rs](../../desktop/src-tauri/src/lib.rs)); headless runs only `reconcile_interrupted_runs` (settle/reattach, no prompt), and the TUI has nothing | The Agent triggers it itself once Ready, so no host needs to be present (see §9.2) |
+| Someone runs the continuation pass in the restarted session | Historically only Desktop did; headless ran only `reconcile_interrupted_runs` (settle/reattach, no prompt), and the TUI had nothing | **Landed**: the Agent triggers it itself once Ready, so no host needs to be present; the desktop pass is retired so one conversation cannot receive two continuations (see §9.2) |
 | The interruption must leave a resumable state | A graceful stop goes through `cancel_all` → terminal marker → `interruptedRun` null → `plan_resume` says `Terminal` → **no resume**; only an abnormal death (`kill -9` / crash / OOM) leaves `interrupted` | On a graceful exit, mark the run by its cause: `agent_shutdown` → resumable, `user_cancelled` → not (see premise 1 below) |
 | The conversation must have a thread + run row in `app.db` | Run rows come from a host-submitted prompt or from import (discovery every 60s) | A box running only a TUI, with no host, has no candidate at all; the first self-healed launch should import once |
 | The remaining product gates | Newest run, not `waiting_approval`, within 7 days, `autoResumeInterrupted` (on by default — it spends the user's credits) | Unchanged |
@@ -434,7 +434,7 @@ D10 ahead of the original "send a prompt" shape: do the "tail is a tool result" 
 | A user-message-free resume acceptance path + the request-only directive + the assistant-tail guard (D10) | `agent/src/rpc/session_prompt.rs`, `agent/src/agent/run_loop.rs`, `agent/src/session/entry.rs` |
 | An "unknown" placeholder tool result when a crashed tail lacks one | `agent/src/agent/run_loop.rs` (beside the existing cancel path) |
 | `run_started` carries `auto_resume_of`; clients render "continuing automatically" | `agent/src/session/entry.rs`, `tui/`, `desktop/`, `mobile/`, `packages/thread-projection/` |
-| Retire the old one-shot pass (`resume_interrupted_runs_at_launch`) | `host/src/agent_bridge/resume.rs`, `desktop/src-tauri/src/lib.rs` |
+| The old one-shot pass is retired (`resume_interrupted_runs_at_launch` and `host/src/agent_bridge/resume.rs` deleted with it) | `desktop/src-tauri/src/lib.rs`; the replacement lives in `agent/src/rpc/resume.rs` |
 
 ### Later
 
@@ -488,6 +488,14 @@ model endpoint so no real credential was spent on the verification.
 | 6 | The same but the switch is **off** (the default) | — | **zero** continuations; the session honestly stays `interrupted_by_restart` |
 | 7 | An interrupted session with no usable model | — | reported as `has no model configured; left interrupted`, never a fake success |
 | 8 | An interruption older than seven days | — | skipped (counted as checked, not continued) |
+
+Test and environment failures fixed in the same change:
+
+| # | Problem | Root cause (measured) | Fix |
+|---|---|---|---|
+| 9 | `models::tests::registry_injects_future_models_from_disk_cache` flaked under parallelism (2 of 10 runs) | Several test modules build a `Registry` without a `TestHome`; a refresh thread they spawn publishes a different catalog into the process-global memory cache inside another test's reset→assert window | Test builds serialize reads, publishes and resets through one re-entrant `CACHE_ACCESS` lock, and a refresh thread carries a generation number so one that spans a reset no longer publishes |
+| 10 | `grpc::tests::the_public_serve_wrappers…` failed in a long-path worktree | `$HOME/.future/run/agent.sock` exceeded the unix `sun_path` limit (104 bytes on macOS): 113 in the worktree, 78 in the main tree | An endpoint over budget falls back to a per-user short directory under the temp root plus a path hash (still per-instance); short homes keep the documented layout |
+| 11 | `cli/tests/bin.rs::config_wizard_reports_the_missing_console…` hung | With piped stdin, the unix path still let `rpassword` open `/dev/tty`; a process with a controlling terminal blocks there forever (Windows already had a guard) | Non-terminal stdin is refused before the platform read, with the same message Windows reports |
 
 Rows 1–3 under "Before" are where this work started: they record the behaviour **before** the fix, so the
 table shows that something changed rather than that it always worked.
