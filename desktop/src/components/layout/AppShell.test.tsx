@@ -659,6 +659,9 @@ beforeEach(() => {
   mocks.stopRemote.mockClear();
   mocks.tauriEvents = {};
   mocks.terminalTarget = null;
+  // The new-conversation target is remembered in webview storage, so without
+  // this one test's created workspace would be the next one's default.
+  localStorage.clear();
   resetStore();
 });
 
@@ -989,6 +992,38 @@ describe("app shell layout", () => {
     act(() => rail().onNewChat("w-t2"));
     expect(children.newConversation).toMatchObject({ initialMode: "workspace", initialWorkspaceId: "w-t2" });
     expect(rail().active).toBe("workspace");
+    view.unmount();
+  });
+
+  /**
+   * The target the user created a conversation on last is where the next one
+   * opens. Every new conversation used to start on a plain chat, so a reader who
+   * works in one workspace re-picked it on every visit.
+   */
+  it("opens the new-conversation view on the target of the last created conversation", () => {
+    const store = mocks.store.threadStore as { workspaces: unknown[] };
+    store.workspaces = [chatWorkspace, workWorkspace];
+    localStorage.setItem("future.newConversationTarget", JSON.stringify({ mode: "workspace", workspaceId: "w-t2" }));
+
+    const view = mount(<AppShell />);
+    act(() => rail().onNewChat());
+    expect(children.newConversation).toMatchObject({ initialMode: "workspace", initialWorkspaceId: "w-t2" });
+    // The rail highlights where the composer points, not the plain chat the
+    // button used to imply.
+    expect(rail().active).toBe("workspace");
+    view.unmount();
+  });
+
+  /** A remembered workspace that is gone is not a target: the composer falls back to a plain chat. */
+  it("opens a plain chat when the remembered workspace no longer exists", () => {
+    const store = mocks.store.threadStore as { workspaces: unknown[] };
+    store.workspaces = [chatWorkspace, workWorkspace];
+    localStorage.setItem("future.newConversationTarget", JSON.stringify({ mode: "workspace", workspaceId: "w-gone" }));
+
+    const view = mount(<AppShell />);
+    act(() => rail().onNewChat());
+    expect(children.newConversation).toMatchObject({ initialMode: "chat", initialWorkspaceId: null });
+    expect(rail().active).toBe("chat");
     view.unmount();
   });
 
