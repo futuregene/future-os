@@ -59,8 +59,6 @@ describe("command catalog", () => {
       .sort();
     expect(bare).toEqual([
       "vibe.back",
-      "vibe.block.next",
-      "vibe.block.previous",
       "vibe.cell",
       "vibe.close",
       "vibe.focus.down",
@@ -71,8 +69,12 @@ describe("command catalog", () => {
       "vibe.input.close",
       "vibe.input.open",
       "vibe.open",
+      "vibe.scroll.down",
+      "vibe.scroll.up",
       "vibe.zoom.next",
       "vibe.zoom.previous",
+      "vibe.zoom.scroll.down",
+      "vibe.zoom.scroll.up",
     ]);
     for (const id of bare)
       expect(scopeOf(COMMANDS.find(spec => spec.id === id)!), id).not.toBe("global");
@@ -123,14 +125,16 @@ describe("command catalog", () => {
       "group.previous",
       "thread.next",
       "thread.previous",
-      "vibe.block.next",
-      "vibe.block.previous",
       "vibe.focus.down",
       "vibe.focus.left",
       "vibe.focus.right",
       "vibe.focus.up",
+      "vibe.scroll.down",
+      "vibe.scroll.up",
       "vibe.zoom.next",
       "vibe.zoom.previous",
+      "vibe.zoom.scroll.down",
+      "vibe.zoom.scroll.up",
     ]);
   });
 

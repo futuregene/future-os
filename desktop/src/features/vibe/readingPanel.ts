@@ -12,6 +12,13 @@
  *   conversation* ("I am reading this one's files"), so it is remembered per
  *   conversation, by the panel's own stable key.
  *
+ * **Hiding, though, is a habit, not a fact about one conversation.** Closing the column in
+ * one cell and having it open again in the next made the reader close it again and again,
+ * so the `hidden`/`auto` half is *sticky*: the last of those two choices becomes the
+ * fallback for any conversation that has no entry of its own (`stickyDefault`). `pinned`
+ * is deliberately **not** sticky — pinning is a decision about one conversation, and
+ * inheriting it would open a column nobody asked for.
+ *
  * Kept pure and separate: the rule is a table of cases (preference × width), and the
  * question "is the column there" is asked from the render, the key and the menu.
  */
@@ -74,8 +81,29 @@ export function preferenceLabelKey(preference: ReadingPanelPreference): string {
   return `panel.${preference}`;
 }
 
-/** Read one conversation's preference out of the panel's stored map. */
-export function readPanelPreference(all: Readonly<Record<string, unknown>>, key: string): ReadingPanelPreference {
+/**
+ * Read one conversation's preference out of the panel's stored map.
+ *
+ * `fallback` is the panel's sticky `hidden`/`auto` choice, used for a conversation nobody
+ * has decided about yet: that is what makes closing the column in one cell keep it closed
+ * in the next one. A value this build does not know is treated as "no entry" rather than
+ * guessed at.
+ */
+export function readPanelPreference(
+  all: Readonly<Record<string, unknown>>,
+  key: string,
+  fallback: "auto" | "hidden" = "auto",
+): ReadingPanelPreference {
   const value = all[key];
-  return value === "hidden" || value === "pinned" || value === "auto" ? value : "auto";
+  return value === "hidden" || value === "pinned" || value === "auto" ? value : fallback;
+}
+
+/**
+ * The sticky default a choice implies: `hidden`/`auto` set it, `pinned` leaves it alone.
+ *
+ * One function rather than a condition at each write site, because the rule is "pinning
+ * says nothing about the other conversations" and that is easy to get wrong twice.
+ */
+export function nextStickyDefault(current: "auto" | "hidden", preference: ReadingPanelPreference): "auto" | "hidden" {
+  return preference === "pinned" ? current : preference;
 }

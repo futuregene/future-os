@@ -89,8 +89,10 @@ export type CommandId
     // Taking a held sentence back into the box: a change of mind about one message,
     // not about the layer (which is why it is not on `Esc`).
     | "vibe.queue.cancel"
-    | "vibe.block.previous"
-    | "vibe.block.next"
+    | "vibe.scroll.up"
+    | "vibe.scroll.down"
+    | "vibe.zoom.scroll.up"
+    | "vibe.zoom.scroll.down"
     | "vibe.menu"
     | "vibe.home";
 
@@ -228,12 +230,18 @@ export const COMMANDS: readonly CommandSpec[] = [
   // the grid's left/right.
   { id: "vibe.zoom.previous", category: "vibe", defaultBinding: "arrowleft", bindings: ["arrowleft", "h"], inTerminal: false, repeat: true, scope: "vibeZoom" },
   { id: "vibe.zoom.next", category: "vibe", defaultBinding: "arrowright", bindings: ["arrowright", "l"], inTerminal: false, repeat: true, scope: "vibeZoom" },
-  // Up/down inside a zoomed cell walk the transcript **by block**, not by pixel:
-  // a remote control cannot scroll, so the reading layer moves a block cursor over
-  // messages and expands the one it is on. The wheel and the trackpad still scroll
-  // normally — this pair is what makes the same view readable from the sofa.
-  { id: "vibe.block.previous", category: "vibe", defaultBinding: "arrowup", inTerminal: false, repeat: true, scope: "vibeZoom" },
-  { id: "vibe.block.next", category: "vibe", defaultBinding: "arrowdown", inTerminal: false, repeat: true, scope: "vibeZoom" },
+  // Scrolling a transcript that is **not** the one you are typing in: the grid's cells are
+  // small, and reading one of them means moving its text, not moving the ring. `PageUp` /
+  // `PageDown` in the grid, and the same keys (plus `↑`/`↓`, which the reading layer has
+  // nothing else for) in the zoomed view.
+  //
+  // `PageUp`/`PageDown` rather than `↑`/`↓` in the grid because the arrows are the ring:
+  // one key cannot both "go to the cell above" and "scroll this cell up", and the ring is
+  // the gesture a reader makes constantly.
+  { id: "vibe.scroll.up", category: "vibe", defaultBinding: "pageup", inTerminal: false, repeat: true, scope: "vibeGrid" },
+  { id: "vibe.scroll.down", category: "vibe", defaultBinding: "pagedown", inTerminal: false, repeat: true, scope: "vibeGrid" },
+  { id: "vibe.zoom.scroll.up", category: "vibe", defaultBinding: "arrowup", bindings: ["arrowup", "pageup"], inTerminal: false, repeat: true, scope: "vibeZoom" },
+  { id: "vibe.zoom.scroll.down", category: "vibe", defaultBinding: "arrowdown", bindings: ["arrowdown", "pagedown"], inTerminal: false, repeat: true, scope: "vibeZoom" },
   // ---- The input layer -----------------------------------------------------
   //
   // One editable element exists at a time in the panel, and this layer is the

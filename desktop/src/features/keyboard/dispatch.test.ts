@@ -233,15 +233,15 @@ describe("the input layer", () => {
   });
 
   it("leaves another layer's bare key to the editor", () => {
-    // One layer out, `↓` walks message blocks and `↩` zooms. Neither may reach
+    // One layer out, `↓` scrolls the transcript and `↩` zooms. Neither may reach
     // over the field that has the caret — that is the difference between
     // `overEditable` and an ordinary scoped command.
-    const bindings = { "vibe.block.next": "arrowdown", "vibe.open": "enter" };
+    const bindings = { "vibe.zoom.scroll.down": "arrowdown", "vibe.open": "enter" };
     const outer = ["vibeZoom", "vibe", "global"] as const;
     expect(dispatchShortcut(event("ArrowDown", { code: "ArrowDown" }), context({ bindings, editable: true, scopes: outer }))).toBeNull();
     expect(dispatchShortcut(event("Enter", { code: "Enter" }), context({ bindings, editable: true, scopes: outer }))).toBeNull();
     // Without the caret they run normally.
-    expect(dispatchShortcut(event("ArrowDown", { code: "ArrowDown" }), context({ bindings, editable: false, scopes: outer }))?.id).toBe("vibe.block.next");
+    expect(dispatchShortcut(event("ArrowDown", { code: "ArrowDown" }), context({ bindings, editable: false, scopes: outer }))?.id).toBe("vibe.zoom.scroll.down");
   });
 
   it("keeps the remote's own buttons live over the editor", () => {
