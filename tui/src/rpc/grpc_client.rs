@@ -140,6 +140,16 @@ struct Inner {
     poke_notify: Notify,
     #[cfg(test)]
     before_empty_wait: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    #[cfg(test)]
+    before_reconnect_wait: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    #[cfg(test)]
+    before_subscribe_wait: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    #[cfg(test)]
+    before_stable_reset: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    #[cfg(test)]
+    subscription_attempts: Mutex<Vec<String>>,
+    #[cfg(test)]
+    connection_edges: Mutex<Vec<bool>>,
     /// Permanent stop (disconnect).
     stop: AtomicBool,
     stop_notify: Notify,
@@ -188,6 +198,16 @@ impl GrpcClient {
             poke_notify: Notify::new(),
             #[cfg(test)]
             before_empty_wait: Mutex::new(None),
+            #[cfg(test)]
+            before_reconnect_wait: Mutex::new(None),
+            #[cfg(test)]
+            before_subscribe_wait: Mutex::new(None),
+            #[cfg(test)]
+            before_stable_reset: Mutex::new(None),
+            #[cfg(test)]
+            subscription_attempts: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            connection_edges: Mutex::new(Vec::new()),
             stop: AtomicBool::new(false),
             stop_notify: Notify::new(),
             backoff_ms: AtomicU64::new(RECONNECT_BACKOFF_BASE_MS),
@@ -1284,6 +1304,9 @@ fn spawn_stream_manager(inner: Arc<Inner>) {
             let poked = inner.poke_notify.notified();
             tokio::pin!(poked);
             poked.as_mut().enable();
+            let stopped = inner.stop_notify.notified();
+            tokio::pin!(stopped);
+            stopped.as_mut().enable();
             if inner.stop.load(Ordering::SeqCst) {
                 return;
             }
@@ -1303,7 +1326,7 @@ fn spawn_stream_manager(inner: Arc<Inner>) {
                 // poke or stop.
                 tokio::select! {
                     _ = &mut poked => {}
-                    _ = inner.stop_notify.notified() => {
+                    _ = &mut stopped => {
                         if inner.stop.load(Ordering::SeqCst) { return; }
                     }
                 }
@@ -1334,6 +1357,10 @@ fn spawn_stream_manager(inner: Arc<Inner>) {
                 let mut st = inner.state.lock();
                 let was = st.connected;
                 st.connected = false;
+                #[cfg(test)]
+                if was {
+                    inner.connection_edges.lock().push(false);
+                }
                 was
             };
             if was_connected {
@@ -1348,6 +1375,12 @@ fn spawn_stream_manager(inner: Arc<Inner>) {
             // instead of blindly re-subscribing, since a dead channel returns
             // a stream that never emits data/error/end).
             loop {
+                // Register both wakeups before inspecting the state they signal.
+                let stopped = inner.stop_notify.notified();
+                let poked = inner.poke_notify.notified();
+                tokio::pin!(stopped, poked);
+                stopped.as_mut().enable();
+                poked.as_mut().enable();
                 if inner.stop.load(Ordering::SeqCst) {
                     return;
                 }
@@ -1355,23 +1388,39 @@ fn spawn_stream_manager(inner: Arc<Inner>) {
                 if session_now != session {
                     break; // session changed — resubscribe at the top
                 }
-                tokio::select! {
-                    _ = inner.poke_notify.notified() => {
+                #[cfg(test)]
+                {
+                    let gate = inner.before_reconnect_wait.lock().take();
+                    if let Some(gate) = gate {
+                        gate.wait().await;
+                        gate.wait().await;
+                    }
+                }
+                let woke_by_poke = tokio::select! {
+                    _ = &mut poked => {
                         // Session change or explicit connect_events: try the
                         // stream right away.
+                        true
                     }
-                    _ = inner.stop_notify.notified() => {
+                    _ = &mut stopped => {
                         if inner.stop.load(Ordering::SeqCst) { return; }
+                        false
                     }
-                    _ = tokio::time::sleep(backoff_delay(&inner)) => {}
-                }
+                    _ = tokio::time::sleep(backoff_delay(&inner)) => false,
+                };
                 if inner.stop.load(Ordering::SeqCst) {
                     return;
                 }
                 if inner.state.lock().current_session_id != session {
                     break;
                 }
-                let reachability = probe_agent(&inner.addr).await;
+                if woke_by_poke {
+                    break;
+                }
+                let reachability = tokio::select! {
+                    _ = &mut stopped => return,
+                    result = probe_agent(&inner.addr) => result,
+                };
                 if inner.stop.load(Ordering::SeqCst) {
                     return;
                 }
@@ -1406,15 +1455,34 @@ enum StreamExit {
 /// errors, the 5 s first-data watchdog fires, the session changes, or a
 /// poke arrives.
 async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
+    #[cfg(test)]
+    inner.subscription_attempts.lock().push(session.to_string());
+    // Keep cancellation registered during connection and readiness, too.
+    let stopped = inner.stop_notify.notified();
+    tokio::pin!(stopped);
+    stopped.as_mut().enable();
+    if inner.stop.load(Ordering::SeqCst) {
+        return StreamExit::Lost;
+    }
     let poke_version = inner.poke_count.load(Ordering::SeqCst);
-    let mut client = match future_rpc::connection::connect_verified(
+    let poked = inner.poke_notify.notified();
+    tokio::pin!(poked);
+    poked.as_mut().enable();
+    if inner.poke_count.load(Ordering::SeqCst) != poke_version
+        || inner.state.lock().current_session_id != session
+    {
+        return StreamExit::Poked;
+    }
+    let mut client = match tokio::select! {
+        _ = &mut stopped => return StreamExit::Lost,
+        _ = &mut poked => return StreamExit::Poked,
+        result = future_rpc::connection::connect_verified(
         &inner.addr,
         future_rpc::connection::EXPECTED_AGENT_VERSION,
         Duration::from_secs(TRY_CONNECT_TIMEOUT_SEC),
         Duration::from_secs(TRY_CONNECT_TIMEOUT_SEC),
-    )
-    .await
-    {
+        ) => result,
+    } {
         Ok(client) => client,
         Err(_) => return StreamExit::Lost,
     };
@@ -1422,7 +1490,11 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
         session_id: session.to_string(),
         ..Default::default()
     };
-    let mut stream = match client.stream_events(request).await {
+    let mut stream = match tokio::select! {
+        _ = &mut stopped => return StreamExit::Lost,
+        _ = &mut poked => return StreamExit::Poked,
+        result = client.stream_events(request) => result,
+    } {
         Ok(resp) => resp.into_inner(),
         Err(_) => return StreamExit::Lost,
     };
@@ -1459,6 +1531,14 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
             return StreamExit::Lost;
         }
 
+        #[cfg(test)]
+        {
+            let gate = inner.before_subscribe_wait.lock().take();
+            if let Some(gate) = gate {
+                gate.wait().await;
+                gate.wait().await;
+            }
+        }
         tokio::select! {
             msg = stream.message() => {
                 match msg {
@@ -1496,6 +1576,8 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
                             {
                                 let mut st = inner.state.lock();
                                 st.connected = true;
+                                #[cfg(test)]
+                                inner.connection_edges.lock().push(true);
                             }
                             let _ = inner.conn_tx.send(true);
                             stable.as_mut().reset(
@@ -1524,6 +1606,11 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
                 // — the connection is healthy, so a future drop should
                 // reconnect promptly (base backoff) rather than inherit a
                 // backoff grown during an earlier flap.
+                #[cfg(test)]
+                {
+                    let gate = inner.before_stable_reset.lock().take();
+                    if let Some(gate) = gate { gate.wait().await; gate.wait().await; }
+                }
                 reset_backoff(inner);
                 stable_armed = false;
             }
@@ -1532,7 +1619,7 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
                 // resubscribe (TS ignores the cancelled stale stream).
                 return StreamExit::Poked;
             }
-            _ = inner.stop_notify.notified() => {
+            _ = &mut stopped => {
                 if inner.stop.load(Ordering::SeqCst) { return StreamExit::Lost; }
             }
         }
@@ -1551,16 +1638,29 @@ fn spawn_heartbeat(inner: Arc<Inner>) {
         let mut interval = tokio::time::interval(Duration::from_millis(HEARTBEAT_MS));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
+            let stopped = inner.stop_notify.notified();
+            tokio::pin!(stopped);
+            stopped.as_mut().enable();
+            if inner.stop.load(Ordering::SeqCst) {
+                return;
+            }
             tokio::select! {
                 _ = interval.tick() => {
                     if !inner.state.lock().connected {
                         continue;
                     }
-                    if matches!(probe_agent(&inner.addr).await, AgentReachability::Gone) {
+                    let reachability = tokio::select! {
+                        _ = &mut stopped => return,
+                        result = probe_agent(&inner.addr) => result,
+                    };
+                    if inner.stop.load(Ordering::SeqCst) { return; }
+                    if matches!(reachability, AgentReachability::Gone) {
                         let was_connected = {
                             let mut st = inner.state.lock();
                             let was = st.connected;
                             st.connected = false;
+                            #[cfg(test)]
+                            if was { inner.connection_edges.lock().push(false); }
                             was
                         };
                         if was_connected {
@@ -1570,7 +1670,7 @@ fn spawn_heartbeat(inner: Arc<Inner>) {
                         inner.poke_notify.notify_waiters();
                     }
                 }
-                _ = inner.stop_notify.notified() => {
+                _ = &mut stopped => {
                     if inner.stop.load(Ordering::SeqCst) { return; }
                 }
             }
@@ -1792,6 +1892,31 @@ mod tests {
             .expect("conn channel closed");
     }
 
+    async fn wait_test_state(what: &str, budget: Duration, mut ready: impl FnMut() -> bool) {
+        tokio::time::timeout(budget, async {
+            while !ready() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect(what);
+    }
+
+    async fn arrive(gate: &tokio::sync::Barrier) {
+        tokio::time::timeout(Duration::from_secs(10), gate.wait())
+            .await
+            .expect("test task did not reach its synchronization point");
+    }
+
+    async fn wait_client_released(inner: std::sync::Weak<Inner>) {
+        wait_test_state(
+            "background tasks retained a disconnected client",
+            Duration::from_secs(10),
+            || inner.upgrade().is_none(),
+        )
+        .await;
+    }
+
     /// Assert that no `false` (connection-lost) notification arrives within
     /// `dur`.
     async fn assert_no_disconnect(conn: &mut watch::Receiver<bool>, dur: Duration) {
@@ -1858,6 +1983,25 @@ mod tests {
 
     /// Mock with per-command-type canned response data (swappable at
     /// runtime) and tonic Status failures, plus a command log.
+    #[derive(Default)]
+    struct ReadinessGate {
+        entered: Notify,
+        release: Notify,
+    }
+
+    impl ReadinessGate {
+        async fn wait_entered(&self) {
+            tokio::time::timeout(Duration::from_secs(10), self.entered.notified())
+                .await
+                .expect("readiness probe did not reach the mock");
+        }
+        fn release(&self) {
+            // The HTTP/2 handler may already have been cancelled by disconnect.
+            // Releasing it must not require that handler to still be alive.
+            self.release.notify_one();
+        }
+    }
+
     #[derive(Clone, Default)]
     struct ApiMock {
         data_by_type: Arc<std::sync::Mutex<StdHashMap<String, String>>>,
@@ -1879,6 +2023,7 @@ mod tests {
         stream_idle: bool,
         /// Delay before answering unary calls (slow-agent scenarios).
         unary_delay_ms: u64,
+        readiness_gate: Arc<Mutex<Option<Arc<ReadinessGate>>>>,
     }
 
     #[tonic::async_trait]
@@ -1889,6 +2034,12 @@ mod tests {
         ) -> Result<tonic::Response<RpcResponse>, tonic::Status> {
             let cmd = request.into_inner();
             if cmd.r#type == "get_agent_readiness" {
+                let gate = self.readiness_gate.lock().take();
+                if let Some(gate) = gate {
+                    gate.entered.notify_one();
+                    gate.release.notified().await;
+                    return Err(tonic::Status::unavailable("gated readiness failure"));
+                }
                 return Ok(tonic::Response::new(future_rpc::proto::RpcResponse {
                 id: cmd.id, r#type: "response".into(), command: "get_agent_readiness".into(), success: true,
                 data: serde_json::json!({"version": future_rpc::connection::EXPECTED_AGENT_VERSION, "agentInstanceId":"mock-agent", "protocolVersion": future_rpc::connection::AGENT_PROTOCOL_VERSION, "dataRootId":"0".repeat(64), "storageSchemaVersion": future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION}).to_string(),
@@ -3180,6 +3331,10 @@ mod tests {
             Ok(delivered)
         }
 
+        fn close_streams(&self) {
+            self.subscribers.lock().clear();
+        }
+
         /// Wait until `count` `stream_events` calls have been served — i.e. the
         /// client's stream manager (or its resubscription) is attached.
         async fn wait_for_subscribes(&self, count: usize) {
@@ -3362,19 +3517,22 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn subscribe_loop_top_stop_check() {
-        let (tx, addr) = spawn_eventful_mock().await;
+        let (source, addr) = spawn_eventful_mock().await;
         let (client, mut events, mut conn) = GrpcClient::new(&addr);
-        attach(&client, &tx, &mut events).await;
+        attach(&client, &source, &mut events).await;
         wait_connected(&mut conn).await;
         assert!(client.is_connected());
-
-        // Stop flag set directly (no notify) → the loop-top check exits.
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        *client.inner.before_subscribe_wait.lock() = Some(gate.clone());
+        source.send(stream_event("ping", "{}", "")).unwrap();
+        arrive(&gate).await;
         client.inner.stop.store(true, Ordering::SeqCst);
-        tx.send(stream_event("ping", "{}", "")).unwrap();
-        // Nothing observable to wait on here (and nothing asserted after it):
-        // let the manager walk its exit path before the test drops it.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        client.disconnect();
+        // No stop notification: the next data iteration must see the flag.
+        source.send(stream_event("ping", "{}", "")).unwrap();
+        arrive(&gate).await;
+        let inner = Arc::downgrade(&client.inner);
+        drop(client);
+        wait_client_released(inner).await;
     }
 
     /// Drain the app event channel until an event of `kind` arrives, returning
@@ -3691,91 +3849,137 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn reconnect_poll_session_change_and_stop() {
-        // Dead agent → the manager sits in the reconnect poll.
         let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        *client.inner.before_reconnect_wait.lock() = Some(gate.clone());
         client.set_current_session_id("s1");
         client.connect_events();
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        arrive(&gate).await;
         assert!(!client.is_connected());
-
-        // Session change WITHOUT a poke (white-box): the poll's pre-select
-        // check breaks out to resubscribe.
-        client.inner.state.lock().current_session_id = "s2".into();
-        tokio::time::sleep(Duration::from_millis(1_300)).await;
-
-        // A poke wakes the poll's select; the post-select check breaks.
+        // Change state after the poll checked it but before its select starts.
+        // The notification must still wake it even with a 30-second backoff.
+        client
+            .inner
+            .backoff_ms
+            .store(RECONNECT_BACKOFF_MAX_MS, Ordering::SeqCst);
+        client.set_current_session_id("s2");
+        arrive(&gate).await;
+        wait_test_state(
+            "session change lost its reconnect wakeup",
+            Duration::from_millis(1300),
+            || {
+                client
+                    .inner
+                    .subscription_attempts
+                    .lock()
+                    .iter()
+                    .any(|s| s == "s2")
+            },
+        )
+        .await;
         client.set_current_session_id("s3");
-        tokio::time::sleep(Duration::from_millis(300)).await;
-
-        // Stop without notify → the poll's loop-top check exits.
-        client.inner.stop.store(true, Ordering::SeqCst);
-        tokio::time::sleep(Duration::from_millis(1_300)).await;
+        wait_test_state(
+            "explicit poke did not resubscribe",
+            Duration::from_millis(1300),
+            || {
+                client
+                    .inner
+                    .subscription_attempts
+                    .lock()
+                    .iter()
+                    .any(|s| s == "s3")
+            },
+        )
+        .await;
+        let inner = Arc::downgrade(&client.inner);
         client.disconnect();
+        drop(client);
+        wait_client_released(inner).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn reconnect_poll_pre_select_session_change() {
-        // A black-hole agent: accepts TCP, never answers. The session change
-        // lands while a subscribe/tryConnect is blocked mid-flight, so the
-        // reconnect poll's pre-select session check catches it.
-        // Bind here and move the listener into the task: the port is held
-        // from the start, so nothing can steal it before it starts accepting.
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            // Sockets are held open (never speaking) until the runtime ends.
-            let mut held = Vec::new();
-            loop {
-                let (sock, _) = listener.accept().await.unwrap();
-                held.push(sock);
-            }
-        });
-        let addr = format!("127.0.0.1:{}", addr.port());
-
-        let (client, _e, _c) = GrpcClient::new(&addr);
+        let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        *client.inner.before_reconnect_wait.lock() = Some(gate.clone());
         client.set_current_session_id("s1");
         client.connect_events();
-        // The subscription hangs (no data). The 5 s watchdog ends it; the
-        // manager enters the reconnect poll, and its 1 s tick starts a
-        // (black-hole-slow) tryConnect — the black hole holds the TCP
-        // handshake, so it times out at 3 s.
-        tokio::time::sleep(Duration::from_millis(6_500)).await;
+        arrive(&gate).await;
+        // A state change without a notification is detected after the tick.
+        client.inner.state.lock().current_session_id = "s2".into();
+        arrive(&gate).await;
+        wait_test_state(
+            "reconnect poll ignored a changed session",
+            Duration::from_millis(6500),
+            || {
+                client
+                    .inner
+                    .subscription_attempts
+                    .lock()
+                    .iter()
+                    .any(|s| s == "s2")
+            },
+        )
+        .await;
+        let inner = Arc::downgrade(&client.inner);
         client.disconnect();
+        drop(client);
+        wait_client_released(inner).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn reconnect_poll_pre_select_check_fires() {
-        // Slow-failing agent: subscribe errors fast (Lost), then each
-        // tryConnect takes ~1 s to fail. Change the session while that call
-        // is in flight — the poll's pre-select check resubscribes.
-        let addr = spawn_api_mock(ApiMock {
+        let mock = ApiMock {
             stream_fails: true,
-            unary_delay_ms: 800,
-            fail_with: StdHashMap::from([("get_agent_readiness".to_string(), String::new())]),
             ..Default::default()
-        })
-        .await;
-        let (client, _e, _c) = GrpcClient::new(&addr);
+        };
+        let readiness_gate = mock.readiness_gate.clone();
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events, _conn) = GrpcClient::new(&addr);
+        let poll = Arc::new(tokio::sync::Barrier::new(2));
+        *client.inner.before_reconnect_wait.lock() = Some(poll.clone());
         client.set_current_session_id("s1");
         client.connect_events();
-        // Lost quickly (stream error) → poll; tick at ≈1 s starts the slow
-        // tryConnect; land the session change inside that window.
-        tokio::time::sleep(Duration::from_millis(1_300)).await;
+        arrive(&poll).await;
+        let probe = Arc::new(ReadinessGate::default());
+        *readiness_gate.lock() = Some(probe.clone());
+        arrive(&poll).await;
+        probe.wait_entered().await;
+        // The failing readiness probe is genuinely in flight, not inferred
+        // from a fixed delay (the mock's old readiness fast path skipped it).
         client.inner.state.lock().current_session_id = "s2".into();
-        tokio::time::sleep(Duration::from_millis(1_500)).await;
+        probe.release();
+        wait_test_state(
+            "failed probe did not re-check its session",
+            Duration::from_millis(1500),
+            || {
+                client
+                    .inner
+                    .subscription_attempts
+                    .lock()
+                    .iter()
+                    .any(|s| s == "s2")
+            },
+        )
+        .await;
+        let inner = Arc::downgrade(&client.inner);
         client.disconnect();
+        drop(client);
+        wait_client_released(inner).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn manager_loop_top_stop_with_idle_manager() {
-        // Manager idle (no session) + stop without notify + a poke to wake
-        // it → the loop-top stop check returns.
         let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        *client.inner.before_empty_wait.lock() = Some(gate.clone());
+        arrive(&gate).await;
         client.inner.stop.store(true, Ordering::SeqCst);
-        client.connect_events(); // poke
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        client.disconnect();
+        client.connect_events();
+        arrive(&gate).await;
+        let inner = Arc::downgrade(&client.inner);
+        drop(client);
+        wait_client_released(inner).await;
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -3852,7 +4056,12 @@ mod tests {
         let (client, _e, _c) = GrpcClient::new("bad addr with spaces");
         client.set_current_session_id("s1");
         client.connect_events();
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            wait_for_backoff_above(&client, RECONNECT_BACKOFF_BASE_MS)
+                .await
+                .is_some(),
+            "the failed subscription must complete before inspecting its state"
+        );
         assert!(!client.is_connected());
         client.disconnect();
 
@@ -3860,7 +4069,12 @@ mod tests {
         let (client, _e, _c) = GrpcClient::new("127.0.0.1:1");
         client.set_current_session_id("s1");
         client.connect_events();
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            wait_for_backoff_above(&client, RECONNECT_BACKOFF_BASE_MS)
+                .await
+                .is_some(),
+            "the failed subscription must complete before inspecting its state"
+        );
         assert!(!client.is_connected());
         client.disconnect();
 
@@ -3873,23 +4087,128 @@ mod tests {
         let (client, _e, _c) = GrpcClient::new(&addr);
         client.set_current_session_id("s1");
         client.connect_events();
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            wait_for_backoff_above(&client, RECONNECT_BACKOFF_BASE_MS)
+                .await
+                .is_some(),
+            "the failed subscription must complete before inspecting its state"
+        );
         assert!(!client.is_connected());
         client.disconnect();
 
-        // Stream ends immediately (after one event).
+        // Hold EOF until the connected state has actually been observed.
+        let (source, addr) = spawn_eventful_mock().await;
+        let (client, mut events, mut conn) = GrpcClient::new(&addr);
+        attach(&client, &source, &mut events).await;
+        wait_connected(&mut conn).await;
+        assert!(client.is_connected());
+        source.close_streams();
+        wait_conn(&mut conn, false, "stream-end disconnect").await;
+        assert!(!client.is_connected());
+        client.disconnect();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn immediate_eof_retains_the_first_event_and_disconnects() {
         let addr = spawn_api_mock(ApiMock {
             stream_ends: true,
             ..Default::default()
         })
         .await;
-        let (client, _e, mut conn) = GrpcClient::new(&addr);
+        let (client, mut events, mut conn) = GrpcClient::new(&addr);
+        client.set_current_session_id("s1");
+        client.connect_events();
+        recv_until(&mut events, "ping").await;
+        wait_conn(&mut conn, false, "immediate EOF did not disconnect").await;
+        assert!(!client.is_connected());
+        assert!(
+            client
+                .inner
+                .connection_edges
+                .lock()
+                .windows(2)
+                .any(|edge| edge == [true, false]),
+            "the first frame must connect before EOF disconnects, even if watch coalesces both"
+        );
+        client.disconnect();
+    }
+
+    #[tokio::test]
+    async fn disconnect_before_background_tasks_start_releases_the_client() {
+        let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
+        let inner = Arc::downgrade(&client.inner);
+        // This single-thread runtime has not polled either spawned task yet.
+        client.disconnect();
+        drop(client);
+        wait_client_released(inner).await;
+    }
+
+    #[tokio::test]
+    async fn disconnect_between_idle_check_and_wait_releases_the_client() {
+        let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        *client.inner.before_empty_wait.lock() = Some(gate.clone());
+        arrive(&gate).await;
+        client.disconnect();
+        arrive(&gate).await;
+        let inner = Arc::downgrade(&client.inner);
+        drop(client);
+        wait_client_released(inner).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn disconnect_between_subscribe_check_and_wait_releases_the_client() {
+        let (source, addr) = spawn_eventful_mock().await;
+        let (client, mut events, _conn) = GrpcClient::new(&addr);
+        attach(&client, &source, &mut events).await;
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        *client.inner.before_subscribe_wait.lock() = Some(gate.clone());
+        source.send(stream_event("ping", "{}", "")).unwrap();
+        arrive(&gate).await;
+        client.disconnect();
+        arrive(&gate).await;
+        let inner = Arc::downgrade(&client.inner);
+        drop(client);
+        wait_client_released(inner).await;
+    }
+
+    #[tokio::test]
+    async fn disconnect_between_reconnect_check_and_wait_releases_the_client() {
+        let (client, _events, _conn) = GrpcClient::new("127.0.0.1:1");
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        *client.inner.before_reconnect_wait.lock() = Some(gate.clone());
+        client.set_current_session_id("s1");
+        client.connect_events();
+        arrive(&gate).await;
+        client
+            .inner
+            .backoff_ms
+            .store(RECONNECT_BACKOFF_MAX_MS, Ordering::SeqCst);
+        client.disconnect();
+        arrive(&gate).await;
+        let inner = Arc::downgrade(&client.inner);
+        drop(client);
+        wait_client_released(inner).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn disconnect_cancels_an_inflight_heartbeat_probe() {
+        let mock = ApiMock::default();
+        let readiness_gate = mock.readiness_gate.clone();
+        let addr = spawn_api_mock(mock).await;
+        let (client, _events, mut conn) = GrpcClient::new(&addr);
         client.set_current_session_id("s1");
         client.connect_events();
         wait_connected(&mut conn).await;
-        // The end of the stream flips the connection back off.
-        wait_conn(&mut conn, false, "stream-end disconnect").await;
+        let gate = Arc::new(ReadinessGate::default());
+        *readiness_gate.lock() = Some(gate.clone());
+        gate.wait_entered().await;
+        let inner = Arc::downgrade(&client.inner);
         client.disconnect();
+        drop(client);
+        wait_client_released(inner).await;
+        // The client has stopped while the mock's reply is still withheld.
+        gate.release();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -4010,16 +4329,25 @@ mod tests {
     async fn stable_connection_resets_backoff() {
         let (_server, addr) = spawn_mock_agent().await;
         let (client, _events, mut conn) = GrpcClient::new(&addr);
+        let gate = Arc::new(tokio::sync::Barrier::new(2));
+        *client.inner.before_stable_reset.lock() = Some(gate.clone());
         client.set_current_session_id("s1");
         client.connect_events();
         wait_connected(&mut conn).await;
-        // Raise the backoff while the stream is still up; the stable timer
-        // (RECONNECT_STABLE_MS = 200 ms in tests) resets it to base.
+        // The real stable timer has expired, but cannot reset until released.
+        // Scheduling the test after that timer can no longer invert the order.
+        arrive(&gate).await;
         client
             .inner
             .backoff_ms
             .store(RECONNECT_BACKOFF_MAX_MS, Ordering::SeqCst);
-        tokio::time::sleep(Duration::from_millis(RECONNECT_STABLE_MS * 3)).await;
+        arrive(&gate).await;
+        wait_test_state(
+            "stable connection did not reset backoff",
+            Duration::from_millis(RECONNECT_STABLE_MS * 3),
+            || client.inner.backoff_ms.load(Ordering::SeqCst) == RECONNECT_BACKOFF_BASE_MS,
+        )
+        .await;
         assert_eq!(
             client.inner.backoff_ms.load(Ordering::SeqCst),
             RECONNECT_BACKOFF_BASE_MS

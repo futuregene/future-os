@@ -86,7 +86,6 @@ export function TerminalView(props: TerminalViewProps) {
     // rather than replaying (which would duplicate the restored output).
     let seek: number | undefined = initial.cursor ?? (initial.buffer ? -1 : 0);
     const disposables: IDisposable[] = [];
-    const listeners: Array<() => void> = [];
 
     const terminal = new Terminal({
       cols: initial.cols,
@@ -114,7 +113,7 @@ export function TerminalView(props: TerminalViewProps) {
     const serializer = new SerializeAddon();
     terminal.loadAddon(serializer);
     terminal.open(container);
-    listeners.push(installMacInputWorkaround(terminal));
+    const removeInputWorkaround = installMacInputWorkaround(terminal);
 
     // Output is queued and applied in arrival order. xterm serialises its own
     // writes, but `serialize()` reads the *applied* buffer, so persistence
@@ -362,16 +361,11 @@ export function TerminalView(props: TerminalViewProps) {
     const onResize = terminal.onResize(size => pushSize(size.cols, size.rows));
     disposables.push(onResize);
     const onWindowResize = () => scheduleFit();
-    // Registered here and torn down through `listeners` below (the rule only
-    // recognises a cleanup returned directly from the effect).
-    // eslint-disable-next-line react/web-api-no-leaked-event-listener
     window.addEventListener("resize", onWindowResize);
-    listeners.push(() => window.removeEventListener("resize", onWindowResize));
     // xterm's fit addon does not observe anything itself: refit when the panel
     // (or the window) changes the container size.
     const observer = new ResizeObserver(() => scheduleFit());
     observer.observe(container);
-    listeners.push(() => observer.disconnect());
 
     // Restore before fitting: a wide stored buffer must reflow to the real
     // geometry, not the other way round.
@@ -399,9 +393,9 @@ export function TerminalView(props: TerminalViewProps) {
       if (fitFrame !== undefined) {
         cancelAnimationFrame(fitFrame);
       }
-      for (const remove of listeners.splice(0)) {
-        remove();
-      }
+      removeInputWorkaround();
+      window.removeEventListener("resize", onWindowResize);
+      observer.disconnect();
       for (const disposable of disposables.splice(0)) {
         disposable.dispose();
       }

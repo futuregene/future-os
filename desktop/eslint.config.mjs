@@ -1,7 +1,7 @@
-import antfu from "@antfu/eslint-config";
-import tailwindcss from "eslint-plugin-tailwindcss";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import antfu from "@antfu/eslint-config";
+import tailwindcss from "eslint-plugin-tailwindcss";
 
 const rootDir = dirname(fileURLToPath(import.meta.url));
 // eslint-plugin-tailwindcss v4 reads the project's main CSS entry (the file that
@@ -27,6 +27,14 @@ export default antfu(
     ],
   },
   tailwindcss.configs.recommended,
+  {
+    files: ["scripts/streaming-markdown-benchmark.tsx"],
+    rules: {
+      // The benchmark measures synchronous commit time; batching would change
+      // the workload being measured. This exception does not apply to app code.
+      "react/dom-no-flush-sync": "off",
+    },
+  },
   {
     files: ["src/features/agent/**/*.{ts,tsx}"],
     ignores: ["**/*.test.{ts,tsx}"],
