@@ -180,7 +180,7 @@ jobs:
       - name: Setup Python for package verification
         uses: actions/setup-python@v7
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Setup 7-Zip for package verification
         shell: pwsh
