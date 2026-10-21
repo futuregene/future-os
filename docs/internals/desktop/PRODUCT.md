@@ -142,6 +142,12 @@ temporary workspace behind the scenes.
 Ordinary Chat file artifacts must be inspectable and cleanable. Cleaning an
 ordinary Chat must prompt for confirmation if temporary workspace files exist.
 
+The target of a new conversation — a workspace, or a plain Chat — is remembered
+from the conversation the user created last: the next one opens on that target
+instead of always on a plain Chat. A remembered workspace that has since been
+deleted falls back to a plain Chat. The preference is this machine's UI state
+and lives in the webview beside the rail's layout state, not in the store.
+
 ### 4.3 Message
 
 A Message is a conversation entry, not just a piece of text. In the future it

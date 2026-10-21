@@ -11,6 +11,7 @@ import { createThread, pinThread } from "../../../integrations/storage/threadSto
 import { errorMessage } from "../../../lib/errors";
 import { emitFutureEvent } from "../../../lib/futureEvents";
 import { truncate } from "../../../lib/objects";
+import { writeNewConversationTarget } from "./newConversationTarget";
 
 export interface PendingPrompt {
   attachments?: MessageAttachment[];
@@ -107,6 +108,14 @@ export function useNewConversation({
           });
         }
       }
+      // The target of the conversation that now exists is the default for the
+      // next one (`newConversationTarget.ts`). Recorded after `createThread`, so
+      // a creation that fails keeps the previous preference instead of adopting
+      // a selection that never became a conversation.
+      writeNewConversationTarget({
+        mode: input.mode,
+        workspaceId: input.mode === "workspace" ? input.workspace?.id ?? null : null,
+      });
       syncSelection(input.modelId, input.thinkingLevel);
       // Prime the agent state cache with the user's explicit selections so
       // AgentThread's activeThinkingLevel picks them up instead of falling

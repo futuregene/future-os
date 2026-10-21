@@ -70,6 +70,10 @@ import { ActivityRail } from "./ActivityRail";
 import { AgentStatusGate } from "./AgentStatusGate";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
+import {
+  defaultNewConversationTarget,
+  readNewConversationTarget,
+} from "./hooks/newConversationTarget";
 import { canShowLeftPanel, canShowRightPanel, MIN_LEFT_PANEL_WIDTH } from "./hooks/panelGeometry";
 import { useAgentConnection } from "./hooks/useAgentConnection";
 import { useAgentDoneBell } from "./hooks/useAgentDoneBell";
@@ -733,11 +737,21 @@ function ReadyAppShell({
   }
 
   function handleOpenNewChat(workspaceId?: string) {
-    // Workspace "+" on a specific workspace → a chat inside it; otherwise a
-    // plain chat (Chat header "+" / top New Chat).
-    setSection(workspaceId ? "workspace" : "chat");
-    setNewChatWorkspaceId(workspaceId ?? null);
-    setNewConversationMode(workspaceId ? "workspace" : "chat");
+    // A workspace named by the caller (a workspace heading's "+") is an explicit
+    // target. Anything else is the plain "new conversation", which opens on the
+    // target the user created last: a workspace they keep working in should not
+    // have to be picked again on every visit (see `newConversationTarget.ts`).
+    const target = workspaceId
+      ? { mode: "workspace" as const, workspaceId }
+      : defaultNewConversationTarget(
+          readNewConversationTarget(),
+          id => userWorkspaces.some(workspace => workspace.id === id),
+        );
+    // The section follows the target so the rail highlights where the composer
+    // is pointing, the same way the workspace "+" flow does.
+    setSection(target.mode === "workspace" ? "workspace" : "chat");
+    setNewChatWorkspaceId(target.workspaceId);
+    setNewConversationMode(target.mode);
     setNewWorkspaceForm(null);
     setCenterMode("new-chat");
   }
