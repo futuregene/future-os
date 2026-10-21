@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "../../i18n";
 import { setFontSize } from "../../lib/fontSize";
-import { DEFAULT_FINAL_ANSWER_ONLY, getFinalAnswerOnly, setFinalAnswerOnly } from "../../lib/replyDisplay";
+import { DEFAULT_REPLY_DETAIL, getReplyDetail, setReplyDetail } from "../../lib/replyDisplay";
 import { setThemeMode } from "../../lib/theme";
 import { GeneralPage } from "./GeneralPage";
 
@@ -36,8 +36,8 @@ beforeEach(() => {
   mocks.isWindows = true;
   setThemeMode("system");
   setFontSize("medium");
-  // Back to the shipped default (on) rather than whatever the last case left.
-  setFinalAnswerOnly(DEFAULT_FINAL_ANSWER_ONLY);
+  // Back to the shipped level rather than whatever the last case left.
+  setReplyDetail(DEFAULT_REPLY_DETAIL);
   void i18n.changeLanguage("en");
 });
 
@@ -157,24 +157,27 @@ describe("generalPage font size picker", () => {
   });
 });
 
-describe("generalPage final answer only switch", () => {
-  it("is on until the reader turns it off, and remembers that", () => {
+describe("generalPage model output level", () => {
+  it("offers default and detailed, opens on default, and remembers the choice", () => {
     const { container } = mount();
-    const toggle = container.querySelector<HTMLButtonElement>("button[role='switch'][aria-label='Show only the final answer']")!;
+    // The fifth picker: language, theme, text size, model output, approval.
+    const level = select(container, 3);
 
-    // On by default: a settled reply opens on its answer.
-    expect(toggle.getAttribute("aria-checked")).toBe("true");
-    expect(container.textContent).toContain("fold its reasoning, tool calls and notes");
+    expect(level.value).toBe("default");
+    expect([...level.options].map(option => option.value)).toEqual(["default", "detailed"]);
+    expect([...level.options].map(option => option.textContent)).toEqual(["Default", "Detailed"]);
+    expect(container.textContent).toContain("shows its final answer");
 
-    act(() => toggle.click());
+    choose(level, "detailed");
 
-    expect(getFinalAnswerOnly()).toBe(false);
-    expect(localStorage.getItem("future.reply.finalAnswerOnly")).toBe("false");
-    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(getReplyDetail()).toBe("detailed");
+    expect(localStorage.getItem("future.reply.detail")).toBe("detailed");
+    // The row's own words follow the level it is on.
+    expect(container.textContent).toContain("keeps everything");
 
-    act(() => toggle.click());
-    expect(getFinalAnswerOnly()).toBe(true);
-    expect(localStorage.getItem("future.reply.finalAnswerOnly")).toBe("true");
+    choose(level, "default");
+    expect(getReplyDetail()).toBe("default");
+    expect(localStorage.getItem("future.reply.detail")).toBe("default");
   });
 });
 
@@ -182,7 +185,7 @@ describe("generalPage approval tier picker", () => {
   it("reports every tier change to the settings owner", () => {
     const onChangeApprovalTier = vi.fn();
     const { container } = mount({ approvalTier: "off", onChangeApprovalTier });
-    const tier = select(container, 3);
+    const tier = select(container, 4);
 
     expect(tier.value).toBe("off");
     expect([...tier.options].map(option => option.value)).toEqual(["manual", "sandbox", "auto", "off"]);
@@ -195,7 +198,7 @@ describe("generalPage approval tier picker", () => {
 
   it.each(["signed_out", "invalid", "checking"])("gates automatic review for %s without changing a pending preference", (futureSessionStatus) => {
     const { container } = mount({ approvalTier: "auto", futureSessionStatus });
-    const tier = select(container, 3);
+    const tier = select(container, 4);
     expect(tier.value).toBe(futureSessionStatus === "checking" ? "auto" : "sandbox");
     expect([...tier.options].find(option => option.value === "auto")!.disabled).toBe(true);
     expect([...tier.options].find(option => option.value === "sandbox")!.disabled).toBe(false);
@@ -203,7 +206,7 @@ describe("generalPage approval tier picker", () => {
 
   it("enables the sandbox option when the sandbox is available", () => {
     const { container } = mount({ approvalTier: "sandbox" });
-    const sandbox = [...select(container, 3).options].find(option => option.value === "sandbox")!;
+    const sandbox = [...select(container, 4).options].find(option => option.value === "sandbox")!;
 
     expect(sandbox.disabled).toBe(false);
     expect(sandbox.textContent).toBe("Sandboxed");
@@ -213,7 +216,7 @@ describe("generalPage approval tier picker", () => {
     mocks.availability = { available: false, code: null, resolved: false };
     const { container } = mount();
 
-    const sandbox = [...select(container, 3).options].find(option => option.value === "sandbox")!;
+    const sandbox = [...select(container, 4).options].find(option => option.value === "sandbox")!;
     expect(sandbox.disabled).toBe(true);
     expect(sandbox.textContent).toBe("Sandboxed (checking)");
   });
@@ -222,7 +225,7 @@ describe("generalPage approval tier picker", () => {
     mocks.availability = { available: false, code: "probe_failed", resolved: true };
     const { container } = mount();
 
-    const sandbox = [...select(container, 3).options].find(option => option.value === "sandbox")!;
+    const sandbox = [...select(container, 4).options].find(option => option.value === "sandbox")!;
     expect(sandbox.disabled).toBe(true);
     expect(sandbox.textContent).toBe("Sandboxed (unavailable)");
   });
@@ -320,14 +323,13 @@ describe("generalPage switches", () => {
 
     const switches = [...container.querySelectorAll<HTMLButtonElement>("[role=switch]")];
     expect(switches.map(item => item.getAttribute("aria-label"))).toEqual([
-      "Show only the final answer",
       "Auto-upgrade skills",
       "Skill recommendations",
       "Generate a title after the first answer",
       "Completion bell",
       "Continue interrupted conversations",
     ]);
-    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["true", "true", "false", "true", "false", "false"]);
+    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "true", "false", "false"]);
   });
 
   it("reports each toggle to its own callback, inverted", () => {

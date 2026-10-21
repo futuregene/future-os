@@ -29,10 +29,17 @@ export const resources = {
           large: "Large",
           xlarge: "Extra large",
         },
-        reply: "Replies",
-        finalAnswerOnly: "Show only the final answer",
-        finalAnswerOnlyHint:
-          "Once an answer settles, fold its reasoning, tool calls and notes into one row above it. On by default. Applies to every desktop this phone is paired with; work still shows while it streams.",
+        reply: "Model output",
+        replyDetail: {
+          default: "Default",
+          detailed: "Detailed",
+        },
+        replyDetailHint: {
+          default:
+            "A finished reply shows its final answer, with the reasoning, tool calls and notes that produced it folded into one row. Work is still shown while it streams. Applies to every computer this phone is paired with.",
+          detailed:
+            "A finished reply keeps everything: its reasoning, tool calls and notes stay in place, in the order they happened. Applies to every computer this phone is paired with.",
+        },
         saveFailed: "Could not save the appearance setting. Please try again.",
       },
       language: {
@@ -1029,10 +1036,17 @@ export const resources = {
           large: "大",
           xlarge: "特大",
         },
-        reply: "回复显示",
-        finalAnswerOnly: "只显示最终回答",
-        finalAnswerOnlyHint:
-          "回答结束后，把思考、工具调用和中间说明收起到回答上方的一行，默认开启；生成过程中仍完整显示。对本手机连接的全部电脑生效。",
+        reply: "模型输出展示",
+        replyDetail: {
+          default: "默认",
+          detailed: "详细",
+        },
+        replyDetailHint: {
+          default:
+            "回答完成后只保留最终回答，思考、工具调用和中间说明收起到一行，可随时展开；生成过程中仍完整显示。对本手机连接的全部电脑生效。",
+          detailed:
+            "回答完成后保留完整过程：思考、工具调用和中间说明按发生顺序与正文一起显示。对本手机连接的全部电脑生效。",
+        },
         saveFailed: "无法保存外观设置，请重试。",
       },
       language: {

@@ -46,9 +46,9 @@ const workedReply: TimelineSegment[] = [
   note("answer", "The plaintext relay works end to end."),
 ];
 
-/** Set the setting the way the appearance page does. */
-async function setFinalAnswerOnly(value: boolean) {
-  await act(async () => { await setAppearance({ finalAnswerOnly: value }); });
+/** Set the level the way the appearance page does. */
+async function setReplyDetail(value: "default" | "detailed") {
+  await act(async () => { await setAppearance({ replyDetail: value }); });
 }
 
 function render(item: TimelineItem) {
@@ -83,7 +83,7 @@ beforeEach(async () => {
 });
 
 it("folds a settled reply the way it ships, without anyone setting it", () => {
-  expect(DEFAULT_APPEARANCE.finalAnswerOnly).toBe(true);
+  expect(DEFAULT_APPEARANCE.replyDetail).toBe("default");
   render(message(workedReply));
 
   expect(prose()).toEqual(["The plaintext relay works end to end."]);
@@ -91,7 +91,7 @@ it("folds a settled reply the way it ships, without anyone setting it", () => {
 });
 
 it("shows the whole reply when the reader turns the setting off", async () => {
-  await setFinalAnswerOnly(false);
+  await setReplyDetail("detailed");
   render(message(workedReply));
 
   expect(prose()).toEqual(["I will read the relay implementation first.", "The plaintext relay works end to end."]);

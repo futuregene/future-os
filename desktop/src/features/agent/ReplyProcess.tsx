@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 /**
  * The work a settled reply ran, folded above its answer.
  *
- * Reading setting `finalAnswerOnly` keeps a reply to the answer it ends on; the
+ * The `default` output level keeps a reply to the answer it ends on; the
  * reasoning, calls and notes that produced it fold into this one row so the
  * answer sits at the reading edge. Nothing is discarded: opening the row
  * replays exactly the blocks a reader sees with the setting off, in order.
