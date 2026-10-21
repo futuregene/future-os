@@ -172,7 +172,62 @@ fn live_row(desktop_id: &str, connected: bool) -> Value {
     })
 }
 
+/// A live row another paired device is driving, as the Desktop reports it.
+fn held_row(desktop_id: &str, holder: Option<&str>) -> Value {
+    let mut row = live_row(desktop_id, true);
+    row["control"] = json!("standby");
+    if let Some(name) = holder {
+        row["holder"] = json!({ "pairId": "pair_phone", "name": name, "kind": "phone" });
+    }
+    row
+}
+
 // -- list -------------------------------------------------------------------
+
+/// "Connected" alone would claim a machine usable whose every command comes back
+/// `superseded`: the row says who has it, and the JSON says it too.
+#[tokio::test]
+async fn list_names_the_device_a_machine_is_held_by() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(
+        &home,
+        json!({ "peers": [held_row(ONE, Some("phone")), held_row(TWO, None)] }),
+    );
+
+    let (code, stdout, stderr) = run(&["remote", "peers"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("taken over by phone"), "{stdout}");
+    assert!(stdout.contains("taken over"), "{stdout}");
+    // Neither held row is reported as plain "connected": that word is what a
+    // reader takes as usable.
+    for line in stdout.lines() {
+        if line.contains(ONE) || line.contains(TWO) {
+            assert!(
+                line.contains("taken over"),
+                "a held machine must not read as connected: {line}"
+            );
+        }
+    }
+
+    // A second ask needs a second answerer: the fake Desktop serves one request
+    // and is gone, which is also the "silent Desktop" the JSON path must not
+    // invent state for.
+    answer_requests(
+        &home,
+        json!({ "peers": [held_row(ONE, Some("phone")), held_row(TWO, None)] }),
+    );
+    let (code, stdout, stderr) = run(&["remote", "peers", "--json"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    let value: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["peers"][0]["control"], "standby");
+    assert_eq!(value["peers"][0]["holder"]["name"], "phone");
+    assert_eq!(value["peers"][0]["holder"]["kind"], "phone");
+    // A holder that never said who it is leaves the object out of the row.
+    assert!(value["peers"][1]["holder"].is_null(), "{value}");
+}
 
 #[tokio::test]
 async fn list_reads_the_book_and_never_prints_a_credential() {
@@ -246,6 +301,10 @@ async fn list_json_keeps_unknown_state_null_rather_than_guessing() {
     assert!(value["peers"][0]["connected"].is_null(), "{value}");
     assert!(value["peers"][0]["stopped"].is_null(), "{value}");
     assert!(value["peers"][0]["agentAvailable"].is_null(), "{value}");
+    // Control is the Desktop's to report as well: the book cannot know whether
+    // another device is driving the machine.
+    assert!(value["peers"][0]["control"].is_null(), "{value}");
+    assert!(value["peers"][0]["holder"].is_null(), "{value}");
 }
 
 #[tokio::test]
@@ -358,6 +417,99 @@ async fn a_machine_that_is_not_paired_is_refused_with_the_list_hint() {
     assert_eq!(code, 1, "{stderr}");
     assert!(stderr.contains("No remote desktop matches"), "{stderr}");
     assert!(stderr.contains("future remote peers"), "{stderr}");
+}
+
+// -- takeover ---------------------------------------------------------------
+
+#[tokio::test]
+async fn takeover_names_the_machine_and_reports_that_control_moved() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    let seen = answer_requests(
+        &home,
+        json!({ "tookOver": true, "peers": [live_row(ONE, true)] }),
+    );
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "takeover", "AAAA"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("is now driven by this machine"), "{stdout}");
+    let posed = seen.lock().unwrap();
+    assert_eq!(posed[0]["op"], "peer-takeover", "{}", posed[0]);
+    assert_eq!(posed[0]["desktopId"], ONE, "{}", posed[0]);
+    // The two roles' identifiers travel in their own fields, always.
+    assert!(posed[0].get("pairId").is_none(), "{}", posed[0]);
+}
+
+/// A machine this one already drove answers that nothing moved. That is a
+/// result, not a refusal, and the command must not exit 1 over it.
+#[tokio::test]
+async fn takeover_says_nothing_moved_when_it_already_had_control() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(
+        &home,
+        json!({ "tookOver": false, "peers": [live_row(ONE, true)] }),
+    );
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "takeover", "#1"]).await;
+    assert_eq!(code, 0, "{stdout} {stderr}");
+    assert!(
+        stdout.contains("already driven by this machine"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("nothing moved"), "{stdout}");
+}
+
+#[tokio::test]
+async fn takeover_json_carries_the_move_and_the_list() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(
+        &home,
+        json!({ "tookOver": true, "peers": [live_row(ONE, true)] }),
+    );
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "takeover", ONE, "--json"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    let value: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["tookOver"], true);
+    assert_eq!(value["answered"], true);
+    assert_eq!(value["peers"][0]["desktopId"], ONE);
+}
+
+/// A refusal is the Desktop's own sentence, not a cheerful exit 0: the machine
+/// stayed with the device that had it.
+#[tokio::test]
+async fn takeover_reports_a_refusal_by_name() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(&home, json!({ "error": "superseded" }));
+
+    let (code, _, stderr) = run(&["remote", "peers", "takeover", ONE]).await;
+    assert_eq!(code, 1);
+    assert!(stderr.contains("could not take it over"), "{stderr}");
+    assert!(stderr.contains("superseded"), "{stderr}");
+}
+
+#[tokio::test]
+async fn takeover_without_a_desktop_says_there_is_nothing_to_act_on() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+
+    let (code, _, stderr) = run(&["remote", "peers", "takeover", ONE]).await;
+    assert_eq!(code, 1);
+    assert!(stderr.contains("No Desktop is running"), "{stderr}");
+    // Nothing was asked of a Desktop that is not there.
+    assert!(!home.exists("run"), "{}", home.future().display());
 }
 
 // -- rename -----------------------------------------------------------------
@@ -484,7 +636,15 @@ async fn the_group_and_each_action_have_their_own_help() {
         stdout.contains("peer-state") || stdout.contains("client role"),
         "{stdout}"
     );
-    for action in ["list", "add", "connect", "disconnect", "rename", "remove"] {
+    for action in [
+        "list",
+        "add",
+        "connect",
+        "disconnect",
+        "takeover",
+        "rename",
+        "remove",
+    ] {
         let (code, stdout, _) = run(&["remote", "peers", action, "--help"]).await;
         assert_eq!(code, 0, "{action}");
         assert!(stdout.contains(action), "{action}: {stdout}");

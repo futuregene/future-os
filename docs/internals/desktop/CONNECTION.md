@@ -462,13 +462,16 @@ same state, so choosing a machine also tells you whether you may use it.
 **The desktop client role answers the same question.** What the host says in
 its presence packet and its `p.{pair}.state.control` packet (`control`, plus
 `holder` while somebody else has it) is kept on the connection and reported
-with `remote_peer_list` as `PeerSummary.control` / `holder`. Four surfaces read
+with `remote_peer_list` as `PeerSummary.control` / `holder`. Five surfaces read
 that one field: the device picker's entry says who is using the machine, the
 machine's row in the Remote section says "taken over" instead of "connected"
 and offers `takeover` (the same command a phone sends, on the `list` lane), the
-section's count names the taken-over machines beside "N of M connected", and the
+section's count names the taken-over machines beside "N of M connected", the
 Remote dot is amber as soon as one paired machine is held by another device —
-the same line the phone's set dot draws (`drivable === total`). A control move —
+the same line the phone's set dot draws (`drivable === total`) — and
+`future remote peers` prints it as that same word in its STATE column (with
+`control` / `holder` in `--json`), where `future remote peers takeover <id|#>`
+asks the running Desktop to send exactly that command. A control move —
 announced by the packet, or noticed in a presence tick — drops that host's
 snapshot gate and re-reads: a standby device is never sent a snapshot, so the
 gate can sit at a revision whose content this client has never applied and would

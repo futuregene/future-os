@@ -335,11 +335,12 @@ Remote 入口的圆点回答的是已配对的机器——只有全部在线、�
   时就知道能不能用。
 - **桌面客户端角色（「连接别的电脑」）也接上了**：宿主在 presence 与
   `p.{pair}.state.control` 里说的 `control`/`holder` 被记在该连接上，随 `remote_peer_list`
-  一起给出（`PeerSummary.control` / `holder`）。界面上四处读同一个字段：设备选择器的条目
+  一起给出（`PeerSummary.control` / `holder`）。五处读同一个字段：设备选择器的条目
   注明「某某正在使用」，该机器的行用「已被接管」代替「已连接」并给出「接管」按钮，
   Remote 页的「已连接 N/M 台」把被接管的台数也说在同一句里，Remote 入口的圆点在
   **有一台被另一台设备握着**时就是琥珀色（与手机圆点同一条线：绿需要每台都在线且
-  drivable）。
+  drivable），终端的状态列写同样的话（`--json` 里是 `control`/`holder`），
+  `future remote peers takeover <id|#>` 就是请运行中的 Desktop 发出那条同一条命令。
   控制权一变动（presence 或 `state.control`），本机立即丢掉该宿主的快照门并重读：
   待命期间宿主不发给它快照，那道门可能停在本机从未应用过的 revision 上，若不丢掉，
   夺回控制权后的第一份快照会被它自己拒掉。待命期间也不再向该宿主轮询目录——拒绝

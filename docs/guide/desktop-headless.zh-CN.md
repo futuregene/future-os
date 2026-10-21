@@ -190,6 +190,7 @@ future remote peers                     # 本机连着的每一台远程桌面
 future remote peers add <邀请链接>       # 配一台：粘贴对方显示的链接
 future remote peers connect <id|序号>    # 现在就连接
 future remote peers disconnect <id|序号> # 断开连接，配对保留
+future remote peers takeover <id|序号>   # 从正驱动它的设备手里接管回来
 future remote peers rename <id|序号> <名字>  # 在本机起个名字（--clear 还原成机器 id）
 future remote peers remove <id|序号>     # 解绑：不再连接，并吊销
 ```
@@ -201,7 +202,11 @@ future remote peers remove <id|序号>     # 解绑：不再连接，并吊销
 - `list` 读那个文件；有 Desktop 在跑时，再读它持有的连接。没有 Desktop 时只报已配对
   的机器和「没有连接状态」——因为连接只存在于那个进程里，磁盘上没有。
 - `connect` 与 `disconnect` 交给运行中的 Desktop 执行：连接本身就是它的，用户主动断开
-  的标记也在它的内存里，只有问它才不会让自动重连把用户的决定撤销。`remove` 能问就问，
+  的标记也在它的内存里，只有问它才不会让自动重连把用户的决定撤销。`takeover` 同样交给它：
+  控制权在同一时间只属于一台设备，被别的设备驱动时本机仍连着、但仍会被退成待命，命令全部
+  以 `superseded` 拒绝——`list` 状态列写「已被接管」（知道名字时写「已被某某接管」），
+  `takeover` 发出的就是手机上同一条 `takeover` 命令，让对方退为待命；控制权没有移动时
+  回答也是成功，由 `--json` 的 `tookOver: false` 说明。`remove` 能问就问，
   问不到就在本机解绑，并从终端里吊销。
 - 已配对的桌面会在 Desktop 启动时被连上。`future headless` 只服务设备、不驱动别的桌面，
   所以客户端角色需要窗口版。

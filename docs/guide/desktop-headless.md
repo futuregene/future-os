@@ -247,6 +247,7 @@ future remote peers                     # every remote desktop this machine driv
 future remote peers add <invitation>    # pair with one: paste the link it shows
 future remote peers connect <id|#>      # connect now
 future remote peers disconnect <id|#>   # drop the connection, keep the pairing
+future remote peers takeover <id|#>     # take it back from the device driving it
 future remote peers rename <id|#> <n>   # name it here (--clear for the machine id)
 future remote peers remove <id|#>       # unpair it: stop connecting, revoke
 ```
@@ -263,8 +264,14 @@ future remote peers remove <id|#>       # unpair it: stop connecting, revoke
   because a connection lives in that process and nowhere on disk.
 - `connect` and `disconnect` are asked of the running Desktop: that is where the
   connection and the user's own "disconnected" mark live, and asking it is what
-  keeps the automatic reconnect pass from undoing a deliberate stop. `remove` asks
-  it too when it can, and otherwise unpairs here and revokes from the terminal.
+  keeps the automatic reconnect pass from undoing a deliberate stop. `takeover`
+  is asked of it for the same reason: one device drives a machine at a time, a
+  standby machine stays connected and refuses every command (`superseded`), and
+  `list` draws that as "taken over" (naming the holder when it said who it is).
+  The command is the same `takeover` a phone sends; a machine this one already
+  drove answers that nothing moved, which is a success (`tookOver: false` in
+  `--json`). `remove` asks the Desktop too when it can, and otherwise unpairs
+  here and revokes from the terminal.
 - A paired desktop is connected by the Desktop as it starts. A headless host
   serves devices but does not drive other desktops, so the client role needs the
   window.

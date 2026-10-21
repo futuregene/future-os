@@ -301,6 +301,7 @@ Usage:
   future remote peers [list] [--json]                Remote desktops THIS machine connects to
   future remote peers add <invitation>               Pair with one by pasting its link
   future remote peers connect|disconnect <id|#>      Take one up or down now
+  future remote peers takeover <id|#>                Take one back from the device driving it
   future remote peers remove <id|#> [--yes]          Unpair it
 
 status answers two different questions and keeps them apart: whether this
@@ -372,6 +373,7 @@ pub const REMOTE_USAGE: &str = r#"Usage:
   future remote peers add <invitation> [--json]
   future remote peers connect <id|#> [--json]
   future remote peers disconnect <id|#> [--json]
+  future remote peers takeover <id|#> [--json]
   future remote peers rename <id|#> <name> [--json]
   future remote peers remove <id|#> [--yes] [--json]"#;
 
@@ -617,6 +619,7 @@ Usage:
   future remote peers add <invitation> [--json]       Pair with one: paste its invitation link
   future remote peers connect <id|#> [--json]         Connect to one now
   future remote peers disconnect <id|#> [--json]      Drop the connection, keep the pairing
+  future remote peers takeover <id|#> [--json]        Take it back from the device driving it
   future remote peers rename <id|#> <name> [--json]   Name it here (--clear goes back to the id)
   future remote peers remove <id|#> [--yes] [--json]  Unpair it: stop connecting, revoke
 
@@ -625,6 +628,10 @@ phones and computers allowed to drive THIS machine; peers are the machines this
 one drives. The two pairings are independent: they have their own credentials,
 their own runtimes, and their own files (~/.future/remote_peers.json here,
 ~/.future/remote_pairings.json there).
+
+A paired desktop is driven by one device at a time. The others stay connected
+and stand by: they answer, they cannot read or command. `list` says so in its
+STATE column, and `takeover` is how a standby machine becomes the one driving.
 
 add is the only action that runs here instead of in the Desktop: pairing is a
 one-time claim against the platform plus a handshake with the other machine, so
@@ -635,14 +642,15 @@ whether it works rather than whether it was written down. A running Desktop then
 keeps it connected; with none running it connects the next time one starts (the
 window - a headless host serves devices but does not drive other desktops).
 
-Everything else reads the book, and connect, disconnect and remove also ask the
-running Desktop, because a live connection and the user's own "disconnected"
-mark live in that process and nowhere on disk. With no Desktop running:
+Everything else reads the book, and connect, disconnect, takeover and remove also
+ask the running Desktop, because a live connection, this machine's control state
+and the user's own "disconnected" mark live in that process and nowhere on disk.
+With no Desktop running:
 
   - list still shows what is paired, with no connection state to report;
   - rename still works: the name is this machine's private label for that host,
     never sent anywhere, and the Desktop reads it from the same file;
-  - connect and disconnect have nothing to act on, and say so;
+  - connect, disconnect and takeover have nothing to act on, and say so;
   - remove unpairs here and revokes where it can reach the platform, so nothing
     on this machine connects to it again.
 
@@ -650,10 +658,11 @@ The id is the other machine's desktopId, as `list` shows it; its `desktop_`
 prefix is optional, and a row number (#1) names the same row.
 
 Every action takes --json. list prints {desktopRunning, answered, peers}: a
-peer's connected, stopped, error and agentAvailable are null when no Desktop
-answered, which is the honest reading of "the book cannot know". add prints
-{desktopRunning, paired}; the rest print the resulting list document, and remove
-also names what it removed."#;
+peer's connected, stopped, error, agentAvailable, control and holder are null
+when no Desktop answered, which is the honest reading of "the book cannot know".
+add prints {desktopRunning, paired}; takeover prints {desktopRunning, answered,
+tookOver, peers}; the rest print the resulting list document, and remove also
+names what it removed."#;
 
 /// The one-line usage every `future remote peers` argument error repeats.
 pub const REMOTE_PEERS_USAGE: &str = r#"Usage:
@@ -661,6 +670,7 @@ pub const REMOTE_PEERS_USAGE: &str = r#"Usage:
   future remote peers add <invitation> [--json]
   future remote peers connect <id|#> [--json]
   future remote peers disconnect <id|#> [--json]
+  future remote peers takeover <id|#> [--json]
   future remote peers rename <id|#> <name> [--json]
   future remote peers rename <id|#> --clear [--json]
   future remote peers remove <id|#> [--yes] [--json]"#;
@@ -676,6 +686,9 @@ running, the connections that process holds. The two halves are kept apart in th
 STATE column because only one of them is knowable from disk:
 
   connected       the Desktop holds a live connection to that machine
+  taken over      connected, but another paired device is driving it: it answers
+                  and refuses every command ("taken over by <name>" when the
+                  holder said who it is). `takeover` takes it back.
   disconnected    the user turned it off from this machine; the automatic
                   reconnect pass leaves it alone until `connect` asks for it
   not connected   paired, no live connection
@@ -688,7 +701,10 @@ truth: a connection lives in that process.
   desktopRunning   a Desktop owns this data directory (window or headless)
   answered         that Desktop reported its connections
   peers[]          desktopId, pairId, name, icon, connected, stopped, error,
-                   agentAvailable - the last four null when nothing answered"#;
+                   agentAvailable, control, holder - all null when nothing
+                   answered. `control` is "active" or "standby"; `holder` is
+                   {name, kind} and null when this machine drives it or nobody
+                   said who does."#;
 
 /// `future remote peers add --help` output.
 pub const REMOTE_PEERS_ADD_HELP: &str = r#"future remote peers add - pair this machine with another remote desktop
@@ -732,6 +748,32 @@ connected by the Desktop as it starts, so start it and look at `list`.
 
 connect reports the state the Desktop answered with, not what was asked: an
 attempt that ended without a connection prints why, and exits 1."#;
+
+/// `future remote peers takeover --help` output.
+pub const REMOTE_PEERS_TAKEOVER_HELP: &str = r#"future remote peers takeover - take a remote desktop back from another device
+
+Usage:
+  future remote peers takeover <id|#> [--json]
+
+A paired desktop is driven by one device at a time. The others stay connected and
+stand by - they answer every heartbeat, and every command they send comes back
+`superseded` - which is how a machine that was fine a moment ago stops showing
+its conversations without any error. `list` draws that state as "taken over", and
+this is how it is undone, without reconnecting: the same `takeover` command a
+phone sends, from this side of the pairing.
+
+The device that had the machine is told to stand by on its own channel, exactly
+as when a phone asks for it. A machine this one already drove answers that
+nothing moved - that is a success, printed as one, not a refusal.
+
+Asked of the running Desktop: the connection that carries the command, and this
+machine's own live control state, exist only in that process. With no Desktop
+running the command says so instead of pretending. The row's word in `list`
+follows the host's next presence tick, so `tookOver` in the answer is what to
+read for "did it move".
+
+--json prints {desktopRunning, answered, tookOver, peers}, where peers is the
+list as `future remote peers list --json` prints it."#;
 
 /// `future remote peers rename --help` output.
 pub const REMOTE_PEERS_RENAME_HELP: &str = r#"future remote peers rename - name a remote desktop here
