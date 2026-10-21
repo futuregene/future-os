@@ -395,13 +395,24 @@ describe("activity rail keyboard commands", () => {
     view.unmount();
   });
 
-  it("jumps to the filter box", () => {
+  /**
+   * The command is a focus now, not an open.
+   *
+   * The field is always drawn (see `ActivityRail.toolbar.test.tsx` for the
+   * structure that guarantees it), so what the key has to do is put the caret in
+   * it — which is the only thing that was useful about it before.
+   */
+  it("puts the caret in the filter box", async () => {
     const p = props([thread("root"), thread("second")]);
     const view = mount(<ActivityRail {...p} />);
-    expect(view.container.querySelector("input[aria-label=\"Search conversations\"]")).toBeNull();
+    const field = () => view.container.querySelector("input[aria-label=\"Search conversations\"]");
+    // Present with nothing done, and not where the caret is.
+    expect(field()).not.toBeNull();
+    expect(document.activeElement).not.toBe(field());
 
     press({ code: "KeyF", ctrlKey: true, key: "f", shiftKey: true });
-    expect(view.container.querySelector("input[aria-label=\"Search conversations\"]")).not.toBeNull();
+    await act(async () => {});
+    expect(document.activeElement).toBe(field());
     view.unmount();
   });
 });

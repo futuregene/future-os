@@ -878,34 +878,33 @@ describe("the rail's remote row controls", () => {
 /**
  * The device picker and the search field share one row above the list.
  *
- * They shared it half-and-half, so opening search squeezed the picker down to
- * its glyph and the field down to a few characters — reported as "they are
- * squeezed together".
+ * They used to take turns in it — the field appeared on a click and pushed the
+ * picker out. Now the field is permanent and the picker stays, drawn `compact`:
+ * glyph, name, chevron in a quarter of the row instead of a band of its own. So
+ * what this checks is that *both* are there at once, in the same row, which is
+ * what "one row, two controls" means and what a two-row regression breaks.
  */
 describe("the search field and the device picker", () => {
-  it("gives the whole row to search while it is open, and hands it back on close", async () => {
+  it("shows both at once, in one row, with the picker compact", async () => {
     const view = await mountRail({
       deviceFilter: { kind: "all" },
       onChangeDeviceFilter: vi.fn(),
       remotePeers: [peer],
     });
     const picker = () => view.container.querySelector("button[aria-label='All devices']");
+    const field = () => view.container.querySelector("input[aria-label='Search conversations']");
     expect(picker()).not.toBeNull();
+    expect(field()).not.toBeNull();
 
-    await act(async () => view.container
-      .querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!
-      .click());
+    const tools = view.container.querySelector<HTMLElement>("[data-testid='rail-list-tools']")!;
+    // One row for both: the picker's own wrapper and the field are siblings of
+    // the same band, so neither has a line to itself.
+    expect(tools.contains(picker())).toBe(true);
+    expect(tools.contains(field())).toBe(true);
+    expect(field()!.parentElement!.parentElement).toBe(tools);
+    // The picker is the compact one — it kept its name, it gave up the band.
+    expect(picker()!.className).toContain("max-w-30");
 
-    expect(picker()).toBeNull();
-    // Search still filters within the chosen device; only the control is gone
-    // while the field needs the room.
-    expect(view.container.querySelector("input[aria-label='Search conversations']")).not.toBeNull();
-
-    await act(async () => view.container
-      .querySelector<HTMLButtonElement>("button[aria-label='Close search']")!
-      .click());
-
-    expect(picker()).not.toBeNull();
     view.unmount();
   });
 });

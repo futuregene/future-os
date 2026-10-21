@@ -21,7 +21,7 @@ import {
   Sparkles,
   SquarePen,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useCommand } from "../../features/keyboard/commands";
 import { groupMergedRows, mergeConversations, rowKey } from "../../features/remote-peer/mergeConversations";
@@ -294,11 +294,9 @@ export function ActivityRail({
   // Text search for the conversation list. Not persisted: the list is huge
   // and a leftover query after restart would feel like a stale filter.
   const [searchQuery, setSearchQuery] = useState("");
-  const [searchOpen, setSearchOpen] = useState(false);
-  const closeSearch = useCallback(() => {
-    setSearchOpen(false);
-    setSearchQuery("");
-  }, []);
+  // The field is always drawn, so its command puts the caret in it rather than
+  // opening it — the same thing it did before, minus the mode.
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   // Attention state for the Skills nav entry: pulsed for a few seconds when
   // the skill-guide banner is dismissed (its notice says the tutorial can be
   // reopened from the Skills page).
@@ -652,9 +650,11 @@ export function ActivityRail({
         : visibleThreads,
   });
 
+  const showListTools = !selectionMode || Boolean(onChangeDeviceFilter && remotePeers.length > 0);
+
   /** Whether this thread should show a selection checkbox. */
   function threadSelectionMode(thread: StoredThread): boolean {
-    return selectionMode && isThreadInScope(thread) && (!searchOpen || threadMatchesQuery(thread));
+    return selectionMode && isThreadInScope(thread) && threadMatchesQuery(thread);
   }
 
   // Pinned threads are hoisted into a single global section (regardless of
@@ -707,10 +707,7 @@ export function ActivityRail({
     () => (workspaceSectionCollapsed ? [] : workspaceGroups),
     [workspaceSectionCollapsed, workspaceGroups],
   );
-  const visiblePinnedThreads = useMemo(
-    () => (searchOpen || queryActive ? filteredPinnedThreads : pinnedThreads),
-    [filteredPinnedThreads, pinnedThreads, queryActive, searchOpen],
-  );
+  const visiblePinnedThreads = filteredPinnedThreads;
   const visibleChatThreads = useMemo(
     () => (chatSectionCollapsed ? [] : filteredChatThreads),
     [chatSectionCollapsed, filteredChatThreads],
@@ -1005,7 +1002,7 @@ export function ActivityRail({
   useCommand("group.next", () => stepGroup(1), listShowing && groupStops.length > 1);
   // Filtering the list is a jump to the field, not a search of its own: the
   // command palette (a separate, later entry) navigates, this narrows.
-  useCommand("rail.search", () => setSearchOpen(true), listShowing);
+  useCommand("rail.search", () => searchInputRef.current?.focus(), listShowing);
 
   /**
    * One workspace's heading, built once and used by both list modes.
@@ -1195,58 +1192,63 @@ export function ActivityRail({
                       </div>
                     )
                   : null}
-                <div className="mb-2 flex shrink-0 items-center gap-1">
-                  {/* The search field takes the whole row while it is open: the
-                      two were sharing it half-and-half, which squeezed the
-                      device picker down to its glyph and the field down to a
-                      few characters. Search still filters within the selected
-                      device; closing it brings the picker back. */}
-                  {onChangeDeviceFilter && remotePeers.length > 0 && !searchOpen
-                    ? (
-                        <div className="min-w-0 flex-1">
-                          <DeviceSelector
-                            filter={deviceFilter}
-                            onChange={onChangeDeviceFilter}
-                            onManage={() => onManageDesktops?.()}
-                            peers={remotePeers}
-                          />
-                        </div>
-                      )
-                    : null}
-                  {selectionMode
-                    ? null
-                    : (
-                        <ConversationSearch
-                          onClose={closeSearch}
-                          onQueryChange={setSearchQuery}
-                          onToggleOpen={() => setSearchOpen(current => !current)}
-                          open={searchOpen}
-                          query={searchQuery}
-                        />
-                      )}
-                </div>
-                {/* Which list this is. Above the list rather than inside it,
-                    and with both names written out: the tree is the default and
-                    the reader has no other way to learn a second view exists. */}
-                <div className="mb-2 flex shrink-0 items-center gap-1">
+                {/* Two bands, each with one job.
+
+                    Band 1 answers "which list" — only the switch, and nothing
+                    else. Band 2 holds what belongs to *the list that switch
+                    shows*: its search, the machine picker the search filters
+                    within, and the list's own menu. The menu sat in band 1 until
+                    now, which read as an action on the switch while it is really
+                    an action on the list — the thing the reader is looking at. */}
+                <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-view-band">
                   <div className="min-w-0 flex-1">
                     <RailViewSwitch onChange={setRailView} view={railView} />
                   </div>
-                  {/* The recent view's own way into a batch. The tree reaches it
-                      from a section's menu (the chat section, a workspace); this
-                      view has no such heading — it is one flat list — so its one
-                      menu sits here, and marks the whole list as the batch. */}
-                  {railView === "recent" && !selectionMode
-                    ? (
-                        <ChatSectionMenu
-                          label={t("activityRail.recentActions")}
-                          onOpenChange={setRecentMenuOpen}
-                          onSelect={() => enterSelectionMode("recent")}
-                          open={recentMenuOpen}
-                        />
-                      )
-                    : null}
                 </div>
+                {showListTools
+                  ? (
+                      <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-list-tools">
+                        {/* One machine standing behind the list is named by the
+                            picker, `compact` because it now shares the row with
+                            the search field. */}
+                        {onChangeDeviceFilter && remotePeers.length > 0
+                          ? (
+                              <DeviceSelector
+                                compact
+                                filter={deviceFilter}
+                                onChange={onChangeDeviceFilter}
+                                onManage={() => onManageDesktops?.()}
+                                peers={remotePeers}
+                              />
+                            )
+                          : null}
+                        {selectionMode
+                          ? null
+                          : (
+                              <ConversationSearch
+                                inputRef={searchInputRef}
+                                onQueryChange={setSearchQuery}
+                                query={searchQuery}
+                              />
+                            )}
+                        {/* The recent view's own way into a batch. The tree
+                            reaches it from a section's menu (the chat section, a
+                            workspace); this view has no such heading — it is one
+                            flat list — so its one menu sits here, at the row's
+                            right end, and marks the whole list as the batch. */}
+                        {railView === "recent" && !selectionMode
+                          ? (
+                              <ChatSectionMenu
+                                label={t("activityRail.recentActions")}
+                                onOpenChange={setRecentMenuOpen}
+                                onSelect={() => enterSelectionMode("recent")}
+                                open={recentMenuOpen}
+                              />
+                            )
+                          : null}
+                      </div>
+                    )
+                  : null}
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="group relative -mx-2 flex min-h-0 flex-1">
                     <div
