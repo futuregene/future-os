@@ -51,20 +51,27 @@ export function listTargets(
 }
 
 /**
- * What a batch may hold: conversations that are not pinned shortcuts, on a
- * machine that can take the command.
+ * What a batch may hold on one page, on a machine that can take the command.
  *
- * Pinned sessions are promoted above the groups (and, on the workspace page,
- * out of their own workspace), so they carry no checkbox while selecting and
- * select-all never sweeps them up. A machine that cannot answer is left out for
- * the same reason its menu items are: a checkbox would promise a delete it
- * would refuse.
+ * `excludePinned` is the *tree* pages' rule, not a universal one: there a pinned
+ * conversation is a shortcut promoted above the groups (and, on the workspace
+ * page, out of its own workspace), so it carries no checkbox and a group's
+ * "select all" never sweeps it up. The recency page has no such section — it
+ * ignores pinning for its order and only draws the marker — so a pinned
+ * conversation there is an ordinary row, and leaving it unselectable put one row
+ * of that list beyond the batch for no reason the reader could see.
+ *
+ * A machine that cannot answer is left out on every page, for the same reason
+ * its menu items are: a checkbox would promise a delete it would refuse.
  */
 export function selectableTargets(
   targets: readonly SessionTarget[],
   commandsFor: (desktopId: string | null) => DesktopCommands | null,
+  excludePinned: boolean,
 ): SessionTarget[] {
   return targets.filter(
-    target => !target.session.pinned && commandsFor(target.desktopId) !== null,
+    target =>
+      (!excludePinned || !target.session.pinned)
+      && commandsFor(target.desktopId) !== null,
   );
 }

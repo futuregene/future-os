@@ -18,6 +18,10 @@
     "large": "大",
     "xlarge": "特大"
   },
+  "finalAnswerOnly": {
+    "title": "只显示最终回答",
+    "description": "回答完成后收起思考、工具调用和中间说明，只保留最终回答；生成过程中仍完整显示，点“查看过程”可展开"
+  },
   "approvalTier": {
     "title": "审批模式",
     "manual": "手动审批",
@@ -305,5 +309,9 @@
     "followCopyName": "复制公众号名",
     "followCopied": "已复制",
     "followReadArticle": "阅读文章"
+  },
+  "autoResumeInterrupted": {
+    "title": "自动继续被中断的对话",
+    "description": "关闭 FutureOS 会中止正在运行的对话（智能体在应用内运行）。开启后，下次打开应用会自动接着跑这些被中断的对话；关闭则保持中断状态，需要你手动继续。"
   }
 }

@@ -71,6 +71,18 @@ pub struct RelayConfig {
     /// asked to check them. Kept explicit so `serve` never hangs at startup.
     #[serde(default = "default_http_timeout")]
     pub http_timeout_seconds: u64,
+    /// PEM certificate `serve` presents when it terminates TLS itself.
+    ///
+    /// Written by `init` from `--tls-cert`, and only when the operator did not
+    /// say a TLS terminator sits in front of the relay
+    /// (`--allow-plaintext-upstream`): in that deployment the listener is
+    /// *meant* to stay plaintext, so recording a certificate here would make
+    /// `serve` try to speak TLS behind a proxy that already does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_cert: Option<String>,
+    /// Private key for [`Self::tls_cert`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_key: Option<String>,
 }
 
 impl RelayConfig {
@@ -114,7 +126,30 @@ impl RelayConfig {
         if self.invitation_ttl_seconds <= 0 || self.room_ttl_seconds <= 0 {
             anyhow::bail!("invitation_ttl_seconds and room_ttl_seconds must be positive");
         }
+        match (&self.tls_cert, &self.tls_key) {
+            (Some(cert), Some(key)) => {
+                if cert.trim().is_empty() || key.trim().is_empty() {
+                    anyhow::bail!("tls_cert and tls_key must not be empty when either is set");
+                }
+            }
+            (None, None) => {}
+            // Half a certificate is never a valid deployment: `serve` would
+            // either fail at startup or silently fall back to plaintext while
+            // the operator believes TLS is on.
+            _ => anyhow::bail!("tls_cert and tls_key go together"),
+        }
         Ok(())
+    }
+
+    /// Whether `serve` should terminate TLS itself.
+    ///
+    /// Both halves have to agree: an `https://` public URL promises TLS to
+    /// every client that reads an invitation, and a certificate is the only way
+    /// to keep that promise from inside this process. A certificate beside an
+    /// `http://` public URL is not used for the API — that deployment reaches
+    /// the relay through a plaintext origin by choice.
+    pub fn terminates_tls(&self) -> bool {
+        self.public_url.trim_start().starts_with("https://") && self.tls_cert.is_some()
     }
 }
 
@@ -135,6 +170,8 @@ mod tests {
             subs_limit: -1,
             payload_limit: DEFAULT_PAYLOAD_LIMIT,
             http_timeout_seconds: 15,
+            tls_cert: None,
+            tls_key: None,
         }
     }
 
@@ -172,5 +209,89 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("nats_ws_url"));
+    }
+
+    /// A relay.json written before `serve` could terminate TLS carries no
+    /// certificate fields, and one written now omits them when there is no
+    /// certificate: an older binary must still read it.
+    #[test]
+    fn a_file_without_a_certificate_round_trips_unchanged() {
+        let config = config();
+        let raw = serde_json::to_string(&config).unwrap();
+        assert!(!raw.contains("tlsCert"), "{raw}");
+        assert!(!raw.contains("tlsKey"), "{raw}");
+        let parsed: RelayConfig = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed.tls_cert, None);
+        assert!(!parsed.terminates_tls());
+    }
+
+    #[test]
+    fn a_certificate_is_recorded_with_its_key() {
+        let config = RelayConfig {
+            public_url: "https://relay.example.com".into(),
+            tls_cert: Some("/etc/relay/fullchain.pem".into()),
+            tls_key: Some("/etc/relay/privkey.pem".into()),
+            ..config()
+        };
+        let raw = serde_json::to_string(&config).unwrap();
+        assert!(
+            raw.contains("\"tlsCert\":\"/etc/relay/fullchain.pem\""),
+            "{raw}"
+        );
+        assert!(
+            raw.contains("\"tlsKey\":\"/etc/relay/privkey.pem\""),
+            "{raw}"
+        );
+        config.validate().unwrap();
+        assert!(config.terminates_tls());
+    }
+
+    /// Half a certificate can only fail later — either at startup or, worse, by
+    /// silently serving plaintext while the operator believes TLS is on.
+    #[test]
+    fn half_a_certificate_is_refused() {
+        for (cert, key) in [
+            (Some("cert.pem".to_string()), None),
+            (None, Some("key.pem".to_string())),
+        ] {
+            let config = RelayConfig {
+                tls_cert: cert,
+                tls_key: key,
+                ..config()
+            };
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains("tls_cert"), "{error}");
+            assert!(error.contains("tls_key"), "{error}");
+        }
+    }
+
+    /// The public URL is the promise an invitation makes, so it decides the
+    /// transport: a certificate beside an `http://` URL is not used for the API,
+    /// and an `https://` URL with no certificate stays behind a terminator.
+    #[test]
+    fn tls_is_terminated_only_when_the_public_url_promises_it() {
+        let base = RelayConfig {
+            tls_cert: Some("cert.pem".into()),
+            tls_key: Some("key.pem".into()),
+            ..config()
+        };
+        assert!(
+            !base.terminates_tls(),
+            "http:// public URL keeps the API plaintext"
+        );
+
+        let https = RelayConfig {
+            public_url: "https://relay.example.com".into(),
+            ..base
+        };
+        assert!(https.terminates_tls());
+
+        let no_certificate = RelayConfig {
+            public_url: "https://relay.example.com".into(),
+            tls_cert: None,
+            tls_key: None,
+            ..config()
+        };
+        assert!(!no_certificate.terminates_tls());
     }
 }

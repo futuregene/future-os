@@ -59,7 +59,15 @@
     "searchConversations": "Search conversations",
     "clearSearch": "Clear search",
     "closeSearch": "Close search",
-    "noMatches": "No matching conversations"
+    "noMatches": "No matching conversations",
+    "viewSwitch": "Conversation list view",
+    "viewWorkspace": "Workspaces",
+    "viewRecent": "Recent",
+    "recentActive": "Active",
+    "recentEarlier": "Earlier",
+    "recentShowMore": "Show {{count}} more",
+    "recentJustNow": "just now",
+    "recentActions": "Recent list actions"
   },
   "appShell": {
     "storeInitFailed": "FutureOS local storage failed to initialize: ",

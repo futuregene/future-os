@@ -26,6 +26,7 @@ import { RailRow, RailRowIndicator, RailRowMenuButton, RailRowSpacer, RailRowTit
  */
 export function RemoteConversationRow({
   active,
+  ageLabel,
   compact,
   conversation,
   depth = 0,
@@ -44,6 +45,8 @@ export function RemoteConversationRow({
   unread,
 }: {
   active: boolean;
+  /** How old this conversation is — the recent view's second column. */
+  ageLabel?: string;
   /** Whether this row sits inside a workspace group, as the local row does. */
   compact?: boolean;
   conversation: MergedConversation;
@@ -137,6 +140,11 @@ export function RemoteConversationRow({
             </span>
           )}
       <RailRowSpacer />
+      {/* The age, before the run indicator: the same column the local row puts
+          it in, so a list holding both machines' rows keeps one right edge. */}
+      {ageLabel
+        ? <span className="pointer-events-none shrink-0 text-2xs tabular-nums text-ink-muted">{ageLabel}</span>
+        : null}
       {selectionMode
         ? (
             // The same control, in the same slot, as the local row's: the

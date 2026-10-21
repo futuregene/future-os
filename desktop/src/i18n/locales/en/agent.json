@@ -35,6 +35,10 @@
     },
     "inspectRun": "Click to inspect run"
   },
+  "process": {
+    "show": "Show process",
+    "hide": "Hide process"
+  },
   "thread": {
     "loading": "Loading FutureOS thread...",
     "noActiveThread": "No active thread.",
@@ -185,7 +189,6 @@
     "noSlashMatches": "No matching tools or skills.",
     "skillsSection": "Skills",
     "noSessionMatches": "No matching conversations.",
-    "sessionsSection": "Chats",
     "workspaceSection": "Workspace",
     "compactContext": "Compact",
     "compactContextDescription": "Compact this conversation's context",

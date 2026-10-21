@@ -535,6 +535,44 @@ test("the recency page windows the finished rows and opens the window on request
   renderChatTab();
 });
 
+test("a pinned conversation carries a checkbox on the recency page", () => {
+  // The tree pages lift a pin above their groups, so a batch leaves it out; the
+  // recency page has no such section and draws it as an ordinary row — which is
+  // what makes it part of the list the reader is ticking through.
+  mockRemote.sessions = [
+    { sessionId: "pinned", threadId: "tp", title: "Pinned plan", pinned: true, streaming: false },
+    { sessionId: "plain", threadId: "tq", title: "Plain plan", streaming: false },
+  ];
+  const mount = (tab: "chat" | "recent") => act(() => tree.update(createElement(SessionList, {
+    tab,
+    empty: null,
+    onMenu,
+    onTabChange,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+  })));
+  mount("chat");
+  enterSelection();
+  // On the chat page the pin is a shortcut: no checkbox at all.
+  expect(button("Pinned plan")).toBeUndefined();
+  expect(button("Plain plan")).toBeDefined();
+
+  mount("recent");
+  expect(button("Pinned plan")).toBeDefined();
+  act(() => button("Pinned plan").props.onPress());
+  act(() => button("sessions.selectVisible").props.onPress());
+  expect(tree.root.findAll(node => node.props.children === "sessions.selectedCount:2").length)
+    .toBeGreaterThan(0);
+
+  // Back to the fixture every other test starts from.
+  mockRemote.sessions = [
+    { sessionId: "s1", threadId: "t1", title: "First", streaming: false },
+    { sessionId: "s2", threadId: "t2", title: "Second", streaming: false },
+    { sessionId: "child", threadId: "tc", title: "Child", parentSessionId: "s1", streaming: false },
+  ];
+  renderChatTab();
+});
+
 test("search finds a collapsed child without changing folds", () => {
   expect(button("sessions.actions:Child")).toBeUndefined();
   enterSearch();

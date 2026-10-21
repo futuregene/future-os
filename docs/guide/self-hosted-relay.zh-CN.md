@@ -44,7 +44,7 @@ future relay init --dir /opt/future-relay \
 | `operator.jwt` | nats-server 信任的 operator JWT |
 | `account.jwt` | account JWT，由 resolver 预加载 |
 | `nats.conf` | 可直接使用的 nats-server 配置：operator 模式、内存 resolver、无 JetStream；给了证书就带 TLS |
-| `relay.json` | 中继自身配置 |
+| `relay.json` | 中继自身配置；需要 `serve` 自己终结 TLS 时，里面会带 `tlsCert`/`tlsKey` |
 | `rooms.json` | 首次配对时创建，room 注册表 |
 
 `--tls-cert` 与 `--tls-key` 必须同时给出。不给则生成明文监听配置：HTTP、`ws://`
@@ -55,7 +55,9 @@ future relay init --dir /opt/future-relay \
 凭据响应都宣称了 TLS，桌面端要求 TLS、手机要求 `wss://`，配对必然失败。有证书却
 宣告明文同样被拒绝。如果中继前面另有一层做 TLS 终止（反向代理、负载均衡、service
 mesh），监听本来就应该是明文而对外地址不是：加 `--allow-plaintext-upstream` 跳过
-这条校验。**只有确认前面真的有一层 TLS 终止时才这么用**，否则凭据和元数据是裸奔的。
+这条校验。这个参数也会让证书不写进 `relay.json`，于是 `future relay serve` 不会在
+代理后面再起一层 TLS（见下面「由谁来终结 API 的 TLS」）。**只有确认前面真的有一层
+TLS 终止时才这么用**，否则凭据和元数据是裸奔的。
 
 两个监听端口取自 `--nats-url` / `--nats-ws-url`，因此中继发给客户端的地址就是它
 实际监听的地址。
@@ -94,6 +96,18 @@ API 24 起对普通应用忽略用户安装的 CA，自签或私有 CA 要么装
 `wss://`，官方平台更是始终要求 `https://` + `wss://`。要做公网部署就用公共 CA，
 那条路径完全不受影响。
 
+一份证书会写进每个监听器。`--tls-cert/--tls-key` 在生成的 `nats.conf` 里出现
+**两次**：一次给客户端端口，一次在 `websocket` 块内部——nats-server 不允许
+websocket 流量继承顶层的 `tls`，而声明了 `wss://` 却没有 websocket TLS 配置会
+直接拒绝启动。手工改这个文件时两块都要留；写成空的 `tls {}`（没有证书路径）虽然
+能启动，但每次握手都会被拒，日志是 `tls: no certificates configured`。
+
+私有 CA 会同时覆盖 TLS 部署的两段链路。`--relay-ca` / `FUTURE_RELAY_CA` 给出的
+根证书既追加到 NATS 连接，也追加到注册房间、领取邀请所用的 HTTP 客户端，所以由
+同一个私有 CA 签发的 API 不需要把证书装进操作系统就能用。它是在信任集里**追加**，
+而不是放宽校验：链不到它的证书照样被拒。如果这台机器上还有别的工具需要该根证书，
+macOS 上仍建议把它装进钥匙串。
+
 ## 2. 启动
 
 ```bash
@@ -117,6 +131,23 @@ future relay serve --config /opt/future-relay/relay.json
 桌面端的 client 角色不需要任何特判：换成自建中继只改变请求**发往哪里**，不改变
 请求**说什么**。
 
+### 由谁来终结 API 的 TLS
+
+API 就是 `future relay serve` 自己提供的，所以证书决定了它怎么监听：
+
+| `--public-url` | `relay.json` 里有无证书 | `serve` 的行为 |
+| --- | --- | --- |
+| `https://…` | 有 | 用该证书直接提供 **HTTPS** |
+| `https://…` | 无 | 明文监听，假定前面有 TLS 终结器（启动时会提示） |
+| `http://…` | 有无均可 | 明文监听；证书只用于 NATS 监听器 |
+
+`init` 会把 `--tls-cert/--tls-key` 写进 `relay.json`（`tlsCert`、`tlsKey`），所以最常见的
+情况——一个公开地址、一份证书——根本不需要额外挂反向代理。真正把中继放在反向
+代理后面时，加 `--allow-plaintext-upstream`：此时证书不会写进 `relay.json`，因为
+做 TLS 的是前面那一跳，后面再套一层 TLS 会让每个请求都失败。
+
+证书与私钥不匹配时，`serve` 启动就报错，而不是等到第一次配对。
+
 ## 3. 让桌面端连上它
 
 ```bash
@@ -124,7 +155,7 @@ futureos --relay https://relay.example.com           # GUI
 future headless --relay https://relay.example.com  # 无 GUI 服务器
 ```
 
-地址只对**本次启动**生效，不写任何文件。所以下次不带这个参数启动就回到官方平台——一次调试用的自建中继不会悄悄变成这台机器的长期选择。`--relay ""` 等同于不写这个参数。私有 CA 用 `--relay-ca /path/to/ca.pem`（或环境变量 `FUTURE_RELAY_CA`）追加。
+地址只对**本次启动**生效，不写任何文件。所以下次不带这个参数启动就回到官方平台——一次调试用的自建中继不会悄悄变成这台机器的长期选择。`--relay ""` 等同于不写这个参数。私有 CA 用 `--relay-ca /path/to/ca.pem`（或环境变量 `FUTURE_RELAY_CA`）追加，它同时作用于 NATS 连接和上面那些 relay HTTP 请求（注册房间、领取邀请），所以 `https://` 的 API 也认这个私有 CA，不需要先装进系统钥匙串。
 容器或测试里也可以用环境变量 `FUTURE_RELAY_URL` 直接指定（优先级高于参数，空值表示官方中继）。
 
 自建模式下：

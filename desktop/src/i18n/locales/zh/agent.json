@@ -31,6 +31,10 @@
     },
     "inspectRun": "点击查看运行详情"
   },
+  "process": {
+    "show": "查看过程",
+    "hide": "收起过程"
+  },
   "thread": {
     "loading": "正在加载 FutureOS 对话…",
     "noActiveThread": "没有活动对话。",
@@ -186,7 +190,6 @@
     "noSlashMatches": "没有匹配的工具或技能。",
     "skillsSection": "技能",
     "noSessionMatches": "没有匹配的对话。",
-    "sessionsSection": "对话",
     "workspaceSection": "工作区",
     "compactContext": "压缩",
     "compactContextDescription": "压缩此对话的上下文",

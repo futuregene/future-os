@@ -327,6 +327,27 @@ session-level `session_idx`, a cross-run `run_sequence`, and an `event_id`; GUI
 observers verify by cursor before fanning out (replay dedup, gaps trigger
 reconnect replay), guaranteeing no disorder and no duplicates.
 
+The session scope (`run_id` empty, `epoch = -1`, `session_idx` ordered) is a
+second, never-compacted log: a standalone manual compaction and every settings
+change between runs land there. A newly created observer starts at
+`session_cursor = -1` and therefore reads that log from its beginning — which is
+what makes a cold observer catch up, and also what makes a replayed event look
+identical to a live one. Two consequences are load-bearing:
+
+- The replay lane is narrowed: `compaction_*` is not forwarded to the webview as
+  `agent-event`. A client turns that payload into a transcript divider it
+  appends at the end of the message list, so a replayed copy would draw a
+  compaction from days ago below the newest message — and it disappears on the
+  next thread open, because the transcript already draws that compaction where
+  it happened. Everything else in the whitelist restates a value
+  (`model_changed`, `cwd_changed`, `permission_level_changed`, …) and converges
+  on the last copy, so replaying it is harmless.
+- The NATS mirror (`publish_event`) still publishes replayed events. It has no
+  `event_id` de-duplication, so remote clients may receive the same replayed
+  `compaction_*` sequence. That is an inference from reading the code, not
+  end-to-end verified; treat it as open when working on the phone's compaction
+  markers.
+
 Event types (consistent with the proto vocabulary):
 
 - `agent_start` / `agent_end` — Run lifecycle (`agent_end` carries the
@@ -487,6 +508,19 @@ Notes:
   the Agent was still working on that run (an accepted-but-queued prompt returns
   its invoke response at the ack) is restored, or settled `completed` once the
   Agent has finished it. A user abort and a `completed` row are never re-read.
+- **A conversation the exit interrupted continues on the next launch.** The
+  Agent is embedded, so quitting ends the run it was streaming: its journal keeps
+  a `run_started` with no terminal, `get_run_state` reports it as
+  `interruptedRun`, and the local row is left non-terminal. Once per launch,
+  after the Agent is reachable, `resume_interrupted_runs_at_launch` asks the
+  Agent about each conversation's **newest** run and, only when the answer is
+  that marker (not a live/queued run the watchdog reattaches, not a durable
+  terminal), settles the row `cancelled`+`interrupted` and submits one
+  continuation prompt through the headless pipeline — the same path a prompt
+  from a paired phone takes, with `runs.trigger_message_id = resume:<run id>` so
+  a second pass finds the continuation instead of asking again. Runs older than
+  a week, conversations parked on an approval, and every conversation when the
+  `autoResumeInterrupted` setting is off are skipped.
 - If an approval later produces file changes, Review Changeset shows the actual
   modification comparison.
 - P2 introduces structured `action_payload` and `sandbox_boundary` fields

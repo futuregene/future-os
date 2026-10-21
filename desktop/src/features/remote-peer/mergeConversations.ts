@@ -70,6 +70,16 @@ export interface RemoteSessionRow {
    * event handler is the one place that could.
    */
   lastMessageAt?: number | null;
+  /**
+   * When the conversation was started, as the host reports it.
+   *
+   * Absent on a host that predates the field. The recent view ranks the rows
+   * that are *still running* by it: a run rewrites `lastMessageAt` about once a
+   * second, so ranking by that swaps rows under the reader's thumb, while a
+   * start time does not move. Absent means "unknown", and the view falls back to
+   * recency for that row rather than inventing a start.
+   */
+  createdAt?: number | null;
 }
 
 export interface RemoteCatalog {
@@ -114,6 +124,27 @@ export interface MergedConversation {
   streaming: boolean;
   /** Unix millis, or `null` when the source has no timestamp. */
   lastMessageAt: number | null;
+  /**
+   * When the conversation was started (unix millis), or `null` when unknown.
+   *
+   * This machine's threads always have it; a host's sessions carry it only if
+   * the host is new enough. The recent view orders the running rows by it — a
+   * run's `lastMessageAt` moves about once a second and re-ranked its row under
+   * the reader's thumb — and an absent value falls back to recency there.
+   */
+  createdAt?: number | null;
+  /**
+   * The conversation's latest run state, as the machine that owns it reports it.
+   *
+   * Always `null` for this machine's rows: the rail already holds their run
+   * status per thread (`threadRunStatuses`) and a second copy here could only
+   * disagree with the row's own indicator. A host's rows carry what the host
+   * says, which is what tells the recent view that a run is waiting on the
+   * reader — `waiting_approval` is not streaming, and a view that read
+   * `streaming` alone would file that row under "earlier". Absent on a row whose
+   * machine reports nothing.
+   */
+  runStatus?: string | null;
   mode: "chat" | "workspace";
   /** The remote workspace this session belongs to; `null` for local rows. */
   workspaceId: string | null;
@@ -244,6 +275,10 @@ export function mergeConversations(
         pinned: thread.pinned,
         streaming: false,
         lastMessageAt: localTimestamp(thread),
+        createdAt: thread.createdAt,
+        // This machine's run status is the rail's, per thread; a second copy
+        // here is how two answers to "is this running" come to disagree.
+        runStatus: null,
         mode: thread.mode,
         workspaceId: thread.workspaceId,
         workspaceName: workspaceNames.get(thread.workspaceId) ?? null,
@@ -284,6 +319,8 @@ export function mergeConversations(
         pinned: session.pinned === true,
         streaming: session.streaming === true,
         lastMessageAt: typeof session.lastMessageAt === "number" ? session.lastMessageAt : null,
+        createdAt: typeof session.createdAt === "number" ? session.createdAt : null,
+        runStatus: typeof session.status === "string" ? session.status : null,
         mode: session.mode === "workspace" ? "workspace" : "chat",
         workspaceId: session.workspaceId ?? null,
         workspaceName: session.workspaceName ?? null,

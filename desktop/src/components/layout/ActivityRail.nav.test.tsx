@@ -112,7 +112,11 @@ function buttonByText(container: HTMLElement, text: string) {
  *  order. Discovered from a deliberate mismatch while writing the guard test
  *  below; the trailing two come from that test's workspace/account fixtures.
  */
-const EXPECTED_NAV_ENTRIES = ["New Chat", "Models", "Skills", "Scheduled tasks", "Remote", "Alpha", "Aalice"];
+// The two view-switch entries sit between the standing entries and the list
+// they switch: "Workspaces" and "Recent" are one property of the list, and the
+// switch is drawn in the nav's own column. They are in this set on purpose — the
+// assertion's job is to make every addition here deliberate.
+const EXPECTED_NAV_ENTRIES = ["New Chat", "Models", "Skills", "Scheduled tasks", "Remote", "Workspaces", "Recent", "Alpha", "Aalice"];
 
 beforeEach(() => {
   localStorage.clear();

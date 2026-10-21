@@ -11,7 +11,7 @@ import type { MobileAttachment, RemoteSkill, SessionReferenceMap, SessionReferen
 import { useTheme } from "../../../theme/ThemeContext";
 import { formatBytes } from "../utils";
 import { useComposerCompletion } from "../useComposerCompletion";
-import { sessionMentionGroups } from "../sessionMention";
+import { sessionMentionOptions } from "../sessionMention";
 import type { PendingSuggestion } from "../useSkillRecommendation";
 import type { SlashAction } from "../skillCompletion";
 import { useStopRequest } from "../useStopRequest";
@@ -173,10 +173,10 @@ function ComposerDockView({
     { refs: sessionRefs, remember: rememberSessionRef },
   );
   const pickerHeight = skillPickerHeight(height, keyboardHeight, slashActions.length);
-  // The `#` menu's conversations, filed by workspace — computed here (not in the
-  // picker) so its height can account for the headings it will draw.
-  const sessionGroups = useMemo(
-    () => sessionMentionGroups(
+  // The `#` menu's conversations, newest activity first — computed here (not in
+  // the picker) so its height can account for the rows it will draw.
+  const sessionMentions = useMemo(
+    () => sessionMentionOptions(
       remote.sessions ?? [],
       remote.workspaces ?? [],
       completion.session?.query ?? "",
@@ -187,8 +187,7 @@ function ComposerDockView({
   const sessionHeight = sessionPickerHeight(
     height,
     keyboardHeight,
-    sessionGroups.reduce((count, group) => count + group.sessions.length, 0),
-    sessionGroups.length,
+    sessionMentions.length,
   );
   const maxInputHeight = Math.max(
     INPUT_MIN_HEIGHT,
@@ -258,7 +257,7 @@ function ComposerDockView({
       <View style={styles.composerArea}>
         {completion.session && (
           <SessionPicker
-            groups={sessionGroups}
+            sessions={sessionMentions}
             maxHeight={sessionHeight}
             onClose={completion.close}
             onSelect={completion.selectSession}

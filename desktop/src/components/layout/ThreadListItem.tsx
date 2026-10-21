@@ -6,7 +6,7 @@ import { useTranslation } from "react-i18next";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { ThreadItemMenu } from "./ActivityRailMenus";
-import { RailRow, RailRowIndicator, RailRowMenuButton, RailRowTitle, RailRowTreeToggle } from "./RailRow";
+import { RailRow, RailRowIndicator, RailRowMenuButton, RailRowSpacer, RailRowTitle, RailRowTreeToggle } from "./RailRow";
 
 /**
  * A single sidebar thread row: title, run/unread indicator, and actions menu.
@@ -19,6 +19,7 @@ import { RailRow, RailRowIndicator, RailRowMenuButton, RailRowTitle, RailRowTree
  */
 function ThreadListItemImpl({
   active,
+  ageLabel,
   archived,
   compact,
   depth = 0,
@@ -42,6 +43,16 @@ function ThreadListItemImpl({
   onToggleSelection,
 }: {
   active: boolean;
+  /**
+   * How old this conversation is, e.g. "3 minutes ago" — the recent view's
+   * second column.
+   *
+   * Optional, and absent everywhere the rail draws its tree: that list is
+   * ranked by workspace, where an age on every row is noise that costs the
+   * title its width. It is here rather than in the caller so both views draw the
+   * same row, and a title that truncates does so the same way in both.
+   */
+  ageLabel?: string;
   archived?: boolean;
   compact?: boolean;
   depth?: number;
@@ -117,7 +128,15 @@ function ThreadListItemImpl({
             />
           )
         : null}
-      <RailRowTitle muted={archived}>{displayTitle}</RailRowTitle>
+      <RailRowTitle grow={!ageLabel} muted={archived}>{displayTitle}</RailRowTitle>
+      {ageLabel
+        ? (
+            <>
+              <RailRowSpacer />
+              <span className="pointer-events-none shrink-0 text-2xs tabular-nums text-ink-muted">{ageLabel}</span>
+            </>
+          )
+        : null}
       {archived ? <span className="pointer-events-none shrink-0 text-2xs text-ink-muted group-hover/thread:hidden">{t("activityRail.archived")}</span> : null}
       {selectionMode
         ? (

@@ -226,6 +226,21 @@ Run Event 表示 Run 过程中的结构化事件。
 `run_sequence` 与 `event_id`；GUI 观察者先按游标校验再扇出（重放去重、跳号触发
 重连重放），保证不乱序、不重复。
 
+session 作用域（`run_id` 为空、`epoch = -1`、按 `session_idx` 排序）是第二条日志，
+从不被压实：手动（standalone）压缩与 run 之间的每次设置变更都落在这里。新建的
+观察者从 `session_cursor = -1` 起读，于是一次补读会把这条日志从头读一遍——这既是
+冷启动能追上进度的原因，也正是“重放的事件”与“刚发生的事件”看起来一模一样的原因。
+由此有两条必须知道的结果：
+
+- 补读这条通道被收窄：`compaction_*` 不再以 `agent-event` 扇给 webview。客户端会把
+  这个 payload 变成一条追加在消息列表末尾的分隔线，因此重放的副本会把几天前的压缩
+  画在最新消息后面——而下一次打开会话它就消失，因为转录本身已经在压缩真实发生的
+  位置画了那条分隔线。白名单里其余事件都是**状态陈述**（`model_changed`、
+  `cwd_changed`、`permission_level_changed` 等），最终收敛到最后一份，重放无害。
+- NATS 镜像（`publish_event`）仍然会发布重放事件。它没有 `event_id` 去重，所以远端
+  客户端**可能**收到同一批重放的 `compaction_*`。这是读代码得到的推断，未做端到端
+  验证；动手机的压缩标记时把它当作未定事项。
+
 事件类型（与 proto 词汇表一致）：
 
 - `agent_start` / `agent_end` — Run 生命周期（`agent_end` 携带 error / usage / duration 权威合计）
@@ -345,6 +360,7 @@ Agent 当前审批未决时应停在对应危险操作处等待用户明确允�
 - 批量操作使用 `batch_operation`，用于一组文件写入、批量删除、批量命令或跨多个资源的高风险动作。
 - **产品设计：** workspace 外的普通读取不拦截，也不产生 `outside_workspace_read` 审批；敏感路径仍由不可覆盖的敏感文件守卫按 `file_read` 处理。workspace 外的写入 / 编辑 / 删除继续通过 `outside_workspace_write` 等审批。
 - GUI 或 Agent 重启后遗留的 `pending` 审批**不**无条件取消：启动收敛保留它们，由 `reconcile_pending_approvals`（启动一次 + watchdog 周期）按 Agent `get_state.pendingApprovals` 的权威集合裁决——Agent 仍在等待的保留卡片（run 复活并回到 `waiting_approval`），Agent 已不持有的（在他处已决、已 abort、或 Agent 自身重启丢失）才转为 `cancelled`，本地缺失的可从 Agent payload 重建。非终态 Run 同样不启动即取消，而是经 `reconcile_interrupted_runs` + `reanimate_run` + active-run watchdog 按 Agent 实际状态收敛（GUI 崩溃期间 Agent 可能仍在运行；仅当 Agent 确认 run 已消失才 settle）。GUI 自己 settle 的行——`failed`，或启动收敛的 `cancelled`+`interrupted` 猜测——随后会按同一账本复读：在该 run 仍被 Agent 处理时写下的行（排队提交在 ack 处即返回 invoke 响应）会被复原，或在 Agent 完成后 settle 为 `completed`；用户中止与 `completed` 行永不复读。
+- **退出中断的对话会在下次启动时继续。** Agent 内嵌在应用里，退出即结束正在流式运行的那一轮：日志留下没有终态的 `run_started`，`get_run_state` 把它报为 `interruptedRun`，本地行保持非终态。每次启动、Agent 可达后，`resume_interrupted_runs_at_launch` 对每个对话的**最新** run 询问 Agent，只有得到该标记（不是 watchdog 会重新挂接的活跃/排队 run，也不是持久终态）时，才把该行 settle 为 `cancelled`+`interrupted`，并经 headless 管道提交一条继续指令——与手机发来的 prompt 同一条路径，`runs.trigger_message_id = resume:<run id>` 让第二次遍历找到已有续跑而不是重复提问。超过一周的 run、停在审批上的对话，以及关闭 `autoResumeInterrupted` 设置时的所有对话都不处理。
 - 如果审批通过后产生文件变更，再由 Review Changeset 展示实际修改对比。
 - P2 引入结构化 `action_payload` 和 `sandbox_boundary` 字段（设计细节见 git history，原 `P2_APPROVAL_MODEL.md`）。
 - **v2（审批规则重构，2026-07-04）**：常规审批对象收敛为**文件路径访问**，规则改为**文件式**（`${WS}/.future/approval_rule.json`、`~/.future/approval_rule.json`，agent 直接读）；手动 shell 与 macOS/Linux escalation 仍是整命令审批，完整语义见 [SANDBOX/COMMON.zh-CN.md](SANDBOX/COMMON.zh-CN.md)。相应地：

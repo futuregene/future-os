@@ -20,6 +20,15 @@ import type { CatalogRow } from "./sessionTree";
  * blocked on a question is the one place a reader is being waited on, and it
  * is *not* streaming, so a page that read `streaming` alone would file it under
  * "earlier" and make them hunt for it.
+ *
+ * The two stretches are ordered by different clocks, on purpose. "Earlier" is
+ * ordered by the last reply, which is the question that page answers. "Active"
+ * is ordered by when each conversation *started*: a streaming run rewrites the
+ * last-reply stamp about once a second, so ranking the running ones by it made
+ * rows swap places under the reader's thumb while a handful of runs took turns
+ * producing output. A start time does not move, so a row keeps its place for the
+ * whole run and a row joining or leaving the stretch is the only thing that
+ * shifts the others.
  */
 
 /** Run states that mean "this conversation is not done yet". */
@@ -43,13 +52,38 @@ export function isActiveSession(row: MergedSessionRow): boolean {
   return status !== undefined && ACTIVE_STATUSES.has(status);
 }
 
-/** Newest reply first; a row with no stamp sorts below every dated row. */
-function byRecency(a: MergedSessionRow, b: MergedSessionRow): number {
-  const at = a.lastMessageAt ?? Number.NEGATIVE_INFINITY;
-  const bt = b.lastMessageAt ?? Number.NEGATIVE_INFINITY;
-  if (at !== bt) return bt - at;
+/** Newest first on one stamp; a row without it sorts below every dated row. */
+function byStamp(
+  at: number | null,
+  bt: number | null,
+  a: MergedSessionRow,
+  b: MergedSessionRow,
+): number {
+  const left = at ?? Number.NEGATIVE_INFINITY;
+  const right = bt ?? Number.NEGATIVE_INFINITY;
+  if (left !== right) return right - left;
   return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
 }
+
+/** Newest reply first — the "earlier" stretch's order. */
+const byRecency = (a: MergedSessionRow, b: MergedSessionRow): number =>
+  byStamp(a.lastMessageAt, b.lastMessageAt, a, b);
+
+/**
+ * Newest conversation first — the "active" stretch's order.
+ *
+ * Its own start time, not its activity. A desktop older than that field sends
+ * none, and there the last-reply stamp is the closest thing to a stable order
+ * available: a run's stamp moves, but a client with no other key must still
+ * draw the rows somehow, and recency is what every other page uses.
+ */
+const byCreation = (a: MergedSessionRow, b: MergedSessionRow): number =>
+  byStamp(
+    a.session.createdAt ?? a.lastMessageAt,
+    b.session.createdAt ?? b.lastMessageAt,
+    a,
+    b,
+  );
 
 function sessionRow(row: MergedSessionRow, section: "active" | "earlier"): CatalogRow {
   return {
@@ -95,7 +129,7 @@ export function recentRows(
     || row.session.title.toLocaleLowerCase().includes(search)
     || (row.session.workspaceName ?? "").toLocaleLowerCase().includes(search);
   const listed = rows.filter(matches);
-  const active = listed.filter(isActiveSession).sort(byRecency);
+  const active = listed.filter(isActiveSession).sort(byCreation);
   const earlier = listed.filter(row => !isActiveSession(row)).sort(byRecency);
   if (search)
     return {
