@@ -62,6 +62,12 @@ pub enum Error {
     /// account fault the user can fix rather than a local one to retry.
     #[error("Not signed in to FutureOS.")]
     NotSignedIn,
+    /// Another process holds this data root's Agent instance lock. Typed so the
+    /// supervision loop can treat it as "yield and wait" instead of a fault:
+    /// the holder is starting or serving the Agent, and starting a second one
+    /// is exactly what the lock forbids.
+    #[error("{0}")]
+    AgentBusy(String),
     #[error("{0}")]
     Message(String),
 }

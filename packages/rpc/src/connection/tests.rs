@@ -100,9 +100,15 @@ fn occupied_lock_reports_the_owner_identity_from_metadata() {
     let guard = owner.try_write().unwrap();
 
     let error = check_instance_lock(home.path()).expect_err("occupied");
+    // A held lock is a yield signal, not a fault: supervision waits for the owner
+    // instead of reporting a failure, so this is `InstanceBusy` by type.
+    assert!(
+        error.is_instance_busy(),
+        "an occupied lock must classify as InstanceBusy, got: {error}"
+    );
     let message = match error {
-        ConnectionError::StartupBlocked(reason) => reason,
-        other => panic!("expected StartupBlocked, got: {other}"),
+        ConnectionError::InstanceBusy(reason) => reason,
+        other => panic!("expected InstanceBusy, got: {other}"),
     };
     assert!(message.contains("already running"), "{message}");
     assert!(message.contains("pid 4242"), "{message}");

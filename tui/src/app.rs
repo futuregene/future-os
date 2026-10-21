@@ -9481,7 +9481,7 @@ impl<T: TerminalIo> App<T> {
             self.chat.add_message(ChatMessage::new(
                 random_id(),
                 ChatRole::System,
-                "⚠️  Connection to agent lost — retrying every 1s...",
+                "⚠️  Connection to agent lost — reconnecting; the agent is restarted automatically if it is gone...",
             ));
         } else {
             self.chat.add_message(ChatMessage::new(

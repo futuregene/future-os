@@ -1938,7 +1938,7 @@ mod tests {
     /// event (`if (connectWatchdog) { clearTimeout(...) }`), never re-arms it.
     /// A port that re-armed the watchdog on every event flapped the
     /// connection every 5 s on an idle TUI (PTY smoke test found:
-    /// "Connection to agent lost — retrying every 1s..." right after the
+    /// "Connection to agent lost — reconnecting; …" right after the
     /// welcome screen, before any input).
     #[tokio::test(flavor = "multi_thread")]
     async fn idle_stream_does_not_flap_after_first_data() {

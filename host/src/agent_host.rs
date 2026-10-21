@@ -83,6 +83,21 @@ impl AgentHost {
     pub fn owns_agent(&self) -> bool {
         self.0.state.lock().unwrap().owned
     }
+
+    /// Give up an Agent this host only *attached* to, so a later [`Self::start`]
+    /// probes and possibly launches again.
+    ///
+    /// Refused while this host owns the Agent: an owned service holds the
+    /// instance lock until a full stop, and pretending otherwise would let a
+    /// second process start one. Returns whether the host changed state.
+    pub fn detach_attached(&self) -> bool {
+        let mut state = self.0.state.lock().unwrap();
+        if state.owned || state.phase != Phase::Ready {
+            return false;
+        }
+        state.phase = Phase::Stopped;
+        true
+    }
     pub fn activity(&self) -> Result<Option<future_agent::service::AgentActivity>, crate::Error> {
         let state = self.0.state.lock().unwrap();
         if !state.owned {
@@ -143,11 +158,17 @@ impl AgentHost {
                                 .unwrap_or_else(|_| Err("Embedded Agent worker panicked".into()));
                             let mut state = host.0.state.lock().unwrap();
                             if !matches!(state.phase, Phase::Failed(_)) {
+                                // A busy instance lock is a yield, not a fault: the
+                                // holder owns the Agent, so this process returns to
+                                // `Stopped` and may try again once that owner
+                                // releases it. Only a real failure is terminal.
+                                let busy = matches!(&result, Err(crate::Error::AgentBusy(_)));
                                 state.phase = match result {
                                     Ok(()) if !state.owned && state.phase == Phase::Ready => {
                                         Phase::Ready
                                     }
                                     Ok(()) => Phase::Stopped,
+                                    Err(_) if busy => Phase::Stopped,
                                     Err(error) => Phase::Failed(error.to_string()),
                                 };
                             }
