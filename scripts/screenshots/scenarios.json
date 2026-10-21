@@ -5321,6 +5321,34 @@
             "shot": "m-recent-window-open.png"
           }
         ]
+      },
+      "recent-new-conversation": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "var body=document.body.innerText;if(body.includes('还没有对话')) throw new Error('a conversation was created without asking');'a11y: nothing created yet'"
+          },
+          {
+            "tap": "新对话"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "var radios=[...document.querySelectorAll('[role=radio]')];if(radios.length<3) throw new Error('the chooser is missing: '+radios.length+' radios');var kinds=radios.slice(0,2).map(r=>(r.textContent||'').trim());if(JSON.stringify(kinds)!=='[\"工作区\",\"对话\"]')  throw new Error('the two answers are not workspace-then-chat: '+JSON.stringify(kinds));var workspaces=radios.slice(2).map(r=>(r.textContent||'').trim());if(!workspaces.includes('多巴胺与决策'))  throw new Error('the workspace list is not behind the workspace answer: '+JSON.stringify(workspaces));'a11y: workspace-then-chat, workspace list drawn — the workspace answer is in force'"
+          },
+          {
+            "shot": "m-recent-newconv.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label=\"稍后再说\"]') || document.body.innerText.includes('工作区')",
