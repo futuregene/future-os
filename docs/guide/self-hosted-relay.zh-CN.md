@@ -158,7 +158,7 @@ API 就是 `future relay serve` 自己提供的，所以证书决定了它怎么
 
 ```bash
 futureos --relay https://relay.example.com           # GUI
-future headless --relay https://relay.example.com  # 无 GUI 服务器
+future host --relay https://relay.example.com  # 无 GUI 服务器
 ```
 
 地址只对**本次启动**生效，不写任何文件。所以下次不带这个参数启动就回到官方平台——一次调试用的自建中继不会悄悄变成这台机器的长期选择。`--relay ""` 等同于不写这个参数。私有 CA 用 `--relay-ca /path/to/ca.pem`（或环境变量 `FUTURE_RELAY_CA`）追加，它同时作用于 NATS 连接和上面那些 relay HTTP 请求（注册房间、领取邀请），所以 `https://` 的 API 也认这个私有 CA，不需要先装进系统钥匙串。
@@ -166,7 +166,7 @@ future headless --relay https://relay.example.com  # 无 GUI 服务器
 
 自建模式下：
 
-* 远程控制不需要 FutureOS 登录，`future headless` 直接跳过登录门槛；
+* 远程控制不需要 FutureOS 登录，`future host` 直接跳过登录门槛；
 * 桌面端自己生成 pair id、Noise 身份、邀请 PSK 和 join token；
 * 邀请是 `futureos://remote/pair?v=3`。其 payload 仍保持官方 v2 的形状（所以
   claim 路径不变），并额外带 `relay`——即 claim 端点所属的 origin；

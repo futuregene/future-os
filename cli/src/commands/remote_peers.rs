@@ -22,7 +22,7 @@
 //!   handshake identity, whatever a newer Desktop adds) survive an edit, and so
 //!   nothing here can print a credential by accident.
 //! * **A live connection** exists only inside the Desktop process (the window,
-//!   or `future headless`): connect, disconnect and the user's own "stopped"
+//!   or `future host`): connect, disconnect and the user's own "stopped"
 //!   mark are all in that process's memory. So `connect`, `disconnect`,
 //!   `takeover` and `remove` ask the running Desktop through the same
 //!   request/reply files `future remote devices` uses ([`super::remote`]
@@ -695,7 +695,7 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
         out.log("The Desktop running here keeps it connected from now on.");
     } else {
         out.log("No Desktop is running: the pairing is stored, and it connects when one starts");
-        out.log("(the window; a headless host serves devices but does not drive other desktops).");
+        out.log("(the window; a host serves devices but does not drive other desktops).");
     }
     Ok(())
 }

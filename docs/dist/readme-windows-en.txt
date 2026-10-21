@@ -12,7 +12,7 @@ future.exe remains available for skills, maintenance and independent CLI use.
 · SmartScreen reputation warnings can occur even on signed builds. Verify the
   official source/publisher first; choose "More info" → "Run anyway" only for
   a trusted artifact. Do not bypass an unexpected signature/publisher mismatch.
-· For an incompatible backend or held instance lock, identify GUI/headless or
+· For an incompatible backend or held instance lock, identify GUI/host or
   independently managed Agents using the same data root. Exit or upgrade the
   owner, then reopen. Never delete the lock. Desktop does not start a second
   Agent when an external service is incompatible or its lock owner unavailable.

@@ -35,7 +35,7 @@ fn help_and_invalid_arguments_have_no_startup_side_effects() {
     ] {
         let invalid = desktop(home.path()).args(args).output().unwrap();
         assert_eq!(invalid.status.code(), Some(1));
-        assert!(String::from_utf8_lossy(&invalid.stderr).contains("future headless"));
+        assert!(String::from_utf8_lossy(&invalid.stderr).contains("future host"));
         assert!(invalid.stdout.is_empty());
         assert!(!home.path().join(".future").exists());
     }
@@ -57,6 +57,6 @@ fn gui_free_build_points_to_standalone_entrypoint() {
     let home = tempfile::tempdir().unwrap();
     let result = desktop(home.path()).output().unwrap();
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("future headless"));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("future host"));
     assert!(!home.path().join(".future").exists());
 }

@@ -36,7 +36,7 @@
 | 项目 | 当前状态 | 执行入口/范围 | 完成时必须保留 |
 |---|---|---|---|
 | R01 固定版本与发行候选 | unsigned 候选已固定；签名/最终发行身份待确认 | 固定完整 SHA、版本/渠道、工具链、features、各 target 与 runner；记录 Mobile 构建身份 | 候选清单、源码树身份、版本 JSON、构建 run、产物 SHA-256 |
-| R02 CLI-only 与 Desktop sidecar | unsigned 实际包通过；Windows/macOS CLI-only archive 未覆盖 | [Linux](../../.github/workflows/build-linux.yaml)、[Windows](../../.github/workflows/build-windows-signed.yml)、[macOS](../../.github/workflows/build-macos-signed.yml)；检查独立 CLI 包和 GUI 包内的同版本 CLI | 包内容清单；仅 CLI 安装即可运行完整 `future headless`；不包含或依赖 `futureos-headless` |
+| R02 CLI-only 与 Desktop sidecar | unsigned 实际包通过；Windows/macOS CLI-only archive 未覆盖 | [Linux](../../.github/workflows/build-linux.yaml)、[Windows](../../.github/workflows/build-windows-signed.yml)、[macOS](../../.github/workflows/build-macos-signed.yml)；检查独立 CLI 包和 GUI 包内的同版本 CLI | 包内容清单；仅 CLI 安装即可运行完整 `future host`；不包含或依赖 `futureos-headless` |
 | R03 Linux musl 与旧系统 | 双架构 musl、Rocky 8 无网络 smoke 通过 | x86_64/aarch64 musl CLI、独立 GNU GUI、deb/portable；既有无网络旧 Rocky 8 smoke | 实际 ELF 静态/NEEDED 结果、旧 Linux 启动/首次非交互拒绝日志 |
 | R04 Windows 签名 | unsigned 包/安装器回归通过，系统签名由用户后验 | 既有 Authenticode 流程：staged CLI/sidecar、GUI、NSIS/portable 及更新载荷 | 每个实际文件签名/时间戳/证书验证、版本与摘要；无证书时保留待验，不能用 unsigned 代替 |
 | R05 macOS 签名与公证 | unsigned 包/恢复逻辑通过，签名公证由用户后验 | arm64/x86_64 的 app、内置 CLI、DMG、updater archive；Developer ID、entitlements、公证及 stapling | codesign、notarytool 受理结果/诊断、stapler/Gatekeeper 验证与包摘要 |

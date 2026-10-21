@@ -4,7 +4,7 @@
 //! A device can only be *added* by the process that will serve it: the invitation
 //! carries a single-use secret and the pair-scoped credential, and the bridge for
 //! that pairing has to be up when the phone scans. That process is whichever
-//! Desktop owns this data directory — the window, or `future headless` — so the
+//! Desktop owns this data directory — the window, or `future host` — so the
 //! request travels to it as a file and the answer comes back as one.
 //!
 //! A device can only be *removed immediately* by that same process, for the mirror
@@ -457,16 +457,16 @@ fn strip_userinfo(url: &str) -> String {
 impl Reply {
     /// The answer for a request that produced this status.
     ///
-    /// The invitation is extracted by the same rule the headless entry point
-    /// prints by (`headless::invitation_link`), not a second opinion: a link that
-    /// rule refuses (expired, or not a v2 invitation) is not one to hand a
-    /// terminal either.
+    /// The invitation is extracted by [`super::invitation_link`], which judges a
+    /// code only by whether it can still be scanned: a link that rule refuses
+    /// (expired, or not a v2 invitation) is not one to hand a terminal either.
     ///
-    /// Deliberately not `headless::pairing_link`: that also requires the Agent
-    /// availability probe, which starts with the bridge and cannot have answered
-    /// yet. A freshly minted code is valid and scannable regardless, and gating
-    /// the answer on the probe reported "no invitation" for one the user could
-    /// already use.
+    /// Deliberately no Agent-availability gate on top of it. That probe starts
+    /// with the bridge and cannot have answered yet when a request is served, and
+    /// a freshly minted code is valid and scannable regardless — gating the answer
+    /// on it reported "no invitation" for one the user could already use. Whether
+    /// the Agent is ready changes what a paired device can do, not whether the
+    /// invitation works.
     pub(crate) fn of_status(status: &crate::remote::RemoteStatus) -> Self {
         match super::invitation_link(status) {
             Some(link) => Self {

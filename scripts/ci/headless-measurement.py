@@ -195,7 +195,7 @@ def main():
                 host = target_dir / target / 'release/futureos-headless'
                 host_args = []
             else:
-                host, host_args = cli, ['headless']
+                host, host_args = cli, ['host']
             revision['headlessBinary'] = {'bytes': host.stat().st_size, 'sha256': digest(host),
                                           'argsPrefix': host_args}
             samples = []

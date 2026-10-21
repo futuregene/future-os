@@ -1,6 +1,6 @@
 //! TUI Agent lifecycle: attach, host in-process, and keep watching.
 //!
-//! The TUI runs the Agent in its own process, the same way `future headless` and
+//! The TUI runs the Agent in its own process, the same way `future host` and
 //! the desktop do. Only the unified `future` binary may do so (see
 //! [`crate::agent_host::hostable`]); the standalone `future-tui` binary attaches to
 //! an Agent somebody else started and reports why it cannot host one.

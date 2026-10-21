@@ -101,8 +101,8 @@ def main():
                     # Every Linux CLI distribution promises a static musl binary.
                     dynamic = run(f"{name}-cli-linkage", ["readelf", "-d", directory / "future"])
                     require("NEEDED" not in dynamic, f"{name} CLI is dynamically linked")
-                    probe(f"{name}-headless-help", directory / "future", ["headless", "--help"],
-                          "Usage: future headless", home)
+                    probe(f"{name}-headless-help", directory / "future", ["host", "--help"],
+                          "Usage: future host", home)
                     require(not (directory / "futureos-headless").exists(),
                             f"{name} still ships the retired standalone headless executable")
                     run(f"{name}-headless-old-glibc", ["bash", "scripts/ci/check-headless-linux.sh",
@@ -147,8 +147,8 @@ def main():
                             run(f"{name}-headless-artifact", [sys.executable,
                                 "scripts/ci/check-headless-artifact.py", binary,
                                 "--output", args.output / f"{name}-headless-artifact.json"], timeout=60)
-                            probe(f"{name}-headless-help", binary, ["headless", "--help"],
-                                  "Usage: future headless", home)
+                            probe(f"{name}-headless-help", binary, ["host", "--help"],
+                                  "Usage: future host", home)
                             probe(f"{name}-agent-help", binary, ["agent", "--help"],
                                   "--reset-windows-sandbox", home)
             summary["status"] = "passed"

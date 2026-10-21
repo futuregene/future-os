@@ -4,7 +4,7 @@
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
 	check-docs test-docs-check \
-	run-agent run-tui run-cli run-headless run-desktop run-mobile-android run-mobile-ios run-channels run-goal \
+	run-agent run-tui run-cli run-host run-headless run-desktop run-mobile-android run-mobile-ios run-channels run-goal \
 	profile-agent-build profile-agent profile-quick profile-heap \
 	generate-models generate-proto \
 	install install-cli install-desktop install-desktop-headless install-skills update-skills uninstall package-desktop clean setup
@@ -54,7 +54,7 @@ CARGO_PINNED := rustup run $(RUST_TOOLCHAIN) cargo
 # The unified `future` CLI embeds agent/tui/channel/goal; the desktop bundles
 # it for CLI tools and maintenance; Desktop hosts Agent in process by default.
 # Standalone component binaries are dev-only. Full installs put `future` and
-# `futureos` in PREFIX; `future headless` runs the shared backend inside the CLI.
+# `futureos` in PREFIX; `future host` runs the shared backend inside the CLI.
 
 # One-time developer bootstrap for a fresh clone. Installs the workspace JS
 # deps (shared packages, desktop, mobile) and the skills submodule,
@@ -185,7 +185,7 @@ build-desktop:
 	$(call npm-install-if-needed,desktop)
 	cd desktop && npm run tauri:build -- --no-bundle
 
-# Compatibility target: GUI-free `future headless`, with no npm/Tauri build.
+# Compatibility target: GUI-free `future host`, with no npm/Tauri build.
 build-desktop-headless:
 	$(CARGO_PINNED) build --release -p future-cli --bin future
 
@@ -286,8 +286,11 @@ run-tui:
 run-cli:
 	cd cli && cargo run
 
-run-headless:
-	$(CARGO_PINNED) run -p future-cli --bin future -- headless $(ARGS)
+# `run-host` is the name; `run-headless` is kept as an alias for muscle memory.
+run-host:
+	$(CARGO_PINNED) run -p future-cli --bin future -- host $(ARGS)
+
+run-headless: run-host
 
 run-channels:
 	cd channels && cargo run
@@ -434,7 +437,7 @@ endif
 
 help:
 	@echo "  build / build-cli / build-desktop   Build desktop + unified CLI (or each part)"
-	@echo "  run-headless                      Run future headless in the foreground (ARGS=...)"
+	@echo "  run-host                          Run future host in the foreground (ARGS=...; alias run-headless)"
 	@echo "  build-desktop-headless             Build GUI-free CLI with headless"
 	@echo "  build-mobile-android / -ios         Build & install the mobile app (Expo)"
 	@echo "  test                                All unit tests (Rust crates + desktop + mobile)"

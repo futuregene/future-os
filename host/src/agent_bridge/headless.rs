@@ -4,7 +4,7 @@
 //! `handleSend` applies (CAS-guarded status writes; a stream that closes before
 //! `agent_end` persists the partial text but fails the run). Keeping this in
 //! `agent_bridge` means the finalization contract lives in one backend place —
-//! remote (phone) prompts and any future headless path must not re-implement it.
+//! remote (phone) prompts and any future host path must not re-implement it.
 
 use super::AttachmentInput;
 use crate::store;

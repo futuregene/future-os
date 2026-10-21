@@ -7,7 +7,7 @@ use std::process::{Command, Stdio};
 fn headless(home: &Path) -> Command {
     {
         let mut command = isolated_command(env!("CARGO_BIN_EXE_future"), home);
-        command.arg("headless");
+        command.arg("host");
         command
     }
 }
@@ -39,7 +39,7 @@ fn standalone_help_and_invalid_arguments_have_no_startup_side_effects() {
         // The usage line names every flag the entry point accepts; asserting a
         // prefix keeps the test about "help was printed" rather than about the
         // exact option list.
-        assert!(String::from_utf8_lossy(&help.stdout).contains("Usage: future headless"));
+        assert!(String::from_utf8_lossy(&help.stdout).contains("Usage: future host"));
         assert!(!home.path().join(".future").exists());
     }
     for arg in ["--headless", "--gui", "--unknown", "-psn_123"] {
@@ -70,7 +70,7 @@ fn relay_flags_are_accepted_in_both_spellings() {
         let home = tempfile::tempdir().unwrap();
         let help = headless(home.path()).args(&args).output().unwrap();
         assert!(help.status.success(), "{args:?}");
-        assert!(String::from_utf8_lossy(&help.stdout).contains("Usage: future headless"));
+        assert!(String::from_utf8_lossy(&help.stdout).contains("Usage: future host"));
     }
     // A flag without its value is an error, not a silent no-op.
     for args in [vec!["--relay"], vec!["--relay-ca"]] {

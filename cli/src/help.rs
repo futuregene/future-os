@@ -32,14 +32,14 @@ Apps (run the FutureOS components — same as their standalone binaries):
   tui       Launch the terminal UI (future-tui)
   channel   Start the IM channel bridge (future-channel)
   goal      Goal control plane: goals/todos/gates (future-goal)
-  headless  Foreground application host for mobile remote access
+  host      Foreground host: this machine as a remote desktop for your devices
   relay     Self-hosted, account-free NATS relay for remote control
 
 Quick start:
   future init                                Initialize Future OS
   future config                              Configure a model provider
   future auth login                          Sign in to the Future platform
-  future headless                            Start the foreground application host
+  future host                                Start the foreground host
   future agent                               Start the agent server
   future tui                                 Launch the terminal UI
   future run "Explain this project"          One-shot agent prompt
@@ -48,7 +48,7 @@ Quick start:
   future doctor                              Check everything is working
 
 Run 'future <group> --help' for per-group details.
-  future headless --help     Foreground host, login and pairing
+  future host --help         Foreground host, login and pairing
   future init --help         Initialization behavior
   future config --help       Interactive model-provider setup
   future desktop --help      Desktop app settings
@@ -311,7 +311,7 @@ serves again after a restart. Run `future remote status --help` for its fields,
 its --json document and its exit codes.
 
 enable and disable are that switch, from a terminal: they take effect at once
-when a Desktop is running (the window, or `future headless`) and are stored for
+when a Desktop is running (the window, or `future host`) and are stored for
 the next launch either way, so neither needs a restart.
 
 Every action takes --json and prints the same document `future remote devices
@@ -319,7 +319,7 @@ Every action takes --json and prints the same document `future remote devices
 expiresAt).
 
 A device is a phone or another computer that paired with this machine's remote
-desktop — the Remote page in the window, or future headless. The list reads the
+desktop — the Remote page in the window, or future host. The list reads the
 pairing book the Desktop itself reads (~/.future/remote_pairings.json), and use
 writes it, so neither needs a running Desktop; a self-hosted relay needs no
 account either.
@@ -328,11 +328,12 @@ add, remove and use are the exceptions to "the book is enough", because the
 Desktop is what actually serves a device. An invitation is only usable while the
 bridge for that pairing is connected, and a removal only takes effect *now* if
 that bridge is stopped — so both ask the running Desktop (the window, or future
-headless) and carry its answer back. use asks it too: control is an in-memory
+host) and carry its answer back. use asks it too: control is an in-memory
 pointer in that process, so handing the machine over is what makes the choice
 take effect before the next restart. With no Desktop running, remove and use edit
-the book itself, which is what the next start reads. A machine with no device at
-all prints an invitation as the Desktop starts.
+the book itself, which is what the next start reads. Nothing pairs a device by
+itself: `add` is the only command that mints an invitation, so a machine with an
+empty book stays unmatched until somebody runs it.
 
 Self-hosted relays work the same way, and a machine may hold an official device
 and a self-hosted one at the same time: `list` names each device's endpoint, and
@@ -386,7 +387,7 @@ Usage:
 Two facts, printed separately because they are different facts:
 
   Remote desktop      Whether this machine is serving its devices right now.
-                      Only a running Desktop (the window, or `future headless`)
+                      Only a running Desktop (the window, or `future host`)
                       can answer; with none running this reads "off — no
                       Desktop is running for this machine".
   Saved switch        autoConnectRemote, the same value the window's Remote page
@@ -399,7 +400,7 @@ name when it declared one, and where it was minted (the Future platform, or a
 self-hosted relay).
 
 --json prints one object:
-  desktopRunning             a Desktop owns this data directory (window or headless)
+  desktopRunning             a Desktop owns this data directory (window or host)
   state                      off | unknown | on | connecting | serving | degraded |
                              failed | revoked — the word to test in a script
   phase                      the Desktop's own phase, or null when it did not answer
@@ -441,7 +442,7 @@ Usage:
 Turns on the same switch the window's Remote page has, and stores it: the
 machine keeps serving its paired devices at the next launch.
 
-With a Desktop running (the window, or `future headless`) it takes effect
+With a Desktop running (the window, or `future host`) it takes effect
 immediately — the request goes to that process, which starts the bridge, so
 nothing has to be restarted. With none running there is no bridge to start: the
 switch is stored, the command says so, and it exits 1 because the machine is not
@@ -469,7 +470,7 @@ machine does not serve again at the next launch.
 
 With a Desktop running it takes effect immediately — the bridge is stopped, and a
 connected device is told the machine went away, so nothing has to be restarted. A
-headless entry keeps running (it is the machine's control endpoint) and waits to
+host entry keeps running (it is the machine's control endpoint) and waits to
 be enabled again. With none running there is nothing to stop: the switch is
 stored, and that is the whole answer.
 
@@ -493,10 +494,10 @@ Add device and scan it, or paste the complete link. The same invitation is also
 on the Remote page while it lasts.
 
 The invitation is minted by the running Desktop, which is the only process that
-can serve the new device, so this needs one: a window, or future headless. With
-none running, the answer is "start the Desktop" — and a machine with no device at
-all prints an invitation as it starts, which is also the recovery path after
-`remove --all`.
+can serve the new device, so this needs one: a window, or future host. With
+none running, the answer is "start the Desktop" — this is the one command that
+pairs a machine, and it is also how a book emptied by `remove --all` gets a first
+device back.
 
 The invitation is whatever the Desktop is configured to mint: an official
 `v=2` link, or a self-hosted relay's `v=3` one. Relay mode needs no FutureOS
@@ -587,7 +588,7 @@ window's "Let this control" writes and the runtime restores at start. Control
 moves the way an explicit takeover moves it, so the previous controller is no
 longer allowed to command this machine.
 
-With a Desktop running (the window, or future headless) it also asks that Desktop
+With a Desktop running (the window, or future host) it also asks that Desktop
 to hand the machine over now, which is what makes the change immediate: control is
 an in-memory pointer there, and only a takeover — the same one a phone performs —
 moves it. Publishing the new controller and standing the previous one down is the
@@ -640,7 +641,7 @@ invitation it offers for connecting another computer, and paste the whole link
 here. The pairing is stored and this command connects once, so the answer is
 whether it works rather than whether it was written down. A running Desktop then
 keeps it connected; with none running it connects the next time one starts (the
-window - a headless host serves devices but does not drive other desktops).
+window - a host serves devices but does not drive other desktops).
 
 Everything else reads the book, and connect, disconnect, takeover and remove also
 ask the running Desktop, because a live connection, this machine's control state
@@ -698,7 +699,7 @@ With no Desktop running every row reads "not connected", because that is the
 truth: a connection lives in that process.
 
 --json prints one object:
-  desktopRunning   a Desktop owns this data directory (window or headless)
+  desktopRunning   a Desktop owns this data directory (window or host)
   answered         that Desktop reported its connections
   peers[]          desktopId, pairId, name, icon, connected, stopped, error,
                    agentAvailable, control, holder - all null when nothing
@@ -724,7 +725,7 @@ expired one is refused, and a fresh link from the other machine is the only fix.
 On success the pairing is stored in ~/.future/remote_peers.json and this command
 connects once, so a broken pairing is reported now instead of at the next start.
 A running Desktop keeps it connected from then on; with none running it connects
-when one starts (the window; a headless host does not drive other desktops).
+when one starts (the window; a host does not drive other desktops).
 
 --json prints {desktopRunning, paired}, where paired is one peer row as
 `future remote peers list --json` prints it."#;
@@ -886,7 +887,7 @@ Reading a run:
   the conversation), and `feedback` records your verdict on a run.
 
 Execution:
-  Runs are executed by the desktop (or headless desktop) tick loop, not by
+  Runs are executed by the desktop (or host) tick loop, not by
   this CLI. `future task run` queues a request; the next tick picks it up.
   `--wait` blocks until the run reaches a terminal state and prints its
   status, thread/session ids, and result summary.

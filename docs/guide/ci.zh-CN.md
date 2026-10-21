@@ -30,7 +30,7 @@ iOS 的 Foundation 测试不代表 Simulator UI/E2E 覆盖。
 Rust 组的 Build 使用 `cargo test --locked --no-run` 编译测试目标，
 Tests 使用相同的包选择和 profile 执行测试，不再先跑一次独立的 dev-profile 构建。
 文档测试仍可能在 Tests 中编译示例。Desktop 只预编译默认 GUI 测试目标，
-其中 `desktop_entry` 验证参数与启动副作用；真正的 `future headless` 进程测试归 CLI。
+其中 `desktop_entry` 验证参数与启动副作用；真正的 `future host` 进程测试归 CLI。
 关闭 GUI 的 Desktop 入口兼容性测试与 Clippy 只在 Misc 的 `desktop-entry-compat` 中运行。
 常规 CI 不执行独立产品或 CLI/GUI 联合构建；打包和签名归发布工作流负责。
 

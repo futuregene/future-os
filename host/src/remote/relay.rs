@@ -74,7 +74,7 @@ pub struct RelayLaunch {
 
 /// `None` until a launch applies its flags. A `Mutex` rather than a `OnceLock`
 /// because both entry points apply the same parsed flags (the GUI from
-/// `launch.rs`, `future headless` from its own parser): identical values must be
+/// `launch.rs`, `future host` from its own parser): identical values must be
 /// harmless rather than an "already set" error.
 static LAUNCH: std::sync::Mutex<Option<RelayLaunch>> = std::sync::Mutex::new(None);
 
@@ -104,7 +104,7 @@ fn launch() -> RelayLaunch {
 /// Apply the entry's parsed relay options before reading pairing state.
 ///
 /// Called by both entry points, so the choice means the same thing whether it
-/// arrived on the GUI's command line or through `future headless`. Nothing is
+/// arrived on the GUI's command line or through `future host`. Nothing is
 /// written down: these flags decide where *this launch* mints its invitations,
 /// and a launch that names no relay uses the Future platform for new pairings.
 /// Existing pairings keep the relay that issued them either way, which is why an

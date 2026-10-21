@@ -31,7 +31,7 @@ BUILD_CLI=0 make run-desktop
 
 ```bash
 cd /Volumes/ZHITAI/Workspace/future-os
-./target/debug/future headless
+./target/debug/future host
 ```
 
 在另一终端查看设备：
@@ -48,9 +48,9 @@ cd /Volumes/ZHITAI/Workspace/future-os
 | ID | 平台/准备 | 操作步骤 | 预期结果 | 当前结果 |
 |---|---|---|---|---|
 | M01 | macOS GUI + 已有手机；原数据目录 | 正常退出旧宿主，记录原工作区/会话和配对设备；用本版本 GUI 打开同一数据目录，再换为 headless，手机重连 | 原数据库、工作区、身份、配对簿和控制设备保持；无需重新配对；会话可继续 | 待用户反馈 |
-| M02 | 交互终端 + 手机；独立空 Future home | 在独立目录用 `FUTURE_HOME=<临时绝对路径> ./target/debug/future headless` 启动；按终端完成首次登录，手机领取邀请 | 登录/配对完成后可实际发消息、同步事件；只创建原有布局的文件；重启复用凭据 | 待用户反馈 |
-| M03 | 空临时目录；非交互终端 | 设置独立 `FUTURE_HOME` 后执行 `future headless </dev/null`，记录退出码及输出 | 退出 1、提示交互终端；不输出授权/配对材料，不创建 app.db、配对或凭据 | 待用户反馈 |
-| M04 | 用户已有自建中继 + 手机 | 在独立测试根运行 `future headless --relay <中继 URL>`；私有 CA 时带原有 `--relay-ca <PEM>`；完成配对并重启 | 邀请使用所选中继，凭据可复用；不因包名改变配对；origin/TLS 和 CA 边界保持 | 待用户反馈 |
+| M02 | 交互终端 + 手机；独立空 Future home | 在独立目录用 `FUTURE_HOME=<临时绝对路径> ./target/debug/future host` 启动；按终端完成登录，在第二个终端用 `future remote devices add` 配手机 | 登录/配对完成后可实际发消息、同步事件；只创建原有布局的文件；重启复用凭据 | 待用户反馈 |
+| M03 | 空临时目录；非交互终端 | 设置独立 `FUTURE_HOME` 后执行 `future host </dev/null`，记录退出码及输出 | 退出 1、提示平台登录需交互终端；不输出授权材料，不创建 app.db、配对或凭据 | 待用户反馈 |
+| M04 | 用户已有自建中继 + 手机 | 在独立测试根运行 `future host --relay <中继 URL>`；私有 CA 时带原有 `--relay-ca <PEM>`；用 `future remote devices add` 配对并重启 | 邀请使用所选中继，凭据可复用；不因包名改变配对；origin/TLS 和 CA 边界保持 | 待用户反馈 |
 | M05 | 至少两台已配对客户端 | 运行 `future remote devices`、`add`，领取新邀请；用 `use <id或序号>` 切换在控设备，重启宿主后再查看 | 原设备不被替换；配对簿和控制指针一致；只有在控设备可执行原有控制动作 | 待用户反馈 |
 | M06 | M05 的独立测试配对 | 用 `remove <id或序号>` 撤销一台，确认另一台仍可连接；网络故障条件下撤销后重启，再恢复网络 | 精确撤销目标；其他设备不受影响；待撤销记录按原规则恢复清理 | 待用户反馈 |
 | M07 | 手机和 GUI 各一轮；临时工作区 | 发起会触发审批的读/写/命令；分别拒绝和批准；保存一条工作区规则后再次请求 | 审批状态同步且决定实际生效；规则原子持久化并按原规则实时注入；不扩大权限 | 待用户反馈 |
