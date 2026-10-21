@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use parking_lot::RwLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{Cost, Model};
 
@@ -24,7 +24,12 @@ const DEFAULT_FUTURE_PLATFORM_URL: &str = "https://future-os.cn";
 const FUTURE_MODELS_REFRESH_BACKOFF: u64 = 30;
 
 static FUTURE_MODELS_LAST_ATTEMPT: AtomicU64 = AtomicU64::new(0);
-static FUTURE_MODELS_REFRESH_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+/// Single-flight slot: `0` is idle, anything else is the *ticket* of the owner.
+/// Tickets come from [`FUTURE_MODELS_REFRESH_TICKETS`] so an owner can release
+/// only the slot it took — a refresh thread that outlives a test reset must not
+/// free a slot a later owner holds.
+static FUTURE_MODELS_REFRESH_IN_FLIGHT: AtomicU64 = AtomicU64::new(0);
+static FUTURE_MODELS_REFRESH_TICKETS: AtomicU64 = AtomicU64::new(0);
 /// Bumped by every test reset. A background refresh reads it before fetching and
 /// publishes only if it still matches, so a thread a *previous* test spawned
 /// cannot overwrite the caches inside a later test's reset→assert window. It is
@@ -135,6 +140,33 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
+/// Take the single-flight slot, returning the ticket that owns it, or `None`
+/// when a refresh already holds it.
+fn acquire_future_models_refresh_slot() -> Option<u64> {
+    // 0 is the idle marker, so never hand out a (wrapped) 0 ticket.
+    let ticket = FUTURE_MODELS_REFRESH_TICKETS
+        .fetch_add(1, Ordering::Relaxed)
+        .wrapping_add(1)
+        .max(1);
+    FUTURE_MODELS_REFRESH_IN_FLIGHT
+        .compare_exchange(0, ticket, Ordering::AcqRel, Ordering::Acquire)
+        .ok()
+        .map(|_| ticket)
+}
+
+/// Release the slot only if `ticket` still owns it. A refresh thread's release
+/// is a no-op once a test reset (or a newer refresh) has taken the slot over,
+/// which is what keeps a slow background fetch from handing out a free slot
+/// inside another test's assert window.
+fn release_future_models_refresh_slot(ticket: u64) {
+    let _ = FUTURE_MODELS_REFRESH_IN_FLIGHT.compare_exchange(
+        ticket,
+        0,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+}
+
 /// Kick off a one-at-a-time background refresh of the Future model catalog,
 /// respecting a backoff window. Never blocks the caller — the fetched models are
 /// written to both the file cache and the in-process memory cache, so the next
@@ -167,12 +199,7 @@ fn spawn_future_models_refresh_unlocked(
         return None;
     }
     // Single-flight: bail if a refresh is already running.
-    if FUTURE_MODELS_REFRESH_IN_FLIGHT
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return None;
-    }
+    let ticket = acquire_future_models_refresh_slot()?;
     FUTURE_MODELS_LAST_ATTEMPT.store(now, Ordering::Relaxed);
 
     let api_key = api_key.to_string();
@@ -214,9 +241,11 @@ fn spawn_future_models_refresh_unlocked(
                 .unwrap_or_else(|| "unknown panic".to_string());
             tracing::warn!("Future models background refresh panicked: {msg}");
         }
-        // Always reset the flag — a panic must not permanently block
-        // future refreshes.
-        FUTURE_MODELS_REFRESH_IN_FLIGHT.store(false, Ordering::Release);
+        // Always release the slot — a panic must not permanently block
+        // future refreshes — but only this refresh's own ticket, so a thread
+        // left over from an earlier test cannot free a slot that a later owner
+        // holds (that race made `refresh_bails_when_already_in_flight` fail).
+        release_future_models_refresh_slot(ticket);
     }))
 }
 
@@ -802,9 +831,9 @@ pub(crate) fn future_models_test_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// Reset every future-models cache static to a clean slate for tests. This
-/// force-clears `IN_FLIGHT` rather than waiting out a slow in-flight refresh
-/// (which may be hitting a real URL for up to 10s); a leftover thread that later
-/// finishes only re-stores `false` and is otherwise harmless to these tests.
+/// force-clears the in-flight slot rather than waiting out a slow refresh (which
+/// may be hitting a real URL for up to 10s); the leftover thread's own release
+/// then fails its ticket check and is a no-op for whoever owns the slot now.
 #[cfg(test)]
 pub(crate) fn reset_future_caches_for_tests() {
     #[cfg(test)]
@@ -820,7 +849,7 @@ pub(crate) fn reset_future_caches_for_tests() {
 fn reset_future_caches_for_tests_unlocked() {
     FUTURE_MODELS_GENERATION.fetch_add(1, Ordering::AcqRel);
     FUTURE_MODELS_LAST_ATTEMPT.store(0, Ordering::Relaxed);
-    FUTURE_MODELS_REFRESH_IN_FLIGHT.store(false, Ordering::Relaxed);
+    FUTURE_MODELS_REFRESH_IN_FLIGHT.store(0, Ordering::Relaxed);
     *FUTURE_MODELS_MEMORY_CACHE.write() = None;
 }
 
@@ -1427,6 +1456,27 @@ mod tests {
         super::reset_future_caches_for_tests();
     }
 
+    /// Owns the single-flight slot the way a running refresh does, releasing it
+    /// by ticket on drop (so a failing assertion cannot leak the slot).
+    struct HeldRefreshSlot(Option<u64>);
+
+    impl Drop for HeldRefreshSlot {
+        fn drop(&mut self) {
+            if let Some(ticket) = self.0.take() {
+                release_future_models_refresh_slot(ticket);
+            }
+        }
+    }
+
+    /// Take the single-flight slot for real, instead of faking the flag with a
+    /// bare store: only the ticket holder can release it, so a refresh thread
+    /// left running by some earlier test cannot free it underneath us.
+    fn hold_refresh_slot() -> HeldRefreshSlot {
+        HeldRefreshSlot(Some(
+            acquire_future_models_refresh_slot().expect("slot is free after a reset"),
+        ))
+    }
+
     #[test]
     fn fetch_future_models_parses_data_and_array_forms() {
         let _guard = future_test_lock();
@@ -1756,9 +1806,9 @@ mod tests {
             "second call must be blocked by the backoff window"
         );
         assert!(FUTURE_MODELS_LAST_ATTEMPT.load(Ordering::Relaxed) > 0);
-        // Join the refresh thread deterministically, then assert the flag cleared.
+        // Join the refresh thread deterministically, then assert the slot cleared.
         handle.join().unwrap();
-        assert!(!FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed));
+        assert_eq!(FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -1766,14 +1816,39 @@ mod tests {
         let _guard = future_test_lock();
         let _gate = future_refresh_gate();
         reset_future_caches_for_tests_unlocked();
-        FUTURE_MODELS_REFRESH_IN_FLIGHT.store(true, Ordering::Relaxed);
+        let held = hold_refresh_slot();
         assert!(
             spawn_future_models_refresh_unlocked("k", "http://127.0.0.1:1").is_none(),
             "already-in-flight must bail"
         );
         // Bailed at the single-flight gate: no new attempt was stamped.
         assert_eq!(FUTURE_MODELS_LAST_ATTEMPT.load(Ordering::Relaxed), 0);
-        FUTURE_MODELS_REFRESH_IN_FLIGHT.store(false, Ordering::Relaxed);
+        drop(held);
+        assert_eq!(FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed), 0);
+    }
+
+    /// A refresh thread that outlives the test reset must not free the slot a
+    /// later owner took. This used to be a bare `store(false)` in the refresh
+    /// thread, which let a leftover thread from any earlier test hand
+    /// `spawn_future_models_refresh_unlocked` a free slot between another test's
+    /// acquire and its assertion.
+    #[test]
+    fn stale_refresh_owner_cannot_free_a_newer_slot() {
+        let _guard = future_test_lock();
+        let _gate = future_refresh_gate();
+        reset_future_caches_for_tests_unlocked();
+        // A refresh that is still fetching when the reset below arrives.
+        let stale_ticket = acquire_future_models_refresh_slot().expect("slot is free");
+        reset_future_caches_for_tests_unlocked();
+        let held = hold_refresh_slot();
+        // The stale thread finishes and releases its own ticket: no-op here.
+        release_future_models_refresh_slot(stale_ticket);
+        assert!(
+            spawn_future_models_refresh_unlocked("k", "http://127.0.0.1:1").is_none(),
+            "a stale owner's release must not free the current slot"
+        );
+        drop(held);
+        reset_future_caches_for_tests_unlocked();
     }
 
     #[test]
@@ -1790,11 +1865,12 @@ mod tests {
             REFRESH_TEST_PANIC.store(payload_kind, Ordering::Relaxed);
             let handle = spawn_future_models_refresh_unlocked("k", "http://127.0.0.1:1")
                 .expect("refresh spawns");
-            // The panic is caught and the single-flight flag released.
+            // The panic is caught and the single-flight slot released.
             handle.join().unwrap();
-            assert!(
-                !FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed),
-                "panic must not wedge the in-flight flag"
+            assert_eq!(
+                FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed),
+                0,
+                "panic must not wedge the in-flight slot"
             );
         }
     }
