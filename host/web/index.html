@@ -768,7 +768,7 @@ async function selectSession(sid) {
   await loadSessionState(sid); // 填充模型/思考等级选择器 + 显示重命名按钮
 }
 
-// ── 键盘导航：方向键选行 → 回车进入会话 → 再回车里输入框 ─────────────────
+// ── 键盘导航：方向键选行 → 回车进入会话 → 再回车聚焦输入框 → Esc 退回列表 ──
 // 游标只负责「选」不负责「打开」：每移一行就发一轮 get_messages 没必要，所以
 // selectSession 仍然只在回车/点击时跑。
 const narrowPane = () => window.matchMedia("(max-width: 719px)").matches;
@@ -806,6 +806,18 @@ function enterSessionOrComposer() {
   msg.focus();
 }
 
+// 输入框里按 Esc：交还焦点（窄屏上同时收起软键盘），游标回到当前会话那一行，
+// 方向键重新可用——键盘进出对话区的入口（回车）与出口（Esc）就此对称。列表
+// 导航只在列表可见时成立，所以宽屏只失焦，窄屏退回列表（与「‹ 会话」同效）。
+function leaveComposer() {
+  const msg = $("msg");
+  if (document.activeElement === msg) msg.blur();
+  if (session) cursorSid = session; // 游标停在进入的会话上，箭头从这里继续走
+  kbNav = !!cursorSid;
+  if (!listPaneVisible()) $("app").classList.remove("show-chat");
+  paintCursor();
+}
+
 // 输入控件（输入框/下拉/按钮）拥有焦点时完全交给浏览器：textarea 里的 Enter
 // 仍是换行，发送仍是 Cmd/Ctrl+Enter。
 function controlsFocus(el) {
@@ -815,6 +827,11 @@ function controlsFocus(el) {
 
 document.addEventListener("keydown", (e) => {
   if (e.isComposing || e.metaKey || e.ctrlKey || e.altKey) return;
+  // Esc 是「退出输入框」：必须在 controlsFocus 拦下之前处理，否则草稿框把一切
+  // 按键都占给浏览器。审批框的 Esc（拒绝）在 #log 里自己处理，不经过这里。
+  if (e.key === "Escape" && document.activeElement === $("msg")) {
+    e.preventDefault(); leaveComposer(); return;
+  }
   if (controlsFocus(document.activeElement)) return;
   // 对话区里自己处理按键的可聚焦元素（审批框的 Esc/Cmd+Enter、消息里的链接）
   if (document.activeElement?.closest?.("#log")) return;
