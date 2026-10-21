@@ -448,3 +448,145 @@ fn an_incomplete_schema_surfaces_instead_of_swallowing_the_write() {
         assert!(error.contains("damaged display index"), "{when}: {error}");
     }
 }
+
+/// The projected display row for a session's compaction entry, read straight
+/// from the index. A *page* is the wrong witness: with a body present it
+/// re-projects from the entry, so the stored row's own payload is what has to
+/// carry the checkpoint.
+fn compaction_display_row(manager: &Manager, id: &str) -> serde_json::Value {
+    let id = id.to_owned();
+    let payload: String = manager
+        .storage()
+        .unwrap()
+        .db
+        .call(move |db| {
+            Ok(db.query_row(
+                "SELECT payload FROM history_display WHERE session_id=?1 AND json_extract(payload,'$.kind')='compaction'",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    serde_json::from_str(&payload).unwrap()
+}
+
+fn session_with_checkpoint() -> (Manager, Session) {
+    let dir = tempfile::tempdir().unwrap();
+    let manager = Manager::new(dir.path().join("sessions"));
+    let mut session = Session::new("/synthetic", "mock");
+    session
+        .entries
+        .push(SessionEntry::new_user("user", json!("question")));
+    session.entries.push(SessionEntry {
+        entry_type: "compaction".into(),
+        ..SessionEntry::new_user(
+            "",
+            json!({
+                "schema_version": 3, "checkpoint_id": "cp_1", "phase": "standalone",
+                "tokens_before": 62203, "tokens_after": 33281, "trigger": "manual",
+            }),
+        )
+    });
+    session
+        .entries
+        .push(SessionEntry::new_assistant(json!("answer"), Vec::new()));
+    manager.save(&session).unwrap();
+    (manager, session)
+}
+
+/// The divider a client draws is built from `payload.checkpoint`: its identity
+/// (`checkpointId`) folds the live copy against the durable one, and its counts
+/// and `phase` decide the text and whether the marker stays inside the exchange.
+/// A compaction shape must keep that object — it is the projection's input, not
+/// message body text.
+#[test]
+fn a_compaction_shape_keeps_the_checkpoint_the_divider_prints() {
+    let checkpoint = json!({
+        "schema_version": 3,
+        "checkpoint_id": "cp_20261019-170529",
+        "cutoff_entry_id": "e9",
+        "tokens_before": 62203,
+        "tokens_after": 33281,
+        "trigger": "manual",
+        "phase": "standalone",
+        "summary": [{"type": "text", "text": "covered history index"}],
+    });
+    let shape = entry_shape(&json!({
+        "id": "c1", "type": "compaction", "role": "system",
+        "timestamp": "2026-10-19T09:05:29Z",
+        "content": checkpoint.clone(),
+    }));
+    assert_eq!(
+        shape["content"], checkpoint,
+        "the checkpoint is projected verbatim, summary included: a partial copy \
+         would make an indexed page disagree with the direct projection"
+    );
+    let entry: SessionEntry = serde_json::from_value(shape).unwrap();
+    let projected = project_entries(&[entry]).remove(0);
+    assert_eq!(projected["kind"], "compaction");
+    assert_eq!(
+        projected["checkpoint"]["checkpointId"],
+        "cp_20261019-170529"
+    );
+    assert_eq!(projected["checkpoint"]["tokensBefore"], 62203);
+    assert_eq!(projected["checkpoint"]["tokensAfter"], 33281);
+    assert_eq!(projected["checkpoint"]["trigger"], "manual");
+    assert_eq!(projected["checkpoint"]["phase"], "standalone");
+}
+
+/// The same thing end to end: a saved compaction entry's indexed row carries the
+/// counts, which is what the body-less fallback serves to a client.
+#[test]
+fn the_display_index_carries_the_checkpoint_counts_and_identity() {
+    let (manager, session) = session_with_checkpoint();
+    let payload = compaction_display_row(&manager, &session.id);
+    assert_eq!(payload["checkpoint"]["checkpointId"], "cp_1");
+    assert_eq!(payload["checkpoint"]["tokensBefore"], 62203);
+    assert_eq!(payload["checkpoint"]["tokensAfter"], 33281);
+    assert_eq!(payload["checkpoint"]["trigger"], "manual");
+    assert_eq!(payload["checkpoint"]["phase"], "standalone");
+}
+
+/// A row the version-1 projection wrote — checkpoint blanked to `""` — is
+/// rebuilt on the next read instead of being trusted forever: the version stamp
+/// is what says whether a session's derived rows are current.
+#[test]
+fn a_version_one_row_is_rebuilt_on_its_next_read() {
+    let (manager, session) = session_with_checkpoint();
+    let id = session.id;
+    // Exactly what the previous projection produced, plus its version stamp.
+    manager.test_execute(&format!(
+        "UPDATE history_display SET payload=json_set(payload,'$.checkpoint','')
+           WHERE session_id='{id}' AND json_extract(payload,'$.kind')='compaction';
+         INSERT OR REPLACE INTO history_index_state(session_id,projection_version)
+           VALUES ('{id}',1);"
+    ));
+    assert_eq!(
+        compaction_display_row(&manager, &id)["checkpoint"],
+        json!(""),
+        "the fixture must reproduce the version-1 row"
+    );
+    // Any read of the session rebuilds it, because the stamp is out of date.
+    manager.history_page(&id, None, None, Some(100)).unwrap();
+    let rebuilt = compaction_display_row(&manager, &id);
+    assert_eq!(rebuilt["checkpoint"]["checkpointId"], "cp_1");
+    assert_eq!(rebuilt["checkpoint"]["tokensBefore"], 62203);
+    assert_eq!(rebuilt["checkpoint"]["tokensAfter"], 33281);
+    // The rebuild must not have moved or dropped anything else.
+    assert_eq!(rebuilt["kind"], "compaction");
+}
+
+/// A row the old projection already wrote is still a marker when it is read as
+/// data: the client draws a divider without counts. Losing the marker entirely
+/// would be the worse failure — the transcript would claim the conversation
+/// continued unbroken.
+#[test]
+fn a_blank_checkpoint_still_projects_a_compaction_marker() {
+    let entry = SessionEntry {
+        entry_type: "compaction".into(),
+        ..SessionEntry::new_user("", json!(""))
+    };
+    let projected = project_entries(&[entry]).remove(0);
+    assert_eq!(projected["kind"], "compaction");
+    assert_eq!(projected["checkpoint"], json!(""));
+}
