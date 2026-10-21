@@ -89,6 +89,8 @@ export type CommandId
     // Taking a held sentence back into the box: a change of mind about one message,
     // not about the layer (which is why it is not on `Esc`).
     | "vibe.queue.cancel"
+    | "vibe.page.previous"
+    | "vibe.page.next"
     | "vibe.scroll.up"
     | "vibe.scroll.down"
     | "vibe.zoom.scroll.up"
@@ -238,6 +240,11 @@ export const COMMANDS: readonly CommandSpec[] = [
   // `PageUp`/`PageDown` rather than `↑`/`↓` in the grid because the arrows are the ring:
   // one key cannot both "go to the cell above" and "scroll this cell up", and the ring is
   // the gesture a reader makes constantly.
+  // Turning the grid's page, past twelve pinned conversations (`VIBE.md` §4). `⌥←`/`⌥→`
+  // rather than the page keys, which now scroll the selected cell, and rather than
+  // `⌘⌥←`/`→`, which move a cell within its page.
+  { id: "vibe.page.previous", category: "vibe", defaultBinding: "alt+arrowleft", inTerminal: false, scope: "vibeGrid" },
+  { id: "vibe.page.next", category: "vibe", defaultBinding: "alt+arrowright", inTerminal: false, scope: "vibeGrid" },
   { id: "vibe.scroll.up", category: "vibe", defaultBinding: "pageup", inTerminal: false, repeat: true, scope: "vibeGrid" },
   { id: "vibe.scroll.down", category: "vibe", defaultBinding: "pagedown", inTerminal: false, repeat: true, scope: "vibeGrid" },
   { id: "vibe.zoom.scroll.up", category: "vibe", defaultBinding: "arrowup", bindings: ["arrowup", "pageup"], inTerminal: false, repeat: true, scope: "vibeZoom" },

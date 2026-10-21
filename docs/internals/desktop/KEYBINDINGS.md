@@ -194,7 +194,8 @@ below). `mod` is `⌘` on macOS and `Ctrl` elsewhere:
 | Take a queued sentence back into the box | `mod+shift+x` / the menu's cancel row | vibeInput / vibe |
 | The layer's menu | `mod+shift+k` / `Menu` | vibe |
 | Jump to the live end of the conversation | `Home` | vibe |
-| Go to a numbered cell | `1`–`9` | vibeGrid |
+| Go to a numbered cell, or the add tile | `1`–`9` | vibeGrid |
+| Previous / next page of the grid (registered only past twelve pinned) | `alt+←` / `alt+→` | vibeGrid |
 | Previous / next cell | `mod+[` / `mod+]` | (reuses `thread.previous`/`next`; the panel registers them, the rail does not) |
 | Cycle the grid layout | `mod+shift+g` | vibe |
 | More / fewer columns, automatic | `mod+=` / `mod+-` / `mod+0` | vibe |

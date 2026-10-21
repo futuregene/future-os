@@ -162,7 +162,8 @@ desktop/src/features/settings/
 | 把排队的那条撤回输入框 | `mod+shift+x` / 菜单里的撤回行 | vibeInput / vibe |
 | 当前层的菜单 | `mod+shift+k` / `菜单` | vibe |
 | 跳到会话正在发生的地方 | `主页` | vibe |
-| 跳到编号格子 | `1`–`9` | vibeGrid |
+| 跳到编号格子，或加号 | `1`–`9` | vibeGrid |
+| 上一页 / 下一页格子（只有超过 12 个置顶时才注册） | `alt+←` / `alt+→` | vibeGrid |
 | 上一个 / 下一个格子 | `mod+[` / `mod+]` | （复用 `thread.previous`/`next`；面板注册，左栏此时不在） |
 | 循环网格布局 | `mod+shift+g` | vibe |
 | 增减列 / 恢复自动 | `mod+=` / `mod+-` / `mod+0` | vibe |

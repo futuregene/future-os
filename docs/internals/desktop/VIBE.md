@@ -117,11 +117,21 @@ which is why two cells become 1×2 rather than two slivers while five stay 3×2
 
 * **A short last row is left empty, not stretched.** Cell 2 is always the second
   place. The keys can override the column count (`⌘=` / `⌘-`, `⌘0` back to auto).
-* **No scrolling.** Twelve cells is the ceiling, and going past it says so
-  ("remove one, or switch the machine filter"). A grid you have to scroll is not
-  an overview.
-* A cell's 24px header — number, title, machine, run state, approval count,
-  unread dot — is outside the transcript and is what a click or `↩` targets.
+* **No scrolling; pages instead.** Twelve cells is one page, and a thirteenth pinned
+  conversation goes to page two rather than becoming unreachable — the bar says `1/2` and
+  `⌥←`/`⌥→` turn the page. Scrolling was rejected on purpose (a grid you have to scroll is
+  not an overview) and shrinking cells without limit is worse: at thirteen cells a 4×4 of
+  320px cells is unreadable.
+* A cell's 24px header — number, title, machine, run state, approval count, unread dot —
+  is outside the transcript and is what a click or `↩` targets.
+* **The empty square is the add tile.** Where the shape leaves a square free (three cells
+  are 2×2 with one empty), it holds a `+`: the ring reaches it like a cell, `↩` opens the
+  picker, and the picker's first rows are the five conversations the reader was in most
+  recently — that list answers "which one" far better than a full browser does. Its last two
+  rows are "browse every conversation…" (the machine → workspace → conversation dialog) and
+  "start a new conversation…", which leaves for the new-conversation screen and **pins what
+  is created there**. Either way, adding is pinning (§1). A full page has no free square, so
+  the menu's add row is the way in.
 * **Hover is never the only way to reach a control.** Every action a cell offers
   is reachable by the keys, because a remote has no pointer.
 
@@ -510,9 +520,10 @@ than an absent one — an empty answer is still an answer when it is what was as
 
 * No free-form split tree, no drag-resizing a cell (that is a window manager, not
   an overview).
-* No scrolling grid; twelve cells is the ceiling.
-* No new conversation from inside the panel: create it in the main window and it
-  appears here once pinned.
+* No scrolling grid: twelve cells per page, with pages past that (§4).
+* No conversation-creation *flow* inside the panel: the add tile's "start a new
+  conversation" leaves for the screen that already asks for a first message, and pins what
+  is created there.
 * No ordering or layout sync across machines; the order is per machine, like the
   other view preferences.
 * No automatic send after a pause, and no auto-approval.
@@ -543,6 +554,8 @@ Automatable — and where each one lives:
 | Closing the column in one cell keeps it closed in the next (the habit), and a pin does not travel | `readingPanel.sticky.test.ts`, `VibeStage.test.tsx` |
 | `PageUp`/`PageDown` scroll the selected cell's transcript without moving the ring; in the reading layer `↑`/`↓` scroll; the remote's `Home` jumps to the newest message | `VibeStage.test.tsx` |
 | The reading layer has more air than the main window at both ends, and a roomier gap between turns | `AgentThread.chrome.test.tsx` |
+| The add tile appears only in a free square, is reachable by the ring and its printed number, and its rows are the recent unpinned conversations in activity order | `emptySlot.test.ts`, `VibeStage.test.tsx` |
+| Twelve cells per page, `⌥←`/`⌥→` turn it, the bar names the page, and the keys are unclaimed with one page | `emptySlot.test.ts`, `VibeStage.test.tsx` |
 | The bar reserves the macOS traffic-light box on macOS outside fullscreen, and uses the ordinary inset otherwise | `barChrome.test.ts`, plus the harness reporting `padding-left: 80px` and the label at x = 80 |
 | The bar is the window's drag surface, and its three buttons still click | `VibeStage.test.tsx` |
 | `core:window:allow-set-fullscreen` is granted to the main window, and no `deny-` entry undercuts it | `fullscreenCapability.test.ts` |
