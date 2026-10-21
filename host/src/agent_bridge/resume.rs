@@ -12,7 +12,7 @@
 //! every conversation whose **newest** run the Agent itself confirms as
 //! interrupted — a run that began and never committed, which is exactly what the
 //! embedded Agent's death leaves behind — it settles that row and sends one
-//! continuation prompt through [`super::headless`], the same pipeline a prompt
+//! continuation prompt through `super::headless`, the same pipeline a prompt
 //! from a paired phone uses. The Agent then continues with the whole
 //! conversation as its context, which is what the manual 继续 flow does too
 //! (`continue_run` on the remote side, `buildContinuePrompt` in the GUI).
