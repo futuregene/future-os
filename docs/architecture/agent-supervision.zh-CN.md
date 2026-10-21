@@ -3,7 +3,8 @@
 > [English](agent-supervision.md)
 >
 > 设计日期：2026-10-21。源码基线：`a91fcf0ec`。
-> 状态：**仅设计，未改任何代码。** P1 未开工。本文把"已认可的设计"与"必须由用户拍板的产品决定"分开写，见 [§2](#2-判定分区设计-vs-产品决定)，待决项汇总在 [§12](#12-待决问题汇总)。
+> 状态：**P1 已落地**（监督器、`Busy` 让位、有界等待、熔断、三入口接线、Agent 自触发续跑）。
+> 本文把"已落地的设计"与"必须由用户拍板的产品决定"分开写，见 [§2](#2-判定分区设计-vs-产品决定)；待决项汇总在 [§12](#12-待决问题汇总)，实测记录在 [§13](#13-实测记录)。
 
 现在有三个入口会把 Agent 带起来：`future agent`、`future headless`、`future tui`。三者都遵守同一个实例锁，但**谁先启动、谁负责、死了怎么办**三件事各有各的写法，缺的正是这一层。本文补的是这一层，不改变实例锁、存储格式和 RPC 契约。
 
@@ -35,17 +36,17 @@
 | D3 | 客户端统一为"探测 → 确认缺席 → 抢锁 → 启动/让位"的监督器 | 设计 | **已认可** |
 | D4 | 等待必须有界，且期间界面必须说明（[§5](#5-等待必须有界)） | 设计要求 | **已认可** |
 | D5 | 崩溃循环熔断（[§6](#6-熔断)） | 设计 | **已认可** |
-| **P1** | 监督器核心 + `Busy` 分类 + 三个入口接线（[§10](#10-落地清单)） | 实现 | 设计已认可；**开工需用户点头** |
+| **P1** | 监督器核心 + `Busy` 分类 + 三个入口接线（[§10](#10-落地清单)） | 实现 | **已落地** |
 | **D6** | TUI 改为"外部优先，否则进程内启动"，去掉子进程 sidecar（[§7](#7-tui-改为进程内启动)） | **产品决定** | **待用户决定** |
 | **P2** | 让 Agent 活过 TUI 退出：detached sidecar + `--ephemeral` 空闲退出（[§8](#8-生命周期与所有权)） | **产品决定** | **待用户决定** |
 | **D7** | Agent 被**用户主动**停掉后，其他客户端是否自动重启（[§4.3](#43-四种死法要分开)） | 产品决定 | 建议：不自动；**待确认** |
-| **D8** | 重启后的续跑语义：谁跑、什么时候算可续跑（§9.1、§9.2） | 设计 | **已认可**；判据已由订阅数改为 cause |
-| **D9** | 触发也放进 Agent（用户 2026-10-21 提出） | 产品决定 | **已采纳**，含四项前提（cause / 开关跟着执行者 / 护栏 / 标记） |
+| **D8** | 重启后的续跑语义：谁跑、什么时候算可续跑（§9.1、§9.2） | 设计 | **部分落地**：续跑判据已实现；`cause` 区分尚未实现（见 §12） |
+| **D9** | 触发也放进 Agent（用户 2026-10-21 提出） | 产品决定 | **已落地**：Agent 启动后自触发，开关 `~/.future/agent/settings.json` 的 `resumeInterruptedOnStart`（**默认开**，与桌面原有的 `autoResumeInterrupted` 一致）；Desktop 的一次性 pass 已退役 |
 | **D10** | 续跑不发用户消息，在 loop 内以 request-only 指令续上（§9.3，用户 2026-10-21 提出） | 产品决定 → 设计 | **已采纳**（方案）；需放开 assistant 尾巴守卫，**实现另派** |
 
 标注为"待用户决定"的两项**不是已定方案**，本文不为它们设计代码路径，只描述选项、代价与影响面。
 
-标注为"已采纳/已认可"的项只确定**方案**，不等于已经能这么做：D10 今天仍走不通（存在 assistant 尾巴守卫），P1、cause、Agent 自触发、无 user 续跑都还是待派工的实现。
+标注"已落地"的项有代码与测试；标注"已认可"的仍只是方案：D10 今天走不通（assistant 尾巴守卫还在），D8 的 cause 区分尚未实现。
 
 ## 3 判定依据
 
@@ -198,7 +199,7 @@ TUI 采用与 headless 完全相同的策略：外部可达就 attach；缺席�
 
 ### 9.1 重启之后，会话怎么继续
 
-[#1277](../../host/src/agent_bridge/resume.rs) 给了正确的基础，但它的边界决定了"重启只是一次抖动"这个结论只在特定条件下成立。本设计必须显式依赖它，否则自愈会把"会话继续"变成"会话停在半路"。
+[#1277](../../agent/src/rpc/resume.rs)（当时的实现，现已由 Agent 侧接替）给了正确的基础，但它的边界决定了"重启只是一次抖动"这个结论只在特定条件下成立。本设计必须显式依赖它，否则自愈会把"会话继续"变成"会话停在半路"。
 
 #### 它实际做了什么
 
@@ -216,7 +217,7 @@ TUI 采用与 headless 完全相同的策略：外部可达就 attach；缺席�
 
 | 条件 | 现状 | 本设计需要做什么 |
 |---|---|---|
-| 重启后的会话里有人跑续跑 pass | **只有 Desktop 跑**（[lib.rs](../../desktop/src-tauri/src/lib.rs)）；headless 只跑 `reconcile_interrupted_runs`（结算/重接流，不发 prompt），TUI 完全没有 | 由 Agent 自己在 Ready 后触发，不依赖任何宿主在场（见 §9.2） |
+| 重启后的会话里有人跑续跑 pass | 历史上只有 Desktop 跑；headless 只跑 `reconcile_interrupted_runs`（结算/重接流，不发 prompt），TUI 完全没有 | **已落地**：由 Agent 自己在 Ready 后触发，不依赖任何宿主在场；Desktop 的 pass 已退役，避免同一会话收到两条续跑（见 §9.2） |
 | 中断要留下"可续跑"的状态 | 优雅停机走 `cancel_all` → 写 terminal → `interruptedRun` 为 null → `plan_resume` 判 `Terminal` → **不续跑**；只有异常死亡（`kill -9` / 崩溃 / OOM）留下 `interrupted` | 优雅退出时按 cause 标记：`agent_shutdown` → 可续，`user_cancelled` → 不可续（见下面「前提一」） |
 | 会话必须在 `app.db` 里有 thread + run 行 | run 行由宿主提交 prompt 或 import 生成（discovery 每 60s） | 只有 TUI 在跑、没有任何宿主的机器没有候选；自愈首次拉起时补一次 import |
 | 其余产品门槛 | 最新 run、非 `waiting_approval`、7 天内、`autoResumeInterrupted`（默认开，等于代用户花钱） | 不改 |
@@ -413,7 +414,7 @@ D10 优先于"发 prompt"的初版：先做"尾部是 tool"和"assistant 带 too
 
 ## 10 落地清单
 
-### P1（设计已认可；开工需用户点头）
+### P1（已落地）
 
 | 改动 | 位置 |
 |---|---|
@@ -431,7 +432,7 @@ D10 优先于"发 prompt"的初版：先做"尾部是 tool"和"assistant 带 too
 | 续跑 run 的无 user 接受路径 + request-only 指令 + assistant 尾巴守卫（D10） | `agent/src/rpc/session_prompt.rs`、`agent/src/agent/run_loop.rs`、`agent/src/session/entry.rs` |
 | 崩溃尾部缺 tool 结果时补"不确定"占位 | `agent/src/agent/run_loop.rs`（现有取消路径的邻位） |
 | `run_started` 带 `auto_resume_of`，客户端渲染为"自动继续" | `agent/src/session/entry.rs`、`tui/`、`desktop/`、`mobile/`、`packages/thread-projection/` |
-| 旧的一次性 pass 退役（`resume_interrupted_runs_at_launch`） | `host/src/agent_bridge/resume.rs`、`desktop/src-tauri/src/lib.rs` |
+| 旧的一次性 pass 已退役（`resume_interrupted_runs_at_launch` 与 `host/src/agent_bridge/resume.rs` 一并删除） | `desktop/src-tauri/src/lib.rs`；新实现在 `agent/src/rpc/resume.rs` |
 
 ### 后续
 
@@ -463,8 +464,37 @@ D10 优先于"发 prompt"的初版：先做"尾部是 tool"和"assistant 带 too
 1. **D6：TUI 是否改为进程内启动？** 影响 TUI 的崩溃隔离、内存与冷启动；收益是三入口一条策略。
 2. **P2：Agent 该不该活过 TUI 退出？** 选项 A（随启动者死 + 他人重启，会打断当前这一轮，但会话会续上，见 §9.1）vs B（detached + 空闲退出）。
 3. **D7：用户主动停止后，别的客户端要不要自动把它拉起来？** 建议不自动（尊重"我说停就停"），但需要确认。
-4. **续跑会在没有客户端在场时花钱**：开关搬到 `~/.future/agent/settings.json` 后，默认值取开还是关？（现 `autoResumeInterrupted` 默认开）
+4. ~~续跑的默认值~~（已定）：`resumeInterruptedOnStart` 默认**开**，与桌面原有的 `autoResumeInterrupted` 一致，避免搬动机制时静默丢掉既有行为。
 5. **续跑要不要覆盖非交互来源的会话？**（channels / goal / CLI / 子会话）。默认建议：先只续"用户眼前对话"能识别的会话，其余需额外标记。
 6. **P1 开工许可。** 设计已认可，但三个入口的启动路径都会变；D8/D9/D10 的几项（cause、Agent 自触发、开关跟着执行者、无 user 续跑）建议一并入 P1，否则自愈会把会话停在半路。
 
 不需要用户决定、仅记录为实测可调的参数：等待上限 180s、熔断阈值 3 次/300s、冷却 60s 起步、`IDLE_GRACE` 120s、`future tui -p` 是否也内嵌。
+
+## 13 实测记录
+
+以下每一行都是**真跑出来的**，不是读代码推断。方法：release 二进制、每个用例一个独立 `FUTURE_HOME`、
+与开发者真实 `~/.future` 隔离；假模型端点是一个本地 stub（不为验证消耗真实凭据）。
+
+| # | 场景 | 改动前 | 现在 |
+|---|---|---|---|
+| 1 | `future agent` 拥有 Agent，headless 附着 → `kill -9` agent | 30s 内无人接管，headless 只反复重连 | **3s 内** headless 拉起新 Agent（`the Agent is gone; starting a new one` + 新 instance id） |
+| 2 | headless 拥有 Agent，TUI 附着 → 结束 headless | 40s 内无人接管，TUI 停在 `Connection to agent lost` | **1s 内** TUI 拉起新 Agent |
+| 3 | 锁被占用、默认端点不存在（Agent 只绑 TCP）→ 启动 TUI | TUI **exit 1**，报 "Cannot start a local Agent" | TUI **不退出**，等待并打印 `waiting for the Agent another process is starting (30s of 180s)` + 持锁者 pid/host |
+| 4 | 同上，另一个 headless | exit 1 | 同样等待（`supervise()` 路径） |
+| 5 | 开关 `resumeInterruptedOnStart=true`，有中断 run 且有模型 → 启动 `future agent` | 无续跑 | 日志 `1 conversation(s) checked, 1 continued`；假端点收到 1 次请求，最后一条 user 消息是续跑 prompt；会话 `interruptedRun` 变为 null、`queryCount` 1→2 |
+| 6 | 同上但**开关未开**（默认） | — | **0 次**续跑，会话如实保持 `interrupted_by_restart` |
+| 7 | 中断会话没有可用模型 | — | 如实报告 `has no model configured; left interrupted`，不假装成功 |
+| 8 | 中断时间超过 7 天 | — | 跳过（计入 `checked`，不计入 `continued`） |
+
+同轮修掉的测试/环境问题：
+
+| # | 问题 | 根因（实测） | 修法 |
+|---|---|---|---|
+| 9 | `models::tests::registry_injects_future_models_from_disk_cache` 并行偶发（HEAD 10 次 2 次失败） | 多个测试模块在没有 `TestHome` 的情况下构建 `Registry`，其后台刷新线程会在「reset → 断言」窗口内把另一份目录写进进程级内存缓存 | 测试构建里给读/发布加同一把 `CACHE_ACCESS`（可重入），复位、发布、构建互斥；并给刷新线程加代际号，跨过复位的旧线程不再发布 |
+| 10 | 长路径 worktree 下 `grpc::tests::the_public_serve_wrappers…` 失败 | `$HOME/.future/run/agent.sock` 超过 unix `sun_path`（macOS 104 字节）：worktree 下 113，主工作树 78 | 端点路径超预算时回退到临时目录下的**每用户短目录**＋路径哈希（仍按实例隔离）；短路径布局不变 |
+| 11 | `cli/tests/bin.rs::config_wizard_reports_the_missing_console…` 挂死 | stdin 是管道时，unix 侧仍让 `rpassword` 打开 `/dev/tty`；进程有控制终端时永久阻塞（Windows 侧本来有防护） | 在调用平台读取前就拒绝非终端 stdin，与 Windows 报同一句错误 |
+
+改动前的那三行（1、2、3）是本次修复的起点：它们记录的是**修复前**的行为，用来证明修复真的改变了行为，
+而不是"本来就能用"。
+
+已知未覆盖：Windows 命名管道与进程组；有真实模型凭据时的 `cause` 区分（见 §12）。

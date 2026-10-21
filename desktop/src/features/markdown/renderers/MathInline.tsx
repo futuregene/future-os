@@ -1,5 +1,5 @@
-import katex from "katex";
 import { useMemo } from "react";
+import { mathHtml, useKatex } from "../lazyKatex";
 
 /* eslint-disable react/dom-no-dangerously-set-innerhtml -- KaTeX renders
    HTML-escaped output; dangerouslySetInnerHTML is its documented render path */
@@ -11,33 +11,15 @@ interface MathInlineProps {
 /**
  * Inline math formula rendered with KaTeX.
  * Renders within the text flow (no displayMode).
+ *
+ * KaTeX loads on the first formula (`../lazyKatex`); until it lands the formula
+ * shows its source, so the sentence keeps its shape instead of reflowing.
  */
 export function MathInline({ code }: MathInlineProps) {
-  const html = useMemo(() => {
-    try {
-      return katex.renderToString(code, {
-        displayMode: false,
-        throwOnError: false,
-        trust: true,
-        strict: false,
-      });
-    }
-    catch {
-      return `<span class="text-danger">${escapeHtml(code)}</span>`;
-    }
-  }, [code]);
+  const katex = useKatex();
+  const html = useMemo(() => (katex ? mathHtml(katex, code, false) : null), [katex, code]);
 
-  return (
-    <span
-      className="inline-block"
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
-}
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return html === null
+    ? <code className="font-mono text-ink-soft">{code}</code>
+    : <span className="inline-block" dangerouslySetInnerHTML={{ __html: html }} />;
 }

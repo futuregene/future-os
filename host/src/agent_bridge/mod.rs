@@ -16,7 +16,6 @@ mod prompt;
 mod queries;
 mod reconciliation;
 mod replica;
-pub mod resume;
 pub mod review;
 mod run_control;
 mod session;
@@ -78,7 +77,6 @@ pub use self::reconciliation::{
     attach_remote_stream, reconcile_interrupted_runs, reconcile_thread_workspace,
     spawn_active_run_watchdog,
 };
-pub use self::resume::resume_interrupted_runs_at_launch;
 pub use self::run_control::{abort_run, compact_agent_session, compact_thread_context};
 pub use self::run_control::{abort_session, wait_for_agent_idle, AbortSessionOutcome};
 pub use self::session::fork_agent_session;

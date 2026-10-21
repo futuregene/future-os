@@ -41,6 +41,11 @@ Local development sessions. Desktop starts its embedded Agent by default;
 - `start-desktop-windows.bat` / `start-desktop-windows.ps1` — Windows wrapper and implementation.
 - `start-mobile-android.sh` — Expo/Android dev session (SDK checks, prebuild, Gradle or Metro).
 - `start-mobile-ios.sh` — Expo/iOS dev session (CocoaPods, prebuild, Xcode build or Metro).
+- `lab-guard.sh` — runs an Agent experiment only if its `FUTURE_HOME` provably cannot reach
+  the real `~/.future`: the value must be set, absolute, symlink-resolved and under
+  `/tmp`, `$TMPDIR` or `/private/var/folders`. It also owns cleanup (`pids`/`kill`), which
+  signals only pids whose provenance names the lab root and that hold nothing under the
+  real data root. Tests: `lab-guard.test.sh`. Never on a product entry point's path.
 
 See the [Desktop Agent guide](../docs/guide/desktop-agent.md) for options, exit semantics and recovery. DRY_RUN=1 launches no processes; RUN_CHECKS=1 performs static checks only. Occupied dev ports fail without switching; relative Cargo output paths resolve against the repository root.
 

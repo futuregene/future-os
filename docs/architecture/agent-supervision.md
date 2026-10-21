@@ -3,7 +3,10 @@
 > [中文](agent-supervision.zh-CN.md)
 >
 > Design date: 2026-10-21. Source baseline: `a91fcf0ec`.
-> Status: **Design only; no code changed.** P1 has not started. This document separates the approved design from the product decisions that need the user's sign-off — see [§2](#2-approved-design-vs-product-decisions); the open items are collected in [§12](#12-open-questions).
+> Status: **P1 has landed** (supervisor, `Busy` yielding, bounded waiting, the breaker, all three entries wired, and
+> Agent-triggered continuation). This document separates what landed from the product decisions that still need
+> the user's sign-off — see [§2](#2-approved-design-vs-product-decisions); open items are in
+> [§12](#12-open-questions) and the measurements are in [§13](#13-measured-behaviour).
 
 Three entry points can bring an Agent up today: `future agent`, `future headless`, and `future tui`. All three honour the same instance lock, but **who starts it, who owns it, and what happens when it dies** each has its own answer. That layer is what is missing, and it is what this document adds. It changes neither the instance lock, the storage format, nor the RPC contract.
 
@@ -35,17 +38,17 @@ All three funnel through [`select_agent`](../../packages/rpc/src/connection.rs):
 | D3 | One supervisor per client: probe → confirm absent → take the lock → start or yield | Design | **Approved** |
 | D4 | Waiting is bounded and visible (see [§5](#5-waiting-is-bounded)) | Design requirement | **Approved** |
 | D5 | A crash-loop breaker (see [§6](#6-the-breaker)) | Design | **Approved** |
-| **P1** | Supervisor core + `Busy` classification + wiring the three entries ([§10](#10-implementation-checklist)) | Implementation | Design approved; **starting work needs the user's go-ahead** |
+| **P1** | Supervisor core + `Busy` classification + wiring the three entries ([§10](#10-implementation-checklist)) | Implementation | **Landed** |
 | **D6** | TUI switches to "external first, otherwise in-process" and drops the child sidecar ([§7](#7-tui-starts-the-agent-in-process)) | **Product decision** | **Awaiting the user** |
 | **P2** | Let the Agent outlive the TUI: detached sidecar + `--ephemeral` idle exit ([§8](#8-lifetime-and-ownership)) | **Product decision** | **Awaiting the user** |
 | **D7** | After the **user** stops the Agent, should other clients restart it? ([§4.3](#43-four-kinds-of-death)) | Product decision | Recommendation: no; **awaiting confirmation** |
-| **D8** | Post-restart continuation: who runs it, and when is a run resumable? (§9.1, §9.2) | Design | **Approved**; the criterion is the cause, not the subscription count |
-| **D9** | The trigger lives in the Agent too (proposed by the user, 2026-10-21) | Product decision | **Adopted**, with four premises (cause / the switch follows the executor / guardrails / the marker) |
+| **D8** | Post-restart continuation: who runs it, and when is a run resumable? (§9.1, §9.2) | Design | **Partly landed**: the continuation criterion is implemented; the `cause` distinction is not (see §12) |
+| **D9** | The trigger lives in the Agent too (proposed by the user, 2026-10-21) | Product decision | **Landed**: the Agent triggers it after starting; the switch is `resumeInterruptedOnStart` in `~/.future/agent/settings.json` (**on by default**, matching the desktop's `autoResumeInterrupted`); the desktop's one-shot pass is retired |
 | **D10** | Continuation sends no user message; it continues inside the loop via a request-only directive (§9.3, proposed by the user, 2026-10-21) | Product decision → design | **Adopted** (as a plan); needs the assistant-tail guard relaxed, and **implementation is a separate task** |
 
 The two entries marked "awaiting the user" are **not settled**. This document does not design code paths for them; it states the options, their costs, and what they affect.
 
-An entry marked "adopted/approved" fixes only the **plan**; it does not mean the behaviour exists. D10 cannot run today (the assistant-tail guard is still there), and P1, the cause, Agent-triggered continuation and the user-message-free resume are all still unassigned implementation work.
+An entry marked "landed" has code and tests behind it; "approved" is still only a plan. D10 cannot run today (the assistant-tail guard is still there) and D8's cause distinction is not implemented.
 
 ## 3 Inputs to a decision
 
@@ -198,7 +201,7 @@ Under either option, **the idle decision must be made by the Agent from real sta
 
 ### 9.1 What happens to the conversation after a restart
 
-[#1277](../../host/src/agent_bridge/resume.rs) supplies the right foundation, but its boundaries decide whether "a restart is just jitter" actually holds. This design must depend on it explicitly, or self-healing turns "the conversation continues" into "the conversation stops half way".
+[#1277](../../agent/src/rpc/resume.rs) (the implementation of its day, since taken over by the Agent) supplies the right foundation, but its boundaries decide whether "a restart is just jitter" actually holds. This design must depend on it explicitly, or self-healing turns "the conversation continues" into "the conversation stops half way".
 
 #### What it actually does
 
@@ -216,7 +219,7 @@ So the accurate statement is: **the conversation does not end and history is not
 
 | Condition | Today | What this design must do |
 |---|---|---|
-| Someone runs the continuation pass in the restarted session | **Only Desktop does** ([lib.rs](../../desktop/src-tauri/src/lib.rs)); headless runs only `reconcile_interrupted_runs` (settle/reattach, no prompt), and the TUI has nothing | The Agent triggers it itself once Ready, so no host needs to be present (see §9.2) |
+| Someone runs the continuation pass in the restarted session | Historically only Desktop did; headless ran only `reconcile_interrupted_runs` (settle/reattach, no prompt), and the TUI had nothing | **Landed**: the Agent triggers it itself once Ready, so no host needs to be present; the desktop pass is retired so one conversation cannot receive two continuations (see §9.2) |
 | The interruption must leave a resumable state | A graceful stop goes through `cancel_all` → terminal marker → `interruptedRun` null → `plan_resume` says `Terminal` → **no resume**; only an abnormal death (`kill -9` / crash / OOM) leaves `interrupted` | On a graceful exit, mark the run by its cause: `agent_shutdown` → resumable, `user_cancelled` → not (see premise 1 below) |
 | The conversation must have a thread + run row in `app.db` | Run rows come from a host-submitted prompt or from import (discovery every 60s) | A box running only a TUI, with no host, has no candidate at all; the first self-healed launch should import once |
 | The remaining product gates | Newest run, not `waiting_approval`, within 7 days, `autoResumeInterrupted` (on by default — it spends the user's credits) | Unchanged |
@@ -413,7 +416,7 @@ D10 ahead of the original "send a prompt" shape: do the "tail is a tool result" 
 
 ## 10 Implementation checklist
 
-### P1 (design approved; starting work needs the user's go-ahead)
+### P1 (landed)
 
 | Change | Location |
 |---|---|
@@ -431,7 +434,7 @@ D10 ahead of the original "send a prompt" shape: do the "tail is a tool result" 
 | A user-message-free resume acceptance path + the request-only directive + the assistant-tail guard (D10) | `agent/src/rpc/session_prompt.rs`, `agent/src/agent/run_loop.rs`, `agent/src/session/entry.rs` |
 | An "unknown" placeholder tool result when a crashed tail lacks one | `agent/src/agent/run_loop.rs` (beside the existing cancel path) |
 | `run_started` carries `auto_resume_of`; clients render "continuing automatically" | `agent/src/session/entry.rs`, `tui/`, `desktop/`, `mobile/`, `packages/thread-projection/` |
-| Retire the old one-shot pass (`resume_interrupted_runs_at_launch`) | `host/src/agent_bridge/resume.rs`, `desktop/src-tauri/src/lib.rs` |
+| The old one-shot pass is retired (`resume_interrupted_runs_at_launch` and `host/src/agent_bridge/resume.rs` deleted with it) | `desktop/src-tauri/src/lib.rs`; the replacement lives in `agent/src/rpc/resume.rs` |
 
 ### Later
 
@@ -468,3 +471,34 @@ Questions the user must answer, ordered by blast radius:
 6. **Go-ahead for P1.** The design is approved, but all three entries' startup paths change; D8/D9/D10's items (the cause, Agent-triggered continuation, the switch following the executor, the user-message-free resume) should ride in P1 — otherwise self-healing leaves conversations half way.
 
 Not user decisions — parameters to tune against measurement: the 180s wait cap, the 3-per-300s breaker threshold, the 60s initial cooldown, `IDLE_GRACE` 120s, and whether `future tui -p` also embeds.
+
+## 13 Measured behaviour
+
+Every row below was **run**, not inferred from reading code: a release binary, one isolated
+`FUTURE_HOME` per case, nothing touching the developer's real `~/.future`, and a local stub
+model endpoint so no real credential was spent on the verification.
+
+| # | Scenario | Before | Now |
+|---|---|---|---|
+| 1 | `future agent` owns the Agent, headless attached → `kill -9` the agent | nobody took over within 30s; headless only reconnected | headless brings a new Agent up **within 3s** (`the Agent is gone; starting a new one`, new instance id) |
+| 2 | headless owns the Agent, TUI attached → end headless | nobody took over within 40s; the TUI sat on `Connection to agent lost` | the TUI brings a new Agent up **within 1s** |
+| 3 | Lock held, default endpoint absent (Agent bound to TCP only) → start the TUI | the TUI **exited 1** with "Cannot start a local Agent" | the TUI **keeps waiting**, printing `waiting for the Agent another process is starting (30s of 180s)` plus the holder's pid/host |
+| 4 | Same, with another headless | exit 1 | the same wait through `supervise()` |
+| 5 | `resumeInterruptedOnStart=true`, an interrupted run and a model → start `future agent` | no continuation | `1 conversation(s) checked, 1 continued`; the stub received one request whose last user message is the continuation prompt; `interruptedRun` becomes null and `queryCount` goes 1→2 |
+| 6 | The same but the switch is **off** (the default) | — | **zero** continuations; the session honestly stays `interrupted_by_restart` |
+| 7 | An interrupted session with no usable model | — | reported as `has no model configured; left interrupted`, never a fake success |
+| 8 | An interruption older than seven days | — | skipped (counted as checked, not continued) |
+
+Test and environment failures fixed in the same change:
+
+| # | Problem | Root cause (measured) | Fix |
+|---|---|---|---|
+| 9 | `models::tests::registry_injects_future_models_from_disk_cache` flaked under parallelism (2 of 10 runs) | Several test modules build a `Registry` without a `TestHome`; a refresh thread they spawn publishes a different catalog into the process-global memory cache inside another test's reset→assert window | Test builds serialize reads, publishes and resets through one re-entrant `CACHE_ACCESS` lock, and a refresh thread carries a generation number so one that spans a reset no longer publishes |
+| 10 | `grpc::tests::the_public_serve_wrappers…` failed in a long-path worktree | `$HOME/.future/run/agent.sock` exceeded the unix `sun_path` limit (104 bytes on macOS): 113 in the worktree, 78 in the main tree | An endpoint over budget falls back to a per-user short directory under the temp root plus a path hash (still per-instance); short homes keep the documented layout |
+| 11 | `cli/tests/bin.rs::config_wizard_reports_the_missing_console…` hung | With piped stdin, the unix path still let `rpassword` open `/dev/tty`; a process with a controlling terminal blocks there forever (Windows already had a guard) | Non-terminal stdin is refused before the platform read, with the same message Windows reports |
+
+Rows 1–3 under "Before" are where this work started: they record the behaviour **before** the fix, so the
+table shows that something changed rather than that it always worked.
+
+Not covered: Windows named pipes and process groups; the `cause` distinction with a real credential
+(see §12).

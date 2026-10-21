@@ -213,10 +213,16 @@ fn service_fixture() {
             AgentService::with_instance(config, |_| {
                 let metadata = root.join("agent").join("agent-instance.json");
                 let original = std::fs::read(&metadata)?;
-                assert!(matches!(
-                    select(),
-                    Err(future_rpc::connection::ConnectionError::StartupBlocked(_))
-                ));
+                // A held lock is a yield, not a fault: the holder owns the
+                // Agent, so the gate reports `InstanceBusy` — the type
+                // supervision waits on — and never a second start.
+                assert!(
+                    matches!(
+                        select(),
+                        Err(future_rpc::connection::ConnectionError::InstanceBusy(_))
+                    ),
+                    "a held instance lock must block local startup"
+                );
                 assert_eq!(std::fs::read(metadata)?, original);
                 assert!(!root.join("agent").join("agent.db").exists());
                 Ok(())
