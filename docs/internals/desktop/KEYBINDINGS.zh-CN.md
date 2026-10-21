@@ -270,7 +270,9 @@ desktop/src/features/settings/
 | `thread.find` | `features/agent/search/ThreadSearch` | 只有打开会话时才存在 |
 | `chat.stop` | `features/agent/AgentThread` | 中断在 `useAgentThreadState` 里，且只在回复流式输出期间 |
 | `composer.focus` | `features/agent/Composer` | 只有输入框自己知道它能不能持有光标 |
-| `group.previous` / `group.next` / `thread.previous` / `thread.next` / `rail.search` | `components/layout/ActivityRail` | 绘制顺序是左栏自己的 |
+| `composer.model.*` / `composer.thinking.*` / `composer.approval.*` | `features/agent/composer/ComposerControls` | 三个选择器的值与可用性都在那一行里 |
+| `thread.usage` | `features/agent/ThreadHeader` | 账单和它的对话框是表头的 |
+| `group.previous` / `group.next` / `thread.previous` / `thread.next` / `rail.search` / `rail.view.*` / `rail.device.next` | `components/layout/ActivityRail` | 绘制顺序、视图与设备筛选都是左栏自己的 |
 | `terminal.toggle` | `features/terminal/useTerminalPanel` | 需要面板的打开状态；也是终端唯一放行的命令 |
 
 注册即「可用」：没人注册就没人认领。所以没有回复在流式输出时，`chat.stop` 既不做事，
@@ -307,6 +309,12 @@ desktop/src/features/settings/
 | 上一个 / 下一个对话 | `mod+[` / `mod+]` | 细调：逐个对话行；可连按 |
 | 上一个 / 下一个工作区或对话 | `mod+shift+[` / `mod+shift+]` | 粗调：按住 ⇧ 迈更大一步；可连按 |
 | 筛选对话列表 | `mod+shift+f` | 跳到输入框，不做跳转 |
+| 列表切到最近的对话 / 切到工作区 | `mod+alt+1` / `mod+alt+2` | 左栏的视图切换；一个答案一个键，不是开关 |
+| 切换到下一台设备 | `mod+shift+d` | 沿设备选择器的环走（全部 → 本机 → 每台配对机器）；可连按。面板内同一组键属于 `vibe.device` |
+| 上一个 / 下一个模型 | `mod+alt+shift+m` / `mod+alt+m` | 输入框的模型选择器；环形回绕 |
+| 上一档 / 下一档思考等级 | `mod+alt+shift+t` / `mod+alt+t` | 在该模型接受的档位之间回绕 |
+| 上一档 / 下一档访问级别 | `mod+alt+shift+a` / `mod+alt+a` | 在当前账号与本机提供的档位之间回绕 |
+| 查看本次对话用量 | `mod+alt+u` | 表头的账单；只在会话有 agent session 时注册 |
 | 切换到对话 / 工作区 / 技能 / 定时任务 / 远程桌面 | `mod+1` … `mod+5` | |
 | 显示或隐藏左侧栏 | `mod+b` | |
 | 显示或隐藏右侧面板 | `mod+shift+b` | |

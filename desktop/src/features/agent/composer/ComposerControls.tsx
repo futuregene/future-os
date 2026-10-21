@@ -9,9 +9,27 @@ import { automaticApprovalAvailable, effectiveApprovalTier } from "../../../inte
 import { useProviderNames } from "../../../integrations/agent/useProviderNames";
 import { useSandboxAvailability } from "../../../integrations/agent/useSandboxAvailability";
 import { isLinux, isWindows } from "../../../lib/platform";
+import { useCommand } from "../../keyboard/commands";
 
 /** Approval-tier order for the composer dropdown (availability is host-gated). */
 const APPROVAL_TIERS: ApprovalTier[] = ["manual", "sandbox", "auto", "off"];
+
+/**
+ * The next entry of a small ring, wrapping at both ends.
+ *
+ * A ring rather than "stop at the last one": these are four to six values a
+ * reader cycles to compare, and a key that silently stopped working at the end
+ * of a list they cannot see would read as broken. Nothing selected (`undefined`,
+ * or a stored value this build dropped) enters at the end the move comes from.
+ */
+function stepRing<T>(ring: readonly T[], current: T | undefined, delta: 1 | -1): T | undefined {
+  if (ring.length === 0)
+    return undefined;
+  const index = current === undefined ? -1 : ring.indexOf(current);
+  if (index === -1)
+    return ring[delta === 1 ? 0 : ring.length - 1];
+  return ring[(index + delta + ring.length) % ring.length];
+}
 
 /**
  * Icon per approval tier, shared between the dropdown rows and the trigger so
@@ -64,6 +82,56 @@ export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyR
   const activeThinkingLevel = supportsThinking ? normalizeThinkingLevel(thinkingLevel) : "off";
   // Localized thinking-level label; unknown levels fall back to the raw value.
   const thinkingLevelLabel = (level: string) => t(`composer.thinkingLevelLabels.${level}`, { defaultValue: level });
+  /**
+   * Whether a tier can be picked here — the same rule the menu's rows use, so a
+   * keyboard step can never land on a row the menu would refuse to offer.
+   */
+  function tierAvailable(tier: ApprovalTier): boolean {
+    if ((tier === "sandbox" || tier === "auto") && !sandboxAvailability.available)
+      return false;
+    return !(tier === "auto" && !autoAvailable);
+  }
+  const approvalRing = APPROVAL_TIERS.filter(tierAvailable);
+
+  // The three pickers, from the keyboard. A `SelectMenu` has no roving focus, so
+  // opening one would only get a reader to a pointer target; stepping the value
+  // is what hands on the keys are asking for. One pair each, because holders of
+  // `⇧` walk back instead of going the long way round.
+  const canStepModel = !disabled && modelOptions.length > 1 && Boolean(onModelChange);
+  useCommand("composer.model.previous", () => {
+    const next = stepRing(modelOptions, activeModel, -1);
+    if (next)
+      onModelChange?.(modelKey(next));
+  }, canStepModel);
+  useCommand("composer.model.next", () => {
+    const next = stepRing(modelOptions, activeModel, 1);
+    if (next)
+      onModelChange?.(modelKey(next));
+  }, canStepModel);
+  const canStepThinking = !disabled && supportsThinking && Boolean(onThinkingLevelChange);
+  useCommand("composer.thinking.previous", () => {
+    const next = stepRing(thinkingLevels, activeThinkingLevel, -1);
+    if (next)
+      onThinkingLevelChange?.(next);
+  }, canStepThinking);
+  useCommand("composer.thinking.next", () => {
+    const next = stepRing(thinkingLevels, activeThinkingLevel, 1);
+    if (next)
+      onThinkingLevelChange?.(next);
+  }, canStepThinking);
+  // One available tier is no choice at all: the key stays unclaimed rather than
+  // consuming a press on a ring that would only ever hold the value it has.
+  const canStepApproval = !disabled && approvalRing.length > 1 && Boolean(onChangeApprovalTier);
+  useCommand("composer.approval.previous", () => {
+    const next = stepRing(approvalRing, visibleApprovalTier, -1);
+    if (next)
+      onChangeApprovalTier?.(next);
+  }, canStepApproval);
+  useCommand("composer.approval.next", () => {
+    const next = stepRing(approvalRing, visibleApprovalTier, 1);
+    if (next)
+      onChangeApprovalTier?.(next);
+  }, canStepApproval);
 
   return (
     <>
@@ -110,7 +178,7 @@ export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyR
                   {APPROVAL_TIERS.map(tier => (
                     <SelectMenuItem
                       className="py-1.5"
-                      disabled={((tier === "sandbox" || tier === "auto") && !sandboxAvailability.available) || (tier === "auto" && !autoAvailable)}
+                      disabled={!tierAvailable(tier)}
                       key={tier}
                       selected={visibleApprovalTier === tier}
                       onSelect={() => {
