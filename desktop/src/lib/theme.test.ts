@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { invokeCommand } from "../integrations/tauri/invoke";
+
+vi.mock("../integrations/tauri/invoke", () => ({
+  invokeCommand: vi.fn(() => Promise.resolve()),
+}));
+
 /**
  * Theme module under test.
  *
@@ -42,7 +48,10 @@ beforeEach(() => {
   localStorage.clear();
   document.documentElement.classList.remove("dark");
   document.documentElement.style.colorScheme = "";
+  document.documentElement.style.removeProperty("--color-surface");
+  document.documentElement.style.removeProperty("--color-ink");
   delete document.documentElement.dataset.palette;
+  vi.mocked(invokeCommand).mockClear();
   vi.unstubAllGlobals();
   vi.resetModules();
 });
@@ -218,5 +227,22 @@ describe("theme palette", () => {
       expect(palette).toBe(palette.toLowerCase());
       expect(palette).not.toContain(" ");
     }
+  });
+
+  it("hands the rendered surface and ink to the window frame after a palette change", async () => {
+    installMatchMedia(false);
+    vi.mocked(invokeCommand).mockClear();
+    document.documentElement.style.setProperty("--color-surface", "#282828");
+    document.documentElement.style.setProperty("--color-ink", "#ebdbb2");
+    const theme = await import("./theme");
+
+    theme.setThemePalette("gruvbox");
+
+    // The backend cannot map a palette id to a color; the computed tokens are
+    // the only place the winning palette is known.
+    expect(invokeCommand).toHaveBeenCalledWith("set_window_caption_colors", {
+      caption: "#282828",
+      text: "#ebdbb2",
+    });
   });
 });
