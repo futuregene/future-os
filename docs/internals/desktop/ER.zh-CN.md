@@ -226,6 +226,21 @@ Run Event 表示 Run 过程中的结构化事件。
 `run_sequence` 与 `event_id`；GUI 观察者先按游标校验再扇出（重放去重、跳号触发
 重连重放），保证不乱序、不重复。
 
+session 作用域（`run_id` 为空、`epoch = -1`、按 `session_idx` 排序）是第二条日志，
+从不被压实：手动（standalone）压缩与 run 之间的每次设置变更都落在这里。新建的
+观察者从 `session_cursor = -1` 起读，于是一次补读会把这条日志从头读一遍——这既是
+冷启动能追上进度的原因，也正是“重放的事件”与“刚发生的事件”看起来一模一样的原因。
+由此有两条必须知道的结果：
+
+- 补读这条通道被收窄：`compaction_*` 不再以 `agent-event` 扇给 webview。客户端会把
+  这个 payload 变成一条追加在消息列表末尾的分隔线，因此重放的副本会把几天前的压缩
+  画在最新消息后面——而下一次打开会话它就消失，因为转录本身已经在压缩真实发生的
+  位置画了那条分隔线。白名单里其余事件都是**状态陈述**（`model_changed`、
+  `cwd_changed`、`permission_level_changed` 等），最终收敛到最后一份，重放无害。
+- NATS 镜像（`publish_event`）仍然会发布重放事件。它没有 `event_id` 去重，所以远端
+  客户端**可能**收到同一批重放的 `compaction_*`。这是读代码得到的推断，未做端到端
+  验证；动手机的压缩标记时把它当作未定事项。
+
 事件类型（与 proto 词汇表一致）：
 
 - `agent_start` / `agent_end` — Run 生命周期（`agent_end` 携带 error / usage / duration 权威合计）
