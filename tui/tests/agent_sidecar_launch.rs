@@ -27,9 +27,11 @@
 /// assertion below is about. 60 s is 160x the measured latency and matches the
 /// sibling fixture's window in `agent_sidecar_readiness.rs` (see
 /// `docs/testing/flaky-tui.md` §7.1 and §11.3).
+#[cfg(unix)]
 const LAUNCH_FIXTURE_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Restore an environment variable to what it was.
+#[cfg(unix)]
 fn restore(key: &str, previous: Option<std::ffi::OsString>) {
     match previous {
         Some(value) => std::env::set_var(key, value),
