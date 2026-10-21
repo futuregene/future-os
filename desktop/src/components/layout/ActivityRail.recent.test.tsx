@@ -540,3 +540,54 @@ describe("the recent view and the tree do not leak into each other", () => {
     second.unmount();
   });
 });
+
+/**
+ * The two views from the keyboard.
+ *
+ * The switch on screen is for a pointer; these are its keys. One key per answer
+ * rather than a toggle, so pressing "the recent ones" twice stays where it is
+ * instead of flipping to the list its label does not name.
+ */
+describe("the rail's two views from the keyboard", () => {
+  let uninstallShortcuts: () => void;
+  beforeEach(() => {
+    resetAllCommandBindings();
+    uninstallShortcuts = installShortcuts();
+  });
+  afterEach(() => {
+    uninstallShortcuts();
+    resetAllCommandBindings();
+  });
+
+  const press = (init: KeyboardEventInit) => act(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+  });
+  const pressed = (container: HTMLElement, id: string) =>
+    container.querySelector(`[data-testid="rail-view-${id}"]`)?.getAttribute("aria-pressed");
+
+  it("switches to the recent list and back to the tree", () => {
+    const view = mount(<ActivityRail {...props([thread("one")])} />);
+    expect(pressed(view.container, "workspace")).toBe("true");
+
+    press({ altKey: true, code: "Digit1", ctrlKey: true, key: "1" });
+    expect(pressed(view.container, "recent")).toBe("true");
+    expect(pressed(view.container, "workspace")).toBe("false");
+
+    // The same key again is still "the recent ones".
+    press({ altKey: true, code: "Digit1", ctrlKey: true, key: "1" });
+    expect(pressed(view.container, "recent")).toBe("true");
+
+    press({ altKey: true, code: "Digit2", ctrlKey: true, key: "2" });
+    expect(pressed(view.container, "workspace")).toBe("true");
+    expect(pressed(view.container, "recent")).toBe("false");
+    view.unmount();
+  });
+
+  it("leaves the keys unclaimed on a section with no list", () => {
+    const view = mount(<ActivityRail {...props([thread("one")], { active: "skill" })} />);
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, altKey: true, code: "Digit1", ctrlKey: true, key: "1" });
+    act(() => window.dispatchEvent(event));
+    expect(event.defaultPrevented).toBe(false);
+    view.unmount();
+  });
+});

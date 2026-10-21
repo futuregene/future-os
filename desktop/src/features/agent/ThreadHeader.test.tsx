@@ -4,6 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
 import { WorkspaceBadge } from "../../components/layout/WorkspaceBadge";
+import { installShortcuts } from "../../test/installShortcuts";
 import { ThreadHeader } from "./ThreadHeader";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -268,4 +269,49 @@ it("draws the shell's workspace badge after the machine, and nothing when it is 
   // two headers must agree on the order or the same conversation reads
   // differently on the machine it is on and on the one watching it.
   expect(machine.compareDocumentPosition(workspace) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+it("opens the same account book from the keyboard", async () => {
+  revalidateUsage.mockClear();
+  const uninstall = installShortcuts();
+  try {
+    render(
+      <ThreadHeader
+        leftPanelExpanded
+        onToggleLeftPanel={() => {}}
+        thread={thread}
+        usage={usage}
+      />,
+    );
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, altKey: true, code: "KeyU", ctrlKey: true, key: "u" })));
+    // The key is the button's own path, not a second one: it re-reads the session
+    // and then shows the same dialog.
+    expect(revalidateUsage).toHaveBeenCalledWith("t1");
+    await act(async () => {});
+    expect(document.body.textContent).toContain("Token usage and amount");
+  }
+  finally {
+    uninstall();
+  }
+});
+
+it("leaves the usage key unclaimed on a conversation with no agent session", () => {
+  const uninstall = installShortcuts();
+  try {
+    render(
+      <ThreadHeader
+        leftPanelExpanded
+        onToggleLeftPanel={() => {}}
+        thread={{ ...thread, agentSessionId: null } as typeof thread}
+      />,
+    );
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, altKey: true, code: "KeyU", ctrlKey: true, key: "u" });
+    act(() => window.dispatchEvent(event));
+    // Nothing to account for: the press stays free and no empty dialog appears.
+    expect(event.defaultPrevented).toBe(false);
+    expect(document.body.textContent).not.toContain("Token usage and amount");
+  }
+  finally {
+    uninstall();
+  }
 });

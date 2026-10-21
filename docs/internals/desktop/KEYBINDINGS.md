@@ -329,7 +329,9 @@ Everything that belongs to a view is registered by that view while it is mounted
 | `thread.find` | `features/agent/search/ThreadSearch` | only exists with a conversation open |
 | `chat.stop` | `features/agent/AgentThread` | the abort lives in `useAgentThreadState`, and only while a reply streams |
 | `composer.focus` | `features/agent/Composer` | only the composer knows whether it can hold a caret |
-| `group.previous` / `group.next` / `thread.previous` / `thread.next` / `rail.search` | `components/layout/ActivityRail` | the drawn order is the rail's own |
+| `composer.model.*` / `composer.thinking.*` / `composer.approval.*` | `features/agent/composer/ComposerControls` | the three pickers' values and availability live in that row |
+| `thread.usage` | `features/agent/ThreadHeader` | the account book and its dialog are the header's |
+| `group.previous` / `group.next` / `thread.previous` / `thread.next` / `rail.search` / `rail.view.*` / `rail.device.next` | `components/layout/ActivityRail` | the drawn order, the view and the device filter are the rail's own |
 | `terminal.toggle` | `features/terminal/useTerminalPanel` | needs the panel's open state; also the one command the terminal lets through |
 
 Registration *is* availability: nothing registered, nothing claimed. That is why
@@ -369,6 +371,12 @@ separate keymap — see *Modes* below.
 | Previous / next conversation | `mod+[` / `mod+]` | the fine move: every drawn conversation row; repeats |
 | Previous / next workspace or conversation | `mod+shift+[` / `mod+shift+]` | the coarse move: hold ⇧ for the bigger step; repeats |
 | Filter the conversation list | `mod+shift+f` | jumps to the field, does not navigate |
+| List recent conversations / List workspaces | `mod+alt+1` / `mod+alt+2` | the rail's view switch; one key per answer, not a toggle |
+| Switch to the next device | `mod+shift+d` | walks the device picker's ring (all → this machine → each paired one); repeats. `vibe.device` holds the same keys inside the panel |
+| Previous / next model | `mod+alt+shift+m` / `mod+alt+m` | the composer's model picker; wraps |
+| Previous / next thinking level | `mod+alt+shift+t` / `mod+alt+t` | wraps through every level the model accepts |
+| Previous / next access level | `mod+alt+shift+a` / `mod+alt+a` | wraps through the tiers this account and host can offer |
+| Show this conversation's usage | `mod+alt+u` | the header's receipt; registered only when the conversation has an agent session |
 | Go to Chats / Workspaces / Skills / Scheduled tasks / Remote | `mod+1` … `mod+5` | |
 | Show or hide the sidebar | `mod+b` | |
 | Show or hide the context panel | `mod+shift+b` | |

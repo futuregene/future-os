@@ -123,6 +123,7 @@ describe("command catalog", () => {
     expect(COMMANDS.filter(spec => spec.repeat).map(spec => spec.id).sort()).toEqual([
       "group.next",
       "group.previous",
+      "rail.device.next",
       "thread.next",
       "thread.previous",
       "vibe.focus.down",

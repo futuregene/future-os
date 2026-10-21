@@ -1022,6 +1022,39 @@ export function ActivityRail({
   // Filtering the list is a jump to the field, not a search of its own: the
   // command palette (a separate, later entry) navigates, this narrows.
   useCommand("rail.search", () => setSearchOpen(true), listShowing);
+  // Which list is drawn, one key per answer. The switch on screen has two
+  // segments; a key that named one of them and meant "the other one when this is
+  // already on" is a key whose second press does what its label does not say.
+  useCommand("rail.view.recent", () => setRailView("recent"), listShowing);
+  useCommand("rail.view.workspace", () => setRailView("workspace"), listShowing);
+
+  /**
+   * The device filter as one ring, in the order the picker above the list draws
+   * it: all machines, this machine, then each paired machine.
+   *
+   * A cycle rather than a key that opens the picker: its menu is a pointer target
+   * (plain buttons, no roving focus), so opening it from the keyboard would get a
+   * reader somewhere they still have to click. "The next machine" is one press.
+   */
+  const stepDevice = useCallback(() => {
+    if (!onChangeDeviceFilter)
+      return;
+    const filterKey = (filter: DeviceFilter) => filter.kind === "all"
+      ? "all"
+      : `device::${filter.desktopId ?? "local"}`;
+    const ring: DeviceFilter[] = [
+      { kind: "all" },
+      { desktopId: null, kind: "device" },
+      ...remotePeers.map(peer => ({ desktopId: peer.desktopId, kind: "device" }) as const),
+    ];
+    const index = ring.findIndex(entry => filterKey(entry) === filterKey(deviceFilter));
+    // A filter naming a machine this build no longer knows (`-1`) starts the
+    // ring over instead of guessing where it would have been.
+    onChangeDeviceFilter(ring[(index + 1) % ring.length]!);
+  }, [deviceFilter, onChangeDeviceFilter, remotePeers]);
+  // With no other machine paired the picker is not drawn either, and the key
+  // stays unclaimed rather than consuming a press that changes nothing.
+  useCommand("rail.device.next", stepDevice, listShowing && Boolean(onChangeDeviceFilter) && remotePeers.length > 0);
 
   /**
    * One workspace's heading, built once and used by both list modes.

@@ -3,7 +3,9 @@ import type { ComponentProps } from "react";
 import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetAllCommandBindings } from "../../features/keyboard/shortcuts";
+import { installShortcuts } from "../../test/installShortcuts";
 import { flushAsync } from "../../test/renderHook";
 import { ActivityRail } from "./ActivityRail";
 
@@ -912,6 +914,67 @@ describe("the search and the device picker", () => {
     // The picker stays where it was: opening the field does not push it out.
     expect(tools().contains(picker())).toBe(true);
 
+    view.unmount();
+  });
+});
+
+/**
+ * The device filter from the keyboard.
+ *
+ * The picker one row above the list is a pointer target, so the keyboard's way
+ * through the machines is the ring the picker draws them in: all machines, this
+ * one, each paired one, then all machines again.
+ */
+describe("the device filter from the keyboard", () => {
+  let uninstallShortcuts: () => void;
+  beforeEach(() => {
+    resetAllCommandBindings();
+    uninstallShortcuts = installShortcuts();
+  });
+  afterEach(() => {
+    uninstallShortcuts();
+    resetAllCommandBindings();
+  });
+
+  const press = (init: KeyboardEventInit) => act(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+  });
+
+  /** One press from `filter`, with two machines paired. */
+  async function stepFrom(filter: ComponentProps<typeof ActivityRail>["deviceFilter"]) {
+    const onChangeDeviceFilter = vi.fn();
+    const view = await mountRail({
+      deviceFilter: filter,
+      onChangeDeviceFilter,
+      remotePeers: [peer, { ...peer, desktopId: "desktop_b", name: "Second machine" }],
+    });
+    press({ altKey: false, code: "KeyD", ctrlKey: true, key: "d", shiftKey: true });
+    const next = onChangeDeviceFilter.mock.calls[0]?.[0];
+    view.unmount();
+    return next;
+  }
+
+  it("walks all machines, this one and each paired one, then starts over", async () => {
+    expect(await stepFrom({ kind: "all" })).toEqual({ desktopId: null, kind: "device" });
+    expect(await stepFrom({ desktopId: null, kind: "device" })).toEqual({ desktopId: "desktop_a", kind: "device" });
+    expect(await stepFrom({ desktopId: "desktop_a", kind: "device" })).toEqual({ desktopId: "desktop_b", kind: "device" });
+    expect(await stepFrom({ desktopId: "desktop_b", kind: "device" })).toEqual({ kind: "all" });
+  });
+
+  it("starts the ring over from a machine this build no longer knows", async () => {
+    // A stored filter can name a machine that was unpaired since: the ring cannot
+    // place it, so the next press goes back to "all machines" rather than guessing.
+    expect(await stepFrom({ desktopId: "desktop_gone", kind: "device" })).toEqual({ kind: "all" });
+  });
+
+  it("leaves the key unclaimed when nothing else is paired", async () => {
+    const onChangeDeviceFilter = vi.fn();
+    const view = await mountRail({ onChangeDeviceFilter, remotePeers: [] });
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "KeyD", ctrlKey: true, key: "d", shiftKey: true });
+    act(() => window.dispatchEvent(event));
+    expect(onChangeDeviceFilter).not.toHaveBeenCalled();
+    // Nothing to switch to, so the press is not consumed either.
+    expect(event.defaultPrevented).toBe(false);
     view.unmount();
   });
 });

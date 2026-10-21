@@ -8,6 +8,7 @@ import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitleb
 import { IconButton } from "../../components/ui/IconButton";
 import { revalidateAgentState } from "../../integrations/agent/agentStateCache";
 import { startWindowDrag } from "../../lib/windowDrag";
+import { useCommand } from "../keyboard/commands";
 import { SessionUsageDialog } from "./SessionUsageDialog";
 
 interface ThreadHeaderProps {
@@ -51,6 +52,25 @@ export function ThreadHeader({
 }: ThreadHeaderProps) {
   const { t } = useTranslation("agent");
   const [usageOpen, setUsageOpen] = useState(false);
+  /**
+   * Open the account book, reading the session first.
+   *
+   * The cached figure can be behind (a run that ended while this window was in
+   * the background, an event missed during a reconnect), and a spend panel that
+   * opens on yesterday's numbers is worse than one that opens a moment later. The
+   * cached values stay on screen until the fresh read lands.
+   */
+  function openUsage() {
+    if (!thread?.agentSessionId)
+      return;
+    revalidateAgentState(thread.id);
+    setUsageOpen(true);
+  }
+  // The header's receipt, from the keyboard. `thread.usage` is enabled exactly
+  // when that button is drawn: a conversation with no agent session has nothing
+  // to account for, and the command must not be claimed there to open a dialog
+  // that can only say so.
+  useCommand("thread.usage", openUsage, Boolean(thread?.agentSessionId));
   return (
     // `pr-14` (56px) reserves the collapsed context-panel toggle's corner: its
     // 16px inset + 32px button + the same 8px gap the buttons to the left of it
@@ -85,16 +105,7 @@ export function ThreadHeader({
               data-testid="thread-usage"
               icon={<ReceiptText className="size-4" />}
               label={t("usage.open")}
-              onClick={() => {
-                // Read the session before showing its account book: the cached
-                // figure can be behind (a run that ended while this window was
-                // in the background, an event missed during a reconnect), and a
-                // spend panel that opens on yesterday's numbers is worse than
-                // one that opens a moment later. The cached values stay on
-                // screen until the fresh read lands.
-                revalidateAgentState(thread.id);
-                setUsageOpen(true);
-              }}
+              onClick={openUsage}
             />
           )
         : null}
