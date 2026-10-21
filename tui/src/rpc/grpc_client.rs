@@ -1396,20 +1396,25 @@ fn spawn_stream_manager(inner: Arc<Inner>) {
                         gate.wait().await;
                     }
                 }
-                tokio::select! {
+                let woke_by_poke = tokio::select! {
                     _ = &mut poked => {
                         // Session change or explicit connect_events: try the
                         // stream right away.
+                        true
                     }
                     _ = &mut stopped => {
                         if inner.stop.load(Ordering::SeqCst) { return; }
+                        false
                     }
-                    _ = tokio::time::sleep(backoff_delay(&inner)) => {}
-                }
+                    _ = tokio::time::sleep(backoff_delay(&inner)) => false,
+                };
                 if inner.stop.load(Ordering::SeqCst) {
                     return;
                 }
                 if inner.state.lock().current_session_id != session {
+                    break;
+                }
+                if woke_by_poke {
                     break;
                 }
                 let reachability = tokio::select! {
@@ -1460,8 +1465,17 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
         return StreamExit::Lost;
     }
     let poke_version = inner.poke_count.load(Ordering::SeqCst);
+    let poked = inner.poke_notify.notified();
+    tokio::pin!(poked);
+    poked.as_mut().enable();
+    if inner.poke_count.load(Ordering::SeqCst) != poke_version
+        || inner.state.lock().current_session_id != session
+    {
+        return StreamExit::Poked;
+    }
     let mut client = match tokio::select! {
         _ = &mut stopped => return StreamExit::Lost,
+        _ = &mut poked => return StreamExit::Poked,
         result = future_rpc::connection::connect_verified(
         &inner.addr,
         future_rpc::connection::EXPECTED_AGENT_VERSION,
@@ -1478,6 +1492,7 @@ async fn subscribe_stream(inner: &Arc<Inner>, session: &str) -> StreamExit {
     };
     let mut stream = match tokio::select! {
         _ = &mut stopped => return StreamExit::Lost,
+        _ = &mut poked => return StreamExit::Poked,
         result = client.stream_events(request) => result,
     } {
         Ok(resp) => resp.into_inner(),
