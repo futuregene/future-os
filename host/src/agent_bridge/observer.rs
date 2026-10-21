@@ -693,7 +693,23 @@ async fn record_message_activity(
     })
     .await
     {
-        Ok(Ok(())) => state.last_message_activity_ms = Some(timestamp),
+        Ok(Ok(advanced)) => {
+            state.last_message_activity_ms = Some(timestamp);
+            // The local GUI's sidebar is event-driven — a row's age label and its
+            // place in the list come from the stamp we just wrote — so without
+            // this signal a run driven from outside the GUI (CLI, scheduler,
+            // another machine) kept showing the age it had before the run.
+            // Announce only a write that moved the row: a deleted thread or a
+            // replayed older event has nothing for the row to show.
+            //
+            // This is the same throttle the store write sits behind (rapid
+            // token deltas are folded into at most one update a second, with
+            // prompts and terminals always flushing), so a streaming reply
+            // reaches the GUI about once a second and never per token.
+            if advanced {
+                crate::emit_thread_activity(&shared.thread_id, timestamp);
+            }
+        }
         result => eprintln!("FutureOS could not record message activity: {result:?}"),
     }
 }
@@ -1982,6 +1998,118 @@ mod tests {
         assert_eq!(activity(), Some(base + 600));
     }
 
+    /// A run driven from outside the GUI (the CLI, a scheduler, another
+    /// machine) has no GUI-side sender to ping the sidebar, so the observer is
+    /// the only writer that can move a row. Every advance it records must be
+    /// announced with the value it wrote — that signal is what patches the row
+    /// — and it must ride the same coalescing window as the store write:
+    /// a streaming reply announces about once a second, never per token.
+    #[tokio::test]
+    async fn recorded_activity_announces_the_stamp_a_gui_must_patch() {
+        let home = TestHome::new("observer-activity-announce");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-activity-announce"));
+        let _lease = lease_run("run-activity-announce");
+        let shared = Arc::new(ObserverShared::new(&thread.id));
+        let mut state = ObserverState::default();
+        let base = crate::store::now_millis() + 2_000;
+        let event = |kind: &str, idx, ms| {
+            let mut event = stream_event(kind, "run-activity-announce", idx);
+            event.timestamp = chrono::DateTime::from_timestamp_millis(ms)
+                .unwrap()
+                .to_rfc3339();
+            event
+        };
+        record_webview_fanout();
+        activity_fanout(&thread.id); // drain anything recorded before this test
+
+        assert!(
+            handle_event(
+                "sess-activity-announce",
+                &shared,
+                &mut state,
+                event("text_chunk", 0, base)
+            )
+            .await
+        );
+        assert_eq!(
+            activity_fanout(&thread.id),
+            [base],
+            "the first recorded advance is announced with the stamp written"
+        );
+
+        // Inside the window: a token delta and a settings change write nothing,
+        // so there is nothing to announce.
+        assert!(
+            handle_event(
+                "sess-activity-announce",
+                &shared,
+                &mut state,
+                event("text_chunk", 1, base + 300)
+            )
+            .await
+        );
+        assert!(
+            handle_event(
+                "sess-activity-announce",
+                &shared,
+                &mut state,
+                event("model_changed", 2, base + 400)
+            )
+            .await
+        );
+        assert_eq!(
+            activity_fanout(&thread.id),
+            Vec::<i64>::new(),
+            "a delta inside the one-second window must not reach the GUI"
+        );
+
+        // Past the window: one announcement, carrying the advanced stamp.
+        assert!(
+            handle_event(
+                "sess-activity-announce",
+                &shared,
+                &mut state,
+                event("text_chunk", 3, base + 1_000)
+            )
+            .await
+        );
+        assert_eq!(activity_fanout(&thread.id), [base + 1_000]);
+
+        // A terminal always flushes, even inside the window: the row must end
+        // on the reply's exact last activity, not on the last throttled tick.
+        assert!(
+            handle_event(
+                "sess-activity-announce",
+                &shared,
+                &mut state,
+                event("agent_end", 4, base + 1_100)
+            )
+            .await
+        );
+        assert_eq!(activity_fanout(&thread.id), [base + 1_100]);
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("get_thread")
+                .and_then(|thread| thread.last_message_at),
+            Some(base + 1_100),
+            "the announced stamp is the one the row holds"
+        );
+
+        // A replay older than the row is not an advance: no write, no signal.
+        let mut replay = ObserverState::default();
+        assert!(
+            handle_event(
+                "sess-activity-announce",
+                &shared,
+                &mut replay,
+                event("text_chunk", 0, base)
+            )
+            .await
+        );
+        assert_eq!(activity_fanout(&thread.id), Vec::<i64>::new());
+    }
+
     #[tokio::test]
     async fn ensure_observer_rejects_invalid_or_missing_owners() {
         let _home = TestHome::new("observer-ensure-err");
@@ -2256,19 +2384,32 @@ mod tests {
     /// installed once for the whole test binary; each test filters by its own
     /// session id, and every other test's events are simply discarded.
     static WEBVIEW_FANOUT: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+    /// Activity signals, by thread id, with the stamp each one carried.
+    static ACTIVITY_FANOUT: Mutex<Vec<(String, i64)>> = Mutex::new(Vec::new());
     static WEBVIEW_SINK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
     fn record_webview_event(event: crate::events::Event<'_>) {
-        if let crate::events::Event::AgentSettings {
-            session_id,
-            event_type,
-            ..
-        } = event
-        {
-            WEBVIEW_FANOUT
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .push((session_id.to_string(), event_type.to_string()));
+        match event {
+            crate::events::Event::AgentSettings {
+                session_id,
+                event_type,
+                ..
+            } => {
+                WEBVIEW_FANOUT
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push((session_id.to_string(), event_type.to_string()));
+            }
+            crate::events::Event::ThreadActivity {
+                thread_id,
+                last_message_at,
+            } => {
+                ACTIVITY_FANOUT
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push((thread_id.to_string(), last_message_at));
+            }
+            _ => {}
         }
     }
 
@@ -2295,6 +2436,20 @@ mod tests {
             .into_iter()
             .filter(|(session, _)| session == session_id)
             .map(|(_, event_type)| event_type)
+            .collect()
+    }
+
+    /// The activity stamps announced for one thread since the last drain, in
+    /// order — what the sidebar row would patch itself with.
+    fn activity_fanout(thread_id: &str) -> Vec<i64> {
+        let mut recorder = ACTIVITY_FANOUT
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let recorded = std::mem::take(&mut *recorder);
+        recorded
+            .into_iter()
+            .filter(|(thread, _)| thread == thread_id)
+            .map(|(_, at)| at)
             .collect()
     }
 

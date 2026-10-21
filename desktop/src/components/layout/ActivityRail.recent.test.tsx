@@ -294,6 +294,44 @@ describe("the recent view's order", () => {
     expect(drawnTitles(view.container)).toEqual(["Remote · desk-b", "Local"]);
     view.unmount();
   });
+
+  /**
+   * The age a row draws, which is computed from the row's own activity stamp.
+   *
+   * Read from the row's stamp span rather than its title, because the title is
+   * the button's accessible name and never contains the age. The row is
+   * addressed by its merged key, which names its machine as well as its id.
+   */
+  function rowAge(container: HTMLElement, key: string): string | null {
+    const row = container.querySelector(`[data-recent-row="local::${key}"]`);
+    return row?.querySelector("span.text-2xs")?.textContent ?? null;
+  }
+
+  /**
+   * A row whose activity stamp advanced must re-age and re-place itself.
+   *
+   * This is what an externally-driven run now pushes (the row's `lastMessageAt`
+   * changed, nothing else): the label was cached against the old row data, so a
+   * list that rendered the moved stamp but kept the old age would show "an hour
+   * ago" under a conversation that is answering right now, in the old place.
+   */
+  it("re-ages and re-places a row whose activity stamp advanced", () => {
+    const stale = thread("stale", { title: "Stale", createdAt: now - 3 * hour, lastMessageAt: now - 90 * minute });
+    const other = thread("other", { title: "Other", createdAt: now - 2 * hour, lastMessageAt: now - minute });
+    const view = mount(<ActivityRail {...props([stale, other])} />);
+    showRecent(view.container);
+    expect(drawnTitles(view.container)).toEqual(["Other", "Stale"]);
+    expect(rowAge(view.container, "stale")).not.toBe("just now");
+
+    // The backend recorded activity for the stale conversation (a CLI/scheduled
+    // run) and the store patched its row: nothing else about the row changed.
+    view.rerender(
+      <ActivityRail {...props([{ ...stale, lastMessageAt: Date.now() }, other])} />,
+    );
+    expect(rowAge(view.container, "stale")).toBe("just now");
+    expect(drawnTitles(view.container)).toEqual(["Stale", "Other"]);
+    view.unmount();
+  });
 });
 
 describe("the recent view's window", () => {
