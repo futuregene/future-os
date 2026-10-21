@@ -140,6 +140,16 @@ interface ComposerProps {
    * also take the next utterance's keys (`VIBE.md` §5.3).
    */
   triggers?: boolean;
+  /**
+   * How much of the control row to draw.
+   *
+   * `full` is the interactive row — model, thinking level, approval tier, attach —
+   * which is what every other composer in the app has and keeps. `none` is the
+   * panel's input layer: from a sofa those four are noise in the middle of a
+   * sentence, so they move into the panel's menu (`VIBE.md` §5.6) and what stays on
+   * screen is a read-only line the panel draws itself.
+   */
+  controls?: "full" | "none";
 }
 
 function ComposerImpl({
@@ -168,6 +178,7 @@ function ComposerImpl({
   onDragStateChange,
   onEmptySubmit,
   triggers = true,
+  controls = "full",
 }: ComposerProps) {
   const { t, i18n } = useTranslation("agent");
   // The editor is non-controlled (see MentionEditor); we only mirror its empty
@@ -659,26 +670,30 @@ function ComposerImpl({
       {attachError
         ? <div className="px-1 pb-1 text-xs text-warning">{attachError}</div>
         : null}
-      <ComposerControls
-        disabled={disabled}
-        modelId={modelId}
-        modelOptions={modelOptions}
-        modelsEmptyReason={modelsEmptyReason}
-        onModelChange={onModelChange}
-        thinkingLevel={thinkingLevel}
-        onThinkingLevelChange={onThinkingLevelChange}
-        approvalTier={approvalTier}
-        futureSessionStatus={futureSessionStatus}
-        onChangeApprovalTier={onChangeApprovalTier}
-        sending={sending}
-        onAbort={onAbort}
-        handleAttachFiles={handleAttachFiles}
-        inputEmpty={inputEmpty}
-        attachmentCount={attachments.length}
-        sendPending={sendPending}
-        recommendPending={recommendPending}
-        compactionPending={Boolean(compactionPending)}
-      />
+      {controls === "none"
+        ? null
+        : (
+            <ComposerControls
+              disabled={disabled}
+              modelId={modelId}
+              modelOptions={modelOptions}
+              modelsEmptyReason={modelsEmptyReason}
+              onModelChange={onModelChange}
+              thinkingLevel={thinkingLevel}
+              onThinkingLevelChange={onThinkingLevelChange}
+              approvalTier={approvalTier}
+              futureSessionStatus={futureSessionStatus}
+              onChangeApprovalTier={onChangeApprovalTier}
+              sending={sending}
+              onAbort={onAbort}
+              handleAttachFiles={handleAttachFiles}
+              inputEmpty={inputEmpty}
+              attachmentCount={attachments.length}
+              sendPending={sendPending}
+              recommendPending={recommendPending}
+              compactionPending={Boolean(compactionPending)}
+            />
+          )}
     </form>
   );
 }

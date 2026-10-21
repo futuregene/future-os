@@ -136,6 +136,14 @@ export interface AgentThreadProps {
   inputHeader?: ReactNode;
   /** The input layer only: the panel's hint line, below the composer. */
   inputFooter?: ReactNode;
+  /**
+   * How much of the composer's control row to draw (see `Composer.controls`).
+   *
+   * Only the panel passes `none`, for its input layer: the values move into the menu
+   * and a read-only line stays on screen. Undefined means "whatever the composer
+   * does by default", which is what keeps the main window untouched.
+   */
+  composerControls?: "full" | "none";
 }
 
 export function AgentThread({
@@ -173,6 +181,7 @@ export function AgentThread({
   onLeaveInput,
   inputHeader,
   inputFooter,
+  composerControls,
 }: AgentThreadProps) {
   const { t } = useTranslation("agent");
   const agentState = useCachedAgentState(thread?.id);
@@ -559,6 +568,7 @@ export function AgentThread({
           // The input layer is for speaking: a popup over the transcript would
           // also eat the next utterance's keys (`VIBE.md` §5.3).
           triggers={!isInput}
+          controls={composerControls}
           onSend={handleComposerSend}
           workspaceId={thread?.workspaceId}
           sessionMentions={sessionMentions}

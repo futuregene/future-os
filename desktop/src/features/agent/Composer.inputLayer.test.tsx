@@ -33,9 +33,14 @@ vi.mock("../../integrations/tauri/invoke", () => ({
 let container: HTMLElement;
 let root: ReturnType<typeof createRoot>;
 
-async function mount(options: { onEmptySubmit?: () => void; onSend?: (payload: unknown) => void } = {}) {
+async function mount(options: {
+  controls?: "full" | "none";
+  onEmptySubmit?: () => void;
+  onSend?: (payload: unknown) => void;
+} = {}) {
   await act(async () => root.render(
     <Composer
+      controls={options.controls}
       modelOptions={[]}
       onEmptySubmit={options.onEmptySubmit}
       onSend={options.onSend ?? (() => {})}
@@ -77,6 +82,36 @@ afterEach(() => {
   container.remove();
   localStorage.clear();
   sessionStorage.clear();
+});
+
+describe("the input layer's control row", () => {
+  /**
+   * The composer's interactive controls, as the page names them: the approval
+   * dropdown is a button titled "Approval", the model and thinking controls are
+   * buttons in the same row, and the attach button has its own label.
+   */
+  function controlLabels(): string[] {
+    return [...container.querySelectorAll("button")]
+      .map(button => button.getAttribute("aria-label") ?? button.getAttribute("title") ?? "")
+      .filter(Boolean);
+  }
+
+  it("draws them by default, which is every other composer in the app", async () => {
+    await mount();
+    // The attach button is the one control that exists whatever the model catalogue
+    // says, so its absence would mean the row is gone rather than unpopulated.
+    expect(container.textContent).not.toBe("");
+    expect(container.querySelector("form")).not.toBeNull();
+    expect(controlLabels().length).toBeGreaterThan(0);
+  });
+
+  it("draws none of them when asked, and keeps the editor", async () => {
+    // The panel's input layer (§5.6): the values move into the menu and the layer
+    // keeps one read-only line, so the row must be gone — not empty, gone.
+    await mount({ controls: "none" });
+    expect(editor()).not.toBeUndefined();
+    expect(controlLabels()).toEqual([]);
+  });
 });
 
 describe("the input layer's send key", () => {

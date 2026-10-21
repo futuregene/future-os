@@ -18,6 +18,7 @@ import { useApprovals } from "../../components/layout/hooks/useApprovals";
 import { usePendingApprovalCounts } from "../../components/layout/hooks/usePendingApprovalCounts";
 import { Badge } from "../../components/ui/Badge";
 import { IconButton } from "../../components/ui/IconButton";
+import { modelKey, thinkingLevels } from "../../integrations/agent/agentClient";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { cn } from "../../lib/cn";
 import { emitFutureEvent } from "../../lib/futureEvents";
@@ -31,10 +32,12 @@ import { attentionOf, nextAttention } from "./attention";
 import { cellPosition, gridOf, MAX_CELLS, moveInGrid } from "./layout";
 import { moveInOrder, resolveOrder } from "./order";
 import { vibeCellsOf } from "./vibeCells";
+import { setVibeCellModel, setVibeCellThinkingLevel, useVibeCellSettings } from "./vibeCellSettings";
 import { VibeHintBar } from "./VibeHintBar";
 import { VibeMenu } from "./VibeMenu";
 import { readVibePreferences, writeVibeColumns, writeVibeDevice, writeVibeOrder } from "./vibePreferences";
 import { VibeRemoteCell } from "./VibeRemoteCell";
+import { VibeSettingsLine } from "./VibeSettings";
 
 /** Everything a conversation's view needs that does not vary per conversation. */
 export interface VibeThreadViewProps {
@@ -198,6 +201,19 @@ export function VibeStage({
   // own approval queue and its input layer are this machine's, and a host's
   // conversation answers its own approvals inside its own cell.
   const focusedLocal = focused?.thread ?? null;
+  /**
+   * The focused conversation's settings, for the read-only line and the menu's rows.
+   *
+   * `null` when the ring is on a host's conversation: those are that machine's, and
+   * the panel does not pretend to change them from here (its cell says so by having
+   * no settings line at all).
+   */
+  const focusedSettings = useVibeCellSettings(focusedLocal, {
+    approvalTier: view.approvalTier,
+    modelId: view.modelId,
+    modelOptions: view.modelOptions,
+    thinkingLevel: view.thinkingLevel,
+  });
 
   const layout = useMemo(
     () => gridOf(shown.length, size.width || window.innerWidth, size.height || window.innerHeight, columns),
@@ -557,6 +573,55 @@ export function VibeStage({
       },
       description: t("menu.layoutHint"),
     },
+    // This cell's settings: what used to be four dropdowns in the middle of a
+    // dictated sentence. `←`/`→` cycles each value — the same gesture as the layout
+    // and device rows, so the menu teaches one grammar rather than four.
+    ...(focusedLocal
+      ? [
+          {
+            id: "model",
+            label: t("menu.model"),
+            value: focusedSettings.modelName,
+            onRun: () => {},
+            onAdjust: (delta: -1 | 1) => {
+              const ids = view.modelOptions.map(option => modelKey(option));
+              if (ids.length === 0)
+                return;
+              const at = ids.indexOf(focusedSettings.modelId);
+              const next = ids[((at === -1 ? 0 : at) + delta + ids.length) % ids.length]!;
+              void setVibeCellModel(focusedLocal.id, next, view.modelOptions);
+            },
+          },
+          ...(focusedSettings.supportsThinking
+            ? [{
+                id: "thinking",
+                label: t("menu.thinking"),
+                value: t(`agent:composer.thinkingLevelLabels.${focusedSettings.thinkingLevel}`, { defaultValue: focusedSettings.thinkingLevel }),
+                onRun: () => {},
+                onAdjust: (delta: -1 | 1) => {
+                  const levels = thinkingLevels as readonly string[];
+                  const at = levels.indexOf(focusedSettings.thinkingLevel);
+                  const next = levels[((at === -1 ? 0 : at) + delta + levels.length) % levels.length]!;
+                  void setVibeCellThinkingLevel(focusedLocal.id, next);
+                },
+              }]
+            : []),
+          {
+            id: "approval",
+            label: t("menu.approval"),
+            value: t(`agent:composer.approvalTier.${focusedSettings.approvalTier}`),
+            onRun: () => {},
+            onAdjust: (delta: -1 | 1) => {
+              // Application-wide, not this cell's: the label says so, and the row
+              // writing it goes through the same setter the main window uses.
+              const tiers: ApprovalTier[] = ["manual", "sandbox", "auto", "off"];
+              const at = tiers.indexOf(focusedSettings.approvalTier);
+              view.onChangeApprovalTier(tiers[((at === -1 ? 0 : at) + delta + tiers.length) % tiers.length]!);
+            },
+            description: t("menu.approvalHint"),
+          },
+        ]
+      : []),
     {
       id: "move-earlier",
       label: t("menu.moveEarlier"),
@@ -815,7 +880,11 @@ export function VibeStage({
                     {focused?.desktopId
                       ? <span className="text-[10px] text-ink-muted">{peerLabels.get(focused.desktopId) ?? focused.desktopId}</span>
                       : null}
-                    <span className="text-ink-faint">{t("of", { total: shown.length })}</span>
+                    {/* What this conversation runs on, read-only: the same line the
+                        input layer shows, in the same place, so the value does not
+                        move or vanish between the two layers (§5.6). */}
+                    {focusedLocal ? <VibeSettingsLine settings={focusedSettings} /> : null}
+                    <span className="ml-auto text-ink-faint">{t("of", { total: shown.length })}</span>
                   </div>
                   <div
                     className="min-h-0 flex-1 overflow-hidden rounded-lg border border-line-soft bg-surface"
@@ -850,7 +919,10 @@ export function VibeStage({
                         <span className="text-ink-soft">{t("input.to")}</span>
                         <span className="min-w-0 truncate text-sm font-medium">{focused?.title ?? ""}</span>
                         {focusedLocal ? <Badge className="h-5" tone="neutral">{t("input.local")}</Badge> : null}
-                        <span className="ml-auto font-mono text-[11px] text-ink-faint">{arrows}</span>
+                        {focusedLocal
+                          ? <span className="ml-auto"><VibeSettingsLine settings={focusedSettings} /></span>
+                          : null}
+                        <span className={cn("font-mono text-[11px] text-ink-faint", !focusedLocal && "ml-auto")}>{arrows}</span>
                       </div>
                       <div className="min-h-0 flex-1">
                         {focusedLocal
@@ -858,6 +930,9 @@ export function VibeStage({
                               <VibeThreadView
                                 chrome="input"
                                 focused
+                                // The input layer draws its own state line and the
+                                // menu changes the values (§5.6).
+                                composerControls="none"
                                 inputFooter={(
                                   <VibeHintBar
                                     fixed={[{ code: "Enter", labelKey: "fixed.send" }]}
@@ -917,6 +992,7 @@ export function VibeStage({
 function VibeThreadView({
   thread,
   chrome,
+  composerControls,
   focused,
   activeApproval,
   inputFooter,
@@ -927,6 +1003,7 @@ function VibeThreadView({
 }: {
   thread: StoredThread;
   chrome: AgentThreadChrome;
+  composerControls?: "full" | "none";
   focused: boolean;
   activeApproval?: StoredApprovalRequest | null;
   inputFooter?: React.ReactNode;
@@ -947,6 +1024,7 @@ function VibeThreadView({
       agentConnection={view.agentConnection}
       approvalTier={view.approvalTier}
       chrome={chrome}
+      composerControls={composerControls}
       inputFooter={inputFooter}
       loadingStore={view.loadingStore}
       modelId={modelId}
