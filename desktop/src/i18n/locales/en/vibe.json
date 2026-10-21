@@ -60,5 +60,11 @@
     "chats": "Chats",
     "all": "All machines",
     "label": "Machines"
+  },
+  "queue": {
+    "queued": "Queued — waiting for this run",
+    "held": "The queued message stays queued: this conversation's box already has text",
+    "returned": "Back in the box",
+    "cancel": "Take the queued message back"
   }
 }

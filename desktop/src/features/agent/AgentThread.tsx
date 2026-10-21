@@ -144,6 +144,14 @@ export interface AgentThreadProps {
    * does by default", which is what keeps the main window untouched.
    */
   composerControls?: "full" | "none";
+  /**
+   * What a send means while this conversation's run is still in flight.
+   *
+   * Only the panel passes it: the draft is handed over and queued instead of being
+   * dropped, and `false` means "one is already queued" — the text then stays in the
+   * editor (`Composer.onQueue`).
+   */
+  onQueue?: (payload: ComposerSendPayload) => boolean;
 }
 
 export function AgentThread({
@@ -182,6 +190,7 @@ export function AgentThread({
   inputHeader,
   inputFooter,
   composerControls,
+  onQueue,
 }: AgentThreadProps) {
   const { t } = useTranslation("agent");
   const agentState = useCachedAgentState(thread?.id);
@@ -569,6 +578,7 @@ export function AgentThread({
           // also eat the next utterance's keys (`VIBE.md` §5.3).
           triggers={!isInput}
           controls={composerControls}
+          onQueue={onQueue}
           onSend={handleComposerSend}
           workspaceId={thread?.workspaceId}
           sessionMentions={sessionMentions}

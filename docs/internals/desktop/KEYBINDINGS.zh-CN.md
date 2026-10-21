@@ -156,8 +156,9 @@ desktop/src/features/settings/
 | 放大视图里的上一个 / 下一个对话 | `←` / `→` | vibeZoom |
 | 上一段 / 下一段消息 | `↑` / `↓` | vibeZoom |
 | 进入输入层 | `↩` | vibeZoom |
-| 把这次输入发出去（空草稿：收起） | `↩` —— 输入框自己的固定键，不是命令 | vibeInput |
+| 把这次输入发出去（空草稿：收起；正在跑：排进队列） | `↩` —— 输入框自己的固定键，不是命令 | vibeInput |
 | 退出输入层 | `Esc` / `返回` | vibeInput |
+| 把排队的那条撤回输入框 | `mod+shift+x` / 菜单里的撤回行 | vibeInput / vibe |
 | 当前层的菜单 | `mod+shift+k` / `菜单` | vibe |
 | 跳到会话正在发生的地方 | `主页` | vibe |
 | 跳到编号格子 | `1`–`9` | vibeGrid |

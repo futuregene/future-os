@@ -4,6 +4,7 @@ import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { AgentThreadChrome } from "../agent/AgentThread";
+import type { ComposerSendPayload } from "../agent/Composer";
 import type { SessionMentionOption } from "../agent/sessionMention";
 import type { RemoteCatalog } from "../remote-peer/mergeConversations";
 import type { RemotePeer } from "../remote-peer/remotePeerClient";
@@ -36,6 +37,7 @@ import { setVibeCellModel, setVibeCellThinkingLevel, useVibeCellSettings } from 
 import { VibeHintBar } from "./VibeHintBar";
 import { VibeMenu } from "./VibeMenu";
 import { readVibePreferences, writeVibeColumns, writeVibeDevice, writeVibeOrder } from "./vibePreferences";
+import { useVibeQueue } from "./vibeQueue";
 import { VibeRemoteCell } from "./VibeRemoteCell";
 import { VibeSettingsLine } from "./VibeSettings";
 
@@ -272,6 +274,23 @@ export function VibeStage({
   }, [approvalCounts, runStatuses, shown, unreadThreadIds]);
   const attentionCount = attention.size;
 
+  /**
+   * The send queue: one held sentence per conversation, handed back — never sent —
+   * when that conversation stops running (`vibeQueue.ts`, `VIBE.md` §5.4).
+   *
+   * `runStatus` is read through the same projection the cells' headers draw, so "still
+   * running" means the same thing on the badge and in the queue.
+   */
+  const queue = useVibeQueue(
+    (threadId) => {
+      const status = runStatuses[threadId]?.status;
+      return status ?? undefined;
+    },
+    // Changes whenever any run's status does — the one thing the hand-back check needs
+    // to know that a conversation stopped running.
+    useMemo(() => Object.values(runStatuses).map(status => status?.status ?? "").join(","), [runStatuses]),
+  );
+
   /** "Remove from the panel" is "unpin", on whichever machine owns the cell. */
   const removeFromPanel = useCallback((cell: VibeCell) => {
     if (cell.thread)
@@ -323,6 +342,8 @@ export function VibeStage({
   useCommand("vibe.open", () => {
     if (!focused)
       return;
+    if (focused.thread)
+      queue.acknowledge(focused.thread.id);
     setLayer(focused.kind === "local" ? "input" : "read");
   }, onGrid);
   useCommand("vibe.close", onClose, onGrid);
@@ -340,7 +361,11 @@ export function VibeStage({
   useCommand("vibe.back", () => setLayer("grid"), onRead);
   useCommand("vibe.zoom.previous", () => stepFocus(-1), onRead);
   useCommand("vibe.zoom.next", () => stepFocus(1), onRead);
-  useCommand("vibe.input.open", () => setLayer("input"), onRead && focused?.kind === "local");
+  useCommand("vibe.input.open", () => {
+    if (focusedLocal)
+      queue.acknowledge(focusedLocal.id);
+    setLayer("input");
+  }, onRead && focused?.kind === "local");
 
   // ── Input layer ───────────────────────────────────────────────────────────
   // Sending is **not** here: `⏎` is the composer's own fixed key, which already
@@ -348,6 +373,25 @@ export function VibeStage({
   // editor hands an empty draft to this layer's onLeaveInput instead. Closing the
   // layer is the panel's own.
   useCommand("vibe.input.close", () => setLayer("read"), layer === "input");
+  /**
+   * Take the held sentence back into the box.
+   *
+   * A separate command from "leave the layer" on purpose: leaving the input layer is how
+   * a reader stops dictating, and taking a queued sentence back is how they change their
+   * mind about one message. One key doing both would make `Esc` mean two different things
+   * depending on a state the reader cannot read off the key.
+   *
+   * Registered only while something is held — the panel's rule for every command — and
+   * in the input layer, because that is where the sentence was dictated.
+   */
+  useCommand("vibe.queue.cancel", () => {
+    if (!focusedLocal)
+      return;
+    // A refusal means the box already holds something the reader typed since; the entry
+    // stays visible and cancellable rather than overwriting it.
+    if (queue.cancel(focusedLocal.id) === "busy")
+      emitFutureEvent("toast", { message: t("queue.held"), tone: "info" });
+  }, layer === "input" && queue.queued.has(focusedLocal?.id ?? ""));
 
   // ── Panel-wide ────────────────────────────────────────────────────────────
   useCommand("vibe.move.left", () => {
@@ -437,6 +481,13 @@ export function VibeStage({
       activeApproval={layer === "grid" ? null : activeApproval}
       chrome={chrome}
       focused={ownsCommands}
+      // Queued, never sent: the composer hands the sentence over and clears its box
+      // when this returns true. A refusal means one is already held, and the text then
+      // stays exactly where the reader can see it.
+      onQueue={payload => queue.enqueue(thread.id, {
+        attachments: payload.attachments,
+        text: payload.content,
+      }) === "queued"}
       onApprovalDecision={async (approval, status) => {
         await decideApproval(approval, status);
         view.onApprovalDecided();
@@ -622,6 +673,20 @@ export function VibeStage({
           },
         ]
       : []),
+    // Taking a held sentence back, when there is one. A row rather than only a key:
+    // the remote's reader is the one this queue exists for, and `Menu` is how they
+    // reach anything that is not on a direction key.
+    ...(focusedLocal && queue.queued.has(focusedLocal.id)
+      ? [{
+          id: "queue-cancel",
+          label: t("queue.cancel"),
+          group: true,
+          onRun: () => {
+            queue.cancel(focusedLocal.id);
+            closeMenu();
+          },
+        }]
+      : []),
     {
       id: "move-earlier",
       label: t("menu.moveEarlier"),
@@ -741,6 +806,32 @@ export function VibeStage({
                   : null}
                 {cell.thread && unreadThreadIds.has(cell.thread.id)
                   ? <span className="size-1.5 shrink-0 rounded-full bg-info" title={t("unread")} />
+                  : null}
+                {/* A held sentence, said out loud. "I said it but cannot see it" is the
+                    failure this marker exists to prevent (§5.4). */}
+                {cell.thread && queue.queued.has(cell.thread.id)
+                  ? (
+                      <span
+                        className="shrink-0 rounded bg-warning-soft px-1 text-[10px] font-medium text-warning"
+                        data-vibe-queued=""
+                        title={t("queue.queued")}
+                      >
+                        {t("queue.queued")}
+                      </span>
+                    )
+                  : null}
+                {/* …and the moment it goes back into the box, which is the one thing the
+                    reader must not miss: the message is now theirs to send again. */}
+                {cell.thread && queue.returned.has(cell.thread.id)
+                  ? (
+                      <span
+                        className="shrink-0 rounded bg-info-soft px-1 text-[10px] font-medium text-info"
+                        data-vibe-returned=""
+                        title={t("queue.returned")}
+                      >
+                        {t("queue.returned")}
+                      </span>
+                    )
                   : null}
                 {/* Why this cell is in the attention queue. The approval badge above
                     already counts approvals; this is the other two reasons, and it is
@@ -936,7 +1027,9 @@ export function VibeStage({
                                 inputFooter={(
                                   <VibeHintBar
                                     fixed={[{ code: "Enter", labelKey: "fixed.send" }]}
-                                    ids={["vibe.input.close", "vibe.menu"]}
+                                    ids={queue.queued.has(focusedLocal?.id ?? "")
+                                      ? ["vibe.queue.cancel", "vibe.input.close", "vibe.menu"]
+                                      : ["vibe.input.close", "vibe.menu"]}
                                   />
                                 )}
                                 onApprovalDecision={async (approval, status) => {
@@ -994,6 +1087,7 @@ function VibeThreadView({
   chrome,
   composerControls,
   focused,
+  onQueue,
   activeApproval,
   inputFooter,
   onLeaveInput,
@@ -1005,6 +1099,8 @@ function VibeThreadView({
   chrome: AgentThreadChrome;
   composerControls?: "full" | "none";
   focused: boolean;
+  /** What a send means while the run is still going (see `Composer.onQueue`). */
+  onQueue?: (payload: { attachments: ComposerSendPayload["attachments"]; content: string }) => boolean;
   activeApproval?: StoredApprovalRequest | null;
   inputFooter?: React.ReactNode;
   onLeaveInput?: () => void;
@@ -1038,6 +1134,7 @@ function VibeThreadView({
       onOpenModels={view.onOpenModels}
       onOpenProviders={view.onOpenProviders}
       onPromptConsumed={() => {}}
+      onQueue={onQueue}
       onRetryAgentConnection={view.onRetryAgentConnection}
       ownsCommands={focused}
       // The panel has no rail to collapse and no shell to report to: a cell's

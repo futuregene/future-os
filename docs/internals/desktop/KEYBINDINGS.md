@@ -188,8 +188,9 @@ below). `mod` is `⌘` on macOS and `Ctrl` elsewhere:
 | Previous / next conversation in the zoomed cell | `←` / `→` | vibeZoom |
 | Previous / next message block | `↑` / `↓` | vibeZoom |
 | Open the input layer | `↩` | vibeZoom |
-| Send the dictation (empty draft: close) | `↩` — the composer's own fixed key, not a command | vibeInput |
+| Send the dictation (empty draft: close; a run in flight: queue it) | `↩` — the composer's own fixed key, not a command | vibeInput |
 | Leave the input layer | `Esc` / `Back` | vibeInput |
+| Take a queued sentence back into the box | `mod+shift+x` / the menu's cancel row | vibeInput / vibe |
 | The layer's menu | `mod+shift+k` / `Menu` | vibe |
 | Jump to the live end of the conversation | `Home` | vibe |
 | Go to a numbered cell | `1`–`9` | vibeGrid |

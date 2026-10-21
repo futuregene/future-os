@@ -48,6 +48,14 @@ mark, so a host's conversation can be *in* the grid and still be absent from the
 attention queue (§9.5). Its own approvals do reach it, as events to that cell, and
 are answered in the cell.
 
+**Known limitation, not a backlog item**: a host's conversation cannot enter the
+attention queue or the send queue, because neither fact exists on the wire. The
+catalogue is that machine's own summary and carries no per-run outcome and no unread
+state, and a prompt to it is a different command with different preconditions. Making
+the panel show either would be a **catalogue-protocol change on the host side** —
+worth doing, but it is its own task with its own compatibility story, not something
+this panel can close by being cleverer.
+
 ## 2. Order: creation time, plus what the user moved
 
 Default order is **`createdAt` ascending** — the oldest pinned conversation in
@@ -203,22 +211,34 @@ this here on purpose: it is a capability that used to be one keystroke and is no
 two, and the next person to wonder where it went should find the answer instead
 of the feature half-restored by accident.
 
-### 5.4 A conversation that is already running
+### 5.4 A conversation that is already running: the send queue
 
-**What happens today, stated exactly**: there is no send queue, so pressing `⏎` on a
-conversation whose run is in flight does **nothing**. The composer's `submitValue`
-returns early on `sending`; the draft stays in the editor, and the only signals are
-that the send control has already turned into a **stop** button (`composer.stop`) and
-that the reply is visibly streaming. There is **no text** anywhere saying "this
-conversation is still running", and the panel adds none — an earlier draft of this
-document claimed it did, which was wrong.
+Pressing `⏎` on a conversation whose run is in flight **holds the sentence** instead of
+dropping it. The composer hands the draft over and clears its box; the panel shows
+`已排队` on the cell; when the run ends the text goes **back into that conversation's
+input box**, the cell says `已放回输入框`, and the reader presses `⏎` if they still
+mean it.
 
-That is the one interaction this panel cannot leave as it is: on a remote control a
-key that does nothing is indistinguishable from a key that is not bound, and the
-reader has no pointer to look for a reason with. P1 therefore adds a per-conversation
-queue (the existing `pendingPrompt` is a one-shot hand-off when a conversation is
-opened, not a queue): a dictated message waits for the current run and sends itself.
-Until then the draft is kept, and `Esc` never throws it away.
+**Nothing is ever sent by itself**, and that is the design, not a shortcut. Of the two
+possible queues — "send it when the run ends" and "hand it back and let the reader
+decide" — this is the safer one: a message dictated from a sofa gets one last look,
+there is no window in which a sentence they had second thoughts about is already gone,
+and there is no timer to tune.
+
+The five rules (`vibeQueue.ts`):
+
+| Rule | How it holds |
+| --- | --- |
+| **Visible** | A cell that holds a sentence shows `已排队`; a cell whose sentence just went back shows `已放回输入框` until the reader opens that conversation |
+| **Cancellable, and cancelling is not discarding** | The menu's cancel row, or `⌘⇧X` in the input layer, puts the text back in the box. If the box already holds something typed since, the cancellation is **refused** and the sentence stays queued — overwriting a message being written is the one thing worse than waiting |
+| **One per conversation** | A second `⏎` is **refused** (the composer keeps the text in its box) rather than replacing the held sentence. Replacing is how a sentence gets swallowed |
+| **The last moment is the reader's** | The queue has no send path at all: it only writes `composerDraft` |
+| **A failure keeps it** | A run that failed or was interrupted reaches the same "not running" check, so the sentence comes back — never re-sent as a second message |
+
+`Esc` in the input layer still means "leave the layer", and does **not** cancel the
+queue: leaving the layer is how a reader stops dictating, taking a sentence back is how
+they change their mind about one message. One key for both would mean `Esc` did two
+different things depending on a state the reader cannot read off the key.
 
 ### 5.5 The contract with the conversation views
 
@@ -464,6 +484,8 @@ Automatable — and where each one lives:
 | A host's view in a cell mounts no composer and does not narrow the host's event lane | `RemoteConversationView.chrome.test.tsx` |
 | The settings line shows the cell's own model, on both the reading and the input layer, and the input layer's composer is asked for values only | `VibeStage.test.tsx`, `Composer.inputLayer.test.tsx` |
 | The menu's three settings rows exist for a local cell, adjust with `←`/`→`, and are absent for a host's | `VibeStage.test.tsx` |
+| The queue: one per conversation (a second is refused), visible on the cell, handed back into the box when the run ends, kept across a failure, and cancelled into the box rather than discarded | `vibeQueue.test.ts`, `VibeStage.test.tsx` |
+| The composer's half: a send during a run hands the text over and clears the box, a refusal leaves the text in place, and an idle send is still a send | `Composer.inputLayer.test.tsx` |
 | A remote's buttons survive a rebinding and a cleared binding | `shortcuts.test.ts`, `catalog.test.ts`, `keybinding.test.ts` |
 
 Two of these were falsified by hand before landing (the assertions were removed,
@@ -480,7 +502,14 @@ Still open, and honestly not covered:
   menu; the editor's trigger is text-driven, so this needs a test at the editor's
   level.
 * **Per-conversation column preference** (the reading layer's second column) is
-  P1 and not implemented.
+  P2 and not implemented.
+* **The queue's own states are component-tested, not captured.** The screenshot
+  harness can report a run in flight to the *rail* (`?streaming=`), but a local
+  composer's "my run is in flight" comes from a streaming assistant bubble in that
+  conversation's message stream, which the fixture cannot produce without faking the
+  agent. The capture therefore asserts the neighbouring property instead — that the
+  queue does **not** steal an ordinary send — and the marker, the hand-back and the
+  cancel row are covered in `VibeStage.test.tsx` and `Composer.inputLayer.test.tsx`.
 
 On hardware (manual, recorded in the matrix below):
 
@@ -544,7 +573,7 @@ What P0 landed, and what it deliberately left:
 | Stage | Content |
 | --- | --- |
 | **P0 — done** | the panel and its grid; scale-respecting cell rendering for local conversations; membership = pin; order = `createdAt` + drag/keyboard reordering; the three layers and the single-editor invariant; the input layer with dictation, the target bar and the three state meanings; `⌘⇧V`, arrows, `⏎`, `Esc`, `1`–`9`; explicit "still running" refusal |
-| **P1 — in progress** | **done:** the menu (`Menu`, one column, `←`/`→` adjust a value in place) · the attention queue (§9.5) · the machine filter, a host's conversations as cells, the add dialog and removal across machines · the input layer's controls moved into the menu with the values left read-only on screen (§5.6) · the send queue (§5.4) · **next:** zoom at one or two columns with the panel's three states; degraded rendering for non-focused cells |
+| **P1 — in progress** | **done:** the menu (`Menu`, one column, `←`/`→` adjust a value in place) · the attention queue (§9.5) · the machine filter, a host's conversations as cells, the add dialog and removal across machines · the input layer's controls moved into the menu with the values left read-only on screen (§5.6) · the send queue (§5.4) · **next (P2):** the remote-control hardware matrix first, then the reading layer's one/two columns, per-conversation column preference, `h/j/k/l`, `⌘/` cheat sheet, order in `app.db` |
 | **P2** | order in `app.db`; layout presets and a column override; `⌘/` cheat sheet; `h/j/k/l`; a "learn this button" diagnostics page; optional text size on the volume buttons |
 
 ## 15. Open questions

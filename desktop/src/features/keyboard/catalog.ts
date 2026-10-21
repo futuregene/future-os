@@ -85,6 +85,9 @@ export type CommandId
     // conversation is actually operated with.
     | "vibe.input.open"
     | "vibe.input.close"
+    // Taking a held sentence back into the box: a change of mind about one message,
+    // not about the layer (which is why it is not on `Esc`).
+    | "vibe.queue.cancel"
     | "vibe.block.previous"
     | "vibe.block.next"
     | "vibe.menu"
@@ -232,6 +235,9 @@ export const COMMANDS: readonly CommandSpec[] = [
   // therefore the composer's own, and an empty draft closes the layer from there
   // (`VIBE.md` §5.2).
   { id: "vibe.input.open", category: "vibe", defaultBinding: "enter", inTerminal: false, scope: "vibeZoom" },
+  // `⌘⇧X`: "take that back". A chord rather than a bare key, because the caret is in
+  // the editor when a sentence is queued (`VIBE.md` §5.4).
+  { id: "vibe.queue.cancel", category: "vibe", defaultBinding: "mod+shift+x", inTerminal: false, scope: "vibeInput" },
   { id: "vibe.input.close", category: "vibe", defaultBinding: "escape", aliases: ["browserback"], inTerminal: false, overEditable: true, scope: "vibeInput" },
   // ---- Keys the remote control has, and a keyboard does not ----------------
   //

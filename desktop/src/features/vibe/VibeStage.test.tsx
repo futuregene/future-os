@@ -7,7 +7,9 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { onFutureEvent } from "../../lib/futureEvents";
+import { isMacOS } from "../../lib/platform";
 import { installShortcuts } from "../../test/installShortcuts";
+import { loadComposerDraft } from "../agent/composerDraft";
 import { clearCommandHandlers } from "../keyboard/commands";
 import { resetShortcutScopes } from "../keyboard/scopes";
 import { resetAllCommandBindings } from "../keyboard/shortcuts";
@@ -29,15 +31,36 @@ const h = vi.hoisted(() => ({
   approvals: { activeApproval: null as unknown, decideApproval: vi.fn(async () => {}) },
   counts: new Map<string, number>(),
   cached: { current: null as { model?: string; thinkingLevel?: string } | null },
+  /** What the panel's queue answered when the stub composer handed a sentence over. */
+  probe: { taken: undefined as boolean | undefined },
 }));
 
 vi.mock("../agent/AgentThread", () => ({
-  AgentThread: (props: { chrome?: string; composerControls?: string; thread: { id: string } }) => (
+  AgentThread: (props: {
+    chrome?: string;
+    composerControls?: string;
+    onQueue?: (payload: { attachments: unknown[]; content: string }) => boolean;
+    thread: { id: string };
+  }) => (
     <div
       data-chrome={props.chrome ?? "full"}
       data-composer-controls={props.composerControls ?? ""}
       data-thread={props.thread.id}
     >
+      {/* What the real composer does with `onQueue`: hand the sentence over, and it
+          answers whether the box may be cleared. */}
+      {props.onQueue
+        ? (
+            <button
+              data-queue-probe=""
+              onClick={() => {
+                const taken = props.onQueue!({ attachments: [], content: "held sentence" });
+                h.probe.taken = taken;
+              }}
+              type="button"
+            />
+          )
+        : null}
       {props.chrome === "input"
         ? <div contentEditable data-input-editor="" suppressContentEditableWarning />
         : null}
@@ -109,6 +132,28 @@ let container: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 let uninstallShortcuts: () => void;
 
+/** Re-render the mounted panel with new inputs — what a run-status push does. */
+function rerender(options: { runStatuses?: Record<string, { status: string }>; threads: StoredThread[] }) {
+  act(() => {
+    root.render(
+      <VibeStage
+        catalogs={[]}
+        onClose={() => {}}
+        onOpenInShell={() => {}}
+        onOpenRemoteInShell={() => {}}
+        onPinLocal={() => {}}
+        onPinRemote={() => {}}
+        peers={[]}
+        runStatuses={(options.runStatuses ?? {}) as never}
+        threads={options.threads}
+        unreadThreadIds={new Set()}
+        view={VIEW}
+        workspaces={WORKSPACES}
+      />,
+    );
+  });
+}
+
 function mount(options: {
   threads: StoredThread[];
   catalogs?: RemoteCatalog[];
@@ -167,6 +212,9 @@ function walkTo(id: string) {
 
 beforeEach(() => {
   clearVibePreferences();
+  // The queue hands a sentence back by writing it into the conversation's composer
+  // draft, so a draft left by one case is state the next case would see.
+  sessionStorage.clear();
   resetAllCommandBindings();
   resetShortcutScopes();
   clearCommandHandlers();
@@ -182,6 +230,7 @@ afterEach(() => {
   container.remove();
   uninstallShortcuts();
   localStorage.clear();
+  sessionStorage.clear();
 });
 
 describe("the panel's layers", () => {
@@ -707,6 +756,105 @@ describe("this cell's settings", () => {
     press({ code: "ContextMenu", key: "ContextMenu" });
     expect(container.querySelector("[data-vibe-menu-row=\"model\"]")).toBeNull();
     expect(container.querySelector("[data-vibe-menu-row=\"approval\"]")).toBeNull();
+  });
+});
+
+describe("the send queue", () => {
+  // The five rules the queue was commissioned under, driven from the panel's side:
+  // visible, cancellable without losing the text, one per conversation, never sent by
+  // itself, kept across a failure. The pure half is `vibeQueue.test.ts`; here it is the
+  // cell markers, the menu row and the key.
+  function handOver() {
+    const probe = container.querySelector<HTMLElement>("[data-queue-probe]");
+    expect(probe, "a composer that can hand a sentence over").not.toBeNull();
+    act(() => probe!.click());
+    return h.probe.taken;
+  }
+
+  it("marks the cell as soon as a sentence is held", () => {
+    mount({ runStatuses: { a: { status: "running" } }, threads: [thread("a", 100)] });
+    expect(container.querySelector("[data-vibe-queued]")).toBeNull();
+    expect(handOver()).toBe(true);
+    expect(container.querySelector("[data-vibe-queued]")).not.toBeNull();
+  });
+
+  it("refuses a second one, so a held sentence is never overwritten", () => {
+    mount({ runStatuses: { a: { status: "running" } }, threads: [thread("a", 100)] });
+    expect(handOver()).toBe(true);
+    // The refusal is what keeps the composer's own text in the box (see
+    // `Composer.inputLayer.test.tsx`); here it only has to say "no".
+    expect(handOver()).toBe(false);
+  });
+
+  it("hands the sentence back when the run ends, and never sends it", () => {
+    mount({ runStatuses: { a: { status: "running" } }, threads: [thread("a", 100)] });
+    handOver();
+    // The run finishes. The panel now puts the text back in the box and says so — it
+    // does not send, which is why there is no send path anywhere in `vibeQueue.ts`.
+    rerender({ runStatuses: { a: { status: "completed" } }, threads: [thread("a", 100)] });
+    expect(container.querySelector("[data-vibe-queued]")).toBeNull();
+    expect(container.querySelector("[data-vibe-returned]")).not.toBeNull();
+    expect(loadComposerDraft("a")?.text).toBe("held sentence");
+  });
+
+  it("keeps the sentence across a failed run", () => {
+    // A failure is not a reason to lose it and not a reason to re-send it: it comes
+    // back to the box like any other ending.
+    mount({ runStatuses: { a: { status: "running" } }, threads: [thread("a", 100)] });
+    handOver();
+    rerender({ runStatuses: { a: { status: "failed" } }, threads: [thread("a", 100)] });
+    expect(loadComposerDraft("a")?.text).toBe("held sentence");
+    expect(container.querySelector("[data-vibe-returned]")).not.toBeNull();
+  });
+
+  it("offers the cancel row only while something is held, and puts the text back", () => {
+    mount({ runStatuses: { a: { status: "running" } }, threads: [thread("a", 100)] });
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    expect(container.querySelector("[data-vibe-menu-row=\"queue-cancel\"]")).toBeNull();
+    press({ code: "Escape", key: "Escape" });
+
+    handOver();
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    expect(container.querySelector("[data-vibe-menu-row=\"queue-cancel\"]")).not.toBeNull();
+    walkTo("queue-cancel");
+    press({ code: "Enter", key: "Enter" });
+    // Cancelling is "not now": the sentence is in the box, not gone.
+    expect(loadComposerDraft("a")?.text).toBe("held sentence");
+    expect(container.querySelector("[data-vibe-queued]")).toBeNull();
+  });
+
+  it("cancels from the input layer's own key", () => {
+    mount({ runStatuses: { a: { status: "running" } }, threads: [thread("a", 100)] });
+    handOver();
+    // Into the input layer: the key belongs to that scope (the caret is in the editor).
+    press({ code: "Enter", key: "Enter" });
+    // `mod+shift+x`: `meta` on the platform the test runs as (the dispatcher reads
+    // `mod` from `isMacOS`), and `ctrl` elsewhere.
+    press({ code: "KeyX", key: "x", metaKey: isMacOS, ctrlKey: !isMacOS, shiftKey: true });
+    expect(loadComposerDraft("a")?.text).toBe("held sentence");
+    expect(container.querySelector("[data-vibe-queued]")).toBeNull();
+  });
+
+  it("stops marking a handed-back sentence once the reader opens it", () => {
+    mount({ runStatuses: { a: { status: "running" } }, threads: [thread("a", 100)] });
+    handOver();
+    rerender({ runStatuses: { a: { status: "completed" } }, threads: [thread("a", 100)] });
+    expect(container.querySelector("[data-vibe-returned]")).not.toBeNull();
+    // Opening the conversation's input layer is what "I have seen it" means: the text
+    // is in the box in front of them.
+    press({ code: "Enter", key: "Enter" });
+    expect(container.querySelector("[data-vibe-returned]")).toBeNull();
+  });
+
+  it("does not queue for a host's conversation", () => {
+    // A remote cell has no composer at all, so there is nothing to hand over — the
+    // panel offers no queue for it rather than a queue nothing can fill.
+    mount({
+      catalogs: [{ desktopId: "desk_1", sessions: [{ pinned: true, sessionId: "s1", status: "active", title: "Remote" }] } as never],
+      peers: [{ desktopId: "desk_1", name: "Studio" } as never],
+      threads: [],
+    });
+    expect(container.querySelector("[data-queue-probe]")).toBeNull();
   });
 });
 

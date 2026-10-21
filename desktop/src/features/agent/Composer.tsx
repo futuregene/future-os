@@ -150,6 +150,19 @@ interface ComposerProps {
    * screen is a read-only line the panel draws itself.
    */
   controls?: "full" | "none";
+  /**
+   * What a send means while this conversation's run is still in flight.
+   *
+   * The panel's answer is "keep it": the draft is handed over, cleared from the box,
+   * and the panel queues it — one per conversation, handed back to the box when the
+   * run ends, never sent by itself (`VIBE.md` §5.4). Returning `false` refuses the
+   * hand-over (something is already queued) and the text **stays in the editor**,
+   * which is the difference between "not now" and "lost".
+   *
+   * Absent everywhere else: there, a send during a run is simply not a send, and no
+   * message is taken away from the reader.
+   */
+  onQueue?: (payload: ComposerSendPayload) => boolean;
 }
 
 function ComposerImpl({
@@ -179,6 +192,7 @@ function ComposerImpl({
   onEmptySubmit,
   triggers = true,
   controls = "full",
+  onQueue,
 }: ComposerProps) {
   const { t, i18n } = useTranslation("agent");
   // The editor is non-controlled (see MentionEditor); we only mirror its empty
@@ -377,6 +391,29 @@ function ComposerImpl({
       // the reader stops trusting, and a remote control has no second way in.
       if (!disabled)
         onEmptySubmit?.();
+      return;
+    }
+    // The conversation is still running: keep what was said instead of dropping it.
+    // The panel queues it and gives it back to this box when the run ends — it is
+    // never sent by itself, because a dictated sentence gets one last look.
+    if (onQueue && !disabled && !compactionPending && sending && !sendPending) {
+      const submittedDraftKey = draftKeyRef.current;
+      const submittedAttachments = attachmentsRef.current;
+      const taken = onQueue({ attachments: submittedAttachments, content: trimmed });
+      if (taken) {
+        // Handed over: the text now lives in the panel's queue, so this box gives it
+        // up the same way a delivered message does.
+        editorRef.current?.clear();
+        lastTextRef.current = "";
+        const remaining = attachmentsRef.current.filter(item => !submittedAttachments.includes(item));
+        attachmentsRef.current = remaining;
+        setAttachments(remaining);
+        setAttachError(null);
+        if (remaining.length === 0 && submittedDraftKey)
+          clearComposerDraft(submittedDraftKey);
+      }
+      // Refused (one is already queued): the text stays here, exactly where the reader
+      // can see it and decide.
       return;
     }
     if (

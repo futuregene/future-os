@@ -91,6 +91,9 @@
         "open": "Start the input layer (type or dictate)",
         "close": "Leave the input layer",
         "send": "Send the dictation"
+      },
+      "queue": {
+        "cancel": "Take the queued message back into the box"
       }
     },
     "palette": {
