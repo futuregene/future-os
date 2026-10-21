@@ -42,9 +42,12 @@ development and distribution maintenance.
   an ordinary tickable row on the **recent** page, which opens no shortcut
   section of its own.
 - The session list opens on the **recent** page (`lastTab`), and returns there
-  when a chat is closed. Its three pages are workspaces (its conversations filed
-  under their workspace), conversations (the ones in no workspace), and recent
-  (every conversation, workspaces included, newest reply first). The recent page
+  when a chat is closed. Its three pages are, **in order**, recent, workspaces
+  (its conversations filed under their workspace) and conversations (the ones in
+  no workspace). Recent leads the row: it is where the app opens, it is the one
+  page that needs no knowledge of which workspace a conversation lives in, and a
+  row whose default sat in the middle started the reader in the middle of it.
+  It lists every conversation (workspaces included), newest reply first. The recent page
   splits into "active" — running, queued, or waiting on the reader's approval,
   which is *not* streaming and would otherwise be filed under "earlier" — above
   "earlier". The two stretches use different clocks: active is ordered by when
@@ -64,7 +67,7 @@ development and distribution maintenance.
   its own glyph and name, the name on up to two lines, and the row takes a line
   of its own at the reader's largest text size), the list-actions menu `⋯`
   (search, batch selection), the connection dot and settings; the row under it
-  belongs entirely to the page switch (workspaces / conversations). The search
+  belongs entirely to the page switch (recent / workspaces / conversations). The search
   field and the batch bar still replace that lower row, so the header — machine,
   connection, settings — stays visible while typing or selecting.
 - The workspace picker in the new-conversation dialog can register a directory
@@ -242,10 +245,10 @@ offline push.
   Workspace group headers use a 4px folder→name gap so the group name lines up
   with its first-level conversation titles.
   The list's three pages are the pages of one horizontal swipe, and they form a
-  loop: workspaces → conversations → recency by dragging left, with both ends
-  wrapping (right from workspaces lands on recency, left from recency lands on
-  workspaces). A swipe still moves one page, so the loop never skips
-  conversations.
+  loop: recent → workspaces → conversations by dragging left, with both ends
+  wrapping (right from recent lands on conversations, left from conversations
+  lands on recent). A swipe still moves one page, so the loop never skips
+  workspaces.
   A drag that is not clearly horizontal stays a list scroll, and the swipe is
   off while the toolbar is searching or selecting (the tab bar is hidden then,
   so the swipe would change mode unseen); the tabs themselves still switch on
