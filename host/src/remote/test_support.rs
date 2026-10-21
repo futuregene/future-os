@@ -928,9 +928,13 @@ impl futures::Stream for Incoming {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        self.listener
-            .poll_accept(cx)
-            .map(|result| Some(result.map(|(stream, _)| stream)))
+        self.listener.poll_accept(cx).map(|result| {
+            Some(result.and_then(|(stream, _)| {
+                // Custom incoming streams bypass Tonic's TCP_NODELAY default.
+                stream.set_nodelay(true)?;
+                Ok(stream)
+            }))
+        })
     }
 }
 

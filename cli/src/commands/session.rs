@@ -1709,27 +1709,14 @@ mod tests {
         let env = crate::test_env::EnvGuard::set(&[(
             "FUTURE_AGENT_GRPC_ADDR",
             std::ffi::OsString::from(addr),
-        )]);
+        )])
+        .with_temp_home();
         // `session set --cwd` files the conversation in the desktop app's own
         // store (`~/.future/app/app.db`), so every one of these tests must run
         // against a throwaway home: without this they would read — and, on a
         // machine where the desktop app has imported the session, *write* — the
         // real app database.
-        isolate_home();
         (agent, env)
-    }
-
-    /// Point HOME at a fresh temporary directory for the rest of this test,
-    /// keeping the directory alive in a thread-local so the guard's drop leaves
-    /// nothing behind and no test deletes a directory another one is using.
-    fn isolate_home() {
-        use std::cell::RefCell;
-        thread_local! {
-            static HOMES: RefCell<Vec<tempfile::TempDir>> = const { RefCell::new(Vec::new()) };
-        }
-        let home = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("HOME", home.path());
-        HOMES.with(|homes| homes.borrow_mut().push(home));
     }
 
     /// `--parent` in the create step is what makes a child a child: without it

@@ -361,13 +361,11 @@ fn ensure_mock_server() {
                         .expect("bind mock agent listener");
                     let addr = listener.local_addr().expect("mock agent local addr");
                     addr_tx.send(addr).expect("report mock agent addr");
+                    // Match the native Agent server's low-latency TCP policy.
+                    // serve_with_incoming does not apply Server TCP options.
                     let incoming =
-                        futures::stream::poll_fn(move |cx| match listener.poll_accept(cx) {
-                            std::task::Poll::Ready(result) => {
-                                std::task::Poll::Ready(Some(result.map(|(stream, _)| stream)))
-                            }
-                            std::task::Poll::Pending => std::task::Poll::Pending,
-                        });
+                        tonic::transport::server::TcpIncoming::from_listener(listener, true, None)
+                            .expect("mock Agent TCP incoming");
                     // Drive the server on the runtime's worker pool; it lives
                     // until the process exits, so it is spawned rather than
                     // awaited (awaiting would park this async block forever).

@@ -179,7 +179,10 @@ pub async fn spawn_mock(agent: MockAgent) -> String {
     tokio::spawn(
         Server::builder()
             .add_service(FutureAgentServer::new(agent))
-            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
+            .serve_with_incoming(
+                tonic::transport::server::TcpIncoming::from_listener(listener, true, None)
+                    .expect("mock Agent TCP incoming"),
+            ),
     );
     format!("127.0.0.1:{}", addr.port())
 }

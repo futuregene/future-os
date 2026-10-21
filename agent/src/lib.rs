@@ -135,6 +135,7 @@ pub(crate) mod test_support {
     pub(crate) struct TestHome {
         previous_home: Option<std::ffi::OsString>,
         previous_userprofile: Option<std::ffi::OsString>,
+        previous_future_home: Option<std::ffi::OsString>,
         dir: tempfile::TempDir,
         _guard: std::sync::MutexGuard<'static, ()>,
     }
@@ -144,6 +145,7 @@ pub(crate) mod test_support {
             let guard = home_env_lock();
             let previous_home = std::env::var_os("HOME");
             let previous_userprofile = std::env::var_os("USERPROFILE");
+            let previous_future_home = std::env::var_os("FUTURE_HOME");
             let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .parent()
                 .expect("workspace root")
@@ -155,11 +157,13 @@ pub(crate) mod test_support {
             // (non-canonical) $HOME would make raw dirs::home_dir() paths never
             // match canonicalized rule bases.
             let canonical_home = crate::sandbox::paths::canonicalize_lenient(dir.path());
+            std::env::remove_var("FUTURE_HOME");
             std::env::set_var("HOME", &canonical_home);
             std::env::set_var("USERPROFILE", &canonical_home);
             Self {
                 previous_home,
                 previous_userprofile,
+                previous_future_home,
                 dir,
                 _guard: guard,
             }
@@ -186,6 +190,7 @@ pub(crate) mod test_support {
         fn drop(&mut self) {
             restore_env("HOME", &self.previous_home);
             restore_env("USERPROFILE", &self.previous_userprofile);
+            restore_env("FUTURE_HOME", &self.previous_future_home);
         }
     }
 
@@ -238,6 +243,34 @@ pub(crate) mod test_support {
 
     #[cfg(test)]
     mod env_restore_tests {
+        #[test]
+        fn test_home_isolates_and_restores_an_inherited_future_home() {
+            const CHILD: &str = "FUTURE_AGENT_HOME_GUARD_PROBE";
+            if std::env::var_os(CHILD).is_none() {
+                let inherited = tempfile::tempdir().unwrap();
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "test_support::env_restore_tests::test_home_isolates_and_restores_an_inherited_future_home", "--nocapture"])
+                    .env(CHILD, "1").env("FUTURE_HOME", inherited.path())
+                    .output().unwrap();
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert!(
+                    output.status.success() && stdout.contains("1 passed; 0 failed"),
+                    "{stdout}\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return;
+            }
+            let inherited = std::env::var_os("FUTURE_HOME").unwrap();
+            let home = super::TestHome::new();
+            assert!(std::env::var_os("FUTURE_HOME").is_none());
+            assert_eq!(
+                crate::utils::future_home(),
+                crate::sandbox::paths::canonicalize_lenient(home.path()).join(".future")
+            );
+            drop(home);
+            assert_eq!(std::env::var_os("FUTURE_HOME"), Some(inherited));
+        }
+
         /// Both restore arms, exercised directly (the Some/None mix a real
         /// TestHome sees depends on the host env, which unit tests can't
         /// control — HOME is always set under cargo test, USERPROFILE never).
