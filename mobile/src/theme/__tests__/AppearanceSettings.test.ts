@@ -46,9 +46,9 @@ it("stores a scheme or a text size as soon as it is picked", async () => {
   await select("Dark");
   expect(radio("Dark").props.accessibilityState.checked).toBe(true);
   expect(radio("Follow system").props.accessibilityState.checked).toBe(false);
-  expect(mockSetItem).toHaveBeenLastCalledWith("future.mobile.appearance", JSON.stringify({ themeMode: "dark", fontSize: "medium" }));
+  expect(mockSetItem).toHaveBeenLastCalledWith("future.mobile.appearance", JSON.stringify({ themeMode: "dark", fontSize: "medium", finalAnswerOnly: false }));
   await select("Extra large");
-  expect(getAppearance()).toEqual({ themeMode: "dark", fontSize: "xlarge" });
+  expect(getAppearance()).toEqual({ themeMode: "dark", fontSize: "xlarge", finalAnswerOnly: false });
   expect(radio("Extra large").props.accessibilityState.checked).toBe(true);
 });
 
@@ -89,4 +89,38 @@ it("disables every choice while a write is in flight", async () => {
   await act(async () => { finish(); });
   expect(radio("Large").props.disabled).toBe(false);
   expect(radios().every(node => node.props.accessibilityState.disabled)).toBe(false);
+});
+
+describe("the reply reading setting", () => {
+  const replySwitch = () => tree.root.find(
+    node => node.props.accessibilityLabel === "Show only the final answer" && typeof node.props.onValueChange === "function",
+  );
+  const flip = async (value: boolean) => {
+    await act(async () => { replySwitch().props.onValueChange(value); });
+  };
+
+  it("is off by default, and says what it does", () => {
+    expect(replySwitch().props.value).toBe(false);
+    expect(tree.root.findAll(node => String(node.type) === "Text"
+      && String(node.props.children).startsWith("Once an answer settles")).length).toBe(1);
+  });
+
+  it("stores the choice and applies it", async () => {
+    await flip(true);
+    expect(mockSetItem).toHaveBeenLastCalledWith(
+      "future.mobile.appearance",
+      JSON.stringify({ themeMode: "system", fontSize: "medium", finalAnswerOnly: true }),
+    );
+    expect(getAppearance().finalAnswerOnly).toBe(true);
+    expect(replySwitch().props.value).toBe(true);
+
+    await flip(false);
+    expect(getAppearance().finalAnswerOnly).toBe(false);
+  });
+
+  it("keeps the scheme and text size when the reply setting changes", async () => {
+    await act(async () => { radio("Dark").props.onPress(); });
+    await flip(true);
+    expect(getAppearance()).toEqual({ themeMode: "dark", fontSize: "medium", finalAnswerOnly: true });
+  });
 });

@@ -29,6 +29,10 @@ export const resources = {
           large: "Large",
           xlarge: "Extra large",
         },
+        reply: "Replies",
+        finalAnswerOnly: "Show only the final answer",
+        finalAnswerOnlyHint:
+          "Once an answer settles, fold its reasoning, tool calls and notes into one row above it. Applies to every desktop this phone is paired with; work still shows while it streams.",
         saveFailed: "Could not save the appearance setting. Please try again.",
       },
       language: {
@@ -422,6 +426,8 @@ export const resources = {
         stepWrite: "Wrote",
         stepEdit: "Edited",
         stepsFailed: "{{count}} failed",
+        processShow: "Show process",
+        processHide: "Hide process",
         copy: "Copy",
         copyResponse: "Copy response",
         expandCode: "Expand code",
@@ -1023,6 +1029,10 @@ export const resources = {
           large: "大",
           xlarge: "特大",
         },
+        reply: "回复显示",
+        finalAnswerOnly: "只显示最终回答",
+        finalAnswerOnlyHint:
+          "回答结束后，把思考、工具调用和中间说明收起到回答上方的一行；生成过程中仍完整显示。对本手机连接的全部电脑生效。",
         saveFailed: "无法保存外观设置，请重试。",
       },
       language: {
@@ -1362,6 +1372,8 @@ export const resources = {
         stepWrite: "写入",
         stepEdit: "编辑",
         stepsFailed: "{{count}} 次失败",
+        processShow: "查看过程",
+        processHide: "收起过程",
         copy: "复制",
         copyResponse: "复制回复",
         expandCode: "展开代码",
