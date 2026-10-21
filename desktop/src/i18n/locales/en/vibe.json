@@ -32,5 +32,12 @@
     "fullscreen": "Toggle full screen",
     "close": "Close the panel",
     "more": "More…"
+  },
+  "attention": {
+    "badge": "{{count}} need you",
+    "approval": "Approval",
+    "failed": "Failed",
+    "finished": "Finished",
+    "none": "Nothing is waiting for you"
   }
 }

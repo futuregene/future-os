@@ -338,6 +338,31 @@ only. They are still refused as a *recording* for another command in the same
 scope, because two commands answering to one button would be as ambiguous as two
 commands on one chord.
 
+### 9.5 The attention queue
+
+The question a person watching several conversations asks most often is "which one
+wants something from me". The answer is deliberately narrow — a conversation is not
+interesting because it is busy:
+
+| State | In the queue? | Why |
+| --- | --- | --- |
+| a pending approval (`approvals > 0`, or the run reporting `waiting_approval`) | **yes**, `Approval` | the only state that blocks the agent; it outranks a failure for the same reason |
+| a failed run | **yes**, `Failed` | nobody resumes it by waiting |
+| a run that finished while the reader was elsewhere (the rail's unread mark) | **yes**, `Finished` | worth a visit; nothing is blocked |
+| queued, running, cancelled | **no** | a queue that included "running" would be every cell — a slower version of the arrow keys |
+| finished and already read | **no** | it is just a finished run |
+
+Two places answer it, from two distances: the panel's bar counts ("2 need you") and a
+cell's header marks *why* it is waiting (`Failed`, `Finished`; an approval already has
+its count badge). The key jumps to the **next waiting cell clockwise from where the
+reader is** and lands on its **reading layer** — "what does this want from me" is
+answered by opening it, and one more press would make the queue pointless.
+
+With nothing waiting the key is **unclaimed** (not registered at all), which is the
+panel's rule for every command: a key that would do nothing must stay the app's own.
+The menu still answers the question, with a disabled "nothing is waiting" row rather
+than an absent one — an empty answer is still an answer when it is what was asked.
+
 ## 10. What the panel does not do
 
 * No free-form split tree, no drag-resizing a cell (that is a window manager, not
@@ -444,7 +469,7 @@ What P0 landed, and what it deliberately left:
 | Stage | Content |
 | --- | --- |
 | **P0 — done** | the panel and its grid; scale-respecting cell rendering for local conversations; membership = pin; order = `createdAt` + drag/keyboard reordering; the three layers and the single-editor invariant; the input layer with dictation, the target bar and the three state meanings; `⌘⇧V`, arrows, `⏎`, `Esc`, `1`–`9`; explicit "still running" refusal |
-| **P1 — in progress** | **done:** the menu (`Menu`, one column, `←`/`→` adjust a value in place) · **next:** the attention queue, then the machine filter with the add dialog and removal, then the input layer's chrome, then the send queue. Later in P1: zoom at one or two columns with the panel's three states; degraded rendering for non-focused cells |
+| **P1 — in progress** | **done:** the menu (`Menu`, one column, `←`/`→` adjust a value in place) · the attention queue (§9.5) · **next:** the machine filter with the add dialog and removal, then the input layer's chrome, then the send queue. Later in P1: zoom at one or two columns with the panel's three states; degraded rendering for non-focused cells |
 | **P2** | order in `app.db`; layout presets and a column override; `⌘/` cheat sheet; `h/j/k/l`; a "learn this button" diagnostics page; optional text size on the volume buttons |
 
 ## 15. Open questions

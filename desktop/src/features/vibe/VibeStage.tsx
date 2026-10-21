@@ -5,6 +5,7 @@ import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { AgentThreadChrome } from "../agent/AgentThread";
 import type { SessionMentionOption } from "../agent/sessionMention";
+import type { VibeAttentionReason } from "./attention";
 import type { VibeMenuRow } from "./menuNav";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Expand, MoreHorizontal, X } from "lucide-react";
@@ -22,6 +23,7 @@ import { AgentThread } from "../agent/AgentThread";
 import { useCommand } from "../keyboard/commands";
 import { useShortcutScope } from "../keyboard/scopes";
 import { bindingLabel, useShortcutOverrides } from "../keyboard/shortcuts";
+import { attentionOf, nextAttention } from "./attention";
 import { cellPosition, gridOf, MAX_CELLS, moveInGrid } from "./layout";
 import { moveInOrder, resolveOrder, vibeKeyOfLocal } from "./order";
 import { VibeHintBar } from "./VibeHintBar";
@@ -178,6 +180,28 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
   // point, the answerable card.
   const { activeApproval, decideApproval } = useApprovals(layer === "grid" ? null : focused?.id ?? null);
 
+  /**
+   * Which cells need a human, and why.
+   *
+   * Computed for the cells on screen only: an attention queue that pointed at a
+   * conversation the panel is not showing would be a promise the panel cannot keep
+   * (`attention.ts` has the rule, and why "running" is not in it).
+   */
+  const attention = useMemo(() => {
+    const reasons = new Map<string, VibeAttentionReason>();
+    for (const thread of shown) {
+      const reason = attentionOf({
+        approvals: approvalCounts.get(thread.id) ?? 0,
+        runStatus: runStatuses[thread.id]?.status ?? null,
+        unread: unreadThreadIds.has(thread.id),
+      });
+      if (reason)
+        reasons.set(vibeKeyOfLocal(thread.id), reason);
+    }
+    return reasons;
+  }, [approvalCounts, runStatuses, shown, unreadThreadIds]);
+  const attentionCount = attention.size;
+
   const persistOrder = useCallback((next: string[]) => {
     setOrder(next);
     writeVibeOrder(next);
@@ -291,6 +315,23 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
   // The remote's `Menu`. It is also the input layer's way out of the editor's
   // chrome, which is why it is one of the few commands allowed to run over it.
   useCommand("vibe.menu", () => setMenuOpen(true));
+  /**
+   * Jump to the next conversation that needs a human.
+   *
+   * Registered **only while something does**, which is the rule the panel's other
+   * keys follow (`chat.stop`): with nothing waiting, the key must stay unclaimed
+   * rather than swallow a press for a no-op. Landing goes to the reading layer, not
+   * just to the ring, because the whole question is "what does this want from me" —
+   * one more press to find out would make the queue pointless.
+   */
+  useCommand("vibe.attention", () => {
+    const next = nextAttention(shown.map(thread => vibeKeyOfLocal(thread.id)), attention, focusedKey);
+    const target = next ? shown.find(thread => vibeKeyOfLocal(thread.id) === next) : null;
+    if (!target)
+      return;
+    setFocus(target);
+    setLayer("read");
+  }, attentionCount > 0);
 
   /**
    * Close the menu and put the caret back where it was.
@@ -347,6 +388,31 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
    * the end of the feature.
    */
   const menuRows: VibeMenuRow[] = [
+    // What needs a human, first: on a remote this is the screen's opening question,
+    // and a menu whose first row is "columns" answers something nobody asked.
+    ...(attentionCount > 0
+      ? shown
+          .filter(thread => attention.has(vibeKeyOfLocal(thread.id)))
+          .map((thread, index) => ({
+            id: `attention:${thread.id}`,
+            label: thread.title,
+            value: t(`attention.${attention.get(vibeKeyOfLocal(thread.id))!}`),
+            group: index === 0,
+            onRun: () => {
+              setFocus(thread);
+              setLayer("read");
+              closeMenu();
+            },
+          }))
+      : [{
+          id: "attention:none",
+          label: t("attention.none"),
+          // Disabled rather than absent: "nothing is waiting" is the answer to the
+          // question the reader opened the menu to ask.
+          disabled: true,
+          group: true,
+          onRun: () => {},
+        }]),
     {
       id: "layout",
       label: t("menu.layout"),
@@ -464,6 +530,28 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
                 {isRunning(runStatuses[thread.id])
                   ? <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-accent" title={t("running")} />
                   : null}
+                {/* Why this cell is in the attention queue. The approval badge below
+                    already counts approvals; this is the other two reasons, and it
+                    is the only place a *failed* run says so without opening the cell. */}
+                {(() => {
+                  const reason = attention.get(key);
+                  return reason === "failed" || reason === "finished"
+                    ? (
+                        <span
+                          className={cn(
+                            "shrink-0 rounded px-1 text-[10px] font-medium",
+                            reason === "failed"
+                              ? "bg-danger-soft text-danger"
+                              : "bg-info-soft text-info",
+                          )}
+                          data-vibe-attention-reason={reason}
+                          title={t(`attention.${reason}`)}
+                        >
+                          {t(`attention.${reason}`)}
+                        </span>
+                      )
+                    : null;
+                })()}
                 {approvals > 0
                   ? <Badge className="h-5 px-1.5" tone="warning">{approvals}</Badge>
                   : null}
@@ -482,13 +570,27 @@ export function VibeStage({ threads, workspaces, runStatuses, unreadThreadIds, v
   }
 
   return (
-    <div className="fixed inset-0 z-40 flex flex-col bg-canvas text-ink">
+    <div
+      className="fixed inset-0 z-40 flex flex-col bg-canvas text-ink"
+      // Which conversation the ring is on, and which layer is on top. Two facts the
+      // panel's own keys move, and the only ones a capture can assert the way a
+      // reader sees them (a screenshot cannot show focus).
+      data-vibe-focused={focused?.id ?? ""}
+      data-vibe-layer={layer}
+    >
       <header className="flex h-9 shrink-0 select-none items-center gap-3 border-b border-line-soft/60 px-3">
         <span className="text-xs font-semibold tracking-wide text-ink-soft">{t("title")}</span>
         <span className="text-xs text-ink-soft">
           {t("count", { count: shown.length })}
           {overflow > 0 ? ` · ${t("overflow", { count: overflow })}` : ""}
         </span>
+        {attentionCount > 0
+          ? (
+              <span className="text-xs font-medium text-warning" data-vibe-attention="">
+                {t("attention.badge", { count: attentionCount })}
+              </span>
+            )
+          : null}
         <span className="font-mono text-xs text-ink-faint">
           {layout.columns}
           ×

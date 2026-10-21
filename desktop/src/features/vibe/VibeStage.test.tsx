@@ -352,6 +352,90 @@ describe("the menu", () => {
   });
 });
 
+describe("the attention queue", () => {
+  // `h.counts` is the mocked global approval counts; `runStatuses` is passed in.
+  function mountWith(runStatuses: Record<string, { status: string }>, counts: Record<string, number> = {}) {
+    h.counts = new Map(Object.entries(counts));
+    act(() => {
+      root.render(
+        <VibeStage
+          onClose={() => {}}
+          onOpenInShell={() => {}}
+          onTogglePin={() => {}}
+          runStatuses={runStatuses as never}
+          threads={[thread("a", 100), thread("b", 200), thread("c", 300)]}
+          unreadThreadIds={new Set()}
+          view={VIEW}
+          workspaces={WORKSPACES}
+        />,
+      );
+    });
+  }
+
+  it("jumps to the next cell that needs a human, and lands on its reading layer", () => {
+    // The whole point: "what does this want from me" is answered by opening it, not
+    // by moving a ring and making the reader press again.
+    mountWith({ b: { status: "failed" } });
+    press({ code: "KeyA", key: "a", ctrlKey: true, shiftKey: true });
+    expect(drawn("read")).toEqual(["b"]);
+  });
+
+  it("walks the queue in panel order and wraps", () => {
+    mountWith({ b: { status: "failed" }, c: { status: "waiting_approval" } });
+    press({ code: "KeyA", key: "a", ctrlKey: true, shiftKey: true });
+    expect(drawn("read")).toEqual(["b"]);
+    press({ code: "KeyA", key: "a", ctrlKey: true, shiftKey: true });
+    expect(drawn("read")).toEqual(["c"]);
+    press({ code: "KeyA", key: "a", ctrlKey: true, shiftKey: true });
+    expect(drawn("read")).toEqual(["b"]);
+  });
+
+  it("counts a pending approval and an unseen finish as attention", () => {
+    mountWith({ a: { status: "running" } }, { a: 1 });
+    press({ code: "KeyA", key: "a", ctrlKey: true, shiftKey: true });
+    expect(drawn("read")).toEqual(["a"]);
+  });
+
+  it("leaves a busy conversation out of the queue", () => {
+    // "running" is not "needs you": a queue that included it would be every cell,
+    // and then the key would be a slower version of the arrow keys.
+    mountWith({ a: { status: "running" }, b: { status: "queued" }, c: { status: "running" } });
+    press({ code: "KeyA", key: "a", ctrlKey: true, shiftKey: true });
+    // Nothing waiting means the key is unclaimed, so the panel is still on the grid.
+    expect(drawn("read")).toEqual(["a", "b", "c"]);
+  });
+
+  it("says it is waiting in the panel's own bar and on the cell", () => {
+    mountWith({ b: { status: "failed" } });
+    expect(container.querySelector("[data-vibe-attention]")?.textContent).toContain("1");
+    expect(container.querySelector("[data-vibe-attention-reason=\"failed\"]")).not.toBeNull();
+    // The bar and the marker answer the same question from two places: "somewhere in
+    // here" and "this one".
+    mountWith({ a: { status: "running" } });
+    expect(container.querySelector("[data-vibe-attention]")).toBeNull();
+  });
+
+  it("lists what is waiting in the menu, and says so when nothing is", () => {
+    mountWith({ b: { status: "failed" } });
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    expect(container.querySelector("[aria-current=\"true\"]")?.getAttribute("data-vibe-menu-row")).toBe("attention:b");
+    press({ code: "Escape", key: "Escape" });
+    mountWith({});
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    // A disabled row, not an absent one: "nothing is waiting" is the answer to the
+    // question the menu was opened to ask.
+    expect(container.querySelector("[data-vibe-menu-row=\"attention:none\"]")?.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("opens the waiting conversation from the menu", () => {
+    mountWith({ c: { status: "waiting_approval" } });
+    press({ code: "ContextMenu", key: "ContextMenu" });
+    press({ code: "Enter", key: "Enter" });
+    expect(drawn("read")).toEqual(["c"]);
+    expect(container.querySelector("[role=\"menu\"]")).toBeNull();
+  });
+});
+
 describe("membership", () => {
   it("shows only pinned, live conversations of this machine", () => {
     mount({
