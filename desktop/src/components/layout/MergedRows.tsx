@@ -2,26 +2,20 @@ import type { ReactNode } from "react";
 import type { DeviceFilter, MergedConversation, RemoteWorkspaceTarget } from "../../features/remote-peer/mergeConversations";
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread } from "../../integrations/storage/threadStore";
-import type { RailView } from "./hooks/useRailView";
 import type { RecentSection, RecentSectionKind } from "./recentOrder";
 import { Plus } from "lucide-react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { groupMergedRows } from "../../features/remote-peer/mergeConversations";
 import { iconGlyph } from "../../features/remote-peer/peerIcons";
 import { RemoteWorkspaceMenu } from "../../features/remote-peer/RemoteWorkspaceMenu";
-import { RailGroupHeader, RailHeaderButton, RailSectionHeader } from "./RailChrome";
+import { ChatSectionMenu } from "./ActivityRailMenus";
+import { RailGroupHeader, RailHeaderButton, RailSectionHeader, RailSectionToggle } from "./RailChrome";
+import { RailNewChatButton } from "./RailNewChatButton";
 import { RemoteConversationRow } from "./RemoteConversationRow";
 
 /**
- * Which list this component draws: one of the rail's tabs, or the search results.
- *
- * Not "tree": that was two lists (workspaces, then chats) wearing one name, and
- * the reason the chats read as living inside the workspaces.
- */
-export type MergedListView = RailView | "search";
-
-/**
- * The merged list's rows, one list at a time.
+ * The merged list's rows: pinned, then workspaces, then chats.
  *
  * The same shape, headings, folding and controls as the local list, because they
  * are the same list to the reader. Where it differs, it says why:
@@ -50,17 +44,23 @@ export type MergedListView = RailView | "search";
 export function MergedRows({
   activeKey,
   ageLabels,
+  chatSectionCollapsed,
   collapsedWorkspaces,
   filter,
   onChangedRemote,
   onDeletedRemote,
+  onNewChat,
   onNewChatInWorkspace,
+  onNewWorkspace,
   onOpenRemote,
   onRenameRemote,
   onRenameRemoteWorkspace,
+  onSelectChats,
   onSelectWorkspaceChats,
+  onToggleChatSection,
   onToggleRemoteExpanded,
   onToggleWorkspace,
+  onToggleWorkspaceSection,
   peers,
   remoteSelection,
   renderLocalGroupHeader,
@@ -71,24 +71,15 @@ export function MergedRows({
   rowMeta,
   rowRoots,
   rows,
-  searchLabels,
   selectionMode,
   threadById,
   expandedRemoteRows,
-  view,
+  view = "tree",
+  workspaceSectionCollapsed,
 }: {
   activeKey: string | null;
   /** The age label to draw on a row, by row key (the recent view only). */
   ageLabels?: ReadonlyMap<string, string>;
-  /**
-   * Where each search result lives, by row key: the workspace's name, or the
-   * chats tab's own name for a conversation in no workspace.
-   *
-   * Cross-tab results are one flat list, so the one fact a row loses by leaving
-   * its own list is which list it came from — and that is exactly the fact the
-   * reader needs to decide whether to open it.
-   */
-  searchLabels?: ReadonlyMap<string, string>;
   /**
    * The recent view's stretches, already split and windowed.
    *
@@ -100,6 +91,7 @@ export function MergedRows({
   /** Finished rows the window is holding back, and how to open it further. */
   recentMore?: number;
   onShowMoreRecent?: () => void;
+  chatSectionCollapsed: boolean;
   /** The rail's fold state: the same instance that draws the local headings. */
   collapsedWorkspaces: ReadonlySet<string>;
   /**
@@ -119,6 +111,7 @@ export function MergedRows({
    * is what holds the open conversation; this list only knows its rows.
    */
   onDeletedRemote: (conversation: MergedConversation) => void;
+  onNewChat?: () => void;
   /**
    * Start a conversation on another machine: in a workspace, or with none.
    *
@@ -126,8 +119,11 @@ export function MergedRows({
    * chat section's own control asks for on this machine.
    */
   onNewChatInWorkspace?: (desktopId: string, workspaceId: string | null) => void;
+  onNewWorkspace?: () => void;
   onOpenRemote: (conversation: MergedConversation) => void;
   onRenameRemote: (conversation: MergedConversation) => void;
+  /** Mark the chats section for a batch action. */
+  onSelectChats?: () => void;
   /**
    * Rename a workspace on the machine that owns it.
    *
@@ -143,9 +139,11 @@ export function MergedRows({
    * wherever they live.
    */
   onSelectWorkspaceChats?: (groupKey: string) => void;
+  onToggleChatSection: () => void;
   /** Fold or unfold the forks of one conversation on another machine, by row key. */
   onToggleRemoteExpanded: (key: string) => void;
   onToggleWorkspace: (key: string) => void;
+  onToggleWorkspaceSection: () => void;
   /**
    * Which remote conversations have their forks on screen.
    *
@@ -192,10 +190,8 @@ export function MergedRows({
     depth?: number,
     hasChildren?: boolean,
     compact?: boolean,
-    /** The recent view's second column; absent in the tabbed lists. */
+    /** The recent view's second column; absent in the tree view. */
     ageLabel?: string,
-    /** The search results' weak origin label; absent everywhere else. */
-    qualifier?: string,
   ) => ReactNode;
   /**
    * Which conversation each listed row hangs under, by row key — its root.
@@ -213,23 +209,14 @@ export function MergedRows({
   /**
    * Which list to draw.
    *
-   * A *tab*, not a shape: the rail stopped having a "tree" mode and a "recent"
-   * mode, because a workspace list and a chat list are siblings rather than
-   * nested views of one another. So:
-   *
-   * - `workspace` — the pinned workspace conversations, then the workspace
-   *   groups with the conversations inside them.
-   * - `chat` — the pinned chats, then the conversations that belong to no
-   *   workspace.
-   * - `recent` — no headings for where a conversation lives, two stretches
-   *   instead ("active", "earlier"), each ranked by one clock (`recentOrder.ts`).
-   * - `search` — the results of a query, flat and across the tabs, each row
-   *   saying where it lives (`searchLabels`).
-   *
-   * Every one is drawn from the rows this component is handed, so switching
-   * lists moves nothing about a conversation itself.
+   * `tree` is the rail's own shape — pinned, workspaces, chats — and the default.
+   * `recent` is the second view over the same rows: no headings for where a
+   * conversation lives, two stretches instead ("active", "earlier"), each ranked
+   * by one clock (`recentOrder.ts`). Both are drawn from the rows this component
+   * is handed, so switching views moves nothing about a conversation itself.
    */
-  view: MergedListView;
+  view?: "tree" | "recent";
+  workspaceSectionCollapsed: boolean;
 }) {
   const { t } = useTranslation("layout");
   // The sections and their order: a fork is a conversation's, so the rows are
@@ -237,23 +224,29 @@ export function MergedRows({
   // conversation's section rather than one its own fields would pick.
   const { chats, pinned, workspaces } = groupMergedRows(rows, rowRoots);
 
+  // The chat section's menu is the rail's own control, which owns its open state
+  // through props — so the state lives here, next to the header that draws it.
+  const [chatMenuOpen, setChatMenuOpen] = useState(false);
   // One machine selected: it is named by the selector directly above the list, so
   // repeating it on every row says nothing and takes the space a title needs.
   const oneMachine = filter.kind === "device" && filter.desktopId !== null;
+  // Creating a workspace or a chat makes one on *this* machine, so the controls
+  // that do it belong only where this machine's rows are listed: under a remote
+  // device's filter they would add something the user cannot see.
+  const showLocalActions = filter.kind === "all" || filter.desktopId === null;
 
   function renderRow(
     conversation: MergedConversation,
     compact: boolean,
     groupHasSource: boolean,
     /**
-     * The flat lists' overrides.
+     * The recent view's overrides.
      *
-     * A flat list says everything itself: every row sits at depth 0 (there is no
-     * parent above it to indent under), carries its own age in the recent view,
-     * and says where it lives in the search results. The tabbed lists pass
-     * nothing, so their rows keep the depth their tree computed.
+     * A flat list says both things itself: every row sits at depth 0 (there is
+     * no parent above it to indent under) and carries its own age. The tree view
+     * passes nothing, so its rows keep the depth its tree computed.
      */
-    flat?: { age?: string; depth: 0; label?: string },
+    flat?: { age?: string; depth: 0 },
   ): ReactNode {
     if (conversation.desktopId === null) {
       const thread = threadById.get(conversation.id);
@@ -277,7 +270,6 @@ export function MergedRows({
         flat ? false : meta?.hasChildren ?? false,
         compact,
         flat?.age,
-        flat?.label,
       );
     }
     const selectable = remoteSelection?.selectable(conversation) === true;
@@ -304,7 +296,6 @@ export function MergedRows({
           onOpenRemote(row);
         }}
         onOpenRename={onRenameRemote}
-        qualifier={flat?.label}
         onToggleExpanded={row => onToggleRemoteExpanded(row.key)}
         onToggleSelection={conversation => remoteSelection?.toggle(conversation)}
         peer={peers.find(peer => peer.desktopId === conversation.desktopId)}
@@ -318,22 +309,8 @@ export function MergedRows({
     );
   }
 
-  if (view === "search") {
-    // One flat list across the tabs, every row saying where it lives. The order
-    // is the rail's (it built the rows), because it is also what the keyboard
-    // walk steps through.
-    return (
-      <div className="space-y-0.5" data-testid="search-rows">
-        {rows.map(row => (
-          <div data-search-row={row.key} key={row.key}>
-            {renderRow(row, false, false, {
-              depth: 0,
-              label: searchLabels?.get(row.key),
-            })}
-          </div>
-        ))}
-      </div>
-    );
+  if (rows.length === 0) {
+    return <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noChats")}</div>;
   }
 
   if (view === "recent" && recentSections) {
@@ -385,123 +362,178 @@ export function MergedRows({
     );
   }
 
-  // One tab at a time. The tab *is* the section heading: it says which list this
-  // is, so a heading inside the list repeating its name was the extra level the
-  // tabs replaced. What those headings carried moved with them — the tab's own
-  // menu (its batch entry) lives in the rail's control row, and the workspace tab
-  // offers "new workspace" there too.
-  const tabPinned = pinned.filter(row => rowTabOf(row) === view);
   return (
     <>
-      {tabPinned.length > 0
+      {pinned.length > 0
         ? (
             <div className="mb-3 space-y-0.5">
               <RailSectionHeader>{t("activityRail.pinnedHeader")}</RailSectionHeader>
-              {tabPinned.map(row => renderRow(row, false, false))}
+              {pinned.map(row => renderRow(row, false, false))}
             </div>
           )
         : null}
-      {view === "chat"
-        ? (
-            <div className="shrink-0 space-y-0.5" data-testid="merged-conversations">
-              {chats.length === 0
-                ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noChats")}</div>
-                : chats.map(row => renderRow(row, false, false))}
-            </div>
-          )
-        : (
-            <div className="space-y-0.5">
-              {workspaces.length === 0
-                ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.emptyWorkspaceTab")}</div>
+      <div className="space-y-0.5">
+        <RailSectionHeader
+          controls={(
+            <>
+              <RailSectionToggle
+                collapsed={workspaceSectionCollapsed}
+                label={workspaceSectionCollapsed
+                  ? t("activityRail.expandWorkspaceSection")
+                  : t("activityRail.collapseWorkspaceSection")}
+                onToggle={onToggleWorkspaceSection}
+              />
+              {showLocalActions && onNewWorkspace
+                ? (
+                    <RailHeaderButton
+                      icon={<Plus className="size-3.5" />}
+                      label={t("activityRail.newWorkspace")}
+                      onClick={onNewWorkspace}
+                    />
+                  )
                 : null}
-              {workspaces.map((group) => {
+            </>
+          )}
+        >
+          {t("activityRail.workspace")}
+        </RailSectionHeader>
+        {!workspaceSectionCollapsed && workspaces.length === 0
+          ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noWorkspaceThreads")}</div>
+          : null}
+        {workspaceSectionCollapsed
+          ? null
+          : workspaces.map((group) => {
               // A group of this machine's rows is this machine's workspace, and
               // the rail already renders that heading — with its menu, its
               // click-to-select and its pin marker. Using it here is what makes
               // the two lists one list rather than two that resemble each other.
-                if (group.desktopId === null && group.workspaceId !== null) {
-                  const collapsed = collapsedWorkspaces.has(group.workspaceId);
-                  return (
-                    <div className="space-y-0.5" key={group.key}>
-                      {renderLocalGroupHeader(group.workspaceId)}
-                      {collapsed
-                        ? null
-                        : group.rows.map(row => renderRow(row, true, false))}
-                    </div>
-                  );
-                }
-                const collapsed = collapsedWorkspaces.has(group.key);
-                const desktopId = group.desktopId;
-                const workspaceId = group.workspaceId;
+              if (group.desktopId === null && group.workspaceId !== null) {
+                const collapsed = collapsedWorkspaces.has(group.workspaceId);
                 return (
                   <div className="space-y-0.5" key={group.key}>
-                    <RailGroupHeader
-                      collapsed={collapsed}
-                      collapsedLabel={t("activityRail.expandWorkspace")}
-                      expandedLabel={t("activityRail.collapseWorkspace")}
-                      glyph={oneMachine ? null : <GroupGlyph desktopId={desktopId} peers={peers} />}
-                      menu={desktopId && workspaceId
-                        ? (
-                            <>
-                              {/* A workspace on another machine takes the same
+                    {renderLocalGroupHeader(group.workspaceId)}
+                    {collapsed
+                      ? null
+                      : group.rows.map(row => renderRow(row, true, false))}
+                  </div>
+                );
+              }
+              const collapsed = collapsedWorkspaces.has(group.key);
+              const desktopId = group.desktopId;
+              const workspaceId = group.workspaceId;
+              return (
+                <div className="space-y-0.5" key={group.key}>
+                  <RailGroupHeader
+                    collapsed={collapsed}
+                    collapsedLabel={t("activityRail.expandWorkspace")}
+                    expandedLabel={t("activityRail.collapseWorkspace")}
+                    glyph={oneMachine ? null : <GroupGlyph desktopId={desktopId} peers={peers} />}
+                    menu={desktopId && workspaceId
+                      ? (
+                          <>
+                            {/* A workspace on another machine takes the same
                                 controls the local one has, in the same order:
                                 the actions menu first, then the way to start a
                                 conversation in it. */}
-                              <RemoteWorkspaceMenu
-                                desktopId={desktopId}
-                                name={group.label ?? t("activityRail.workspace")}
-                                onChanged={onChangedRemote}
-                                onRename={onRenameRemoteWorkspace
-                                  ? () => onRenameRemoteWorkspace({
+                            <RemoteWorkspaceMenu
+                              desktopId={desktopId}
+                              name={group.label ?? t("activityRail.workspace")}
+                              onChanged={onChangedRemote}
+                              onRename={onRenameRemoteWorkspace
+                                ? () => onRenameRemoteWorkspace({
                                     // The heading's *current* name, which is what the
                                     // dialog opens with and what the host is
                                     // addressed by id to replace.
-                                      desktopId,
-                                      name: group.label ?? "",
-                                      workspaceId,
-                                    })
-                                  : undefined}
-                                onSelect={selectionMode
-                                  ? undefined
-                                  : () => onSelectWorkspaceChats?.(group.key)}
-                                pinned={group.pinned}
-                                workspaceId={workspaceId}
-                              />
-                              <RailHeaderButton
-                                icon={<Plus className="size-3.5" />}
-                                label={t("activityRail.newChatInWorkspace", {
-                                  name: group.label ?? t("activityRail.workspace"),
-                                })}
-                                onClick={() => onNewChatInWorkspace?.(desktopId, workspaceId)}
-                                // A *group* heading, not a section heading: the plus
-                                // is the same control the local workspace heading
-                                // draws, revealed the same way. Drawing it plainly
-                                // here left a permanently visible glyph in the
-                                // remote heading and a hidden one in the local
-                                // heading directly above it.
-                                revealOnHover
-                              />
-                            </>
-                          )
-                        : null}
-                      name={group.label ?? t("activityRail.workspace")}
-                      onToggle={() => onToggleWorkspace(group.key)}
-                      pinned={group.pinned}
-                      testId="merged-group-heading"
+                                    desktopId,
+                                    name: group.label ?? "",
+                                    workspaceId,
+                                  })
+                                : undefined}
+                              onSelect={selectionMode
+                                ? undefined
+                                : () => onSelectWorkspaceChats?.(group.key)}
+                              pinned={group.pinned}
+                              workspaceId={workspaceId}
+                            />
+                            <RailHeaderButton
+                              icon={<Plus className="size-3.5" />}
+                              label={t("activityRail.newChatInWorkspace", {
+                                name: group.label ?? t("activityRail.workspace"),
+                              })}
+                              onClick={() => onNewChatInWorkspace?.(desktopId, workspaceId)}
+                              // A *group* heading, not a section heading: the plus
+                              // is the same control the local workspace heading
+                              // draws, revealed the same way. Drawing it plainly
+                              // here left a permanently visible glyph in the
+                              // remote heading and a hidden one in the local
+                              // heading directly above it.
+                              revealOnHover
+                            />
+                          </>
+                        )
+                      : null}
+                    name={group.label ?? t("activityRail.workspace")}
+                    onToggle={() => onToggleWorkspace(group.key)}
+                    pinned={group.pinned}
+                    testId="merged-group-heading"
+                  />
+                  {collapsed ? null : group.rows.map(row => renderRow(row, true, true))}
+                </div>
+              );
+            })}
+      </div>
+      <div className="mt-3 flex flex-1 flex-col space-y-0.5">
+        <RailSectionHeader
+          controls={(
+            <>
+              <RailSectionToggle
+                collapsed={chatSectionCollapsed}
+                label={chatSectionCollapsed
+                  ? t("activityRail.expandChatSection")
+                  : t("activityRail.collapseChatSection")}
+                onToggle={onToggleChatSection}
+              />
+              {/* The chat section's own menu, as the local list has. It marks
+                  conversations for a batch action, and the batch can hold any
+                  machine's rows — a remote row carries the same checkbox a local
+                  one does — so it is offered wherever the section lists
+                  anything. */}
+              {onSelectChats
+                ? (
+                    <ChatSectionMenu
+                      open={chatMenuOpen}
+                      onOpenChange={setChatMenuOpen}
+                      onSelect={onSelectChats}
                     />
-                    {collapsed ? null : group.rows.map(row => renderRow(row, true, true))}
-                  </div>
-                );
-              })}
-            </div>
+                  )
+                : null}
+              {/* A conversation lives on one machine, and the list can be
+                  showing one or all of them — so this asks only when there is
+                  something to ask. Filtering to a host used to leave the reader
+                  no way to start a conversation *on* the host they had just
+                  chosen to look at. */}
+              <RailNewChatButton
+                filter={filter}
+                onNewChatLocal={onNewChat}
+                onNewChatRemote={onNewChatInWorkspace
+                  ? (desktopId, workspaceId) => onNewChatInWorkspace(desktopId, workspaceId)
+                  : undefined}
+                peers={peers}
+              />
+            </>
           )}
+        >
+          {t("activityRail.chatHeader")}
+        </RailSectionHeader>
+        {!chatSectionCollapsed && chats.length === 0
+          ? <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noChats")}</div>
+          : null}
+        <div className="shrink-0 space-y-0.5" data-testid="merged-conversations">
+          {chatSectionCollapsed ? null : chats.map(row => renderRow(row, false, false))}
+        </div>
+      </div>
     </>
   );
-}
-
-/** Which tab a conversation belongs to — the same rule the rail uses. */
-function rowTabOf(row: MergedConversation): "chat" | "workspace" {
-  return row.mode === "workspace" ? "workspace" : "chat";
 }
 
 /**

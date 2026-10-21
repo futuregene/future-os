@@ -7,7 +7,6 @@ import type { FutureAuthState, ProvidersView } from "../../integrations/agent/pr
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { ContextTab } from "./ContextPanel";
-import type { RailView } from "./hooks/useRailView";
 import { Monitor } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -83,7 +82,6 @@ import { useHasProviders } from "./hooks/useHasProviders";
 import { useLeftPanelWidth } from "./hooks/useLeftPanelWidth";
 import { useModelSelection } from "./hooks/useModelSelection";
 import { useNewConversation } from "./hooks/useNewConversation";
-import { useRailView, viewForMode } from "./hooks/useRailView";
 import { useRemoteDoneBell } from "./hooks/useRemoteDoneBell";
 import { useRemotePeers } from "./hooks/useRemotePeers";
 import { useRemoteStatus } from "./hooks/useRemoteStatus";
@@ -163,12 +161,7 @@ function ReadyAppShell({
   // The remote peer's own namespace: its strings describe another machine, and
   // folding them into `layout` would put them where no other remote string is.
   const { t: tRemotePeer } = useTranslation("remotePeer");
-  // Which page the window shows. The conversation column is one page, not two:
-  // which *list* it draws is the rail's tab (`railView` below), because a
-  // workspace and a chat were two sections answering one question — and that is
-  // how the chats ended up looking like they lived inside the workspaces.
-  const [section, setSection] = useState<ActivitySection>("conversations");
-  const { follow: followRailView, select: selectRailView, view: railView } = useRailView();
+  const [section, setSection] = useState<ActivitySection>("chat");
   const [centerMode, setCenterMode] = useState<"thread" | "new-chat">("thread");
   /**
    * Whether the Vibe panel has the screen.
@@ -510,7 +503,6 @@ function ReadyAppShell({
     syncSelection,
     setSection,
     setCenterMode,
-    onOpenedThread: mode => followRailView(viewForMode(mode)),
     pinCreated: () => {
       const armed = pinNextCreatedRef.current;
       pinNextCreatedRef.current = false;
@@ -642,21 +634,6 @@ function ReadyAppShell({
     setNewChatWorkspaceId(null);
   }
 
-  /**
-   * The user chose a list: a tab click or ⌘1/2/3.
-   *
-   * A choice, so it is remembered (`select`), and it is also a request to *see*
-   * that list — pressing ⌘2 while the Skills page is up has to come back to the
-   * conversations, or the number row would move a selection the reader cannot
-   * see.
-   */
-  function handleSelectRailView(view: RailView) {
-    selectRailView(view);
-    setSection("conversations");
-    setCenterMode("thread");
-    setNewChatWorkspaceId(null);
-  }
-
   // Stable by construction (they only set two pieces of shell state), which is
   // what lets a panel cell's prop object keep its identity across a re-render:
   // without this, every streaming push would hand every cell a new "open models"
@@ -677,11 +654,7 @@ function ReadyAppShell({
   }, []);
 
   function handleSelectThread(thread: StoredThread) {
-    setSection("conversations");
-    // Opening a conversation takes the reader to the list it lives in, without
-    // claiming it as their preference: the tab they *chose* is still the one the
-    // next launch opens.
-    followRailView(viewForMode(thread.mode));
+    setSection(thread.mode === "workspace" ? "workspace" : "chat");
     setActiveThreadId(thread.id);
     setCenterMode("thread");
     setNewChatWorkspaceId(null);
@@ -700,9 +673,8 @@ function ReadyAppShell({
       return;
     }
     // A run's conversation may not be in the local list yet (it was created by
-    // the tick loop); refresh the catalog and open it by id. Which tab it belongs
-    // to is unknown until it arrives, so this does not move the tab.
-    setSection("conversations");
+    // the tick loop); refresh the catalog and open it by id.
+    setSection("chat");
     setActiveThreadId(threadId);
     setCenterMode("thread");
     setNewChatWorkspaceId(null);
@@ -713,8 +685,7 @@ function ReadyAppShell({
 
   function handleSelectWorkspace(_workspace: StoredWorkspace, workspaceThreads: StoredThread[]) {
     const latestThread = workspaceThreads[0];
-    setSection("conversations");
-    followRailView("workspace");
+    setSection("workspace");
     setNewChatWorkspaceId(null);
     if (latestThread) {
       setActiveThreadId(latestThread.id);
@@ -729,8 +700,7 @@ function ReadyAppShell({
   function handleOpenNewChat(workspaceId?: string) {
     // Workspace "+" on a specific workspace → a chat inside it; otherwise a
     // plain chat (Chat header "+" / top New Chat).
-    setSection("conversations");
-    followRailView(workspaceId ? "workspace" : "chat");
+    setSection(workspaceId ? "workspace" : "chat");
     setNewChatWorkspaceId(workspaceId ?? null);
     setNewConversationMode(workspaceId ? "workspace" : "chat");
     setNewWorkspaceForm(null);
@@ -772,8 +742,7 @@ function ReadyAppShell({
 
   /** The local half of the workspace "+": the form's picker browses this disk. */
   function openLocalWorkspaceForm() {
-    setSection("conversations");
-    followRailView("workspace");
+    setSection("workspace");
     setNewChatWorkspaceId(null);
     setNewConversationMode("workspace");
     setNewWorkspaceForm("open");
@@ -922,8 +891,7 @@ function ReadyAppShell({
   async function handleRestoreThread(thread: StoredThread) {
     const restoredThread = await restoreThread(thread.id);
     await refreshStore(restoredThread.id);
-    setSection("conversations");
-    followRailView(viewForMode(restoredThread.mode));
+    setSection(restoredThread.mode === "workspace" ? "workspace" : "chat");
     setCenterMode("thread");
   }
 
@@ -1096,10 +1064,7 @@ function ReadyAppShell({
     if (conversation.desktopId === null)
       return;
     setActiveRemote({ desktopId: conversation.desktopId, sessionId: conversation.id, workspaceId: null });
-    setSection("conversations");
-    // The row names its own mode, so the tab can follow it — a workspace
-    // conversation on the other machine belongs in the workspace list here too.
-    followRailView(viewForMode(conversation.mode));
+    setSection("chat");
     // The mirror of `handleSelectThread`: opening a remote conversation leaves
     // the local one, and it has to actually be *shown* — a draft left in the
     // column would otherwise keep the new-chat screen up over it.
@@ -1116,9 +1081,7 @@ function ReadyAppShell({
    */
   function openRemoteSession(desktopId: string, sessionId: string) {
     setActiveRemote({ desktopId, sessionId, workspaceId: null });
-    // Addressed by ids, so there is no row to read a mode from: the tab stays
-    // where the reader left it.
-    setSection("conversations");
+    setSection("chat");
     setActiveThreadId(null);
     setCenterMode("thread");
     setNewChatWorkspaceId(null);
@@ -1162,8 +1125,7 @@ function ReadyAppShell({
    */
   function startRemoteConversation(desktopId: string, workspaceId: string | null = null) {
     setActiveRemote({ desktopId, sessionId: "", workspaceId });
-    setSection("conversations");
-    followRailView(workspaceId ? "workspace" : "chat");
+    setSection("chat");
     // A draft on a machine is still "a conversation in the column": without
     // this, asking for one from the new-chat screen left that screen up and the
     // machine's composer was never shown.
@@ -1198,9 +1160,8 @@ function ReadyAppShell({
     setSettingsTab("shortcuts");
     setSettingsOpen(true);
   }, shortcutsLive);
-  useCommand("rail.tab.workspace", () => handleSelectRailView("workspace"), shortcutsLive);
-  useCommand("rail.tab.chat", () => handleSelectRailView("chat"), shortcutsLive);
-  useCommand("rail.tab.recent", () => handleSelectRailView("recent"), shortcutsLive);
+  useCommand("section.chat", () => handleSectionChange("chat"), shortcutsLive);
+  useCommand("section.workspace", () => handleSectionChange("workspace"), shortcutsLive);
   useCommand("section.skill", () => handleSectionChange("skill"), shortcutsLive);
   useCommand("section.tasks", () => handleSectionChange("tasks"), shortcutsLive);
   useCommand("section.remote", () => handleSectionChange("remote"), shortcutsLive);
@@ -1330,10 +1291,6 @@ function ReadyAppShell({
     onOpenUpdate: handleOpenUpdate,
     skillIntroDismissed: appSettings.skillIntroDismissed,
     onDismissSkillIntro: () => void changeSettings({ skillIntroDismissed: true }),
-    // The list the rail draws, and the one way it is chosen. Passive follows go
-    // through this shell's open handlers, which call the hook's `follow`.
-    view: railView,
-    onSelectView: handleSelectRailView,
   };
 
   /**
@@ -1539,7 +1496,7 @@ function ReadyAppShell({
                                   remoteStatus={remoteStatus}
                                 />
                               )
-                            : section === "conversations" && activeRemote
+                            : section === "chat" && activeRemote
                               ? (
                                   <RemoteConversationView
                                     approvals={remoteApprovals.approvals}

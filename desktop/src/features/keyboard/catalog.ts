@@ -43,9 +43,8 @@ export type CommandId
     | "rail.search"
     | "panel.left"
     | "panel.right"
-    | "rail.tab.workspace"
-    | "rail.tab.chat"
-    | "rail.tab.recent"
+    | "section.chat"
+    | "section.workspace"
     | "section.skill"
     | "section.tasks"
     | "section.remote"
@@ -182,17 +181,11 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "group.previous", category: "navigation", defaultBinding: "mod+shift+bracketleft", inTerminal: false, repeat: true },
   { id: "group.next", category: "navigation", defaultBinding: "mod+shift+bracketright", inTerminal: false, repeat: true },
   { id: "rail.search", category: "navigation", defaultBinding: "mod+shift+f", inTerminal: false },
-  // The number row names the rail's three lists, then its three pages. The tabs
-  // took `section.chat`'s and `section.workspace`'s slots because they answer the
-  // question those two commands asked (which conversations) and the pages now
-  // start at ⌘4. A user's saved binding for a retired id is dropped by the
-  // resolver, and the settings page offers the new one to rebind.
-  { id: "rail.tab.workspace", category: "navigation", defaultBinding: "mod+1", inTerminal: false },
-  { id: "rail.tab.chat", category: "navigation", defaultBinding: "mod+2", inTerminal: false },
-  { id: "rail.tab.recent", category: "navigation", defaultBinding: "mod+3", inTerminal: false },
-  { id: "section.skill", category: "navigation", defaultBinding: "mod+4", inTerminal: false },
-  { id: "section.tasks", category: "navigation", defaultBinding: "mod+5", inTerminal: false },
-  { id: "section.remote", category: "navigation", defaultBinding: "mod+6", inTerminal: false },
+  { id: "section.chat", category: "navigation", defaultBinding: "mod+1", inTerminal: false },
+  { id: "section.workspace", category: "navigation", defaultBinding: "mod+2", inTerminal: false },
+  { id: "section.skill", category: "navigation", defaultBinding: "mod+3", inTerminal: false },
+  { id: "section.tasks", category: "navigation", defaultBinding: "mod+4", inTerminal: false },
+  { id: "section.remote", category: "navigation", defaultBinding: "mod+5", inTerminal: false },
   { id: "panel.left", category: "panels", defaultBinding: "mod+b", inTerminal: false },
   { id: "panel.right", category: "panels", defaultBinding: "mod+shift+b", inTerminal: false },
   { id: "terminal.toggle", category: "terminal", defaultBinding: "mod+j", inTerminal: true },

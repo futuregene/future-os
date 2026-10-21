@@ -81,9 +81,7 @@ function storedWorkspace(id: string, name: string): StoredWorkspace {
 
 function railProps(overrides: Partial<ComponentProps<typeof ActivityRail>> = {}) {
   return {
-    active: "conversations" as const,
-    view: "chat" as const,
-    onSelectView: vi.fn(),
+    active: "chat" as const,
     activeThreadId: null,
     expanded: true,
     onBatchDeleteThreads: vi.fn(),
@@ -410,7 +408,6 @@ describe("the local tree in merged mode", () => {
    */
   it("keeps a local fork beside its conversation when that one is pinned", async () => {
     const view = await mountRail({
-      view: "workspace",
       remoteCatalogs: [catalogRow("sess_a")],
       remotePeers: [peer],
       threads: [
@@ -453,6 +450,7 @@ describe("the local tree in merged mode", () => {
         { indent: "16px", title: "Pinned parent" },
         { indent: "36px", title: "Fork of pinned" },
         { indent: "28px", title: "Other in the workspace" },
+        { indent: "16px", title: "Remote conversation💻" },
       ]);
     view.unmount();
   });
@@ -492,7 +490,7 @@ describe("the remote tree in merged mode", () => {
   } as never;
 
   it("offers the fold toggle for a remote conversation that has forks", async () => {
-    const view = await mountRail({ remoteCatalogs: [hostWorkspace], remotePeers: [peer], view: "workspace" });
+    const view = await mountRail({ remoteCatalogs: [hostWorkspace], remotePeers: [peer] });
 
     expect(view.container.querySelector("button[aria-label='Expand child conversations of Host parent']")).not.toBeNull();
     // A conversation with nothing forked from it has no toggle, as locally.
@@ -501,7 +499,7 @@ describe("the remote tree in merged mode", () => {
   });
 
   it("hides a collapsed remote conversation's forks, and reveals them", async () => {
-    const view = await mountRail({ remoteCatalogs: [hostWorkspace], remotePeers: [peer], view: "workspace" });
+    const view = await mountRail({ remoteCatalogs: [hostWorkspace], remotePeers: [peer] });
 
     // Collapsed by default, exactly as the local list is.
     expect(view.text()).not.toContain("Host fork");
@@ -554,29 +552,38 @@ describe("the remote tree in merged mode", () => {
 
 /**
  * The merged list's chrome is the rail's own, and its controls stay wired to the
- * rail's state: creating a workspace, and re-reading a host after one of its rows
- * was acted on.
+ * rail's state: folding a section, creating a workspace or a chat, and re-reading
+ * a host after one of its rows was acted on.
  *
- * Asserted through the rail because that is where those handlers live — a
- * control that renders but does nothing is the bug this is here for. The list's
- * two section-wide fold controls have no test any more, because they have no
- * control: a tab is the choice to look at that list, so folding all of it had
- * nothing left to say (see `ActivityRail.nav.test.tsx`, which asserts that the
- * per-workspace fold survives and the section-wide one does not).
+ * Asserted through the rail because that is where those handlers live — a section
+ * header that renders but does not fold is a control that does nothing.
  */
 describe("the merged list's controls", () => {
+  it("folds the workspace and chat sections from their headers", async () => {
+    const view = await mountRail({ remoteCatalogs: [catalogRow("sess_a")] });
+
+    await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='Collapse workspace list']")!.click());
+    expect(view.container.querySelector("button[aria-label='Expand workspace list']")).not.toBeNull();
+
+    await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='Collapse chat list']")!.click());
+    expect(view.container.querySelector("button[aria-label='Expand chat list']")).not.toBeNull();
+    view.unmount();
+  });
+
   it("offers this machine's creation controls, and hands them the rail's handlers", async () => {
     const onNewWorkspace = vi.fn();
+    const onNewChat = vi.fn();
     const view = await mountRail({
+      onNewChat,
       onNewWorkspace,
       remoteCatalogs: [catalogRow("sess_a")],
-      view: "workspace",
     });
 
-    // The workspace tab's "+": creating a workspace belongs to the list it
-    // appears in, and that control is in the list's own row now.
     await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='New workspace']")!.click());
     expect(onNewWorkspace).toHaveBeenCalledTimes(1);
+
+    await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='New chat']")!.click());
+    expect(onNewChat).toHaveBeenCalledTimes(1);
     view.unmount();
   });
 
@@ -609,7 +616,6 @@ describe("the merged list's controls", () => {
  */
 it("renders this machine's workspace heading through the merged list", async () => {
   const view = await mountRail({
-    view: "workspace",
     remoteCatalogs: [catalogRow("sess_a")],
     threads: [thread("th_a", { mode: "workspace", workspaceId: "ws_1" })],
     workspaces: [{ id: "ws_1", name: "future-os", path: "/tmp/ws", pinned: false } as never],
@@ -637,7 +643,6 @@ describe("the merged list's workspace controls", () => {
     const view = await mountRail({
       onNewChatOnRemote,
       remoteCatalogs: [catalogRow("sess_a", { mode: "workspace", workspaceId: "ws_9", workspaceName: "图表脚本" })],
-      view: "workspace",
     });
 
     // The heading's own "+" names the host and its workspace.
@@ -645,12 +650,10 @@ describe("the merged list's workspace controls", () => {
     await act(async () => add.click());
     expect(onNewChatOnRemote).toHaveBeenCalledWith("desktop_a", "ws_9");
 
-    // The list's own menu enters selection mode, which is a local operation.
-    await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='Workspaces list actions']")!.click());
+    // The chat section's menu enters selection mode, which is a local operation.
+    await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='Chat section actions']")!.click());
     await act(async () => {
-      [...view.container.querySelectorAll("button")]
-        .find(node => node.textContent === "Select conversations in “Workspaces”")!
-        .click();
+      [...view.container.querySelectorAll("button")].find(node => node.textContent === "Select chats")!.click();
     });
     expect(view.container.querySelector("[data-child='selection-toolbar'], [role='toolbar']")).not.toBeNull();
     view.unmount();
@@ -674,15 +677,12 @@ it("collects a host's conversations into a batch and hands them to the shell", a
     onDeleteRemoteConversations,
     remoteCatalogs: [catalogRow("sess_1")],
     remotePeers: [peer],
-    view: "chat",
   });
 
-  // Entered from the chats list, which lists a host's chats too.
-  await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='Chats list actions']")!.click());
+  // Entered from the chat section, which now lists a host's chats too.
+  await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label='Chat section actions']")!.click());
   await act(async () => {
-    [...view.container.querySelectorAll("button")]
-      .find(node => node.textContent === "Select conversations in “Chats”")!
-      .click();
+    [...view.container.querySelectorAll("button")].find(node => node.textContent === "Select chats")!.click();
   });
 
   const checkbox = view.container.querySelector<HTMLInputElement>("input[type='checkbox']")!;
@@ -708,7 +708,6 @@ it("offers select-chats on a host's workspace heading, scoping the batch to it",
   const view = await mountRail({
     remoteCatalogs: [catalogRow("sess_ws", { mode: "workspace", workspaceId: "ws_9", workspaceName: "图表脚本" })],
     remotePeers: [peer],
-    view: "workspace",
   });
 
   await act(async () => view.container.querySelector<HTMLButtonElement>("button[aria-label^='Workspace actions']")!.click());
@@ -749,7 +748,6 @@ it("reveals a heading's controls with that heading, not with the list it sits in
     remotePeers: [peer],
     threads: [thread("t_1", { mode: "workspace", workspaceId: "ws_1" })],
     workspaces: [storedWorkspace("ws_1", "Local project")],
-    view: "workspace",
   });
   const content = view.container.querySelector<HTMLElement>("[data-activity-rail-content='true']")!;
   // Both headings are drawn, so the rule is asserted on both kinds.
@@ -825,7 +823,6 @@ describe("the rail's remote row controls", () => {
     const view = await mountRail({
       deviceFilter: { kind: "all" },
       onRenameRemoteWorkspace,
-      view: "workspace",
       remoteCatalogs: [catalogRow("sess_ws", {
         mode: "workspace",
         sessionId: "sess_ws",
@@ -879,34 +876,41 @@ describe("the rail's remote row controls", () => {
 });
 
 /**
- * The device picker and the search field share one row, above the list switch.
+ * The device picker and the search share one row above the list.
  *
- * They used to take turns in it — the field appeared on a click and pushed the
- * picker out. Now both are there at once: the permanent field, and the picker
- * drawn `compact` (glyph, name, chevron in a quarter of the row instead of a band
- * of its own). The row sits above the list switch and directly over the list it
- * narrows, which is where it has always been.
+ * The picker is drawn `compact` — glyph, name, chevron in a quarter of the row
+ * instead of a band of its own — and the search is a single magnifier that opens
+ * into a field in the same row. So what this checks is that the row holds exactly
+ * those two things, before and after the magnifier is clicked: a second row for
+ * either of them is the regression.
  */
-describe("the search field and the device picker", () => {
-  it("shows both at once, in one row, with the picker compact", async () => {
+describe("the search and the device picker", () => {
+  it("shares one row between the picker and the search, closed or open", async () => {
     const view = await mountRail({
       deviceFilter: { kind: "all" },
       onChangeDeviceFilter: vi.fn(),
       remotePeers: [peer],
     });
     const picker = () => view.container.querySelector("button[aria-label='All devices']");
+    const glyph = () => view.container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']");
     const field = () => view.container.querySelector("input[aria-label='Search conversations']");
-    expect(picker()).not.toBeNull();
-    expect(field()).not.toBeNull();
+    const tools = () => view.container.querySelector<HTMLElement>("[data-testid='rail-list-tools']")!;
 
-    const tools = view.container.querySelector<HTMLElement>("[data-testid='rail-search-band']")!;
-    // One row for both: the picker's own wrapper and the field are siblings of
-    // the same band, so neither has a line to itself.
-    expect(tools.contains(picker())).toBe(true);
-    expect(tools.contains(field())).toBe(true);
-    expect(field()!.parentElement!.parentElement).toBe(tools);
+    expect(picker()).not.toBeNull();
+    // A glyph, not a field — the rail keeps the row narrow until it is asked.
+    expect(glyph()).not.toBeNull();
+    expect(field()).toBeNull();
+    expect(tools().contains(picker())).toBe(true);
+    expect(tools().contains(glyph())).toBe(true);
     // The picker is the compact one — it kept its name, it gave up the band.
     expect(picker()!.className).toContain("max-w-30");
+
+    act(() => glyph()!.click());
+    await flushAsync();
+    expect(field()).not.toBeNull();
+    expect(tools().contains(field())).toBe(true);
+    // The picker stays where it was: opening the field does not push it out.
+    expect(tools().contains(picker())).toBe(true);
 
     view.unmount();
   });

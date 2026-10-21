@@ -48,7 +48,7 @@ function storedWorkspace(
 
 function props(threads: StoredThread[]): ComponentProps<typeof ActivityRail> {
   return {
-    active: "conversations",
+    active: "chat",
     expanded: true,
     activeThreadId: "root",
     threads,
@@ -75,11 +75,6 @@ function props(threads: StoredThread[]): ComponentProps<typeof ActivityRail> {
     onTogglePinThread: vi.fn(),
     onTogglePinWorkspace: vi.fn(),
     onToggleExpanded: vi.fn(),
-    // The default here is the chats list: most of these tests are about row
-    // behaviour, and a chat row is the plainest one. The workspace tests pass
-    // their own tab.
-    view: "chat",
-    onSelectView: vi.fn(),
   };
 }
 
@@ -92,7 +87,6 @@ describe("activity rail conversation hierarchy", () => {
     const p: ComponentProps<typeof ActivityRail> = {
       ...props([workspaceThread("ws-thread", "ws-a")]),
       workspaces: [{ id: "ws-a", name: "Alpha", kind: "user", path: "/tmp/alpha", cleanupStatus: "active", createdAt: 0, updatedAt: 0 }],
-      view: "workspace",
     };
     act(() => root.render(<ActivityRail {...p} />));
     await flushAsync();
@@ -153,14 +147,10 @@ describe("activity rail conversation hierarchy", () => {
     const root = createRoot(container);
     const parent = workspace ? workspaceThread("parent", "ws") : thread("parent");
     const sibling = workspace ? workspaceThread("sibling", "ws") : thread("sibling");
-    // Pinned rows follow the tab too: a pinned chat is not in the workspace list.
-    const pinned = { ...(workspace ? workspaceThread("pinned", "ws") : thread("pinned")), pinned: true };
+    const pinned = { ...workspaceThread("pinned", "ws"), pinned: true };
     const p = {
       ...props([parent, sibling, pinned]),
       workspaces: [{ id: "ws", name: "Workspace", kind: "user" as const, path: "/tmp/ws", cleanupStatus: "active" as const, createdAt: 0, updatedAt: 0 }],
-      // One tab at a time: the workspace fixture is asked in the workspace list,
-      // the chat fixture in the chats list.
-      view: workspace ? "workspace" as const : "chat" as const,
     };
     const row = (id: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${id}"]`)!.parentElement!;
     const expectCompactRoots = () => {
@@ -202,7 +192,6 @@ describe("activity rail conversation hierarchy", () => {
     const p = {
       ...props([{ ...thread("first-level", "row-a"), mode: "workspace", workspaceId: "ws" }]),
       workspaces: [{ id: "ws", name: "Workspace", kind: "user" as const, path: "/tmp/ws", cleanupStatus: "active" as const, createdAt: 0, updatedAt: 0 }],
-      view: "workspace" as const,
     };
     act(() => root.render(<ActivityRail {...p} />));
     await flushAsync();
@@ -228,7 +217,6 @@ describe("activity rail conversation hierarchy", () => {
     const p = {
       ...props([parent, { ...thread("child", "parent"), mode: parent.mode, workspaceId: parent.workspaceId }]),
       workspaces: [{ id: "ws", name: "Workspace", kind: "user" as const, path: "/tmp/ws", cleanupStatus: "active" as const, createdAt: 0, updatedAt: 0 }],
-      view: workspace ? "workspace" as const : "chat" as const,
     };
     act(() => root.render(<ActivityRail {...p} />));
     await flushAsync();
@@ -240,9 +228,7 @@ describe("activity rail conversation hierarchy", () => {
       const headerToggle = container.querySelector<HTMLButtonElement>("button[aria-label=\"Collapse workspace\"], button[aria-label=\"Expand workspace\"]");
       if (workspace)
         expect(headerToggle!.querySelector("svg")!.classList.contains("lucide-chevron-down")).toBe(true);
-      // The two section headings that used to sit above these rows are gone with
-      // the tabs, so there is no chevron left to confuse with the row toggle.
-      for (const toggle of [headerToggle]) {
+      for (const toggle of [headerToggle, container.querySelector<HTMLButtonElement>("button[aria-label=\"Collapse chat section\"]")]) {
         if (toggle)
           expect(toggle.querySelector("svg")!.classList.contains("lucide-plus")).toBe(false);
       }
@@ -260,7 +246,7 @@ describe("activity rail conversation hierarchy", () => {
     act(() => root.render(<ActivityRail {...props([thread("root")])} />));
     await flushAsync();
     try {
-      const menuTrigger = container.querySelector<HTMLButtonElement>("button[aria-label='Chats list actions']")!;
+      const menuTrigger = container.querySelector<HTMLButtonElement>("button[aria-label=\"Chat section actions\"]")!;
       act(() => menuTrigger.click());
       act(() => container.querySelector<HTMLButtonElement>("[role=\"menuitem\"]")!.click());
 
@@ -299,7 +285,6 @@ describe("activity rail workspace pinning", () => {
     const p: ComponentProps<typeof ActivityRail> = {
       ...props([workspaceThread("t-a", "ws-a"), workspaceThread("t-b", "ws-b"), workspaceThread("t-c", "ws-c")]),
       workspaces: [alpha, beta, gamma],
-      view: "workspace",
     };
     act(() => root.render(<ActivityRail {...p} />));
     await flushAsync();
@@ -326,7 +311,6 @@ describe("activity rail workspace pinning", () => {
     const p: ComponentProps<typeof ActivityRail> = {
       ...props([workspaceThread("t-a", "ws-a")]),
       workspaces: [alpha],
-      view: "workspace",
     };
     act(() => root.render(<ActivityRail {...p} />));
     await flushAsync();

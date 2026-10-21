@@ -53,7 +53,7 @@ function storedWorkspace(id: string, name: string): StoredWorkspace {
 
 function props(threads: ReturnType<typeof thread>[] = [], workspaces: StoredWorkspace[] = []): ComponentProps<typeof ActivityRail> {
   return {
-    active: "conversations",
+    active: "chat",
     expanded: true,
     activeThreadId: null,
     threads,
@@ -80,8 +80,6 @@ function props(threads: ReturnType<typeof thread>[] = [], workspaces: StoredWork
     onTogglePinThread: vi.fn(),
     onTogglePinWorkspace: vi.fn(),
     onToggleExpanded: vi.fn(),
-    view: "workspace",
-    onSelectView: vi.fn(),
   };
 }
 
@@ -105,6 +103,8 @@ describe("activity rail conversation search", () => {
       [],
     );
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
     await act(async () => {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -145,6 +145,8 @@ describe("activity rail conversation search", () => {
       onManageDesktops: vi.fn(),
     };
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
     await act(async () => {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -160,6 +162,8 @@ describe("activity rail conversation search", () => {
   it("shows a 'no matches' hint when the filter excludes everything", async () => {
     const p = props([thread("a", "Alpha chat")], []);
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
     await act(async () => {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -171,17 +175,11 @@ describe("activity rail conversation search", () => {
     expect(list.textContent).toContain("No matching conversations");
   });
 
-  /**
-   * Escape clears the query and leaves the field in place.
-   *
-   * The field is always on screen now, so there is no "open" state for Escape
-   * to close: what it can do is take the filter away and hand the keyboard back
-   * to the list. It answers only while the field has focus, which is the next
-   * test's point.
-   */
-  it("clears the query on Escape and keeps the field", async () => {
-    const p = { ...props([thread("a", "Alpha chat"), thread("b", "Beta chat")], []), view: "chat" as const };
+  it("clears search when Escape is pressed", async () => {
+    const p = props([thread("a", "Alpha chat")], []);
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
     await act(async () => {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -189,48 +187,11 @@ describe("activity rail conversation search", () => {
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     await flushAsync();
-    const list = container.querySelector("[data-activity-rail-content]")!;
-    expect(list.textContent).not.toContain("Beta chat");
-
-    act(() => input.focus());
     await act(async () => {
       input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
     await flushAsync();
-
-    // Still there (it is not a mode), empty, and the whole list is back.
-    const field = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']");
-    expect(field).not.toBeNull();
-    expect(field!.value).toBe("");
-    expect(list.textContent).toContain("Beta chat");
-  });
-
-  /**
-   * Escape pressed anywhere else must not wipe the filter.
-   *
-   * The field is always mounted, so its Escape listener is live while the reader
-   * is reading the transcript. A bare window listener would empty a search the
-   * reader is not looking at, from a keystroke meant for something else.
-   */
-  it("ignores Escape while the field does not have focus", async () => {
-    const p = props([thread("a", "Alpha chat"), thread("b", "Beta chat")], []);
-    const { container } = await render(p);
-    const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
-    await act(async () => {
-      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
-      descriptor?.set?.call(input, "Alpha");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await flushAsync();
-
-    act(() => input.blur());
-    act(() => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    });
-    await flushAsync();
-
-    expect(container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!.value).toBe("Alpha");
-    expect(container.querySelector("[data-activity-rail-content]")!.textContent).not.toContain("Beta chat");
+    expect(container.querySelector("input[aria-label='Search conversations']")).toBeNull();
   });
 
   it("coexists with device filter and selection mode", async () => {
@@ -261,6 +222,8 @@ describe("activity rail conversation search", () => {
       onManageDesktops: vi.fn(),
     };
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
     await act(async () => {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -275,8 +238,10 @@ describe("activity rail conversation search", () => {
   });
 
   it("empties the filter from the clear button, which only exists while there is a query", async () => {
-    const p = { ...props([thread("a", "Alpha chat"), thread("b", "Beta chat")], []), view: "chat" as const };
+    const p = props([thread("a", "Alpha chat"), thread("b", "Beta chat")], []);
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
 
     // Nothing typed: no clear affordance at all.
     expect(container.querySelector("button[aria-label='Clear search']")).toBeNull();
@@ -322,6 +287,8 @@ describe("activity rail conversation search", () => {
       [storedWorkspace("ws_charts", "Charts workspace"), storedWorkspace("ws_other", "Other")],
     );
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
     await act(async () => {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -370,6 +337,8 @@ describe("activity rail conversation search", () => {
       onManageDesktops: vi.fn(),
     };
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
     await act(async () => {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -385,13 +354,17 @@ describe("activity rail conversation search", () => {
   /**
    * A workspace row is a result, so the rail must not also say there are none.
    *
-   * A list of hits is assembled from every row the rail holds, not from whichever
-   * half the current tab draws: reading one half tells a reader their
-   * conversation does not exist while it is drawn a few rows down.
+   * The pinned and chat sections are read first and can both be empty; the answer
+   * then comes from the workspace groups. Reading only the first two tells a
+   * reader their conversation does not exist while it is drawn under a heading
+   * further down the list. (The chat *section's* own empty hint is a different
+   * element and stays: that section really is empty.)
    */
   it("counts a matching workspace row as a result", async () => {
     const p = props([workspaceThread("ws_row", "ws_a", "the needle")], [storedWorkspace("ws_a", "Alpha")]);
     const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
     const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
     await act(async () => {
       const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
@@ -405,136 +378,5 @@ describe("activity rail conversation search", () => {
     // The list's own no-matches banner is the first thing it draws; it must not
     // be there when a workspace group answered the search.
     expect(list.firstElementChild?.getAttribute("data-testid")).not.toBe("no-matches");
-  });
-  /**
-   * The hard requirement: a hit in a workspace is never lost.
-   *
-   * Search spans the tabs, because a hit the reader cannot see is a hit they will
-   * report as missing. This is the case that goes wrong first — the tabs are two
-   * lists, so a search assembled from "the current tab's rows" answers "no
-   * matches" while the conversation sits one tab away.
-   */
-  it("finds a workspace conversation while the chats list is the one showing", async () => {
-    const p = {
-      ...props([workspaceThread("ws_row", "ws_a", "the needle")], [storedWorkspace("ws_a", "Alpha")]),
-      view: "chat" as const,
-    };
-    const { container } = await render(p);
-    await act(async () => {
-      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
-      descriptor?.set?.call(container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!, "needle");
-      container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!
-        .dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await flushAsync();
-
-    const list = container.querySelector("[data-activity-rail-content]")!;
-    // The row, and where it lives — a flat result list otherwise leaves the
-    // reader to open it to find out.
-    expect(list.textContent).toContain("the needle");
-    expect(list.textContent).toContain("Alpha");
-    // And the rail says that the hit is not in the list that is current, so the
-    // results below it are not read as "from here".
-    const elsewhere = container.querySelector("[data-testid='search-elsewhere']");
-    expect(elsewhere).not.toBeNull();
-    expect(elsewhere!.textContent).toContain("Chats");
-  });
-
-  it("does not say 'elsewhere' when this tab answered the query itself", async () => {
-    const p = { ...props([thread("a", "Alpha chat")], []), view: "chat" as const };
-    const { container } = await render(p);
-    await act(async () => {
-      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
-      descriptor?.set?.call(container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!, "Alpha");
-      container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!
-        .dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await flushAsync();
-
-    expect(container.querySelector("[data-testid='search-elsewhere']")).toBeNull();
-    expect(container.querySelector("[data-testid='no-matches']")).toBeNull();
-    expect(container.querySelector("[data-testid='search-rows']")!.textContent).toContain("Alpha chat");
-  });
-
-  /**
-   * Three empty answers, three sentences.
-   *
-   * They say different things, and reusing one makes a reader unable to tell
-   * "this list is empty" from "your search matched nothing" from "your search
-   * matched, in another list". Each is asserted by text, so a copy-paste that
-   * collapses two of them fails here.
-   */
-  it("says a different thing for an empty list, no hits, and hits elsewhere", async () => {
-    // (a) The list is empty and nothing is being searched for.
-    const emptyChats = await render({ ...props([], []), view: "chat" as const });
-    expect(emptyChats.container.querySelector("[data-testid='empty-chat-tab']")!.textContent).toBe("No chats");
-    expect(emptyChats.container.querySelector("[data-testid='no-matches']")).toBeNull();
-    emptyChats.root.unmount();
-
-    const emptyWorkspaces = await render({ ...props([], []), view: "workspace" as const });
-    expect(emptyWorkspaces.container.querySelector("[data-testid='empty-workspace-tab']")!.textContent).toBe("No workspaces yet");
-    emptyWorkspaces.root.unmount();
-
-    // (b) The search matched nothing anywhere.
-    const none = await render({ ...props([thread("a", "Alpha chat")], []), view: "chat" as const });
-    await act(async () => {
-      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
-      descriptor?.set?.call(none.container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!, "zzz");
-      none.container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!
-        .dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await flushAsync();
-    const noMatches = none.container.querySelector("[data-testid='no-matches']")!;
-    expect(noMatches.textContent).toBe("No matching conversations");
-    expect(none.container.querySelector("[data-testid='search-elsewhere']")).toBeNull();
-    none.root.unmount();
-
-    // (c) It matched, in the other list — a different sentence again.
-    const elsewhere = await render({
-      ...props([workspaceThread("ws_row", "ws_a", "the needle")], [storedWorkspace("ws_a", "Alpha")]),
-      view: "chat" as const,
-    });
-    await act(async () => {
-      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
-      descriptor?.set?.call(elsewhere.container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!, "needle");
-      elsewhere.container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!
-        .dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await flushAsync();
-    const banner = elsewhere.container.querySelector("[data-testid='search-elsewhere']")!;
-    expect(banner.textContent).not.toBe(noMatches.textContent);
-    expect(banner.textContent).not.toBe("No chats");
-    elsewhere.root.unmount();
-  });
-  /**
-   * A result is a row you can open, and opening it is the rail's own click.
-   *
-   * Which list a hit belongs to is the shell's answer: opening a conversation
-   * switches the page and follows the tab (see `AppShell.test.tsx`, "follows it
-   * into the list it lives in"). What this asserts is the rail's half — the
-   * result is a real conversation row that reports *that* conversation, not a
-   * display string a reader can only look at.
-   */
-  it("opens a hit as a conversation, not as a dead row", async () => {
-    const onSelectThread = vi.fn();
-    const target = workspaceThread("ws_row", "ws_a", "the needle");
-    const p: ComponentProps<typeof ActivityRail> = {
-      ...props([target], [storedWorkspace("ws_a", "Alpha")]),
-      view: "chat",
-      onSelectThread,
-    };
-    const { container } = await render(p);
-    const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
-    await act(async () => {
-      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
-      descriptor?.set?.call(input, "needle");
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await flushAsync();
-
-    const result = container.querySelector<HTMLButtonElement>("button[aria-label='the needle']")!;
-    expect(result).not.toBeNull();
-    act(() => result.click());
-    expect(onSelectThread).toHaveBeenCalledWith(expect.objectContaining({ id: "ws_row" }));
   });
 });

@@ -164,36 +164,26 @@ export function WorkspaceHeaderMenu({
 }
 
 /**
- * The open list's own menu: what the reader can do to *this whole list*.
- *
- * One menu per tab, at the right end of the row the list's controls sit in. It
- * was the chat section's menu, then the recent view's, and the two existed
- * because those were the lists that happened to have a heading to hang it on —
- * the workspace list reached a batch from each group instead. With three tabs the
- * question "which rows can I act on at once" has one answer per tab, so every tab
- * gets this menu and the answer is "all of them".
- *
- * A tab with nothing to offer passes no items, and the trigger is not drawn: an
- * empty menu is a promise of actions the reader does not have.
+ * Chat section header menu: select conversations for batch deletion.
  */
-export function RailListMenu({
-  items,
+export function ChatSectionMenu({
   label,
   open,
   onOpenChange,
+  onSelect,
 }: {
-  /** The actions, in the order they are drawn. */
-  items: Array<{
-    danger?: boolean;
-    icon: ReactNode;
-    label: string;
-    onSelect: () => void;
-  }>;
-  /** What this menu is, for its trigger (already the tab's name, e.g. "Workspace list actions"). */
-  label: string;
+  /**
+   * What this menu is, for its trigger.
+   *
+   * The chat section's own by default; the recent view passes its label because
+   * there the menu marks the whole flat list rather than one section.
+   */
+  label?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onSelect: () => void;
 }) {
+  const { t } = useTranslation("layout");
   const triggerRef = useRef<HTMLButtonElement>(null);
   const layerRef = useDismissableLayer<HTMLDivElement>({
     enabled: open,
@@ -213,13 +203,13 @@ export function RailListMenu({
         ref={triggerRef}
         aria-expanded={open}
         aria-haspopup="menu"
-        aria-label={label}
+        aria-label={label ?? t("activityRail.chatSectionActions")}
         className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
         onClick={(event) => {
           event.stopPropagation();
           onOpenChange(!open);
         }}
-        title={label}
+        title={label ?? t("activityRail.chatSectionActions")}
         type="button"
       >
         <MoreHorizontal className="size-3.5" />
@@ -235,17 +225,9 @@ export function RailListMenu({
                 dropUp ? "bottom-7" : "top-7",
               )}
             >
-              {items.map(item => (
-                <ThreadMenuItem
-                  danger={item.danger}
-                  icon={item.icon}
-                  key={item.label}
-                  onClick={item.onSelect}
-                  onClose={() => onOpenChange(false)}
-                >
-                  {item.label}
-                </ThreadMenuItem>
-              ))}
+              <ThreadMenuItem icon={<CheckSquare className="size-3.5" />} onClick={onSelect} onClose={() => onOpenChange(false)}>
+                {t("activityRail.selectThreads")}
+              </ThreadMenuItem>
             </MenuPanel>
           )
         : null}
