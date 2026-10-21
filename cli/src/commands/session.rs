@@ -2553,8 +2553,12 @@ mod tests {
         conn
     }
 
-    /// A thread bound to an Agent session, plus the tables the filing rule reads
-    /// — what the desktop app's import creates when it adopts a session.
+    /// A thread bound to an Agent session, plus the columns the filing rule and
+    /// the workspace ordering read — what the desktop app's import creates when
+    /// it adopts a session. The ordering ranks a workspace by
+    /// `COALESCE(last_message_at, updated_at, created_at)` of its newest
+    /// conversation, so a fixture that omits those columns is not a database the
+    /// app could have written.
     fn seed_desktop_thread(session_id: &str, thread_id: &str) {
         let conn = open_app_db();
         conn.execute_batch(
@@ -2563,6 +2567,8 @@ mod tests {
                  workspace_id TEXT NOT NULL,
                  agent_session_id TEXT,
                  status TEXT NOT NULL DEFAULT 'active',
+                 last_message_at INTEGER,
+                 created_at INTEGER NOT NULL DEFAULT 0,
                  updated_at INTEGER NOT NULL DEFAULT 0
              );",
         )
