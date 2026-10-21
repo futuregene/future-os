@@ -1,0 +1,521 @@
+//! Tests for `future remote peers`.
+//!
+//! Two halves, tested separately because they answer different questions: the
+//! book on disk (what is paired) and the running Desktop (what is connected).
+//! Every test runs against a throwaway home, so a machine's real pairings are
+//! never read, written or revoked.
+
+use super::*;
+use crate::output::Output;
+use crate::test_env::EnvGuard;
+use serde_json::json;
+
+async fn run(args: &[&str]) -> (i32, String, String) {
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let (out, capture) = Output::memory();
+    let code = crate::dispatch(&args, &out).await;
+    let stdout = String::from_utf8(capture.out.lock().unwrap().clone()).unwrap();
+    let stderr = String::from_utf8(capture.err.lock().unwrap().clone()).unwrap();
+    (code, stdout, stderr)
+}
+
+/// A throwaway home, with `FUTURE_HOME` cleared so an ambient one cannot
+/// redirect the test at the real installation.
+struct Home {
+    dir: tempfile::TempDir,
+    _home: EnvGuard,
+    _future_home: EnvGuard,
+}
+
+impl Home {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        let home = EnvGuard::set(&[("HOME", dir.path().as_os_str().to_owned())]);
+        let future_home = EnvGuard::remove(&["FUTURE_HOME"]);
+        Home {
+            dir,
+            _home: home,
+            _future_home: future_home,
+        }
+    }
+
+    fn future(&self) -> PathBuf {
+        self.dir.path().join(".future")
+    }
+
+    fn write(&self, name: &str, text: &str) {
+        std::fs::create_dir_all(self.future()).unwrap();
+        std::fs::write(self.future().join(name), text).unwrap();
+    }
+
+    fn read(&self, name: &str) -> String {
+        std::fs::read_to_string(self.future().join(name)).unwrap()
+    }
+
+    fn exists(&self, name: &str) -> bool {
+        self.future().join(name).exists()
+    }
+}
+
+/// A user NKey seed, as the pairing stores one: the revoke path parses it, so a
+/// placeholder would test a different failure than the one meant.
+fn seed() -> String {
+    nkeys::KeyPair::new_user().seed().unwrap()
+}
+
+const ONE: &str = "desktop_AAAABBBBCCCCDDDD";
+const TWO: &str = "desktop_EEEEFFFFGGGGHHHH";
+
+/// A book with two pairings: one named, one not, both with usable-shaped
+/// credentials.
+fn book(token_url: &str) -> Value {
+    json!({
+        "peers": [
+            {
+                "pairId": "pair_ONE",
+                "desktopId": ONE,
+                "deviceId": "dev_1",
+                "nkeySeed": seed(),
+                "userJwt": "jwt-one",
+                "refreshToken": "refresh-one",
+                "natsUrl": "nats://10.0.0.1:4222",
+                "natsWsUrl": "wss://10.0.0.1/ws",
+                "jwtExpiresAt": 4_000_000_000i64,
+                "tokenUrl": token_url,
+                "name": "work",
+            },
+            {
+                "pairId": "pair_TWO",
+                "desktopId": TWO,
+                "deviceId": "dev_1",
+                "nkeySeed": seed(),
+                "userJwt": "jwt-two",
+                "refreshToken": "refresh-two",
+                "natsUrl": "nats://10.0.0.2:4222",
+                "natsWsUrl": "wss://10.0.0.2/ws",
+                "jwtExpiresAt": 4_000_000_000i64,
+                "tokenUrl": token_url,
+            }
+        ]
+    })
+}
+
+const PLATFORM_TOKEN: &str = "https://future-os.cn/client/v1/remote/auth/token";
+
+/// Hold the Desktop's own lock for as long as this lives, so the commands that
+/// ask a Desktop have one to ask - the same lock file `instance.rs` holds.
+struct RunningDesktop {
+    _file: std::fs::File,
+}
+
+impl RunningDesktop {
+    fn claim(home: &Home) -> Self {
+        let app = home.future().join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(app.join("desktop.lock"))
+            .unwrap();
+        fs2::FileExt::lock_exclusive(&file).unwrap();
+        RunningDesktop { _file: file }
+    }
+}
+
+/// Answer the next request the way the Desktop's control host does, and hand
+/// back what was asked so a test can judge it.
+fn answer_requests(home: &Home, answer: Value) -> std::sync::Arc<std::sync::Mutex<Vec<Value>>> {
+    let directory = home.future().join("run").join("remote-control");
+    std::fs::create_dir_all(&directory).unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let recorded = seen.clone();
+    tokio::spawn(async move {
+        loop {
+            let mut entries: Vec<_> = std::fs::read_dir(&directory)
+                .map(|entries| entries.filter_map(Result::ok).collect())
+                .unwrap_or_default();
+            entries.sort_by_key(|entry| entry.file_name());
+            if let Some(entry) = entries.into_iter().find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".request.json")
+            }) {
+                let request: Value =
+                    serde_json::from_str(&std::fs::read_to_string(entry.path()).unwrap()).unwrap();
+                std::fs::write(
+                    request["reply"].as_str().expect("a reply path"),
+                    answer.to_string(),
+                )
+                .unwrap();
+                recorded.lock().unwrap().push(request);
+                let _ = std::fs::remove_file(entry.path());
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    });
+    seen
+}
+
+/// One peer row as the Desktop reports it.
+fn live_row(desktop_id: &str, connected: bool) -> Value {
+    json!({
+        "desktopId": desktop_id,
+        "pairId": if desktop_id == ONE { "pair_ONE" } else { "pair_TWO" },
+        "name": "work",
+        "connected": connected,
+        "stopped": false,
+        "agentAvailable": connected,
+    })
+}
+
+// -- list -------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_reads_the_book_and_never_prints_a_credential() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    let book = book(PLATFORM_TOKEN);
+    let secret = book["peers"][0]["nkeySeed"].as_str().unwrap().to_string();
+    home.write(BOOK_FILE, &book.to_string());
+
+    let (code, stdout, stderr) = run(&["remote", "peers"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("2 remote desktops are paired"), "{stdout}");
+    assert!(stdout.contains(ONE), "{stdout}");
+    assert!(stdout.contains(TWO), "{stdout}");
+    assert!(stdout.contains("work"), "{stdout}");
+    // No Desktop was asked, and the book cannot know: that is the sentence.
+    assert!(stdout.contains("No Desktop is running"), "{stdout}");
+    assert!(stdout.contains("not connected"), "{stdout}");
+    // Credential material stays in the file.
+    assert!(!stdout.contains(&secret), "the seed was printed: {stdout}");
+    assert!(!stdout.contains("jwt-one"), "{stdout}");
+    assert!(!stdout.contains("refresh-one"), "{stdout}");
+}
+
+#[tokio::test]
+async fn list_reports_the_state_the_running_desktop_answered_with() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    let seen = answer_requests(
+        &home,
+        json!({ "peers": [live_row(ONE, true), live_row(TWO, false)] }),
+    );
+
+    let (code, stdout, stderr) = run(&["remote", "peers"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("connected"), "{stdout}");
+    assert!(stdout.contains("not connected"), "{stdout}");
+    let posed = seen.lock().unwrap();
+    assert_eq!(posed[0]["op"], "peer-state", "{}", posed[0]);
+    assert!(posed[0].get("desktopId").is_none(), "{}", posed[0]);
+}
+
+#[tokio::test]
+async fn list_says_the_state_is_unknown_when_the_desktop_stays_silent() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+
+    let (code, stdout, stderr) = run(&["remote", "peers"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("unknown"), "{stdout}");
+    assert!(stderr.contains("did not answer"), "{stderr}");
+}
+
+#[tokio::test]
+async fn list_json_keeps_unknown_state_null_rather_than_guessing() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "list", "--json"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    let value: Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(value["desktopRunning"], false);
+    assert_eq!(value["answered"], false);
+    assert_eq!(value["peers"][0]["desktopId"], ONE);
+    assert_eq!(value["peers"][0]["name"], "work");
+    assert!(value["peers"][0]["connected"].is_null(), "{value}");
+    assert!(value["peers"][0]["stopped"].is_null(), "{value}");
+    assert!(value["peers"][0]["agentAvailable"].is_null(), "{value}");
+}
+
+#[tokio::test]
+async fn an_empty_book_says_so_and_points_at_add() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+
+    let (code, stdout, stderr) = run(&["remote", "peers"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(
+        stdout.contains("not paired with any remote desktop"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("future remote peers add"), "{stdout}");
+    // A read invents nothing on disk.
+    assert!(!home.exists(BOOK_FILE), "{}", home.future().display());
+}
+
+// -- connect / disconnect ---------------------------------------------------
+
+#[tokio::test]
+async fn connect_names_the_machine_it_asks_about() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    let seen = answer_requests(&home, json!({ "peers": [live_row(ONE, true)] }));
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "connect", "AAAA"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("is connected"), "{stdout}");
+    let posed = seen.lock().unwrap();
+    assert_eq!(posed[0]["op"], "peer-connect", "{}", posed[0]);
+    assert_eq!(posed[0]["desktopId"], ONE, "{}", posed[0]);
+    assert!(posed[0].get("pairId").is_none(), "{}", posed[0]);
+}
+
+#[tokio::test]
+async fn connect_reports_a_failed_attempt_and_exits_one() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    answer_requests(
+        &home,
+        json!({ "peers": [{
+            "desktopId": ONE,
+            "pairId": "pair_ONE",
+            "connected": false,
+            "stopped": false,
+            "agentAvailable": false,
+            "error": "handshake timed out",
+        }] }),
+    );
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "connect", "#1"]).await;
+    assert_eq!(code, 1, "it did not connect: {stdout}");
+    assert!(stdout.contains("still not connected"), "{stdout}");
+    assert!(stdout.contains("handshake timed out"), "{stdout}");
+    assert!(stderr.is_empty(), "{stderr}");
+}
+
+#[tokio::test]
+async fn disconnect_reports_the_state_the_desktop_answered_with() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    let seen = answer_requests(
+        &home,
+        json!({ "peers": [{
+            "desktopId": ONE,
+            "pairId": "pair_ONE",
+            "connected": false,
+            "stopped": true,
+            "agentAvailable": false,
+        }] }),
+    );
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "disconnect", ONE]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("is disconnected"), "{stdout}");
+    assert!(stdout.contains("The pairing stays"), "{stdout}");
+    let posed = seen.lock().unwrap();
+    assert_eq!(posed[0]["op"], "peer-disconnect", "{}", posed[0]);
+    assert_eq!(posed[0]["desktopId"], ONE, "{}", posed[0]);
+}
+
+#[tokio::test]
+async fn connect_without_a_desktop_says_there_is_nothing_to_act_on() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+
+    let (code, _, stderr) = run(&["remote", "peers", "connect", ONE]).await;
+    assert_eq!(code, 1);
+    assert!(stderr.contains("No Desktop is running"), "{stderr}");
+    // Nothing was asked of a Desktop that is not there, and the book is intact.
+    assert!(!home.exists("run"), "{}", home.future().display());
+}
+
+#[tokio::test]
+async fn a_machine_that_is_not_paired_is_refused_with_the_list_hint() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+
+    let (code, _, stderr) = run(&["remote", "peers", "connect", "ZZZZ"]).await;
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("No remote desktop matches"), "{stderr}");
+    assert!(stderr.contains("future remote peers"), "{stderr}");
+}
+
+// -- rename -----------------------------------------------------------------
+
+#[tokio::test]
+async fn rename_writes_the_label_and_keeps_the_credential() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let before: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+    let secret = before["peers"][1]["nkeySeed"].as_str().unwrap().to_string();
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "rename", "EEEE", "laptop"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("laptop"), "{stdout}");
+    let after: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+    assert_eq!(after["peers"][1]["name"], "laptop");
+    // Everything this command does not model survives the edit, including the
+    // credentials it must never lose.
+    assert_eq!(after["peers"][1]["nkeySeed"], secret);
+    assert_eq!(after["peers"][1]["refreshToken"], "refresh-two");
+    assert_eq!(after["peers"][0]["name"], "work");
+}
+
+#[tokio::test]
+async fn rename_clear_goes_back_to_the_machine_id() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+
+    let (code, _, stderr) = run(&["remote", "peers", "rename", "#1", "--clear"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    let after: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+    assert!(after["peers"][0].get("name").is_none(), "{after}");
+
+    let (code, _, stderr) = run(&["remote", "peers", "rename", "#1"]).await;
+    assert_eq!(code, 1);
+    assert!(stderr.contains("What should it be called"), "{stderr}");
+}
+
+#[tokio::test]
+async fn a_row_number_and_a_case_insensitive_prefix_name_the_same_machine() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+
+    let (code, _, stderr) = run(&["remote", "peers", "rename", "#2", "first"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    let (code, _, stderr) = run(&["remote", "peers", "rename", "eeee", "second"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    let after: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+    assert_eq!(after["peers"][1]["name"], "second");
+    assert_eq!(after["peers"][0]["name"], "work");
+}
+
+// -- remove -----------------------------------------------------------------
+
+#[tokio::test]
+async fn remove_asks_the_desktop_first_and_takes_its_answer() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+    let _desktop = RunningDesktop::claim(&home);
+    let seen = answer_requests(
+        &home,
+        json!({ "removed": true, "peers": [live_row(TWO, false)] }),
+    );
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "remove", "AAAA", "--yes"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("no longer paired"), "{stdout}");
+    let posed = seen.lock().unwrap();
+    assert_eq!(posed[0]["op"], "peer-remove", "{}", posed[0]);
+    assert_eq!(posed[0]["desktopId"], ONE, "{}", posed[0]);
+}
+
+#[tokio::test]
+async fn remove_without_yes_refuses_a_prompt_nobody_saw() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    home.write(BOOK_FILE, &book(PLATFORM_TOKEN).to_string());
+
+    let (code, _, stderr) = run(&["remote", "peers", "remove", ONE]).await;
+    assert_eq!(code, 1);
+    assert!(stderr.contains("Refusing to unpair"), "{stderr}");
+    // Nothing was removed: the book still has both.
+    let after: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+    assert_eq!(after["peers"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn remove_with_no_desktop_unpairs_here_and_revokes_where_it_can() {
+    let _guard = crate::test_env::lock_env().await;
+    let home = Home::new();
+    let server = crate::test_server::spawn_http(vec![
+        crate::test_server::HttpRoute::json("/client/v1/remote/auth/token", 200, "{}"),
+        crate::test_server::HttpRoute::json("/client/v1/remote/pair/revoke", 200, "{}"),
+    ])
+    .await;
+    let token_url = format!("{server}/client/v1/remote/auth/token");
+    home.write(BOOK_FILE, &book(&token_url).to_string());
+
+    let (code, stdout, stderr) = run(&["remote", "peers", "remove", TWO, "--yes"]).await;
+    assert_eq!(code, 0, "{stderr}");
+    assert!(stdout.contains("no longer paired"), "{stdout}");
+    assert!(stderr.is_empty(), "{stderr}");
+    let after: Value = serde_json::from_str(&home.read(BOOK_FILE)).unwrap();
+    let remaining = after["peers"].as_array().unwrap();
+    assert_eq!(remaining.len(), 1, "{after}");
+    assert_eq!(remaining[0]["desktopId"], ONE, "{after}");
+}
+
+// -- help and arguments -----------------------------------------------------
+
+#[tokio::test]
+async fn the_group_and_each_action_have_their_own_help() {
+    let _guard = crate::test_env::lock_env().await;
+    let _home = Home::new();
+
+    let (code, stdout, _) = run(&["remote", "peers", "--help"]).await;
+    assert_eq!(code, 0);
+    assert!(stdout.contains("future remote peers"), "{stdout}");
+    assert!(
+        stdout.contains("peer-state") || stdout.contains("client role"),
+        "{stdout}"
+    );
+    for action in ["list", "add", "connect", "disconnect", "rename", "remove"] {
+        let (code, stdout, _) = run(&["remote", "peers", action, "--help"]).await;
+        assert_eq!(code, 0, "{action}");
+        assert!(stdout.contains(action), "{action}: {stdout}");
+    }
+    // The group is named by `future remote --help` too, or nobody finds it.
+    let (code, stdout, _) = run(&["remote", "--help"]).await;
+    assert_eq!(code, 0);
+    assert!(stdout.contains("future remote peers"), "{stdout}");
+}
+
+#[tokio::test]
+async fn add_explains_what_it_wants_before_touching_the_network() {
+    let _guard = crate::test_env::lock_env().await;
+    let _home = Home::new();
+
+    let (code, _, stderr) = run(&["remote", "peers", "add"]).await;
+    assert_eq!(code, 1);
+    assert!(stderr.contains("Which invitation?"), "{stderr}");
+
+    let (code, _, stderr) = run(&["remote", "peers", "add", "a", "b"]).await;
+    assert_eq!(code, 1);
+    assert!(stderr.contains("One invitation at a time"), "{stderr}");
+}
+
+#[tokio::test]
+async fn an_unknown_action_is_a_usage_error() {
+    let _guard = crate::test_env::lock_env().await;
+    let _home = Home::new();
+
+    let (code, _, stderr) = run(&["remote", "peers", "poke"]).await;
+    assert_eq!(code, 1);
+    assert!(stderr.contains("Unknown argument: poke"), "{stderr}");
+    assert!(stderr.contains("future remote peers"), "{stderr}");
+}

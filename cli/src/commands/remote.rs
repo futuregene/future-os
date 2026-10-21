@@ -8,6 +8,10 @@
 //! machine with several paired clients could not say who they were, could not
 //! drop one of them, and could not choose which one drives it.
 //!
+//! The mirror group is [`super::remote_peers`]: `future remote peers` manages the
+//! desktops *this* machine connects out to. The two answer opposite questions and
+//! keep separate books, so neither command group can be read as the other.
+//!
 //! # What is authoritative
 //!
 //! For everything except `add`, the pairing book on disk
@@ -91,6 +95,7 @@ pub async fn remote(command: Option<&str>, rest: &[String], out: &Output) -> Res
             Ok(())
         }
         Some("devices") => devices(rest, out).await,
+        Some("peers") => super::remote_peers::peers(rest, out).await,
         Some("status") => status(rest, out).await,
         Some(action @ ("enable" | "disable")) => switch(action == "enable", rest, out).await,
         Some(other) => Err(format!(
@@ -143,7 +148,7 @@ async fn devices(args: &[String], out: &Output) -> Result<(), String> {
 // ── The pairing book ────────────────────────────────────────────────────────
 
 /// `~/.future/` — the root the Desktop writes its pairing files into.
-fn future_dir() -> Result<PathBuf, String> {
+pub(super) fn future_dir() -> Result<PathBuf, String> {
     future_app_settings::app_dir()
         .map_err(|error| error.to_string())?
         .parent()
@@ -438,7 +443,7 @@ fn display_pair_id(pair_id: &str) -> String {
 /// Atomic JSON write, `0600`, exactly like the Desktop's config writer: a
 /// pairing file is a credential, and a half-written one would make the next
 /// start fail rather than pair.
-fn write_json(path: &Path, value: &Value) -> Result<(), String> {
+pub(super) fn write_json(path: &Path, value: &Value) -> Result<(), String> {
     let serialized = format!(
         "{}\n",
         serde_json::to_string_pretty(value).map_err(|error| error.to_string())?
@@ -478,7 +483,7 @@ fn write_json(path: &Path, value: &Value) -> Result<(), String> {
 /// Only asked to explain when a change takes effect — never to refuse one. A
 /// missing lock file is "nothing is running" without creating it, so a
 /// read-only `list` does not invent an app directory.
-fn desktop_running() -> bool {
+pub(super) fn desktop_running() -> bool {
     let Ok(directory) = future_app_settings::app_dir() else {
         return false;
     };
@@ -1598,6 +1603,22 @@ async fn request_desktop_within(
     unchanged: &str,
     timeout: Duration,
 ) -> Result<Value, String> {
+    request_desktop_naming(op, pair_id, None, unchanged, timeout).await
+}
+
+/// [`request_desktop_within`] that can also name a *remote* desktop, which is
+/// what the client-role operations take (`remote_peers`).
+///
+/// The two roles name different things: `pair_id` is a device paired into this
+/// machine, `desktop_id` is a machine this one connects out to. They travel in
+/// their own fields for exactly that reason (see `host/src/remote/control.rs`).
+pub(super) async fn request_desktop_naming(
+    op: &str,
+    pair_id: Option<&str>,
+    desktop_id: Option<&str>,
+    unchanged: &str,
+    timeout: Duration,
+) -> Result<Value, String> {
     let directory = control_directory()?;
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1616,6 +1637,9 @@ async fn request_desktop_within(
     let mut body = json!({ "op": op, "reply": answer.display().to_string() });
     if let Some(pair_id) = pair_id {
         body["pairId"] = json!(pair_id);
+    }
+    if let Some(desktop_id) = desktop_id {
+        body["desktopId"] = json!(desktop_id);
     }
     write_json(&request, &body)?;
     let outcome = wait_for_answer(
@@ -1958,7 +1982,7 @@ fn confirmed(device: &Device, remaining: usize) -> Result<bool, String> {
 /// One key answers (`prompt::ask_yes_no`): a `[y/N]` question that waits for
 /// Enter is a question that looks hung, and a typed `y` with no newline behind it
 /// was indistinguishable from a command that had stopped responding.
-fn ask(question: &str) -> Result<bool, String> {
+pub(super) fn ask(question: &str) -> Result<bool, String> {
     if !stdin_is_terminal() {
         return Err(format!(
             "Refusing to unpair without confirmation from a terminal: {question} Re-run with \
@@ -2318,7 +2342,11 @@ async fn ask_desktop_to_take_over(pair_id: &str) -> Result<Option<bool>, String>
 
 /// The positional arguments, rejecting any option the action does not accept: a
 /// typo must not silently do something else.
-fn positional(args: &[String], allowed: &[&str], usage: &str) -> Result<Vec<String>, String> {
+pub(super) fn positional(
+    args: &[String],
+    allowed: &[&str],
+    usage: &str,
+) -> Result<Vec<String>, String> {
     let mut values = Vec::new();
     for argument in args {
         if allowed.contains(&argument.as_str()) {
@@ -2332,7 +2360,7 @@ fn positional(args: &[String], allowed: &[&str], usage: &str) -> Result<Vec<Stri
     Ok(values)
 }
 
-fn one_device(mut values: Vec<String>, usage: &str) -> Result<String, String> {
+pub(super) fn one_device(mut values: Vec<String>, usage: &str) -> Result<String, String> {
     match values.len() {
         1 => Ok(values.remove(0)),
         0 => Err(format!(

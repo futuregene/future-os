@@ -180,6 +180,32 @@ future remote disable              # 现在关闭，并且以后保持关闭
   所以 `future remote enable` 能把它直接叫回来，不用重启。开关是**开**时的停止仍按故障处理。
 - 关闭开关不会解绑任何设备；解绑用 `future remote devices remove`。
 
+### 3.3 让本机去驱动另一台桌面（客户端角色）
+
+上面几节管的是**配对到本机**的设备。它的镜像方向是「本机连过去」的桌面：用一次邀请配对，
+之后由 Desktop 维持连接。
+
+```bash
+future remote peers                     # 本机连着的每一台远程桌面
+future remote peers add <邀请链接>       # 配一台：粘贴对方显示的链接
+future remote peers connect <id|序号>    # 现在就连接
+future remote peers disconnect <id|序号> # 断开连接，配对保留
+future remote peers rename <id|序号> <名字>  # 在本机起个名字（--clear 还原成机器 id）
+future remote peers remove <id|序号>     # 解绑：不再连接，并吊销
+```
+
+- `add` 在**本机**执行，而不是交给 Desktop：配对是「向平台领取一次」加「与对方握手」，
+  本机不需要任何服务在跑，所以 Desktop 还没打开过也能先配对。把对方「连接另一台电脑」
+  显示的邀请粘进来即可，它只能使用一次、且有有效期。配对写进
+  `~/.future/remote_peers.json`，命令随后连一次，因此配不上会**现在**报错，而不是等到下次启动。
+- `list` 读那个文件；有 Desktop 在跑时，再读它持有的连接。没有 Desktop 时只报已配对
+  的机器和「没有连接状态」——因为连接只存在于那个进程里，磁盘上没有。
+- `connect` 与 `disconnect` 交给运行中的 Desktop 执行：连接本身就是它的，用户主动断开
+  的标记也在它的内存里，只有问它才不会让自动重连把用户的决定撤销。`remove` 能问就问，
+  问不到就在本机解绑，并从终端里吊销。
+- 已配对的桌面会在 Desktop 启动时被连上。`future headless` 只服务设备、不驱动别的桌面，
+  所以客户端角色需要窗口版。
+
 ## 4. Ctrl+C、SSH 断开与再次启动
 
 Ctrl+C 在登录等待、配对、连接启动和正常运行阶段都可用。退出会先停止新的远程操作、
