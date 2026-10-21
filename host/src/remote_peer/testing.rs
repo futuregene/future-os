@@ -14,33 +14,6 @@ use crate::remote::{start, stop, RemoteStartInput};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use serde_json::json;
 
-/// The host bridge's test web port, whose socket lingers briefly after `stop()`.
-/// Must match `remote::diagnostics::WEB_PORT`; the host tests do the same dance.
-const WEB_PORT: u16 = 8022;
-
-/// Wait until the test web port is bindable again. Every test here starts a
-/// bridge, so without this they collide on the shared port.
-pub async fn wait_for_web_port_free() {
-    // 30 s, not 5. The listener this waits for is released when the PREVIOUS test's
-    // bridge unwinds, and in a whole-crate run (2300+ tests, `--test-threads=1`) that
-    // unwind competes with every other test's teardown. Measured: at 5 s five
-    // `commands::remote_peer::tests` cases failed with 'the test web port never freed'
-    // while the same tests pass alone. The assertion below is unchanged - the port must
-    // still be free before the next bridge starts; only the patience for a slow host is.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    loop {
-        if let Ok(listener) = std::net::TcpListener::bind(("0.0.0.0", WEB_PORT)) {
-            drop(listener);
-            return;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "the test web port never freed"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-}
-
 /// The host bridge's invitation, retargeted at a claim endpoint we control.
 ///
 /// Replacing the `code` is legitimate rather than a shortcut: the host never
@@ -211,8 +184,7 @@ pub async fn fixture_in_home(home: &HomeGuard) -> Fixture {
     }
 }
 
-/// Tear the host bridge down and wait for its port, so the next test can start
-/// one. Called at the end of every test that started a bridge.
+/// Tear the host bridge down. Called at the end of every test that started one.
 ///
 /// It also aborts every retry loop: a loop started by a failed connect (or by a
 /// dropped connection) outlives the call that made it, and the test build's
@@ -220,13 +192,15 @@ pub async fn fixture_in_home(home: &HomeGuard) -> Fixture {
 /// every later test in the binary (`runtime::abort_supervisors_for_test`).
 pub async fn teardown(pair_id: &str) {
     // The whole machine, not one device: these fixtures hold `HomeGuard` and are
-    // therefore serialized, so there is never a second test's bridge to spare —
-    // and the test web listener is one process-wide port that the next fixture
-    // must be able to bind. The pair id is taken so a reader can see which
-    // fixture is being torn down, and so this signature stays honest if the
-    // teardown ever has to become per device.
+    // therefore serialized, so there is never a second test's bridge to spare.
+    // The pair id is taken so a reader can see which fixture is being torn down,
+    // and so this signature stays honest if the teardown ever has to become per
+    // device.
+    //
+    // The web listener needs no wait here: a test build lets the OS pick its
+    // port, so a socket that is still unwinding cannot be taken by the next
+    // fixture.
     let _ = pair_id;
     stop();
     crate::remote_peer::runtime::abort_supervisors_for_test().await;
-    wait_for_web_port_free().await;
 }
