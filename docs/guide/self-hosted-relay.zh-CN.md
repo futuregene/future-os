@@ -100,6 +100,12 @@ websocket 流量继承顶层的 `tls`，而声明了 `wss://` 却没有 websocke
 直接拒绝启动。手工改这个文件时两块都要留；写成空的 `tls {}`（没有证书路径）虽然
 能启动，但每次握手都会被拒，日志是 `tls: no certificates configured`。
 
+私有 CA 会同时覆盖 TLS 部署的两段链路。`--relay-ca` / `FUTURE_RELAY_CA` 给出的
+根证书既追加到 NATS 连接，也追加到注册房间、领取邀请所用的 HTTP 客户端，所以由
+同一个私有 CA 签发的 API 不需要把证书装进操作系统就能用。它是在信任集里**追加**，
+而不是放宽校验：链不到它的证书照样被拒。如果这台机器上还有别的工具需要该根证书，
+macOS 上仍建议把它装进钥匙串。
+
 ## 2. 启动
 
 ```bash
@@ -130,7 +136,7 @@ futureos --relay https://relay.example.com           # GUI
 future headless --relay https://relay.example.com  # 无 GUI 服务器
 ```
 
-地址只对**本次启动**生效，不写任何文件。所以下次不带这个参数启动就回到官方平台——一次调试用的自建中继不会悄悄变成这台机器的长期选择。`--relay ""` 等同于不写这个参数。私有 CA 用 `--relay-ca /path/to/ca.pem`（或环境变量 `FUTURE_RELAY_CA`）追加。
+地址只对**本次启动**生效，不写任何文件。所以下次不带这个参数启动就回到官方平台——一次调试用的自建中继不会悄悄变成这台机器的长期选择。`--relay ""` 等同于不写这个参数。私有 CA 用 `--relay-ca /path/to/ca.pem`（或环境变量 `FUTURE_RELAY_CA`）追加，它同时作用于 NATS 连接和上面那些 relay HTTP 请求（注册房间、领取邀请），所以 `https://` 的 API 也认这个私有 CA，不需要先装进系统钥匙串。
 容器或测试里也可以用环境变量 `FUTURE_RELAY_URL` 直接指定（优先级高于参数，空值表示官方中继）。
 
 自建模式下：
