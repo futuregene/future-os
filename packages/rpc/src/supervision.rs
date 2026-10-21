@@ -216,11 +216,17 @@ mod tests {
     fn restart_delay_grows_and_stays_within_jitter() {
         for attempt in 0..8 {
             let delay = restart_delay(attempt);
-            let capped = (1u64 << attempt.min(5)) * 1000;
-            assert!(delay >= Duration::from_millis(capped * 8 / 10), "{attempt}");
+            // The base grows to 32s but is capped at 30s, so the expectations
+            // have to cap it too — otherwise the lower bound of the capped
+            // attempts is wrong (24s is inside the jitter, 25.6s is not).
+            let capped = (1_000u64 << attempt.min(5)).min(30_000);
             assert!(
-                delay <= Duration::from_millis((capped.min(30_000)) * 12 / 10 + 1),
-                "{attempt}"
+                delay >= Duration::from_millis(capped * 8 / 10),
+                "attempt {attempt}: {delay:?}"
+            );
+            assert!(
+                delay <= Duration::from_millis(capped * 12 / 10 + 1),
+                "attempt {attempt}: {delay:?}"
             );
         }
     }
