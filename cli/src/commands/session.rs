@@ -1321,7 +1321,11 @@ async fn set_session_command(args: &[String], out: &Output) -> Result<(), String
                                     .map(str::to_string)
                             }),
                     };
-                    if level.as_deref().is_none_or(|level| level == "all") {
+                    // Only a level we actually know to be `all` earns the
+                    // warning: a failed `get_state` (or an older agent that
+                    // omits the field) leaves the level unknown, and the note
+                    // would then assert a fact this command never learned.
+                    if level.as_deref() == Some("all") {
                         notes.push(format!(
                             "approval mode `{tier}` cannot ask while the tool permission is `all` — add `--permission workspace`"
                         ));
@@ -3618,7 +3622,7 @@ mod tests {
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         assert_eq!(
             stdout,
-            "Updated session sess-1\n  Sandbox:      auto\n  CtxFiles:     on\n  AutoCompact:  off\n  AutoRetry:    on\n"
+            "Updated session sess-1\n  Approval:     auto\n  CtxFiles:     on\n  AutoCompact:  off\n  AutoRetry:    on\n"
         );
     }
 
