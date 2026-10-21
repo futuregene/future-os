@@ -26,7 +26,7 @@ program with no graphical UI; Ctrl+C closes it. It is not a futureos sidecar.
 futureos starts only the GUI; its former --headless option has been removed.
 
 [Optional Sandbox]
-The desktop defaults to Unrestricted. Select Manual or Sandboxed in Settings.
+The desktop defaults to Full access. Select Manual or Sandboxed in Settings.
 Linux Sandboxed mode needs trusted system Bubblewrap >= 0.9.0 (not bundled):
     Debian/Ubuntu: sudo apt install bubblewrap
     Fedora:        sudo dnf install bubblewrap

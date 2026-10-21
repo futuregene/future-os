@@ -14,7 +14,7 @@ Desktop-level options for the app:
 - **Approval mode** — how much the agent asks before acting:
   - **Manual** — file access follows Allow/Ask/Deny path rules; shell commands ask except for the read-only allowlist.
   - **Sandboxed** — uses macOS Seatbelt, Linux system Bubblewrap, or Windows restricted-token write protection when available; file access still follows path rules. Guarantees differ by platform.
-  - **Unrestricted** (default) — no prompts and no sandbox; everything runs.
+  - **Full access** (default) — no prompts and no sandbox; everything runs.
 - **Auto-upgrade skills** — silently upgrade installed skills to their latest version each time the app opens.
 - **Skill recommendations** (on by default) — when you send a message, suggest at most one skill you don't have installed yet.
 - **Generate a title after the first answer** (on by default) — title a new conversation from its first successful answer; later answers don't retrigger it.

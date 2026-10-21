@@ -18,6 +18,7 @@
 //!   - The terminal is abstracted behind `TerminalIo` so the diff pipeline can
 //!     be driven against a fake terminal in tests.
 
+use crate::components::approval_view::{ApprovalAction, ApprovalView};
 use crate::components::autocomplete::{
     AttachmentProvider, AutocompleteItem, AutocompleteManager, AutocompletePopup, FilePathProvider,
     SessionReferenceItem, SessionReferenceProvider, SlashCommand, SlashCommandProvider,
@@ -35,7 +36,7 @@ use crate::components::provider_dialogs::{
     ProviderListState,
 };
 use crate::components::sandbox_view::{
-    platform_default_tier, PermissionKind, ProbeState, SandboxAction, SandboxPlatform,
+    AccountState, ApprovalMode, PermissionKind, ProbeState, SandboxAction, SandboxPlatform,
     SandboxProbe, SandboxStatus, SandboxTier, SandboxView,
 };
 use crate::components::select_list::{SelectItem, SelectList, SelectListOptions};
@@ -68,7 +69,7 @@ use crate::terminal_image::{
 use crate::theme::{bold, fg, Chrome, Theme, DARK_THEME};
 use crate::tui::{
     apply_theme_to_component, is_focusable, resolve_overlay_layout, set_component_focused,
-    Component, OverlayOptions, SizeValue, SYNC_BEGIN, SYNC_END,
+    Component, OverlayAnchor, OverlayOptions, SizeValue, SYNC_BEGIN, SYNC_END,
 };
 // `utils::extract_segments` is deliberately not imported any more: the overlay
 // row belongs to the overlay (see `App::composite_line_at`), so compositing no
@@ -86,7 +87,7 @@ use crate::worktree::{
 use crate::worktree::GitRunner;
 use regex::Regex;
 use serde_json::{Map, Value};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -460,6 +461,12 @@ pub enum UiCmd {
         kind: String, // "approved" | "rejected"
         request_id: String,
     },
+    /// The approval card (or an id-addressed command) asked for a decision;
+    /// the app turns it into the `approval_decision` RPC.
+    ApprovalDecided {
+        request_id: String,
+        approved: bool,
+    },
     StopDone(Result<(), String>),
     QueuedCancelled {
         result: Result<(), String>,
@@ -607,13 +614,19 @@ pub enum UiCmd {
         result: Result<Value, String>,
     },
     /// `/sandbox` — a `set_sandbox_policy` answer. The payload carries the
-    /// agent's *actual* tier, so a downgrade is visible rather than assumed
+    /// agent's *actual* mode, so a downgrade is visible rather than assumed
     /// away.
     SandboxPolicySet {
         result: Result<Value, String>,
     },
-    /// `/sandbox` — apply this tier (the panel's `enter`).
-    SandboxTierRequested(SandboxTier),
+    /// `/sandbox` / `/mode` — apply this approval mode (the panel's `enter`).
+    SandboxModeRequested(ApprovalMode),
+    /// `/sandbox` — the `list_providers` answer for the account half of the
+    /// `auto` gate. Silent on failure: an unanswered account check keeps the
+    /// row disabled as "(checking)", never as "(sign in)".
+    SandboxAccountLoaded {
+        signed_in: Option<bool>,
+    },
     /// `/sandbox` / `/permission` — apply a permission level.
     PermissionLevelRequested(PermissionKind),
     /// `/sandbox` `r` — re-probe the host instead of reusing the cache.
@@ -731,6 +744,13 @@ pub struct TuiSettings {
     pub default_model: Option<String>,
     pub default_thinking_level: Option<String>,
     pub default_permission_level: Option<String>,
+    /// Default approval mode (`defaultApprovalMode`: `manual` | `sandbox` |
+    /// `auto` | `off`). Applied at startup and by `/new` to a session that has
+    /// no policy of its own; a session another client already configured keeps
+    /// its policy (the persisted value is a default, not an override). Absent ⇒
+    /// the session keeps the agent's dormant sandbox (fully open) — the
+    /// pre-mode-switch TUI behavior, unchanged for existing users.
+    pub default_approval_mode: Option<String>,
     pub enabled_model_ids: Option<Vec<String>>,
     /// Terminal bell (BEL) when a run of ours completes or errors. On by default.
     pub bell_on_complete: Option<bool>,
@@ -783,6 +803,9 @@ impl TuiSettings {
         if let Some(p) = &self.default_permission_level {
             obj.insert("defaultPermissionLevel".into(), Value::String(p.clone()));
         }
+        if let Some(m) = &self.default_approval_mode {
+            obj.insert("defaultApprovalMode".into(), Value::String(m.clone()));
+        }
         if let Some(ids) = &self.enabled_model_ids {
             obj.insert(
                 "enabledModelIds".into(),
@@ -818,6 +841,10 @@ impl TuiSettings {
                 .map(String::from),
             default_permission_level: v
                 .get("defaultPermissionLevel")
+                .and_then(Value::as_str)
+                .map(String::from),
+            default_approval_mode: v
+                .get("defaultApprovalMode")
                 .and_then(Value::as_str)
                 .map(String::from),
             enabled_model_ids: v.get("enabledModelIds").and_then(Value::as_array).map(|a| {
@@ -1085,15 +1112,29 @@ async fn load_history_tail(client: &GrpcClient, session_id: &str) -> Result<Valu
     }
 }
 
-/// Stored pending approval (the TS keeps it for reference; the visible
-/// surface is the chat message + input autofill).
+/// One approval request waiting for this user's decision.
+///
+/// The agent parks the whole run until a decision arrives (there is no
+/// timeout), and it can hold several requests per session — the queue below
+/// mirrors that. The id is kept for the `approval_decision` RPC and for
+/// matching the agent's own `approval_decision` broadcast (another client may
+/// have answered first), but the user never has to type it: the prompt line
+/// above the input answers the front of the queue with `1`/`y`/`2`/`n`/`esc`.
+/// The remaining fields feed the id-addressed commands' diagnostics and future
+/// card renderings; `title` is the one every surface shows.
+#[derive(Clone)]
 #[allow(dead_code)]
 struct PendingApproval {
     request_id: String,
     tool_name: String,
+    kind: String,
     title: String,
     summary: String,
     risk_level: String,
+    /// The agent's curated action view (`command`, `paths`, `writes`,
+    /// `targets`, `justification`) — what the card renders.
+    action: Option<Value>,
+    /// The raw tool arguments; only a fallback when `action` has no detail.
     requested_action: Option<Value>,
 }
 
@@ -1653,7 +1694,18 @@ pub struct App<T: TerminalIo> {
     previous_height: usize,
     previous_kitty_image_ids: BTreeSet<u32>,
     full_redraw_count: usize,
-    pending_approval: Option<PendingApproval>,
+    /// Approvals waiting for a decision, oldest first. The front of the queue
+    /// is what the prompt line and the bare `/approve` act on.
+    pending_approvals: VecDeque<PendingApproval>,
+    /// The approval card's overlay id while one is in front (one at a time —
+    /// the queue advances through the same card).
+    approval_overlay_id: Option<u64>,
+    /// Requests with a decision in flight, as `(id, title)`. Guards against a
+    /// key held down firing `approval_decision` twice for the same request,
+    /// and keeps the display title reachable after the queue entry is gone —
+    /// the agent's `approval_decision` broadcast can beat the RPC's own
+    /// answer, and the result line must still name the request, not its id.
+    pending_decisions: Vec<(String, String)>,
     cached_models: Vec<String>,
     /// Model id → `ModelInfo.supports_images`, from the `list_models` the TUI
     /// has seen (startup, `/model`, the autocomplete fetch). The paste path
@@ -1698,9 +1750,9 @@ pub struct App<T: TerminalIo> {
     /// `input_tx` handed to `start`, kept so the terminal can be suspended for
     /// the external editor and resumed with the same wiring (`/editor`).
     input_tx: Option<mpsc::UnboundedSender<UiInput>>,
-    /// Last known sandbox probe + tier, cached across `/sandbox` opens (the
-    /// desktop probes once per webview process too). `r` inside the panel
-    /// forces a fresh probe.
+    /// Last known sandbox probe + approval mode, cached across `/sandbox`
+    /// opens (the desktop probes once per webview process too). `r` inside the
+    /// panel forces a fresh probe and a fresh account check.
     sandbox: Option<SandboxStatus>,
     /// `/skills` — the platform catalogue as `future skills list --json` last
     /// reported it: the source of the version an install pins and the one an
@@ -1851,7 +1903,9 @@ impl<T: TerminalIo> App<T> {
             previous_height: 0,
             previous_kitty_image_ids: BTreeSet::new(),
             full_redraw_count: 0,
-            pending_approval: None,
+            pending_approvals: VecDeque::new(),
+            approval_overlay_id: None,
+            pending_decisions: Vec::new(),
             cached_models: Vec::new(),
             model_image_support: HashMap::new(),
             model_labels: HashMap::new(),
@@ -1903,14 +1957,14 @@ impl<T: TerminalIo> App<T> {
             SlashCommand {
                 value: "/approve".into(),
                 label: "/approve".into(),
-                description: "approve pending tool execution".into(),
+                description: "allow the pending approval (or by id)".into(),
                 takes_model_arg: false,
                 takes_session_arg: false,
             },
             SlashCommand {
                 value: "/reject".into(),
                 label: "/reject".into(),
-                description: "reject pending tool execution".into(),
+                description: "deny the pending approval (or by id)".into(),
                 takes_model_arg: false,
                 takes_session_arg: false,
             },
@@ -2127,7 +2181,14 @@ impl<T: TerminalIo> App<T> {
             SlashCommand {
                 value: "/sandbox".into(),
                 label: "/sandbox".into(),
-                description: "sandbox tier and tool permissions".into(),
+                description: "approval mode and tool permissions".into(),
+                takes_model_arg: false,
+                takes_session_arg: false,
+            },
+            SlashCommand {
+                value: "/mode".into(),
+                label: "/mode".into(),
+                description: "show or set the approval mode".into(),
                 takes_model_arg: false,
                 takes_session_arg: false,
             },
@@ -2634,28 +2695,65 @@ impl<T: TerminalIo> App<T> {
                 }
                 Err(err) => self.add_system_message(format!("Failed to change directory: {err}")),
             },
+            UiCmd::ApprovalDecided {
+                request_id,
+                approved,
+            } => self.decide_approval(&request_id, approved),
             UiCmd::ApprovalDone {
                 result,
                 kind,
                 request_id,
-            } => match result {
-                Ok(_) => {
-                    let verb = if kind == "approved" {
-                        "Approved"
-                    } else {
-                        "Rejected"
-                    };
-                    self.add_system_message(format!("{verb} request: {request_id}"));
+            } => {
+                // The title travels with the decision: the agent's
+                // `approval_decision` broadcast can clear the queue entry
+                // before this answer lands, and the result line must still
+                // name the request.
+                let title = self
+                    .pending_decisions
+                    .iter()
+                    .find(|(id, _)| *id == request_id)
+                    .map(|(_, title)| title.clone())
+                    .or_else(|| {
+                        self.pending_approvals
+                            .iter()
+                            .find(|pending| pending.request_id == request_id)
+                            .map(|pending| pending.title.clone())
+                    })
+                    .unwrap_or_else(|| request_id.clone());
+                match result {
+                    Ok(()) => {
+                        let already_gone = !self
+                            .pending_approvals
+                            .iter()
+                            .any(|pending| pending.request_id == request_id);
+                        self.pending_decisions.retain(|(id, _)| *id != request_id);
+                        // A decision the broadcast already announced is not
+                        // announced twice.
+                        if !already_gone {
+                            let verb = if kind == "approved" {
+                                "Allowed"
+                            } else {
+                                "Denied"
+                            };
+                            self.add_system_message(format!("{verb}: {title}"));
+                        }
+                        self.finish_pending_approval(&request_id);
+                    }
+                    Err(err) => {
+                        let verb = if kind == "approved" {
+                            "approve"
+                        } else {
+                            "deny"
+                        };
+                        self.add_system_message(format!("Failed to {verb}: {err}"));
+                        // The request stays queued: the failure is transport
+                        // noise (a reconnect, a refused connect), and the
+                        // decision can simply be sent again.
+                        self.pending_decisions.retain(|(id, _)| *id != request_id);
+                        self.request_render(false);
+                    }
                 }
-                Err(err) => {
-                    let verb = if kind == "approved" {
-                        "approve"
-                    } else {
-                        "reject"
-                    };
-                    self.add_system_message(format!("Failed to {verb}: {err}"));
-                }
-            },
+            }
             UiCmd::StopDone(result) => match result {
                 Ok(_) => self.add_system_message("Stopped current generation.".into()),
                 Err(err) => self.add_system_message(format!("Failed to stop: {err}")),
@@ -3051,7 +3149,12 @@ impl<T: TerminalIo> App<T> {
             },
             // ── sandbox / permissions ───────────────────────────────────────
             UiCmd::SandboxProbeRequested => {
-                self.request_sandbox_probe(Self::host_sandbox_platform())
+                // `r` means "re-check this host", and the host has two answers
+                // the panel depends on: the backend probe and the account gate
+                // `auto` needs. Re-asking both is what makes a sign-in or
+                // sign-out made while the TUI runs visible without a restart.
+                self.request_sandbox_probe(Self::host_sandbox_platform());
+                self.request_sandbox_account();
             }
             UiCmd::SandboxProbeLoaded { result } => match result {
                 Ok(payload) => {
@@ -3065,13 +3168,28 @@ impl<T: TerminalIo> App<T> {
                     self.add_system_message(format!("Sandbox probe failed: {err}"));
                 }
             },
-            UiCmd::SandboxTierRequested(tier) => {
-                let client = self.client.clone();
-                let tx = self.op_tx.clone();
-                tokio::spawn(async move {
-                    let result = client.set_sandbox_policy(tier.to_wire()).await;
-                    let _ = tx.send(UiCmd::SandboxPolicySet { result });
-                });
+            UiCmd::SandboxModeRequested(mode) => {
+                // A mode pick closes the card — the same "select ⇒ apply ⇒
+                // dismiss" contract as every other menu. The pick is a
+                // preference, not just this session's traffic: it persists like
+                // `/mode <mode>` does (and like the desktop's approval dropdown,
+                // which writes `appSettings.approvalTier`), so `/new` keeps the
+                // mode the user last chose. The permission half stays open and
+                // session-scoped (picking a level there is a settings tweak, not
+                // a mode switch; the desktop keeps its dropdown open too).
+                if self.top_sandbox_overlay().is_some() {
+                    self.hide_overlay();
+                }
+                self.apply_approval_mode(mode, true);
+            }
+            UiCmd::SandboxAccountLoaded { signed_in } => {
+                // A transport failure keeps the account signal unresolved —
+                // the `auto` row stays "(checking)" instead of claiming the
+                // user is signed out.
+                if let Some(signed_in) = signed_in {
+                    let account = AccountState::from_has_key(signed_in);
+                    self.update_sandbox_status(|status| status.account = account);
+                }
             }
             UiCmd::SandboxPolicySet { result } => match result {
                 Ok(payload) => {
@@ -3079,10 +3197,40 @@ impl<T: TerminalIo> App<T> {
                         Self::host_sandbox_platform(),
                         &payload,
                     );
-                    self.update_sandbox_status(|cached| *cached = status);
+                    // The answer is authoritative: it already reflects the
+                    // account gate (a `reviewer: "user"` after an `auto`
+                    // request means the account was missing). It must land in
+                    // the cache even with no panel open — the footer badge and
+                    // the next `/sandbox` both read it.
+                    self.sandbox = Some(match self.sandbox.clone() {
+                        Some(mut cached) => {
+                            cached.mode = status.mode;
+                            cached.requested_mode = status.requested_mode;
+                            cached.probe = status.probe;
+                            if status.account != AccountState::Checking {
+                                cached.account = status.account;
+                            }
+                            cached
+                        }
+                        None => status.clone(),
+                    });
+                    let cached = self.sandbox.clone();
+                    if let (Some(overlay), Some(status)) = (self.top_sandbox_overlay(), cached) {
+                        overlay.set_status(status);
+                    }
+                    self.request_render(false);
+                    if let Some(notice) = self.sandbox.as_ref().and_then(|s| s.fallback_notice()) {
+                        self.add_system_message(notice);
+                    } else if let Some(mode) = status.mode {
+                        self.add_system_message(format!(
+                            "Approval mode: {} — {}",
+                            mode.label(),
+                            mode.description(Self::host_sandbox_platform())
+                        ));
+                    }
                 }
                 Err(err) => {
-                    self.add_system_message(format!("Failed to set the sandbox tier: {err}"))
+                    self.add_system_message(format!("Failed to set the approval mode: {err}"))
                 }
             },
             UiCmd::PermissionLevelRequested(level) => self.set_permission_level(level, false),
@@ -3839,6 +3987,16 @@ impl<T: TerminalIo> App<T> {
                 self.state.active_tool_count = 0;
                 self.state.tool_start_time = None;
                 self.update_terminal_title();
+                // A finished run leaves no approval pending: the agent cancels
+                // its parked requests on abort/termination, and a run that
+                // completed means nothing was parked. Drop whatever the
+                // broadcasts have not already removed — the prompt line must
+                // not outlive the run it was asking about.
+                if !self.pending_approvals.is_empty() {
+                    self.pending_approvals.clear();
+                    self.pending_decisions.clear();
+                    self.hide_approval_card();
+                }
                 let text = event.text();
                 if !text.is_empty() {
                     self.chat.update_last_message(text);
@@ -3925,9 +4083,41 @@ impl<T: TerminalIo> App<T> {
                 // updates after every tool call, not just at agent_end.
                 self.spawn_refresh();
             }
+            // The automatic reviewer's verdict — auto mode's replacement for
+            // the human approval card. One muted transcript line keeps the
+            // automation visible without demanding a decision.
+            "approval_assessment" => {
+                let e = &event.data;
+                let status = e.get("status").and_then(Value::as_str).unwrap_or("");
+                let tool = e.get("tool_call_id").and_then(Value::as_str).unwrap_or("");
+                let text = match status {
+                    "approved" => {
+                        let risk = e
+                            .get("reported")
+                            .and_then(|reported| reported.get("risk"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        if risk.is_empty() {
+                            "Automatic review: approved".to_string()
+                        } else {
+                            format!("Automatic review: approved (risk: {risk})")
+                        }
+                    }
+                    "rejected" => "Automatic review: rejected — the model must choose a safer action or ask the user".to_string(),
+                    "review_uncertain" | "review_error" => format!(
+                        "Automatic review: {status} — the request was not approved"
+                    ),
+                    other => format!("Automatic review: {other}"),
+                };
+                self.add_system_message(if tool.is_empty() {
+                    text
+                } else {
+                    format!("{text} [{tool}]")
+                });
+            }
             "approval_request" => {
                 let e = &event.data;
-                self.show_approval_overlay(ApprovalEvent {
+                self.handle_approval_request(ApprovalEvent {
                     request_id: e
                         .get("approval_request_id")
                         .and_then(Value::as_str)
@@ -3963,8 +4153,55 @@ impl<T: TerminalIo> App<T> {
                         .and_then(Value::as_str)
                         .unwrap_or("")
                         .to_string(),
+                    action: e.get("action").cloned(),
                     requested_action: e.get("requested_action").cloned(),
                 });
+            }
+            // The agent's own record of a decision — sent for every request it
+            // held, whichever client answered. This client's own RPC is one
+            // source; this broadcast is the other two: another client (the
+            // desktop, the phone) decided first, or an abort/run termination
+            // cancelled the request on the agent side.
+            "approval_decision" => {
+                let e = &event.data;
+                let Some(id) = e
+                    .get("approval_request_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                else {
+                    return;
+                };
+                let was_pending = self
+                    .pending_approvals
+                    .iter()
+                    .any(|pending| pending.request_id == id);
+                if !was_pending {
+                    return;
+                }
+                let status = e.get("status").and_then(Value::as_str).unwrap_or("");
+                let decided_here = self
+                    .pending_decisions
+                    .iter()
+                    .any(|(pending, _)| *pending == id);
+                // Our own decision's transcript line comes from `ApprovalDone`
+                // (it knows the outcome of the RPC); this branch only speaks
+                // for decisions made elsewhere.
+                if !decided_here {
+                    let title = self
+                        .pending_approvals
+                        .iter()
+                        .find(|pending| pending.request_id == id)
+                        .map(|pending| pending.title.clone())
+                        .unwrap_or_default();
+                    let text = match status {
+                        "approved" => format!("Allowed elsewhere: {title}"),
+                        "rejected" => format!("Denied elsewhere: {title}"),
+                        "cancelled" => format!("Cancelled: {title}"),
+                        other => format!("Resolved ({other}): {title}"),
+                    };
+                    self.add_system_message(text);
+                }
+                self.finish_pending_approval(&id);
             }
             "error" => {
                 self.state.streaming = false;
@@ -4069,19 +4306,36 @@ impl<T: TerminalIo> App<T> {
                 self.spawn_refresh();
             }
             "sandbox_policy_changed" => {
-                // The event carries the tier the agent now runs under — the
-                // only read-back of the policy that exists (`get_state` does
-                // not report it). Recording it keeps an already-open panel
-                // honest when another client changes the tier.
-                if let Some(tier) = event
+                // The event carries the mode the agent now runs under (plus the
+                // tier, for pre-mode agents). Recording it keeps an
+                // already-open panel honest when another client changes the
+                // policy.
+                let mode = event
                     .data
-                    .get("tier")
+                    .get("mode")
                     .and_then(Value::as_str)
-                    .and_then(SandboxTier::from_wire)
-                {
+                    .and_then(ApprovalMode::from_wire)
+                    .or_else(|| {
+                        let tier = event
+                            .data
+                            .get("tier")
+                            .and_then(Value::as_str)
+                            .and_then(SandboxTier::from_wire)?;
+                        let reviewer = event
+                            .data
+                            .get("reviewer")
+                            .and_then(Value::as_str)
+                            .unwrap_or("");
+                        Some(if tier == SandboxTier::Sandbox && reviewer == "model" {
+                            ApprovalMode::Auto
+                        } else {
+                            ApprovalMode::from_wire(tier.to_wire())?
+                        })
+                    });
+                if let Some(mode) = mode {
                     self.update_sandbox_status(|status| {
-                        status.tier = tier;
-                        status.requested_tier = Some(tier);
+                        status.mode = Some(mode);
+                        status.requested_mode = Some(mode);
                     });
                 }
                 self.spawn_refresh();
@@ -4673,65 +4927,188 @@ impl<T: TerminalIo> App<T> {
         self.request_render(false);
     }
 
-    // ─── Approval overlay ──────────────────────────────────────────────
+    // ─── Approval card ─────────────────────────────────────────────────
 
-    fn show_approval_overlay(&mut self, req: ApprovalEvent) {
-        // Store pending approval.
-        self.pending_approval = Some(PendingApproval {
-            request_id: req.request_id.clone(),
-            tool_name: req.tool_name.clone(),
-            title: req.title.clone(),
-            summary: req.summary.clone(),
-            risk_level: req.risk_level.clone(),
-            requested_action: req.requested_action.clone(),
-        });
-
-        // Show as a chat message with instructions.
-        let action_preview = match &req.requested_action {
-            Some(Value::String(s)) => s.clone(),
-            Some(v) => serde_json::to_string_pretty(v).unwrap_or_default(),
-            None => String::new(),
-        };
-        let risk = req.risk_level.to_uppercase();
-        let preview_block = if action_preview.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "```\n{}\n```",
-                truncate_to_width(
-                    &action_preview,
-                    500,
-                    &TruncateOptions {
-                        ellipsis: false,
-                        pad: false
-                    }
-                )
-            )
-        };
-        let content = format!(
-            "⚠️ **Approval Required** [{risk} RISK]\n**{}**\n{}\n{}\n\nType **/approve {}** to allow or **/reject {}** to deny.",
-            req.title,
-            req.summary,
-            preview_block,
-            req.request_id,
-            req.request_id
-        );
-        self.chat
-            .add_message(ChatMessage::new(random_id(), ChatRole::System, &content));
+    /// An `approval_request` arrived: queue it and put the modal card in
+    /// front. The input line is never touched — an approval never costs the
+    /// user their draft, and the card is modal because the agent has parked
+    /// the whole run until it is answered.
+    fn handle_approval_request(&mut self, req: ApprovalEvent) {
+        let already_queued = self
+            .pending_approvals
+            .iter()
+            .any(|pending| pending.request_id == req.request_id);
+        if !already_queued {
+            self.pending_approvals.push_back(PendingApproval {
+                request_id: req.request_id.clone(),
+                tool_name: req.tool_name.clone(),
+                kind: req.kind.clone(),
+                title: req.title.clone(),
+                summary: req.summary.clone(),
+                risk_level: req.risk_level.clone(),
+                action: req.action.clone(),
+                requested_action: req.requested_action.clone(),
+            });
+        }
 
         // Tell the user even if the window is not focused: an approval request
         // parks the whole run until they answer, which is exactly the case the
         // desktop notifications exist for.
-        let body = format!(
-            "{} — /approve {} or /reject {}",
-            req.title, req.request_id, req.request_id
-        );
+        let body = format!("{} — answer the approval card", req.title);
         self.notify_event(NotifyKind::ApprovalNeeded, &body);
 
-        // Auto-fill the input with the approve command.
-        self.input
-            .set_value(&format!("/approve {}", req.request_id), None);
-        self.request_render(false);
+        self.show_approval_card();
+    }
+
+    /// Put the card for the front of the queue in front. An already-open card
+    /// is updated in place when it is asking about the same request —
+    /// recreating it on every `get_state` refresh would reset the user's
+    /// cursor mid-decision.
+    fn show_approval_card(&mut self) {
+        let Some(front) = self.pending_approvals.front().cloned() else {
+            self.hide_approval_card();
+            return;
+        };
+        let request = crate::components::approval_view::ApprovalRequest {
+            request_id: front.request_id.clone(),
+            title: front.title.clone(),
+            summary: front.summary.clone(),
+            kind: front.kind.clone(),
+            risk_level: front.risk_level.clone(),
+            action: front.action.clone(),
+            requested_action: front.requested_action.clone(),
+        };
+        let queue_len = self.pending_approvals.len();
+
+        // One card at a time: an open card either follows the queue (new
+        // request, same panel) or is replaced.
+        if let Some(id) = self.approval_overlay_id {
+            if let Some(index) = self.overlay_stack.iter().position(|entry| entry.id == id) {
+                if let Some(overlay) = self.overlay_stack[index]
+                    .component
+                    .as_any_mut()
+                    .downcast_mut::<ApprovalOverlay>()
+                {
+                    overlay.view.set_request(request, queue_len);
+                    self.request_render(false);
+                    return;
+                }
+            }
+            // The id is stale (the panel was closed some other way).
+            self.approval_overlay_id = None;
+        }
+
+        let overlay = ApprovalOverlay::new(
+            ApprovalView::new(request, queue_len),
+            Self::approval_sink(self.op_tx.clone()),
+        );
+        let rows = (self.terminal.rows() as usize).max(3);
+        let width = (self.terminal.columns() as usize)
+            .saturating_sub(6)
+            .clamp(30, 100);
+        let id = self.show_overlay(
+            Box::new(overlay),
+            OverlayOptions {
+                width: Some(SizeValue::Fixed(width)),
+                max_height: Some(SizeValue::Fixed(rows.saturating_sub(2))),
+                anchor: Some(OverlayAnchor::BottomCenter),
+                ..Default::default()
+            },
+        );
+        self.approval_overlay_id = Some(id);
+        self.request_render(true);
+    }
+
+    /// Remove the approval card, if one is open. Leaves the queue alone.
+    fn hide_approval_card(&mut self) {
+        let Some(id) = self.approval_overlay_id.take() else {
+            return;
+        };
+        if let Some(index) = self.overlay_stack.iter().position(|entry| entry.id == id) {
+            let entry = self.overlay_stack.remove(index);
+            if self.focused == FocusTarget::Overlay(entry.id) {
+                self.restore_focus(&entry);
+            }
+            if self.overlay_stack.is_empty() {
+                self.terminal.hide_cursor();
+            }
+            self.request_render(true);
+        }
+    }
+
+    /// The card's callback: a decision becomes the RPC, everything else is
+    /// redraw noise.
+    fn approval_sink(tx: mpsc::UnboundedSender<UiCmd>) -> Box<dyn FnMut(ApprovalAction)> {
+        Box::new(move |action: ApprovalAction| match action {
+            ApprovalAction::Decide {
+                request_id,
+                approved,
+            } => {
+                let _ = tx.send(UiCmd::ApprovalDecided {
+                    request_id,
+                    approved,
+                });
+            }
+            ApprovalAction::None | ApprovalAction::Moved => {}
+        })
+    }
+
+    /// Send a decision for one request. The queue keeps the entry until the
+    /// RPC answers (`ApprovalDone` removes it): removing it here would close
+    /// the card before the agent confirmed, and a failed RPC would have to
+    /// re-open it — both worse than one frame of double-answering protection
+    /// from `pending_decisions`. The card itself is the "in flight" feedback;
+    /// only the outcome reaches the transcript.
+    fn decide_approval(&mut self, request_id: &str, approved: bool) {
+        if self
+            .pending_decisions
+            .iter()
+            .any(|(id, _)| id == request_id)
+        {
+            return;
+        }
+        let title = self
+            .pending_approvals
+            .iter()
+            .find(|pending| pending.request_id == request_id)
+            .map(|pending| pending.title.clone())
+            .unwrap_or_else(|| request_id.to_string());
+        self.send_approval_decision(request_id, &title, approved);
+    }
+
+    /// The `approval_decision` RPC and its result plumbing. Shared by the
+    /// card, the bare `/approve`, and the id-addressed form.
+    fn send_approval_decision(&mut self, request_id: &str, title: &str, approved: bool) {
+        self.pending_decisions
+            .push((request_id.to_string(), title.to_string()));
+        let client = self.client.clone();
+        let tx = self.op_tx.clone();
+        let id = request_id.to_string();
+        tokio::spawn(async move {
+            let result = client.approval_decision(&id, approved, "").await;
+            let _ = tx.send(UiCmd::ApprovalDone {
+                result,
+                kind: if approved {
+                    "approved".into()
+                } else {
+                    "rejected".into()
+                },
+                request_id: id,
+            });
+        });
+    }
+
+    /// Remove an answered request from the queue (this client's RPC result or
+    /// the agent's own broadcast — another client may have decided first),
+    /// then show the next request's card or dismiss the card.
+    fn finish_pending_approval(&mut self, request_id: &str) {
+        self.pending_approvals
+            .retain(|pending| pending.request_id != request_id);
+        if self.pending_approvals.is_empty() {
+            self.hide_approval_card();
+        } else {
+            self.show_approval_card();
+        }
     }
 }
 
@@ -4744,9 +5121,61 @@ pub struct ApprovalEvent {
     pub risk_level: String,
     pub title: String,
     pub summary: String,
+    /// The agent's curated action view (`command`, `paths`, `writes`, …).
+    pub action: Option<Value>,
     pub requested_action: Option<Value>,
 }
 
+/// Overlay wrapper for [`ApprovalView`].
+///
+/// Like every other panel wrapper here: the view is I/O-free and reports
+/// intent, this layer turns it into a `UiCmd`. The card is modal (an approval
+/// parks the run), and it owns `escape` — the key denies the request rather
+/// than closing a panel and leaving the run parked.
+struct ApprovalOverlay {
+    view: ApprovalView,
+    on_action: Box<dyn FnMut(ApprovalAction)>,
+}
+
+impl ApprovalOverlay {
+    fn new(view: ApprovalView, on_action: Box<dyn FnMut(ApprovalAction)>) -> Self {
+        ApprovalOverlay { view, on_action }
+    }
+
+    fn set_theme(&mut self, theme: Theme) {
+        self.view.set_theme(&theme);
+    }
+}
+
+impl Component for ApprovalOverlay {
+    fn render(&mut self, width: usize) -> Vec<String> {
+        // The card wants to be as tall as its content; the app caps the
+        // window with `max_height`, so a generous bound here is enough.
+        self.view.render(width, 40)
+    }
+
+    fn handle_input(&mut self, data: &str) {
+        let action = self.view.handle_key(data);
+        if action != ApprovalAction::None {
+            (self.on_action)(action);
+        }
+    }
+
+    /// Escape is the card's own cancel/deny (see `ApprovalView::handle_key`):
+    /// closing the panel instead would hide the prompt and leave the agent
+    /// parked with nothing asking.
+    fn wants_escape(&self) -> bool {
+        true
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
 // ─── /sandbox and /skills overlay wrappers ──────────────────────────────────
 
 /// Overlay wrapper for `SandboxView`.
@@ -4756,7 +5185,7 @@ pub struct ApprovalEvent {
 /// rule as the menu/provider overlays: the callback sends a command instead of
 /// capturing the app, so no `&mut self` is held while the component handles a
 /// key. It also owns the one row the panel cannot render itself — the
-/// "the agent cannot tell us the current tier" caveat.
+/// "the agent cannot tell us the current mode" caveat.
 struct SandboxOverlay {
     view: SandboxView,
     /// Row budget handed to the panel (the terminal height minus chrome).
@@ -4781,12 +5210,8 @@ impl SandboxOverlay {
         }
     }
 
-    fn view_mut(&mut self) -> &mut SandboxView {
-        &mut self.view
-    }
-
     fn set_status(&mut self, status: SandboxStatus) {
-        self.note = sandbox_tier_caveat(&status);
+        self.note = sandbox_mode_caveat(&status);
         self.view.set_status(status);
     }
 
@@ -5010,6 +5435,8 @@ fn fit_overlay_row(row: &str, width: usize) -> String {
 fn apply_theme_to_new_overlay(component: &mut dyn Component, theme: Theme) {
     if let Some(overlay) = component.as_any_mut().downcast_mut::<SandboxOverlay>() {
         overlay.set_theme(theme);
+    } else if let Some(overlay) = component.as_any_mut().downcast_mut::<ApprovalOverlay>() {
+        overlay.set_theme(theme);
     } else if let Some(overlay) = component.as_any_mut().downcast_mut::<SkillsOverlay>() {
         overlay.set_theme(theme);
     } else if let Some(overlay) = component
@@ -5025,53 +5452,14 @@ fn apply_theme_to_new_overlay(component: &mut dyn Component, theme: Theme) {
     }
 }
 
-/// The extra panel row shown while the session's real tier is unknown: the
-/// agent has no "read the sandbox policy" command, so before the user applies a
-/// tier here the panel can only show the platform default. Presenting that
-/// guess as the session's policy is exactly the kind of silent lie the
-/// downgrade banner exists to prevent.
-fn sandbox_tier_caveat(status: &SandboxStatus) -> Option<String> {
-    (status.requested_tier.is_none() && status.tier == platform_default_tier(status.platform)).then(
-        || {
-            "Tier shown is this platform's default — apply one here to set the session's."
-                .to_string()
-        },
-    )
-}
-
-/// Which half of the shared sandbox card a command opens it on.
-///
-/// The card holds two settings — the approval tier and the tool-permission
-/// level — and `/sandbox` and `/permission` both open it, so the initial
-/// highlight is the only thing that can tell the two commands apart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SandboxFocus {
-    /// `/sandbox`: the tier list owns the highlight.
-    Tiers,
-    /// `/permission`: the tool-permission rows do.
-    Permissions,
-}
-
-/// Move the card's highlight from the tier list into the permission block.
-///
-/// The card is one flat list of six rows — `↑`/`↓` walk the three tiers and
-/// then the three permission levels — so its own `↓` is what does this, and
-/// walking it is exactly what a user pressing `/permission` would do next.
-/// (`PermissionView` is reachable from the app read-only; the walk is the only
-/// way in.) `below` counts the *selectable* tiers under the current one, so
-/// the walk lands on the block's first row instead of skipping into it.
-fn focus_permission_block(view: &mut SandboxView) {
-    let options = view.tier_options();
-    let current = view.highlighted_tier();
-    let below = options
-        .iter()
-        .skip_while(|(tier, _)| *tier != current)
-        .skip(1)
-        .filter(|(_, enabled)| *enabled)
-        .count();
-    for _ in 0..=below {
-        let _ = view.handle_key("down");
-    }
+/// The extra panel row shown while the session's real mode is unknown: until
+/// the user (or another client) applies a policy, the panel can only show the
+/// platform default. Presenting that guess as the session's policy is exactly
+/// the kind of silent lie the downgrade banner exists to prevent.
+fn sandbox_mode_caveat(status: &SandboxStatus) -> Option<String> {
+    status.mode.is_none().then(|| {
+        "Mode shown is this platform's default — apply one here to set the session's.".to_string()
+    })
 }
 
 /// Does this host want Chinese chrome? The TUI has no language setting (its
@@ -5886,33 +6274,35 @@ impl<T: TerminalIo> App<T> {
                     // trailing-separator trim — no `..` handling on its side).
                     self.switch_cwd(normalize_path(&resolved));
                 }
-                "approve" if !arg.is_empty() => {
-                    let client = self.client.clone();
-                    let tx = self.op_tx.clone();
-                    let id = arg.clone();
-                    tokio::spawn(async move {
-                        let result = client.approval_decision(&id, true, "").await;
-                        let _ = tx.send(UiCmd::ApprovalDone {
-                            result,
-                            kind: "approved".into(),
-                            request_id: id,
-                        });
-                    });
-                }
-                "reject" if !arg.is_empty() => {
-                    let client = self.client.clone();
-                    let tx = self.op_tx.clone();
-                    let id = arg.clone();
-                    tokio::spawn(async move {
-                        let result = client
-                            .approval_decision(&id, false, "rejected by user")
-                            .await;
-                        let _ = tx.send(UiCmd::ApprovalDone {
-                            result,
-                            kind: "rejected".into(),
-                            request_id: id,
-                        });
-                    });
+                // `/approve` / `/reject`: with an id, decide that request
+                // (validated against the queue — an id the agent no longer
+                // holds answers with an error anyway); with no argument,
+                // decide the front of the queue. The prompt line's keys are
+                // the primary surface; these commands are the scriptable and
+                // id-addressable path.
+                "approve" | "reject" => {
+                    let approved = cmd == "approve";
+                    let arg = arg.trim().trim_matches('`').to_string();
+                    let id = if arg.is_empty() {
+                        self.pending_approvals
+                            .front()
+                            .map(|front| front.request_id.clone())
+                    } else {
+                        Some(arg.clone())
+                    };
+                    let Some(id) = id else {
+                        self.add_system_message(format!("No pending approval to {cmd}"));
+                        return;
+                    };
+                    if !self
+                        .pending_approvals
+                        .iter()
+                        .any(|pending| pending.request_id == id)
+                    {
+                        self.add_system_message(format!("No pending approval with id '{arg}'"));
+                        return;
+                    }
+                    self.decide_approval(&id, approved);
                 }
                 "stop" => {
                     let client = self.client.clone();
@@ -5968,6 +6358,8 @@ impl<T: TerminalIo> App<T> {
                 "tool-output" => self.show_tool_calls(),
                 // ── Sandbox, permissions and the skill browser ──────────
                 "sandbox" => self.show_sandbox(),
+                "mode" if !arg.trim().is_empty() => self.mode_command(&arg),
+                "mode" => self.show_sandbox(),
                 "permission" => self.show_permission(&arg),
                 "worktree" => self.worktree_command(&arg),
                 // ── Key bindings ────────────────────────────────────────
@@ -6117,6 +6509,15 @@ impl<T: TerminalIo> App<T> {
         } else {
             Some(self.state.thinking.clone() as ThinkingLevel)
         };
+        let approval_mode = self
+            .tui_settings
+            .default_approval_mode
+            .as_deref()
+            .and_then(ApprovalMode::from_wire);
+        // A new session starts at the agent's `all` default, which would skip
+        // the approval gate entirely. Hand the mode's prerequisite over with it
+        // (the current level, not the persisted one: `none` must survive).
+        let permission = self.state.permission_level;
         tokio::spawn(async move {
             let result = client
                 .new_session(cwd.as_deref(), model_id.as_deref(), level.as_deref())
@@ -6124,6 +6525,14 @@ impl<T: TerminalIo> App<T> {
             let mut state = None;
             if let Ok(ref v) = result {
                 if v.get("sessionId").and_then(Value::as_str).is_some() {
+                    if let Some(mode) = approval_mode {
+                        // A fresh session has no policy; the persisted default
+                        // is what the user expects `/new` to keep honoring.
+                        if mode != ApprovalMode::Off && permission == PermissionKind::All {
+                            let _ = client.set_permission_level("workspace").await;
+                        }
+                        let _ = client.set_sandbox_policy(mode).await;
+                    }
                     state = client.get_state().await.ok();
                 }
             }
@@ -6962,8 +7371,7 @@ impl<T: TerminalIo> App<T> {
     fn sandbox_sink(tx: mpsc::UnboundedSender<UiCmd>) -> Box<dyn FnMut(SandboxAction)> {
         Box::new(move |action: SandboxAction| {
             let cmd = match action {
-                SandboxAction::TierSelected(tier) => UiCmd::SandboxTierRequested(tier),
-                SandboxAction::PermissionSelected(kind) => UiCmd::PermissionLevelRequested(kind),
+                SandboxAction::ModeSelected(mode) => UiCmd::SandboxModeRequested(mode),
                 SandboxAction::RefreshProbe => UiCmd::SandboxProbeRequested,
                 SandboxAction::Cancelled => UiCmd::OverlayCancel,
                 SandboxAction::None | SandboxAction::Moved => return,
@@ -7193,12 +7601,13 @@ impl<T: TerminalIo> App<T> {
         }
     }
 
-    /// `/sandbox` — open the tier + tool-permission panel.
+    /// `/sandbox` — open the approval-mode + tool-permission panel.
     ///
     /// The probe answer is cached across opens (the desktop probes once per
-    /// webview process); `r` inside the panel forces a fresh one. Only Linux
-    /// and Windows need an RPC to learn the answer — macOS has Seatbelt by
-    /// construction and an unsupported platform is definitive too.
+    /// webview process); `r` inside the panel forces a fresh probe and a fresh
+    /// account check. Only Linux and Windows need an RPC to learn the probe
+    /// answer — macOS has Seatbelt by construction and an unsupported platform
+    /// is definitive too.
     fn show_sandbox(&mut self) {
         self.open_sandbox_panel(Self::host_sandbox_platform());
     }
@@ -7225,14 +7634,13 @@ impl<T: TerminalIo> App<T> {
     /// makes the Linux/Windows probe decision reachable from a test on any
     /// host.
     fn open_sandbox_panel(&mut self, platform: SandboxPlatform) {
-        self.open_sandbox_card(platform, SandboxFocus::Tiers);
+        self.open_sandbox_card(platform);
     }
 
-    /// The card `/sandbox` and `/permission` share: the approval tier and the
-    /// tool-permission picker are one screen (the agent owns both halves of the
-    /// policy), so the two commands differ in *where they start*, not in what
-    /// they open.
-    fn open_sandbox_card(&mut self, platform: SandboxPlatform, focus: SandboxFocus) {
+    /// `/sandbox` and `/mode` open the same card: the approval-mode picker.
+    /// The commands differ in *when they are useful*, not in what they open —
+    /// `/mode` with an argument skips the card entirely.
+    fn open_sandbox_card(&mut self, platform: SandboxPlatform) {
         let status = self
             .sandbox
             .clone()
@@ -7242,15 +7650,11 @@ impl<T: TerminalIo> App<T> {
         self.sandbox = Some(status.clone());
         let mut view = SandboxView::new(platform);
         view.set_status(status.clone());
-        view.set_permission_level(self.state.permission_level);
-        if focus == SandboxFocus::Permissions {
-            focus_permission_block(&mut view);
-        }
         let rows = (self.terminal.rows() as usize).max(3);
         let overlay = SandboxOverlay::new(
             view,
             rows.saturating_sub(2),
-            sandbox_tier_caveat(&status),
+            sandbox_mode_caveat(&status),
             Self::sandbox_sink(self.op_tx.clone()),
         );
         let width = (self.terminal.columns() as usize).saturating_sub(4).min(90);
@@ -7265,6 +7669,29 @@ impl<T: TerminalIo> App<T> {
         if status.probe_state() == ProbeState::Checking {
             self.request_sandbox_probe(platform);
         }
+        // Ask on every open, not only while unresolved: the account can change
+        // under a long-running TUI (`future auth login` in another shell), and
+        // this is one local `list_providers` round trip.
+        self.request_sandbox_account();
+    }
+
+    /// The account half of the `auto` gate: does the `future` provider have a
+    /// stored key? The agent's own gate (`system_one::resolve`) reads the same
+    /// `auth.json` entry, so the two agree unless one side is stale — and the
+    /// agent's `set_sandbox_policy` answer remains authoritative either way.
+    fn request_sandbox_account(&mut self) {
+        let client = self.client.clone();
+        let tx = self.op_tx.clone();
+        tokio::spawn(async move {
+            let signed_in = match client.list_providers().await {
+                Ok(providers) => providers
+                    .iter()
+                    .find(|provider| provider.id == "future")
+                    .map(|provider| provider.has_api_key),
+                Err(_) => None,
+            };
+            let _ = tx.send(UiCmd::SandboxAccountLoaded { signed_in });
+        });
     }
 
     /// `probe_sandbox` (macOS/Linux/other) or `probe_windows_sandbox`
@@ -7284,30 +7711,90 @@ impl<T: TerminalIo> App<T> {
         });
     }
 
-    /// `/permission [all|workspace|none]` — without an argument the panel that
-    /// owns the permission picker opens; with one the level is applied.
+    /// `/permission <all|workspace|none>` — the tool-permission level, applied
+    /// directly. The level is a legacy setting the mode card deliberately does
+    /// not surface, so an argument is required.
     fn show_permission(&mut self, arg: &str) {
         let arg = arg.trim();
-        if arg.is_empty() {
-            // The same card `/sandbox` opens, but with the tool-permission
-            // block under the highlight: two commands that open a
-            // byte-identical panel read as a bug, and this is the difference
-            // worth showing — nothing is hidden either way, `↑` still walks
-            // into the tier list.
-            self.open_sandbox_card(Self::host_sandbox_platform(), SandboxFocus::Permissions);
-            return;
-        }
-        match PermissionKind::from_wire(arg) {
-            Some(level) => self.set_permission_level(level, true),
-            None => self.add_system_message(format!(
+        match (PermissionKind::from_wire(arg), arg.is_empty()) {
+            (Some(level), _) => self.set_permission_level(level, true),
+            (None, true) => {
+                self.add_system_message("Usage: /permission [all|workspace|none]".to_string())
+            }
+            (None, false) => self.add_system_message(format!(
                 "Usage: /permission [all|workspace|none] (got '{arg}')"
             )),
         }
     }
 
+    /// `/mode [manual|sandbox|auto|off]` — the direct route to the approval
+    /// mode: without an argument the shared card opens (same as `/sandbox`),
+    /// with one the mode is applied and persisted as the TUI default. `full`
+    /// is accepted as the display spelling of `off` (the panel calls it
+    /// `Full access`). The availability gates (`sandbox`/`auto` prerequisites)
+    /// still apply through the panel-independent check below — a request the
+    /// agent would only downgrade is refused here instead.
+    fn mode_command(&mut self, arg: &str) {
+        let arg = arg.trim();
+        let Some(mode) = ApprovalMode::from_user_input(arg) else {
+            self.add_system_message(format!(
+                "Usage: /mode [manual|sandbox|auto|off] (got '{arg}')"
+            ));
+            return;
+        };
+        // Refuse modes whose prerequisites are known-missing; unknown
+        // prerequisites (no probe/account answer yet) let the request
+        // through — the agent's own answer carries the fallback notice.
+        let probe_ok = self
+            .sandbox
+            .as_ref()
+            .is_none_or(|status| !status.probe.resolved || status.probe.available);
+        // Only a resolved "signed out" blocks: `Checking` means nobody has
+        // answered yet, and `list_providers` may be in flight or failed. The
+        // agent re-checks the account itself and answers with the downgrade.
+        let account_ok = self
+            .sandbox
+            .as_ref()
+            .is_none_or(|status| status.account != AccountState::SignedOut);
+        let blocked = match mode {
+            ApprovalMode::Sandbox => !probe_ok,
+            ApprovalMode::Auto => !probe_ok || !account_ok,
+            ApprovalMode::Off | ApprovalMode::Manual => false,
+        };
+        if blocked {
+            let reason = if !probe_ok {
+                "the system sandbox is unavailable"
+            } else {
+                "no FutureOS account is signed in"
+            };
+            self.add_system_message(format!(
+                "Cannot apply {}: {reason} — open /sandbox for details.",
+                mode.label()
+            ));
+            return;
+        }
+        self.apply_approval_mode(mode, true);
+    }
+
     /// `set_permission_level`, optionally persisting the choice as the TUI's
     /// startup default.
+    ///
+    /// `all` is the legacy "no gating" level: the agent's `before_tool_call`
+    /// returns before the approval gate runs, so no mode's rules are ever
+    /// consulted. Asking for it while a protected mode is set therefore also
+    /// switches that mode to `Full access` — otherwise the footer would keep
+    /// advertising a policy the agent no longer enforces.
     fn set_permission_level(&mut self, level: PermissionKind, persist: bool) {
+        if level == PermissionKind::All {
+            if let Some(mode) = self.protected_approval_mode() {
+                self.add_system_message(format!(
+                    "Permission level All skips the approval gate, so {} is no longer enforced — switched the approval mode to {}.",
+                    mode.label(),
+                    ApprovalMode::Off.label()
+                ));
+                self.apply_approval_mode(ApprovalMode::Off, persist);
+            }
+        }
         if persist {
             self.tui_settings.default_permission_level = Some(level.to_wire().to_string());
             self.save_tui_settings();
@@ -7320,12 +7807,62 @@ impl<T: TerminalIo> App<T> {
         });
     }
 
-    /// Push a new permission level into the open panel (a no-op otherwise).
+    /// The cached approval mode when it is one the gate has to enforce
+    /// (`manual`, `sandbox`, `auto`), or `None` for `off` / no policy yet.
+    fn protected_approval_mode(&self) -> Option<ApprovalMode> {
+        match self.sandbox.as_ref()?.mode? {
+            mode @ (ApprovalMode::Manual | ApprovalMode::Sandbox | ApprovalMode::Auto) => {
+                Some(mode)
+            }
+            ApprovalMode::Off => None,
+        }
+    }
+
+    /// `set_sandbox_policy` for one approval mode, optionally persisting the
+    /// choice as the TUI's startup default. The wire mapping (`auto` →
+    /// `tier = sandbox, reviewer = model`) lives in the client, mirroring the
+    /// CLI and the desktop bridge.
+    ///
+    /// A protected mode also needs the tool-permission level at `workspace`: at
+    /// `all` the agent returns from `before_tool_call` before any approval rule
+    /// is evaluated, which is exactly the silent "manual but nothing asks"
+    /// failure. A legacy `all` is raised to `workspace` (and persisted with the
+    /// mode, so a restart keeps gating); `none` is left alone — it denies more,
+    /// not less. The desktop never hits this because it always provisions its
+    /// sessions at `workspace`.
+    fn apply_approval_mode(&mut self, mode: ApprovalMode, persist: bool) {
+        if persist {
+            self.tui_settings.default_approval_mode = Some(mode.as_str().to_string());
+            self.save_tui_settings();
+        }
+        if mode != ApprovalMode::Off && self.state.permission_level == PermissionKind::All {
+            self.state.permission_level = PermissionKind::Workspace;
+            if persist {
+                self.tui_settings.default_permission_level = Some("workspace".to_string());
+                self.save_tui_settings();
+            }
+            self.sync_sandbox_panel();
+            self.add_system_message(
+                "Tool permission level raised to Workspace — the approval mode only asks while the gate is armed."
+                    .to_string(),
+            );
+            let client = self.client.clone();
+            tokio::spawn(async move {
+                let _ = client.set_permission_level("workspace").await;
+            });
+        }
+        let client = self.client.clone();
+        let tx = self.op_tx.clone();
+        tokio::spawn(async move {
+            let result = client.set_sandbox_policy(mode).await;
+            let _ = tx.send(UiCmd::SandboxPolicySet { result });
+        });
+    }
+
+    /// Push a new status into the open panel (a no-op otherwise).
     fn sync_sandbox_panel(&mut self) {
-        let level = self.state.permission_level;
         let status = self.sandbox.clone();
         if let Some(overlay) = self.top_sandbox_overlay() {
-            overlay.view_mut().set_permission_level(level);
             if let Some(status) = status {
                 overlay.set_status(status);
             }
@@ -7462,9 +7999,13 @@ impl<T: TerminalIo> App<T> {
     /// Replace the cached sandbox status and push it into the open panel.
     ///
     /// The panel is updated through `set_status`, which also re-clamps a
-    /// highlight left on a tier the new status disables — feeding the view
+    /// highlight left on a mode the new status disables — feeding the view
     /// directly would leave the cursor on a disabled row.
     fn update_sandbox_status<F: FnOnce(&mut SandboxStatus)>(&mut self, update: F) {
+        // Seed a host-platform status when there is no cache yet: the probe
+        // and account answers describe *this host* regardless of which
+        // platform a panel was opened with, and the seeded probe state is
+        // exactly what a host-platform panel would show.
         let mut status = self
             .sandbox
             .clone()
@@ -8416,6 +8957,10 @@ impl<T: TerminalIo> App<T> {
                 "Permission: {}",
                 s.permission_level.as_deref().unwrap_or("all")
             ),
+            format!(
+                "Approval mode: {}",
+                s.sandbox_tier.as_deref().unwrap_or("(not set)")
+            ),
             format!("Queries: {}", s.query_count),
             format!(
                 "Auto compaction: {}",
@@ -8480,7 +9025,7 @@ impl<T: TerminalIo> App<T> {
         // Shortcuts line (truncate to fit terminal width).
         let term_w = self.terminal.columns() as usize;
         let shortcuts = truncate_to_width(
-            "ctrl+c interrupt · ctrl+p model · ctrl+t thinking · ctrl+o expand/collapse · / commands",
+            "ctrl+c interrupt · ctrl+p model · ctrl+t thinking · ctrl+o expand/collapse · /mode approval · / commands",
             term_w.saturating_sub(4),
             &TruncateOptions::default(),
         );
@@ -8813,6 +9358,45 @@ impl<T: TerminalIo> App<T> {
         }
         if let Some(perm) = s.default_permission_level {
             let _ = self.client.set_permission_level(&perm).await;
+            if let Some(level) = PermissionKind::from_wire(&perm) {
+                self.state.permission_level = level;
+            }
+        }
+        if let Some(mode) = s
+            .default_approval_mode
+            .as_deref()
+            .and_then(ApprovalMode::from_wire)
+        {
+            // Do not broadcast the fallback banner on startup: a persisted
+            // `auto` without an account downgrades quietly here (the panel
+            // still shows the full story when opened).
+            //
+            // …and do not override a policy the session already has: the
+            // persisted value is a *default* for sessions that never chose
+            // one, while the agent may be shared with the desktop, which set a
+            // policy for this very session. The startup refresh has already
+            // recorded that policy in the cache.
+            let session_has_policy = self
+                .sandbox
+                .as_ref()
+                .and_then(|status| status.mode)
+                .is_some();
+            if !session_has_policy {
+                let _ = self.client.set_sandbox_policy(mode).await;
+                self.update_sandbox_status(|status| status.requested_mode = Some(mode));
+            }
+        }
+        // Whatever the mode came from — the persisted default just applied or a
+        // policy the session already had — a protected one is only enforced
+        // while the tool-permission level gates: at `all` the agent returns from
+        // `before_tool_call` before any approval rule is consulted. Keep the
+        // startup state coherent (for this run; the value is persisted only
+        // when the user picks it).
+        if self.protected_approval_mode().is_some()
+            && self.state.permission_level == PermissionKind::All
+            && self.client.set_permission_level("workspace").await.is_ok()
+        {
+            self.state.permission_level = PermissionKind::Workspace;
         }
         // Re-read agent state so the footer reflects changes.
         if let Ok(state) = self.client.get_state().await {
@@ -8934,6 +9518,52 @@ impl<T: TerminalIo> App<T> {
             self.chat
                 .update_run_state(&run_id, RunState::LostOnAgentRestart);
         }
+        // Approvals the agent still holds — a reconnect's way of saying "the
+        // run is parked on these". Rebuild the queue from the snapshot: drop
+        // the ones that resolved while we were away (their broadcasts were
+        // missed), keep the prompt line for the rest. Entries already queued
+        // (a decision in flight, or a duplicate refresh) are left alone —
+        // the id is the identity, so re-slicing would only churn the order.
+        let snapshot_ids: std::collections::HashSet<&str> = s
+            .pending_approvals
+            .iter()
+            .map(|pending| pending.approval_request_id.as_str())
+            .collect();
+        self.pending_approvals
+            .retain(|pending| snapshot_ids.contains(pending.request_id.as_str()));
+        for pending in &s.pending_approvals {
+            if !self
+                .pending_approvals
+                .iter()
+                .any(|queued| queued.request_id == pending.approval_request_id)
+            {
+                self.handle_approval_request(ApprovalEvent {
+                    request_id: pending.approval_request_id.clone(),
+                    tool_id: pending.tool_id.clone(),
+                    tool_name: pending.tool_name.clone(),
+                    kind: pending.kind.clone(),
+                    risk_level: pending.risk_level.clone(),
+                    title: if pending.title.is_empty() {
+                        "Approve tool execution".to_string()
+                    } else {
+                        pending.title.clone()
+                    },
+                    summary: pending.summary.clone(),
+                    action: pending.action.clone(),
+                    requested_action: pending.requested_action.clone(),
+                });
+            }
+        }
+        // Decisions that were in flight when the connection dropped never
+        // came back: without this their ids would keep guarding the keys
+        // forever (the queue is empty, but `pending_decisions` never drains).
+        if self.pending_approvals.is_empty() {
+            self.pending_decisions.clear();
+        }
+        // Keep the card in step with the rebuilt queue: it follows the front
+        // (a new request replaces the question in place) and is dismissed when
+        // nothing is parked any more.
+        self.show_approval_card();
         for queued in &s.queued_runs {
             self.chat.upsert_queued_run(
                 &queued.run_id,
@@ -8981,8 +9611,14 @@ impl<T: TerminalIo> App<T> {
             self.state.active_tool_count = 0;
             self.state.tool_start_time = None;
         }
+        // A snapshot for another session also answers for another session's
+        // policy: the mode this client last *asked* for belongs to the session
+        // being left, so it must not be carried over as if it had been
+        // requested here (a leftover `auto` would make the new session look
+        // like an account downgrade).
+        let session_changed = !s.session_id.is_empty() && self.state.session_id != s.session_id;
         if !s.session_id.is_empty() {
-            if self.state.session_id != s.session_id {
+            if session_changed {
                 self.state.compaction_requested = false;
                 self.state.compaction_revision += 1;
             }
@@ -9021,6 +9657,37 @@ impl<T: TerminalIo> App<T> {
             .and_then(PermissionKind::from_wire)
         {
             self.state.permission_level = level;
+        }
+        // Same for the approval mode: the agent's read-back (mode-aware
+        // agents spell "auto" here; pre-mode ones only the tier, which maps
+        // back cleanly). An unset policy clears a stale local mode so the
+        // footer's `open` badge stays truthful after `/new` — but only when a
+        // cached status exists: with no cache there is nothing stale to clear,
+        // and materializing a platform-default status here would poison a
+        // later panel opened for a *different* platform (the Linux/Windows
+        // probe tests do exactly that).
+        if let Some(mode) = s.sandbox_tier.as_deref().and_then(ApprovalMode::from_wire) {
+            self.update_sandbox_status(|status| {
+                status.mode = Some(mode);
+                // The read-back reports the *effective* mode only. Touching
+                // `requested_mode` here would erase the record of a downgrade
+                // this client already reported (a refresh lands after every
+                // run, so the banner would vanish immediately) — but a request
+                // the read-back no longer explains (another client replaced
+                // the policy) is stale and must not keep claiming a fallback.
+                // A switch to another session resets it outright: its request
+                // history is not this session's.
+                let explained = status.requested_mode == Some(mode)
+                    || SandboxStatus::is_known_downgrade(status.requested_mode, Some(mode));
+                if session_changed || !explained {
+                    status.requested_mode = Some(mode);
+                }
+            });
+        } else if s.sandbox_tier.is_none() && self.sandbox.is_some() {
+            self.update_sandbox_status(|status| {
+                status.mode = None;
+                status.requested_mode = None;
+            });
         }
 
         // Update the client's session ID if the server returned a different
@@ -9681,6 +10348,17 @@ impl<T: TerminalIo> App<T> {
             // else the id's tail after the provider prefix.
             model: Some(self.model_display()),
             thinking: Some(self.state.thinking.clone()),
+            // The approval-mode badge: the session's own policy when known,
+            // else the honest "open" (no policy = fully open, which is *not*
+            // the same as an explicit `off` — but the footer has no room for
+            // that distinction, and `open` is the truthful one-word summary).
+            approval_mode: Some(match &self.sandbox {
+                Some(status) => match status.mode {
+                    Some(mode) => mode.badge().to_string(),
+                    None => "open".to_string(),
+                },
+                None => "open".to_string(),
+            }),
             streaming: self.state.streaming,
             compacting: self.state.compacting || self.state.compaction_requested,
             spinner_frame: Some(self.state.spinner_frame),
@@ -10794,6 +11472,7 @@ mod tests {
             default_model: Some("deepseek-v4-pro".into()),
             default_thinking_level: Some("high".into()),
             default_permission_level: None,
+            default_approval_mode: Some("auto".into()),
             enabled_model_ids: Some(vec!["a".into(), "b".into()]),
             bell_on_complete: None,
             theme_id: None,
@@ -10805,6 +11484,7 @@ mod tests {
         let back = TuiSettings::from_json(&parsed);
         assert_eq!(back.default_model.as_deref(), Some("deepseek-v4-pro"));
         assert_eq!(back.default_thinking_level.as_deref(), Some("high"));
+        assert_eq!(back.default_approval_mode.as_deref(), Some("auto"));
         assert_eq!(
             back.enabled_model_ids,
             Some(vec!["a".to_string(), "b".to_string()])
@@ -10817,6 +11497,7 @@ mod tests {
             default_model: Some("m".into()),
             default_thinking_level: None,
             default_permission_level: None,
+            default_approval_mode: None,
             enabled_model_ids: Some(vec!["x".into()]),
             bell_on_complete: None,
             theme_id: None,
@@ -12516,19 +13197,34 @@ mod tests {
         });
         assert!(last_system(&app).contains("Failed to change directory"));
 
-        // ApprovalDone approved/rejected × ok/err.
+        // ApprovalDone approved/rejected × ok/err. The title comes from the
+        // queue, so queue the requests first; an unknown id falls back to it.
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            r#"{"approval_request_id":"r1","tool_id":"t1","tool_name":"shell","kind":"exec","risk_level":"medium","title":"Run one","summary":"s"}"#,
+        ));
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            r#"{"approval_request_id":"r2","tool_id":"t2","tool_name":"shell","kind":"exec","risk_level":"medium","title":"Run two","summary":"s"}"#,
+        ));
         app.handle_cmd(UiCmd::ApprovalDone {
             result: Ok(()),
             kind: "approved".into(),
             request_id: "r1".into(),
         });
-        assert!(last_system(&app).contains("Approved request: r1"));
+        assert!(last_system(&app).contains("Allowed: Run one"));
+        assert_eq!(app.pending_approvals.len(), 1);
         app.handle_cmd(UiCmd::ApprovalDone {
             result: Err("x".into()),
             kind: "rejected".into(),
             request_id: "r2".into(),
         });
-        assert!(last_system(&app).contains("Failed to reject"));
+        assert!(last_system(&app).contains("Failed to deny"));
+        assert_eq!(
+            app.pending_approvals.len(),
+            1,
+            "a failed RPC keeps the request queued"
+        );
 
         // StopDone ok/err.
         app.handle_cmd(UiCmd::StopDone(Ok(())));
@@ -13298,14 +13994,25 @@ mod tests {
         app.handle_agent_event(&make_event("tool_end", r#"{"tool_id":"t2"}"#));
         pump(&mut app, &mut rx).await; // tool_end's spawn_refresh fails silently
 
-        // approval_request → chat card + prefilled /approve command.
+        // approval_request → modal card; the editor is untouched.
         app.handle_agent_event(&make_event(
             "approval_request",
-            r#"{"approval_request_id":"a1","tool_id":"t9","tool_name":"shell","kind":"exec","risk_level":"high","summary":"rm -rf","requested_action":"rm -rf /"}"#,
+            r#"{"approval_request_id":"a1","tool_id":"t9","tool_name":"shell","kind":"exec","risk_level":"high","summary":"rm -rf","action":{"command":"rm -rf /"},"requested_action":{"command":"rm -rf /"}}"#,
         ));
-        assert!(last_system(&app).contains("Approval Required"));
-        assert!(app.input.get_value().contains("/approve a1"));
-        app.input.set_value("", None);
+        assert!(app.input.get_value().is_empty());
+        assert_eq!(app.pending_approvals.len(), 1);
+        assert!(
+            top_overlay_is::<ApprovalOverlay>(&app),
+            "the card is in front"
+        );
+        // The agent's own decision broadcast removes it (another client
+        // answered first — the `approval_decision` event carries the id).
+        app.handle_agent_event(&make_event(
+            "approval_decision",
+            r#"{"approval_request_id":"a1","status":"approved"}"#,
+        ));
+        assert!(app.pending_approvals.is_empty());
+        assert!(!top_overlay_is::<ApprovalOverlay>(&app), "the card is gone");
 
         // error event.
         app.handle_agent_event(&make_event("error", r#"{"error":"boom"}"#));
@@ -13616,13 +14323,26 @@ mod tests {
         assert!(last_system(&app).contains("Cannot change working directory"));
         app.state.streaming = false;
 
-        // /approve, /reject (with and without arg).
+        // /approve, /reject: bare (no pending → refusal), id-addressed
+        // (queued request → decided), unknown id (local refusal, no RPC).
         app.handle_cmd(UiCmd::Submit("/approve".into()));
+        assert!(last_system(&app).contains("No pending approval to approve"));
         app.handle_cmd(UiCmd::Submit("/reject".into()));
+        assert!(last_system(&app).contains("No pending approval to reject"));
+        app.handle_cmd(UiCmd::Submit("/approve nowhere".into()));
+        assert!(last_system(&app).contains("No pending approval with id 'nowhere'"));
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            r#"{"approval_request_id":"req-1","tool_id":"t1","tool_name":"shell","kind":"exec","risk_level":"medium","title":"Run one","summary":"s"}"#,
+        ));
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            r#"{"approval_request_id":"req-2","tool_id":"t2","tool_name":"shell","kind":"exec","risk_level":"medium","title":"Run two","summary":"s"}"#,
+        ));
         app.handle_cmd(UiCmd::Submit("/approve req-1".into()));
         pump_until_msg(&mut app, &mut rx, "Failed to approve").await;
         app.handle_cmd(UiCmd::Submit("/reject req-2".into()));
-        pump_until_msg(&mut app, &mut rx, "Failed to reject").await;
+        pump_until_msg(&mut app, &mut rx, "Failed to deny").await;
 
         // /cancel with and without arg.
         app.handle_cmd(UiCmd::Submit("/cancel".into()));
@@ -15146,6 +15866,63 @@ mod tests {
         app.stop();
     }
 
+    /// The persisted approval mode is pushed to a session that has no policy
+    /// yet (`auto` travels as the sandbox tier plus the model reviewer).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_persisted_mode_reaches_a_fresh_session() {
+        let mock = AppMockAgent::default();
+        let requests = mock.requests.clone();
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        std::fs::write(&app.tui_settings_path, r#"{"defaultApprovalMode":"auto"}"#).unwrap();
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump_until_agent_commands(&mut app, &mut rx, &requests, "set_sandbox_policy", 1).await;
+        let policies: Vec<future_rpc::proto::SandboxPolicy> = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|cmd| cmd.r#type == "set_sandbox_policy")
+            .filter_map(|cmd| cmd.sandbox_policy.clone())
+            .collect();
+        assert_eq!(policies.len(), 1);
+        assert_eq!(policies[0].tier, "sandbox");
+        assert_eq!(policies[0].reviewer, "model");
+        app.stop();
+    }
+
+    /// …but a default is not an override: a session another client already
+    /// configured keeps its own policy.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_persisted_mode_does_not_override_an_existing_policy() {
+        let mock = AppMockAgent {
+            overrides: std::collections::HashMap::from([(
+                "get_state".to_string(),
+                r#"{"sessionId":"s1","model":"m","thinkingLevel":"off","cwd":"/tmp","sandboxTier":"manual","isStreaming":false}"#
+                    .to_string(),
+            )]),
+            ..Default::default()
+        };
+        let requests = mock.requests.clone();
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        std::fs::write(&app.tui_settings_path, r#"{"defaultApprovalMode":"auto"}"#).unwrap();
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        pump(&mut app, &mut rx).await;
+        assert!(
+            requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|cmd| cmd.r#type != "set_sandbox_policy"),
+            "the session's own policy must not be overwritten"
+        );
+        assert_eq!(
+            app.sandbox.as_ref().and_then(|status| status.mode),
+            Some(ApprovalMode::Manual)
+        );
+        app.stop();
+    }
+
     /// The event's structured result decides a failure, so a live failed call is
     /// marked (and can keep its body) the same way a replayed one is.
     #[test]
@@ -15293,21 +16070,25 @@ mod tests {
             .iter()
             .any(|m| m.contains("Cancelled queued run")));
 
-        // /approve + /reject succeed.
+        // /approve + /reject succeed (against the mock agent's live session).
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            r#"{"approval_request_id":"r1","tool_id":"t1","tool_name":"shell","kind":"exec","risk_level":"medium","title":"Run one","summary":"s"}"#,
+        ));
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            r#"{"approval_request_id":"r2","tool_id":"t2","tool_name":"shell","kind":"exec","risk_level":"medium","title":"Run two","summary":"s"}"#,
+        ));
         app.handle_cmd(UiCmd::Submit("/approve r1".into()));
         app.handle_cmd(UiCmd::Submit("/reject r2".into()));
-        pump_until_all(
-            &mut app,
-            &mut rx,
-            &["Approved request: r1", "Rejected request: r2"],
-        )
-        .await;
+        pump_until_all(&mut app, &mut rx, &["Allowed: Run one", "Denied: Run two"]).await;
         assert!(system_messages(&app)
             .iter()
-            .any(|m| m.contains("Approved request: r1")));
+            .any(|m| m.contains("Allowed: Run one")));
         assert!(system_messages(&app)
             .iter()
-            .any(|m| m.contains("Rejected request: r2")));
+            .any(|m| m.contains("Denied: Run two")));
+        assert!(app.pending_approvals.is_empty());
 
         app.stop();
     }
@@ -16024,18 +16805,26 @@ mod tests {
         app.apply_autocomplete_selection();
         assert_eq!(app.input.get_value(), "/model x");
 
-        // Approval with an object requested_action (pretty-printed) and a
-        // missing one (no preview block).
+        // Two approval requests in a row: the card is shown once (it follows
+        // the queue) rather than stacked, and neither hijacks the editor.
         app.handle_agent_event(&make_event(
             "approval_request",
             r#"{"approval_request_id":"a2","requested_action":{"cmd":"ls"}}"#,
         ));
-        assert!(last_system(&app).contains("Approval Required"));
+        assert!(top_overlay_is::<ApprovalOverlay>(&app));
         app.handle_agent_event(&make_event(
             "approval_request",
             r#"{"approval_request_id":"a3"}"#,
         ));
-        assert!(last_system(&app).contains("Approval Required"));
+        assert_eq!(app.pending_approvals.len(), 2);
+        assert_eq!(
+            app.overlay_stack
+                .iter()
+                .filter(|entry| entry.component.as_any().is::<ApprovalOverlay>())
+                .count(),
+            1,
+            "one card, not one per request"
+        );
 
         // /model selector refused while streaming.
         app.state.streaming = true;
@@ -18648,18 +19437,21 @@ mod tests {
         assert!(short.starts_with('…'), "{short}");
     }
 
-    /// An approval request must notify, because the run parks until answered.
+    /// An approval request must notify, because the run parks until answered,
+    /// and it must put the card in front without touching the editor.
     #[tokio::test]
-    async fn approval_request_notifies_the_user() {
+    async fn approval_request_notifies_and_opens_the_card() {
         let (mut app, _rx) = make_app(100, 30);
-        app.show_approval_overlay(ApprovalEvent {
+        app.input.set_value("draft in progress", None);
+        app.handle_approval_request(ApprovalEvent {
             request_id: "req-1".into(),
             tool_id: "t1".into(),
             tool_name: "shell".into(),
-            kind: "shell".into(),
+            kind: "shell_command".into(),
             risk_level: "high".into(),
             title: "Run rm -rf".into(),
             summary: "destructive command".into(),
+            action: Some(serde_json::json!({"command": "rm -rf /"})),
             requested_action: Some(Value::String("rm -rf /".into())),
         });
         let writes = terminal_writes(&app);
@@ -18668,11 +19460,20 @@ mod tests {
             "approval must emit an OSC 9 notification: {writes:?}"
         );
         assert!(
-            writes.contains("req-1"),
+            writes.contains("Run rm -rf"),
             "the notification names the request"
         );
-        assert!(app.pending_approval.is_some());
-        assert!(app.input.get_value().starts_with("/approve req-1"));
+        assert_eq!(app.pending_approvals.len(), 1);
+        // The editor is never hijacked: the draft survives the request.
+        assert_eq!(app.input.get_value(), "draft in progress");
+        // The card is the visible surface, with the command and both options.
+        assert!(top_overlay_is::<ApprovalOverlay>(&app));
+        let text = top_overlay_text(&mut app, 80);
+        assert!(text.contains("Tool use"), "{text}");
+        assert!(text.contains("$ rm -rf /"), "{text}");
+        assert!(text.contains("Do you want to proceed?"), "{text}");
+        assert!(text.contains("1. Yes"), "{text}");
+        assert!(text.contains("2. No"), "{text}");
     }
 
     /// Notifications respect the settings gate: disabling them silences the
@@ -18686,20 +19487,256 @@ mod tests {
             osc9: true,
             title: true,
         });
-        app.show_approval_overlay(ApprovalEvent {
+        app.handle_approval_request(ApprovalEvent {
             request_id: "req-2".into(),
             tool_id: "t1".into(),
             tool_name: "shell".into(),
-            kind: "shell".into(),
+            kind: "shell_command".into(),
             risk_level: "high".into(),
             title: "Run rm -rf".into(),
             summary: "destructive command".into(),
+            action: None,
             requested_action: None,
         });
         assert!(
             !terminal_writes(&app).contains("\x1b]9;"),
             "a disabled config must stay silent"
         );
+    }
+
+    /// A helper that queues one approval request through the real event path.
+    fn queue_approval(app: &mut App<FakeTerminal>, id: &str, title: &str) {
+        app.handle_agent_event(&make_event(
+            "approval_request",
+            &format!(
+                r#"{{"approval_request_id":"{id}","tool_id":"t1","tool_name":"shell","kind":"shell_command","risk_level":"medium","title":"{title}","summary":"s","action":{{"command":"echo {id}"}}}}"#
+            ),
+        ));
+    }
+
+    /// The card's keys move the selection and answer it; a decision in flight
+    /// swallows repeats, and the card advances through the queue.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_approval_card_selects_and_advances_the_queue() {
+        let (mut app, mut rx) = make_app(100, 30);
+        queue_approval(&mut app, "a1", "First command");
+        queue_approval(&mut app, "a2", "Second command");
+
+        // One card, showing the front of the queue and its size.
+        assert!(top_overlay_is::<ApprovalOverlay>(&app));
+        let text = top_overlay_text(&mut app, 80);
+        assert!(text.contains("First command"), "{text}");
+        assert!(text.contains("2 pending"), "{text}");
+
+        // Enter on the default selection allows the front.
+        press_on_overlay(&mut app, &mut rx, "enter");
+        assert_eq!(
+            app.pending_decisions
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a1"]
+        );
+        // A repeat press while the RPC is in flight fires nothing.
+        press_on_overlay(&mut app, &mut rx, "enter");
+        assert_eq!(
+            app.pending_decisions
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a1"]
+        );
+
+        // The answer removes it; the card moves on to the next request.
+        app.handle_cmd(UiCmd::ApprovalDone {
+            result: Ok(()),
+            kind: "approved".into(),
+            request_id: "a1".into(),
+        });
+        assert_eq!(app.pending_approvals.len(), 1);
+        assert_eq!(app.pending_approvals[0].request_id, "a2");
+        assert!(top_overlay_is::<ApprovalOverlay>(&app));
+        assert!(last_system(&app).contains("Allowed: First command"));
+        let text = top_overlay_text(&mut app, 80);
+        assert!(text.contains("Second command"), "{text}");
+        assert!(!text.contains("pending"), "one request left: {text}");
+
+        // Down moves the highlight to No; enter denies it.
+        press_on_overlay(&mut app, &mut rx, "down");
+        press_on_overlay(&mut app, &mut rx, "enter");
+        app.handle_cmd(UiCmd::ApprovalDone {
+            result: Ok(()),
+            kind: "rejected".into(),
+            request_id: "a2".into(),
+        });
+        assert!(app.pending_approvals.is_empty());
+        assert!(!top_overlay_is::<ApprovalOverlay>(&app), "the card is gone");
+        assert!(last_system(&app).contains("Denied: Second command"));
+        // With nothing pending the keys belong to the editor again.
+        app.handle_key("1");
+        assert_eq!(app.input.get_value(), "1");
+        let _ = rx.try_recv();
+    }
+
+    /// Escape on the card denies the request: the run is parked, so closing
+    /// the panel without an answer would hang it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn escape_on_the_card_denies_the_request() {
+        let (mut app, mut rx) = make_app(100, 30);
+        queue_approval(&mut app, "a1", "First command");
+        // Escape goes through the app's overlay routing (the card claims it
+        // via `wants_escape`), like a real keypress.
+        app.handle_key(Key::ESCAPE);
+        while let Ok(cmd) = rx.try_recv() {
+            app.handle_cmd(cmd);
+        }
+        assert_eq!(
+            app.pending_decisions
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a1"]
+        );
+        // The card stays while the decision is in flight — it is the record
+        // of what the run is parked on.
+        assert!(top_overlay_is::<ApprovalOverlay>(&app));
+        // The editor keeps its content: the card owns its keys, not the box.
+        assert!(app.input.get_value().is_empty());
+    }
+
+    /// The number and letter keys answer directly, without a cursor trip.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn number_and_letter_keys_answer_the_card() {
+        let (mut app, mut rx) = make_app(100, 30);
+        queue_approval(&mut app, "a1", "First command");
+        press_on_overlay(&mut app, &mut rx, "y");
+        assert_eq!(
+            app.pending_decisions
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a1"]
+        );
+        let _ = rx.try_recv();
+    }
+
+    /// A decision made by another client arrives as the agent's
+    /// `approval_decision` broadcast: the request disappears with a notice,
+    /// and our own in-flight decision does not double-announce.
+    #[tokio::test]
+    async fn an_approval_decided_elsewhere_removes_the_request() {
+        let (mut app, _rx) = make_app(100, 30);
+        queue_approval(&mut app, "a1", "First command");
+        queue_approval(&mut app, "a2", "Second command");
+
+        // Another client allowed a1.
+        app.handle_agent_event(&make_event(
+            "approval_decision",
+            r#"{"approval_request_id":"a1","status":"approved"}"#,
+        ));
+        assert_eq!(app.pending_approvals.len(), 1);
+        assert_eq!(app.pending_approvals[0].request_id, "a2");
+        assert!(last_system(&app).contains("Allowed elsewhere: First command"));
+        // The card moved on to the remaining request.
+        assert!(top_overlay_text(&mut app, 80).contains("Second command"));
+
+        // Our own decision (in flight) resolves via the broadcast without a
+        // second transcript line from this branch. The in-flight record stays
+        // until the RPC's own answer lands: it carries the title the result
+        // line needs after the queue entry is gone.
+        app.send_approval_decision("a2", "Second command", false);
+        app.handle_agent_event(&make_event(
+            "approval_decision",
+            r#"{"approval_request_id":"a2","status":"rejected"}"#,
+        ));
+        assert!(app.pending_approvals.is_empty());
+        assert_eq!(app.pending_decisions.len(), 1);
+        assert!(!top_overlay_is::<ApprovalOverlay>(&app));
+        app.handle_cmd(UiCmd::ApprovalDone {
+            result: Ok(()),
+            kind: "rejected".into(),
+            request_id: "a2".into(),
+        });
+        assert!(app.pending_decisions.is_empty());
+        // The broadcast spoke for it, so the RPC's answer does not repeat the
+        // outcome — and never falls back to printing the raw id.
+        assert!(!system_messages(&app)
+            .iter()
+            .any(|m| m.contains("approval_") || m.contains("Denied: a2")));
+
+        // A broadcast for an id we never held is ignored (another session's).
+        app.handle_agent_event(&make_event(
+            "approval_decision",
+            r#"{"approval_request_id":"zz","status":"approved"}"#,
+        ));
+        assert!(last_system(&app).contains("Denied") || last_system(&app).contains("elsewhere"));
+    }
+
+    /// `agent_end` clears the queue and dismisses the card: a finished run
+    /// parks nothing.
+    #[tokio::test]
+    async fn agent_end_clears_pending_approvals() {
+        let (mut app, _rx) = make_app(100, 30);
+        queue_approval(&mut app, "a1", "First command");
+        assert_eq!(app.pending_approvals.len(), 1);
+        assert!(top_overlay_is::<ApprovalOverlay>(&app));
+        app.handle_agent_event(&make_event("agent_end", r#"{"state":"completed"}"#));
+        assert!(app.pending_approvals.is_empty());
+        assert!(!top_overlay_is::<ApprovalOverlay>(&app));
+    }
+
+    /// A reconnect rebuilds the queue from `get_state`'s `pendingApprovals`:
+    /// what the agent still holds comes back, what resolved while we were
+    /// away is dropped, and duplicates are not re-queued.
+    #[tokio::test]
+    async fn a_refresh_rebuilds_the_approval_queue_from_the_agent_state() {
+        let (mut app, _rx) = make_app(100, 30);
+        queue_approval(&mut app, "a1", "First command");
+        queue_approval(&mut app, "a2", "Second command");
+
+        let mut state = sample_state();
+        state.pending_approvals = vec![
+            crate::rpc::types::PendingApprovalState {
+                approval_request_id: "a2".into(),
+                tool_id: "t2".into(),
+                tool_name: "shell".into(),
+                kind: "shell_command".into(),
+                risk_level: "medium".into(),
+                title: "Second command".into(),
+                summary: "s".into(),
+                action: None,
+                requested_action: None,
+            },
+            // A new one the agent holds that we have never seen (queued while
+            // the connection was down).
+            crate::rpc::types::PendingApprovalState {
+                approval_request_id: "a3".into(),
+                tool_id: "t3".into(),
+                tool_name: "shell".into(),
+                kind: "shell_command".into(),
+                risk_level: "medium".into(),
+                title: "Third command".into(),
+                summary: "s".into(),
+                action: None,
+                requested_action: None,
+            },
+        ];
+        app.handle_cmd(UiCmd::Refreshed(Ok(state)));
+        let ids: Vec<&str> = app
+            .pending_approvals
+            .iter()
+            .map(|pending| pending.request_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["a2", "a3"], "a1 resolved while away; no dupes");
+        assert!(top_overlay_is::<ApprovalOverlay>(&app));
+        assert!(top_overlay_text(&mut app, 80).contains("2 pending"));
+
+        // An empty snapshot empties the queue (nothing parked any more).
+        let mut empty = sample_state();
+        empty.pending_approvals = vec![];
+        app.handle_cmd(UiCmd::Refreshed(Ok(empty)));
+        assert!(app.pending_approvals.is_empty());
+        assert!(!top_overlay_is::<ApprovalOverlay>(&app));
     }
 
     #[tokio::test]
@@ -20953,101 +21990,61 @@ mod tests {
         app.stop();
     }
 
-    /// `/sandbox` and `/permission` open one card — the agent owns both halves
-    /// of the policy, so there is one screen — but not in the same state: the
-    /// tier list has the highlight under `/sandbox`, the tool-permission block
-    /// under `/permission`. Two commands opening byte-identical panels is what
-    /// this pins down (the card itself is unchanged, and nothing is hidden
-    /// either way).
+    /// `/permission` no longer opens the shared card — the card is mode-only,
+    /// so the bare command is a usage error pointing at the level vocabulary.
     #[tokio::test(flavor = "multi_thread")]
-    async fn permission_opens_the_permission_half_of_the_shared_card() {
-        let (mut sandbox_app, _rx) = make_app(100, 30);
-        sandbox_app.handle_submit("/sandbox");
-        let sandbox = top_overlay_text(&mut sandbox_app, 80);
-
-        let mock = AppMockAgent::default();
-        let requests = mock.requests.clone();
-        let (addr, _seen) = spawn_app_mock_with(mock).await;
-        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
-        app.start(mpsc::unbounded_channel().0).await.unwrap();
+    async fn permission_without_an_argument_is_a_usage_error() {
+        let (mut app, _rx) = make_app(100, 30);
         app.handle_submit("/permission");
-        let permission = top_overlay_text(&mut app, 80);
-
-        // One card, both blocks, two entry states.
-        for text in [&sandbox, &permission] {
-            assert!(text.contains("Sandbox & permissions"), "{text}");
-            assert!(text.contains("Approval mode"), "{text}");
-            assert!(text.contains("Tool permissions"), "{text}");
-        }
-        assert_ne!(
-            sandbox, permission,
-            "the two commands must not open the same panel"
-        );
-        let marked = |text: &str| {
-            text.lines()
-                .find(|line| line.trim_start().starts_with('›'))
-                .unwrap_or_default()
-                .to_string()
-        };
-        assert!(marked(&sandbox).contains("Sandboxed"), "{sandbox}");
-        assert!(marked(&permission).contains("All"), "{permission}");
-
-        // The block `/permission` lands on is live: ↓ to Workspace, enter
-        // applies it through the agent.
-        press_on_overlay(&mut app, &mut rx, "down");
-        press_on_overlay(&mut app, &mut rx, "enter");
-        pump_until_msg(&mut app, &mut rx, "Tool permission level: Workspace").await;
-        assert_eq!(app.state.permission_level, PermissionKind::Workspace);
-
-        // …and the tier half is still reachable: `↑` walks back through the
-        // block and then out of it into the tier list, whose rows apply a tier
-        // (so `/permission` reaches everything `/sandbox` does).
-        press_on_overlay(&mut app, &mut rx, "up"); // Workspace → All
-        press_on_overlay(&mut app, &mut rx, "up"); // …and out of the block
-        let back = top_overlay_text(&mut app, 80);
-        assert!(marked(&back).contains("Unrestricted"), "{back}");
-        press_on_overlay(&mut app, &mut rx, "enter");
-        // Wait for the command to arrive, not for the command *channel* to go
-        // quiet: the RPC runs in a spawned task, so `pump` could return during
-        // the connect and the count below would read zero on a busy host (the
-        // assertion is the same, it just stops racing the transport).
-        pump_until_agent_commands(&mut app, &mut rx, &requests, "set_sandbox_policy", 1).await;
-        assert_eq!(
-            agent_command_count(&requests, "set_sandbox_policy"),
-            1,
-            "the tier row still writes the policy"
-        );
-        app.stop();
+        assert!(app.overlay_stack.is_empty(), "no panel opens");
+        assert!(last_system(&app).contains("Usage: /permission [all|workspace|none]"));
     }
 
-    /// `/sandbox` opens the tier + permission panel with the platform's initial
-    /// status, says out loud that the tier is the platform default (the agent
-    /// has no policy read-back), applies a tier through the agent, and turns a
-    /// silent downgrade into the panel's fallback banner.
+    /// `/sandbox` opens the mode panel with the platform's initial
+    /// status, says out loud that the mode is the platform default (the agent
+    /// has no policy read-back), applies a mode through the agent — closing
+    /// the panel on the pick, like every other menu — and turns a silent
+    /// downgrade into a transcript notice plus the next open's banner.
     #[tokio::test]
     async fn sandbox_panel_warns_about_the_unknown_tier_and_shows_a_downgrade() {
         let (mut app, mut rx) = make_app(100, 30);
         app.handle_submit("/sandbox");
         assert!(top_overlay_is::<SandboxOverlay>(&app));
         let text = top_overlay_text(&mut app, 80);
-        assert!(text.contains("Sandbox & permissions"), "{text}");
         assert!(text.contains("Approval mode"), "{text}");
-        assert!(text.contains("Tool permissions"), "{text}");
+        assert!(!text.contains("Tool permissions"), "{text}");
         // macOS is sandboxed by construction, and no policy has been read.
         assert!(text.contains("current: Sandboxed"), "{text}");
         assert!(
-            text.contains("Tier shown is this platform's default"),
+            text.contains("Mode shown is this platform's default"),
             "the panel must not present the platform default as the session policy: {text}"
         );
 
-        // Applying a tier goes through `set_sandbox_policy`…
+        // Applying a mode goes through `set_sandbox_policy`…
         press_on_overlay(&mut app, &mut rx, "enter");
-        // …and the agent's answer (a downgrade) is what the panel then shows.
+        // …and the pick closes the panel (select ⇒ apply ⇒ dismiss).
+        assert!(app.overlay_stack.is_empty(), "a mode pick closes the card");
+        // …and the agent's answer (a downgrade) lands in the cache and the
+        // transcript — never reported as applied.
         app.handle_cmd(UiCmd::SandboxPolicySet {
             result: Ok(json_parse(
                 r#"{"tier":"manual","requestedTier":"sandbox","sandboxAvailable":false,"sandboxCode":"binary_missing","sandboxBackend":"none"}"#,
             )),
         });
+        assert_eq!(
+            app.sandbox.as_ref().and_then(|status| status.mode),
+            Some(ApprovalMode::Manual)
+        );
+        assert!(
+            system_messages(&app)
+                .iter()
+                .any(|m| m.contains("fell back to Manual")),
+            "a downgraded request must never be reported as applied: {:?}",
+            system_messages(&app)
+        );
+        // The cached status is what a later open reuses — with the fallback
+        // banner instead of the caveat.
+        app.handle_submit("/sandbox");
         let text = top_overlay_text(&mut app, 80);
         assert!(text.contains("current: Manual"), "{text}");
         assert!(
@@ -21055,13 +22052,8 @@ mod tests {
             "a downgraded request must never be reported as applied: {text}"
         );
         assert!(
-            !text.contains("Tier shown is this platform's default"),
+            !text.contains("Mode shown is this platform's default"),
             "the answer removes the caveat: {text}"
-        );
-        // The cached status is what a later open reuses.
-        assert_eq!(
-            app.sandbox.as_ref().map(|status| status.tier),
-            Some(SandboxTier::Manual)
         );
 
         // The panel's refresh key reaches the app as a probe request (the dead
@@ -21096,21 +22088,21 @@ mod tests {
         app.handle_cmd(UiCmd::SandboxPolicySet {
             result: Err("session gone".into()),
         });
-        assert!(last_system(&app).contains("Failed to set the sandbox tier: session gone"));
+        assert!(last_system(&app).contains("Failed to set the approval mode: session gone"));
         assert_eq!(
-            app.sandbox.as_ref().map(|status| status.tier),
-            Some(opening.tier),
-            "a failed request must not move the cached tier"
+            app.sandbox.as_ref().and_then(|status| status.mode),
+            opening.mode,
+            "a failed request must not move the cached mode"
         );
         assert!(
             app.sandbox
                 .as_ref()
-                .is_some_and(|status| status.requested_tier.is_none()),
+                .is_some_and(|status| status.requested_mode.is_none()),
             "…and must not be recorded as applied"
         );
         let text = top_overlay_text(&mut app, 80);
         assert!(
-            text.contains("Tier shown is this platform's default"),
+            text.contains("Mode shown is this platform's default"),
             "{text}"
         );
     }
@@ -21178,53 +22170,441 @@ mod tests {
         app.stop();
     }
 
-    /// The sandbox tier also arrives on the event stream — the only read-back
-    /// the agent offers — so an open panel follows a change made elsewhere.
+    /// The approval mode also arrives on the event stream — one of two
+    /// read-backs the agent offers — so an open panel follows a change made
+    /// elsewhere.
     #[tokio::test]
-    async fn sandbox_policy_event_updates_the_cached_tier() {
+    async fn sandbox_policy_event_updates_the_cached_mode() {
         let (mut app, mut rx) = make_app(100, 30);
         app.handle_submit("/sandbox");
         app.handle_agent_event(&make_event("sandbox_policy_changed", r#"{"tier":"off"}"#));
         let text = top_overlay_text(&mut app, 80);
-        assert!(text.contains("current: Unrestricted"), "{text}");
+        assert!(text.contains("current: Full access"), "{text}");
         assert!(
-            !text.contains("Tier shown is this platform's default"),
-            "an event-confirmed tier is not a guess: {text}"
+            !text.contains("Mode shown is this platform's default"),
+            "an event-confirmed mode is not a guess: {text}"
         );
-        // An event without a usable tier keeps the last known status.
+        // The mode spelling carries auto distinctly from the sandbox tier.
+        app.handle_agent_event(&make_event(
+            "sandbox_policy_changed",
+            r#"{"tier":"sandbox","mode":"auto","reviewer":"model"}"#,
+        ));
+        assert_eq!(
+            app.sandbox.as_ref().and_then(|status| status.mode),
+            Some(ApprovalMode::Auto)
+        );
+        // An event without a usable mode keeps the last known status.
         app.handle_agent_event(&make_event("sandbox_policy_changed", r#"{"tier":"junk"}"#));
         assert_eq!(
-            app.sandbox.as_ref().map(|status| status.tier),
-            Some(SandboxTier::Off)
+            app.sandbox.as_ref().and_then(|status| status.mode),
+            Some(ApprovalMode::Auto)
         );
         pump(&mut app, &mut rx).await;
     }
 
-    /// The caveat row is a pure function of the status: present while the tier
-    /// is the platform's guess, gone once something authoritative set it.
+    /// A protected mode needs the approval gate wired up: the agent's legacy
+    /// `all` permission level returns from `before_tool_call` *before* any
+    /// approval rule runs, so picking Manual there would prompt for nothing.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_protected_mode_raises_the_legacy_permission_level() {
+        let mock = AppMockAgent::default();
+        let requests = mock.requests.clone();
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        assert_eq!(app.state.permission_level, PermissionKind::All);
+
+        app.handle_submit("/mode manual");
+        pump_until_agent_commands(&mut app, &mut rx, &requests, "set_permission_level", 1).await;
+        pump_until_agent_commands(&mut app, &mut rx, &requests, "set_sandbox_policy", 1).await;
+        let sent = requests.lock().unwrap().clone();
+        assert!(
+            sent.iter()
+                .any(|cmd| cmd.r#type == "set_permission_level" && cmd.level == "workspace"),
+            "the gate has to be armed for the mode to mean anything"
+        );
+        assert_eq!(
+            app.tui_settings.default_permission_level.as_deref(),
+            Some("workspace"),
+            "a restart must not silently drop the gate"
+        );
+        // The mirror follows immediately (this path writes no transcript line
+        // of its own; the next refresh agrees with it).
+        assert_eq!(app.state.permission_level, PermissionKind::Workspace);
+
+        // `none` denies more rather than less: a later mode pick leaves it be.
+        let (mut deny, mut deny_rx) = make_app(100, 30);
+        deny.state.permission_level = PermissionKind::None;
+        deny.apply_approval_mode(ApprovalMode::Manual, false);
+        assert_eq!(deny.state.permission_level, PermissionKind::None);
+        pump(&mut deny, &mut deny_rx).await;
+        app.stop();
+    }
+
+    /// `all` is the legacy "no gating" switch: it must not coexist with a mode
+    /// whose whole point is that the gate asks. The mode follows it to Full
+    /// access, so the footer cannot advertise a policy nothing enforces.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_legacy_all_level_switches_the_mode_to_full_access() {
+        let mock = AppMockAgent {
+            overrides: std::collections::HashMap::from([(
+                "set_sandbox_policy".to_string(),
+                r#"{"tier":"manual","effectiveMode":"manual","configuredMode":"manual","reviewer":"user","sandboxAvailable":true,"sandboxBackend":"macos_seatbelt"}"#
+                    .to_string(),
+            )]),
+            ..Default::default()
+        };
+        let requests = mock.requests.clone();
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+        app.handle_submit("/mode manual");
+        pump_until_agent_commands(&mut app, &mut rx, &requests, "set_sandbox_policy", 1).await;
+        pump_until_msg(&mut app, &mut rx, "Approval mode: Manual").await;
+
+        app.handle_submit("/permission all");
+        pump_until_agent_commands(&mut app, &mut rx, &requests, "set_sandbox_policy", 2).await;
+        let policies: Vec<future_rpc::proto::SandboxPolicy> = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|cmd| cmd.r#type == "set_sandbox_policy")
+            .filter_map(|cmd| cmd.sandbox_policy.clone())
+            .collect();
+        assert_eq!(policies[1].tier, "off");
+        assert!(
+            system_messages(&app)
+                .iter()
+                .any(|m| m.contains("switched the approval mode to Full access")),
+            "{:?}",
+            system_messages(&app)
+        );
+        assert_eq!(
+            app.tui_settings.default_approval_mode.as_deref(),
+            Some("off")
+        );
+        app.stop();
+    }
+
+    /// `/mode <mode>` applies and persists the choice; a bad value is a usage
+    /// error, a mode with known-missing prerequisites is refused with a reason,
+    /// and no argument opens the shared card.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mode_command_applies_persists_and_opens_the_card() {
+        let mock = AppMockAgent::default();
+        let requests = mock.requests.clone();
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+
+        // No argument: the shared card, mode half focused.
+        app.handle_submit("/mode");
+        assert!(top_overlay_is::<SandboxOverlay>(&app));
+        let text = top_overlay_text(&mut app, 80);
+        assert!(text.contains("Approval mode"), "{text}");
+        let marked_row = text
+            .lines()
+            .find(|line| line.trim_start().starts_with('›'))
+            .unwrap_or_default()
+            .to_string();
+        assert!(marked_row.contains("Sandboxed"), "{text}");
+        app.handle_key("escape");
+
+        // A bad value is a usage error.
+        app.handle_submit("/mode sometimes");
+        assert!(last_system(&app).contains("Usage: /mode [manual|sandbox|auto|off]"));
+
+        // `manual` needs nothing: applied and persisted.
+        app.handle_submit("/mode manual");
+        pump_until_agent_commands(&mut app, &mut rx, &requests, "set_sandbox_policy", 1).await;
+        assert_eq!(
+            app.tui_settings.default_approval_mode.as_deref(),
+            Some("manual")
+        );
+        let saved = std::fs::read_to_string(&app.tui_settings_path).unwrap_or_default();
+        assert!(saved.contains("defaultApprovalMode"), "{saved}");
+        assert!(saved.contains("\"manual\""), "{saved}");
+
+        // The wire mapping: auto → tier sandbox + reviewer model.
+        app.handle_submit("/mode auto");
+        pump_until_agent_commands(&mut app, &mut rx, &requests, "set_sandbox_policy", 2).await;
+        let policies: Vec<future_rpc::proto::SandboxPolicy> = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|cmd| cmd.r#type == "set_sandbox_policy")
+            .filter_map(|cmd| cmd.sandbox_policy.clone())
+            .collect();
+        assert_eq!(policies.len(), 2);
+        assert_eq!(policies[0].tier, "manual");
+        assert_eq!(policies[0].reviewer, "user");
+        assert_eq!(policies[1].tier, "sandbox");
+        assert_eq!(policies[1].reviewer, "model");
+
+        // The panel calls `off` "Full access": the label spelling is a
+        // synonym on the command line, and the persisted value stays the
+        // canonical wire name (`off`) rather than the badge.
+        app.handle_submit("/mode full");
+        pump_until_agent_commands(&mut app, &mut rx, &requests, "set_sandbox_policy", 3).await;
+        assert_eq!(
+            app.tui_settings.default_approval_mode.as_deref(),
+            Some("off")
+        );
+        let policies: Vec<future_rpc::proto::SandboxPolicy> = requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|cmd| cmd.r#type == "set_sandbox_policy")
+            .filter_map(|cmd| cmd.sandbox_policy.clone())
+            .collect();
+        assert_eq!(policies[2].tier, "off");
+        assert_eq!(policies[2].reviewer, "user");
+
+        // A mode with known-missing prerequisites is refused without an RPC:
+        // a resolved-but-unavailable probe blocks `sandbox`/`auto`. With no
+        // probe answer at all the request passes through (the agent's own
+        // answer carries the fallback), so the refused path needs a cached
+        // unavailable probe first.
+        let (mut plain, _plain_rx) = make_app(100, 30);
+        plain.handle_cmd(UiCmd::SandboxProbeLoaded {
+            result: Ok(json_parse(
+                r#"{"available":false,"code":"binary_missing","backend":"none"}"#,
+            )),
+        });
+        plain.handle_submit("/mode sandbox");
+        assert!(last_system(&plain)
+            .contains("Cannot apply Sandboxed: the system sandbox is unavailable"));
+        assert!(
+            plain.tui_settings.default_approval_mode.is_none(),
+            "a refused mode is not persisted"
+        );
+        app.stop();
+        plain.stop();
+    }
+
+    /// The account signal only ever comes from the account itself: a
+    /// `manual`/`sandbox`/`off` answer reports `reviewer: "user"` too, and
+    /// reading that as "signed out" would disable `auto` until a restart. An
+    /// *unknown* account also lets `/mode auto` through — the agent's own check
+    /// is the authority, and a refusal here would be a guess.
+    #[tokio::test]
+    async fn an_unresolved_account_neither_clears_nor_blocks_auto() {
+        let (mut app, _rx) = make_app(100, 30);
+        let manual_answer = r#"{"tier":"manual","effectiveMode":"manual","configuredMode":"manual","reviewer":"user","sandboxAvailable":true,"sandboxBackend":"macos_seatbelt"}"#;
+        app.handle_cmd(UiCmd::SandboxPolicySet {
+            result: Ok(json_parse(manual_answer)),
+        });
+        assert_eq!(
+            app.sandbox.as_ref().expect("cached").account,
+            AccountState::Checking,
+            "a non-auto answer says nothing about the account"
+        );
+
+        // A known signed-in account survives later non-auto answers.
+        app.handle_cmd(UiCmd::SandboxAccountLoaded {
+            signed_in: Some(true),
+        });
+        app.handle_cmd(UiCmd::SandboxPolicySet {
+            result: Ok(json_parse(manual_answer)),
+        });
+        assert_eq!(
+            app.sandbox.as_ref().expect("cached").account,
+            AccountState::SignedIn
+        );
+
+        // Signed out is the only thing that refuses the request.
+        app.handle_cmd(UiCmd::SandboxAccountLoaded {
+            signed_in: Some(false),
+        });
+        app.handle_submit("/mode auto");
+        assert!(
+            last_system(&app).contains("no FutureOS account is signed in"),
+            "{}",
+            last_system(&app)
+        );
+        assert_eq!(app.tui_settings.default_approval_mode, None);
+
+        // Unknown (the account check failed or is still in flight) does not.
+        let (mut plain, _plain_rx) = make_app(100, 30);
+        plain.handle_cmd(UiCmd::SandboxAccountLoaded { signed_in: None });
+        plain.handle_submit("/mode auto");
+        assert!(
+            !system_messages(&plain)
+                .iter()
+                .any(|m| m.contains("Cannot apply")),
+            "{:?}",
+            system_messages(&plain)
+        );
+        assert_eq!(
+            plain.tui_settings.default_approval_mode.as_deref(),
+            Some("auto")
+        );
+        plain.stop();
+    }
+
+    /// A pick in the shared card persists like `/mode <mode>`: the mode is a
+    /// preference (`/new` must inherit it), and the desktop's approval dropdown
+    /// writes its settings too.
+    #[tokio::test]
+    async fn a_mode_picked_in_the_panel_is_persisted() {
+        let (mut app, mut rx) = make_app(100, 30);
+        app.handle_submit("/sandbox");
+        // macOS starts on Sandboxed; `auto` is disabled while the account is
+        // unresolved, so ↓ lands on Full access.
+        press_on_overlay(&mut app, &mut rx, "down");
+        press_on_overlay(&mut app, &mut rx, "enter");
+        assert!(app.overlay_stack.is_empty(), "a mode pick closes the card");
+        assert_eq!(
+            app.tui_settings.default_approval_mode.as_deref(),
+            Some("off")
+        );
+        let saved = std::fs::read_to_string(&app.tui_settings_path).unwrap_or_default();
+        assert!(saved.contains("defaultApprovalMode"), "{saved}");
+        assert!(saved.contains("\"off\""), "{saved}");
+        pump(&mut app, &mut rx).await;
+    }
+
+    /// The read-back reports the *effective* mode, so a refresh must not
+    /// overwrite the request that explains a downgrade — only a switch to
+    /// another session (whose request history is not ours) resets it.
+    #[tokio::test]
+    async fn a_refresh_keeps_the_downgrade_explanation() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.handle_cmd(UiCmd::SandboxPolicySet {
+            result: Ok(json_parse(
+                r#"{"tier":"sandbox","effectiveMode":"sandbox","configuredMode":"auto","reviewer":"user","sandboxAvailable":true,"sandboxBackend":"macos_seatbelt"}"#,
+            )),
+        });
+        assert!(app.sandbox.as_ref().expect("cached").is_fallback());
+
+        // The same session's snapshot only reports what is in force.
+        let mut same = sample_state();
+        same.sandbox_tier = Some("sandbox".to_string());
+        app.state.session_id = "s1".to_string();
+        app.handle_cmd(UiCmd::Refreshed(Ok(same)));
+        let status = app.sandbox.as_ref().expect("cached");
+        assert_eq!(status.mode, Some(ApprovalMode::Sandbox));
+        assert_eq!(status.requested_mode, Some(ApprovalMode::Auto));
+        assert!(
+            status.fallback_notice().is_some(),
+            "the downgrade must stay explained after a refresh"
+        );
+
+        // A different session's policy did not come from this client's
+        // request, so the carried-over `auto` must not survive it.
+        let mut other = sample_state();
+        other.session_id = "s2".to_string();
+        other.sandbox_tier = Some("sandbox".to_string());
+        app.handle_cmd(UiCmd::Refreshed(Ok(other)));
+        let status = app.sandbox.as_ref().expect("cached");
+        assert_eq!(status.mode, Some(ApprovalMode::Sandbox));
+        assert_eq!(status.requested_mode, Some(ApprovalMode::Sandbox));
+        assert!(!status.is_fallback());
+    }
+
+    /// A request the read-back no longer explains is stale (another client set
+    /// the policy), so a later refresh must not keep claiming a fallback.
+    #[tokio::test]
+    async fn a_refresh_clears_a_request_the_policy_no_longer_explains() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.handle_cmd(UiCmd::SandboxPolicySet {
+            result: Ok(json_parse(
+                r#"{"tier":"sandbox","effectiveMode":"sandbox","configuredMode":"auto","reviewer":"user","sandboxAvailable":true,"sandboxBackend":"macos_seatbelt"}"#,
+            )),
+        });
+        assert!(app.sandbox.as_ref().expect("cached").is_fallback());
+
+        let mut replaced = sample_state();
+        replaced.sandbox_tier = Some("off".to_string());
+        app.state.session_id = "s1".to_string();
+        app.handle_cmd(UiCmd::Refreshed(Ok(replaced)));
+        let status = app.sandbox.as_ref().expect("cached");
+        assert_eq!(status.mode, Some(ApprovalMode::Off));
+        assert_eq!(status.requested_mode, Some(ApprovalMode::Off));
+        assert!(!status.is_fallback());
+        assert_eq!(status.fallback_notice(), None);
+    }
+
+    /// The automatic reviewer's verdict renders as a transcript line — auto
+    /// mode's replacement for the human approval card.
+    #[tokio::test]
+    async fn approval_assessment_events_render_as_transcript_lines() {
+        let (mut app, mut _rx) = make_app(100, 30);
+        app.handle_agent_event(&make_event(
+            "approval_assessment",
+            r#"{"status":"approved","tool_call_id":"t9","reported":{"risk":"low"}}"#,
+        ));
+        assert!(last_system(&app).contains("Automatic review: approved (risk: low)"));
+        assert!(last_system(&app).contains("[t9]"));
+
+        app.handle_agent_event(&make_event(
+            "approval_assessment",
+            r#"{"status":"rejected","tool_call_id":"t10"}"#,
+        ));
+        assert!(last_system(&app).contains("Automatic review: rejected"));
+
+        app.handle_agent_event(&make_event(
+            "approval_assessment",
+            r#"{"status":"review_uncertain","tool_call_id":"t11"}"#,
+        ));
+        assert!(last_system(&app).contains("Automatic review: review_uncertain"));
+        assert!(last_system(&app).contains("not approved"));
+    }
+
+    /// The footer shows the session's approval mode as a badge, and an unset
+    /// policy reads as `open` — not the same thing as an explicit `off`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn footer_badge_tracks_the_approval_mode() {
+        let mock = AppMockAgent::default();
+        let (addr, _seen) = spawn_app_mock_with(mock).await;
+        let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
+        app.start(mpsc::unbounded_channel().0).await.unwrap();
+
+        let badge = |app: &mut App<FakeTerminal>| {
+            app.running = true;
+            let before = app.terminal.writes.borrow().len();
+            app.do_render();
+            let joined = app.terminal.writes.borrow()[before..].concat();
+            strip_ansi_codes(&joined).to_string()
+        };
+
+        // Startup against a stateless mock: no policy → `open`.
+        let footer = badge(&mut app);
+        assert!(footer.contains("[open]"), "{footer}");
+
+        // An applied auto policy flips the badge.
+        app.handle_cmd(UiCmd::SandboxPolicySet {
+            result: Ok(json_parse(
+                r#"{"tier":"sandbox","effectiveMode":"auto","configuredMode":"auto","reviewer":"model","sandboxAvailable":true,"sandboxBackend":"macos_seatbelt"}"#,
+            )),
+        });
+        pump_until_msg(&mut app, &mut rx, "Approval mode: Automatic review").await;
+        let footer = badge(&mut app);
+        assert!(footer.contains("[auto]"), "{footer}");
+        assert!(!footer.contains("[open]"), "{footer}");
+        app.stop();
+    }
+
+    /// The caveat row is a pure function of the status: present while the
+    /// mode is the platform's guess, gone once something authoritative set it.
     #[test]
-    fn sandbox_tier_caveat_tracks_whether_the_tier_is_known() {
+    fn sandbox_mode_caveat_tracks_whether_the_mode_is_known() {
         let platform = SandboxPlatform::current();
         let fresh = SandboxStatus::new(platform);
-        assert!(sandbox_tier_caveat(&fresh).is_some());
+        assert!(sandbox_mode_caveat(&fresh).is_some());
 
         let mut applied = fresh.clone();
-        applied.requested_tier = Some(platform_default_tier(platform));
-        applied.tier = platform_default_tier(platform);
-        assert!(sandbox_tier_caveat(&applied).is_none());
+        applied.mode = Some(ApprovalMode::Manual);
+        assert!(sandbox_mode_caveat(&applied).is_none());
 
-        let other = SandboxTier::ALL
-            .iter()
-            .copied()
-            .find(|tier| *tier != platform_default_tier(platform))
-            .expect("a tier differs from the platform default");
         let mut changed = fresh;
-        changed.tier = other;
-        assert!(sandbox_tier_caveat(&changed).is_none());
+        changed.mode = Some(ApprovalMode::Off);
+        assert!(sandbox_mode_caveat(&changed).is_none());
     }
 
     /// `/permission <level>` applies and persists the level; a bad value is a
-    /// usage error, and no argument opens the panel that owns the picker.
+    /// usage error, and no argument stays one too (the card no longer carries
+    /// the picker).
     #[tokio::test(flavor = "multi_thread")]
     async fn permission_command_sets_persists_and_opens_the_picker() {
         let mock = AppMockAgent::default();
@@ -21251,11 +22631,11 @@ mod tests {
 
         app.handle_submit("/permission  sometimes");
         assert!(last_system(&app).contains("Usage: /permission [all|workspace|none]"));
-        // No argument: the panel with the permission picker opens instead.
+        // No argument: a usage error too — the card is mode-only now, so there
+        // is no panel that owns the picker.
         app.handle_submit("/permission");
-        assert!(top_overlay_is::<SandboxOverlay>(&app));
-        let text = top_overlay_text(&mut app, 80);
-        assert!(text.contains("current: None"), "{text}");
+        assert!(app.overlay_stack.is_empty(), "no panel opens");
+        assert!(last_system(&app).contains("Usage: /permission [all|workspace|none]"));
 
         let sent = requests.lock().unwrap().clone();
         let levels: Vec<String> = sent
@@ -21296,11 +22676,10 @@ mod tests {
             app.tui_settings.default_permission_level.is_none(),
             "a panel pick is not the startup default"
         );
+        // The card is mode-only now: an open sandbox panel is untouched by a
+        // permission answer, and the mode rows it renders are still there.
         let text = top_overlay_text(&mut app, 80);
-        assert!(
-            text.contains("current: None"),
-            "the open panel follows the applied level: {text}"
-        );
+        assert!(text.contains("current: Sandboxed"), "{text}");
 
         // With no panel open the same command still mirrors the level.
         app.hide_overlay();
@@ -22147,15 +23526,10 @@ mod tests {
         sandbox_sink(SandboxAction::None);
         sandbox_sink(SandboxAction::Moved);
         assert!(rx.try_recv().is_err(), "redraw-only actions stay silent");
-        sandbox_sink(SandboxAction::TierSelected(SandboxTier::Off));
+        sandbox_sink(SandboxAction::ModeSelected(ApprovalMode::Off));
         assert!(matches!(
             rx.try_recv(),
-            Ok(UiCmd::SandboxTierRequested(SandboxTier::Off))
-        ));
-        sandbox_sink(SandboxAction::PermissionSelected(PermissionKind::None));
-        assert!(matches!(
-            rx.try_recv(),
-            Ok(UiCmd::PermissionLevelRequested(PermissionKind::None))
+            Ok(UiCmd::SandboxModeRequested(ApprovalMode::Off))
         ));
         sandbox_sink(SandboxAction::RefreshProbe);
         assert!(matches!(rx.try_recv(), Ok(UiCmd::SandboxProbeRequested)));

@@ -95,7 +95,7 @@ namespace restrictions and fallback behavior.
 
 Sign in inside the app to use FutureOS-hosted models, or configure your own
 provider/key. See [[Quick Start|Quick-Start]]. The desktop defaults to
-**Unrestricted**; select Manual/Sandboxed if needed before running tasks.
+**Full access**; select Manual/Sandboxed if needed before running tasks.
 
 ## Data, updates and uninstalling
 

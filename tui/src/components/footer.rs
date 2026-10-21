@@ -15,6 +15,11 @@ pub struct FooterData {
     pub cwd: Option<String>,
     pub model: Option<String>,
     pub thinking: Option<String>,
+    /// The session's approval mode badge (`manual` | `sandbox` | `auto` |
+    /// `off`) — the short always-visible readout of `/sandbox` / `/mode`.
+    /// `None` means no policy was ever set (the agent runs fully open); the
+    /// app passes the dedicated `open` spelling for that case.
+    pub approval_mode: Option<String>,
     pub streaming: bool,
     pub compacting: bool,
     pub spinner_frame: Option<usize>,
@@ -152,6 +157,22 @@ impl Component for Footer {
                 _ => String::new(),
             };
             left_parts.push(color_fg(chrome.text, chrome.base, model) + &thinking);
+        }
+
+        // Approval mode badge — the always-visible mode switch state, in
+        // square brackets so it reads as a switch position rather than
+        // another value: `model [auto]`. An effective mode gets the bright
+        // `text` colour (a security-relevant state the user should notice);
+        // `open` — no policy set, fully open — stays the muted caution it is.
+        if let Some(mode) = &self.data.approval_mode {
+            if !mode.is_empty() {
+                let colour = if mode == "open" {
+                    chrome.muted
+                } else {
+                    chrome.text
+                };
+                left_parts.push(color_fg(colour, chrome.base, &format!("[{mode}]")));
+            }
         }
 
         // Build right side: [token stats] [cost] [context usage]
@@ -307,6 +328,42 @@ mod tests {
     fn renders_with_minimal_data() {
         let line = render_footer(FooterData::default(), 80);
         assert!(visible_width(&line) <= 80);
+    }
+
+    /// The approval-mode badge sits after the model, an effective mode is
+    /// bright while the no-policy `open` stays muted — a security-relevant
+    /// switch state should out-draw the do-nothing default.
+    #[test]
+    fn renders_the_approval_mode_badge() {
+        let line = render_footer(
+            FooterData {
+                model: Some("GPT-4o".to_string()),
+                approval_mode: Some("auto".to_string()),
+                ..Default::default()
+            },
+            80,
+        );
+        assert!(strip_ansi_codes(&line).contains("GPT-4o  [auto]"), "{line}");
+
+        let line = render_footer(
+            FooterData {
+                model: Some("GPT-4o".to_string()),
+                approval_mode: Some("open".to_string()),
+                ..Default::default()
+            },
+            80,
+        );
+        assert!(strip_ansi_codes(&line).contains("[open]"), "{line}");
+
+        // Empty string renders no badge (the caller's "unknown" spelling).
+        let line = render_footer(
+            FooterData {
+                approval_mode: Some(String::new()),
+                ..Default::default()
+            },
+            80,
+        );
+        assert!(!strip_ansi_codes(&line).contains("[]"), "{line}");
     }
 
     #[test]

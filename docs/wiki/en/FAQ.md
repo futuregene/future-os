@@ -35,7 +35,7 @@ Use the **model selector** inside the input box, or manage which models appear i
 
 ### The agent stopped and is asking me something
 
-The selected approval mode/rules require a decision. Choose **Allow once**, **Deny**, or a saved project rule when offered; there is no timeout. The default Unrestricted mode does not ask, and even protected modes do not prompt for every call. See [[Sandbox]] and [[Using FutureOS|Using-FutureOS]].
+The selected approval mode/rules require a decision. Choose **Allow once**, **Deny**, or a saved project rule when offered; there is no timeout. The default Full access mode does not ask, and even protected modes do not prompt for every call. See [[Sandbox]] and [[Using FutureOS|Using-FutureOS]].
 
 ### Where are my conversations and settings stored?
 
