@@ -29,7 +29,7 @@ website and try again.
 · Exiting an embedded owner cancels every client's active, queued and approval
   work, including CLI/TUI conversations; GUI prompts when work exists. Attached
   external Agents survive; Desktop cancels only its own submitted runs.
-· The desktop defaults to Unrestricted; select approvals/write protection in
+· The desktop defaults to Full access; select approvals/write protection in
   Settings. Online features still send requests to their corresponding services.
 · The command-line tool future.exe is included in the same directory.
 

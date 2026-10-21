@@ -28,13 +28,13 @@
     "sandbox": "沙箱保护",
     "sandboxChecking": "沙箱保护（检测中）",
     "sandboxUnavailable": "沙箱保护（不可用）",
-    "off": "完全放开",
+    "off": "完全访问",
     "description": {
       "manual": "文件访问遵循审批规则；只读白名单命令直接放行，其余命令需批准。不启用 OS 沙箱。",
       "sandbox": "命令在 macOS 沙箱中运行，必要时请求批准。",
       "sandboxWindows": "命令启用 Windows 写保护，必要时请求批准。",
       "sandboxLinux": "命令在 Linux 沙箱中运行，必要时请求批准。",
-      "off": "全部放开，不再询问，也不启用沙箱。",
+      "off": "跳过所有审批，也不启用沙箱——命令以本机完整权限执行。",
       "auto": "自动判断是否放行，保留沙箱保护。"
     },
     "fallbackNotice": "沙箱保护不可用（诊断码：{{code}}）。已切换为手动审批：获批或白名单命令在没有 OS 沙箱的情况下运行。",

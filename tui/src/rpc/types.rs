@@ -156,6 +156,11 @@ pub struct RpcSessionState {
     pub cwd: Option<String>,
     #[serde(default)]
     pub permission_level: Option<String>,
+    /// The session's approval mode — the agent's `SandboxPolicy::mode()`
+    /// ("manual" | "sandbox" | "auto" | "off"), absent when the session never
+    /// set a policy (fully open, distinct from an explicit "off").
+    #[serde(default)]
+    pub sandbox_tier: Option<String>,
     #[serde(default, deserialize_with = "de_null_default")]
     pub skills: Vec<String>,
     #[serde(default, deserialize_with = "de_null_default")]
@@ -180,6 +185,39 @@ pub struct RpcSessionState {
     pub recent_terminal_acks: Vec<RecentTerminalAck>,
     #[serde(default)]
     pub requested_run: Option<RunTerminalState>,
+    /// Approvals the agent still holds for this session (`get_state`'s
+    /// `pendingApprovals`, proto field 39). The agent parks the run until a
+    /// decision arrives, so a reconnect without these would strand the run:
+    /// the card would never reappear and nothing but another client could
+    /// free it.
+    #[serde(default, deserialize_with = "de_null_default")]
+    pub pending_approvals: Vec<PendingApprovalState>,
+}
+
+/// `PendingApprovalState` — one entry of `get_state`'s `pendingApprovals`,
+/// the same payload the `approval_request` stream event carries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingApprovalState {
+    #[serde(alias = "approval_request_id")]
+    pub approval_request_id: String,
+    #[serde(default, alias = "tool_id")]
+    pub tool_id: String,
+    #[serde(default, alias = "tool_name")]
+    pub tool_name: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default, alias = "risk_level")]
+    pub risk_level: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub summary: String,
+    /// The agent's curated action view (command, paths, writes, targets).
+    #[serde(default)]
+    pub action: Option<serde_json::Value>,
+    #[serde(default, alias = "requested_action")]
+    pub requested_action: Option<serde_json::Value>,
 }
 
 /// `RecentTerminalAck` — camelCase wire keys on the wire today: the #384

@@ -155,7 +155,7 @@ async function click(element: HTMLElement | null | undefined) {
 
 it("shows the tier glyph for each approval setting", async () => {
   const cases: [ApprovalTier, string, string][] = [
-    ["off", "Unrestricted", "shield-off"],
+    ["off", "Full access", "shield-off"],
     ["manual", "Manual", "shield-question-mark"],
     ["sandbox", "Sandboxed", "shield-keyhole"],
     ["auto", "Automatic review", "shield-check"],
@@ -181,10 +181,10 @@ it("lists every approval tier, marks the current one and reports a change", asyn
   expect(automatic.querySelector(".lucide-shield-keyhole")).toBeNull();
   // Pick by label rather than position: the row order is not part of the
   // contract, but each tier must be reachable and report its own value.
-  const unrestricted = menuItems().find(row => row.textContent?.includes("Unrestricted"))!;
-  expect(unrestricted).not.toBeNull();
-  expect(unrestricted.querySelector("svg")).not.toBeNull();
-  await click(unrestricted);
+  const fullAccess = menuItems().find(row => row.textContent?.includes("Full access"))!;
+  expect(fullAccess).not.toBeNull();
+  expect(fullAccess.querySelector("svg")).not.toBeNull();
+  await click(fullAccess);
   expect(onChangeApprovalTier).toHaveBeenCalledWith("off");
 });
 

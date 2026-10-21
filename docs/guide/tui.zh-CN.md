@@ -28,9 +28,11 @@ future tui        # 终端 2：终端界面
 - 会话持久化、模型配置、工具审批与沙箱策略都由 agent 处理；TUI 只是前端。
   `/sandbox` 与 `/permission` 可以从这里修改 agent 的会话策略（见
   [沙箱与工具权限](#沙箱与工具权限)）；启动时除应用 TUI 自己持久化的
-  `defaultPermissionLevel` 外，不会有其它隐式改动。
-- 新会话默认权限为 `all`。CLI 的 `future run --permission none` 禁止所有工具
-  调用，而非只禁止写入；区别见[沙箱指南](../wiki/zh/Sandbox.md)。
+  `defaultPermissionLevel` / `defaultApprovalMode` 外，不会有其它隐式改动。
+- 新会话默认权限为 `all`。受保护的审批模式（见 [沙箱与工具权限](#沙箱与工具权限)）
+  会把它提升为 `workspace`，因为 `all` 完全跳过审批闸门。CLI 的
+  `future run --permission none` 禁止所有工具调用，而非只禁止写入；区别见
+  [沙箱指南](../wiki/zh/Sandbox.md)。
 
 ## 项目指令
 
@@ -64,8 +66,9 @@ future tui        # 终端 2：终端界面
 | `/skills` | 技能浏览器：搜索、预览、插入、安装 / 卸载 / 升级 |
 | `/skill-recommend [on\|off]` | 发送前推荐合适的技能（默认开启） |
 | `/tools [none\|all]` | 多选内置工具；`none` 表示全部禁用 |
-| `/permission [all\|workspace\|none]` | 设置工具权限级别（并记住它）；不带参数时打开沙箱面板 |
-| `/sandbox` | 沙箱 tier、后端可用性与权限选择器 |
+| `/permission <all\|workspace\|none>` | 设置工具权限级别（并记住它） |
+| `/mode [manual\|sandbox\|auto\|off]` | 查看审批模式，或直接设置（会记住） |
+| `/sandbox` | 审批模式、后端可用性与权限选择器 |
 | `/theme [id]` | 打开主题选择器，或按 id 直接设置主题 |
 | `/sessions` | 浏览并切换会话 |
 | `/new` | 新建会话 |
@@ -96,8 +99,8 @@ future tui        # 终端 2：终端界面
 | `/shell <cmd>` | 经 agent 执行一条命令并显示输出 |
 | `/stop` | 停止当前生成 |
 | `/cancel <run-id>` | 取消排队中的运行 |
-| `/approve <request-id>` | 批准待执行工具 |
-| `/reject <request-id>` | 拒绝待执行工具 |
+| `/approve [id]` | 允许待处理的审批（队首，或按 id） |
+| `/reject [id]` | 拒绝待处理的审批（队首，或按 id） |
 | `/editor` | 用 `$VISUAL` / `$EDITOR` 编辑当前草稿 |
 | `/cancel-input` | 取消正在等待的 `/provider-key` 输入 |
 
@@ -111,8 +114,8 @@ future tui        # 终端 2：终端界面
 `false`/`disable`，不区分大小写）；不带参数时翻转当前状态。两者都是本会话的
 agent 侧设置：自动压缩开启时页脚会显示指示；`/autoretry` 则在 TUI 内保留镜像，
 因为 agent 不回传该值。
-`/permission <level>` 还会把参数持久化为 TUI 设置文件里的 `defaultPermissionLevel`，
-下次 `future tui` 启动即从该值开始（在 `/sandbox` 面板里选的级别只应用、不持久化）。
+`/permission <level>` 会把参数持久化为 TUI 设置文件里的 `defaultPermissionLevel`，
+下次 `future tui` 启动即从该值开始。
 
 `/shell <cmd>` 取的是命令名之后的**原始行内容**，而不是按空白折叠后的参数，因此
 `printf '%s  %s'` 会原样传给 agent。它没有 PTY：这就是 agent 的一次性 `shell` 命令
@@ -123,6 +126,43 @@ agent 侧设置：自动压缩开启时页脚会显示指示；`/autoretry` 则�
 请求。`/delete --yes` 删除会话文件后新建一个会话。`/worktree` 刻意只做只读查询与
 新建：它只会跑 `git worktree list`/`status`/`rev-parse` 与 `git worktree add`，并直接
 拒绝 `remove`/`prune`/`reset`/`clean`/`checkout`/`gc`/`reflog`。
+
+## 审批
+
+当 agent 要执行审批闸门放行不了的操作（白名单外的 shell 命令、工作区外的写入……），
+它会暂停整个 run 并询问。此时屏幕下方会弹出确认卡片：
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ Tool use  ·  MEDIUM risk                                         │
+│                                                                  │
+│   Approve shell command                                          │
+│   $ curl -s https://example.com | head -c 2000                   │
+│   Agent wants to run a shell command.                            │
+│                                                                  │
+│ Do you want to proceed?                                          │
+│ ❯ 1. Yes                                                         │
+│   2. No                                                          │
+│                                                                  │
+│ ↑/↓ select · enter confirm · esc cancel                          │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+| 按键 | 动作 |
+|---|---|
+| `↑↓` / `k` `j` | 在两个选项之间移动 |
+| `enter` / `space` | 确认高亮项 |
+| `1` / `y`、`2` / `n` | 不移动光标直接作答 |
+| `escape` | 拒绝（run 已被暂停，不回答会一直挂住） |
+
+卡片展示 agent 为该请求整理好的详情：shell 请求显示命令，文件写入显示受影响路径，
+以及风险等级。输入框里的草稿不受影响——卡片打开期间按键归卡片，排队中的消息在 run
+恢复后照常送达。
+
+同时有多个待处理请求时页脚会显示计数，卡片按队列顺序逐个询问。`/approve` 与
+`/reject` 仍可脚本化使用：不带参数作用于队首，带 id 作用于指定请求。若另一端
+（桌面端、手机）先作了决定，transcript 里会给出提示并让卡片前进到下一个；重连后队列
+从 agent 状态重建，断线不会困住被暂停的 run。
 
 ## 弹窗菜单与分页浮层
 
@@ -268,28 +308,37 @@ unavailable.`，而不是稍后抛出难以理解的系统错误。只有**成�
 
 ## 沙箱与工具权限
 
-`/sandbox` 打开沙箱面板；不带参数的 `/permission` 打开的是同一个面板——因为 tier
-与权限级别本就属于同一处设置。
+`/sandbox` 打开审批模式卡片：四种模式、各自的说明、后端可用性行，以及（请求被
+降级后的）回退提示。工具权限级别不在这张卡片上——`/permission <level>` 是它唯一的
+入口。
 
 | 按键 | 动作 |
 |---|---|
-| `↑↓` / `k` `j` | 在六行之间移动（三个 tier，然后三个权限级别） |
+| `↑↓` / `k` `j` | 在四个模式行之间移动 |
 | `enter` / `space` | 应用高亮行 |
-| `r` | 重新探测沙箱后端 |
+| `r` | 重新探测沙箱后端，并重查 FutureOS 登录状态 |
 | `esc` | 关闭 |
 
-tier 行就是桌面端的三种审批模式：
+模式行就是桌面端的四种审批模式：
 
-| Tier | 含义 |
+| 模式 | 含义 |
 |---|---|
 | `Manual` | 文件访问遵循审批规则；白名单中的只读命令自动执行，其它命令会询问。不使用操作系统沙箱。 |
 | `Sandboxed` | 命令在操作系统沙箱中执行，必要时请求审批。 |
-| `Unrestricted`（`off`） | 不询问、不沙箱——一切直接执行。 |
+| `Automatic review`（`auto`） | 由第二个模型审查沙箱内可接受的请求；需要可用的沙箱后端与已登录的 FutureOS 账户。 |
+| `Full access`（`off`） | 跳过所有审批，也不启用沙箱——命令以本机完整权限执行。 |
+
+审批模式只有在工具权限级别真正启用审批闸门时才生效。agent 的旧 `all` 级别会在
+读取审批规则之前直接放行，所以在 TUI 里选择 `Manual`、`Sandboxed` 或
+`Automatic review` 时会同时把 `all` 提升为 `Workspace`（并记住，重启后仍生效；
+`none` 不受影响）。反过来，`/permission all` 是明确的“关闭闸门”：它会把审批
+模式切到 `Full access` 并给出提示，避免底部徽章展示一条实际不生效的策略。
 
 操作系统沙箱是 macOS 原生能力（Seatbelt）；在 Linux 上 agent 通过系统 Bubblewrap
 实现，Windows 上则没有沙箱 tier（命令改由 FutureOS 写保护约束）。因此在非 macOS
 主机上打开面板会看到相应说明，并且**后端不可用时 `Sandboxed` 行是禁用的**——
-高亮会跳过它，选中它不会有任何动作。
+高亮会跳过它，选中它不会有任何动作。`Automatic review` 同样受后端限制，并且在
+FutureOS 登录状态尚未返回或明确未登录（`(sign in)`）时也不可选。
 
 可用性是三态，面板不会把三者混为一谈：
 
@@ -300,10 +349,10 @@ tier 行就是桌面端的三种审批模式：
   “探测中”并报告错误，而不会声称沙箱不存在。
 
 agent 会如实回落而不是假装成功：在探测不到后端的主机上请求 `sandbox`，返回的是
-`manual`，面板会打印回落横幅（`Sandbox requested but unavailable — fell back to
-Manual: …`），而不是当作成功。你在本面板应用 tier 之前看到的值是当前平台的默认值，
-面板会明确标注这一点；一旦有策略应答或 `sandbox_policy_changed` 事件带来真实 tier，
-该标注即消失。
+`manual`；没有登录账号时请求 `auto`，返回的是 `sandboxed`。面板会打印回落横幅
+（`Sandbox requested but unavailable — fell back to Manual: …`），而不是当作成功。
+你在本面板应用模式之前看到的值是当前平台的默认值，面板会明确标注这一点；一旦有
+策略应答或 `sandbox_policy_changed` 事件带来真实模式，该标注即消失。
 
 权限行是 agent 对工具调用的三个级别：
 
@@ -313,9 +362,9 @@ Manual: …`），而不是当作成功。你在本面板应用 tier 之前看�
 | `Workspace` | 工具调用先请求审批；授权范围限于当前工作区。 |
 | `None` | 所有工具调用在执行前即被拒绝。 |
 
-`/permission <level>` 直接应用并把它持久化为 `~/.future/tui/settings.json` 里的
-`defaultPermissionLevel`；在面板里选的级别只应用、不持久化。下次启动此 TUI 时，
-`defaultPermissionLevel` 会重新应用到 agent。
+`/permission <level>` 直接应用级别并把它持久化为 `~/.future/tui/settings.json` 里的
+`defaultPermissionLevel`。下次启动此 TUI 时，`defaultPermissionLevel` 会重新应用到
+agent。
 
 ## Provider 与模型
 
@@ -426,8 +475,8 @@ TUI 把客户端侧设置持久化到 `~/.future/tui/settings.json`：
 | `/editor` 提示缺少编辑器 | `$VISUAL` 与 `$EDITOR` 都未设置。带上其中一个启动，例如 `EDITOR=vim future tui`；空的 `$VISUAL` 不会回退到 `$EDITOR`。 |
 | `/copy` 提示 unconfirmed 或失败 | 原生剪贴板程序不可用（远程/SSH 会话？），已改为 OSC 52 请求，需终端自行应用。超过 100 KB 的内容会被拒绝，请改复制较小的范围。 |
 | `/skills` 无法安装：提示找不到 `future` 可执行文件 | 面板只在本 TUI 启动时解析一次 `future`。请用 `future tui` 启动（或把统一二进制放进 `PATH`）而不是独立的 `future-tui`；安装后需要重启才生效。 |
-| `/sandbox` 显示沙箱不可用 | 探测没有找到可用后端（macOS Seatbelt；Linux Bubblewrap）。面板会给出原因与诊断码，按 `r` 可重新探测。在 Linux 上 agent 会回落到 `Manual`，面板会如实说明而不是假装 tier 已生效。 |
-| 工具调用未被询问就被拒绝 | 权限级别是 `None`——见 `/sandbox` → Tool permissions，或执行 `/permission workspace`。 |
+| `/sandbox` 显示沙箱不可用 | 探测没有找到可用后端（macOS Seatbelt；Linux Bubblewrap）。面板会给出原因与诊断码，按 `r` 可重新探测。在 Linux 上 agent 会回落到 `Manual`，面板会如实说明而不是假装模式已生效。 |
+| 工具调用未被询问就被拒绝 | 权限级别是 `None`——执行 `/permission workspace`（或 `all`）。 |
 | 没有铃声 / 没有桌面通知 | 检查 `~/.future/tui/settings.json` 中的 `notify.enabled`（以及 `notify.bell` / `notify.osc9`，还有旧版 `bellOnComplete: false`）。其他客户端启动的 run、print 模式与管道输出都不会通知。 |
 | 主题没有重绘某处 | 对话区、页脚、菜单、provider 列表、会话列表、分页浮层与用量/沙箱面板都会跟随 `/theme`。若仍有部件未被重绘，那是一个 bug——唯一有意不参与的是输入行，因为它本身不输出颜色。 |
 
