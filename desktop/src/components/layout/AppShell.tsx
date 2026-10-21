@@ -1863,10 +1863,19 @@ function ReadyAppShell({
               onPickLocal={() => {
                 setNewChatDeviceChoice(false);
                 handleOpenNewChat();
+                // The dialog had the caret, and this is the screen the question
+                // is about to be typed on: give it back. A composer that mounts
+                // in this same commit focuses itself; the event is for the one
+                // already on screen (⌘N pressed again on the new-chat screen),
+                // which no remount would have reached.
+                emitFutureEvent("focus-composer", undefined);
               }}
               onPickPeer={(peer) => {
                 setNewChatDeviceChoice(false);
                 startRemoteConversation(peer.desktopId);
+                // Same reason as above, on the machine that was picked: the
+                // draft this opens may already be the one on screen.
+                emitFutureEvent("focus-composer", undefined);
               }}
               peers={remotePeers}
               title={tRemotePeer("chooseChatDevice")}

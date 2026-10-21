@@ -13,6 +13,7 @@ import { readNativeClipboardFilePaths, savePastedFile, savePastedImage } from ".
 import { cn } from "../../lib/cn";
 import { EMPTY_EDITOR_ATTR } from "../../lib/editableTarget";
 import { errorMessage } from "../../lib/errors";
+import { onFutureEvent } from "../../lib/futureEvents";
 import { imageExtensionFromMime, splitFileName } from "../agent/attachments";
 import { SkillRecommendCard } from "../agent/SkillRecommendCard";
 import { RemoteApprovalMenu } from "./RemoteApprovalMenu";
@@ -341,6 +342,22 @@ export function RemoteComposer({
     if (!streaming)
       textareaRef.current?.focus();
   }, [desktopId, sessionId, streaming]);
+
+  /**
+   * The caret comes back on request, the way this app's own composer answers the
+   * same event.
+   *
+   * The device dialog holds the caret while it asks which machine the question
+   * belongs to, so closing it has to hand the caret back — and that flow can
+   * land on a draft *already on screen* (`⌘N` pressed again): same desktop, same
+   * session, so nothing remounts and the mount-time autofocus above never runs
+   * again. Without this, Enter in the dialog would leave the field unfocused and
+   * swallow the question typed next.
+   */
+  useEffect(() => onFutureEvent("focus-composer", () => {
+    if (!streaming)
+      textareaRef.current?.focus();
+  }), [streaming]);
 
   // When the link comes back, try to flush any queued prompt/continuation.
   useEffect(() => {

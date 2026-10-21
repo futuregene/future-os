@@ -1152,6 +1152,25 @@ describe("app shell layout", () => {
   });
 
   /**
+   * ⌘N and then Enter, without touching the mouse: the dialog takes the caret
+   * when it opens, so the machine it opens on (this one) is reachable from the
+   * keyboard the shortcut was pressed with.
+   */
+  it("answers the machine dialog with the keyboard, from the shortcut", () => {
+    mocks.remotePeers = { catalogs: [], peers: [connectedHost()] };
+    const view = mount(<AppShell />);
+
+    act(() => runCommand("chat.new"));
+    const row = labeledButton(view.container, "This computer");
+    expect(document.activeElement).toBe(row);
+    act(() => {
+      row.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    });
+    expect(view.container.querySelector("[data-child='new-conversation']")).not.toBeNull();
+    view.unmount();
+  });
+
+  /**
    * A machine that cannot take work says so instead of being offered.
    *
    * Two ways to be there and still unable: offline (the link is down) and held
