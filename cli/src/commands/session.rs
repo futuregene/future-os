@@ -37,6 +37,7 @@ Usage:
   future session approve <id> <request-id> [opts]      Allow a pending approval
   future session reject <id> <request-id> [opts]       Deny a pending approval
   future session delete <id>                           Delete a session
+  future session prune --older-than <age> [--yes]      Delete sessions idle longer than <age>
 
 Session data is stored in ~/.future/agent/agent.db";
 
@@ -110,7 +111,7 @@ fn help(out: &Output) {
 }
 
 /// `truncate(s, n)` — cut to n chars (last char replaced with "…").
-fn truncate(s: &str, n: usize) -> String {
+pub(super) fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
     } else {
@@ -137,7 +138,7 @@ fn ago(iso: &str, now_ms: i64) -> String {
     relative_age(parse_timestamp_ms(iso), now_ms)
 }
 
-fn relative_age(updated_ms: i64, now_ms: i64) -> String {
+pub(super) fn relative_age(updated_ms: i64, now_ms: i64) -> String {
     let ms = now_ms - updated_ms;
     let mins = ms / 60_000;
     if mins < 1 {
@@ -173,7 +174,7 @@ fn parse_timestamp_ms(iso: &str) -> i64 {
 }
 
 /// `Date.now()`.
-fn now_ms() -> i64 {
+pub(super) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -281,7 +282,7 @@ async fn list_sessions(json_flag: bool, parent: Option<&str>, out: &Output) -> R
 }
 
 /// `s.padEnd(n)`.
-fn pad_end(s: &str, n: usize) -> String {
+pub(super) fn pad_end(s: &str, n: usize) -> String {
     let count = s.chars().count();
     if count >= n {
         s.to_string()
@@ -1460,6 +1461,10 @@ pub async fn session(
 
     if subcommand == "reset" {
         return super::session_reset::run(args, out).await;
+    }
+
+    if subcommand == "prune" {
+        return super::session_prune::run(args, out).await;
     }
 
     if subcommand == "wait" {
