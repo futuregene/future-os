@@ -297,8 +297,15 @@ export function ActivityRail({
   const [chatSectionMenuOpen, setChatSectionMenuOpen] = useState(false);
   // Which list the rail shows: the tree (its own shape, and the default) or the
   // recent view. Persisted — it is how this window lists things, and a restart
-  // should bring back the list the reader left.
-  const { setView: setRailView, view: railView } = useRailView();
+  // should bring back the list the reader left. The switch's own left/right
+  // order is persisted alongside it, since a reader who exchanged the two
+  // segments meant to keep them that way.
+  const {
+    moveView: moveRailView,
+    order: railViewOrder,
+    setView: setRailView,
+    view: railView,
+  } = useRailView();
   // Text search for the conversation list. Not persisted: the list is huge
   // and a leftover query after restart would feel like a stale filter.
   const [searchQuery, setSearchQuery] = useState("");
@@ -1255,7 +1262,12 @@ export function ActivityRail({
                   : null}
                 <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-view-band">
                   <div className="min-w-0 flex-1">
-                    <RailViewSwitch onChange={setRailView} view={railView} />
+                    <RailViewSwitch
+                      onChange={setRailView}
+                      onMove={moveRailView}
+                      order={railViewOrder}
+                      view={railView}
+                    />
                   </div>
                 </div>
                 <div className="flex min-h-0 flex-1 flex-col">

@@ -63,6 +63,7 @@
     "viewSwitch": "会话列表视图",
     "viewWorkspace": "工作区",
     "viewRecent": "最近",
+    "reorderView": "拖到另一项上可交换位置",
     "recentActive": "活跃",
     "recentEarlier": "更早",
     "recentShowMore": "再显示 {{count}} 个",

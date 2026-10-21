@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 /**
  * Which list the activity rail shows.
@@ -14,7 +14,20 @@ export type RailView = "workspace" | "recent";
 /** The view the rail opens on: the tree, as it always has. */
 export const DEFAULT_RAIL_VIEW: RailView = "workspace";
 
+/**
+ * The left-to-right order of the switch's two segments.
+ *
+ * A tuple rather than an array so the two ids cannot go missing: the switch
+ * always offers both views, and the reader only ever chooses which one is on
+ * the left.
+ */
+export type RailViewOrder = readonly [RailView, RailView];
+
+/** The order the switch has always drawn, and the one a first launch gets. */
+export const DEFAULT_RAIL_ORDER: RailViewOrder = ["workspace", "recent"];
+
 const STORAGE_KEY = "future.activityRail.view";
+const ORDER_STORAGE_KEY = "future.activityRail.viewOrder";
 
 function readRailView(): RailView {
   try {
@@ -29,14 +42,50 @@ function readRailView(): RailView {
   }
 }
 
+function isRailView(value: unknown): value is RailView {
+  return value === "workspace" || value === "recent";
+}
+
 /**
- * The rail's view, persisted so a restart brings back the list the user left.
+ * A stored order, or the default.
  *
- * Its own key rather than a field on any conversation: it is a property of how
- * this window lists things, and two windows on one machine may disagree.
+ * Only a permutation of both views is accepted: a stored value missing one, or
+ * naming one twice, would drop a segment from the switch and leave the reader
+ * with a list they cannot get back to.
+ */
+function readRailOrder(): RailViewOrder {
+  try {
+    const raw = localStorage.getItem(ORDER_STORAGE_KEY);
+    if (!raw)
+      return DEFAULT_RAIL_ORDER;
+    const parsed: unknown = JSON.parse(raw);
+    if (
+      Array.isArray(parsed)
+      && parsed.length === 2
+      && isRailView(parsed[0])
+      && isRailView(parsed[1])
+      && parsed[0] !== parsed[1]
+    ) {
+      return [parsed[0], parsed[1]];
+    }
+    return DEFAULT_RAIL_ORDER;
+  }
+  catch {
+    // Unavailable storage or a corrupt write — as if this were a first launch.
+    return DEFAULT_RAIL_ORDER;
+  }
+}
+
+/**
+ * The rail's view and its switch order, both persisted so a restart brings back
+ * the list the user left.
+ *
+ * Their own keys rather than a field on any conversation: they are properties of
+ * how this window lists things, and two windows on one machine may disagree.
  */
 export function useRailView() {
   const [view, setView] = useState<RailView>(readRailView);
+  const [order, setOrder] = useState<RailViewOrder>(readRailOrder);
 
   useEffect(() => {
     try {
@@ -45,5 +94,28 @@ export function useRailView() {
     catch { /* Storage is best effort. */ }
   }, [view]);
 
-  return { setView, view };
+  useEffect(() => {
+    try {
+      localStorage.setItem(ORDER_STORAGE_KEY, JSON.stringify(order));
+    }
+    catch { /* Storage is best effort. */ }
+  }, [order]);
+
+  /**
+   * Put `from` where `to` is, moving `to` into the vacated slot.
+   *
+   * A swap rather than an insert: there are exactly two segments, so the only
+   * sensible drag is "these two trade places", and an insert would be the same
+   * move with an index to recompute.
+   */
+  const moveView = useCallback((from: RailView, to: RailView) => {
+    setOrder((current) => {
+      if (from === to || !current.includes(from) || !current.includes(to))
+        return current;
+      const [left, right] = current;
+      return [right, left];
+    });
+  }, []);
+
+  return { moveView, order, setView, view };
 }

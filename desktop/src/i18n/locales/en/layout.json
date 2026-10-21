@@ -63,6 +63,7 @@
     "viewSwitch": "Conversation list view",
     "viewWorkspace": "Workspaces",
     "viewRecent": "Recent",
+    "reorderView": "Drag onto the other view to swap places",
     "recentActive": "Active",
     "recentEarlier": "Earlier",
     "recentShowMore": "Show {{count}} more",
