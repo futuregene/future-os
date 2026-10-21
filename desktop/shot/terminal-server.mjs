@@ -10,6 +10,7 @@
  *   SHOT_TERMINAL_CWD  directory the prompt claims (display only)
  */
 import { createServer } from "node:http";
+import process from "node:process";
 import { WebSocketServer } from "ws";
 
 const PORT = Number(process.argv[2] ?? 7391);
@@ -17,19 +18,19 @@ const CWD = process.env.SHOT_TERMINAL_CWD ?? "/Users/lixin/Research/dopamine-dec
 
 /** A shell transcript: listing, test run and git status of the demo project. */
 const TRANSCRIPT = [
-  "\u001b[1;32m➜\u001b[0m \u001b[1;36mdopamine-decision\u001b[0m git:(\u001b[31mmain\u001b[0m) ",
+  "\u001B[1;32m➜\u001B[0m \u001B[1;36mdopamine-decision\u001B[0m git:(\u001B[31mmain\u001B[0m) ",
   "ls\r\n",
-  "\u001b[1;34mdata\u001b[0m    \u001b[1;34mfigures\u001b[0m \u001b[1;34mnotes\u001b[0m    \u001b[1;34mpapers\u001b[0m  draft-v3.md  README.md\r\n",
-  "\u001b[1;32m➜\u001b[0m \u001b[1;36mdopamine-decision\u001b[0m git:(\u001b[31mmain\u001b[0m) ",
+  "\u001B[1;34mdata\u001B[0m    \u001B[1;34mfigures\u001B[0m \u001B[1;34mnotes\u001B[0m    \u001B[1;34mpapers\u001B[0m  draft-v3.md  README.md\r\n",
+  "\u001B[1;32m➜\u001B[0m \u001B[1;36mdopamine-decision\u001B[0m git:(\u001B[31mmain\u001B[0m) ",
   "python3 -m pytest tests/ -q\r\n",
-  "\u001b[32m....................\u001b[0m                                     \u001b[32m[ 62%]\u001b[0m\r\n",
-  "\u001b[32m............\u001b[0m                                         \u001b[32m[100%]\u001b[0m\r\n",
+  "\u001B[32m....................\u001B[0m                                     \u001B[32m[ 62%]\u001B[0m\r\n",
+  "\u001B[32m............\u001B[0m                                         \u001B[32m[100%]\u001B[0m\r\n",
   "32 passed, 2 warnings in 4.81s\r\n",
-  "\u001b[1;32m➜\u001b[0m \u001b[1;36mdopamine-decision\u001b[0m git:(\u001b[31mmain\u001b[0m) ",
+  "\u001B[1;32m➜\u001B[0m \u001B[1;36mdopamine-decision\u001B[0m git:(\u001B[31mmain\u001B[0m) ",
   "git status --short\r\n",
-  " \u001b[31mM\u001b[0m notes/compare.md\r\n",
-  "\u001b[31m??\u001b[0m figures/forest-plot.png\r\n",
-  "\u001b[1;32m➜\u001b[0m \u001b[1;36mdopamine-decision\u001b[0m git:(\u001b[31mmain\u001b[0m) ",
+  " \u001B[31mM\u001B[0m notes/compare.md\r\n",
+  "\u001B[31m??\u001B[0m figures/forest-plot.png\r\n",
+  "\u001B[1;32m➜\u001B[0m \u001B[1;36mdopamine-decision\u001B[0m git:(\u001B[31mmain\u001B[0m) ",
 ].join("");
 
 const sessions = new Map();
@@ -83,7 +84,7 @@ const server = createServer((request, response) => {
       const id = `term_${nextId++}`;
       const session = info(id, input.threadId ?? "", input.cols ?? 100, input.rows ?? 28);
       sessions.set(id, session);
-      console.log("[terminal-server] created", id, "cwd", session.cwd);
+      process.stdout.write(`[terminal-server] created ${id} cwd ${session.cwd}\n`);
       json(response, 200, session);
     });
     return;
@@ -110,11 +111,11 @@ wss.on("connection", (socket) => {
   socket.send(TRANSCRIPT, { binary: false });
   socket.on("message", (data) => {
     const text = String(data);
-    if (/^[\x20-\x7e\r\n]+$/.test(text))
+    if (/^[\x20-\x7E\r\n]+$/.test(text))
       socket.send(text.replace(/\r/g, "\r\n"), { binary: false });
   });
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`[terminal-server] http://127.0.0.1:${PORT}`);
+  process.stdout.write(`[terminal-server] http://127.0.0.1:${PORT}\n`);
 });

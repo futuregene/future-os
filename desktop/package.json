@@ -1,8 +1,8 @@
 {
   "name": "@futureos/desktop",
-  "private": true,
-  "version": "0.0.0",
   "type": "module",
+  "version": "0.0.0",
+  "private": true,
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build && node scripts/stabilize-dist-mtimes.mjs && node scripts/check-streaming-worker.mjs",

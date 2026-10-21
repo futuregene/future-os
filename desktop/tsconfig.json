@@ -1,9 +1,9 @@
 {
   "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "noEmit": true,
-    "jsx": "react-jsx"
+    "jsx": "react-jsx",
+    "noEmit": true
   },
-  "include": ["src", "shot", "vite.shot.config.ts"],
-  "references": []
+  "references": [],
+  "include": ["src", "shot", "vite.shot.config.ts"]
 }
