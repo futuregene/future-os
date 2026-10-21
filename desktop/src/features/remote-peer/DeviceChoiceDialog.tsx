@@ -1,5 +1,7 @@
+import type { KeyboardEvent } from "react";
 import type { RemotePeer } from "./remotePeerClient";
 import { ChevronRight, Monitor } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
@@ -41,6 +43,17 @@ export function DeviceChoiceDialog({
 }) {
   const { t } = useTranslation("remotePeer");
   const { t: tCommon } = useTranslation("common");
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // The hands are already on the keyboard when this appears: it is what ⌘N
+  // opens. So the list takes the caret on open, on its first row — this
+  // machine, which can always take the work — and the arrows and Enter then
+  // answer the question without a trip to the mouse. A dialog that opened with
+  // the caret nowhere asked the keyboard user to reach for the pointer to say
+  // which computer they meant.
+  useEffect(() => {
+    listRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+  }, []);
 
   /**
    * Why a machine cannot take this, when the reason is another paired device.
@@ -64,7 +77,11 @@ export function DeviceChoiceDialog({
       open
       title={title}
     >
-      <div className="max-h-80 space-y-0.5 overflow-y-auto">
+      <div
+        className="max-h-80 space-y-0.5 overflow-y-auto"
+        onKeyDown={handleRowKeyDown}
+        ref={listRef}
+      >
         {/* This machine leads: it is the answer a create action used to assume,
             and it is always able to take the work. */}
         <DeviceRow
@@ -95,6 +112,55 @@ export function DeviceChoiceDialog({
 }
 
 /**
+ * Walk the rows with the arrows and open the one Enter lands on.
+ *
+ * The same keys the rail's menus answer to (`ActivityRailMenus`), for the same
+ * reason: this list is a list, and the user who opened it from the keyboard
+ * expects to finish there. Focus is the selection — the arrows move the caret
+ * and the row's own highlight follows it in CSS — so there is no second state
+ * to keep in step with what is on screen.
+ *
+ * `:not(:disabled)` skips a machine that cannot take the work instead of
+ * landing on it and coming back refused. Such a row is still drawn: it is
+ * paired, and the reader looking for it needs to see whether it is offline,
+ * being reached, or driven by another device.
+ *
+ * Enter is answered here rather than left to the button's own activation: that
+ * is what the key means in a list of this kind, and saying so is what makes it
+ * testable without a browser. `preventDefault` keeps the same key from opening
+ * the row a second time through its default action.
+ */
+function handleRowKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+  const rows = [...event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)")];
+  if (rows.length === 0)
+    return;
+  if (event.key === "Enter") {
+    const row = rows.find(candidate => candidate === document.activeElement);
+    if (!row)
+      return;
+    event.preventDefault();
+    row.click();
+    return;
+  }
+  if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End")
+    return;
+  event.preventDefault();
+  if (event.key === "Home" || event.key === "End") {
+    rows[event.key === "Home" ? 0 : rows.length - 1]?.focus();
+    return;
+  }
+  const at = rows.indexOf(document.activeElement as HTMLButtonElement);
+  const delta = event.key === "ArrowDown" ? 1 : -1;
+  // Nothing of the list has the caret (the focus is on the footer, say): "down"
+  // starts at the top and "up" at the bottom, rather than at whichever end the
+  // arithmetic happens to land on.
+  const next = at < 0
+    ? (delta > 0 ? 0 : rows.length - 1)
+    : (at + delta + rows.length) % rows.length;
+  rows[next]?.focus();
+}
+
+/**
  * One machine, as a row that opens it.
  *
  * Not a radio: a tap *is* the choice — it moves the dialog to that machine's
@@ -121,7 +187,11 @@ function DeviceRow({
         "flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm",
         disabled
           ? "cursor-not-allowed text-ink-muted"
-          : "text-ink hover:bg-surface-subtle",
+          // The focused row *is* the chosen one while the list is walked
+          // (`handleRowKeyDown` moves the focus, not a highlight of its own),
+          // so the highlight has to follow the focus. Inset, because the ring
+          // would otherwise be clipped by the scrolling box around the list.
+          : "text-ink hover:bg-surface-subtle focus-visible:bg-surface-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus",
       )}
       disabled={disabled}
       onClick={onClick}

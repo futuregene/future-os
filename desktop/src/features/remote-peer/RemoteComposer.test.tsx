@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { RemoteComposer } from "./RemoteComposer";
 import { clearRemoteComposerDraft } from "./remoteComposerDraft";
 import { getRemoteOutbox, resetRemoteOutbox } from "./remotePromptOutbox";
@@ -1163,6 +1164,22 @@ it("takes the caret on mount, for a conversation and for a draft", async () => {
   const draft = await mount({ sessionId: "" });
   expect(document.activeElement).toBe(draft.input);
   await draft.unmount();
+});
+
+/**
+ * The caret also comes back on request, which is what the device dialog asks for
+ * when it closes. A draft the dialog re-opens is already on screen — same
+ * desktop, same session — so nothing remounts and the mount-time autofocus above
+ * would never run again.
+ */
+it("takes the caret back when the shell asks for it", async () => {
+  const view = await mount({ sessionId: "" });
+  view.input.blur();
+  expect(document.activeElement).not.toBe(view.input);
+
+  await act(async () => emitFutureEvent("focus-composer", undefined));
+  expect(document.activeElement).toBe(view.input);
+  await view.unmount();
 });
 
 /**
