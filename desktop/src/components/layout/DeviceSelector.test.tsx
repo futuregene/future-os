@@ -149,8 +149,58 @@ it("says when another paired device is driving a machine", async () => {
   expect(found.desktop_c).toBe("");
 });
 
+/**
+ * A held machine carries the way out on its own entry.
+ *
+ * The note explains why its conversations are missing; the button answers it
+ * without the trip to the Remote page. Clicking it is not a pick: the entry is
+ * still a choice, and taking the machine is the one row action that does not
+ * change which list is on screen.
+ */
+it("offers to take a held machine from its own entry, without picking it", async () => {
+  const onTakeControl = vi.fn<(desktopId: string) => Promise<void>>().mockResolvedValue(undefined);
+  const view = await openPicker([
+    { ...peer, desktopId: "desktop_a", name: "Held", control: "standby", holder: { name: "Hui's phone" } },
+    { ...peer, desktopId: "desktop_b", name: "Ours", control: "active" },
+  ], onTakeControl);
+  try {
+    const take = view.container.querySelector<HTMLButtonElement>("button[aria-label='Take over Held']");
+    expect(take).not.toBeNull();
+    // A machine this desktop drives needs no takeover, and says so by drawing none.
+    expect(view.container.querySelector("button[aria-label='Take over Ours']")).toBeNull();
+
+    await act(async () => take!.click());
+
+    expect(onTakeControl).toHaveBeenCalledWith("desktop_a");
+    expect(view.onChange).not.toHaveBeenCalled();
+    // The list stays open: the machine's rows appear under it once it answers.
+    expect(view.container.querySelector("[role='listbox']")).not.toBeNull();
+  }
+  finally {
+    await act(async () => view.root.unmount());
+  }
+});
+
+/** Without a caller able to send the request, the entry keeps its note only. */
+it("draws no takeover when the caller has none to send", async () => {
+  const view = await openPicker([
+    { ...peer, desktopId: "desktop_a", name: "Held", control: "standby" },
+  ]);
+  try {
+    expect(view.container.querySelector("button[aria-label='Take over Held']")).toBeNull();
+    expect(view.container.querySelector("[data-testid='option-note']")?.textContent)
+      .toBe("In use by another device");
+  }
+  finally {
+    await act(async () => view.root.unmount());
+  }
+});
+
 /** Open the picker on a mutable view, so each case can click an entry. */
-async function openPicker(peers: RemotePeer[] = [peer]) {
+async function openPicker(
+  peers: RemotePeer[] = [peer],
+  onTakeControl?: (desktopId: string) => Promise<void> | void,
+) {
   const onManage = vi.fn();
   const onChange = vi.fn();
   const container = document.createElement("div");
@@ -158,7 +208,13 @@ async function openPicker(peers: RemotePeer[] = [peer]) {
   const root = createRoot(container);
   await act(async () => {
     root.render(
-      <DeviceSelector filter={{ kind: "all" }} onChange={onChange} onManage={onManage} peers={peers} />,
+      <DeviceSelector
+        filter={{ kind: "all" }}
+        onChange={onChange}
+        onManage={onManage}
+        onTakeControl={onTakeControl}
+        peers={peers}
+      />,
     );
   });
   const trigger = container.querySelector<HTMLButtonElement>("button[aria-haspopup='listbox']")!;

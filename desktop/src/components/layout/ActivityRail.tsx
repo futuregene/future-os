@@ -116,6 +116,15 @@ interface ActivityRailProps {
   /** Re-read paired hosts and their catalogues (after a remote row action). */
   onRemoteConversationsChanged?: () => void;
   /**
+   * Take a machine another paired device drives, from the device picker.
+   *
+   * The picker lists the machine and says it is held; this is the way back from
+   * that same list, so the user does not have to leave the conversation list for
+   * the Remote page to get its rows. The caller owns the request and re-reads
+   * the list afterwards.
+   */
+  onTakeControlRemote?: (desktopId: string) => Promise<void> | void;
+  /**
    * Start a conversation in a workspace on another machine.
    *
    * The remote counterpart of the local heading's own "new chat" control: the
@@ -187,6 +196,7 @@ export function ActivityRail({
   onRenameRemoteConversation,
   onRenameRemoteWorkspace,
   onRemoteConversationsChanged,
+  onTakeControlRemote,
   onNewChatOnRemote,
   onManageDesktops,
   activeRemoteKey = null,
@@ -1220,6 +1230,7 @@ export function ActivityRail({
                                 filter={deviceFilter}
                                 onChange={onChangeDeviceFilter}
                                 onManage={() => onManageDesktops?.()}
+                                onTakeControl={onTakeControlRemote}
                                 peers={remotePeers}
                               />
                             )

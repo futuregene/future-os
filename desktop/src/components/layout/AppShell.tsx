@@ -25,7 +25,7 @@ import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
-import { compactRemoteConversation, deleteRemoteConversation, forkRemoteConversation, installRemoteSkill, pinRemoteConversation } from "../../features/remote-peer/remotePeerClient";
+import { compactRemoteConversation, deleteRemoteConversation, forkRemoteConversation, installRemoteSkill, pinRemoteConversation, takeoverRemotePeer } from "../../features/remote-peer/remotePeerClient";
 import { sendRemoteContinuation } from "../../features/remote-peer/remotePromptOutbox";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { remoteSkillRecoSource } from "../../features/remote-peer/remoteSkillRecoSource";
@@ -1255,6 +1255,14 @@ function ReadyAppShell({
     onRenameRemoteWorkspace: setRemoteWorkspaceRename,
     onNewChatOnRemote: (desktopId: string, workspaceId: string | null) => startRemoteConversation(desktopId, workspaceId),
     onRemoteConversationsChanged: () => void refreshRemotePeers(),
+    // The device picker's own takeover: the same `takeover` command the Remote
+    // page sends, then a re-read so the machine's rows appear in the merged list
+    // the picker sits above (the host's `control` push would get there a poll
+    // later at the latest, but the list is right there under the button).
+    onTakeControlRemote: async (desktopId: string) => {
+      await takeoverRemotePeer(desktopId);
+      await refreshRemotePeers();
+    },
     onManageDesktops: () => handleSectionChange("remote"),
     activeRemoteKey: activeRemote
       ? `${activeRemote.desktopId}::${activeRemote.sessionId}`
