@@ -20,7 +20,8 @@ import { runCommand, useCommand } from "../../features/keyboard/commands";
 import { useShortcutDispatcher } from "../../features/keyboard/useDispatcher";
 import { CommandPalette } from "../../features/palette/CommandPalette";
 import { ShortcutCheatSheet } from "../../features/palette/ShortcutCheatSheet";
-import { peerStatus } from "../../features/remote-peer/peerStatus";
+import { DeviceChoiceDialog } from "../../features/remote-peer/DeviceChoiceDialog";
+import { peerDrivable, peerStatus } from "../../features/remote-peer/peerStatus";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
@@ -173,33 +174,11 @@ function ReadyAppShell({
    */
   const [vibeOpen, setVibeOpen] = useState(false);
   /**
-   * The one machine the conversation list shows. Kept at the shell rather than
+   * Which machines the conversation list shows. Kept at the shell rather than
    * in the rail so the choice survives the rail remounting when the sidebar
    * collapses.
-   *
-   * **One machine, never several.** A conversation is created on, and opened
-   * from, the machine this names, so both flows start with a device: the picker
-   * is the first step, and this machine is the answer it opens with. The
-   * "all machines" list is gone — it merged every paired machine's rows and
-   * made "new" and "open" mean whatever the row under the pointer belonged
-   * to. Device first, then create; device first, then pick a conversation.
    */
-  const [deviceFilter, setDeviceFilter] = useState<DeviceFilter>({ desktopId: null, kind: "device" });
-
-  /**
-   * Put one machine behind the list — the single writer of `deviceFilter`.
-   *
-   * Every place that opens or creates a conversation names its machine through
-   * here, so the picker can never disagree with what the column is showing: a
-   * conversation opened from the palette, a task run or a notification switches
-   * the list to that machine instead of leaving another machine's rows above it.
-   */
-  function selectDevice(desktopId: string | null) {
-    setDeviceFilter(current =>
-      current.kind === "device" && current.desktopId === desktopId
-        ? current
-        : { desktopId, kind: "device" });
-  }
+  const [deviceFilter, setDeviceFilter] = useState<DeviceFilter>({ kind: "all" });
   /**
    * The remote conversation on screen, if any.
    *
@@ -248,6 +227,20 @@ function ReadyAppShell({
    * question the phone's new-conversation dialog opens on.
    */
   const [workspaceDeviceChoice, setWorkspaceDeviceChoice] = useState(false);
+  /**
+   * The machine step in front of a new conversation.
+   *
+   * A conversation lives on one machine and runs there, so "new conversation"
+   * cannot create anything until it knows which machine — and the rail's list
+   * can be showing one machine or all of them. The create controls used to
+   * assume this computer: with a host's conversations on screen, the button
+   * and ⌘N made a local conversation, which is a different disk, a different
+   * agent and a different place from the one the reader was looking at.
+   *
+   * The device picker above the list answers the question when it names one
+   * machine, and that case asks nothing (`handleNewConversationRequest`).
+   */
+  const [newChatDeviceChoice, setNewChatDeviceChoice] = useState(false);
   /** The host whose create-workspace form is open, if any. */
   const [remoteWorkspaceHost, setRemoteWorkspaceHost] = useState<RemotePeer | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -677,9 +670,6 @@ function ReadyAppShell({
 
   function handleSelectThread(thread: StoredThread) {
     setSection(thread.mode === "workspace" ? "workspace" : "chat");
-    // The list follows the conversation: a local thread under another machine's
-    // rows would leave the picker naming a machine that owns nothing on screen.
-    selectDevice(null);
     setActiveThreadId(thread.id);
     setCenterMode("thread");
     setNewChatWorkspaceId(null);
@@ -700,7 +690,6 @@ function ReadyAppShell({
     // A run's conversation may not be in the local list yet (it was created by
     // the tick loop); refresh the catalog and open it by id.
     setSection("chat");
-    selectDevice(null);
     setActiveThreadId(threadId);
     setCenterMode("thread");
     setNewChatWorkspaceId(null);
@@ -711,7 +700,6 @@ function ReadyAppShell({
 
   function handleSelectWorkspace(_workspace: StoredWorkspace, workspaceThreads: StoredThread[]) {
     const latestThread = workspaceThreads[0];
-    selectDevice(null);
     setSection("workspace");
     setNewChatWorkspaceId(null);
     if (latestThread) {
@@ -725,9 +713,6 @@ function ReadyAppShell({
   }
 
   function handleOpenNewChat(workspaceId?: string) {
-    // A new chat is made on this machine's disk, so this machine is the one the
-    // list has to show: the composer behind it writes here.
-    selectDevice(null);
     // Workspace "+" on a specific workspace → a chat inside it; otherwise a
     // plain chat (Chat header "+" / top New Chat).
     setSection(workspaceId ? "workspace" : "chat");
@@ -742,6 +727,43 @@ function ReadyAppShell({
   function handleTrySkill(skillName: string) {
     saveComposerDraft("new", { text: `/${skillName} ` });
     handleOpenNewChat();
+  }
+
+  /**
+   * The rail's plain "new conversation": device first, then the conversation.
+   *
+   * Three answers, in the order they cost the reader:
+   *
+   * - **One machine on screen**: the picker above the list already names it, and
+   *   that is the answer — asking again would be a dialog whose only content is
+   *   what the button beside it says. This is the ordinary case and it creates
+   *   straight away, on that machine.
+   * - **One machine paired**: nothing to choose between, so nothing is asked.
+   * - **The merged list with machines to choose from**: the machine *is* the
+   *   question, so it is asked — in a dialog, because this is also what ⌘N does
+   *   and a shortcut has no button to hang a menu under.
+   *
+   * A conversation started inside a workspace skips all of this
+   * (`handleOpenNewChat(workspaceId)`): that workspace is a folder on this
+   * machine's disk, and there is no question left to ask.
+   */
+  function handleNewConversationRequest() {
+    if (deviceFilter.kind === "device") {
+      if (deviceFilter.desktopId === null) {
+        handleOpenNewChat();
+        return;
+      }
+      startRemoteConversation(deviceFilter.desktopId);
+      return;
+    }
+    // Only a machine that can take the work is something to choose between: a
+    // machine that is offline, restarting, or driven by another paired device
+    // would answer the tap and then refuse the first prompt.
+    if (!remotePeers.some(peerDrivable)) {
+      handleOpenNewChat();
+      return;
+    }
+    setNewChatDeviceChoice(true);
   }
 
   // Skills page 「教我使用技能」: create the coach conversation (same flow as
@@ -1093,7 +1115,6 @@ function ReadyAppShell({
   function openRemoteConversation(conversation: MergedConversation) {
     if (conversation.desktopId === null)
       return;
-    selectDevice(conversation.desktopId);
     setActiveRemote({ desktopId: conversation.desktopId, sessionId: conversation.id, workspaceId: null });
     setSection("chat");
     // The mirror of `handleSelectThread`: opening a remote conversation leaves
@@ -1111,7 +1132,6 @@ function ReadyAppShell({
    * than a row — a task run names its conversation by session id.
    */
   function openRemoteSession(desktopId: string, sessionId: string) {
-    selectDevice(desktopId);
     setActiveRemote({ desktopId, sessionId, workspaceId: null });
     setSection("chat");
     setActiveThreadId(null);
@@ -1156,9 +1176,6 @@ function ReadyAppShell({
    * the client cannot mint a host-side session id.
    */
   function startRemoteConversation(desktopId: string, workspaceId: string | null = null) {
-    // A draft is a conversation *on that machine*, so the list moves with it:
-    // the picker names the machine the draft's composer will talk to.
-    selectDevice(desktopId);
     setActiveRemote({ desktopId, sessionId: "", workspaceId });
     setSection("chat");
     // A draft on a machine is still "a conversation in the column": without
@@ -1180,18 +1197,10 @@ function ReadyAppShell({
   // Nothing on the onboarding gate: there is no conversation, no rail and no
   // settings page to reach yet.
   const shortcutsLive = !showGate;
-  // ⌘N makes the conversation where the picker points. The new-chat screen
-  // writes on this machine's disk, so a machine selected above the list must
-  // take the draft instead (the empty session id is the host's own signal to
-  // create one) — otherwise the shortcut quietly made a local conversation
-  // while the list above it showed another machine.
-  useCommand("chat.new", () => {
-    if (deviceFilter.kind === "device" && deviceFilter.desktopId !== null) {
-      startRemoteConversation(deviceFilter.desktopId);
-      return;
-    }
-    handleOpenNewChat();
-  }, shortcutsLive);
+  // ⌘N is the rail's "new conversation" button under a different name, so it
+  // asks the same question — a shortcut that made something on a machine other
+  // than the one on screen was wrong for the same reason the button was.
+  useCommand("chat.new", () => handleNewConversationRequest(), shortcutsLive);
   useCommand("vibe.toggle", () => setVibeOpen(open => !open), shortcutsLive);
   useCommand("panel.left", handleToggleLeftPanel, shortcutsLive);
   useCommand("panel.right", () => setRightExpanded(value => !value), shortcutsLive && !hideRightPanel);
@@ -1321,7 +1330,16 @@ function ReadyAppShell({
     workspaces,
     onChange: handleSectionChange,
     onOpenModels: handleOpenModels,
-    onNewChat: handleOpenNewChat,
+    // The rail's create controls: a plain new conversation asks which machine
+    // first (`handleNewConversationRequest`); one started inside a workspace
+    // names its machine already — that folder is on this disk.
+    onNewChat: (workspaceId?: string) => {
+      if (workspaceId) {
+        handleOpenNewChat(workspaceId);
+        return;
+      }
+      handleNewConversationRequest();
+    },
     onNewWorkspace: handleOpenNewWorkspace,
     onBatchDeleteThreads: openBatchDelete,
     onDeleteRemoteConversations: handleDeleteRemoteConversations,
@@ -1765,6 +1783,24 @@ function ReadyAppShell({
                 setRemoteWorkspaceHost(peer);
               }}
               peers={remotePeers}
+            />
+          )
+        : null}
+      {newChatDeviceChoice
+        ? (
+            <DeviceChoiceDialog
+              description={tRemotePeer("chooseChatDeviceHint")}
+              onClose={() => setNewChatDeviceChoice(false)}
+              onPickLocal={() => {
+                setNewChatDeviceChoice(false);
+                handleOpenNewChat();
+              }}
+              onPickPeer={(peer) => {
+                setNewChatDeviceChoice(false);
+                startRemoteConversation(peer.desktopId);
+              }}
+              peers={remotePeers}
+              title={tRemotePeer("chooseChatDevice")}
             />
           )
         : null}
