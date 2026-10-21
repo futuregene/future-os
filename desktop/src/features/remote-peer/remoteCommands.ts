@@ -18,7 +18,16 @@ export interface RemoteCommand {
   /** Localized label. */
   label: string;
   description: string;
-  run: () => void;
+  /**
+   * A token to leave in the draft, when choosing the command is a hand-off
+   * rather than a request: the phone's "reference a conversation" row removes
+   * the slash word and types its `#`, which opens the conversation menu. The
+   * desktop can type that key itself, but offering it here is what gives `/`
+   * something to say on a host with no commands and no skills installed.
+   */
+  insert?: string;
+  /** What running the command asks the host to do (absent for a hand-off). */
+  run?: () => void;
 }
 
 /**

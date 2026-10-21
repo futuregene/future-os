@@ -59,6 +59,8 @@ vi.mock("../../integrations/storage/threadStore", () => ({
 }));
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+// jsdom has no layout, so a menu cannot scroll its highlighted row into view.
+Element.prototype.scrollIntoView = vi.fn();
 
 const peer = {
   agentAvailable: true,
@@ -75,8 +77,26 @@ const peer = {
   pairId: "pair_1",
 };
 
+/**
+ * That host's conversations, as its catalogue carries them: the `#` menu's
+ * source. A chat and a workspace conversation, so the row's workspace label is
+ * exercised too.
+ */
+const conversations = [
+  { sessionId: "sess_2", title: "Fix the flaky test", mode: "chat" as const, lastMessageAt: 300 },
+  {
+    sessionId: "sess_3",
+    title: "Release notes",
+    mode: "workspace" as const,
+    workspaceId: "ws_1",
+    workspaceName: "future-os",
+    lastMessageAt: 200,
+  },
+];
+
 async function mount(props: {
   canCompact?: boolean;
+  conversations?: typeof conversations;
   desktopId?: string;
   onCompact?: () => void;
   onCreated?: (sessionId: string) => void;
@@ -95,6 +115,7 @@ async function mount(props: {
   // streaming tests need one) must not silently drop the other props.
   const resolved = {
     canCompact: props.canCompact ?? false,
+    conversations: props.conversations ?? [],
     desktopId: props.desktopId ?? "desktop_a",
     onCompact: props.onCompact,
     onCreated,
@@ -779,6 +800,191 @@ it("sends normally when the host would not accept the command", async () => {
   expect(onCompact).not.toHaveBeenCalled();
   expect(prompt).toHaveBeenCalledWith("desktop_a", "sess_1", "/comp", [], null, { modelId: null, thinkingLevel: null }, expect.any(String));
   await view.unmount();
+});
+
+// ── the `#` conversation references ─────────────────────────────────────────
+
+/** The rows of whichever menu is open, in the order the keyboard walks them. */
+function menuRows(view: Awaited<ReturnType<typeof mount>>): HTMLElement[] {
+  return [...view.container.querySelectorAll<HTMLElement>("[role='option']")];
+}
+
+/**
+ * `#` offers the conversations on *that* host, and a pick becomes a link.
+ *
+ * The composer is a textarea, so it cannot hold the local editor's pill: the
+ * draft shows the phone's compact token and the send expands it into the link
+ * the agent resolves. What is asserted is both halves — the token the reader
+ * sees, and the message the host receives.
+ */
+it("offers that host's conversations after `#` and sends the reference as a link", async () => {
+  const view = await mount({ conversations });
+
+  await act(async () => view.type("see #"));
+  expect(menuRows(view).map(node => node.textContent)).toEqual([
+    "Fix the flaky test",
+    `Release notes${conversations[1]!.workspaceName}`,
+  ]);
+
+  await act(async () => menuRows(view)[0]!.click());
+  // The compact token stays in the draft; the menu answered and closed.
+  expect(view.input.value).toBe("see #Fix the flaky test ");
+  expect(menuRows(view)).toHaveLength(0);
+
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+  });
+  await settle();
+
+  expect(prompt).toHaveBeenCalledWith(
+    "desktop_a",
+    "sess_1",
+    "see [Fix the flaky test](futureos://session/sess_2)",
+    [],
+    null,
+    { modelId: null, thinkingLevel: null },
+    expect.any(String),
+  );
+  await view.unmount();
+});
+
+/** `#` filters on what is typed, and choosing the second row picks that one. */
+it("filters the menu and chooses the highlighted conversation with Enter", async () => {
+  const view = await mount({ conversations });
+
+  await act(async () => view.type("see #release"));
+  expect(menuRows(view)).toHaveLength(1);
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+  });
+
+  expect(view.input.value).toBe("see #Release notes ");
+  await view.unmount();
+});
+
+/** The arrows move the highlight through the conversations. */
+it("walks the conversation menu with the arrow keys", async () => {
+  const view = await mount({ conversations });
+  await act(async () => view.type("#"));
+
+  const selected = () => menuRows(view).map(node => node.getAttribute("aria-selected"));
+  expect(selected()).toEqual(["true", "false"]);
+
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }));
+  });
+  expect(selected()).toEqual(["false", "true"]);
+
+  // Wraps at the end, so the last row's next is the first.
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }));
+  });
+  expect(selected()).toEqual(["true", "false"]);
+  await view.unmount();
+});
+
+/** A `#` that is not the start of a word is text, never a menu. */
+it("leaves a `#` inside a word or a heading alone", async () => {
+  const view = await mount({ conversations });
+
+  await act(async () => view.type("issue#12"));
+  expect(menuRows(view)).toHaveLength(0);
+
+  await act(async () => view.type("## Plan"));
+  expect(menuRows(view)).toHaveLength(0);
+  await view.unmount();
+});
+
+/** Escape closes the menu without taking away what was typed. */
+it("closes the conversation menu on Escape and keeps the word", async () => {
+  const view = await mount({ conversations });
+
+  await act(async () => view.type("see #fix"));
+  expect(menuRows(view)).toHaveLength(1);
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+  });
+
+  expect(menuRows(view)).toHaveLength(0);
+  // The word may be text the user wants — closing is not deleting.
+  expect(view.input.value).toBe("see #fix");
+  await view.unmount();
+});
+
+/** With nowhere to point, `#` opens nothing rather than an empty panel. */
+it("opens no menu when there is no other conversation", async () => {
+  const view = await mount({ conversations: [] });
+
+  await act(async () => view.type("#"));
+
+  expect(menuRows(view)).toHaveLength(0);
+  await view.unmount();
+});
+
+/** The conversation being composed in is not a conversation to point at. */
+it("does not offer the conversation it belongs to", async () => {
+  const view = await mount({ conversations, sessionId: "sess_2" });
+
+  await act(async () => view.type("#"));
+
+  expect(menuRows(view).map(node => node.textContent)).toEqual([
+    `Release notes${conversations[1]!.workspaceName}`,
+  ]);
+  await view.unmount();
+});
+
+/**
+ * `/` reaches the reference on a host with nothing else to offer.
+ *
+ * The phone has this row for a different reason (it has no `#` key to speak of);
+ * here it is what keeps `/` from opening an empty menu on a host with no
+ * commands and no skills installed — the row removes the slash word and types
+ * the `#`, which is the same hand-off.
+ */
+it("offers the conversation reference from the `/` menu and hands over to `#`", async () => {
+  const view = await mount({ canCompact: false, conversations, peer: { ...peer, features: [] } });
+
+  await act(async () => view.type("/"));
+  const rows = [...view.container.querySelectorAll("button")]
+    .filter(node => node.getAttribute("role") === "option");
+  expect(rows.map(node => node.textContent).join(" ")).toContain("Reference a conversation");
+
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+  });
+  await settle();
+
+  // The slash word is gone, the `#` it named is typed, and the conversation
+  // menu opened in its place.
+  expect(view.input.value).toBe("#");
+  expect(menuRows(view)).toHaveLength(2);
+  await view.unmount();
+});
+
+/** A reference survives a visit: the token and the id it stands for both do. */
+it("restores a draft's reference and still expands it", async () => {
+  const first = await mount({ conversations });
+  await act(async () => first.type("see #"));
+  await act(async () => menuRows(first)[0]!.click());
+  await first.unmount();
+
+  const second = await mount({ conversations });
+  expect(second.input.value).toBe("see #Fix the flaky test ");
+  await act(async () => {
+    second.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+  });
+  await settle();
+
+  expect(prompt).toHaveBeenCalledWith(
+    "desktop_a",
+    "sess_1",
+    "see [Fix the flaky test](futureos://session/sess_2)",
+    [],
+    null,
+    { modelId: null, thinkingLevel: null },
+    expect.any(String),
+  );
+  await second.unmount();
 });
 
 // ── the `/` menu's skills ───────────────────────────────────────────────────
