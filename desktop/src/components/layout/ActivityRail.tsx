@@ -699,7 +699,8 @@ export function ActivityRail({
       : filteredVisibleThreads,
   });
 
-  const showListTools = !selectionMode || Boolean(onChangeDeviceFilter && remotePeers.length > 0);
+  /** Whether this machine's rows come from a pick of devices rather than one. */
+  const showDevicePicker = Boolean(onChangeDeviceFilter && remotePeers.length > 0);
 
   /** Whether this thread should show a selection checkbox. */
   function threadSelectionMode(thread: StoredThread): boolean {
@@ -801,17 +802,38 @@ export function ActivityRail({
    * a workspace, a conversation — is a control of its own in the same row
    * (below), not a menu item: it is the one thing a reader looks for when the
    * list is empty, and an empty list has no rows to aim a menu at.
+   *
+   * **The recent list has no menu.** A batch is "the rows under this heading", and
+   * this list's only boundary is time — a selection here would mean every
+   * conversation on the machine, which is not a batch a reader can picture. The
+   * workspace and chats lists keep theirs. Deleting one conversation from the
+   * recent list is still a row action, so nothing is lost by it.
    */
-  const listMenuItems = useMemo(() => [{
-    icon: <CheckSquare className="size-3.5" />,
-    label: t("activityRail.selectChatsInView", { view: viewLabel }),
-    onSelect: () => enterSelectionMode(view),
-  }], [enterSelectionMode, t, view, viewLabel]);
+  const listMenuItems = useMemo(() => (view === "recent"
+    ? []
+    : [{
+        icon: <CheckSquare className="size-3.5" />,
+        label: t("activityRail.selectChatsInView", { view: viewLabel }),
+        onSelect: () => enterSelectionMode(view),
+      }]), [enterSelectionMode, t, view, viewLabel]);
+  const showListMenu = !selectionMode && listMenuItems.length > 0;
 
   // Creating a workspace makes one on *this* machine, so the control belongs only
   // where this machine's workspaces are the ones on screen.
   const canCreateHere = deviceFilter.kind === "all"
     || (deviceFilter.kind === "device" && deviceFilter.desktopId === null);
+  const showCreateControl = !selectionMode
+    && (view === "workspace" ? canCreateHere : view === "chat" && remotePeers.length > 0);
+  /**
+   * Whether the list's control row is drawn at all.
+   *
+   * Outside a batch it always is, because the search field lives in it — that
+   * field is the rail's one way to narrow any list, so the row is never empty even
+   * on a tab with no menu and no creation control. In a batch its controls give
+   * way to the selection toolbar, and only the machine picker stays: the rows a
+   * batch covers still depend on it.
+   */
+  const showListTools = selectionMode ? showDevicePicker : true;
 
   /**
    * Which row is "current". A local thread is current while a list is showing
@@ -1314,12 +1336,12 @@ export function ActivityRail({
                         {/* One machine standing behind the list is named by the
                             picker, `compact` because it now shares the row with
                             the search field. */}
-                        {onChangeDeviceFilter && remotePeers.length > 0
+                        {showDevicePicker
                           ? (
                               <DeviceSelector
                                 compact
                                 filter={deviceFilter}
-                                onChange={onChangeDeviceFilter}
+                                onChange={onChangeDeviceFilter!}
                                 onManage={() => onManageDesktops?.()}
                                 peers={remotePeers}
                               />
@@ -1338,19 +1360,19 @@ export function ActivityRail({
                             `+` was the "Workspace" section heading's; the chat
                             tab's is the machine-aware "new conversation", which
                             lived on the chat heading. Both headings are gone, and
-                            both controls belong with the list they fill. */}
-                        {selectionMode
-                          ? null
-                          : view === "workspace" && canCreateHere
-                            ? (
-                                <RailHeaderButton
-                                  icon={<Plus className="size-3.5" />}
-                                  label={t("activityRail.newWorkspace")}
-                                  onClick={onNewWorkspace}
-                                />
-                              )
-                            : view === "chat" && remotePeers.length > 0
+                            both controls belong with the list they fill. The
+                            recent tab has neither: it is a view over lists that
+                            already exist. */}
+                        {showCreateControl
+                          ? (view === "workspace"
                               ? (
+                                  <RailHeaderButton
+                                    icon={<Plus className="size-3.5" />}
+                                    label={t("activityRail.newWorkspace")}
+                                    onClick={onNewWorkspace}
+                                  />
+                                )
+                              : (
                                   <RailNewChatButton
                                     filter={deviceFilter}
                                     onNewChatLocal={() => onNewChat()}
@@ -1359,15 +1381,11 @@ export function ActivityRail({
                                       : undefined}
                                     peers={remotePeers}
                                   />
-                                )
-                              : null}
-                        {/* The open list's own menu, at the row's right end.
-                            Every tab has one: each tab *is* a list, so each has a
-                            whole list to act on at once, and the workspace tab
-                            needs it twice over — that is where "new workspace"
-                            lives now that the section heading that carried it is
-                            gone. */}
-                        {!selectionMode && listMenuItems.length > 0
+                                ))
+                          : null}
+                        {/* The open list's own menu, at the row's right end —
+                            where the list has one (see `listMenuItems`). */}
+                        {showListMenu
                           ? (
                               <RailListMenu
                                 items={listMenuItems}

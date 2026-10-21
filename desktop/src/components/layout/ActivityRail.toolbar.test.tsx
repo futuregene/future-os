@@ -156,9 +156,10 @@ describe("the rail's bands", () => {
     // trigger of any kind.
     expect(viewBand.querySelector("input")).toBeNull();
     expect(viewBand.querySelector("button[aria-haspopup='menu']")).toBeNull();
-    // And the list does have a menu — otherwise the assertions above are about a
-    // control that is not on screen at all.
-    expect(listMenu(container, tab)).not.toBeNull();
+    // The two lists that have a boundary keep their own menu — otherwise those
+    // assertions would be about a control that is not on screen at all. The
+    // recent list has none (see the "boundary" test below).
+    expect(listMenu(container, tab) === null).toBe(tab === "Recent");
   });
 
   it("keeps the search field on screen, in the list's own band, with no interaction", async () => {
@@ -172,8 +173,13 @@ describe("the rail's bands", () => {
     expect(band(container, "rail-view-band")!.contains(field)).toBe(false);
   });
 
-  /** One row holds the list's controls, and the list's menu is its last item. */
-  it.each(TABS)("shares one row between the search field and the list's menu (%s)", async (tab) => {
+  /**
+   * One row holds the search field and the list's own controls.
+   *
+   * The row is where the field lives (it filters the list drawn under it), and
+   * the list's menu — where the list has one — sits at that row's right end.
+   */
+  it.each(TABS)("keeps the search field in the list's row (%s)", async (tab) => {
     const { container } = await render(<Rail {...props()} />);
     act(() => [...container.querySelectorAll<HTMLButtonElement>("[data-testid^='rail-view-']")]
       .find(button => button.title === tab)!
@@ -181,13 +187,17 @@ describe("the rail's bands", () => {
     await flushAsync();
 
     const tools = band(container, "rail-list-tools")!;
-    const trigger = listMenu(tools, tab);
-    expect(trigger).not.toBeNull();
-    // Same band as the field: that is the whole point — one row holding the
-    // list's actions, instead of a row of their own for each.
     expect(tools.contains(searchField(tools))).toBe(true);
-    // And at its right end.
-    expect(tools.lastElementChild!.contains(trigger)).toBe(true);
+
+    const trigger = listMenu(tools, tab);
+    if (tab === "Recent") {
+      expect(trigger).toBeNull();
+    }
+    else {
+      expect(trigger).not.toBeNull();
+      // At the row's right end, after the field.
+      expect(tools.lastElementChild!.contains(trigger)).toBe(true);
+    }
   });
 
   it("orders the band: machine picker, search, the tab's create control, then the menu", async () => {
@@ -209,12 +219,10 @@ describe("the rail's bands", () => {
 
   it("drops the list's band while a batch is being selected", async () => {
     const { container } = await render(<Rail {...props()} />);
-    act(() => container.querySelector<HTMLButtonElement>("[data-testid='rail-view-recent']")!.click());
-    await flushAsync();
-    act(() => listMenu(container, "Recent")!.click());
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Workspaces list actions']")!.click());
     await flushAsync();
     act(() => [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find(button => button.textContent?.includes("Select conversations in “Recent”"))!
+      .find(button => button.textContent?.includes("Select conversations in “Workspaces”"))!
       .click());
     await flushAsync();
 
@@ -222,6 +230,24 @@ describe("the rail's bands", () => {
     // which list the batch covers is still the question it answers.
     expect(band(container, "rail-list-tools")).toBeNull();
     expect(band(container, "rail-view-band")).not.toBeNull();
+  });
+
+  /**
+   * The recent list draws no list-wide menu, and keeps the rest of its row.
+   *
+   * A batch is "the rows under this heading" — a workspace, the chats list. This
+   * list's only boundary is time, so a selection here would mean every
+   * conversation on the machine, which is not a batch a reader can picture. The
+   * row itself stays, because the search field lives in it: narrowing the recent
+   * list is exactly what a reader does with it.
+   */
+  it("draws no menu on the recent list, and keeps its search field", async () => {
+    const { container } = await render(<Rail {...props()} />);
+    act(() => container.querySelector<HTMLButtonElement>("[data-testid='rail-view-recent']")!.click());
+    await flushAsync();
+
+    expect(listMenu(container, "Recent")).toBeNull();
+    expect(searchField(container)).not.toBeNull();
   });
 
   /**
