@@ -504,6 +504,38 @@ test("a save already in flight is not started twice", async () => {
   await act(async () => { release(); await Promise.resolve(); });
 });
 
+// The schedule's times are read on the desktop's clock, not the phone's: the
+// editor shows the zone it got and sends back what the user picked.
+test("carries the time zone the trigger times are read in", async () => {
+  detail = taskDetail({ timezone: "Asia/Shanghai" });
+  await openTask();
+
+  // The stored zone is shown, and the "desktop's zone" chip is not selected.
+  expect(input("tasks.form.timezone").props.value).toBe("Asia/Shanghai");
+  expect(chip("tasks.form.timezoneDesktop").props.accessibilityState.selected).toBe(false);
+
+  await act(async () => chip("Europe/Berlin").props.onPress());
+  await act(async () => button("tasks.form.save").props.onPress());
+  expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({
+    timezone: "Europe/Berlin",
+  }));
+});
+
+test("a new task sends the desktop's zone as an empty value", async () => {
+  await act(async () => button("tasks.new").props.onPress());
+  expect(chip("tasks.form.timezoneDesktop").props.accessibilityState.selected).toBe(true);
+
+  await act(async () => input("tasks.form.name").props.onChangeText("zoned"));
+  await act(async () => input("tasks.form.prompt").props.onChangeText("p"));
+  await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
+  await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
+  await act(async () => chip("tasks.triggerMode.daily").props.onPress());
+  await act(async () => button("tasks.form.save").props.onPress());
+
+  // 空值 = "跟随桌面"——由桌面解析并落具体时区，手机不猜。
+  expect(mockRemote.createTask).toHaveBeenCalledWith(expect.objectContaining({ timezone: "" }));
+});
+
 // ─── creating a task ────────────────────────────────────────────────────────
 
 test("creates a chat task that needs no directory and returns to the list", async () => {

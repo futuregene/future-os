@@ -11,6 +11,7 @@ pub fn task(name: &str) -> Task {
         cwd: std::env::temp_dir().display().to_string(),
         model_id: None,
         thinking_level: None,
+        timezone: None,
         session_policy: SessionPolicy::New,
         conversation_mode: future_tasks::ConversationMode::Workspace,
         thread_id: None,

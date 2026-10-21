@@ -351,6 +351,7 @@ mod tests {
             cwd: "/tmp/repo".into(),
             model_id: Some("future/gpt-5".into()),
             thinking_level: Some("high".into()),
+            timezone: None,
             session_policy: future_tasks::SessionPolicy::New,
             session_retention: future_tasks::SessionRetention::Keep,
             conversation_mode: future_tasks::ConversationMode::Workspace,

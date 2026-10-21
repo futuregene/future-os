@@ -128,6 +128,13 @@ pub struct Task {
     pub cwd: String,
     pub model_id: Option<String>,
     pub thinking_level: Option<String>,
+    /// IANA time zone the schedule's wall-clock times are in (`Asia/Shanghai`).
+    ///
+    /// `None` = no choice recorded (a row written before the setting existed):
+    /// the schedule then runs on the host's zone, Beijing when that cannot be
+    /// read — see [`crate::timezone`]. Every writer resolves a concrete name
+    /// before storing, so `None` is a legacy row, not a current default.
+    pub timezone: Option<String>,
     pub session_policy: SessionPolicy,
     /// What kind of conversation this task opens (see [`ConversationMode`]).
     #[serde(default = "default_conversation_mode")]

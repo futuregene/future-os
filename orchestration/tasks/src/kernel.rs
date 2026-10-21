@@ -7,6 +7,7 @@
 
 use crate::types::Task;
 use chrono::{Datelike, NaiveDate};
+use chrono_tz::Tz;
 use serde::Deserialize;
 
 /// The status a stored row carried when it was a *suggestion*. Nothing writes it
@@ -100,6 +101,11 @@ pub fn parse_schedule(trigger_json: &serde_json::Value) -> Option<ScheduleMode> 
 
 /// Compute the next due epoch-ms strictly after `after_ms` for a schedule.
 /// Returns `None` for `manual`, `once` already past, or an unparseable trigger.
+///
+/// The wall-clock times in `trigger_json` are in the task's own zone (see
+/// [`crate::timezone::task_timezone`]), not the host's: a task set to `09:00` in
+/// Shanghai fires at 09:00 Shanghai even on a machine whose own clock sits
+/// elsewhere.
 pub fn next_due(task: &Task, after_ms: i64) -> Option<i64> {
     if !task.enabled || task.deleted_at.is_some() {
         return None;
@@ -108,18 +114,18 @@ pub fn next_due(task: &Task, after_ms: i64) -> Option<i64> {
         crate::types::TriggerKind::Manual => None,
         crate::types::TriggerKind::Schedule => {
             let mode = parse_schedule(&task.trigger_json)?;
-            next_due_for_mode(&mode, after_ms)
+            next_due_for_mode(&mode, after_ms, crate::timezone::task_timezone(task))
         }
     }
 }
 
-fn next_due_for_mode(mode: &ScheduleMode, after_ms: i64) -> Option<i64> {
-    use chrono::{DateTime, Duration, Local, TimeZone};
-    let after = DateTime::from_timestamp_millis(after_ms)?.with_timezone(&Local);
+fn next_due_for_mode(mode: &ScheduleMode, after_ms: i64, tz: Tz) -> Option<i64> {
+    use chrono::{DateTime, Duration, TimeZone};
+    let after = DateTime::from_timestamp_millis(after_ms)?.with_timezone(&tz);
     match mode {
         ScheduleMode::Once { date, time } => {
             let dt = parse_date_time(date, time)?;
-            let due = Local.from_local_datetime(&dt).earliest()?;
+            let due = tz.from_local_datetime(&dt).earliest()?;
             (due.timestamp_millis() > after_ms).then(|| due.timestamp_millis())
         }
         ScheduleMode::Interval {
@@ -137,7 +143,7 @@ fn next_due_for_mode(mode: &ScheduleMode, after_ms: i64) -> Option<i64> {
         }
         ScheduleMode::Daily { time } => {
             let t = parse_time(time)?;
-            let due = next_calendar_time(&after, t)?;
+            let due = next_calendar_time(&after, t, tz)?;
             (due.timestamp_millis() > after_ms).then(|| due.timestamp_millis())
         }
         ScheduleMode::Weekly { days, time } => {
@@ -147,7 +153,7 @@ fn next_due_for_mode(mode: &ScheduleMode, after_ms: i64) -> Option<i64> {
                 return None;
             }
             (0..=7)
-                .filter_map(|delta| weekly_candidate(after_ms, &day_nums, t, delta))
+                .filter_map(|delta| weekly_candidate(after_ms, &day_nums, t, delta, tz))
                 .filter(|cand| cand.timestamp_millis() > after_ms)
                 .min()
                 .map(|d| d.timestamp_millis())
@@ -155,7 +161,7 @@ fn next_due_for_mode(mode: &ScheduleMode, after_ms: i64) -> Option<i64> {
         ScheduleMode::Monthly { day, time } => {
             let t = parse_time(time)?;
             (0..=12)
-                .filter_map(|delta| monthly_candidate(after_ms, *day, t, delta))
+                .filter_map(|delta| monthly_candidate(after_ms, *day, t, delta, tz))
                 .filter(|cand| cand.timestamp_millis() > after_ms)
                 .min()
                 .map(|d| d.timestamp_millis())
@@ -165,7 +171,7 @@ fn next_due_for_mode(mode: &ScheduleMode, after_ms: i64) -> Option<i64> {
             // Three years of candidates: the one this year (if still ahead), the
             // next, and one more so a clamped leap day cannot fall through.
             (0..=2)
-                .filter_map(|delta| yearly_candidate(after_ms, *month, *day, t, delta))
+                .filter_map(|delta| yearly_candidate(after_ms, *month, *day, t, delta, tz))
                 .filter(|cand| cand.timestamp_millis() > after_ms)
                 .min()
                 .map(|d| d.timestamp_millis())
@@ -174,19 +180,21 @@ fn next_due_for_mode(mode: &ScheduleMode, after_ms: i64) -> Option<i64> {
 }
 
 /// The `delta`-th weekday candidate for a weekly schedule, or `None` when that
-/// day is not selected (or does not exist locally, e.g. a spring-forward gap).
+/// day is not selected (or does not exist in the task's zone, e.g. a
+/// spring-forward gap).
 fn weekly_candidate(
     after_ms: i64,
     day_nums: &[u32],
     time: chrono::NaiveTime,
     delta: i64,
-) -> Option<chrono::DateTime<chrono::Local>> {
-    use chrono::{Duration, Local, TimeZone};
-    let after = chrono::DateTime::from_timestamp_millis(after_ms)?.with_timezone(&Local);
+    tz: Tz,
+) -> Option<chrono::DateTime<Tz>> {
+    use chrono::{Duration, TimeZone};
+    let after = chrono::DateTime::from_timestamp_millis(after_ms)?.with_timezone(&tz);
     let date = (after + Duration::days(delta)).date_naive();
     let matches = day_nums.contains(&date.weekday().num_days_from_monday());
     matches
-        .then(|| Local.from_local_datetime(&date.and_time(time)).earliest())
+        .then(|| tz.from_local_datetime(&date.and_time(time)).earliest())
         .flatten()
 }
 
@@ -197,16 +205,19 @@ fn monthly_candidate(
     day: i64,
     time: chrono::NaiveTime,
     delta: i64,
-) -> Option<chrono::DateTime<chrono::Local>> {
-    use chrono::{DateTime, Local, TimeZone};
-    let after = DateTime::from_timestamp_millis(after_ms)?.with_timezone(&Local);
+    tz: Tz,
+) -> Option<chrono::DateTime<Tz>> {
+    use chrono::{DateTime, TimeZone};
+    let after = DateTime::from_timestamp_millis(after_ms)?.with_timezone(&tz);
     let (y, m) = add_months(after.year(), after.month(), delta);
     let dom = day.min(days_in_month(y, m) as i64) as u32;
     let date = NaiveDate::from_ymd_opt(y, m, dom)?;
-    Local.from_local_datetime(&date.and_time(time)).earliest()
+    tz.from_local_datetime(&date.and_time(time)).earliest()
 }
 
-/// The `delta`-th `month`/`day` at `time`, relative to the year `after_ms` is in.
+/// The `delta`-th `month`/`day` at `time`, relative to the year `after_ms` is in
+/// — in the task's own zone, since a year starts at a different instant
+/// everywhere.
 ///
 /// The month is checked before [`days_in_month`], which indexes the *next*
 /// month and would panic on a 0 or 13 that a hand-edited `trigger_json` can
@@ -218,16 +229,17 @@ fn yearly_candidate(
     day: i64,
     time: chrono::NaiveTime,
     delta: i64,
-) -> Option<chrono::DateTime<chrono::Local>> {
-    use chrono::{DateTime, Local, TimeZone};
+    tz: Tz,
+) -> Option<chrono::DateTime<Tz>> {
+    use chrono::{DateTime, TimeZone};
     if !(1..=12).contains(&month) || day < 1 {
         return None;
     }
-    let after = DateTime::from_timestamp_millis(after_ms)?.with_timezone(&Local);
+    let after = DateTime::from_timestamp_millis(after_ms)?.with_timezone(&tz);
     let year = after.year() + delta as i32;
     let dom = day.min(days_in_month(year, month) as i64) as u32;
     let date = NaiveDate::from_ymd_opt(year, month, dom)?;
-    Local.from_local_datetime(&date.and_time(time)).earliest()
+    tz.from_local_datetime(&date.and_time(time)).earliest()
 }
 
 fn parse_date_time(date: &str, time: &str) -> Option<chrono::NaiveDateTime> {
@@ -271,13 +283,14 @@ fn days_in_month(year: i32, month: u32) -> u32 {
 }
 
 fn next_calendar_time(
-    after: &chrono::DateTime<chrono::Local>,
+    after: &chrono::DateTime<Tz>,
     time: chrono::NaiveTime,
-) -> Option<chrono::DateTime<chrono::Local>> {
-    use chrono::{Duration, Local, TimeZone};
+    tz: Tz,
+) -> Option<chrono::DateTime<Tz>> {
+    use chrono::{Duration, TimeZone};
     let days = if after.time() >= time { 1 } else { 0 };
     let date = after.date_naive() + Duration::days(days);
-    Local.from_local_datetime(&date.and_time(time)).earliest()
+    tz.from_local_datetime(&date.and_time(time)).earliest()
 }
 
 // ─── session retention ────────────────────────────────────────────────────
@@ -373,10 +386,15 @@ fn run_kind_label(kind: crate::types::RunKind) -> &'static str {
     }
 }
 
-/// Epoch ms as a local RFC 3339 stamp; empty when unrepresentable.
-fn local_time(ms: i64) -> String {
+/// Epoch ms as an RFC 3339 stamp in the task's own zone; empty when
+/// unrepresentable.
+///
+/// The offset is part of the value (`…+08:00`), so a reader in another zone can
+/// still recover the instant; and reading it in the task's zone is what makes
+/// `09:00` mean the same thing here as in the schedule it came from.
+fn local_time(ms: i64, tz: Tz) -> String {
     chrono::DateTime::from_timestamp_millis(ms)
-        .map(|d| d.with_timezone(&chrono::Local).to_rfc3339())
+        .map(|d| d.with_timezone(&tz).to_rfc3339())
         .unwrap_or_default()
 }
 
@@ -391,7 +409,8 @@ fn trigger_label(task: &Task) -> String {
 }
 
 /// What the run actually is: where it works, what kind of conversation it
-/// opens, whether it continues one, and the model it spends on.
+/// opens, whether it continues one, the zone its clock is read in, and the
+/// model it spends on.
 ///
 /// A `chat` task may carry no working directory at all (its conversation runs
 /// in the conversation's own temporary workspace), so the path is omitted
@@ -401,6 +420,13 @@ fn run_settings_line(task: &Task) -> String {
     if !task.cwd.trim().is_empty() {
         parts.push(format!("cwd={}", task.cwd.trim()));
     }
+    // The zone is resolved, not `(default)`: a run that reports `18:00` should
+    // be able to say which clock produced it, especially when it is not the
+    // reader's own.
+    parts.push(format!(
+        "timezone={}",
+        crate::timezone::task_timezone(task).name()
+    ));
     parts.push(format!(
         "conversation={}",
         match task.conversation_mode {
@@ -448,8 +474,12 @@ pub fn compose_envelope_header(
         "task: {} | id: {} | prompt-version: {}\n",
         task.name, task.id, task.prompt_version
     ));
+    let tz = crate::timezone::task_timezone(task);
     let mut run = format!("run: kind={}", run_kind_label(kind));
-    if let Some(due) = due_ms.map(local_time).filter(|due| !due.is_empty()) {
+    if let Some(due) = due_ms
+        .map(|due| local_time(due, tz))
+        .filter(|due| !due.is_empty())
+    {
         run.push_str(&format!(" | due={due}"));
     }
     if let Some(n) = occurrence {
@@ -519,6 +549,7 @@ mod tests {
             cwd: "/tmp".into(),
             model_id: None,
             thinking_level: None,
+            timezone: None,
             session_policy: SessionPolicy::New,
             conversation_mode: crate::types::ConversationMode::Workspace,
             thread_id: None,
@@ -543,6 +574,14 @@ mod tests {
                     .and_hms_opt(h, mi, 0)
                     .unwrap(),
             )
+            .single()
+            .unwrap()
+            .timestamp_millis()
+    }
+
+    /// The same wall-clock reading in an explicit zone.
+    fn ms_in(tz: Tz, y: i32, mo: u32, d: u32, h: u32, mi: u32) -> i64 {
+        tz.with_ymd_and_hms(y, mo, d, h, mi, 0)
             .single()
             .unwrap()
             .timestamp_millis()
@@ -837,6 +876,107 @@ mod tests {
         }
     }
 
+    // ─── time zone ────────────────────────────────────────────────────────
+
+    /// The same schedule fires at its wall-clock time in the task's zone, not
+    /// the host's: `09:00` is 01:00 UTC in Shanghai and 13:00 UTC in New York.
+    #[test]
+    fn a_daily_schedule_fires_on_the_tasks_own_clock() {
+        let shanghai = ms_in(Tz::Asia__Shanghai, 2026, 1, 5, 8, 0);
+        let mut t = task(
+            serde_json::json!({"mode":"daily","time":"09:00"}),
+            TriggerKind::Schedule,
+        );
+        t.timezone = Some("Asia/Shanghai".into());
+        assert_eq!(
+            next_due(&t, shanghai),
+            Some(ms_in(Tz::Asia__Shanghai, 2026, 1, 5, 9, 0)),
+            "09:00 Shanghai is 01:00 UTC"
+        );
+        assert_eq!(
+            next_due(&t, shanghai),
+            Some(ms_in(Tz::UTC, 2026, 1, 5, 1, 0))
+        );
+
+        // The same instant in another zone: the task still waits for 09:00 its
+        // own time, six hours after New York's 09:00.
+        t.timezone = Some("America/New_York".into());
+        assert_eq!(
+            next_due(&t, shanghai),
+            Some(ms_in(Tz::America__New_York, 2026, 1, 5, 9, 0)),
+            "the zone on the task decides, not the host's"
+        );
+        assert_eq!(
+            next_due(&t, shanghai),
+            Some(ms_in(Tz::UTC, 2026, 1, 5, 14, 0))
+        );
+    }
+
+    /// The zone's own DST rules apply. A daily 09:00 in New York moves with the
+    /// clock change, which a fixed offset could never express.
+    #[test]
+    fn a_zone_with_dst_follows_its_own_offset() {
+        let mut t = task(
+            serde_json::json!({"mode":"daily","time":"09:00"}),
+            TriggerKind::Schedule,
+        );
+        t.timezone = Some("America/New_York".into());
+        // 2026-03-08 is the US spring-forward day: 09:00 is EDT (UTC-4).
+        let winter = ms_in(Tz::America__New_York, 2026, 3, 7, 8, 0);
+        let due = next_due(&t, winter).unwrap();
+        assert_eq!(
+            due,
+            ms_in(Tz::UTC, 2026, 3, 7, 14, 0),
+            "the day before the change is EST (UTC-5)"
+        );
+        let summer = ms_in(Tz::America__New_York, 2026, 3, 9, 8, 0);
+        assert_eq!(
+            next_due(&t, summer),
+            Some(ms_in(Tz::UTC, 2026, 3, 9, 13, 0)),
+            "after the change it is EDT (UTC-4)"
+        );
+    }
+
+    /// An explicit zone whose spring-forward gap swallows the scheduled time
+    /// yields no candidate that day (the same rule the host's zone always had),
+    /// rather than a shifted run.
+    #[test]
+    fn a_time_that_does_not_exist_in_the_zone_is_skipped() {
+        let mut t = task(
+            serde_json::json!({"mode":"daily","time":"02:30"}),
+            TriggerKind::Schedule,
+        );
+        t.timezone = Some("America/New_York".into());
+        // 2026-03-08 02:00–02:59 does not exist in New York.
+        let before = ms_in(Tz::America__New_York, 2026, 3, 8, 1, 0);
+        assert_eq!(next_due(&t, before), None);
+    }
+
+    /// The envelope's `due=` is read on the task's clock, with its offset — a
+    /// manual run still gets an anchor, and a zone other than the host's must
+    /// not be rendered as if it were the host's.
+    #[test]
+    fn the_envelope_renders_due_on_the_tasks_clock() {
+        let mut t = task(serde_json::json!({}), TriggerKind::Manual);
+        t.timezone = Some("Asia/Shanghai".into());
+        let due = ms_in(Tz::UTC, 2026, 10, 7, 1, 0);
+        let header = compose_run_prompt(&t, crate::types::RunKind::Main, Some(due), None, due);
+        assert!(header.contains("timezone=Asia/Shanghai"), "{header}");
+        assert!(
+            header.contains("due=2026-10-07T09:00:00+08:00"),
+            "09:00 Shanghai, not 01:00 UTC: {header}"
+        );
+
+        // A task with no stored zone still names the one it resolved to.
+        let bare = task(serde_json::json!({}), TriggerKind::Manual);
+        let resolved = crate::timezone::task_timezone(&bare).name().to_string();
+        assert!(
+            compose_envelope_header(&bare, crate::types::RunKind::Manual, None, None)
+                .contains(&format!("timezone={resolved}")),
+            "the resolved zone is stated"
+        );
+    }
+
     // ─── truncate ─────────────────────────────────────────────────────────
 
     #[test]
@@ -901,8 +1041,12 @@ mod tests {
             "{bare}"
         );
         assert!(
+            bare.contains("run settings: cwd=/tmp/repo | timezone=",),
+            "the run names the clock it reads: {bare}"
+        );
+        assert!(
             bare.contains(
-                "run settings: cwd=/tmp/repo | conversation=workspace | session=new (fresh conversation per run) | model=future/deepseek-flash | thinking=high"
+                "conversation=workspace | session=new (fresh conversation per run) | model=future/deepseek-flash | thinking=high"
             ),
             "{bare}"
         );

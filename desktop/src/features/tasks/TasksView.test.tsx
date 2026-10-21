@@ -66,6 +66,7 @@ function task(overrides: Partial<TaskView> = {}): TaskView {
     cwd: "/tmp/repo",
     modelId: "future/gpt-5",
     thinkingLevel: "high",
+    timezone: "Asia/Shanghai",
     sessionPolicy: "new",
     sessionRetention: "keep",
     conversationMode: "workspace",
@@ -506,6 +507,48 @@ describe("tasksView", () => {
       },
     });
     expect(created?.[1]).toMatchObject({ input: { modelId: "future/gpt-5", thinkingLevel: "high" } });
+  });
+
+  // The trigger times are real clock times, so the form asks which clock they
+  // belong to. A new task starts on "this machine's zone" — an empty value the
+  // host resolves, Beijing when it cannot read one — and an existing task opens
+  // on the zone it stores.
+  it("carries the time zone the schedule's clock reads", async () => {
+    const { container } = await renderView([task()]);
+    await click(rows(container)[0]);
+    await click(settingsToggle(container)!);
+    expect(container.textContent).toContain("Asia/Shanghai");
+
+    await click(buttonByText(container, "Edit")!);
+    const select = field(container, "Time zone") as HTMLSelectElement;
+    expect(select.value).toBe("Asia/Shanghai");
+    // The empty option is the machine's own zone, and a concrete zone is
+    // offered for the common cases even on a runtime without the full list.
+    expect(select.querySelector("option[value='']")).not.toBeNull();
+    expect(select.querySelector("option[value='Europe/Berlin']")).not.toBeNull();
+
+    await setValue(select, "Europe/Berlin");
+    await click(buttonByText(container, "Save")!);
+    const updated = mocks.invokeCommand.mock.calls.find(([command]) => command === "update_task");
+    expect(updated?.[1]).toMatchObject({ input: { timezone: "Europe/Berlin" } });
+  });
+
+  it("leaves a new task on the machine's zone until one is chosen", async () => {
+    const { container } = await renderView([]);
+    await click(buttonByText(container, "New scheduled task"));
+    mocks.invokeCommand.mockClear();
+
+    await setValue(field(container, "Name") as HTMLInputElement, "zoned");
+    await setValue(field(container, "Prompt") as HTMLTextAreaElement, "p");
+    await chooseModelAndThinking(container);
+    await setValue(triggerModeSelect(container), "daily");
+    await setValue(field(container, "Time") as HTMLInputElement, "09:00");
+    // The unset choice is what reaches the host: it resolves and stores a
+    // concrete zone, so the record never carries a guess.
+    expect((field(container, "Time zone") as HTMLSelectElement).value).toBe("");
+    await click(buttonByText(container, "Save"));
+    const created = mocks.invokeCommand.mock.calls.find(([command]) => command === "create_task");
+    expect(created?.[1]).toMatchObject({ input: { timezone: "" } });
   });
 
   it("refuses a save without a model or a thinking level", async () => {
