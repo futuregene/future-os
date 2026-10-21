@@ -3564,6 +3564,19 @@ async fn an_unanswered_tool_call_tail_continues_without_a_user_message() {
     .await;
 }
 
+/// Step 3: the tail is a plain assistant turn, which the loop used to refuse
+/// outright. It is accepted here only because the journal proves a run is still
+/// open — see `a_continuation_is_refused_when_the_journal_proves_no_open_run`.
+#[tokio::test(flavor = "current_thread")]
+async fn an_assistant_tail_continues_without_a_user_message() {
+    assert_a_continuation_is_accepted(
+        "cont-assistant",
+        crashed_entries(CrashedTail::AssistantText),
+        None,
+    )
+    .await;
+}
+
 /// The boundary of the relaxed guard: "the transcript ends on an assistant turn"
 /// is not permission — "the journal still shows that run open" is. A finished
 /// run's tail is exactly the shape the guard exists to reject.

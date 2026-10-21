@@ -239,21 +239,12 @@ impl Loop {
         }
         let mut active_checkpoint = self.active_checkpoint.lock().clone();
         let mut context_manager = self.context_manager.clone();
-        // Validate: a conversation may end on an assistant turn only in the one
-        // case that is repairable — continuing a run whose process died after
-        // the model had issued a tool call and before its result was recorded.
-        // The last message can then be an assistant turn carrying unanswered
-        // tool calls, which the continuation answers with a placeholder; every
-        // other assistant tail is still the upstream bug this guard exists to
-        // catch.
+        // Validate: a conversation may end with an assistant message only when
+        // this is the Agent continuing a run its own process died in the middle
+        // of. Every other caller must not reach here that way — a model request
+        // whose transcript stops on an assistant turn is a bug upstream.
         if let Some(last) = messages.last() {
-            let repairable_tool_calls = ctx.resume.is_some()
-                && last.role == "assistant"
-                && last
-                    .content
-                    .iter()
-                    .any(|block| matches!(block, ContentBlock::ToolCall { .. }));
-            if last.role == "assistant" && !repairable_tool_calls {
+            if last.role == "assistant" && ctx.resume.is_none() {
                 return Err(anyhow!(
                     "Internal error: conversation ended with an assistant message. \
                      This is a bug — please report it."
@@ -3049,6 +3040,31 @@ mod tests {
         }
     }
 
+    /// The guard exists to catch an upstream bug, not to forbid recovery. A run
+    /// this process died in the middle of leaves the transcript on an assistant
+    /// turn, and that is exactly the case a continuation must accept.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_continuation_may_end_on_an_assistant_turn() {
+        let provider = ScriptedProvider::new(vec![Script::Events(vec![ev_stop()])]);
+        let loop_ = Loop::new(provider.clone(), "mock");
+        let mut messages = user_messages("hi");
+        messages.push(AgentMessage {
+            role: "assistant".to_string(),
+            content: vec![ContentBlock::text("half an answer")],
+            ..Default::default()
+        });
+        let result = loop_
+            .run_streaming_with_messages(
+                messages,
+                &continuation("CONTINUE-THE-TASK"),
+                noop_on_text,
+                noop_on_event,
+                None,
+            )
+            .await;
+        assert!(result.is_ok(), "{:?}", result.err());
+    }
+
     /// The instruction reaches the model and nothing else. It is request-only
     /// context on the first turn — if it were pushed onto the durable list it
     /// would be persisted and rendered as a user bubble, which is the whole
@@ -3060,18 +3076,7 @@ mod tests {
         let mut messages = user_messages("hi");
         messages.push(AgentMessage {
             role: "assistant".to_string(),
-            content: vec![ContentBlock::ToolCall {
-                id: "c1".to_string(),
-                name: "shell".to_string(),
-                args: serde_json::json!({}),
-                provider_metadata: Default::default(),
-            }],
-            ..Default::default()
-        });
-        messages.push(AgentMessage {
-            role: "tool".to_string(),
-            content: vec![ContentBlock::tool_result("c1", "done", false)],
-            name: "shell".to_string(),
+            content: vec![ContentBlock::text("half an answer")],
             ..Default::default()
         });
         let (_, durable) = loop_
@@ -3168,9 +3173,10 @@ mod tests {
         assert_eq!(messages.len(), before);
     }
 
-    /// A crashed tail must produce a request the provider accepts. A tail whose
-    /// call already has its result is valid as it stands; one whose call died
-    /// with the process is not, and the continuation has to answer it.
+    /// All three crashed tails must produce a request the provider accepts. The
+    /// third one — a plain assistant tail — is accepted here only because the
+    /// continuation path set `ResumeContext`; `run_rejects_assistant_last_message`
+    /// keeps the refusal for every other caller.
     #[tokio::test(flavor = "current_thread")]
     async fn each_crashed_tail_shape_produces_a_valid_continuation_request() {
         let tool_call = || ContentBlock::ToolCall {
@@ -3201,6 +3207,14 @@ mod tests {
                 vec![AgentMessage {
                     role: "assistant".to_string(),
                     content: vec![tool_call()],
+                    ..Default::default()
+                }],
+            ),
+            (
+                "a plain assistant turn",
+                vec![AgentMessage {
+                    role: "assistant".to_string(),
+                    content: vec![ContentBlock::text("half an answer")],
                     ..Default::default()
                 }],
             ),
