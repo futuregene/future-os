@@ -1051,6 +1051,9 @@
             "wait": 900
           },
           {
+            "eval": "(() => {\n  const round = n => Math.round(n * 10) / 10;\n  const rows = [...document.querySelectorAll(\"[role='listbox'] [role='option']\")];\n  const marks = rows.map((row) => {\n    const slot = row.querySelector(':scope > span');\n    const name = [...row.querySelectorAll('span')].find(s => String(s.className).includes('truncate'));\n    return {\n      name: row.getAttribute('aria-label'),\n      slot: round(slot.getBoundingClientRect().width),\n      nameLeft: round(name.getBoundingClientRect().left),\n    };\n  });\n  if (marks.length < 3)\n    throw new Error('the picker does not list this machine and a host: ' + JSON.stringify(marks));\n  // Two of the marks are 14px line icons and the rest are emoji the user picked,\n  // which are wider: a slot sized by its glyph put each name at its own x, so the\n  // list read as two columns. Measured, because alignment is a position and a\n  // class list cannot state one.\n  if (new Set(marks.map(m => m.nameLeft)).size > 1)\n    throw new Error('the entries do not share a name column: ' + JSON.stringify(marks));\n  if (new Set(marks.map(m => m.slot)).size > 1)\n    throw new Error('the entries do not draw their mark in one slot: ' + JSON.stringify(marks));\n  return marks;\n})()"
+          },
+          {
             "eval": "(() => { const t = document.body.innerText; if (!t.includes('本机')) throw new Error('the selector does not offer this machine'); if (!t.includes('工作室 iMac')) throw new Error('the selector does not offer the connected host'); if (!t.includes('管理远程桌面')) throw new Error('the selector does not lead to managing the hosts'); })()"
           },
           {
