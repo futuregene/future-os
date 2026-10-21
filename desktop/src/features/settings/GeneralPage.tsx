@@ -14,6 +14,7 @@ import { REPLY_DETAIL_LEVELS, setReplyDetail, useReplyDetail } from "../../lib/r
 import { setThemeMode, THEME_MODES, useThemeMode } from "../../lib/theme";
 import { linuxUnavailableReasonKey } from "./linuxSandboxStatus";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
+import { ThemePalettePicker } from "./ThemePalettePicker";
 
 export function GeneralPage({
   approvalTier,
@@ -73,8 +74,8 @@ export function GeneralPage({
           </Select>
         </SettingsRow>
         <SettingsRow
-          title={t("theme.title")}
-          description={t("theme.description")}
+          title={t("appearance.title")}
+          description={t("appearance.description")}
         >
           <Select
             size="sm"
@@ -84,10 +85,19 @@ export function GeneralPage({
           >
             {THEME_MODES.map(mode => (
               <option key={mode} value={mode}>
-                {t(`theme.${mode}`)}
+                {t(`appearance.${mode}`)}
               </option>
             ))}
           </Select>
+        </SettingsRow>
+        {/* The palette is a second, independent axis: it works in both
+            renditions, so it gets its own row instead of a combined list. */}
+        <SettingsRow
+          description={t("theme.description")}
+          stacked
+          title={t("theme.title")}
+        >
+          <ThemePalettePicker />
         </SettingsRow>
         <SettingsRow
           title={t("fontSize.title")}

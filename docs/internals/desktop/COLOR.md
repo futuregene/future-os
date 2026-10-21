@@ -2,23 +2,87 @@
 
 > ([中文](COLOR.zh-CN.md)) All GUI colors go through the **semantic tokens**
 > defined in [`desktop/src/styles/globals.css`](../../../desktop/src/styles/globals.css)
-> (`@theme` holds the light palette, a `:root.dark` block overrides the same
-> variables), never raw Tailwind named colors (`blue-300` / `green-50` …). When
-> picking a color for a new or changed component, choose from the semantic
+> (`@theme` holds the default light palette, a `:root.dark` block overrides the
+> same variables, and each color theme adds a `[data-palette="…"]` block that
+> does the same), never raw Tailwind named colors (`blue-300` / `green-50` …).
+> When picking a color for a new or changed component, choose from the semantic
 > tokens below — by *what the color expresses*, not by "I want a blue".
 
-## Light and dark
+## Appearance and color theme (two axes)
 
-The app ships both palettes. Every token exists in both, so a component writes
-`bg-surface` / `text-ink-soft` once and never branches on the theme. Switching
-is a `.dark` class on `<html>`, applied by `lib/theme.ts`; the choice (Light /
-Dark / Follow system) lives in Settings → General and is persisted in
-`localStorage`. The values are CSS variables, which is why dark mode needs no
-`dark:` variants — the palette flips underneath the same utility (`bg-surface`
-resolves to `var(--color-surface)`).
+The look has **two independent choices**, both in Settings → General, both
+persisted in `localStorage` before the first paint:
 
-Every table below lists `light / dark`. A token with one value is identical in
-both themes.
+| axis | values | applied as | picks |
+| --- | --- | --- | --- |
+| **Appearance** | Light / Dark / Follow system | `.dark` on `<html>` | which rendition is painted |
+| **Color theme** | FutureOS (default) · Nord · Solarized · Gruvbox · Rosé Pine · Catppuccin | `data-palette` on `<html>` | the hues |
+
+They are separate because they answer different questions: "how bright" and
+"what does it feel like". Every color theme ships **both** renditions, so a
+chosen theme still follows the system — Rosé Pine in a light window is Dawn, in
+a dark one Moon. A combined list of six light + six dark entries would make the
+user re-pick their look whenever the OS flipped.
+
+The values are CSS variables, so a component writes `bg-surface` /
+`text-ink-soft` once and never branches on either axis: `bg-surface` resolves to
+`var(--color-surface)`, and whichever theme is active has set that variable.
+That is also why neither axis needs a `dark:` variant or a per-theme variant.
+
+Every table below lists `light / dark` for the **default** theme (FutureOS). A
+token with one value is identical in both renditions.
+
+## Palettes
+
+Each palette is a block in `styles/globals.css` that reassigns **the same
+`--color-*` variables** `@theme` / `:root.dark` declare. Two selector forms per
+palette:
+
+```css
+[data-palette="nord"] { … }                      /* light rendition */
+.dark [data-palette="nord"],
+:root.dark[data-palette="nord"] { … }            /* dark rendition */
+```
+
+- `[data-palette="nord"]` matches the root **and** any element carrying the
+  attribute, which is how the Settings picker paints one preview card per theme
+  (see `features/settings/ThemePalettePicker.tsx`) while the app stays on its
+  active theme.
+- The dark block needs both selectors: the root carries `.dark` and
+  `data-palette` on the same element, a preview carries only `data-palette`
+  inside a `.dark` ancestor. Neither may lose to `:root.dark`, which both forms
+  avoid at equal-or-higher specificity — and every palette block comes **after**
+  `:root.dark` in the file, which is what decides it for the light form.
+  `styles/globals.test.ts` pins that order, every palette's token set, and that
+  the `futureos` block still mirrors `@theme` / `:root.dark`.
+
+Deliberately **not** per-palette:
+
+- `search-*` — a search hit is a bright mark with dark text in every theme, so
+  the shared values stay.
+- `--shadow-*` — depth belongs to the rendition, not the hue.
+
+Each palette is derived from its upstream project's own colors (Nord's Polar
+Night / Snow Storm / Frost, Solarized's base03 / base3, Gruvbox's bg0 / bg1,
+Rosé Pine Dawn / Moon, Catppuccin Latte / Mocha) and then adjusted until it
+meets the contrast floors below. A new palette must define the same token set —
+`styles/globals.test.ts` fails otherwise, and `features/terminal/theme.ts` will
+not compile without its terminal colors.
+
+### Contrast floors
+
+Checked when a color theme is added, and pinned for the terminal palettes by
+`features/terminal/theme.test.ts`:
+
+| pair | floor |
+| --- | --- |
+| `ink` on `canvas` / `surface` | 7:1 |
+| `ink-soft` on `surface` | 4.5:1 |
+| `ink-muted` on `surface` | 3:1 (muted text is deliberately low) |
+| `accent`, `success`, `danger`, `warning`, `info` on `surface` | 4.5:1 |
+| white on `accent-fill` / `danger-fill` | 4.5:1 |
+| `ink` on `surface-subtle` / `code-surface` | 6:1 |
+| `search-ink` on `search-match` | 4.5:1 |
 
 ## Principles
 
@@ -143,15 +207,25 @@ Shadow values are `--shadow-*` custom properties; the dark palette deepens them
 
 ### Non-CSS palettes
 
-Two places cannot use CSS variables and resolve the theme in JavaScript:
+Two places cannot use CSS variables and resolve the theme in JavaScript, so each
+needs a palette × rendition entry — they are the only place a new color theme
+can be forgotten silently:
 
-- **Terminal** (`features/terminal/theme.ts`): `TERMINAL_THEME` (light) and
-  `TERMINAL_DARK_THEME` (dark), selected by `terminalTheme(resolvedTheme)`.
-  `theme.test.ts` pins a minimum WCAG contrast for every ANSI color in both.
-- **Code highlighting** (`features/markdown/useCodeHighlighter.ts`): Shiki
-  `github-light` / `github-dark`, chosen from `useResolvedTheme()`.
+- **Terminal** (`features/terminal/theme.ts`): one xterm palette per color theme
+  per rendition, selected by `terminalTheme(palette, theme)` — or
+  `currentTerminalTheme()` when xterm is constructed, which cannot read a hook
+  value. The `Record<ThemePalette, Record<ResolvedTheme, …>>` table makes a
+  missing entry a type error, and `theme.test.ts` pins a minimum WCAG contrast
+  for every ANSI color in **every** palette.
+- **Code highlighting** (`features/markdown/useCodeHighlighter.ts`): a Shiki
+  theme per palette per rendition, chosen from `useThemePalette()` +
+  `useResolvedTheme()` and bundled up front. Each palette reuses the editor
+  theme its upstream project ships (`nord`, `solarized-light` / `solarized-dark`,
+  `gruvbox-light-medium` / `gruvbox-dark-medium`, `rose-pine-dawn` /
+  `rose-pine-moon`, `catppuccin-latte` / `catppuccin-mocha`); the default theme
+  keeps `github-light` / `github-dark`, which its palette was drawn from.
 
-When adding a color to one of them, add it to both variants.
+When adding a color to one of them, add it to every palette's variants.
 
 ## Color-picking quick reference
 
@@ -183,6 +257,9 @@ When adding a color to one of them, add it to both variants.
 
 Token values are defined in
 [`desktop/src/styles/globals.css`](../../../desktop/src/styles/globals.css):
-`@theme` for the light palette, `:root.dark` for the dark overrides, `:root` /
+`@theme` for the default light palette, `:root.dark` for its dark rendition, the
+`[data-palette="…"]` blocks for the other color themes, and `:root` /
 `:root.dark` `--shadow-*` for shadows. **Change colors there only**; never scatter
-raw colors across components.
+raw colors across components. The palette ids themselves
+(`lib/theme.ts` `THEME_PALETTES`) are the single source for the picker, the
+terminal table and the Shiki table.

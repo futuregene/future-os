@@ -3,12 +3,42 @@
     "title": "界面语言",
     "description": "选择应用的显示语言"
   },
-  "theme": {
-    "title": "主题",
+  "appearance": {
+    "title": "界面外观",
     "description": "浅色、深色，或跟随系统外观",
     "light": "浅色",
     "dark": "深色",
     "system": "跟随系统"
+  },
+  "theme": {
+    "title": "配色主题",
+    "description": "界面底色、文字与强调色的色系。每个主题都跟随上方的外观设置，因此各有浅色与深色两套取值。",
+    "palettes": {
+      "futureos": {
+        "name": "FutureOS",
+        "description": "默认主题：冷调中性灰，只用一个蓝色强调色。"
+      },
+      "nord": {
+        "name": "Nord",
+        "description": "来自 Nord 项目的极地蓝与灰。"
+      },
+      "solarized": {
+        "name": "Solarized",
+        "description": "Ethan Schoonover 的暖纸色调，配蓝色强调色。"
+      },
+      "gruvbox": {
+        "name": "Gruvbox",
+        "description": "复古暖灰配青绿强调色。"
+      },
+      "rose-pine": {
+        "name": "Rosé Pine",
+        "description": "柔和的梅紫与玫瑰色，刻意做得低对比。"
+      },
+      "catppuccin": {
+        "name": "Catppuccin",
+        "description": "粉彩底色，配蓝色强调色。"
+      }
+    }
   },
   "fontSize": {
     "title": "字体大小",

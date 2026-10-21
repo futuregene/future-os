@@ -908,8 +908,11 @@ must not pollute the daily background-program list.
 GUI colors uniformly use the **semantic tokens** defined in
 `desktop/src/styles/globals.css` (neutral/surface, accent/interaction, the
 status triple, diff, shadows) — no raw Tailwind named colors written in
-components. Every token has a light and a dark value; the theme (Light / Dark /
-Follow system) is a Settings → General choice.
+components. The look has two independent Settings → General choices:
+**appearance** (Light / Dark / Follow system) and **color theme** (FutureOS by
+default, plus Nord, Solarized, Gruvbox, Rosé Pine, Catppuccin). Every token of
+every color theme has a light and a dark value, so a chosen theme still follows
+the system appearance and switching color themes never re-asks for brightness.
 Status badges uniformly use the `<Badge tone>` component; colors
 distinguishing **sibling categories** (run error subtypes) are an
 intentional exception.

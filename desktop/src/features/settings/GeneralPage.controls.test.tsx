@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "../../i18n";
 import { setFontSize } from "../../lib/fontSize";
 import { DEFAULT_REPLY_DETAIL, getReplyDetail, setReplyDetail } from "../../lib/replyDisplay";
-import { setThemeMode } from "../../lib/theme";
+import { setThemeMode, setThemePalette } from "../../lib/theme";
 import { GeneralPage } from "./GeneralPage";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -35,6 +35,7 @@ beforeEach(() => {
   mocks.isLinux = false;
   mocks.isWindows = true;
   setThemeMode("system");
+  setThemePalette("futureos");
   setFontSize("medium");
   // Back to the shipped level rather than whatever the last case left.
   setReplyDetail(DEFAULT_REPLY_DETAIL);
@@ -114,7 +115,7 @@ describe("generalPage language picker", () => {
   });
 });
 
-describe("generalPage theme picker", () => {
+describe("generalPage appearance picker", () => {
   it("reflects the active theme and switches the document palette", () => {
     const { container } = mount();
     const theme = select(container, 1);
@@ -132,6 +133,63 @@ describe("generalPage theme picker", () => {
 
     expect(container.ownerDocument.documentElement.classList.contains("dark")).toBe(false);
     expect(localStorage.getItem("future.theme")).toBe("light");
+  });
+});
+
+describe("generalPage color theme picker", () => {
+  it("offers every palette as a named radio, with the active one checked", () => {
+    const { container } = mount();
+    const group = container.querySelector("[role=radiogroup][aria-label='Color theme']")!;
+    const cards = [...group.querySelectorAll<HTMLButtonElement>("[role=radio]")];
+
+    expect(cards.map(card => card.getAttribute("aria-label")))
+      .toEqual(["FutureOS", "Nord", "Solarized", "Gruvbox", "Rosé Pine", "Catppuccin"]);
+    expect(cards.map(card => card.getAttribute("aria-checked")))
+      .toEqual(["true", "false", "false", "false", "false", "false"]);
+  });
+
+  it("paints each preview in its own palette while the app keeps the active one", () => {
+    const { container } = mount();
+    const cards = [...container.querySelectorAll<HTMLButtonElement>("[role=radio]")];
+
+    // A card previews a palette by carrying its `data-palette`: the CSS blocks
+    // match a nested preview as well as the root.
+    expect(cards.map(card => card.dataset.palette))
+      .toEqual(["futureos", "nord", "solarized", "gruvbox", "rose-pine", "catppuccin"]);
+    // ...and the app itself is still on the default.
+    expect(document.documentElement.dataset.palette).toBe("futureos");
+  });
+
+  it("switches the palette and remembers it", () => {
+    const { container } = mount();
+    const nord = container.querySelector<HTMLButtonElement>("[role=radio][aria-label='Nord']")!;
+
+    act(() => nord.click());
+
+    expect(document.documentElement.dataset.palette).toBe("nord");
+    expect(localStorage.getItem("future.palette")).toBe("nord");
+    expect(nord.getAttribute("aria-checked")).toBe("true");
+    // The appearance choice is a separate axis and stays where it was.
+    expect(localStorage.getItem("future.theme")).toBe("system");
+    expect(select(container, 1).value).toBe("system");
+  });
+
+  it("leaves the light/dark palette alone when only the color theme changes", () => {
+    const { container } = mount();
+    const dark = container.querySelector<HTMLButtonElement>("[role=radio][aria-label='Catppuccin']")!;
+
+    act(() => dark.click());
+
+    expect(container.ownerDocument.documentElement.classList.contains("dark")).toBe(false);
+    expect(localStorage.getItem("future.palette")).toBe("catppuccin");
+  });
+
+  it("restores the stored palette on mount", () => {
+    setThemePalette("gruvbox");
+    const { container } = mount();
+    const checked = container.querySelector("[role=radio][aria-checked='true']")!;
+
+    expect(checked.getAttribute("aria-label")).toBe("Gruvbox");
   });
 });
 

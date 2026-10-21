@@ -9,6 +9,12 @@
  *   ?press=meta+f          dispatch this shortcut at the real window listener
  *                          (the browser tool's key table has no letter keys)
  *   ?lang=en               render the English UI instead of Chinese
+ *                          (`shot/prefs.ts` pins these before the app is
+ *                          imported — see `desktop/shot/index.html`)
+ *   ?theme=dark&palette=nord  pin the appearance and the color theme (both are
+ *                          preferences read before the first paint, so a capture
+ *                          of "Gruvbox in a light window" is one URL rather than
+ *                          a click sequence)
  *   ?settings=key:value    seed the fake backend's app settings before boot
  *   ?streaming=id,id       report these threads as running (rail's ring)
  *   ?unread=id,id          mark these threads' finished runs unread (rail's dot)
@@ -35,9 +41,6 @@ import "../src/i18n";
 import "../src/styles/globals.css";
 
 const params = new URLSearchParams(location.search);
-
-// The UI language is a user preference in the real app; pin it per capture.
-localStorage.setItem("future.language", params.get("lang") === "en" ? "en" : "zh");
 
 // `?settings=communityEdition:true,bellOnComplete:false`
 const settingsPatch = params.get("settings");

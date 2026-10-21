@@ -3,12 +3,42 @@
     "title": "Language",
     "description": "Choose the display language of the app"
   },
-  "theme": {
-    "title": "Theme",
+  "appearance": {
+    "title": "Appearance",
     "description": "Light, dark, or follow the system appearance",
     "light": "Light",
     "dark": "Dark",
     "system": "System"
+  },
+  "theme": {
+    "title": "Color theme",
+    "description": "Hues for surfaces, text and accents. Every theme follows the appearance above, so it has a light and a dark rendition.",
+    "palettes": {
+      "futureos": {
+        "name": "FutureOS",
+        "description": "The default: cool neutral greys with a single blue accent."
+      },
+      "nord": {
+        "name": "Nord",
+        "description": "Arctic blues and greys from the Nord project."
+      },
+      "solarized": {
+        "name": "Solarized",
+        "description": "Ethan Schoonover's warm paper tones with a blue accent."
+      },
+      "gruvbox": {
+        "name": "Gruvbox",
+        "description": "Retro warm greys with a teal accent."
+      },
+      "rose-pine": {
+        "name": "Rosé Pine",
+        "description": "Soft plum and rose, muted and low-contrast by design."
+      },
+      "catppuccin": {
+        "name": "Catppuccin",
+        "description": "Pastel surfaces with a blue accent."
+      }
+    }
   },
   "fontSize": {
     "title": "Font size",
