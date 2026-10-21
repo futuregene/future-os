@@ -36,6 +36,7 @@
 //!   - `insert_history`   — finished transcript rows → the terminal's own
 //!     scrollback (leave the alternate screen, append, come back)
 
+pub mod agent_host;
 pub mod agent_supervisor;
 pub mod app;
 pub mod clipboard;
