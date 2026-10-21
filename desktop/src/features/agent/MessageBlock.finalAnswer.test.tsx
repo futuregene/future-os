@@ -4,7 +4,7 @@ import type { Root } from "react-dom/client";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { setFinalAnswerOnly } from "../../lib/replyDisplay";
+import { setReplyDetail } from "../../lib/replyDisplay";
 import { MessageBlock } from "./MessageBlock";
 
 /**
@@ -30,7 +30,7 @@ let root: Root;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  setFinalAnswerOnly(false);
+  setReplyDetail("detailed");
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -39,7 +39,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
-  setFinalAnswerOnly(false);
+  setReplyDetail("detailed");
 });
 
 function note(id: string, text: string): MessageSegment {
@@ -108,7 +108,7 @@ it("shows the whole reply when the setting is off", () => {
 });
 
 it("folds the work into one row above the final answer once the reply settles", () => {
-  setFinalAnswerOnly(true);
+  setReplyDetail("default");
   render(workedReply);
 
   expect(text()).not.toContain("I will look at the relay implementation first.");
@@ -122,7 +122,7 @@ it("folds the work into one row above the final answer once the reply settles", 
 });
 
 it("opens to the same blocks the setting hides, and closes again", () => {
-  setFinalAnswerOnly(true);
+  setReplyDetail("default");
   render(workedReply);
 
   const toggle = processToggle()!;
@@ -137,7 +137,7 @@ it("opens to the same blocks the setting hides, and closes again", () => {
 });
 
 it("keeps the live reply whole while it streams", () => {
-  setFinalAnswerOnly(true);
+  setReplyDetail("default");
   render(reply(workedReply.segments!, { status: "streaming" }));
 
   expect(text()).toContain("I will look at the relay implementation first.");
@@ -150,14 +150,14 @@ it("never folds a reply that has no answer to isolate", () => {
   const unfolded = text();
 
   // Nothing to keep, so the reply stays exactly as the setting-off render left it.
-  act(() => setFinalAnswerOnly(true));
+  act(() => setReplyDetail("default"));
   render(worked);
   expect(processToggle()).toBeNull();
   expect(text()).toBe(unfolded);
 });
 
 it("copies the answer the row shows, not the prose the fold hides", async () => {
-  setFinalAnswerOnly(true);
+  setReplyDetail("default");
   render(workedReply);
 
   await act(async () => {

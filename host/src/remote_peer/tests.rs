@@ -11,7 +11,7 @@
 //! (so the PSK and Noise keys are the host's real ones), with its claim code
 //! replaced by one that carries the nonce/claim_url the client requires.
 
-use super::testing::{claim, start_host, wait_for_web_port_free};
+use super::testing::{claim, start_host};
 use super::{creds, platform, session};
 use crate::remote::test_support::{init_store, now_secs, FakeNats, HomeGuard, MockPlatform};
 use crate::remote::{publish_event, stop};
@@ -81,7 +81,6 @@ async fn a_desktop_client_pairs_with_a_real_host_and_reads_its_catalog() {
     assert!(row["lastMessageAt"].is_number(), "{row}");
 
     stop();
-    wait_for_web_port_free().await;
 }
 
 /// The reconnect path, which is the one that runs for the rest of the pairing's
@@ -125,7 +124,6 @@ async fn a_second_connection_reconnects_with_ik_after_the_secret_is_cleared() {
     assert!(data["sessions"].is_array());
 
     stop();
-    wait_for_web_port_free().await;
 }
 
 /// A peer that is not the machine the invitation named must never receive our
@@ -149,7 +147,6 @@ async fn a_swapped_host_key_is_refused_not_adopted() {
     );
 
     stop();
-    wait_for_web_port_free().await;
 }
 
 /// The live half: a host-side event must reach a subscribed client decrypted,
@@ -232,7 +229,6 @@ async fn a_host_event_reaches_a_subscriber_decrypted() {
     );
 
     stop();
-    wait_for_web_port_free().await;
 }
 
 /// A command the host does not implement must reach the caller as an error,
@@ -267,7 +263,6 @@ async fn a_command_the_host_does_not_implement_surfaces_its_error() {
     );
 
     stop();
-    wait_for_web_port_free().await;
 }
 
 /// The catalog a client reads must be the *host's*, not a locally invented one:
@@ -282,7 +277,6 @@ async fn two_hosts_are_kept_apart_in_the_credential_book() {
     let (first_pair, first_invitation) = start_host(&platform, &first_nats).await;
     let first = claim(&platform, &first_invitation, &first_pair, first_nats.url()).await;
     stop();
-    wait_for_web_port_free().await;
 
     let second_nats = FakeNats::start().await;
     let (second_pair, second_invitation) = start_host(&platform, &second_nats).await;
@@ -313,7 +307,6 @@ async fn two_hosts_are_kept_apart_in_the_credential_book() {
         .is_some_and(|peer| peer.creds.pair_id == second_pair));
 
     stop();
-    wait_for_web_port_free().await;
 }
 
 /// A pairing whose JWT has already expired is refreshed before connecting, and
@@ -353,7 +346,6 @@ async fn an_expired_grant_is_refreshed_before_the_connect() {
     );
 
     stop();
-    wait_for_web_port_free().await;
 }
 
 /// Unpairing is a local decision first: the local entry disappears even when the
@@ -381,7 +373,6 @@ async fn unpairing_removes_the_local_entry_even_when_the_platform_refuses() {
     assert!(creds::load().expect("book").peers.is_empty());
 
     stop();
-    wait_for_web_port_free().await;
 }
 
 /// The revocation contract: "already gone" is a success, so a retry queue
@@ -403,7 +394,6 @@ async fn an_already_revoked_pairing_is_not_an_error() {
     }
 
     stop();
-    wait_for_web_port_free().await;
 }
 
 /// A reply is bound to the request that asked for it: the associated data is

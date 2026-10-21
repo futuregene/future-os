@@ -2738,6 +2738,85 @@
             "shot": "d-rail-recent.png"
           }
         ]
+      },
+      "vibe-add-slot": {
+        "url": "http://localhost:5299/shot/?pinned=th_data&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 2600
+          },
+          {
+            "eval": "(() => {\n  const grid = document.querySelector('.grid');\n  const bar = document.querySelector('[data-vibe-drag=\"bar\"]');\n  const label = bar ? bar.querySelector('span') : null;\n  const barBox = bar.getBoundingClientRect();\n  const labelBox = label.getBoundingClientRect();\n  const items = [...grid.children].map((el) => {\n    const box = el.getBoundingClientRect();\n    const style = getComputedStyle(el);\n    return {\n      kind: el.getAttribute('data-vibe-cell') ? 'cell' + el.getAttribute('data-vibe-cell') : 'add',\n      size: [Math.round(box.width), Math.round(box.height)],\n      row: style.gridRowStart,\n      column: style.gridColumnStart,\n    };\n  });\n  const template = getComputedStyle(grid).gridTemplateRows.split(' ').map(v => Math.round(parseFloat(v)));\n  return JSON.stringify({\n    bar: { height: Math.round(barBox.height), labelCentre: Math.round(labelBox.top + labelBox.height / 2 - barBox.top) },\n    templateRows: template,\n    items,\n  });\n})()"
+          },
+          {
+            "shot": "d-vibe-add-slot.png"
+          }
+        ]
+      },
+      "settings-themes": {
+        "note": "Settings → General's color-theme picker: one card per palette, each painting itself while the app keeps the active theme. The assertion pins that separation — a card that inherited the app's surfaces would make every preview identical.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "lixin"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "eval": "(() => {\n        const cards = [...document.querySelectorAll('[role=radio][data-palette]')];\n        const expected = [\"futureos\",\"ayu\",\"catppuccin\",\"dracula\",\"everforest\",\"gruvbox\",\"kanagawa\",\"nightfox\",\"nord\",\"one-dark\",\"rose-pine\",\"solarized\",\"tokyo-night\",\"vesper\"];\n        if (cards.length !== expected.length) throw new Error('expected ' + expected.length + ' palette cards, found ' + cards.length);\n        const got = cards.map(card => card.dataset.palette);\n        if (got.join(',') !== expected.join(',')) throw new Error('cards are ' + got.join(','));\n        const canvases = cards.map(card => getComputedStyle(card).getPropertyValue('--color-canvas').trim());\n        const unique = new Set(canvases);\n        if (unique.size !== expected.length) throw new Error('previews share surfaces: ' + JSON.stringify(canvases));\n        return { count: cards.length, canvases };\n      })()"
+          },
+          {
+            "shot": "d-settings-themes.png"
+          },
+          {
+            "tap": "Nord"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => {\n        const root = document.documentElement;\n        if (root.dataset.palette !== 'nord') throw new Error('the root palette is ' + root.dataset.palette);\n        const canvas = getComputedStyle(root).getPropertyValue('--color-canvas').trim();\n        if (canvas !== '#eceff4') throw new Error('canvas is ' + canvas + ', expected the Nord light value');\n        const body = getComputedStyle(document.body).backgroundColor;\n        if (body !== 'rgb(236, 239, 244)') throw new Error('body painted ' + body);\n        if (!localStorage.getItem('future.palette')?.includes('nord')) throw new Error('the choice was not stored');\n        return { canvas, body };\n      })()"
+          },
+          {
+            "shot": "d-settings-themes-nord.png"
+          }
+        ]
+      },
+      "settings-themes-dark": {
+        "url": "http://localhost:5299/shot/?theme=dark&palette=catppuccin",
+        "note": "The same picker in a dark window with Catppuccin active: previews follow the rendition as well as the palette, and the app itself is on Catppuccin Mocha.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "lixin"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "eval": "(() => {\n        const root = document.documentElement;\n        if (!root.classList.contains('dark')) throw new Error('the harness did not boot dark');\n        const canvas = getComputedStyle(root).getPropertyValue('--color-canvas').trim();\n        if (canvas !== '#11111b') throw new Error('canvas is ' + canvas + ', expected Catppuccin Mocha');\n        const cards = [...document.querySelectorAll('[role=radio][data-palette]')];\n        const nord = cards.find(card => card.dataset.palette === 'nord');\n        if (!nord) throw new Error('no Nord card');\n        const nordCanvas = getComputedStyle(nord).getPropertyValue('--color-canvas').trim();\n        if (nordCanvas !== '#2e3440') throw new Error('the Nord card shows ' + nordCanvas + ', not its dark surface');\n        return { canvas, nordCanvas };\n      })()"
+          },
+          {
+            "shot": "d-settings-themes-dark.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",
@@ -3783,7 +3862,19 @@
             "wait": 700
           },
           {
-            "tap": "工具调用"
+            "tap": "查看过程"
+          },
+          {
+            "wait": 1400
+          },
+          {
+            "eval": "(() => {\n  // The fold's own row carries the same counts in its spoken label, so the run\n  // is the row whose label *starts* with the tool wording.\n  const run = [...document.querySelectorAll('[role=button]')]\n    .find(node => (node.getAttribute('aria-label') || '').startsWith('工具调用'));\n  if (!run) throw new Error('no step summary row inside the opened process');\n  run.click();\n  return 'step run opened';\n})()"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "eval": "(() => {\n  const run = [...document.querySelectorAll('[role=button]')]\n    .find(node => (node.getAttribute('aria-label') || '').startsWith('工具调用'));\n  if (!run) throw new Error('the step summary row is gone');\n  // The reply block draws the summary line and, once opened, the rows under\n  // it — one child either way until the press lands.\n  if (run.parentElement.children.length < 2)\n    throw new Error('the step run did not open: only its summary line is drawn');\n  return 'the run is open';\n})()"
           },
           {
             "wait": 1600
@@ -3800,7 +3891,8 @@
           {
             "shot": "m-steps-expanded.png"
           }
-        ]
+        ],
+        "_comment": "The reply ships with its work folded onto the answer, so the individual step rows are two taps in: 查看过程 opens the answer's process, 工具调用 opens the run inside it."
       },
       "image": {
         "steps": [
@@ -4288,28 +4380,28 @@
             "wait": 1500
           },
           {
-            "eval": "(() => {\n  const labels = [...document.querySelectorAll('[role=radio]')].map(node => node.getAttribute('aria-label'));\n  for (const wanted of ['跟随系统', '浅色', '深色', '小', '中', '大', '特大']) {\n    if (!labels.includes(wanted)) throw new Error('the appearance page is missing ' + wanted + ': ' + JSON.stringify(labels));\n  }\n  // Each size chip is set at the size it picks, so the choice reads as a size.\n  const chipSize = label => getComputedStyle(document.querySelector(`[role=radio][aria-label=\"${label}\"]`).firstElementChild).fontSize;\n  const sizes = ['小', '中', '大', '特大'].map(chipSize);\n  if (new Set(sizes).size !== 4) throw new Error('the size chips are not all different: ' + JSON.stringify(sizes));\n  // The reply reading setting is this phone's own, and starts off.\n  const reply = document.querySelector('[aria-label=\"只显示最终回答\"]');\n  if (!reply) throw new Error('the appearance page has no reply reading setting');\n  if (reply.checked !== false) throw new Error('the reply setting does not start off: ' + reply.checked);\n  return 'appearance options ok: ' + JSON.stringify(sizes);\n})()"
+            "eval": "(() => {\n  const labels = [...document.querySelectorAll('[role=radio]')].map(node => node.getAttribute('aria-label'));\n  for (const wanted of ['跟随系统', '浅色', '深色', '小', '中', '大', '特大']) {\n    if (!labels.includes(wanted)) throw new Error('the appearance page is missing ' + wanted + ': ' + JSON.stringify(labels));\n  }\n  // Each size chip is set at the size it picks, so the choice reads as a size.\n  const chipSize = label => getComputedStyle(document.querySelector(`[role=radio][aria-label=\"${label}\"]`).firstElementChild).fontSize;\n  const sizes = ['小', '中', '大', '特大'].map(chipSize);\n  if (new Set(sizes).size !== 4) throw new Error('the size chips are not all different: ' + JSON.stringify(sizes));\n  // The reply level is this phone's own, offers both levels, and ships on 默认.\n  const replyLabels = [...document.querySelectorAll('[role=radio]')].map(node => node.getAttribute('aria-label'));\n  for (const wanted of ['默认', '详细']) {\n    if (!replyLabels.includes(wanted)) throw new Error('the reply level is missing ' + wanted + ': ' + JSON.stringify(replyLabels));\n  }\n  // A checked chip is painted with the accent border (react-native-web leaves\n  // `aria-checked` unset on a radio).\n  const checkedChip = label => getComputedStyle(document.querySelector(`[role=radio][aria-label=\"${label}\"]`)).borderColor === 'rgb(37, 99, 235)';\n  if (!checkedChip('默认') || checkedChip('详细'))\n    throw new Error('the reply level does not start on 默认');\n  return 'appearance options ok: ' + JSON.stringify(sizes);\n})()"
           },
           {
-            "eval": "(() => {\n  // The header is built from `desktopSettings.<level>`, so a level whose\n  // title key is missing paints the key itself instead of failing loudly. It\n  // is the heading in the row that also holds the back control: the list\n  // behind the sheet has headings of its own and comes first in the document.\n  const back = document.querySelector('[aria-label=\"返回\"]');\n  const bar = back && back.parentElement && back.parentElement.parentElement;\n  const header = bar ? bar.querySelector('[role=heading]') : null;\n  if (!header) throw new Error('the appearance level has no header');\n  const title = (header.textContent || '').trim();\n  if (title !== '外观') throw new Error('the appearance header is not its title: ' + title);\n  // Each group shows exactly the stored choice, and nothing at all is stored\n  // until the reader chooses: the default is to follow the phone, at the\n  // size the app was designed at.\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance') || 'null') || { themeMode: 'system', fontSize: 'medium' };\n  const themeLabel = { system: '跟随系统', light: '浅色', dark: '深色' }[stored.themeMode];\n  const sizeLabel = { small: '小', medium: '中', large: '大', xlarge: '特大' }[stored.fontSize];\n  const accent = 'rgb(37, 99, 235)';\n  const chosen = [...document.querySelectorAll('[role=radio]')]\n    .filter(node => getComputedStyle(node).borderColor === accent)\n    .map(node => node.getAttribute('aria-label'));\n  if (JSON.stringify(chosen) !== JSON.stringify([themeLabel, sizeLabel])) {\n    throw new Error('the checked choices do not match the stored appearance ' + JSON.stringify(stored) + ': ' + JSON.stringify(chosen));\n  }\n  return 'header and checked appearance ok';\n})()"
+            "eval": "(() => {\n  // The header is built from `desktopSettings.<level>`, so a level whose\n  // title key is missing paints the key itself instead of failing loudly. It\n  // is the heading in the row that also holds the back control: the list\n  // behind the sheet has headings of its own and comes first in the document.\n  const back = document.querySelector('[aria-label=\"返回\"]');\n  const bar = back && back.parentElement && back.parentElement.parentElement;\n  const header = bar ? bar.querySelector('[role=heading]') : null;\n  if (!header) throw new Error('the appearance level has no header');\n  const title = (header.textContent || '').trim();\n  if (title !== '外观') throw new Error('the appearance header is not its title: ' + title);\n  // Each group shows exactly the stored choice, and nothing at all is stored\n  // until the reader chooses: the default is to follow the phone, at the\n  // size the app was designed at.\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance') || 'null') || { themeMode: 'system', fontSize: 'medium', replyDetail: 'default' };\n  const themeLabel = { system: '跟随系统', light: '浅色', dark: '深色' }[stored.themeMode];\n  const sizeLabel = { small: '小', medium: '中', large: '大', xlarge: '特大' }[stored.fontSize];\n  const replyLabel = { default: '默认', detailed: '详细' }[stored.replyDetail || 'default'];\n  const accent = 'rgb(37, 99, 235)';\n  // One checked chip per group, in the order the groups are drawn.\n  const chosen = [...document.querySelectorAll('[role=radio]')]\n    .filter(node => getComputedStyle(node).borderColor === accent)\n    .map(node => node.getAttribute('aria-label'));\n  if (JSON.stringify(chosen) !== JSON.stringify([themeLabel, sizeLabel, replyLabel])) {\n    throw new Error('the checked choices do not match the stored appearance ' + JSON.stringify(stored) + ': ' + JSON.stringify(chosen));\n  }\n  return 'header and checked appearance ok';\n})()"
           },
           {
-            "eval": "document.querySelector('[aria-label=\"只显示最终回答\"]').click(); 'reply on'"
-          },
-          {
-            "wait": 1200
-          },
-          {
-            "eval": "(() => {\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance') || '{}');\n  if (stored.finalAnswerOnly !== true) throw new Error('the reply setting was not stored: ' + JSON.stringify(stored));\n  if (document.querySelector('[aria-label=\"只显示最终回答\"]').checked !== true) throw new Error('the reply setting did not switch on');\n  return 'reply setting stored and painted';\n})()"
-          },
-          {
-            "eval": "document.querySelector('[aria-label=\"只显示最终回答\"]').click(); 'reply off'"
+            "eval": "document.querySelector('[role=radio][aria-label=\"详细\"]').click(); 'detailed'"
           },
           {
             "wait": 1200
           },
           {
-            "eval": "(() => {\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance') || '{}');\n  if (stored.finalAnswerOnly !== false) throw new Error('the reply setting did not switch back: ' + JSON.stringify(stored));\n  if (document.querySelector('[aria-label=\"只显示最终回答\"]').checked !== false) throw new Error('the reply setting did not switch back on screen');\n  return 'reply setting off again';\n})()"
+            "eval": "(() => {\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance') || '{}');\n  if (stored.replyDetail !== 'detailed') throw new Error('the reply level was not stored: ' + JSON.stringify(stored));\n  const checked = label => getComputedStyle(document.querySelector(`[role=radio][aria-label=\"${label}\"]`)).borderColor === 'rgb(37, 99, 235)';\n  if (!checked('详细') || checked('默认')) throw new Error('the reply level did not switch to 详细');\n  return 'reply level stored and painted';\n})()"
+          },
+          {
+            "eval": "document.querySelector('[role=radio][aria-label=\"默认\"]').click(); 'default'"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance') || '{}');\n  if (stored.replyDetail !== 'default') throw new Error('the reply level did not switch back: ' + JSON.stringify(stored));\n  const checked = label => getComputedStyle(document.querySelector(`[role=radio][aria-label=\"${label}\"]`)).borderColor === 'rgb(37, 99, 235)';\n  if (!checked('默认') || checked('详细')) throw new Error('the reply level did not switch back on screen');\n  return 'reply level back on 默认';\n})()"
           },
           {
             "shot": "m-appearance-light.png"
@@ -4399,7 +4491,7 @@
             "wait": 1000
           },
           {
-            "eval": "(() => {\n  const stored = window.localStorage.getItem('future.mobile.appearance');\n  const parsed = stored ? JSON.parse(stored) : {};\n  if (parsed.themeMode !== 'system' || parsed.fontSize !== 'medium' || parsed.finalAnswerOnly !== false) {\n    throw new Error('the appearance was left changed: ' + stored);\n  }\n  return 'profile left on the default appearance';\n})()"
+            "eval": "(() => {\n  const stored = window.localStorage.getItem('future.mobile.appearance');\n  const parsed = stored ? JSON.parse(stored) : {};\n  if (parsed.themeMode !== 'system' || parsed.fontSize !== 'medium' || parsed.replyDetail !== 'default') {\n    throw new Error('the appearance was left changed: ' + stored);\n  }\n  return 'profile left on the default appearance';\n})()"
           }
         ]
       },
@@ -5292,6 +5384,34 @@
           },
           {
             "shot": "m-recent-window-open.png"
+          }
+        ]
+      },
+      "recent-new-conversation": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "var body=document.body.innerText;if(body.includes('还没有对话')) throw new Error('a conversation was created without asking');'a11y: nothing created yet'"
+          },
+          {
+            "tap": "新对话"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "var radios=[...document.querySelectorAll('[role=radio]')];if(radios.length<3) throw new Error('the chooser is missing: '+radios.length+' radios');var kinds=radios.slice(0,2).map(r=>(r.textContent||'').trim());if(JSON.stringify(kinds)!=='[\"工作区\",\"对话\"]')  throw new Error('the two answers are not workspace-then-chat: '+JSON.stringify(kinds));var workspaces=radios.slice(2).map(r=>(r.textContent||'').trim());if(!workspaces.includes('多巴胺与决策'))  throw new Error('the workspace list is not behind the workspace answer: '+JSON.stringify(workspaces));'a11y: workspace-then-chat, workspace list drawn — the workspace answer is in force'"
+          },
+          {
+            "shot": "m-recent-newconv.png"
           }
         ]
       }

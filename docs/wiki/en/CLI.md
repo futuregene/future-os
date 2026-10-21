@@ -317,6 +317,7 @@ future session approvals <id>
 future session approve <id> <request-id> [--allow <glob>]
 future session reject <id> <request-id>
 future session delete <id>
+future session prune --older-than 3d [--yes]  # delete sessions idle longer than that (preview by default)
 ```
 
 `session info` reads the persisted journal (what the conversation contains and

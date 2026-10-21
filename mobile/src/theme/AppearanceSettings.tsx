@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Pressable, StyleSheet, Switch, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import { FONT_SIZE_PREFERENCE_ORDER, FONT_SIZE_SCALE, layout, radius, spacing } from "./tokens";
-import { getAppearance, setAppearance, type Appearance, type ThemeMode } from "./preferences";
+import { getAppearance, REPLY_DETAIL_LEVELS, setAppearance, type Appearance, type ThemeMode } from "./preferences";
 import { createThemedStyles, useAppearance, useTheme } from "./ThemeContext";
 
 /** The three schemes, in the order the reader meets them. */
@@ -22,7 +22,7 @@ export function AppearanceSettings() {
   const styles = useStyles();
   const theme = useTheme();
   const { t } = useTranslation();
-  const { themeMode, fontSize, finalAnswerOnly } = useAppearance();
+  const { themeMode, fontSize, replyDetail } = useAppearance();
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
 
@@ -83,19 +83,22 @@ export function AppearanceSettings() {
       </View>
       {failed ? <Text accessibilityRole="alert" style={styles.error}>{t("appearance.saveFailed")}</Text> : null}
       <Text accessibilityRole="header" style={styles.label}>{t("appearance.reply")}</Text>
-      <View style={styles.row}>
-        <View style={styles.rowText}>
-          <Text style={styles.optionText}>{t("appearance.finalAnswerOnly")}</Text>
-          <Text style={styles.description}>{t("appearance.finalAnswerOnlyHint")}</Text>
-        </View>
-        <Switch
-          accessibilityLabel={t("appearance.finalAnswerOnly")}
-          disabled={saving}
-          onValueChange={value => void select({ finalAnswerOnly: value })}
-          trackColor={{ false: theme.colors.line, true: theme.colors.accent }}
-          value={finalAnswerOnly}
-        />
+      <View accessibilityRole="radiogroup" style={styles.options}>
+        {REPLY_DETAIL_LEVELS.map(value => (
+          <Pressable
+            accessibilityLabel={t(`appearance.replyDetail.${value}`)}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: replyDetail === value, disabled: saving }}
+            disabled={saving}
+            key={value}
+            onPress={() => void select({ replyDetail: value })}
+            style={({ pressed }) => [styles.option, replyDetail === value && styles.selected, (pressed || saving) && styles.dimmed]}
+          >
+            <Text style={styles.optionText}>{t(`appearance.replyDetail.${value}`)}</Text>
+          </Pressable>
+        ))}
       </View>
+      <Text style={styles.description}>{t(`appearance.replyDetailHint.${replyDetail}`)}</Text>
     </View>
   );
 }
@@ -119,8 +122,6 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   selected: { borderColor: theme.colors.accent, backgroundColor: theme.colors.accentSoft },
   dimmed: { opacity: 0.6 },
   optionText: { color: theme.colors.ink },
-  row: { flexDirection: "row", alignItems: "center", gap: spacing.sm, minHeight: layout.touchTarget },
-  rowText: { flex: 1, gap: 2 },
   description: { color: theme.colors.inkMuted, fontSize: theme.font(13), lineHeight: theme.font(18) },
   error: { color: theme.colors.danger, fontSize: theme.font(13) },
 }));

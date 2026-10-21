@@ -18,11 +18,21 @@ import { MenuPanel } from "../ui/MenuPanel";
  * because the list below it is otherwise identical-looking either way.
  */
 export function DeviceSelector({
+  compact = false,
   filter,
   onChange,
   onManage,
   peers,
 }: {
+  /**
+   * Draw the control as one item of a row rather than as a band of its own.
+   *
+   * The rail's list tools (search, this picker, the list's menu) are one row, so
+   * the picker has to give way: it keeps its glyph, its name and its chevron, and
+   * the name truncates instead of taking the full width. Its own row — where it
+   * is the only thing in it — stays the default.
+   */
+  compact?: boolean;
   filter: DeviceFilter;
   onChange: (filter: DeviceFilter) => void;
   onManage: () => void;
@@ -51,7 +61,7 @@ export function DeviceSelector({
   }
 
   return (
-    <div className="relative px-2">
+    <div className={cn("relative", compact ? "shrink-0" : "px-2")}>
       {/* Named explicitly because the visible name starts with a decorative
           glyph: without this the control's accessible name is the emoji, so
           neither a screen reader nor a test can address it as "all devices". */}
@@ -60,8 +70,8 @@ export function DeviceSelector({
         aria-haspopup="listbox"
         aria-label={label}
         className={cn(
-          "flex h-8 w-full items-center gap-2 rounded-md border border-line-soft px-2 text-xs font-medium text-ink transition-colors hover:bg-surface-subtle",
-          "truncate",
+          "flex items-center gap-1.5 rounded-md border border-line-soft px-1.5 text-xs font-medium text-ink transition-colors hover:bg-surface-subtle",
+          compact ? "h-7 max-w-30" : "h-8 w-full gap-2 px-2",
         )}
         onClick={() => setOpen(current => !current)}
         type="button"
@@ -75,7 +85,14 @@ export function DeviceSelector({
 
       {open
         ? (
-            <MenuPanel className="absolute left-2 right-2 top-9 z-40 p-1" ref={menuRef} role="listbox">
+            <MenuPanel
+              className={cn(
+                "absolute z-40 p-1",
+                compact ? "left-0 top-8 w-56" : "left-2 right-2 top-9",
+              )}
+              ref={menuRef}
+              role="listbox"
+            >
               <SelectorOption
                 active={filter.kind === "all"}
                 label={t("selector.all")}

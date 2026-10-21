@@ -4,10 +4,15 @@ import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
 
 /**
- * A compact, inline text search for the activity rail conversation list.
+ * The activity rail's conversation search: a glyph that opens into a field.
  *
- * Opens on demand so the rail keeps its narrow footprint, then filters rows as
- * the user types. Escape closes and clears the query.
+ * **A magnifier, until it is clicked.** The rail is a narrow column and the list
+ * below it is the point; a field that is always drawn spends a row on a control
+ * most sessions never touch. So the row holds one small glyph, and clicking it
+ * expands the field in place — the glyph's own place, so nothing moves.
+ *
+ * Escape closes and clears the query, because a closed field must not leave a
+ * filter behind that the reader cannot see.
  */
 export function ConversationSearch({
   className,
@@ -48,7 +53,9 @@ export function ConversationSearch({
       <button
         aria-label={t("activityRail.openSearch")}
         className={cn(
-          "inline-flex size-8 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft",
+          // Sized and placed like the compact controls beside it, so the closed
+          // state is one more glyph in the row rather than a gap.
+          "inline-flex size-7 shrink-0 items-center justify-center rounded-md text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft",
           className,
         )}
         onClick={onToggleOpen}

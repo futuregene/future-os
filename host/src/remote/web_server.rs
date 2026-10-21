@@ -40,14 +40,26 @@ pub(super) fn web_client_enabled() -> bool {
 
 /// Bind the web-client listener up front (in `start()`) so a busy port surfaces
 /// in the returned status instead of a silent web_url that goes nowhere.
-pub(super) async fn bind_web_listener() -> Result<tokio::net::TcpListener, crate::Error> {
-    tokio::net::TcpListener::bind(("0.0.0.0", WEB_PORT))
+///
+/// Returns the port the listener actually took: in production it is [`WEB_PORT`],
+/// and in a test build the OS picks it, so the URL the status reports has to
+/// come from the listener rather than from the constant.
+pub(super) async fn bind_web_listener() -> Result<(tokio::net::TcpListener, u16), crate::Error> {
+    let requested = web_bind_port();
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", requested))
         .await
         .map_err(|error| {
             crate::Error::Message(format!(
-                "web server bind on port {WEB_PORT} failed: {error}"
+                "web server bind on port {requested} failed: {error}"
             ))
-        })
+        })?;
+    let port = listener
+        .local_addr()
+        .map_err(|error| {
+            crate::Error::Message(format!("web server has no local address: {error}"))
+        })?
+        .port();
+    Ok((listener, port))
 }
 
 /// Best-effort LAN IPv4 address so a phone on the same network can reach the
@@ -66,11 +78,11 @@ pub(super) fn lan_ip() -> Option<String> {
 /// Serve the web client from `host/web/` on the already-bound listener.
 /// Reads each file per request so edits are picked up on browser refresh
 /// without rebuilding. Aborts on `stop()`.
-pub(super) async fn run_web_server(listener: tokio::net::TcpListener) {
+pub(super) async fn run_web_server(listener: tokio::net::TcpListener, port: u16) {
     let web_dir = web_dir();
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(WEB_MAX_CONNECTIONS));
     eprintln!(
-        "remote: web client at http://localhost:{WEB_PORT} (serving {})",
+        "remote: web client at http://localhost:{port} (serving {})",
         web_dir.display()
     );
     loop {

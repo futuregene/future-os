@@ -1,8 +1,8 @@
 import type { BundledLanguage, BundledTheme, HighlighterGeneric } from "shiki";
-import type { ResolvedTheme } from "../../lib/theme";
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { bundledLanguagesInfo, createHighlighter } from "shiki";
-import { useResolvedTheme } from "../../lib/theme";
+import { THEME_PALETTES, useResolvedTheme, useThemePalette } from "../../lib/theme";
+import { paletteShiki } from "../../theme/palettes";
 
 type CodeHighlighter = HighlighterGeneric<BundledLanguage, BundledTheme>;
 
@@ -21,12 +21,32 @@ export interface HighlightResult {
   fgColor: string;
 }
 
-// Shiki theme per app theme. Both are bundled up front (they are a few KB of
-// JSON) so switching the app theme never leaves code blocks on the old palette.
-const THEMES: Record<ResolvedTheme, BundledTheme> = {
-  light: "github-light",
-  dark: "github-dark",
-};
+/**
+ * Code block colors come from the theme's own data (`src/theme/palettes.json`),
+ * so a palette supplies its syntax-highlighting theme the same way it supplies
+ * its surfaces.
+ *
+ * Each palette reuses the editor theme its upstream project ships (`nord`,
+ * `solarized-light` / `solarized-dark`, `gruvbox-light-medium` /
+ * `gruvbox-dark-medium`, `rose-pine-dawn` / `rose-pine-moon`,
+ * `catppuccin-latte` / `catppuccin-mocha`, `tokyo-night`, `dracula`,
+ * `one-dark-pro` / `one-light`, `everforest-dark` / `everforest-light`,
+ * `kanagawa-wave` / `kanagawa-lotus`, `ayu-dark` / `ayu-light`, `vesper`): a
+ * Nord code block next to Nord chrome should look like code in Nord, not like
+ * GitHub Dark tinted cold. Where the project ships only one rendition, the
+ * palette names the nearest available editor theme for the other (Dracula →
+ * Rosé Pine Dawn, Nightfox → Nord, Vesper/Tokyo Night → One Light); the
+ * mapping is visible in the JSON and listed in `COLOR.md`.
+ *
+ * Every bundled theme is loaded up front (a few KB of JSON each) so switching
+ * the app theme never leaves code blocks on the old palette.
+ */
+const BUNDLED_THEMES: BundledTheme[] = [
+  ...new Set(THEME_PALETTES.flatMap(palette => [
+    paletteShiki(palette, "light"),
+    paletteShiki(palette, "dark"),
+  ])),
+];
 
 let highlighterPromise: Promise<CodeHighlighter> | null = null;
 let cachedHighlighter: CodeHighlighter | null = null;
@@ -80,7 +100,7 @@ function getHighlighter(): Promise<CodeHighlighter> {
     // (see ensureLanguageLoaded) instead of paying to parse all of them upfront
     // when the first code block appears.
     highlighterPromise = createHighlighter({
-      themes: [THEMES.light, THEMES.dark],
+      themes: BUNDLED_THEMES,
       langs: [],
     }).then((highlighter) => {
       cachedHighlighter = highlighter;
@@ -155,6 +175,7 @@ export function useCodeHighlighter() {
   // Components re-render when the app theme flips, and the token colors below
   // come from the matching Shiki theme.
   const resolvedTheme = useResolvedTheme();
+  const palette = useThemePalette();
 
   useEffect(() => {
     // Kick off the shared highlighter lazily on first mount; getHighlighter is
@@ -176,7 +197,7 @@ export function useCodeHighlighter() {
         return null;
       }
 
-      const shikiTheme = THEMES[resolvedTheme];
+      const shikiTheme = paletteShiki(palette, resolvedTheme);
       const cacheKey = `${shikiTheme}\u0000${normalizedLang}\u0000${code}`;
       const cached = highlightCache.get(cacheKey);
       if (cached) {
@@ -230,7 +251,7 @@ export function useCodeHighlighter() {
     // the highlighter/grammar loads gives `highlight` a new identity so memoized
     // consumers re-run against the now-ready highlighter or language.
     // eslint-disable-next-line react/exhaustive-deps
-    [version, resolvedTheme],
+    [version, palette, resolvedTheme],
   );
 
   return { highlight, isLoaded: cachedHighlighter !== null };
