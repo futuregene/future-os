@@ -32,5 +32,12 @@
     "fullscreen": "切换系统全屏",
     "close": "关闭面板",
     "more": "更多…"
+  },
+  "attention": {
+    "badge": "{{count}} 个待处理",
+    "approval": "待批准",
+    "failed": "失败",
+    "finished": "已完成",
+    "none": "没有需要你处理的会话"
   }
 }

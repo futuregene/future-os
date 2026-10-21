@@ -2256,6 +2256,32 @@
             "eval": "JSON.stringify({ open: !!document.querySelector('[role=\"menu\"]') })"
           }
         ]
+      },
+      "vibe-attention": {
+        "url": "http://localhost:5299/shot/?pinned=th_data,th_fig,th_longformer,th_sc&unread=th_data&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 2600
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const badge = document.querySelector('[data-vibe-attention]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,focused: root ? root.getAttribute('data-vibe-focused') : null,badge: badge ? badge.textContent : null,reasons: [...document.querySelectorAll('[data-vibe-attention-reason]')]  .map(e => e.getAttribute('data-vibe-attention-reason')),cells: document.querySelectorAll('[data-vibe-cell]').length,editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-grid-attention.png"
+          },
+          {
+            "eval": "(() => {const mac = /Mac/i.test(navigator.platform || navigator.userAgent);window.dispatchEvent(new KeyboardEvent('keydown', {key: 'a', code: 'KeyA', shiftKey: true,metaKey: mac, ctrlKey: !mac, bubbles: true, cancelable: true }));return mac ? 'meta+shift+a' : 'ctrl+shift+a';})()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => {const root = document.querySelector('[data-vibe-layer]');const badge = document.querySelector('[data-vibe-attention]');return JSON.stringify({layer: root ? root.getAttribute('data-vibe-layer') : null,focused: root ? root.getAttribute('data-vibe-focused') : null,badge: badge ? badge.textContent : null,reasons: [...document.querySelectorAll('[data-vibe-attention-reason]')]  .map(e => e.getAttribute('data-vibe-attention-reason')),cells: document.querySelectorAll('[data-vibe-cell]').length,editors: document.querySelectorAll('[contenteditable=\"true\"]').length,});})()"
+          },
+          {
+            "shot": "d-vibe-attention.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",
