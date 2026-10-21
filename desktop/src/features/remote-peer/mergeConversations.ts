@@ -1,6 +1,13 @@
 /**
- * The merged conversation list: this machine's threads and every paired remote
- * desktop's sessions, in one list, ordered by the same rule everywhere.
+ * The conversation list's rows: the machine the picker names — this machine's
+ * threads, or one paired desktop's sessions — ordered by the same rule
+ * everywhere.
+ *
+ * One machine at a time is the rail's rule, not this module's: the merge still
+ * accepts several catalogues and an `all` filter, because that is what a list
+ * of several machines *would* need and what its own tests still hold it to.
+ * The rail never asks for it — a conversation is created and opened on the
+ * machine the picker names, so the picker is the first step of both.
  *
  * Two properties matter and are the reason this is a pure module rather than
  * inline JSX:
