@@ -30,21 +30,29 @@ beforeEach(async () => {
 
 describe("reading a stored appearance", () => {
   it("is the default when nothing is stored", () => {
-    expect(parseAppearance(null)).toEqual({ themeMode: "system", fontSize: "medium" });
+    expect(parseAppearance(null)).toEqual({ themeMode: "system", fontSize: "medium", finalAnswerOnly: false });
   });
 
   it("reads a stored record back", () => {
-    expect(parseAppearance('{"themeMode":"dark","fontSize":"xlarge"}')).toEqual({ themeMode: "dark", fontSize: "xlarge" });
+    expect(parseAppearance('{"themeMode":"dark","fontSize":"xlarge"}')).toEqual({ themeMode: "dark", fontSize: "xlarge", finalAnswerOnly: false });
   });
 
   it("falls back field by field, so one bad value cannot cost the other", () => {
-    expect(parseAppearance('{"themeMode":"dark","fontSize":"huge"}')).toEqual({ themeMode: "dark", fontSize: "medium" });
-    expect(parseAppearance('{"themeMode":"sepia","fontSize":"large"}')).toEqual({ themeMode: "system", fontSize: "large" });
+    expect(parseAppearance('{"themeMode":"dark","fontSize":"huge"}')).toEqual({ themeMode: "dark", fontSize: "medium", finalAnswerOnly: false });
+    expect(parseAppearance('{"themeMode":"sepia","fontSize":"large"}')).toEqual({ themeMode: "system", fontSize: "large", finalAnswerOnly: false });
     // Not our JSON, and not even an object.
     expect(parseAppearance("{")).toEqual(DEFAULT_APPEARANCE);
     expect(parseAppearance('"dark"')).toEqual(DEFAULT_APPEARANCE);
     expect(parseAppearance("null")).toEqual(DEFAULT_APPEARANCE);
     expect(parseAppearance('{"fontSize":null}')).toEqual(DEFAULT_APPEARANCE);
+  });
+
+  it("reads the reply setting, and treats anything but a stored true as off", () => {
+    expect(parseAppearance('{"finalAnswerOnly":true}')).toEqual({ ...DEFAULT_APPEARANCE, finalAnswerOnly: true });
+    // A record written before the field existed has no answer to read.
+    expect(parseAppearance('{"themeMode":"dark"}').finalAnswerOnly).toBe(false);
+    expect(parseAppearance('{"finalAnswerOnly":"true"}').finalAnswerOnly).toBe(false);
+    expect(parseAppearance('{"finalAnswerOnly":false}').finalAnswerOnly).toBe(false);
   });
 });
 
@@ -57,7 +65,7 @@ describe("restoring on launch", () => {
     await fresh.initializeAppearance();
     expect(mockGetItem).toHaveBeenCalledTimes(1);
     expect(mockGetItem).toHaveBeenCalledWith("future.mobile.appearance");
-    expect(fresh.getAppearance()).toEqual({ themeMode: "dark", fontSize: "small" });
+    expect(fresh.getAppearance()).toEqual({ themeMode: "dark", fontSize: "small", finalAnswerOnly: false });
   });
 
   it("starts in the defaults when storage is unavailable", async () => {
@@ -71,17 +79,17 @@ describe("restoring on launch", () => {
 describe("saving a choice", () => {
   it("writes the whole record and applies it", async () => {
     await setAppearance({ themeMode: "dark" });
-    expect(mockSetItem).toHaveBeenCalledWith("future.mobile.appearance", JSON.stringify({ themeMode: "dark", fontSize: "medium" }));
-    expect(getAppearance()).toEqual({ themeMode: "dark", fontSize: "medium" });
+    expect(mockSetItem).toHaveBeenCalledWith("future.mobile.appearance", JSON.stringify({ themeMode: "dark", fontSize: "medium", finalAnswerOnly: false }));
+    expect(getAppearance()).toEqual({ themeMode: "dark", fontSize: "medium", finalAnswerOnly: false });
     await setAppearance({ fontSize: "large" });
-    expect(mockSetItem).toHaveBeenLastCalledWith("future.mobile.appearance", JSON.stringify({ themeMode: "dark", fontSize: "large" }));
-    expect(getAppearance()).toEqual({ themeMode: "dark", fontSize: "large" });
+    expect(mockSetItem).toHaveBeenLastCalledWith("future.mobile.appearance", JSON.stringify({ themeMode: "dark", fontSize: "large", finalAnswerOnly: false }));
+    expect(getAppearance()).toEqual({ themeMode: "dark", fontSize: "large", finalAnswerOnly: false });
   });
 
   it("keeps the previous value when the write is refused", async () => {
     await setAppearance({ fontSize: "xlarge" });
     mockSetItem.mockRejectedValueOnce(new Error("full"));
     await expect(setAppearance({ themeMode: "light" })).rejects.toThrow("full");
-    expect(getAppearance()).toEqual({ themeMode: "system", fontSize: "xlarge" });
+    expect(getAppearance()).toEqual({ themeMode: "system", fontSize: "xlarge", finalAnswerOnly: false });
   });
 });

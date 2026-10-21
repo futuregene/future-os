@@ -759,7 +759,10 @@ mod tests {
         let (out, _) = Output::memory();
         add(&args(&[project.to_str().unwrap()]), &out).unwrap();
 
-        // The app has imported the session into a thread.
+        // The app has imported the session into a thread. `last_message_at` and
+        // `created_at` are there because the workspace ordering ranks by
+        // `COALESCE(last_message_at, updated_at, created_at)` of the newest
+        // conversation — a real (migrated) store always carries them.
         let conn = Connection::open(home.database()).unwrap();
         conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS threads (
@@ -767,10 +770,12 @@ mod tests {
                  workspace_id TEXT NOT NULL DEFAULT '',
                  agent_session_id TEXT,
                  status TEXT NOT NULL DEFAULT 'active',
+                 last_message_at INTEGER,
+                 created_at INTEGER NOT NULL DEFAULT 0,
                  updated_at INTEGER NOT NULL DEFAULT 0
              );
-             INSERT INTO threads (id, workspace_id, agent_session_id, status, updated_at)
-             VALUES ('thr-1', 'ws-1', 'sess-1', 'active', 1);",
+             INSERT INTO threads (id, workspace_id, agent_session_id, status, last_message_at, updated_at)
+             VALUES ('thr-1', 'ws-1', 'sess-1', 'active', 1, 1);",
         )
         .expect("the app's threads table");
         drop(conn);

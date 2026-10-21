@@ -1,4 +1,4 @@
-import { Brain, ChevronDown, ChevronUp, Wrench } from "lucide-react-native";
+import { Brain, ChevronDown, ChevronUp, ListTree, Wrench } from "lucide-react-native";
 import { Fragment, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, View } from "react-native";
@@ -83,6 +83,39 @@ export function replyTailBlock(blocks: readonly ReplyBlock[]): number | null {
     if (isOutputBlock(blocks[index]!)) return index;
   }
   return null;
+}
+
+/**
+ * Split a settled reply into the work that led to its answer and the answer
+ * itself — the whole reply minus everything before its last piece of prose.
+ *
+ * "The final answer" is the reply's last non-empty prose block. An agent that
+ * works through a task writes notes between its calls, and the prose after the
+ * last call is what it is actually telling the reader; everything after that
+ * prose stays with the answer, so a trailing pause changes nothing about which
+ * block the reply opens on. A reply with no prose at all — still only work, or
+ * one whose answer the compaction replaced — has no answer to isolate, so
+ * nothing folds and the reader keeps the whole reply.
+ *
+ * Desktop's `splitFinalAnswer` decides the same thing for its own blocks; the
+ * two must agree, because both clients promise the same shape for a settled
+ * reply.
+ */
+export function splitFinalAnswer(blocks: readonly ReplyBlock[]): { process: ReplyBlock[]; answer: ReplyBlock[]; } {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index]!;
+    if (block.kind === "segment" && block.segment.kind === "text" && block.segment.text.trim().length > 0)
+      return { process: blocks.slice(0, index), answer: blocks.slice(index) };
+  }
+  return { process: [], answer: [...blocks] };
+}
+
+/** Every step row a set of rendered blocks holds, in order. */
+function blockSteps(blocks: readonly ReplyBlock[]): StepSegment[] {
+  return blocks.flatMap((block) => {
+    if (block.kind === "steps") return block.segments;
+    return isStepSegment(block.segment) ? [block.segment] : [];
+  });
 }
 
 /**
@@ -244,6 +277,107 @@ export function StepRunBlock({
                 opened
                 tool={segment.tool}
                 resolveTarget={onResolveToolTarget}
+              />
+            ),
+          )}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** One inline slice of an assistant reply, in stream order (desktop parity). */
+export function ReplyBlockRow({
+  block,
+  streaming,
+  onOpenFile,
+  onResolveToolTarget,
+}: {
+  block: ReplyBlock;
+  streaming?: boolean;
+  onOpenFile?(path: string): void;
+  onResolveToolTarget?: ToolTargetResolver;
+}) {
+  if (block.kind === "steps") {
+    return <StepRunBlock segments={block.segments} onResolveToolTarget={onResolveToolTarget} />;
+  }
+  return (
+    <SegmentBlock
+      segment={block.segment}
+      streaming={streaming}
+      onOpenFile={onOpenFile}
+      onResolveToolTarget={onResolveToolTarget}
+    />
+  );
+}
+
+/**
+ * The work a settled reply ran, folded above its answer.
+ *
+ * The phone's display setting `finalAnswerOnly` keeps a reply to the answer it
+ * ends on: the reasoning, calls and notes that produced it fold into this one
+ * row, so the answer sits at the reading edge of a screen that holds a few
+ * lines at a time. Nothing is discarded — opening the row draws exactly the
+ * blocks a reader sees with the setting off, in order, each still opening its
+ * own detail.
+ *
+ * The collapsed line follows the folded step run's idiom: glyphs and counts
+ * rather than a sentence, because a phone's margin is the whole budget. The
+ * wording lives on in the accessibility label.
+ */
+export function ProcessFold({
+  blocks,
+  onOpenFile,
+  onResolveToolTarget,
+}: {
+  blocks: ReplyBlock[];
+  onOpenFile?(path: string): void;
+  onResolveToolTarget?: ToolTargetResolver;
+}) {
+  const styles = useStyles();
+  const { colors } = useTheme();
+  const { t } = useTranslation();
+  const [expanded, setExpanded] = useState(false);
+  const counts = stepRunCounts(blockSteps(blocks));
+  const spoken = stepRunSummary(t, counts);
+  const label = expanded ? t("chat.processHide") : t("chat.processShow");
+  return (
+    <View style={[styles.inlineTool, styles.activityBlock]}>
+      <Pressable
+        accessibilityLabel={spoken ? `${label} · ${spoken}` : label}
+        accessibilityRole="button"
+        accessibilityState={{ expanded }}
+        hitSlop={ROW_HIT_SLOP}
+        onPress={() => setExpanded(value => !value)}
+        style={[styles.toolHeader, styles.stepSummaryRow]}
+      >
+        <ListTree color={colors.inkMuted} size={14} />
+        <Text style={styles.toolText}>{label}</Text>
+        {counts.map(({ kind, count }) => (
+          <Fragment key={kind}>
+            <View style={styles.stepSummaryItem}>
+              {kind === "thinking"
+                ? <Brain color={colors.inkMuted} size={14} />
+                : <Wrench color={colors.inkMuted} size={14} />}
+              <Text style={styles.toolText}>{t("chat.stepCount", { count })}</Text>
+            </View>
+          </Fragment>
+        ))}
+        {expanded ? (
+          <ChevronUp color={colors.inkMuted} size={14} />
+        ) : (
+          <ChevronDown color={colors.inkMuted} size={14} />
+        )}
+      </Pressable>
+      {expanded ? (
+        <View style={styles.processChildren}>
+          {blocks.map(
+            block => (
+              <ReplyBlockRow
+                block={block}
+                key={block.kind === "steps" ? block.segments[0]!.id : block.segment.id}
+                onOpenFile={onOpenFile}
+                onResolveToolTarget={onResolveToolTarget}
               />
             ),
           )}
