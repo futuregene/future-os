@@ -21,12 +21,17 @@
 //! launched, so Windows runs the negative control only. The module record says
 //! so; the measured number for this row is the macOS one (§11.1).
 
+#[cfg(unix)]
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 
 use future_goal::store::Store;
 use future_goal::webui::run_server;
+#[cfg(unix)]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// The name `open_in_browser` resolves on this platform.
@@ -84,6 +89,7 @@ fn write_opener_stub(dir: &Path, record: &Path) -> PathBuf {
 }
 
 /// Wait for the opener's record to appear, then return its single line.
+#[cfg(unix)]
 async fn opened_url(record: &Path) -> String {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -104,6 +110,7 @@ async fn opened_url(record: &Path) -> String {
 
 /// `http://127.0.0.1:<port>/`, with the port parsed out — the URL shape
 /// `run_server` builds must be exact, not merely non-empty.
+#[cfg(unix)]
 fn parse_dashboard_url(url: &str) -> u16 {
     let rest = url
         .strip_prefix("http://127.0.0.1:")
