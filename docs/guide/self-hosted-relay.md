@@ -55,8 +55,31 @@ That writes, into `--dir`:
 in plaintext: HTTP, `ws://` and `nats://`. That path is for a relay on a local
 network — see below.
 
+The advertised scheme and the listeners have to agree, and `init` enforces it:
+a `tls://` or `wss://` endpoint with no `--tls-cert`/`--tls-key` is refused,
+because the generated `nats.conf` would then listen in plaintext while every
+credential response promised TLS — the desktop requires TLS, the phone requires
+`wss://`, and the pairing simply fails. A certificate with a plaintext endpoint
+is refused for the same reason. If the relay sits behind something else that
+terminates TLS (a reverse proxy, a load balancer, a service mesh), the listener
+is *meant* to stay plaintext while the advertised URL is not: pass
+`--allow-plaintext-upstream` to skip the check. Only do that when you know a
+TLS-terminating hop is really in front of the relay — otherwise the credentials
+and metadata travel in the clear.
+
 Both listeners take their port from `--nats-url`/`--nats-ws-url`, so the
 address the relay hands to clients is the address it actually listens on.
+
+The generated `nats.conf` leaves nats-server's HTTP monitoring endpoint off —
+the relay never reads it, and its fixed port would keep a second relay on the
+same machine from starting. Uncomment the `http:` line in the file when you
+want those stats.
+
+`--listen` defaults to `127.0.0.1:8099` and `--public-url` to the matching
+loopback origin, which is right for the desktop on the same machine. A phone on
+the LAN needs the relay to listen on an address it can reach: pass
+`--listen 0.0.0.0:8099 --public-url http://<this machine's LAN address>:8099`,
+because the address in `--public-url` is copied verbatim into every invitation.
 
 ### Plaintext or TLS
 

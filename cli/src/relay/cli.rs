@@ -22,7 +22,8 @@ pub const HELP: &str = "future relay — an account-free NATS relay for FutureOS
 Usage:
   future relay init  --dir DIR [--listen ADDR] [--public-url URL]
                      [--nats-url URL] [--nats-ws-url URL]
-                     [--tls-cert PEM --tls-key PEM] [--force]
+                     [--tls-cert PEM --tls-key PEM]
+                     [--allow-plaintext-upstream] [--force]
   future relay serve --config FILE
   future relay --help
 
@@ -37,6 +38,15 @@ Defaults for init:
   --public-url    http://127.0.0.1:8099
   --nats-url      nats://127.0.0.1:4222
   --nats-ws-url   ws://127.0.0.1:9090
+
+The listeners and the URLs they advertise have to agree. A `tls://` or
+`wss://` endpoint promises TLS, so `init` needs --tls-cert/--tls-key for it and
+refuses to write a plaintext listener advertised as TLS; a certificate with a
+plaintext endpoint is refused for the same reason. Only when the relay sits
+behind something else that terminates TLS — a reverse proxy, a load balancer —
+pass --allow-plaintext-upstream to skip that check: the relay then listens in
+plaintext and still advertises `tls://`/`wss://`, which is correct only because
+the hop in front of it is the one doing TLS.
 
 The relay has no accounts and no database. It keeps rooms in a JSON file beside
 relay.json, so a restart does not cost a re-pair, and it never stores a
@@ -68,6 +78,7 @@ struct InitArgs {
     nats_ws_url: String,
     tls_cert: Option<PathBuf>,
     tls_key: Option<PathBuf>,
+    allow_plaintext_upstream: bool,
     force: bool,
 }
 
@@ -80,6 +91,7 @@ fn parse_init(args: &[String]) -> anyhow::Result<InitArgs> {
         nats_ws_url: "ws://127.0.0.1:9090".into(),
         tls_cert: None,
         tls_key: None,
+        allow_plaintext_upstream: false,
         force: false,
     };
     let mut index = 0;
@@ -103,6 +115,7 @@ fn parse_init(args: &[String]) -> anyhow::Result<InitArgs> {
             "--nats-ws-url" => parsed.nats_ws_url = value()?,
             "--tls-cert" => parsed.tls_cert = Some(PathBuf::from(value()?)),
             "--tls-key" => parsed.tls_key = Some(PathBuf::from(value()?)),
+            "--allow-plaintext-upstream" => parsed.allow_plaintext_upstream = true,
             "--force" => parsed.force = true,
             other => bail!("unknown option `{other}`"),
         }
@@ -114,7 +127,69 @@ fn parse_init(args: &[String]) -> anyhow::Result<InitArgs> {
     if parsed.tls_cert.is_some() != parsed.tls_key.is_some() {
         bail!("--tls-cert and --tls-key go together");
     }
+    check_transport(&parsed)?;
     Ok(parsed)
+}
+
+/// The scheme of a `scheme://…` URL, lower-case, or `""` when it has none.
+fn url_scheme(url: &str) -> String {
+    url.split("://")
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// Whether clients reading this endpoint will attempt a TLS handshake.
+fn is_tls_scheme(url: &str) -> bool {
+    matches!(url_scheme(url).as_str(), "tls" | "wss")
+}
+
+/// Hold the advertised scheme and the generated listener to the same transport.
+///
+/// `init` copies `--nats-url`/`--nats-ws-url` into every credential response, so
+/// the scheme there is a promise to the clients. The generated `nats.conf` only
+/// speaks TLS when it was handed a certificate; `tls://` with no certificate
+/// therefore produces a plaintext listener that the desktop refuses (it requires
+/// TLS unless the pairing is a relay's `nats://`) and a `wss://` endpoint the
+/// phone cannot open — a deployment that looks configured and cannot pair. The
+/// reverse is the same mistake from the other side.
+///
+/// The one topology this cannot see is a TLS terminator in front of the relay
+/// (a reverse proxy, a load balancer, a service mesh). There the listener is
+/// meant to stay plaintext while the advertised URL is not, so the check is
+/// skipped only when the operator says so with `--allow-plaintext-upstream`.
+fn check_transport(args: &InitArgs) -> anyhow::Result<()> {
+    if args.allow_plaintext_upstream {
+        return Ok(());
+    }
+    let endpoints = [
+        ("--nats-url", args.nats_url.as_str()),
+        ("--nats-ws-url", args.nats_ws_url.as_str()),
+    ];
+    let mut tls: Vec<(&str, &str)> = Vec::new();
+    let mut plaintext: Vec<(&str, &str)> = Vec::new();
+    for (flag, url) in endpoints {
+        if is_tls_scheme(url) {
+            tls.push((flag, url));
+        } else {
+            plaintext.push((flag, url));
+        }
+    }
+    if args.tls_cert.is_none() {
+        if let Some((flag, url)) = tls.first() {
+            bail!(
+                "{flag} {url} declares TLS, but no certificate was given: pass --tls-cert PEM --tls-key PEM so the listener can serve it, use a plaintext endpoint (nats:// / ws://) for a relay on a local network, or pass --allow-plaintext-upstream if a TLS-terminating proxy sits in front of this relay"
+            );
+        }
+        return Ok(());
+    }
+    if let Some((flag, url)) = plaintext.first() {
+        bail!(
+            "{flag} {url} is plaintext, but --tls-cert/--tls-key were given: `init` cannot make that endpoint speak TLS, so use tls:// / wss:// there, drop the certificate (a relay on a local network needs no TLS), or pass --allow-plaintext-upstream if a TLS-terminating proxy sits in front of this relay"
+        );
+    }
+    Ok(())
 }
 
 fn init(args: &[String]) -> anyhow::Result<()> {
@@ -270,8 +345,10 @@ fn nats_conf(
          \n\
          listen: 0.0.0.0:{client_port}\n\
          {tls_block}\n\
-         # Bind the monitoring endpoint to loopback only, or remove this line.\n\
-         http: 127.0.0.1:8222\n\
+         # nats-server's HTTP monitoring endpoint is off by default: the relay\n\
+         # itself never reads it, and a fixed port would keep a second relay on\n\
+         # this machine from starting (`bind: Only one usage of each socket`).\n\
+         # Uncomment for stats on loopback: `http: 127.0.0.1:8222`.\n\
          \n\
          operator: \"{operator}\"\n\
          # The account JWTs live in this file (resolver_preload), so the resolver\n\
@@ -459,6 +536,121 @@ mod tests {
         // Without a certificate the template must not pretend TLS is on.
         assert!(!conf.contains("tls {"), "{conf}");
         assert!(conf.contains("no_tls: true"), "{conf}");
+        // No monitoring listener: the relay never reads it, and a fixed port
+        // stops a second relay on the same machine from starting. The hint is
+        // commented out, so the default file has no active `http:` directive.
+        assert!(
+            !conf
+                .lines()
+                .any(|line| line.trim_start().starts_with("http:")),
+            "{conf}"
+        );
+        assert!(conf.contains("http: 127.0.0.1:8222"), "{conf}");
+    }
+
+    /// A `tls://`/`wss://` endpoint is a promise to every client that reads the
+    /// credential response. Without a certificate the generated listener stays
+    /// plaintext, so `init` must refuse rather than write a relay nobody can
+    /// pair with — the desktop requires TLS and the phone requires `wss://`.
+    #[test]
+    fn a_tls_scheme_without_a_certificate_is_refused() {
+        for (flag, url) in [
+            ("--nats-url", "tls://relay.example.com:4222"),
+            ("--nats-ws-url", "wss://relay.example.com:9090"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().to_string_lossy().to_string();
+            let error = run(&[
+                "init".to_string(),
+                "--dir".to_string(),
+                path,
+                flag.to_string(),
+                url.to_string(),
+            ])
+            .expect_err("a TLS scheme needs a certificate")
+            .to_string();
+            assert!(error.contains(url), "{flag} is not named: {error}");
+            assert!(error.contains("--tls-cert"), "no way out given: {error}");
+            // Nothing is half-written: the check runs before the directory work.
+            assert!(!dir.path().join("relay.json").exists());
+        }
+    }
+
+    /// The same mismatch from the other side: a certificate makes both listeners
+    /// speak TLS, so an endpoint advertised as plaintext would be wrong too.
+    #[test]
+    fn a_certificate_with_a_plaintext_scheme_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("cert.pem");
+        let key = dir.path().join("key.pem");
+        for path in [&cert, &key] {
+            std::fs::write(path, "x").unwrap();
+        }
+        let error = run(&[
+            "init".to_string(),
+            "--dir".to_string(),
+            dir.path().to_string_lossy().to_string(),
+            "--nats-url".to_string(),
+            "nats://relay.example.com:4222".to_string(),
+            "--nats-ws-url".to_string(),
+            "wss://relay.example.com:9090".to_string(),
+            "--tls-cert".to_string(),
+            cert.to_string_lossy().to_string(),
+            "--tls-key".to_string(),
+            key.to_string_lossy().to_string(),
+        ])
+        .expect_err("a plaintext endpoint with a certificate is a mismatch")
+        .to_string();
+        assert!(error.contains("nats://relay.example.com:4222"), "{error}");
+        assert!(error.contains("--allow-plaintext-upstream"), "{error}");
+    }
+
+    /// A TLS terminator in front of the relay is a real deployment, so the
+    /// operator can say so: the check is skipped and the plaintext listener is
+    /// written while the advertised URL keeps its own scheme.
+    #[test]
+    fn allow_plaintext_upstream_accepts_either_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let cert = dir.path().join("cert.pem");
+        let key = dir.path().join("key.pem");
+        for path in [&cert, &key] {
+            std::fs::write(path, "x").unwrap();
+        }
+        // No certificate, TLS advertised: the proxy in front does the TLS.
+        let behind_proxy = dir.path().join("behind-proxy");
+        run(&[
+            "init".to_string(),
+            "--dir".to_string(),
+            behind_proxy.to_string_lossy().to_string(),
+            "--nats-url".to_string(),
+            "tls://relay.example.com:4222".to_string(),
+            "--nats-ws-url".to_string(),
+            "wss://relay.example.com:9090".to_string(),
+            "--allow-plaintext-upstream".to_string(),
+        ])
+        .expect("the flag opts out of the scheme check");
+        let config = RelayConfig::load(&behind_proxy.join("relay.json")).expect("config written");
+        assert_eq!(config.nats_url, "tls://relay.example.com:4222");
+        let conf = std::fs::read_to_string(behind_proxy.join("nats.conf")).unwrap();
+        assert!(
+            conf.contains("no_tls: true"),
+            "the listener stays plaintext"
+        );
+
+        // Certificate present, plaintext advertised: the same opt-out covers it.
+        let with_cert = dir.path().join("with-cert");
+        run(&[
+            "init".to_string(),
+            "--dir".to_string(),
+            with_cert.to_string_lossy().to_string(),
+            "--tls-cert".to_string(),
+            cert.to_string_lossy().to_string(),
+            "--tls-key".to_string(),
+            key.to_string_lossy().to_string(),
+            "--allow-plaintext-upstream".to_string(),
+        ])
+        .expect("the flag opts out of the scheme check");
+        assert!(with_cert.join("nats.conf").exists());
     }
 
     /// With a certificate the client port and the websocket port both get a
