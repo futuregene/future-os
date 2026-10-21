@@ -2713,6 +2713,31 @@
             "shot": "d-vibe-page-two.png"
           }
         ]
+      },
+      "rail-recent": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "最近"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "var list=document.querySelector('[data-testid=\"recent-rows\"]');if(!list) throw new Error('the recent view is not drawn');var secs=[...list.querySelectorAll('[data-recent-section]')].map(s=>s.getAttribute('data-recent-section'));if(JSON.stringify(secs)!==JSON.stringify(['active','earlier'])) throw new Error('stretches: '+JSON.stringify(secs));var counts=[...list.querySelectorAll('[data-recent-count]')].map(n=>Number(n.getAttribute('data-recent-count')));if(counts[0]!==3||counts[1]!==14) throw new Error('caption counts: '+JSON.stringify(counts));var rows=[...list.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));if(rows.length!==17) throw new Error('rows drawn: '+rows.length);'a11y: two stretches, 3 active over 14 earlier'"
+          },
+          {
+            "eval": "var rows=[...document.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));var sc=rows.indexOf('local::th_sc'), lf=rows.indexOf('local::th_longformer');if(sc<0||lf<0) throw new Error('the two running rows are missing: '+JSON.stringify(rows));if(sc>lf) throw new Error('the active stretch is not ordered by start time: th_sc at '+sc+', longformer at '+lf);if(rows.length>0 && rows.indexOf('desktop_studio::rs_forest')!==0)  throw new Error('a host run in flight is not the first row: '+rows[0]);'a11y: active ordered by creation, runs of both machines are in it'"
+          },
+          {
+            "eval": "var rows=[...document.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));var order=['local::th_review','local::th_chat1','local::th_review_a','local::th_review_b'];var idx=order.map(k=>rows.indexOf(k));if(idx.some(i=>i<0)) throw new Error('a finished row is missing: '+JSON.stringify(rows));if(idx[0]<3) throw new Error('the pinned conversation was lifted into the active stretch');for(var i=1;i<idx.length;i++) if(idx[i]<idx[i-1])  throw new Error('the earlier stretch is not ordered by last reply: '+JSON.stringify(idx));var pinnedHeadings=[...document.querySelectorAll('[data-testid=\"recent-rows\"] *')].filter(e=>e.children.length===0&&(e.textContent||'').trim()==='置顶');if(pinnedHeadings.length) throw new Error('the recent view drew a pinned section');'a11y: earlier by reply, pin is a marker'"
+          },
+          {
+            "shot": "d-rail-recent.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",

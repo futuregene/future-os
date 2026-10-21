@@ -597,6 +597,36 @@ The left navigation supports:
 - Every list section and workspace group expands/collapses; the rail lists only
   active conversations, so archived threads do not appear here (see 4.2).
 
+**The list-view switch (`Workspaces | Recent`)** is a row of its own between the
+nav entries and the list, about 28px, with both names written out (not an icon
+plus a tooltip: the tree is the default and the reader has no other way to learn
+a second view exists). The choice is stored on this machine
+(`future.activityRail.view`) and restored on restart; the default is always
+**Workspaces**, because the tree is the product's primary shape.
+
+"Recent" is a second **ordering** of the same list, not a second list: it draws
+no workspace groups, no pinned section and no fork tree, and lays every
+conversation (including a paired computer's) in one column of two stretches:
+
+- **Active** — a run that has not finished: producing output, queued, or waiting
+  on the reader's approval (which is *not* streaming, so a view that read
+  `streaming` alone would file the one thing waiting on them under "Earlier").
+  Ordered by the conversation's **start time**, newest first: a running turn
+  rewrites its activity stamp about once a second, so ranking by that swaps rows
+  under the reader's thumb. A host that sends no start time falls back to
+  recency for its rows.
+- **Earlier** — everything else, ordered by the **last reply**. Thirty rows at a
+  time (the desktop list is taller than a phone's), with "Show N more" under
+  them; the caption counts the whole stretch rather than the drawn part. Active
+  is never windowed.
+
+In "Recent" a pin is only a row marker and does not move the row (the two clocks
+are the page's rule), and a fork is a row of its own at its own time — there is
+no parent row above it to indent under. Search narrows the merged list by title
+and workspace name as it does elsewhere. The two views do not affect each other:
+switching back to Workspaces shows the same groups, folds, pinned section and
+row order as before.
+
 Pinning is **global**: every pinned conversation — whether belonging to a
 workspace or an ordinary Chat — is gathered in the top "Pinned" section;
 unpinning returns it to its own group. Workspace **groups** can be pinned too
