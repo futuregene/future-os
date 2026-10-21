@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "../../i18n";
 import { setFontSize } from "../../lib/fontSize";
+import { getFinalAnswerOnly, setFinalAnswerOnly } from "../../lib/replyDisplay";
 import { setThemeMode } from "../../lib/theme";
 import { GeneralPage } from "./GeneralPage";
 
@@ -35,6 +36,7 @@ beforeEach(() => {
   mocks.isWindows = true;
   setThemeMode("system");
   setFontSize("medium");
+  setFinalAnswerOnly(false);
   void i18n.changeLanguage("en");
 });
 
@@ -149,6 +151,25 @@ describe("generalPage font size picker", () => {
 
     expect(document.documentElement.style.getPropertyValue("--app-font-scale")).toBe("0.85");
     expect(localStorage.getItem("future.fontSize")).toBe("small");
+  });
+});
+
+describe("generalPage final answer only switch", () => {
+  it("reflects and persists the reading setting", () => {
+    const { container } = mount();
+    const toggle = container.querySelector<HTMLButtonElement>("button[role='switch'][aria-label='Show only the final answer']")!;
+
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(container.textContent).toContain("fold its reasoning, tool calls and notes");
+
+    act(() => toggle.click());
+
+    expect(getFinalAnswerOnly()).toBe(true);
+    expect(localStorage.getItem("future.reply.finalAnswerOnly")).toBe("true");
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+
+    act(() => toggle.click());
+    expect(getFinalAnswerOnly()).toBe(false);
   });
 });
 
@@ -294,19 +315,22 @@ describe("generalPage switches", () => {
 
     const switches = [...container.querySelectorAll<HTMLButtonElement>("[role=switch]")];
     expect(switches.map(item => item.getAttribute("aria-label"))).toEqual([
+      "Show only the final answer",
       "Auto-upgrade skills",
       "Skill recommendations",
       "Generate a title after the first answer",
       "Completion bell",
     ]);
-    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["true", "false", "true", "false"]);
+    expect(switches.map(item => item.getAttribute("aria-checked"))).toEqual(["false", "true", "false", "true", "false"]);
   });
 
   it("reports each toggle to its own callback, inverted", () => {
     const { container, props } = mount({ autoUpgradeSkills: true, bellOnComplete: true });
 
-    act(() => container.querySelectorAll<HTMLButtonElement>("[role=switch]")[0]!.click());
-    act(() => container.querySelectorAll<HTMLButtonElement>("[role=switch]")[3]!.click());
+    const toggle = (label: string) => container.querySelector<HTMLButtonElement>(`[role=switch][aria-label='${label}']`)!;
+
+    act(() => toggle("Auto-upgrade skills").click());
+    act(() => toggle("Completion bell").click());
 
     expect(props.onToggleAutoUpgradeSkills).toHaveBeenCalledExactlyOnceWith(false);
     expect(props.onToggleBellOnComplete).toHaveBeenCalledExactlyOnceWith(false);
