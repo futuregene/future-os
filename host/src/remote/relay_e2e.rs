@@ -24,9 +24,12 @@
 //!   cargo test -p futureos --lib remote::relay_e2e -- --ignored --nocapture
 //! ```
 //!
-//! This is a `cfg(test)` build, so the broker may be plaintext — the same
-//! carve-out `remote/real_network.rs` uses. A release build refuses a non-TLS
-//! relay, which is what a deployment gets.
+//! This is a `cfg(test)` build, so the broker may be plaintext. That needs no
+//! test-only carve-out: `connect_nats` waives required TLS for exactly one case
+//! — a relay-issued pairing (`control_url.is_some()`) whose endpoint is
+//! `nats://` — and keeps verified TLS for the Future platform and for any
+//! `tls://` endpoint (`future_remote_server::connect_nats`, `plaintext_relay`).
+//! A release build against this same relay behaves the same way.
 
 #![cfg(test)]
 
