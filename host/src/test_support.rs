@@ -41,6 +41,8 @@ pub mod provider_responses;
 
 pub mod tasks;
 
+pub(crate) mod timing;
+
 /// Retained entry unit fixtures opt into their original test configuration.
 /// Cargo's test-support feature alone never changes a product child process.
 pub fn configure_entry_fixture() {

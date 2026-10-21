@@ -64,7 +64,19 @@ jobs:
         run: node scripts/ci/rust-checks.mjs build
       - name: Tests
         if: inputs.mode == 'test'
+        env:
+          FUTURE_HOST_FIXTURE_TIMINGS: ${{ runner.os == 'Windows' && contains(matrix.packages, 'future-host') && format('{0}/host-fixture-timings.jsonl', runner.temp) || '' }}
         run: node scripts/ci/rust-checks.mjs test
+      - name: Summarize Host fixture timings
+        if: always() && inputs.mode == 'test' && runner.os == 'Windows' && contains(matrix.packages, 'future-host')
+        run: node scripts/ci/host-test-timings.mjs "${{ runner.temp }}/host-fixture-timings.jsonl"
+      - name: Upload Host fixture timings
+        if: always() && inputs.mode == 'test' && runner.os == 'Windows' && contains(matrix.packages, 'future-host')
+        uses: actions/upload-artifact@v7
+        with:
+          name: host-windows-fixture-timings
+          path: ${{ runner.temp }}/host-fixture-timings.jsonl
+          if-no-files-found: error
       - name: clippy
         if: inputs.mode == 'check'
         run: node scripts/ci/rust-checks.mjs clippy

@@ -6,6 +6,12 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      projects:
+        description: 'Optional comma-separated Cargo/npm project names or android,ios; empty runs full CI'
+        type: string
+        required: false
+        default: ''
   workflow_call:
     inputs:
       full:
@@ -70,6 +76,7 @@ jobs:
         id: plan
         env:
           FORCE_ALL: ${{ github.event_name == 'workflow_dispatch' || inputs.full == true }}
+          MANUAL_PROJECTS: ${{ github.event_name == 'workflow_dispatch' && inputs.projects || '' }}
         run: node scripts/ci/affected.mjs "$RUNNER_TEMP/ci-files.json"
 
   rust-linux-test:

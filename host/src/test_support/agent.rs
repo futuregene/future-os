@@ -421,6 +421,7 @@ static MOCK_LOCK: Mutex<()> = Mutex::new(());
 /// `FUTURE_AGENT_GRPC_ADDR` at it, and resets the script + request log.
 pub struct MockAgentGuard {
     _lock: MutexGuard<'static, ()>,
+    timing: crate::test_support::timing::FixtureTiming,
 }
 
 pub fn mock_agent() -> MockAgentGuard {
@@ -428,11 +429,14 @@ pub fn mock_agent() -> MockAgentGuard {
 }
 
 pub fn mock_agent_with_cleanup(cleanup: fn()) -> MockAgentGuard {
+    let mut timing = crate::test_support::timing::FixtureTiming::start("MockAgentGuard", "agent");
     let lock = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    timing.mark("lock_wait");
     // A finished test's observers keep re-attaching on the ambient runtime;
     // drop them now so their get_state/stream_events calls can't consume the
     // replies this test is about to script.
     cleanup();
+    timing.mark("pre_cleanup");
     install_channel_runtime();
     ensure_mock_server();
     // Each independent fixture starts with a fresh verification. Otherwise a
@@ -450,7 +454,18 @@ pub fn mock_agent_with_cleanup(cleanup: fn()) -> MockAgentGuard {
         state.requests.clear();
         state.stream_requests.clear();
     }
-    MockAgentGuard { _lock: lock }
+    timing.mark("setup");
+    MockAgentGuard {
+        _lock: lock,
+        timing,
+    }
+}
+
+impl Drop for MockAgentGuard {
+    fn drop(&mut self) {
+        self.timing.mark("body");
+        self.timing.finish();
+    }
 }
 
 impl MockAgentGuard {
@@ -665,6 +680,7 @@ pub struct TestHome {
     prev_home: Option<String>,
     dir: PathBuf,
     cleanup: fn(),
+    timing: crate::test_support::timing::FixtureTiming,
 }
 
 impl TestHome {
@@ -673,15 +689,18 @@ impl TestHome {
     }
 
     pub fn with_cleanup(tag: &str, cleanup: fn()) -> Self {
+        let mut timing = crate::test_support::timing::FixtureTiming::start("TestHome", tag);
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let lock = crate::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        timing.mark("lock_wait");
         // Process-lifetime workers and observers must be gone BEFORE publishing
         // the new HOME and creating its schema, not later when mock_agent is
         // acquired. Otherwise an old task can resolve this new HOME and lock
         // its SQLite database during migration.
         cleanup();
+        timing.mark("pre_cleanup");
         let dir = std::env::temp_dir().join(format!(
             "futureos-bridge-test-{}-{}-{}",
             std::process::id(),
@@ -692,6 +711,7 @@ impl TestHome {
         std::fs::create_dir_all(&dir).expect("create test home");
         let prev_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", &dir);
+        timing.mark("home_setup");
         // The cancels above stop tracked tasks, but a task outside those
         // registries can still be mid-write on the freshly published HOME and
         // hold its lock for a moment (slow CI runners widen this window).
@@ -714,11 +734,13 @@ impl TestHome {
             }
         }
         result.expect("initialize app store in test home");
+        timing.mark("store_setup");
         Self {
             _lock: lock,
             prev_home,
             dir,
             cleanup,
+            timing,
         }
     }
 
@@ -729,7 +751,9 @@ impl TestHome {
 
 impl Drop for TestHome {
     fn drop(&mut self) {
+        self.timing.mark("body");
         (self.cleanup)();
+        self.timing.mark("cleanup");
         match &self.prev_home {
             Some(prev) => std::env::set_var("HOME", prev),
             None => std::env::remove_var("HOME"),
@@ -739,6 +763,7 @@ impl Drop for TestHome {
         // leaves the directory behind on every run.
         crate::store::close_pool();
         let _ = std::fs::remove_dir_all(&self.dir);
+        self.timing.finish();
     }
 }
 

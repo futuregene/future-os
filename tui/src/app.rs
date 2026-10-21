@@ -10057,6 +10057,17 @@ mod tests {
 
     // ─── Fake terminal ────────────────────────────────────────────────
 
+    struct TestAgentEvents {
+        receiver: mpsc::UnboundedReceiver<AgentEvent>,
+        client: Arc<GrpcClient>,
+    }
+
+    impl Drop for TestAgentEvents {
+        fn drop(&mut self) {
+            self.client.disconnect();
+        }
+    }
+
     struct FakeTerminal {
         writes: Rc<RefCell<Vec<String>>>,
         cols: u16,
@@ -10066,6 +10077,10 @@ mod tests {
         /// When set, `start` fails — the terminal-failure path a real console
         /// takes on an unusable handle.
         fail_start: bool,
+        // App fixtures do not run the outer terminal event loop. Keep its
+        // inbox alive until the app drops, otherwise the first mock ping is
+        // interpreted as "app gone" and every subsequent RPC can wait 5 s.
+        agent_events: Option<TestAgentEvents>,
     }
 
     impl TerminalIo for FakeTerminal {
@@ -10120,6 +10135,7 @@ mod tests {
                 on_input: None,
                 on_resize: None,
                 fail_start: false,
+                agent_events: None,
             },
             Arc::new(client),
             op_tx,
@@ -10530,6 +10546,7 @@ mod tests {
                 on_input: None,
                 on_resize: None,
                 fail_start: false,
+                agent_events: None,
             },
             Arc::new(client),
             op_tx,
@@ -14296,7 +14313,8 @@ mod tests {
         cli_options: &CliOptions,
     ) -> (App<FakeTerminal>, mpsc::UnboundedReceiver<UiCmd>) {
         let (op_tx, op_rx) = mpsc::unbounded_channel();
-        let (client, _events, _conn) = GrpcClient::new(addr);
+        let (client, events, _conn) = GrpcClient::new(addr);
+        let client = Arc::new(client);
         let app = App::new(
             FakeTerminal {
                 writes: Rc::new(RefCell::new(Vec::new())),
@@ -14305,13 +14323,53 @@ mod tests {
                 on_input: None,
                 on_resize: None,
                 fail_start: false,
+                agent_events: Some(TestAgentEvents {
+                    receiver: events,
+                    client: client.clone(),
+                }),
             },
-            Arc::new(client),
+            client,
             op_tx,
             cli_options,
             test_settings_path(),
         );
         (app, op_rx)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn live_app_fixture_keeps_its_event_inbox_until_the_app_drops() {
+        let (addr, _) = spawn_app_mock().await;
+        let (mut app, _) = make_app_at(&addr, &CliOptions::default());
+        app.client.set_current_session_id("s1");
+        app.client.connect_events();
+        let inbox = app
+            .terminal
+            .agent_events
+            .as_mut()
+            .expect("owned event inbox");
+        let event = tokio::time::timeout(Duration::from_secs(10), inbox.receiver.recv())
+            .await
+            .expect("the real mock stream must deliver its first frame")
+            .expect("the event inbox stays open");
+        assert_eq!(event.r#type, "ping");
+        assert!(
+            app.client.is_connected(),
+            "delivery must keep the stream live"
+        );
+        app.client
+            .get_state()
+            .await
+            .expect("RPC over the live fixture");
+        assert!(
+            app.client.is_connected(),
+            "RPC must not lose the event consumer"
+        );
+        let client = app.client.clone();
+        drop(app);
+        assert!(
+            !client.is_connected(),
+            "dropping the fixture disconnects it"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -23268,6 +23326,7 @@ mod tests {
                 on_input: None,
                 on_resize: None,
                 fail_start: false,
+                agent_events: None,
             },
             Arc::new(client),
             op_tx,

@@ -5,7 +5,12 @@
 ## 常规检查
 
 [`ci.yml`](../../.github/workflows/ci.yml) 在 PR、merge group 和 main push 时运行，
-按改动范围选择项目；手动 dispatch 执行全部常规项目。删除和重命名前的路径也参与识别。
+按改动范围选择项目；手动 dispatch 默认执行全部常规项目。
+手动入口的可选 `projects` 参数接受逗号分隔的 Cargo/npm workspace 项目名，
+例如 `future-host,future-tui,future-cli`，沿用现有 runner 分组，只执行明确选择的项目，
+不自动扩展消费者。原生任务使用 `android`、`ios`；仅选择 `@future-os/mobile` 时执行 JS 检查。
+未知项目名会使计划失败。PR、merge group 和 main push 始终自动判断改动和依赖，
+包含删除及重命名前的路径，手动选择不会限制这些事件。
 
 | Job | Runner | 内容 |
 |---|---|---|
@@ -24,6 +29,12 @@ iOS 的 Foundation 测试不代表 Simulator UI/E2E 覆盖。
 
 Rust 测试命令使用 `--no-fail-fast`：任一测试目标失败仍使 job 失败，但 Cargo 会继续执行
 其他选中的测试目标，让一轮 CI 收集它们的失败，避免每次只暴露第一个失败目标。
+
+Windows Host 测试 job 在 summary 和 `host-windows-fixture-timings` JSONL artifact 中
+记录夹具的共享锁等待、前置清理、HOME/数据库初始化、主体存活时间、清理与环境/文件恢复。
+计时不修改测试命令、断言或期限。嵌套 Home/Mock 夹具和并发锁等待存在重叠，
+累计秒数不能彼此相加，也不代表 job 墙钟时间；不使用这些夹具的测试不在计时范围内，
+主体存活时间包含嵌套初始化和销毁。其他 job 不启用该记录器。
 
 ## 范围检测与依赖图
 

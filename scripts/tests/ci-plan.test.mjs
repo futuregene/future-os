@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
-import { affected, catalog } from '../ci/affected.mjs';
+import { affected, catalog, manualPlan } from '../ci/affected.mjs';
 import { checkResult } from '../ci/ci-result.mjs';
 
 // Exercise the real manifests so newly introduced path dependencies participate.
@@ -9,6 +9,31 @@ const projects = catalog();
 const plan = (...files) => affected(files, projects);
 const rust = result => result.rust.flatMap(group => group.packages);
 const ts = result => result.typescript.map(pkg => pkg.name);
+
+test('manual selection keeps exact Cargo/npm projects and existing runner groups', () => {
+  const result = manualPlan('future-host, future-tui,future-cli,future-host,@future-os/markdown', projects);
+  assert.deepEqual(new Set(rust(result)), new Set(['future-host', 'future-tui', 'future-cli']));
+  assert.deepEqual(result.rust.map(row => row.name).sort(), ['host', 'tui-cli']);
+  assert.deepEqual(ts(result), ['@future-os/markdown']);
+  assert.equal(result.android || result.ios, false);
+  assert.ok(!rust(result).includes('futureos'), 'manual selection does not expand to consumers');
+});
+
+test('empty manual selection is full and native projects are explicit', () => {
+  assert.deepEqual(manualPlan('  ', projects), affected([], projects, true));
+  const mobile = manualPlan('@future-os/mobile', projects);
+  assert.equal(mobile.android || mobile.ios, false);
+  const native = manualPlan('android,ios', projects);
+  assert.equal(native.android && native.ios, true);
+  assert.deepEqual(rust(native), []);
+  assert.deepEqual(ts(native), []);
+});
+
+test('invalid manual selections fail rather than silently selecting nothing', () => {
+  for (const selection of ['future-hots', 'future-host,', 'future-host,,future-cli', 'future-remote-interop']) {
+    assert.throws(() => manualPlan(selection, projects), /Unknown manual CI project/);
+  }
+});
 
 test('RPC reaches its transitive Rust consumers, including Desktop', () => {
   const result = plan('packages/rpc/src/lib.rs');

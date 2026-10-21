@@ -144,8 +144,41 @@ export function affected(files, projects, force = false) {
   };
 }
 
+// Explicit manual selections do not expand to consumers. PR/push planning
+// continues to use changed files and the reverse dependency graph above.
+export function manualPlan(selection, projects) {
+  if (typeof selection !== 'string') throw new Error('Invalid manual project selection');
+  const full = affected([], projects, true);
+  if (!selection.trim()) return full;
+  const names = new Set(selection.split(',').map(name => name.trim()));
+  const allowed = new Set([
+    ...full.rust.flatMap(group => group.packages),
+    ...full.typescript.map(pkg => pkg.name), 'android', 'ios',
+  ]);
+  for (const name of names) {
+    if (!allowed.has(name)) throw new Error(`Unknown manual CI project: ${name || '(empty)'}`);
+  }
+  return {
+    rust: full.rust.map(group => ({ ...group, packages: group.packages.filter(name => names.has(name)) }))
+      .filter(group => group.packages.length),
+    typescript: full.typescript.filter(pkg => names.has(pkg.name)),
+    android: names.has('android'), ios: names.has('ios'),
+    reasons: {
+      rust: Object.fromEntries([...names].filter(name => full.reasons.rust[name])
+        .map(name => [name, ['explicit manual selection']])),
+      typescript: Object.fromEntries([...names].filter(name => full.reasons.typescript[name])
+        .map(name => [name, ['explicit manual selection']])),
+      android: names.has('android') ? ['explicit manual selection'] : [],
+      ios: names.has('ios') ? ['explicit manual selection'] : [],
+    },
+  };
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const plan = affected(json(process.argv[2]), catalog(), process.env.FORCE_ALL === 'true');
+  const projects = catalog();
+  const plan = process.env.GITHUB_EVENT_NAME === 'workflow_dispatch' && process.env.MANUAL_PROJECTS?.trim()
+    ? manualPlan(process.env.MANUAL_PROJECTS, projects)
+    : affected(json(process.argv[2]), projects, process.env.FORCE_ALL === 'true');
   console.log(JSON.stringify(plan, null, 2));
   if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT,
     ['rust', 'typescript', 'android', 'ios'].map(key => `${key}=${JSON.stringify(plan[key])}\n`).join(''));

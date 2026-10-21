@@ -119,10 +119,20 @@ pub fn app_data_path() -> Result<AppDataPath, crate::Error> {
 /// tree, and the Desktop runs it off the launch path — see
 /// [`reconcile_after_startup`].
 pub fn initialize_app_store() -> Result<(), crate::Error> {
+    #[cfg(any(test, feature = "test-support"))]
+    let mut timing =
+        crate::test_support::timing::FixtureTiming::start("StoreInit", "initialize_app_store");
     ensure_app_dirs()?;
     let conn = connect()?;
+    #[cfg(any(test, feature = "test-support"))]
+    timing.mark("open_store");
     migrations::initialize(&conn)?;
     drop(conn);
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        timing.mark("store_setup");
+        timing.finish();
+    }
     Ok(())
 }
 

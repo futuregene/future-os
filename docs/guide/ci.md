@@ -5,8 +5,14 @@
 ## Regular checks
 
 [`ci.yml`](../../.github/workflows/ci.yml) runs on pull requests, merge groups,
-and pushes to main. A manual dispatch runs every regular project. Main pushes
-select only their affected projects, including deletions and rename sources.
+and pushes to main. A manual dispatch runs every regular project by default.
+Its optional `projects` input accepts comma-separated Cargo/npm workspace names,
+for example `future-host,future-tui,future-cli`. It selects exactly those projects
+using the existing runner groups; consumers are not added. Use `android` or `ios`
+for native jobs (selecting `@future-os/mobile` alone runs the JS checks).
+Unknown names fail planning. PRs, merge groups and main pushes always use automatic
+change/dependency detection, including deletions and rename sources; manual
+selection never restricts those events.
 
 | Job | Runner | Work |
 |---|---|---|
@@ -27,6 +33,15 @@ do not claim Simulator UI/E2E coverage.
 Rust test invocations use `--no-fail-fast`: a failed target still fails its job,
 but Cargo continues through the other selected test targets so one run exposes
 all their failures instead of revealing them one target at a time.
+
+The Windows Host test job records opt-in fixture timings in the job summary and
+`host-windows-fixture-timings` JSONL artifact: shared-lock wait, pre-cleanup,
+home/database setup, body lifetime, cleanup and environment/file restoration.
+This instrumentation does not alter test commands, assertions or deadlines.
+Nested Home/Mock scopes and concurrent lock waits overlap: their cumulative
+seconds must not be added together or treated as job wall time. Tests without
+these fixtures are outside the measurement; body lifetime includes nested setup
+and teardown. Other jobs do not enable the recorder.
 
 ## Selection and dependency graph
 
