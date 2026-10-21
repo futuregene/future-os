@@ -285,6 +285,8 @@ export function ActivityRail({
   const [chatSectionCollapsed, setChatSectionCollapsed] = useState(false);
   // Chat section header menu.
   const [chatSectionMenuOpen, setChatSectionMenuOpen] = useState(false);
+  // The recent view's own actions menu (its only way into a batch).
+  const [recentMenuOpen, setRecentMenuOpen] = useState(false);
   // Which list the rail shows: the tree (its own shape, and the default) or the
   // recent view. Persisted — it is how this window lists things, and a restart
   // should bring back the list the reader left.
@@ -586,6 +588,31 @@ export function ActivityRail({
     return labels;
   }, [i18n.language, recent.rows, t]);
 
+  /**
+   * The scopes a recent-view batch is assembled from.
+   *
+   * One scope for the whole view: it is one flat list, and the tree's scopes
+   * (the chat section, one workspace) do not exist here. Pinning is a marker on
+   * this view rather than a section, so a pinned conversation is an ordinary row
+   * and joins the batch — the opposite of the tree, where a pin lifts a row out
+   * of its group (see `useRailSelection`).
+   */
+  const recentThreadScopes = useMemo(
+    () => new Map(visibleThreads.map(thread => [thread.id, "recent"] as const)),
+    [visibleThreads],
+  );
+  const recentRemoteScopes = useMemo(
+    () => new Map(remoteRows.filter(row => row.desktopId !== null).map(row => [row.key, "recent"] as const)),
+    [remoteRows],
+  );
+  /** This machine's threads the recent view lists — the batch's local half. */
+  const recentThreads = filteredVisibleThreads;
+  /** The hosts' rows the recent view lists — the batch's remote half. */
+  const recentRemoteRows = useMemo(
+    () => recent.rows.filter(row => row.desktopId !== null),
+    [recent.rows],
+  );
+
   const {
     deleteSelected,
     deselectAll,
@@ -606,10 +633,23 @@ export function ActivityRail({
     onBatchDeleteThreads,
     onDeleteRemoteConversations,
     onSelectThread,
-    remoteScopes,
-    threadScopes,
-    visibleRemoteRows: mergedMode ? filteredRemoteRows : visibleRemoteRows,
-    visibleThreads: mergedMode ? filteredVisibleThreads : visibleThreads,
+    // The batch is assembled from what the current view draws, in that view's
+    // own scopes: one workspace or the chat section in the tree, and the whole
+    // flat list in the recent view — where a pin is a marker rather than a
+    // section, so a pinned row joins the batch instead of being lifted out of it.
+    pinnedAreShortcuts: railView !== "recent",
+    remoteScopes: railView === "recent" ? recentRemoteScopes : remoteScopes,
+    threadScopes: railView === "recent" ? recentThreadScopes : threadScopes,
+    visibleRemoteRows: railView === "recent"
+      ? recentRemoteRows
+      : mergedMode
+        ? filteredRemoteRows
+        : visibleRemoteRows,
+    visibleThreads: railView === "recent"
+      ? recentThreads
+      : mergedMode
+        ? filteredVisibleThreads
+        : visibleThreads,
   });
 
   /** Whether this thread should show a selection checkbox. */
@@ -678,6 +718,11 @@ export function ActivityRail({
   const hasAnyVisibleRow = useMemo(() => {
     if (!queryActive)
       return true;
+    // The recent view draws every row of the filtered list, so it is the one
+    // place that can answer this without asking its sections: a row the tree
+    // folds away is still a row here.
+    if (railView === "recent")
+      return recent.rows.length > 0;
     if (mergedMode)
       return filteredRemoteRows.length > 0;
     return filteredPinnedThreads.length > 0
@@ -686,6 +731,8 @@ export function ActivityRail({
   }, [
     queryActive,
     mergedMode,
+    railView,
+    recent.rows.length,
     filteredRemoteRows,
     filteredPinnedThreads,
     filteredChatThreads,
@@ -787,7 +834,7 @@ export function ActivityRail({
    * workspace began.
    */
   const walkBlocks = useMemo(() => {
-    type Section = "pinned" | "workspace" | "chat";
+    type Section = "pinned" | "workspace" | "chat" | "recent";
     interface WalkBlock {
       section: Section;
       rows: { key: string; open: () => void }[];
@@ -813,6 +860,17 @@ export function ActivityRail({
       rows,
       open: open ?? (() => rows[0]?.open()),
     });
+
+    if (railView === "recent") {
+      // One block per drawn row, in the order the view draws them: the recent
+      // list is flat, so every conversation is a stop of its own and the two
+      // moves (fine and coarse) agree about where it begins — as they do for a
+      // chat in the tree, which is also a single-row block.
+      return recent.rows.map(row => toBlock("recent", [{
+        key: row.key,
+        open: () => openRow(row),
+      }]));
+    }
 
     if (mergedMode) {
       // The merged list's own grouping decides its blocks — pinned, then the
@@ -866,6 +924,8 @@ export function ActivityRail({
     onSelectThread,
     onSelectWorkspace,
     openRow,
+    railView,
+    recent.rows,
     threadParents,
     visibleChatThreads,
     visiblePinnedThreads,
@@ -875,7 +935,13 @@ export function ActivityRail({
   /** The rows the fine move walks: the blocks the current section draws. */
   const walkableRows = useMemo(
     () => walkBlocks
-      .filter(block => block.section === "pinned" || (active === "workspace" ? block.section === "workspace" : block.section === "chat"))
+      .filter(block =>
+        // The recent view is not split into the rail's sections — it is one list
+        // whichever section the shell thinks is open — so every block it built
+        // is walkable.
+        block.section === "recent"
+        || block.section === "pinned"
+        || (active === "workspace" ? block.section === "workspace" : block.section === "chat"))
       .flatMap(block => block.rows),
     [active, walkBlocks],
   );
@@ -1166,6 +1232,20 @@ export function ActivityRail({
                   <div className="min-w-0 flex-1">
                     <RailViewSwitch onChange={setRailView} view={railView} />
                   </div>
+                  {/* The recent view's own way into a batch. The tree reaches it
+                      from a section's menu (the chat section, a workspace); this
+                      view has no such heading — it is one flat list — so its one
+                      menu sits here, and marks the whole list as the batch. */}
+                  {railView === "recent" && !selectionMode
+                    ? (
+                        <ChatSectionMenu
+                          label={t("activityRail.recentActions")}
+                          onOpenChange={setRecentMenuOpen}
+                          onSelect={() => enterSelectionMode("recent")}
+                          open={recentMenuOpen}
+                        />
+                      )
+                    : null}
                 </div>
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="group relative -mx-2 flex min-h-0 flex-1">

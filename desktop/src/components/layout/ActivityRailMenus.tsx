@@ -167,10 +167,18 @@ export function WorkspaceHeaderMenu({
  * Chat section header menu: select conversations for batch deletion.
  */
 export function ChatSectionMenu({
+  label,
   open,
   onOpenChange,
   onSelect,
 }: {
+  /**
+   * What this menu is, for its trigger.
+   *
+   * The chat section's own by default; the recent view passes its label because
+   * there the menu marks the whole flat list rather than one section.
+   */
+  label?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSelect: () => void;
@@ -195,13 +203,13 @@ export function ChatSectionMenu({
         ref={triggerRef}
         aria-expanded={open}
         aria-haspopup="menu"
-        aria-label={t("activityRail.chatSectionActions")}
+        aria-label={label ?? t("activityRail.chatSectionActions")}
         className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted transition-colors hover:bg-surface-subtle hover:text-ink-soft"
         onClick={(event) => {
           event.stopPropagation();
           onOpenChange(!open);
         }}
-        title={t("activityRail.chatSectionActions")}
+        title={label ?? t("activityRail.chatSectionActions")}
         type="button"
       >
         <MoreHorizontal className="size-3.5" />

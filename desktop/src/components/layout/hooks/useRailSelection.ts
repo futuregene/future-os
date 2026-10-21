@@ -16,6 +16,7 @@ export function useRailSelection({
   onBatchDeleteThreads,
   onDeleteRemoteConversations,
   onSelectThread,
+  pinnedAreShortcuts = true,
   /** The scope each remote row is in, keyed by its merged-list row key. */
   remoteScopes,
   threadScopes,
@@ -33,6 +34,17 @@ export function useRailSelection({
    */
   onDeleteRemoteConversations: (rows: MergedConversation[]) => void;
   onSelectThread: (thread: StoredThread) => void;
+  /**
+   * Whether a pinned row belongs to the shortcut section above the groups.
+   *
+   * True for the tree, where it does: select-all in a group must not sweep up the
+   * conversations the user pinned on purpose, so those rows carry no checkbox
+   * while a batch is open. False for the recent view, which opens no such
+   * section — it ranks by one clock and draws the pin as a marker — so a pinned
+   * conversation there is an ordinary row, and leaving it out put one row of that
+   * very list beyond the batch for no reason the reader could see.
+   */
+  pinnedAreShortcuts?: boolean;
   remoteScopes: Map<string, string>;
   threadScopes: Map<string, string>;
   /** The remote rows the list is showing, for selection and counts. */
@@ -52,15 +64,15 @@ export function useRailSelection({
   // pinned *host* row, for the same reason.
   const scopedThreads = useMemo(
     () => visibleThreads.filter(
-      thread => !thread.pinned && threadScopes.get(thread.id) === selectionScope,
+      thread => (!pinnedAreShortcuts || !thread.pinned) && threadScopes.get(thread.id) === selectionScope,
     ),
-    [selectionScope, threadScopes, visibleThreads],
+    [pinnedAreShortcuts, selectionScope, threadScopes, visibleThreads],
   );
   const scopedRemoteRows = useMemo(
     () => visibleRemoteRows.filter(
-      row => !row.pinned && remoteScopes.get(row.key) === selectionScope,
+      row => (!pinnedAreShortcuts || !row.pinned) && remoteScopes.get(row.key) === selectionScope,
     ),
-    [remoteScopes, selectionScope, visibleRemoteRows],
+    [pinnedAreShortcuts, remoteScopes, selectionScope, visibleRemoteRows],
   );
 
   const exitSelectionMode = useCallback(() => {
@@ -109,13 +121,15 @@ export function useRailSelection({
   }, []);
 
   const isThreadInScope = useCallback(
-    (thread: StoredThread) => !thread.pinned && threadScopes.get(thread.id) === selectionScope,
-    [selectionScope, threadScopes],
+    (thread: StoredThread) =>
+      (!pinnedAreShortcuts || !thread.pinned) && threadScopes.get(thread.id) === selectionScope,
+    [pinnedAreShortcuts, selectionScope, threadScopes],
   );
 
   const isRemoteRowInScope = useCallback(
-    (row: MergedConversation) => !row.pinned && remoteScopes.get(row.key) === selectionScope,
-    [remoteScopes, selectionScope],
+    (row: MergedConversation) =>
+      (!pinnedAreShortcuts || !row.pinned) && remoteScopes.get(row.key) === selectionScope,
+    [pinnedAreShortcuts, remoteScopes, selectionScope],
   );
 
   const toggleThreadSelection = useCallback((thread: StoredThread) => {

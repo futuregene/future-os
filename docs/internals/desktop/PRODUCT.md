@@ -627,6 +627,16 @@ and workspace name as it does elsewhere. The two views do not affect each other:
 switching back to Workspaces shows the same groups, folds, pinned section and
 row order as before.
 
+**Batch selection has its own entry and scope in each view.** In the tree it is
+reached from a section's menu (the chats section, one workspace) and covers that
+section; a pinned conversation carries no checkbox there and is never swept up by
+"select all", because the pin lifts it above the groups. "Recent" is one flat
+list with no pinned section, so its own menu (right of the switch) marks the whole
+list, and a pinned conversation is an ordinary row — tickable and deletable, the
+same rule the phone uses. The keyboard's two levels (`thread.*` row by row,
+`group.*` group by group) walk the order the recent view *draws*: one list, one
+page, so every step is a row the reader can see.
+
 Pinning is **global**: every pinned conversation — whether belonging to a
 workspace or an ordinary Chat — is gathered in the top "Pinned" section;
 unpinning returns it to its own group. Workspace **groups** can be pinned too

@@ -60,6 +60,36 @@ describe("rail selection", () => {
     h.unmount();
   });
 
+  it("keeps a pinned row in a batch where pinning opens no section", () => {
+    // The recent view ranks by one clock and draws the pin as a marker, so its
+    // pinned rows are ordinary rows of that list: a batch there covers them, and
+    // the opposite (leaving one drawn row unselectable) is what a reader cannot
+    // explain.
+    const plain = thread("plain");
+    const pinned = { ...thread("pinned"), pinned: true };
+    const onBatchDeleteThreads = vi.fn();
+    const h = renderHook(() => useRailSelection({
+      onBatchDeleteThreads,
+      onDeleteRemoteConversations: vi.fn(),
+      onSelectThread: vi.fn(),
+      // One scope for the whole flat list, and pinning is not a section here.
+      pinnedAreShortcuts: false,
+      remoteScopes: new Map(),
+      threadScopes: new Map([[plain.id, "recent"], [pinned.id, "recent"]]),
+      visibleRemoteRows: [],
+      visibleThreads: [plain, pinned],
+    }));
+
+    act(() => h.current.enterSelectionMode("recent"));
+    expect(h.current.isThreadInScope(pinned)).toBe(true);
+    act(() => h.current.selectAll());
+    expect([...h.current.selectedThreadIds].sort()).toEqual(["pinned", "plain"]);
+    act(() => h.current.deleteSelected());
+    // Both rows, in the order the list holds them.
+    expect(onBatchDeleteThreads).toHaveBeenCalledWith([plain, pinned]);
+    h.unmount();
+  });
+
   it("never sweeps a pinned thread into a batch selection", () => {
     const plain = thread("plain");
     const pinned = { ...thread("pinned"), pinned: true };
