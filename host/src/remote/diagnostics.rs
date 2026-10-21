@@ -38,16 +38,22 @@ static FIXTURE_WEB_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::Atomi
 /// The fixture tests that call this hold the home guard, which serializes them,
 /// so one process-wide value is enough -- and dropping the guard restores the
 /// default even when the test panics.
-#[cfg(any(test, feature = "test-support"))]
+///
+/// `#[cfg(test)]`, not the wider `test-support` gate the static uses: only this
+/// crate's own `#[cfg(test)]` tests pin a port, and the desktop and CLI both
+/// enable `test-support` without compiling them. Gating these on the feature made
+/// them dead code in every such build, which is a `-D warnings` failure in the
+/// workspace clippy pass.
+#[cfg(test)]
 pub(super) struct WebPortPin;
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub(super) fn pin_web_port(port: u16) -> WebPortPin {
     FIXTURE_WEB_PORT.store(port, Ordering::Relaxed);
     WebPortPin
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 impl Drop for WebPortPin {
     fn drop(&mut self) {
         FIXTURE_WEB_PORT.store(0, Ordering::Relaxed);
