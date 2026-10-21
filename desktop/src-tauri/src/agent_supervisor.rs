@@ -188,6 +188,13 @@ pub async fn agent_status() -> AgentStatus {
         crate::agent_host::Phase::Failed(error) => {
             status.error = Some(error);
         }
+        // A start that yielded to another process ends in `Stopped`, not
+        // `Failed`. The page still has to name that process rather than
+        // substitute the transport error a probe of the unserved endpoint
+        // produces.
+        crate::agent_host::Phase::Stopped => {
+            status.error = crate::agent_host::host().yield_reason();
+        }
         _ => {}
     }
     match crate::agent_bridge::get_agent_readiness().await {
