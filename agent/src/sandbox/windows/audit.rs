@@ -17,9 +17,10 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FileAttributeTagInfo, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
-    GetVolumeInformationByHandleW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO,
-    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
-    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL, WRITE_DAC,
+    GetLongPathNameW, GetVolumeInformationByHandleW, FILE_ATTRIBUTE_REPARSE_POINT,
+    FILE_ATTRIBUTE_TAG_INFO, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+    FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    READ_CONTROL, WRITE_DAC,
 };
 #[cfg(test)]
 use windows_sys::Win32::Storage::FileSystem::{
@@ -44,6 +45,21 @@ impl FrozenPath {
     pub(crate) fn open_local_ntfs(path: &Path) -> io::Result<Self> {
         reject_non_local_path(path)?;
         let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // Expand DOS 8.3 aliases without resolving junctions/symlinks. Compare
+        // this spelling with the opened handle's final path so real redirection
+        // still fails closed; RUNNER~1 and runneradmin are the same directory.
+        let needed = unsafe { GetLongPathNameW(wide.as_ptr(), std::ptr::null_mut(), 0) };
+        if needed == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut expanded = vec![0u16; needed as usize + 1];
+        let written = unsafe {
+            GetLongPathNameW(wide.as_ptr(), expanded.as_mut_ptr(), expanded.len() as u32)
+        };
+        if written == 0 || written as usize >= expanded.len() {
+            return Err(io::Error::last_os_error());
+        }
+        let expected = PathBuf::from(std::ffi::OsString::from_wide(&expanded[..written as usize]));
         // WRITE_DAC is requested up front: if the current unelevated user cannot
         // change this DACL, approval must fail rather than trigger UAC or owner
         // changes later.
@@ -69,7 +85,7 @@ impl FrozenPath {
         frozen.require_ntfs()?;
         frozen.final_path = frozen.query_final_path()?;
         reject_non_local_path(&frozen.final_path)?;
-        if !same_windows_path(path, &frozen.final_path) {
+        if !same_windows_path(&expected, &frozen.final_path) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(

@@ -589,7 +589,7 @@ mod tests {
     fn a_directory_is_one_workspace_and_reopens_by_path() {
         let mut conn = test_conn();
         let dir = temp_dir("one");
-        let canonical = dir.canonicalize().expect("canonicalize");
+        let canonical = strip_verbatim_prefix(dir.canonicalize().expect("canonicalize"));
 
         let created = create(
             &mut conn,
@@ -781,8 +781,7 @@ mod tests {
             create(&mut conn, &dir.display().to_string(), None, None, false, 0).expect("create");
         assert_eq!(
             created.path,
-            dir.canonicalize()
-                .expect("canonicalize")
+            strip_verbatim_prefix(dir.canonicalize().expect("canonicalize"))
                 .display()
                 .to_string()
         );
@@ -835,7 +834,7 @@ mod tests {
         bind_thread(&conn, "thread-1", "sess-1");
         bind_thread(&conn, "thread-2", "sess-2");
         let dir = temp_dir("filing");
-        let canonical = dir.canonicalize().expect("canonicalize");
+        let canonical = strip_verbatim_prefix(dir.canonicalize().expect("canonicalize"));
 
         let filing =
             file_session_for_cwd(&mut conn, "sess-1", &dir.display().to_string(), 5).expect("file");
@@ -967,7 +966,7 @@ mod tests {
     #[test]
     fn identity_falls_back_to_the_given_spelling_for_a_missing_directory() {
         let dir = temp_dir("normalize");
-        let canonical = dir.canonicalize().expect("canonicalize");
+        let canonical = strip_verbatim_prefix(dir.canonicalize().expect("canonicalize"));
         assert_eq!(normalize_path(&dir), canonical);
         // The same directory, spelled one level deeper and through `.`/`..`.
         let spelled = dir.join(".").join("..").join(dir.file_name().unwrap());

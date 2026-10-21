@@ -34,12 +34,49 @@ impl Drop for EnvGuard {
     }
 }
 
+/// Run a process-global environment test in its own single-test process.
+/// Returns true in the parent after verification, false in the isolated body.
+pub fn reexec_test() -> bool {
+    let thread = std::thread::current();
+    let name = thread.name().expect("named libtest thread");
+    const CHILD: &str = "FUTURE_HOST_ISOLATED_ENV_TEST";
+    if std::env::var(CHILD).as_deref() == Ok(name) {
+        return false;
+    }
+    let child = {
+        // Snapshot HOME while no other home fixture is publishing/restoring it.
+        // The child owns its environment after spawn; do not serialize its body.
+        let _lock = crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        std::process::Command::new(std::env::current_exe().expect("test executable"))
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD, name)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn isolated environment test")
+    };
+    let output = child.wait_with_output().expect("isolated test result");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success()
+            && stdout.contains("running 1 test")
+            && stdout.contains("1 passed; 0 failed"),
+        "isolated {name} failed: {stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
 /// Canonical real-loopback RPC and temporary SQLite fixture.
 pub mod agent;
 
 pub mod provider_responses;
 
 pub mod tasks;
+
+pub(crate) mod timing;
 
 /// Retained entry unit fixtures opt into their original test configuration.
 /// Cargo's test-support feature alone never changes a product child process.

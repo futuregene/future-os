@@ -361,13 +361,11 @@ fn ensure_mock_server() {
                         .expect("bind mock agent listener");
                     let addr = listener.local_addr().expect("mock agent local addr");
                     addr_tx.send(addr).expect("report mock agent addr");
+                    // Match the native Agent server's low-latency TCP policy.
+                    // serve_with_incoming does not apply Server TCP options.
                     let incoming =
-                        futures::stream::poll_fn(move |cx| match listener.poll_accept(cx) {
-                            std::task::Poll::Ready(result) => {
-                                std::task::Poll::Ready(Some(result.map(|(stream, _)| stream)))
-                            }
-                            std::task::Poll::Pending => std::task::Poll::Pending,
-                        });
+                        tonic::transport::server::TcpIncoming::from_listener(listener, true, None)
+                            .expect("mock Agent TCP incoming");
                     // Drive the server on the runtime's worker pool; it lives
                     // until the process exits, so it is spawned rather than
                     // awaited (awaiting would park this async block forever).
@@ -421,6 +419,7 @@ static MOCK_LOCK: Mutex<()> = Mutex::new(());
 /// `FUTURE_AGENT_GRPC_ADDR` at it, and resets the script + request log.
 pub struct MockAgentGuard {
     _lock: MutexGuard<'static, ()>,
+    timing: crate::test_support::timing::FixtureTiming,
 }
 
 pub fn mock_agent() -> MockAgentGuard {
@@ -428,11 +427,14 @@ pub fn mock_agent() -> MockAgentGuard {
 }
 
 pub fn mock_agent_with_cleanup(cleanup: fn()) -> MockAgentGuard {
+    let mut timing = crate::test_support::timing::FixtureTiming::start("MockAgentGuard", "agent");
     let lock = MOCK_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    timing.mark("lock_wait");
     // A finished test's observers keep re-attaching on the ambient runtime;
     // drop them now so their get_state/stream_events calls can't consume the
     // replies this test is about to script.
     cleanup();
+    timing.mark("pre_cleanup");
     install_channel_runtime();
     ensure_mock_server();
     // Each independent fixture starts with a fresh verification. Otherwise a
@@ -450,7 +452,18 @@ pub fn mock_agent_with_cleanup(cleanup: fn()) -> MockAgentGuard {
         state.requests.clear();
         state.stream_requests.clear();
     }
-    MockAgentGuard { _lock: lock }
+    timing.mark("setup");
+    MockAgentGuard {
+        _lock: lock,
+        timing,
+    }
+}
+
+impl Drop for MockAgentGuard {
+    fn drop(&mut self) {
+        self.timing.mark("body");
+        self.timing.finish();
+    }
 }
 
 impl MockAgentGuard {
@@ -623,6 +636,12 @@ pub fn stream_event(run_id: &str, idx: i64, event_type: &str, data: &str) -> Str
     }
 }
 
+thread_local! {
+    // Arm only this test's next synchronous initialization. A process-global
+    // flag can be consumed by a sibling while this test waits for HOME's lock.
+    static BUSY_FAULT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// Arm one synthetic `SQLITE_BUSY` for the NEXT store initialization a
 /// [`TestHome`] performs.
 ///
@@ -637,16 +656,14 @@ pub fn stream_event(run_id: &str, idx: i64, event_type: &str, data: &str) -> Str
 ///
 /// `test_support` is compiled only under `#[cfg(test)]`, so this is not a
 /// production seam.
-static BUSY_FAULT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
 #[cfg(test)]
 fn arm_busy_fault() {
-    BUSY_FAULT.store(true, Ordering::SeqCst);
+    BUSY_FAULT.set(true);
 }
 
 /// `crate::store::initialize_app_store()` with the one-shot busy fault applied.
 fn initialize_test_store() -> Result<(), crate::Error> {
-    if BUSY_FAULT.swap(false, Ordering::SeqCst) {
+    if BUSY_FAULT.replace(false) {
         return Err(crate::Error::Database(rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error {
                 code: rusqlite::ffi::ErrorCode::DatabaseBusy,
@@ -663,8 +680,10 @@ fn initialize_test_store() -> Result<(), crate::Error> {
 pub struct TestHome {
     _lock: MutexGuard<'static, ()>,
     prev_home: Option<String>,
+    prev_future_home: Option<std::ffi::OsString>,
     dir: PathBuf,
     cleanup: fn(),
+    timing: crate::test_support::timing::FixtureTiming,
 }
 
 impl TestHome {
@@ -673,15 +692,18 @@ impl TestHome {
     }
 
     pub fn with_cleanup(tag: &str, cleanup: fn()) -> Self {
+        let mut timing = crate::test_support::timing::FixtureTiming::start("TestHome", tag);
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let lock = crate::TEST_HOME_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        timing.mark("lock_wait");
         // Process-lifetime workers and observers must be gone BEFORE publishing
         // the new HOME and creating its schema, not later when mock_agent is
         // acquired. Otherwise an old task can resolve this new HOME and lock
         // its SQLite database during migration.
         cleanup();
+        timing.mark("pre_cleanup");
         let dir = std::env::temp_dir().join(format!(
             "futureos-bridge-test-{}-{}-{}",
             std::process::id(),
@@ -691,7 +713,20 @@ impl TestHome {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create test home");
         let prev_home = std::env::var("HOME").ok();
+        let prev_future_home = std::env::var_os("FUTURE_HOME");
+        std::env::remove_var("FUTURE_HOME");
         std::env::set_var("HOME", &dir);
+        timing.mark("home_setup");
+        // Own restoration before fallible initialization, so an initialization
+        // panic cannot publish this home's environment to the next test.
+        let mut home = Self {
+            _lock: lock,
+            prev_home,
+            prev_future_home,
+            dir,
+            cleanup,
+            timing,
+        };
         // The cancels above stop tracked tasks, but a task outside those
         // registries can still be mid-write on the freshly published HOME and
         // hold its lock for a moment (slow CI runners widen this window).
@@ -714,31 +749,38 @@ impl TestHome {
             }
         }
         result.expect("initialize app store in test home");
-        Self {
-            _lock: lock,
-            prev_home,
-            dir,
-            cleanup,
-        }
+        home.timing.mark("store_setup");
+        home
     }
 
     pub fn path(&self) -> &Path {
         &self.dir
     }
-}
 
-impl Drop for TestHome {
-    fn drop(&mut self) {
+    fn restore(&mut self) {
+        self.timing.mark("body");
         (self.cleanup)();
+        self.timing.mark("cleanup");
         match &self.prev_home {
             Some(prev) => std::env::set_var("HOME", prev),
             None => std::env::remove_var("HOME"),
+        }
+        match &self.prev_future_home {
+            Some(prev) => std::env::set_var("FUTURE_HOME", prev),
+            None => std::env::remove_var("FUTURE_HOME"),
         }
         // Release pooled connections first: Windows cannot unlink a file that
         // is still open, so deleting while the pool holds this home's database
         // leaves the directory behind on every run.
         crate::store::close_pool();
         let _ = std::fs::remove_dir_all(&self.dir);
+        self.timing.finish();
+    }
+}
+
+impl Drop for TestHome {
+    fn drop(&mut self) {
+        self.restore();
     }
 }
 
@@ -831,40 +873,22 @@ mod tests {
     /// `TestHome::drop` takes the `None` arm (removes HOME) when no HOME was
     /// set before the fixture was created.
     ///
-    /// `HOME` is process-global, so *both* ends of this test take `TEST_HOME_LOCK`:
-    /// reading the previous value while another test's `TestHome` is published would
-    /// capture that fixture's directory, and restoring it after the lock is gone
-    /// would publish a path its owner has already deleted — the next
-    /// `HOME`-reading test (a terminal cwd fallback, say) then resolves a directory
-    /// that no longer exists. `TestHome::new` takes the same non-reentrant lock
-    /// itself, so the guard is only held around the two raw `HOME` touches.
+    /// Observe restoration while the fixture still holds TEST_HOME_LOCK. A
+    /// drop/reacquire gap lets another test publish its HOME between the two
+    /// operations and can restore a directory that test has already deleted.
     #[test]
     fn test_home_drop_removes_home_when_unset_before() {
-        // The arm under test is the one for a process that never had a HOME (a
-        // bare `cargo test`, without this campaign's HOME override). This suite
-        // always has one, so the precondition is produced here — under the same
-        // lock — and the real value is restored after the arm has run.
-        let real_home = std::env::var("HOME").ok();
-        let saved = {
-            let _lock = crate::TEST_HOME_LOCK
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner());
-            std::env::remove_var("HOME");
-            std::env::var("HOME").ok()
-        };
         let mut home = TestHome::new("no-prev-home");
+        let saved = home.prev_home.take();
         home.prev_home = None;
-        drop(home);
-        let _lock = crate::TEST_HOME_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
-        match saved {
-            Some(saved) => std::env::set_var("HOME", saved),
-            None => std::env::remove_var("HOME"),
-        }
-        if let Some(real_home) = real_home {
-            std::env::set_var("HOME", real_home);
-        }
+        home.restore();
+        assert!(
+            std::env::var_os("HOME").is_none(),
+            "restore removes absent HOME"
+        );
+        // Still hold the SAME lock while restoring the original value. Dropping
+        // and reacquiring it here lets another fixture's HOME slip in between.
+        home.prev_home = saved;
     }
 
     /// `TestHome::new` retries a `SQLITE_BUSY` from the store initialization and
@@ -880,7 +904,7 @@ mod tests {
         arm_busy_fault();
         let home = TestHome::new("busy-retry");
         assert!(
-            !BUSY_FAULT.load(Ordering::SeqCst),
+            !BUSY_FAULT.get(),
             "the armed fault is consumed by the first attempt"
         );
         // The retry's own initialization is what left a usable store behind.

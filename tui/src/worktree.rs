@@ -1440,16 +1440,15 @@ mod tests {
             let dir =
                 std::env::temp_dir().join(format!("future-worktree-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&dir).unwrap();
-            // `git worktree list` prints resolved paths, and on macOS the temp
-            // dir is reached through the `/var` → `/private/var` symlink: the
-            // fixture resolves once so nothing downstream compares a resolved
-            // path against an unresolved one. Windows gets no such prefix: the
-            // temp dir has no symlink to resolve, and `canonicalize` would add
-            // the `\\?\` verbatim prefix git never prints.
-            #[cfg(not(windows))]
+            // Git reports long Windows names even when TEMP uses an 8.3 alias.
+            // Resolve once, removing only the verbatim prefix Git omits.
             let root = std::fs::canonicalize(&dir).unwrap();
             #[cfg(windows)]
-            let root = dir;
+            let root = PathBuf::from(
+                root.to_string_lossy()
+                    .strip_prefix(r"\\?\")
+                    .expect("canonical Windows temp path has a verbatim prefix"),
+            );
             git_in(&root, &["init", "-q", "-b", "main"]);
             git_in(&root, &["config", "user.email", "tui@example.com"]);
             git_in(&root, &["config", "user.name", "TUI Test"]);
@@ -1543,7 +1542,10 @@ mod tests {
         git_in(&repo.root, &["branch", "feat/taken"]);
 
         let created = create_worktree(&cli, &repo.path(), None, "feat/taken").unwrap();
-        assert_eq!(created.plan.path, repo.root.join(".worktrees/taken"));
+        assert_eq!(
+            created.plan.path,
+            repo.root.join(".worktrees").join("taken")
+        );
         assert_eq!(cli.branch(&created.plan.path).unwrap(), "feat/taken");
         let list = cli.probe(&repo.root).unwrap();
         assert_eq!(list.len(), 2, "the branch was attached, not recreated");

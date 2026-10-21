@@ -203,7 +203,12 @@ pub(super) fn connect() -> Result<PooledConnection, crate::Error> {
 }
 
 pub(super) fn apply_schema(conn: &Connection) -> Result<(), crate::Error> {
-    conn.execute_batch(SCHEMA)?;
+    // A batch of SQL alone still autocommits each CREATE TABLE/INDEX. Commit
+    // the base schema once, keeping the released migrations below in their
+    // own transactions (including their foreign-key toggles and retry rules).
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute_batch(SCHEMA)?;
+    tx.commit()?;
     super::legacy_history::preserve_legacy_history(conn)?;
     apply_approval_assessments_migration(conn)?;
     // This is a required identity invariant: one Agent session may back only
@@ -708,6 +713,37 @@ mod tests {
     fn apply_schema_on_fresh_db_succeeds() {
         let conn = Connection::open_in_memory().unwrap();
         apply_schema(&conn).unwrap();
+    }
+
+    #[test]
+    fn a_failed_base_schema_rolls_back_and_leaves_the_connection_usable() {
+        let conn = Connection::open_in_memory().unwrap();
+        // The base schema reaches its indexes after creating the other tables.
+        // This existing table cannot support idx_threads_workspace.
+        conn.execute_batch(
+            "CREATE TABLE threads(id TEXT PRIMARY KEY); INSERT INTO threads VALUES('original');",
+        )
+        .unwrap();
+        assert!(apply_schema(&conn).is_err());
+        assert!(
+            conn.is_autocommit(),
+            "the failed schema released its transaction"
+        );
+        let workspaces: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='workspaces')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(!workspaces, "earlier base-schema writes rolled back");
+        let original: String = conn
+            .query_row("SELECT id FROM threads", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(original, "original", "pre-existing data survived");
+        conn.execute_batch("DROP TABLE threads").unwrap();
+        apply_schema(&conn).expect("a corrected schema can be retried");
+        assert!(column_exists(&conn, "threads", "workspace_id").unwrap());
     }
 
     #[test]

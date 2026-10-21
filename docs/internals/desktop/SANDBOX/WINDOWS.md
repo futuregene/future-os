@@ -132,12 +132,17 @@ reliable solutions; the wrapper's encoding setup is put in a try, and command
 errors are judged by `$Error.Count` increments, so initialization encoding
 exceptions do not pollute a successful exit.
 
-Capture side `decode_restricted_shell_output`: 5.1 uses
-`MultiByteToWideChar(CP_OEMCP)`, pwsh7 uses UTF-8. Without a console, 5.1 pipes
-use the OEM fallback, not CP_ACP; Chinese is 936 in both, masking the problem —
-Western European 1252 vs 437/850, Russian 1251 vs 866, Greek 1253 vs 737
-differ. Characters beyond the OEM codepage already encoded as `?` cannot be
-recovered at decode; no claim of lossless arbitrary Unicode on 5.1.
+The driver creates a hidden console on the private desktop. A restricted
+`cmd.exe /d /s /c` bootstrap sets `chcp 65001` before launching PowerShell with
+its fixed flags and base64 `-EncodedCommand`; user command text never passes
+through cmd's parser. This establishes UTF-8 before PowerShell caches its
+output writer, including when CLM rejects the encoding setter. The bootstrap
+and shell remain in the same restricted token and no-breakaway Job, and stdout
+and stderr still use the explicit pipe handle allowlist.
+
+Capture side `decode_restricted_shell_output` accepts UTF-8 first and falls
+back to `MultiByteToWideChar(CP_OEMCP)` for legacy native tools. Bytes a native
+tool has already replaced with `?` cannot be recovered by either decoder.
 
 ### 2.4 Probe, maintenance, and app ownership
 

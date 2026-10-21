@@ -16,8 +16,8 @@ pub(crate) mod test_support {
                 _inner: future_host::auth_store::test_support::HomeGuard::with_cleanup(
                     label,
                     || {
-                        crate::runtime::cancel_test_tasks();
-                        crate::store::close_pool();
+                        future_host::auth_store::test_support::cleanup_host();
+                        crate::desktop_shutdown::reset_for_test();
                     },
                 ),
             }

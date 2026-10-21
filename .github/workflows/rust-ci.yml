@@ -1,0 +1,100 @@
+name: Rust CI runner
+
+on:
+  workflow_call:
+    inputs:
+      os:
+        required: true
+        type: string
+      mode:
+        required: true
+        type: string
+      projects:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  crates:
+    name: ${{ matrix.name }}
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.projects) }}
+    env:
+      CI_PACKAGES: ${{ toJSON(matrix.packages) }}
+      CI_HOST_SUITE: ${{ matrix.hostSuite }}
+      CARGO_PROFILE_TEST_DEBUG: '1'
+      CI_TIMING_JOB: ${{ inputs.mode == 'check' && format('Rust check / {0}', matrix.name) || format('Rust {0} test / {1}', inputs.os == 'ubuntu-latest' && 'Linux' || inputs.os == 'windows-latest' && 'Windows' || 'macOS', matrix.name) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Setup pinned Rust
+        run: node scripts/ci/setup-rust.mjs
+      - name: fmt
+        if: inputs.mode == 'check'
+        run: node scripts/ci/rust-checks.mjs fmt
+      - name: Cache Rust
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-ci-${{ matrix.desktop && 'desktop' || 'core' }}
+          # Core groups share one cache per OS. CLI composes the core crates,
+          # so it is the sole core writer; Desktop owns the separate GUI cache.
+          # Checks/PRs/Misc are readers and cannot evict main with private copies.
+          save-if: ${{ github.ref == 'refs/heads/main' && inputs.mode == 'test' && (matrix.desktop || matrix.name == 'tui-cli') }}
+          workspaces: .
+          cache-all-crates: true
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: bash scripts/ci/install-apt-packages.sh build-essential binutils mold pkg-config
+      - name: Install Linux GUI dependencies
+        if: runner.os == 'Linux' && matrix.desktop
+        run: |
+          bash scripts/ci/install-apt-packages.sh libayatana-appindicator3-dev \
+            libgtk-3-dev librsvg2-dev libssl-dev libwebkit2gtk-4.1-dev
+      - name: Install isolated Host broker
+        if: runner.os == 'Linux' && inputs.mode == 'test' && contains(matrix.packages, 'future-host')
+        run: bash scripts/ci/install-apt-packages.sh nats-server
+      - name: Build
+        if: inputs.mode == 'test'
+        run: node scripts/ci/rust-checks.mjs build
+      - name: Tests
+        if: inputs.mode == 'test'
+        env:
+          FUTURE_HOST_FIXTURE_TIMINGS: ${{ format('{0}/ci-timings/host-fixture-timings.jsonl', runner.temp) }}
+        run: node scripts/ci/rust-checks.mjs test
+      - name: clippy
+        if: inputs.mode == 'check'
+        run: node scripts/ci/rust-checks.mjs clippy
+      - name: Summarize Host fixture timings
+        continue-on-error: true
+        if: always() && inputs.mode == 'test'
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/ci-timings/host-fixture-timings.jsonl" ]; then
+            node scripts/ci/host-test-timings.mjs "$RUNNER_TEMP/ci-timings/host-fixture-timings.jsonl"
+          fi
+      - name: Collect job timings
+        continue-on-error: true
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/job-timings.mjs
+      - name: Upload CI timings
+        continue-on-error: true
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: timings-rust-${{ runner.os }}-${{ inputs.mode }}-${{ matrix.name }}
+          path: |
+            ${{ runner.temp }}/ci-timings/
+            target/cargo-timings/cargo-timing.html
+          retention-days: 3
+          if-no-files-found: warn

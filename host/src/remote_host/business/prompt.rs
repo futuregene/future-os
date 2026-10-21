@@ -131,7 +131,7 @@ async fn acknowledge_prepared(
         "runId": prepared.run_id,
     });
     let (accepted_tx, accepted_rx) = tokio::sync::oneshot::channel();
-    tokio::spawn(async move {
+    crate::runtime::spawn(async move {
         let thread_id = prepared.thread_id.clone();
         if let Err(error) =
             crate::agent_bridge::run_prepared_prompt_with_acceptance(prepared, accepted_tx).await

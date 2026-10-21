@@ -276,6 +276,15 @@ async fn run_async() -> Result<()> {
         }
     };
 
+    // Register before spawning providers: a webhook can announce readiness on
+    // another runtime worker before this task reaches the shutdown await.
+    let shutdown_signal = tokio::signal::ctrl_c();
+    tokio::pin!(shutdown_signal);
+    if let std::task::Poll::Ready(result) = futures::poll!(&mut shutdown_signal) {
+        result?;
+        return Ok(());
+    }
+
     let status = Arc::new(StatusBoard::new(StatusSnapshot::default_path()));
     let root = data_root();
     let started = start_all(&config, root.clone(), status.clone())?;
@@ -305,7 +314,7 @@ async fn run_async() -> Result<()> {
         started.shutdown.clone(),
     );
 
-    tokio::signal::ctrl_c().await?;
+    shutdown_signal.await?;
     info!("Shutting down...");
     flusher.abort();
     outbox_drainer.abort();

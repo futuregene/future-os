@@ -708,7 +708,10 @@ async fn a_sandboxed_run_announces_the_wrapper_and_reports_process_facts() {
     }
     let announced = Arc::new(Mutex::new(Vec::new()));
     let seen = announced.clone();
+    #[cfg(not(windows))]
     let command = "printf 'sandboxed-%s' ok";
+    #[cfg(windows)]
+    let command = "Write-Output 'sandboxed-ok'";
     let (result, facts) = with_tool_scope(
         ScopeOptions {
             workspace,

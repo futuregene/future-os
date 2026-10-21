@@ -1650,6 +1650,7 @@ mod tests {
     /// for the same local endpoint.
     #[test]
     fn the_public_serve_wrappers_bind_serve_and_report_bind_failures() {
+        let _home = crate::test_support::TestHome::new();
         let subscriber = tracing_subscriber::fmt()
             .with_writer(std::io::sink)
             .with_ansi(false)
@@ -1693,7 +1694,18 @@ mod tests {
                 let error = serve_local(grpc_app_state(false))
                     .await
                     .expect_err("an occupied endpoint must fail");
+                #[cfg(unix)]
                 assert!(error.to_string().contains("occupied"), "{error}");
+                // FILE_FLAG_FIRST_PIPE_INSTANCE reports an existing pipe as
+                // ERROR_ACCESS_DENIED rather than Unix's ownership-lock text.
+                #[cfg(windows)]
+                assert_eq!(
+                    error
+                        .downcast_ref::<std::io::Error>()
+                        .and_then(|e| e.raw_os_error()),
+                    Some(5),
+                    "{error}"
+                );
                 drop(held);
             });
         });

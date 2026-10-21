@@ -579,7 +579,7 @@ pub(crate) async fn prepare_download_variant(
     let source_for_prepare = source.clone();
     let display_name_for_prepare = display_name.clone();
     let variant_for_prepare = requested_variant.to_string();
-    let prepared = tokio::task::spawn_blocking(move || match variant_for_prepare.as_str() {
+    let prepared = crate::runtime::run_blocking(move || match variant_for_prepare.as_str() {
         "original" => prepare_original(&source_for_prepare, &display_name_for_prepare),
         "" | "preview" => prepare_preview_cached(&source_for_prepare, &display_name_for_prepare)
             .or_else(|_| prepare_original(&source_for_prepare, &display_name_for_prepare)),
@@ -589,7 +589,7 @@ pub(crate) async fn prepare_download_variant(
     .map_err(|error| format!("Preview preparation task failed: {error}"))??;
     let prepared_path = prepared.path.clone();
     let (size, content_hash) =
-        tokio::task::spawn_blocking(move || -> Result<(u64, String), crate::Error> {
+        crate::runtime::run_blocking(move || -> Result<(u64, String), crate::Error> {
             let size = std::fs::metadata(&prepared_path)?.len();
             let content_hash = sha256_file(&prepared_path)?;
             Ok((size, content_hash))
