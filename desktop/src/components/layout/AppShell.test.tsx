@@ -1813,6 +1813,58 @@ describe("app shell account + remote coordination", () => {
     expect(badge?.props.label).toBe("This computer");
     paired.unmount();
   });
+
+  /**
+   * A local conversation in a workspace names it in the header, as a remote one
+   * already did.
+   *
+   * The rail says it per heading, but a conversation read in the flat recent
+   * list, or in the transcript once the list is out of sight, had nothing left
+   * to say which folder it was in — while the same conversation on a paired host
+   * carried it. So the shell hands its own header the same badge, from the row
+   * the rail groups by: a workspace conversation names its workspace, and a chat
+   * conversation names nothing rather than the scratch directory it works in.
+   */
+  it("names the workspace a local conversation is in, and nothing for a chat", () => {
+    // Chat first. The fixture's chat conversation points at the only workspace
+    // there is, so a header keyed on the workspace row rather than on the mode
+    // would name a folder this conversation is not listed under — chat rows sit
+    // in the rail's chat section whatever their scratch directory is called.
+    const chat = mount(<AppShell />);
+    expect((children.agentThread as { headerWorkspace?: unknown }).headerWorkspace).toBeNull();
+    chat.unmount();
+
+    resetStore({
+      threadStore: {
+        ...(mocks.store.threadStore as Record<string, unknown>),
+        activeThread: workThread,
+        activeThreadId: "t2",
+        activeWorkspace: workWorkspace,
+        threads: [chatThread, workThread],
+        workspaces: [chatWorkspace, workWorkspace],
+      },
+    });
+    const inWorkspace = mount(<AppShell />);
+    const badge = (children.agentThread as { headerWorkspace?: { props: { name: string } } }).headerWorkspace;
+    expect(badge?.props.name).toBe("Work");
+    inWorkspace.unmount();
+
+    // A workspace the store has stopped listing is not replaced by the fallback:
+    // naming somebody else's folder is worse than naming none.
+    resetStore({
+      threadStore: {
+        ...(mocks.store.threadStore as Record<string, unknown>),
+        activeThread: workThread,
+        activeThreadId: "t2",
+        activeWorkspace: chatWorkspace,
+        threads: [workThread],
+        workspaces: [chatWorkspace],
+      },
+    });
+    const orphaned = mount(<AppShell />);
+    expect((children.agentThread as { headerWorkspace?: unknown }).headerWorkspace).toBeNull();
+    orphaned.unmount();
+  });
 });
 
 describe("app shell dialogs wiring", () => {
