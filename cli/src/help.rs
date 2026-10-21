@@ -298,6 +298,10 @@ Usage:
   future remote devices remove <id|#> [--yes]        Unpair one device; the others stay paired
   future remote devices remove --all [--yes]         Unpair every device
   future remote devices use <id|#>                   Make a paired device the one in control
+  future remote peers [list] [--json]                Remote desktops THIS machine connects to
+  future remote peers add <invitation>               Pair with one by pasting its link
+  future remote peers connect|disconnect <id|#>      Take one up or down now
+  future remote peers remove <id|#> [--yes]          Unpair it
 
 status answers two different questions and keeps them apart: whether this
 machine is serving its devices right now (runtime state, which only a running
@@ -363,7 +367,13 @@ pub const REMOTE_USAGE: &str = r#"Usage:
   future remote devices add [--json]
   future remote devices remove <id|#> [--yes] [--json]
   future remote devices remove --all [--yes] [--json]
-  future remote devices use <id|#> [--json]"#;
+  future remote devices use <id|#> [--json]
+  future remote peers [list] [--json]
+  future remote peers add <invitation> [--json]
+  future remote peers connect <id|#> [--json]
+  future remote peers disconnect <id|#> [--json]
+  future remote peers rename <id|#> <name> [--json]
+  future remote peers remove <id|#> [--yes] [--json]"#;
 
 /// `future remote status --help` output.
 pub const REMOTE_STATUS_HELP: &str = r#"future remote status — is the remote desktop on, and who is connected
@@ -595,6 +605,167 @@ Two notes can follow, on stderr, and neither means the choice was lost:
 --json prints the resulting device document, like `future remote devices --json`."#;
 
 /// `future task --help` output.
+/// `future remote peers --help` output.
+///
+/// The client role, next to [`REMOTE_HELP`]'s host role. The two are one word
+/// apart in the running product and mean opposite things ("who drives me" vs
+/// "who do I drive"), so the help says which one this is before anything else.
+pub const REMOTE_PEERS_HELP: &str = r#"future remote peers - the remote desktops this machine connects to
+
+Usage:
+  future remote peers [list] [--json]                 Every remote desktop this machine drives
+  future remote peers add <invitation> [--json]       Pair with one: paste its invitation link
+  future remote peers connect <id|#> [--json]         Connect to one now
+  future remote peers disconnect <id|#> [--json]      Drop the connection, keep the pairing
+  future remote peers rename <id|#> <name> [--json]   Name it here (--clear goes back to the id)
+  future remote peers remove <id|#> [--yes] [--json]  Unpair it: stop connecting, revoke
+
+This is the client role, the mirror of `future remote devices`. Devices are the
+phones and computers allowed to drive THIS machine; peers are the machines this
+one drives. The two pairings are independent: they have their own credentials,
+their own runtimes, and their own files (~/.future/remote_peers.json here,
+~/.future/remote_pairings.json there).
+
+add is the only action that runs here instead of in the Desktop: pairing is a
+one-time claim against the platform plus a handshake with the other machine, so
+it needs nothing running on this one. On the other machine open Remote, take the
+invitation it offers for connecting another computer, and paste the whole link
+here. The pairing is stored and this command connects once, so the answer is
+whether it works rather than whether it was written down. A running Desktop then
+keeps it connected; with none running it connects the next time one starts (the
+window - a headless host serves devices but does not drive other desktops).
+
+Everything else reads the book, and connect, disconnect and remove also ask the
+running Desktop, because a live connection and the user's own "disconnected"
+mark live in that process and nowhere on disk. With no Desktop running:
+
+  - list still shows what is paired, with no connection state to report;
+  - rename still works: the name is this machine's private label for that host,
+    never sent anywhere, and the Desktop reads it from the same file;
+  - connect and disconnect have nothing to act on, and say so;
+  - remove unpairs here and revokes where it can reach the platform, so nothing
+    on this machine connects to it again.
+
+The id is the other machine's desktopId, as `list` shows it; its `desktop_`
+prefix is optional, and a row number (#1) names the same row.
+
+Every action takes --json. list prints {desktopRunning, answered, peers}: a
+peer's connected, stopped, error and agentAvailable are null when no Desktop
+answered, which is the honest reading of "the book cannot know". add prints
+{desktopRunning, paired}; the rest print the resulting list document, and remove
+also names what it removed."#;
+
+/// The one-line usage every `future remote peers` argument error repeats.
+pub const REMOTE_PEERS_USAGE: &str = r#"Usage:
+  future remote peers [list] [--json]
+  future remote peers add <invitation> [--json]
+  future remote peers connect <id|#> [--json]
+  future remote peers disconnect <id|#> [--json]
+  future remote peers rename <id|#> <name> [--json]
+  future remote peers rename <id|#> --clear [--json]
+  future remote peers remove <id|#> [--yes] [--json]"#;
+
+/// `future remote peers list --help` output.
+pub const REMOTE_PEERS_LIST_HELP: &str = r#"future remote peers list - every remote desktop this machine drives
+
+Usage:
+  future remote peers [list] [--json]
+
+Reads the client-role book (~/.future/remote_peers.json) and, when a Desktop is
+running, the connections that process holds. The two halves are kept apart in the
+STATE column because only one of them is knowable from disk:
+
+  connected       the Desktop holds a live connection to that machine
+  disconnected    the user turned it off from this machine; the automatic
+                  reconnect pass leaves it alone until `connect` asks for it
+  not connected   paired, no live connection
+  unknown         a Desktop is running but did not answer
+
+With no Desktop running every row reads "not connected", because that is the
+truth: a connection lives in that process.
+
+--json prints one object:
+  desktopRunning   a Desktop owns this data directory (window or headless)
+  answered         that Desktop reported its connections
+  peers[]          desktopId, pairId, name, icon, connected, stopped, error,
+                   agentAvailable - the last four null when nothing answered"#;
+
+/// `future remote peers add --help` output.
+pub const REMOTE_PEERS_ADD_HELP: &str = r#"future remote peers add - pair this machine with another remote desktop
+
+Usage:
+  future remote peers add <invitation> [--json]
+
+Takes the `futureos://remote/pair?...` link the other machine shows in its
+Remote page ("connect another computer"). Paste it whole, in quotes: the link is
+long and every parameter matters.
+
+The pairing runs here, not in the Desktop: the claim and the handshake need
+nothing local to be serving, which is what lets a machine be paired before its
+Desktop is ever opened. The invitation is single-use and short-lived - an
+expired one is refused, and a fresh link from the other machine is the only fix.
+
+On success the pairing is stored in ~/.future/remote_peers.json and this command
+connects once, so a broken pairing is reported now instead of at the next start.
+A running Desktop keeps it connected from then on; with none running it connects
+when one starts (the window; a headless host does not drive other desktops).
+
+--json prints {desktopRunning, paired}, where paired is one peer row as
+`future remote peers list --json` prints it."#;
+
+/// `future remote peers connect|disconnect --help` output.
+pub const REMOTE_PEERS_CONNECT_HELP: &str = r#"future remote peers connect|disconnect - take a pairing up or down now
+
+Usage:
+  future remote peers connect <id|#> [--json]
+  future remote peers disconnect <id|#> [--json]
+
+Asks the running Desktop to connect or drop one remote desktop. This is the same
+call the window's own Connect and Disconnect buttons make, and it matters that it
+is the same one: a disconnect also records the host as stopped in that process,
+which is what keeps the automatic reconnect pass from undoing it a few seconds
+later. Nothing about the pairing changes - connect brings it back.
+
+With no Desktop running there is nothing to connect or drop (a connection lives
+in that process), so both actions say so instead of pretending. A paired host is
+connected by the Desktop as it starts, so start it and look at `list`.
+
+connect reports the state the Desktop answered with, not what was asked: an
+attempt that ended without a connection prints why, and exits 1."#;
+
+/// `future remote peers rename --help` output.
+pub const REMOTE_PEERS_RENAME_HELP: &str = r#"future remote peers rename - name a remote desktop here
+
+Usage:
+  future remote peers rename <id|#> <name> [--json]
+  future remote peers rename <id|#> --clear [--json]
+
+Writes this machine's private label for that desktop into the client-role book.
+The name never leaves this machine: the other side neither sends nor stores it,
+and the Desktop reads it from the same file, so a running one shows it on its
+next refresh. --clear removes it and the machine id is shown again.
+
+No Desktop is needed for this one."#;
+
+/// `future remote peers remove --help` output.
+pub const REMOTE_PEERS_REMOVE_HELP: &str = r#"future remote peers remove - unpair a remote desktop
+
+Usage:
+  future remote peers remove <id|#> [--yes] [--json]
+
+Removes the pairing: this machine stops connecting to that desktop, and its
+credential is revoked where the platform can be reached.
+
+With a Desktop running it is asked first, because it owns the live connection and
+can drop it now; its answer is what makes the removal immediate. With none
+running, the entry is removed here and the revoke is attempted from this process,
+so a machine without a Desktop is still cleanly unpaired. A revoke that cannot be
+delivered is reported and is not fatal: the pairing is gone here, and the other
+side stops accepting that credential when it expires.
+
+Asks for confirmation; --yes skips the prompt, and a command without a terminal
+on stdin must pass it."#;
+
 pub const TASK_HELP: &str = r#"future task — manage scheduled tasks (reusable prompt + trigger + full-permission runs)
 
 A scheduled task is a reusable work unit: prompt + working directory +
