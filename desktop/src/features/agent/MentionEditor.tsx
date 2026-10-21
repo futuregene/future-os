@@ -68,6 +68,15 @@ interface MentionEditorProps {
   /** Conversations offered by the `#` menu, in menu order; omit/empty to disable it. */
   sessions?: SessionMentionOption[];
   disabled?: boolean;
+  /**
+   * Whether `@` / `/` / `#` open their menus while typing.
+   *
+   * Off for the Vibe panel's input layer (`VIBE.md` §5.3): a dictated sentence
+   * arrives as one inserted run, and a recognized "slash" or a path would put a
+   * menu over the transcript — worse, the next utterance's keys would feed the
+   * menu instead of the sentence. The text still lands; only the popups go.
+   */
+  triggers?: boolean;
   placeholder: string;
   className?: string;
   /** Enter pressed (not Shift, not during IME): parent reads getContent, sends, clears. */
@@ -104,6 +113,7 @@ export function MentionEditor({
   onContextToolSelect,
   sessions = [],
   disabled,
+  triggers = true,
   placeholder,
   className,
   onSubmit,
@@ -234,6 +244,14 @@ export function MentionEditor({
   // Refresh the active trigger (`@` file mention, `/` skill or `#` conversation)
   // at the caret.
   function updateTrigger() {
+    if (!triggers) {
+      // Nothing may open: see the prop's comment. Clearing the three is also what
+      // closes a menu that was already open when the layer took the editor over.
+      setQuery(null);
+      setSlashQuery(null);
+      setHashQuery(null);
+      return;
+    }
     const editor = editorRef.current;
     const mention = mentionContext(editor);
     if (mention) {

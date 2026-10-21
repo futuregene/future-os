@@ -160,7 +160,7 @@ allowed to sit on a key the global keymap already uses. `scopes.ts` is that.
 | `vibe` | the panel is open | layout, device filter, add/remove, attention queue, overlay full screen |
 | `vibeGrid` | the grid has the keyboard (no cell zoomed) | the direction keys, `↩`, `1`–`9` |
 | `vibeZoom` | one cell fills the screen | `Esc` back out, the block cursor, the side panel's two keys |
-| `vibeInput` | the input layer: the caret is in a dictation editor | `⏎` send, `Esc` back — the one layer that runs **over** an editor |
+| `vibeInput` | the input layer: the caret is in a dictation editor | `Esc` back and the menu — the one layer that runs **over** an editor. Sending is **not** here: see below |
 
 Resolution is **innermost scope first**, then outwards, then `global`. So:
 
@@ -188,7 +188,7 @@ below). `mod` is `⌘` on macOS and `Ctrl` elsewhere:
 | Previous / next conversation in the zoomed cell | `←` / `→` | vibeZoom |
 | Previous / next message block | `↑` / `↓` | vibeZoom |
 | Open the input layer | `↩` | vibeZoom |
-| Send the dictation (empty draft: close) | `↩` | vibeInput |
+| Send the dictation (empty draft: close) | `↩` — the composer's own fixed key, not a command | vibeInput |
 | Leave the input layer | `Esc` / `Back` | vibeInput |
 | The layer's menu | `mod+shift+k` / `Menu` | vibe |
 | Jump to the live end of the conversation | `Home` | vibe |
@@ -205,8 +205,15 @@ below). `mod` is `⌘` on macOS and `Ctrl` elsewhere:
 | Overlay (app-wide) full screen | `mod+ctrl+f` | global |
 | All shortcuts | `mod+/` | global |
 
-Two notes on this table:
+Three notes on this table:
 
+* **`⏎` sending is not a command.** It is the composer's own fixed key
+  (`MentionEditor.onSubmit`, listed under `FIXED_KEYS`), and it already stands down
+  while an input method composes. The dispatcher listens in the capture phase, so a
+  `vibe.input.send` command would run *before* the editor's submit and the same
+  press would have two owners — the one way to reliably send a message twice. The
+  panel's contribution is only what the editor had no answer for: an empty draft
+  closes the layer. Same key, one owner.
 * **`Menu`, `Back` and `Home` are the remote control's buttons, not a keyboard's.**
   They are `aliases` on their command: they keep working after the reader rebinds
   the chord and after clearing it, the settings page shows them read only, and they

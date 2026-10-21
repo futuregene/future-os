@@ -12,6 +12,8 @@
  *   ?settings=key:value    seed the fake backend's app settings before boot
  *   ?streaming=id,id       report these threads as running (rail's ring)
  *   ?unread=id,id          mark these threads' finished runs unread (rail's dot)
+ *   ?pinned=id,id          pin these threads for this capture (the Vibe panel's
+ *                          membership — the fixture ships one pinned row)
  *   ?remoteSlowRead=1      hold a host's reads back, so the state a reader is in
  *                          while one is in flight reaches a capture (the model
  *                          control before the host answers)
@@ -54,6 +56,7 @@ if (settingsPatch) {
 // other.
 const list = (value: string | null): string[] => (value ?? "").split(",").filter(Boolean);
 seedHarnessState({
+  pinned: list(params.get("pinned")),
   streaming: list(params.get("streaming")),
   unread: list(params.get("unread")),
 });
