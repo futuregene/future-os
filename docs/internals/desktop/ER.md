@@ -508,6 +508,19 @@ Notes:
   the Agent was still working on that run (an accepted-but-queued prompt returns
   its invoke response at the ack) is restored, or settled `completed` once the
   Agent has finished it. A user abort and a `completed` row are never re-read.
+- **A conversation the exit interrupted continues on the next launch.** The
+  Agent is embedded, so quitting ends the run it was streaming: its journal keeps
+  a `run_started` with no terminal, `get_run_state` reports it as
+  `interruptedRun`, and the local row is left non-terminal. Once per launch,
+  after the Agent is reachable, `resume_interrupted_runs_at_launch` asks the
+  Agent about each conversation's **newest** run and, only when the answer is
+  that marker (not a live/queued run the watchdog reattaches, not a durable
+  terminal), settles the row `cancelled`+`interrupted` and submits one
+  continuation prompt through the headless pipeline — the same path a prompt
+  from a paired phone takes, with `runs.trigger_message_id = resume:<run id>` so
+  a second pass finds the continuation instead of asking again. Runs older than
+  a week, conversations parked on an approval, and every conversation when the
+  `autoResumeInterrupted` setting is off are skipped.
 - If an approval later produces file changes, Review Changeset shows the actual
   modification comparison.
 - P2 introduces structured `action_payload` and `sandbox_boundary` fields

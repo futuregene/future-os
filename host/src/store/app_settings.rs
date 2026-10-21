@@ -115,6 +115,7 @@ mod tests {
             title_language: None,
             community_edition: Some(true),
             skill_recommend: None,
+            auto_resume_interrupted: None,
         }
     }
 
