@@ -18,6 +18,7 @@ import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { forkThread } from "../../integrations/storage/threadStore";
+import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
 import { useCommittedRef } from "../../lib/useCommittedRef";
@@ -46,7 +47,22 @@ import { useSkillRecommendation } from "./useSkillRecommendation";
 /** How many user exchanges one loaded page renders. */
 const PAGE_USER_EXCHANGES = 10;
 
-interface AgentThreadProps {
+/**
+ * How much of the conversation's own chrome this view draws.
+ *
+ * - `full` — the main window: title bar, find-in-conversation, the composer at
+ *   the foot, plus the terminal's drag handle. Everything below assumes this.
+ * - `read` — one cell of the Vibe panel, and the zoomed cell: the transcript and
+ *   whatever needs answering, nothing else. **No composer**, which is what makes
+ *   "the app has at most one editable element while the panel is open" a property
+ *   of the component tree rather than a rule someone has to remember.
+ * - `input` — the panel's input layer: the same transcript trimmed to its tail,
+ *   the composer where a dictation belongs, and the caller's own target bar and
+ *   hint line around it.
+ */
+export type AgentThreadChrome = "full" | "read" | "input";
+
+export interface AgentThreadProps {
   thread: StoredThread | null;
   workspacePath?: string | null;
   /** Conversations offered by the composer's `#` menu (see `sessionMentionOptions`). */
@@ -99,6 +115,35 @@ interface AgentThreadProps {
    * definition — which is worth saying only once another computer is in the list.
    */
   headerMachine?: ReactNode;
+  /** How much of the conversation's chrome to draw. See `AgentThreadChrome`. */
+  chrome?: AgentThreadChrome;
+  /**
+   * Whether this instance may claim the app-wide commands a conversation owns
+   * (`chat.stop`).
+   *
+   * Off for every cell of the panel's grid except the focused one: the registry
+   * keeps one handler per command, so several mounted cells would mean "the last
+   * one to mount wins" — and stopping a run would abort whichever conversation
+   * happened to render last.
+   */
+  ownsCommands?: boolean;
+  /**
+   * The input layer only: called when the layer's own key is pressed on an empty
+   * draft. The panel closes the layer; this view does not know what a layer is.
+   */
+  onLeaveInput?: () => void;
+  /** The input layer only: the panel's target bar, above the transcript. */
+  inputHeader?: ReactNode;
+  /** The input layer only: the panel's hint line, below the composer. */
+  inputFooter?: ReactNode;
+  /**
+   * How much of the composer's control row to draw (see `Composer.controls`).
+   *
+   * Only the panel passes `none`, for its input layer: the values move into the menu
+   * and a read-only line stays on screen. Undefined means "whatever the composer
+   * does by default", which is what keeps the main window untouched.
+   */
+  composerControls?: "full" | "none";
 }
 
 export function AgentThread({
@@ -131,6 +176,12 @@ export function AgentThread({
   futureBalance,
   headerAction,
   headerMachine,
+  chrome = "full",
+  ownsCommands = true,
+  onLeaveInput,
+  inputHeader,
+  inputFooter,
+  composerControls,
 }: AgentThreadProps) {
   const { t } = useTranslation("agent");
   const agentState = useCachedAgentState(thread?.id);
@@ -245,7 +296,7 @@ export function AgentThread({
   // Settings → Keyboard: the same interrupt the send button turns into while a
   // reply streams. Registered only then, so the key is unclaimed whenever there
   // is nothing to stop — and a press outside a stream stays the app's own.
-  useCommand("chat.stop", () => void handleAbort(), isReplyStreaming);
+  useCommand("chat.stop", () => void handleAbort(), isReplyStreaming && ownsCommands);
 
   const handleRetryMessage = useCallback(
     (_message: AgentMessage, source: AgentMessage) => {
@@ -379,10 +430,15 @@ export function AgentThread({
   }, [handleAbort]);
   const handleComposerSend = useCallback(
     (payload: ComposerSendPayload) => new Promise<void>((resolve, reject) => {
+      // The input layer exists to ask one question. Once the draft is handed over
+      // (the composer has already cleared it by now), the panel drops back to
+      // reading so the answer is not hidden behind the editor.
+      if (chrome === "input")
+        onLeaveInput?.();
       // Composer waits for delivery; handleSend continues to own the full run.
       void handleSend(payload, resolve).then(resolve, reject);
     }),
-    [handleSend],
+    [chrome, handleSend, onLeaveInput],
   );
   // Skill recommendation on any user message (not just a conversation's first
   // turn): the client owns the trigger rules, the agent only answers
@@ -403,186 +459,271 @@ export function AgentThread({
     onDismiss: recommendation.dismiss,
   }), [recommendation.state.recommendation, recommendation.evaluate, recommendation.dismiss, installRecommended]);
 
-  return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-surface">
-      <ThreadHeader
-        action={headerAction}
-        leftPanelExpanded={leftPanelExpanded}
-        machine={headerMachine}
-        thread={thread}
-        usage={agentState?.usage}
-        onToggleLeftPanel={onToggleLeftPanel}
-      />
-      <div className="group relative min-h-0 flex-1 overflow-hidden">
-        {thread
+  // Everything below is one transcript in three surroundings. What each chrome
+  // keeps or drops is decided here rather than by branching the JSX three ways:
+  // `full` is the main window, `read` is a panel cell (no composer at all, which
+  // is what keeps the app down to one editable element while the panel is open),
+  // `input` is the panel's dictation layer.
+  const isRead = chrome === "read";
+  const isInput = chrome === "input";
+  // The input layer shows only the tail of the conversation: the two messages a
+  // speaker needs to remember what they were talking about, dimmed so the draft
+  // is unmistakably the live thing on screen.
+  const shownMessages = isInput ? visibleMessages.slice(-2) : visibleMessages;
+
+  const approvalCard = activeApproval
+    ? (
+        <div className="pointer-events-auto mx-auto w-full max-w-3xl">
+          <ApprovalPrompt
+            approval={activeApproval}
+            onDecision={onApprovalDecision}
+            threadMode={thread?.mode}
+          />
+        </div>
+      )
+    : null;
+
+  /**
+   * The foot of the conversation: what needs answering, then the composer.
+   *
+   * `full` floats it over the transcript (the gradient is what tells the reader
+   * the text continues underneath); `input` places it in the flow so the space
+   * below can stay empty for the input method's candidate window.
+   */
+  const composerBand = (
+    <div
+      ref={composerRef}
+      className={cn(
+        "pointer-events-none",
+        isInput
+          ? "shrink-0 px-8 pb-2 pt-1"
+          : "absolute inset-x-0 bottom-0 z-10 bg-linear-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10",
+      )}
+    >
+      <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
+        {/* Never in the input layer: an approval is answered with a two-key
+            confirmation, and a card appearing above the editor mid-dictation moves
+            the one thing the eye is on. The reading layer holds it, and the target
+            bar says one is waiting. */}
+        {isInput ? null : approvalCard}
+        {shouldShowAgentNotice(agentConnection)
           ? (
-              <ThreadSearch
-                contentKey={visibleMessages}
-                onPrepareSearch={prepareSearch}
-                onRevealMatch={revealSearchMatch}
-                rootRef={searchRootRef}
+              <AgentConnectionNotice
+                connection={agentConnection}
+                onOpenModels={onOpenModels}
+                onOpenAccount={onOpenAccount}
+                onOpenProviders={onOpenProviders}
+                onRetry={onRetryAgentConnection}
               />
             )
           : null}
-        {sessionChanged && (
-          <div role="status" className="text-ink-soft px-4 py-2 text-sm">
-            {t("thread.sessionChanged")}
-          </div>
-        )}
-        {historyStatus?.canContinue === false && (
-          <div role="status" className="text-ink-soft px-4 py-2 text-sm">
-            {t(historyStatus.source === "legacy" ? "thread.historyRecoveryReadonly" : "thread.historyReadonly")}
-          </div>
-        )}
-        {historyError && (
-          <div role="alert" className="text-danger px-4 py-2 text-sm">
-            {historyError}
-            <button
-              type="button"
-              className="ml-2 underline"
-              onClick={() => void retryHistory()}
-            >
-              {t("common:retry")}
-            </button>
-          </div>
-        )}
-        {showLoadOlderHint
-          ? (
-              <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center px-8 pt-5">
+        <div className="pointer-events-auto mx-auto flex w-full max-w-3xl items-center justify-between gap-3">
+          {showJumpToLatest
+            ? (
                 <button
                   type="button"
-                  onClick={loadOlder}
-                  disabled={coolingDown}
-                  aria-busy={coolingDown}
-                  aria-label={t("thread.loadOlder")}
-                  title={t("thread.loadOlder")}
-                  className="pointer-events-auto flex animate-pop-in items-center gap-1.5 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
+                  onClick={scrollToLatest}
+                  aria-label={t("thread.jumpToLatest")}
+                  title={t("thread.jumpToLatest")}
+                  className="mx-auto flex items-center gap-1 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
                 >
-                  <History className="size-3.5" />
-                  {t("thread.loadOlder")}
+                  <ArrowDown className="size-3.5" />
+                  {t("thread.jumpToLatest")}
                 </button>
-              </div>
-            )
-          : null}
-        <div
-          ref={scrollRef}
-          className="floating-scrollbar h-full overflow-auto overscroll-none px-8 pt-6"
-          data-chat-scroll="true"
-          style={{ overflowAnchor: "none" }}
-          onScroll={handlePagingScroll}
-        >
-          {/* Keep the inset inside the observed content so sticky scrolling and
-              the floating scrollbar settle when the composer grows or shrinks. */}
-          <div ref={searchRootRef} className="mx-auto w-full max-w-4xl">
-            {loadingIndicator
-              ? (
-                  <div className="py-8 text-sm text-ink-soft">
-                    {t("thread.loading")}
-                  </div>
-                )
-              : !thread && !loadingStore
-                  ? (
-                      <div className="py-8 text-sm text-ink-soft">
-                        {t("thread.noActiveThread")}
-                      </div>
-                    )
-                  : (
-                      <MessageList
-                        messages={visibleMessages}
-                        workspaceId={renderWorkspace.workspaceId}
-                        workspacePath={renderWorkspace.workspacePath}
-                        onContinue={handleContinueMessage}
-                        onFork={handleFork}
-                        onRetry={handleRetryMessage}
-                      />
-                    )}
-            <div aria-hidden="true" style={{ height: composerHeight }} />
-          </div>
+              )
+            : <div />}
+          <QuestionNavControl
+            hasNext={hasNextQuestion}
+            hasPrevious={hasPreviousQuestion}
+            onNext={goToNextQuestion}
+            onPrevious={goToPreviousQuestion}
+          />
         </div>
-        <FloatingScrollbar
-          scrollbar={scrollbar}
-          onPointerDown={handleThumbPointerDown}
+        <Composer
+          className="pointer-events-auto mx-auto w-full max-w-3xl"
+          disabled={!thread || loadingThread || loadingStore || historyStatus?.canContinue === false}
+          modelId={modelId}
+          modelOptions={modelOptions}
+          modelsEmptyReason={
+            agentConnection.readiness === "all_disabled"
+              ? "all_disabled"
+              : "no_models"
+          }
+          onModelChange={onModelChange}
+          thinkingLevel={thinkingLevel}
+          onThinkingLevelChange={onThinkingLevelChange}
+          approvalTier={approvalTier}
+          futureSessionStatus={futureSessionStatus}
+          onChangeApprovalTier={onChangeApprovalTier}
+          sending={isReplyStreaming}
+          onAbort={handleComposerAbort}
+          onCompactContext={
+            thread?.agentSessionId ? handleCompactContext : undefined
+          }
+          compactionInProgress={agentState?.isCompacting ?? false}
+          // The panel's send key on an empty draft closes the layer instead of
+          // doing nothing. Everywhere else an empty submit is simply not a send,
+          // so the prop is absent and that command goes unregistered.
+          onEmptySubmit={isInput ? onLeaveInput : undefined}
+          // The input layer is for speaking: a popup over the transcript would
+          // also eat the next utterance's keys (`VIBE.md` §5.3).
+          triggers={!isInput}
+          controls={composerControls}
+          onSend={handleComposerSend}
+          workspaceId={thread?.workspaceId}
+          sessionMentions={sessionMentions}
+          draftKey={thread?.id}
+          skillRecommendation={isInput ? undefined : skillRecommendation}
         />
-        <div
-          ref={composerRef}
-          className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-linear-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10"
-        >
-          <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
-            {activeApproval
-              ? (
-                  <div className="pointer-events-auto mx-auto w-full max-w-3xl">
-                    <ApprovalPrompt
-                      approval={activeApproval}
-                      onDecision={onApprovalDecision}
-                      threadMode={thread?.mode}
-                    />
-                  </div>
-                )
-              : null}
-            {shouldShowAgentNotice(agentConnection)
-              ? (
-                  <AgentConnectionNotice
-                    connection={agentConnection}
-                    onOpenModels={onOpenModels}
-                    onOpenAccount={onOpenAccount}
-                    onOpenProviders={onOpenProviders}
-                    onRetry={onRetryAgentConnection}
-                  />
-                )
-              : null}
-            <div className="pointer-events-auto mx-auto flex w-full max-w-3xl items-center justify-between gap-3">
-              {showJumpToLatest
-                ? (
-                    <button
-                      type="button"
-                      onClick={scrollToLatest}
-                      aria-label={t("thread.jumpToLatest")}
-                      title={t("thread.jumpToLatest")}
-                      className="mx-auto flex items-center gap-1 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
-                    >
-                      <ArrowDown className="size-3.5" />
-                      {t("thread.jumpToLatest")}
-                    </button>
-                  )
-                : <div />}
-              <QuestionNavControl
-                hasNext={hasNextQuestion}
-                hasPrevious={hasPreviousQuestion}
-                onNext={goToNextQuestion}
-                onPrevious={goToPreviousQuestion}
-              />
-            </div>
-            <Composer
-              className="pointer-events-auto mx-auto w-full max-w-3xl"
-              disabled={!thread || loadingThread || loadingStore || historyStatus?.canContinue === false}
-              modelId={modelId}
-              modelOptions={modelOptions}
-              modelsEmptyReason={
-                agentConnection.readiness === "all_disabled"
-                  ? "all_disabled"
-                  : "no_models"
-              }
-              onModelChange={onModelChange}
-              thinkingLevel={thinkingLevel}
-              onThinkingLevelChange={onThinkingLevelChange}
-              approvalTier={approvalTier}
-              futureSessionStatus={futureSessionStatus}
-              onChangeApprovalTier={onChangeApprovalTier}
-              sending={isReplyStreaming}
-              onAbort={handleComposerAbort}
-              onCompactContext={
-                thread?.agentSessionId ? handleCompactContext : undefined
-              }
-              compactionInProgress={agentState?.isCompacting ?? false}
-              onSend={handleComposerSend}
-              workspaceId={thread?.workspaceId}
-              sessionMentions={sessionMentions}
-              draftKey={thread?.id}
-              skillRecommendation={skillRecommendation}
+      </div>
+    </div>
+  );
+
+  const transcript = (
+    <div className="group relative min-h-0 flex-1 overflow-hidden">
+      {chrome === "full" && thread
+        ? (
+            <ThreadSearch
+              contentKey={visibleMessages}
+              onPrepareSearch={prepareSearch}
+              onRevealMatch={revealSearchMatch}
+              rootRef={searchRootRef}
             />
-          </div>
+          )
+        : null}
+      {sessionChanged && (
+        <div role="status" className="text-ink-soft px-4 py-2 text-sm">
+          {t("thread.sessionChanged")}
+        </div>
+      )}
+      {historyStatus?.canContinue === false && (
+        <div role="status" className="text-ink-soft px-4 py-2 text-sm">
+          {t(historyStatus.source === "legacy" ? "thread.historyRecoveryReadonly" : "thread.historyReadonly")}
+        </div>
+      )}
+      {historyError && (
+        <div role="alert" className="text-danger px-4 py-2 text-sm">
+          {historyError}
+          <button
+            type="button"
+            className="ml-2 underline"
+            onClick={() => void retryHistory()}
+          >
+            {t("common:retry")}
+          </button>
+        </div>
+      )}
+      {showLoadOlderHint
+        ? (
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center px-8 pt-5">
+              <button
+                type="button"
+                onClick={loadOlder}
+                disabled={coolingDown}
+                aria-busy={coolingDown}
+                aria-label={t("thread.loadOlder")}
+                title={t("thread.loadOlder")}
+                className="pointer-events-auto flex animate-pop-in items-center gap-1.5 rounded-full border border-line-soft bg-surface px-3 py-1 text-xs text-ink-soft shadow-panel transition-colors hover:text-ink"
+              >
+                <History className="size-3.5" />
+                {t("thread.loadOlder")}
+              </button>
+            </div>
+          )
+        : null}
+      <div
+        ref={scrollRef}
+        data-chat-scroll="true"
+        className={cn(
+          "floating-scrollbar h-full overflow-auto overscroll-none",
+          chrome === "full" ? "px-8 pt-6" : "px-5 pt-4",
+          isInput && "opacity-55",
+        )}
+        style={{ overflowAnchor: "none" }}
+        onScroll={handlePagingScroll}
+      >
+        {/* Keep the inset inside the observed content so sticky scrolling and
+            the floating scrollbar settle when the composer grows or shrinks. */}
+        <div
+          ref={searchRootRef}
+          className={cn("mx-auto w-full", chrome === "full" ? "max-w-4xl" : "max-w-3xl")}
+        >
+          {loadingIndicator
+            ? (
+                <div className="py-8 text-sm text-ink-soft">
+                  {t("thread.loading")}
+                </div>
+              )
+            : !thread && !loadingStore
+                ? (
+                    <div className="py-8 text-sm text-ink-soft">
+                      {t("thread.noActiveThread")}
+                    </div>
+                  )
+                : (
+                    <MessageList
+                      messages={shownMessages}
+                      workspaceId={renderWorkspace.workspaceId}
+                      workspacePath={renderWorkspace.workspacePath}
+                      onContinue={handleContinueMessage}
+                      onFork={handleFork}
+                      onRetry={handleRetryMessage}
+                    />
+                  )}
+          {isRead ? null : <div aria-hidden="true" style={{ height: composerHeight }} />}
         </div>
       </div>
+      <FloatingScrollbar
+        scrollbar={scrollbar}
+        onPointerDown={handleThumbPointerDown}
+      />
+      {isRead ? null : composerBand}
+    </div>
+  );
+
+  return (
+    <div
+      className={cn(
+        "flex h-full min-h-0 flex-col overflow-hidden",
+        // A cell is a pane of a larger surface, not a window: it must not paint
+        // its own background over the panel's.
+        isRead ? "bg-transparent" : "bg-surface",
+      )}
+    >
+      {chrome === "full"
+        ? (
+            <ThreadHeader
+              action={headerAction}
+              leftPanelExpanded={leftPanelExpanded}
+              machine={headerMachine}
+              thread={thread}
+              usage={agentState?.usage}
+              onToggleLeftPanel={onToggleLeftPanel}
+            />
+          )
+        : null}
+      {isInput ? inputHeader : null}
+      {transcript}
+      {/* The read chrome has no composer, so the one thing it must still be able
+          to show is a request that needs an answer — at the foot, where the
+          composer would be. */}
+      {isRead && approvalCard
+        ? (
+            <div className="shrink-0 border-t border-line-soft/60 px-5 pb-3 pt-2">
+              {approvalCard}
+            </div>
+          )
+        : null}
+      {isInput
+        ? (
+            <>
+              {/* Room for the input method's candidate window below the editor,
+                  so it can never cover the sentence being dictated. */}
+              <div aria-hidden="true" className="h-[26vh] shrink-0" />
+              {inputFooter}
+            </>
+          )
+        : null}
     </div>
   );
 }

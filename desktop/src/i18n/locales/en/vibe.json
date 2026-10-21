@@ -1,0 +1,64 @@
+{
+  "title": "Vibe",
+  "count": "{{count}} pinned",
+  "overflow": "{{count}} more than the grid holds",
+  "manualLayout": "manual",
+  "fullscreen": "Toggle full screen",
+  "shortcuts": "All shortcuts",
+  "close": "Close the panel",
+  "running": "Running",
+  "unread": "Unread",
+  "of": "of {{total}}",
+  "input": {
+    "to": "Talking to",
+    "local": "this Mac"
+  },
+  "empty": {
+    "title": "No pinned conversations",
+    "body": "A pinned conversation appears here. Pin one from the sidebar's row menu, or press the add key once the panel has one."
+  },
+  "shortcutHint": "Keyboard:",
+  "menu": {
+    "title": "Panel menu",
+    "layout": "Columns",
+    "layoutHint": "Left and right change it; automatic follows the window",
+    "auto": "Automatic",
+    "columns": "{{count}}",
+    "moveEarlier": "Move this cell earlier",
+    "moveLater": "Move this cell later",
+    "remove": "Remove from the panel",
+    "removeHint": "This unpins the conversation, here and in the sidebar",
+    "openInShell": "Open in the main window",
+    "fullscreen": "Toggle full screen",
+    "close": "Close the panel",
+    "more": "More…",
+    "model": "Model",
+    "thinking": "Thinking level",
+    "approval": "Approval",
+    "approvalHint": "Applies to every conversation, not just this cell"
+  },
+  "attention": {
+    "badge": "{{count}} need you",
+    "approval": "Approval",
+    "failed": "Failed",
+    "finished": "Finished",
+    "none": "Nothing is waiting for you"
+  },
+  "add": {
+    "title": "Add a conversation",
+    "close": "Close",
+    "machine": "Machine",
+    "workspace": "Workspace",
+    "filter": "Filter by title",
+    "empty": "Nothing here can be added. Every conversation in this place is already pinned.",
+    "add": "Add",
+    "added": "In the panel",
+    "footer": "Adding pins the conversation: it appears here and in the sidebar's pinned section."
+  },
+  "devices": {
+    "local": "This Mac",
+    "chats": "Chats",
+    "all": "All machines",
+    "label": "Machines"
+  }
+}
