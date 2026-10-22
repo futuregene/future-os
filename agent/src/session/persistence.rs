@@ -1054,8 +1054,17 @@ mod tests {
             )])
             .unwrap();
         persistence.barrier().unwrap();
-        std::thread::sleep(Duration::from_millis(60));
-        assert!(persistence.inner.worker.lock().is_none());
+        // CI may delay scheduling the worker beyond its idle timeout. Observe
+        // retirement itself before appending again so this tests a restart,
+        // rather than assuming a fixed sleep guarantees the worker has exited.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while persistence.inner.worker.lock().is_some() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            persistence.inner.worker.lock().is_none(),
+            "worker never retired"
+        );
 
         persistence
             .append(vec![SessionEntry::new_assistant(
