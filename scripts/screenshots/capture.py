@@ -63,6 +63,11 @@ CHROME_CANDIDATES = (
     shutil.which("microsoft-edge"),
     shutil.which("chromium"),
     shutil.which("chromium-browser"),
+    # Windows installs browsers under Program Files and never puts them on PATH.
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
 )
 
 
