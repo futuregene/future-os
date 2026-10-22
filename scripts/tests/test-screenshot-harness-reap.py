@@ -77,16 +77,48 @@ def ps_row(pid, ppid, profile, port=9222):
             "command": BROWSER_COMMAND.format(port=port, profile=profile)}
 
 
+def pid_alive(pid):
+    """Whether `pid` names a running process.
+
+    `os.kill(pid, 0)` is not a liveness probe on Windows — it neither raises for a
+    dead pid nor sends anything (measured on Python 3.13), so a helper that
+    waited on it could only ever time out. Existence there comes from
+    `OpenProcess`, and a live process is the one still reporting
+    `STILL_ACTIVE`.
+    """
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+        if not handle:
+            return False
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def process_absent(pid, timeout=10.0):
     """True once `pid` no longer exists (a killed Chrome is reaped by init)."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
+        if not pid_alive(pid):
             return True
-        except PermissionError:
-            return False
         time.sleep(0.1)
     return False
 
@@ -120,8 +152,21 @@ class OrphanSelectionTests(unittest.TestCase):
 
     def test_live_browsers_are_never_orphans(self):
         """A concurrent capture's browser still has its capture process as parent."""
-        rows = [ps_row(4242, 7777, "/tmp/future-shot-live")]
+        rows = [
+            {"pid": 7777, "ppid": 1, "command": "python3 scripts/screenshots/capture.py capture-desktop"},
+            ps_row(4242, 7777, "/tmp/future-shot-live"),
+        ]
         self.assertEqual(capture.orphan_browsers(rows), [])
+
+    def test_a_parent_that_no_longer_exists_is_gone(self):
+        """Windows does not re-parent an orphan: its ppid names a dead process.
+
+        The launch that left this browser behind is not in the listing any more,
+        which is the only signal there is — and the one that made the sweep a
+        no-op on Windows before, since it only ever looked for `ppid == 1`.
+        """
+        rows = [ps_row(4242, 9999, "/tmp/future-shot-dead")]
+        self.assertEqual([row["pid"] for row in capture.orphan_browsers(rows)], [4242])
 
     def test_reparented_browser_of_someone_else_is_left_alone(self):
         command = ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome "
@@ -290,6 +335,11 @@ class ReapTests(unittest.TestCase):
             browser.close()
 
 
+@unittest.skipIf(os.name == "nt",
+                 "a signalled exit is POSIX-only: Windows cannot deliver SIGTERM to a "
+                 "Python process, it terminates it outright, so no handler runs. There the "
+                 "startup sweep (ReapTests, which does run on Windows) is what clears a "
+                 "killed run's browser and profile.")
 @needs_chrome
 class SignalCleanupTests(unittest.TestCase):
     """A SIGTERM (turn timeout, agent restart) must still take the browser down."""

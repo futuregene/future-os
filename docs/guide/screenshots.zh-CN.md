@@ -169,7 +169,7 @@ python3 scripts/screenshots/capture.py video-mobile chat
 
 - Node.js（驱动用到的 `ws` 已是仓库依赖）和 Python 3。
 - Chrome、Edge 或 Chromium。不支持 Safari（驱动需要 CDP）。
-- 截图只驱动 **headless** 浏览器，而且只驱动自己起的那个（或 `--cdp-port` 上已在跑的 headless 实例）。该端口上若是**可见**的浏览器，工具会提示并跳过、绝不去驱动——驱动它就会导航并截取你正看着的那个窗口——改在下一个空闲端口起自己的浏览器。被打断的运行（turn 超时、agent 重启）会留下浏览器和 `future-shot-` profile：每条命令启动时都会回收它们，SIGTERM 处理器则在运行被杀时收掉浏览器。
+- 截图只驱动 **headless** 浏览器，而且只驱动自己起的那个（或 `--cdp-port` 上已在跑的 headless 实例）。该端口上若是**可见**的浏览器，工具会提示并跳过、绝不去驱动——驱动它就会导航并截取你正看着的那个窗口——改在下一个空闲端口起自己的浏览器。被打断的运行（turn 超时、agent 重启）会留下浏览器和 `future-shot-` profile：每条命令启动时都会回收它们，SIGTERM 处理器则在运行被杀时收掉浏览器。该处理器只在 POSIX 上成立：Windows 无法把 SIGTERM 投递给 Python 进程，`os.kill` 在那里是直接终止进程、处理器不会执行，所以那边靠下一条命令启动时的回收——它用 `Get-CimInstance Win32_Process` 读进程表（Windows 没有 `ps`），并以「父进程已不在」判定孤儿（Windows 不会像 POSIX 那样把孤儿改挂到 init）。
 - `pip install pillow` 是可选的：它只用来压小 PDF 里的图片。但 `compare-*` 与 `check-upright-mobile` 需要它，缺了会明确报错。
 - 手机端工具另外需要 `react-native-web`、`@expo/metro-runtime` 和 `react-dom`；`capture.py serve-mobile` 会把它们按需装进 mobile workspace，且不动依赖清单（见"不入库的约定"）。
 - **录视频**另外需要 ffmpeg：macOS 用 `brew install ffmpeg`，Linux 用发行版包管理器。缺了会在开始录像前直接报错，不会录到一半失败。

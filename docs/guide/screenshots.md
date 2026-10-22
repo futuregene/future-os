@@ -252,6 +252,10 @@ Consequences worth knowing before trusting a screenshot:
   free port instead. Interrupted runs (a turn timeout, an agent restart) leave a
   browser and a `future-shot-` profile behind; every command sweeps those at
   startup, and a SIGTERM handler takes the browser down when a run is killed.
+  That handler is POSIX-only: Windows cannot deliver SIGTERM to the process, so
+  there a killed run's browser is cleared by the next command's startup sweep —
+  which reads the process list through `Get-CimInstance Win32_Process`, since
+  Windows has no `ps`.
 - `pip install pillow` is optional: it only shrinks images in the generated PDF.
   `compare-*` and `check-upright-mobile` do need it, and say so if it is missing.
 - The mobile harness additionally needs `react-native-web`, `@expo/metro-runtime`
