@@ -1,6 +1,8 @@
 # Automatic approval: implementation and policy
 
-Status: first implementation, under test and integration. Production false-approval rates
+Status: shipped — the desktop and the TUI offer the `auto` tier, and the phone offers
+it whenever the paired host declares `auto_approval_v1`. Production
+false-approval rates
 require independent evaluation. The detailed policy and original baseline analysis are in
 [the Chinese design](AUTO_APPROVAL.zh-CN.md).
 

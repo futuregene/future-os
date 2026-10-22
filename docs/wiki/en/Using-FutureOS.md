@@ -8,7 +8,7 @@ This is a tour of the app: the three-panel layout, Chat vs. Workspace, talking t
 
 FutureOS is organized into three columns:
 
-- **Left — navigation.** From top to bottom you'll find: **New Chat**, **Models** (a shortcut into settings), **Skills**, **Phone Control** (when signed in), your **Workspaces** (each expands to its conversations), your **Chats**, and Settings (the gear, or the account menu) at the bottom. You can collapse the left panel to give the conversation more room.
+- **Left — navigation.** From top to bottom you'll find: **New Chat**, **Models** (a shortcut into settings), **Skills**, **Scheduled tasks**, **Remote** (phone control and remote desktops), your **Workspaces** (each expands to its conversations), your **Chats**, and Settings (the gear, or the account menu) at the bottom. You can collapse the left panel to give the conversation more room.
 - **Center — the conversation.** Your messages, the streaming reply, plans, tool activity, command previews, errors, and approval cards. The input box is fixed at the bottom.
 - **Right — the context panel.** See what the agent is doing (Files / Runs / Review). It's collapsible — open it when you want to check the work, hide it when you don't.
 
@@ -58,6 +58,7 @@ You can set how much the agent asks in **Settings → General**, or from the shi
 
 - **Manual** — file access follows Allow/Ask/Deny path rules; shell commands ask except for the read-only allowlist.
 - **Sandboxed** — commands use macOS Seatbelt, Linux system Bubblewrap, or Windows restricted-token write protection when available. File tools still follow path rules; not all calls prompt. Platform guarantees differ.
+- **Automatic review** — the sandbox plus a model reviewer for the requests that would otherwise ask you. Needs the OS sandbox and a FutureOS sign-in; see [[Sandbox]].
 - **Full access** (default) — no prompts and no sandbox; everything runs. Use with care.
 
 See [[Sandbox]] for Linux installation, unavailable-mode fallback, escalation scope and credential/network limitations. For phone access to desktop sessions, see [[Remote]].
@@ -89,5 +90,6 @@ Every conversation has a **Files** view with the files in its work area: for a *
 ## See also
 
 - [[Quick Start|Quick-Start]] — the fast path to your first answer.
+- [[Scheduled tasks|Scheduled-Tasks]] — let work run on a schedule.
 - [[Settings]] — providers, models, and approval mode.
 - [[Skills]] — capability packs the agent uses automatically.

@@ -12,9 +12,6 @@
   <img src="docs/desktop-screenshot.png" alt="FutureOS desktop app — new conversation, models, skills, and workspace in one window" width="800">
 </p>
 
-<!-- TODO(demo): replace the static screenshot with a 60-90s demo GIF (TUI approval gate →
-     desktop GUI → IM-bot progress → session fork tree → /future-goal board), saved as docs/demo.gif -->
-
 <p align="center">
   <a href="#quick-start">Quick Start</a> •
   <a href="#features">Features</a> •
@@ -44,7 +41,7 @@
 | Category | Details |
 |---|---|
 | **Multi-Interface** | Terminal UI (TUI), desktop app (GUI), mobile apps (Android & iOS), CLI, IM bots — one agent, everywhere. The desktop backend also runs as a **host on a server** (`future host`: no window or WebView, works over SSH), and the phone↔desktop channel is **end-to-end encrypted** — a Noise handshake with ChaCha20-Poly1305 records, so the relay only carries ciphertext ([host mode](docs/guide/desktop-host.md), [remote](docs/wiki/en/Remote.md)) |
-| **Configurable Tool Safety** | read, write, edit, shell — approval rules and sandbox tiers (`off` / `manual` / `sandbox`); macOS Seatbelt, Linux system Bubblewrap, Windows restricted-token write protection. Availability and guarantees differ by platform ([guide](docs/wiki/en/Sandbox.md)) |
+| **Configurable Tool Safety** | read, write, edit, shell — approval rules and tiers (`off` / `manual` / `sandbox`, plus `auto` = sandbox with model review of the requests that would have asked, on a FutureOS sign-in); macOS Seatbelt, Linux system Bubblewrap, Windows restricted-token write protection. Availability and guarantees differ by platform ([guide](docs/wiki/en/Sandbox.md)) |
 | **Model Flexibility** | **Bring your own key**: the [built-in catalog](docs/wiki/en/Models.md) covers the major providers, and any OpenAI- or Anthropic-compatible endpoint can be added through `models.json`. Or sign in to the **FutureOS provider** (`future auth login`) and have the keys and model list provisioned for you. Both work side by side, and you choose which models the picker offers ([setup](#configure-a-model)) |
 | **Goal Engineering** | Durable goals/todos/gates/monitors for long-horizon runs of 24+ hours — deterministic should-run kernel, event-sourced state, hard checks (evidence floor / acceptance contracts / verify gates), lease liveness, multi-agent ([guide](docs/architecture/goal-control-plane.md)) |
 | **Scheduled Tasks** | Recurring work without you in the loop: a reusable prompt + working directory + model/thinking level, run at full permission on a schedule (interval / daily / weekly / monthly / yearly, or a single date) — and on demand whenever you want. Every run is an ordinary conversation plus a run ledger with status, result summary and prompt-version history ([guide](docs/architecture/tasks.md)) |

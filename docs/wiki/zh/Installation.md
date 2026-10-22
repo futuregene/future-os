@@ -80,7 +80,8 @@ portable 用户可能需要 `sudo apt install libwebkit2gtk-4.1-0` 或
 `sudo dnf install webkit2gtk4.1`。官方 Linux CI 使用静态 musl 构建包含 `future host` 的 CLI，它不需要这些 GUI 运行库，也没有 glibc 版本要求；
 本地源码构建的依赖取决于所选 target。
 
-沙箱模式需要安装**系统 Bubblewrap ≥ 0.9.0**，重启应用后运行
+沙箱模式需要安装**系统 Bubblewrap**（多数发行版为 0.9.0 及以上；兼容性按运行时对所需
+选项的探测结果判断，不以版本号为准），重启应用后运行
 `future agent --probe-sandbox` / `future doctor`。它不随应用捆绑，旧发行版包可能需要可信
 渠道升级。要求、namespace 限制和回退行为见 [[审批与沙箱|Sandbox]]。
 

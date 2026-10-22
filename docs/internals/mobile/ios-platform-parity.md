@@ -2,7 +2,7 @@
 
 > ([中文](ios-platform-parity.zh-CN.md))
 
-## Added this round
+## Capabilities
 
 - **Other App → FutureOS**: the native `ShareViewController` supports text, web
   links, images, and files. The user picks FutureOS in the system share sheet,
@@ -19,8 +19,8 @@
   native bundle lacks the new file module, open and save keep the original
   share-sheet fallback; updating JS cannot conjure the Share Extension — a
   rebuild is required.
-- Removed the `future-native-ui` Android module, npm dependency, and invalid
-  mocks that no longer have production callers.
+- The retired `future-native-ui` Android module has no production callers and is
+  no longer in the repository or the mobile package's dependencies.
 
 ## Inbox boundaries
 

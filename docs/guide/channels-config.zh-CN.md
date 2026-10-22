@@ -114,7 +114,7 @@
 | `domain` | `api.dingtalk.com` | API 域名。 |
 | `sender_allowlist` | `[]` | 私聊和群聊中获准操作 agent 的发送者 ID。空列表拒绝所有消息及斜杠命令；`["*"]` 显式信任所有能联系机器人的人。 |
 
-**升级提示：** 已配置的钉钉桥需要填写 `sender_allowlist` 才会接收 prompt。仅加入群聊并不获得操作 agent 的授权。
+**访问门槛：** 钉钉桥只接收 `sender_allowlist` 中列出的发送者的 prompt。仅加入群聊并不获得操作 agent 的授权。
 
 ## 运行时行为
 

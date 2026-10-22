@@ -233,6 +233,64 @@ printf '%s\n' '{"tool":"open_binary","args":{"path":"/bin/ls"}}' \
 请求按序逐条处理:有状态的引擎会话不该并发驱动。单条请求失败(JSON 非法、缺 `tool`、
 服务器拒绝、工具报错)只影响它自己,会话继续。stderr 留给服务器自己的日志,stdout 始终是干净的 JSON 流。
 
+### `desktop` / `workspace` —— 桌面应用自己的设置与 workspace
+
+```bash
+future desktop settings                       # 桌面应用的全部生效设置
+future desktop settings get approvalTier      # 单个值，便于脚本
+future desktop settings set approvalTier auto # off | manual | sandbox | auto
+future workspace list                         # workspace 列表及其会话
+future workspace add ~/projects/demo --name Demo
+```
+
+读写的是桌面应用自己的数据库（`~/.future/app/app.db`），不是 agent 的设置文档——
+后者由 `future config` 管理。无需桌面应用在运行；运行中的应用下次读取设置时生效。
+`future desktop settings --help` 列出全部可设键，包括 `hiddenModels`、
+`autoUpgradeSkills`、`autoConnectRemote`、`bellOnComplete`、`titleLanguage`、
+`skillRecommend` 与 `autoResumeInterrupted`。这里添加的 workspace 会在应用发布目录后
+出现在左栏（以及已配对手机上）；目录必须已存在。
+
+### `remote` —— 已配对设备与远程桌面
+
+```bash
+future remote status                       # 远程桌面是否开启、当前谁在连接
+future remote enable | disable             # 从终端开关这个开关
+future remote devices [list]               # 已配对设备，以及正在操控的那台
+future remote devices add                  # 生成邀请（需要桌面在运行）
+future remote peers [list]                 # 本机连接的远程桌面
+```
+
+配对、主机模式与两侧各自能做什么，见 [[手机远程|Remote]]。
+
+### `task` —— 定时任务
+
+```bash
+future task list [--all]
+future task add --name "Nightly review" --prompt "Review new issues" \
+  --cwd ~/project --model <model> --thinking high --daily --time 09:00
+future task runs "Nightly review"          # 运行台账
+future task output <run-id>                # 某次运行的完整回答
+```
+
+定时任务 = 可复用的 prompt + 触发方式，触发时或手动请求时以完全权限运行。
+其他触发方式为 `--every`、`--at`、`--weekly`、`--monthly`、`--yearly`；
+`--timezone` 指定墙钟时间按哪个时区读取。运行由桌面（或 host）的 tick 循环执行，
+不由本命令执行，所以 `future task run` 只是排队，`--wait` 等待结果。
+见 [[定时任务|Scheduled-Tasks]]。
+
+### `data` —— 离线备份与恢复
+
+```bash
+future data backup <new-directory>
+future data verify <backup-directory>
+future data restore <backup-directory> --yes
+future data resume | rollback
+```
+
+先停止桌面、agent 以及其他写入者。备份包含两个数据库、托管的图片/工作区/审查数据、
+兼容导入的旧数据源，以及包含凭据的 agent 配置——请妥善保管。恢复以原来的 FutureOS home
+为目标；未完成的恢复会阻止启动，直到 `resume` 或 `rollback` 完成。
+
 ### `models` —— 列出可用模型
 
 ```bash
@@ -255,16 +313,22 @@ FUTURE_HOME=/tmp/futureos-b future agent  # 第二个实例：独立状态与 IP
 socket（见[多实例运行](../../guide/directory-layout.zh-CN.md#多实例运行future_home)）。
 客户端设置同一个 `FUTURE_HOME` 即接入对应实例。
 
-### `tui` / `channel` / `loop` —— 运行其他组件
+### `tui` / `channel` / `goal` / `host` —— 运行其他组件
 
-`future` 是所有 Rust 组件的统一入口——每个都运行与独立二进制完全相同的代码，
-独立二进制仍是构建目标（`cargo build -p <crate>`），但已不再默认安装：
+`future` 是所有 Rust 组件的统一入口——每个都运行与独立二进制完全相同的代码；
+独立二进制仍是 `cargo build -p <crate>` 的构建目标，发布产物则是 `future`：
 
 ```bash
 future tui                # 终端界面
 future channel            # IM 渠道桥：飞书 / 钉钉
 future goal status        # goal 控制面：goal/todo/gate
+future host               # 前台主机：把这台机器作为远程桌面
+future relay init|serve   # 自建、免账号的中继，用于远程控制
 ```
+
+`future host` 是不带 GUI、让手机或另一台电脑持续连到本机的方式；见
+[主机模式指南](../../guide/desktop-host.zh-CN.md) 与 [[手机远程|Remote]]。
+`future relay` 在你不想使用官方中继时自建 NATS 中继。
 
 ### `session` —— 管理会话
 

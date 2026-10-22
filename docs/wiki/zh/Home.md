@@ -33,6 +33,7 @@
 - [[设置|Settings]] —— 登录内置 **Future** provider、添加自己的 provider、管理模型可见性。
 - [[技能|Skills]] —— 浏览、安装和使用内置能力包。
 - [[命令行工具(future)|CLI]] —— 可选的命令行工具,用于脚本化与自动化。
+- [[模型目录|Models]] —— FutureOS 能访问的全部模型，按 provider 分组。
 - [[常见问题|FAQ]] —— 常见问题与排错。
 
 ---

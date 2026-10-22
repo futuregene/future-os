@@ -366,7 +366,7 @@ the debug APK.
 
 After first launch:
 
-1. Sign in on the FutureOS desktop, open Remote, and click "Pair and start".
+1. Sign in on the FutureOS desktop, open the Remote page, and start pairing from "Add a device".
 2. Grant the phone camera permission and scan the desktop QR code.
 3. After pairing, pick a desktop session or create a new conversation.
 
@@ -531,10 +531,9 @@ The main distribution path is the reusable workflow
    - `IOS_DIST_CERT_P12_BASE64` / `IOS_DIST_CERT_P12_PWD` — iOS Distribution
      certificate.
    - `IOS_PROVISIONING_PROFILE_BASE64` — App Store provisioning profile for the
-     main app. The Share Extension is not in the existing release by default;
-     enabling it needs a separate profile and follow-up signing workflow
-     configuration — see [signing config](ios-platform-parity.md); the workflow
-     is not modified in this pass.
+     main app. The Share Extension is not signed by this workflow: enabling it
+     needs a separate profile and its own signing configuration — see
+     [signing config](ios-platform-parity.md).
    - `APPLE_API_KEY` / `APPLE_API_KEY_ID` / `APPLE_API_ISSUER` — App Store
      Connect API Key.
 2. Triggered through the build/release coordination workflow; the iOS

@@ -93,7 +93,9 @@ Official Linux CI builds the CLI (including `future host`) with static musl, so
 neither requires those GUI libraries or any particular glibc version. Local
 source builds depend on their selected target.
 
-For sandbox mode, install **system Bubblewrap ≥ 0.9.0**, restart the app and run
+For sandbox mode, install **system Bubblewrap** (0.9.0 or newer on most
+distributions; compatibility is decided by probing the required options at
+runtime, not by the version string), restart the app and run
 `future agent --probe-sandbox` / `future doctor`. It is not bundled, and an older
 distribution package may need a trusted upgrade. See [[Sandbox]] for requirements,
 namespace restrictions and fallback behavior.
