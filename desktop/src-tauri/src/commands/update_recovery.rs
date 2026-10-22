@@ -20,8 +20,7 @@ impl ProgramFingerprint {
         )
     }
     pub(super) fn verify_saved(operation_id: &str) -> Result<(), crate::AppError> {
-        let path = future_rpc::home::future_home()
-            .join("app/updates")
+        let path = super::journal::root()
             .join(operation_id)
             .join("original-files.json");
         let original: Self = serde_json::from_slice(&std::fs::read(path)?)?;
@@ -113,6 +112,7 @@ mod tests {
     #[test]
     fn persisted_restoration_snapshot_is_rechecked_before_later_restart() {
         let _home = crate::auth_store::test_support::HomeGuard::new("update-original-snapshot");
+        let _root = super::super::journal::CaseRoot::bind();
         let directory = tempfile::tempdir().unwrap();
         let file = directory.path().join("program");
         std::fs::write(&file, b"original").unwrap();
