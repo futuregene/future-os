@@ -434,3 +434,4 @@ future doctor
 - [[安装 FutureOS|Installation]] —— 工具随包附带的位置。
 - [[技能|Skills]] —— 同样的技能,在应用里管理。
 - [[常见问题|FAQ]] —— 常见问题。
+- [主机模式](../../guide/desktop-host.zh-CN.md)、[自建中继](../../guide/self-hosted-relay.zh-CN.md)、[定时任务](../../architecture/tasks.zh-CN.md) 与 [数据与存储](../../architecture/sqlite-migration.zh-CN.md) —— `future host`、`future relay`、`future task`、`future data` 背后的指南。

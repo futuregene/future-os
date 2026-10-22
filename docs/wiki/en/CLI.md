@@ -486,3 +486,4 @@ Checks login status, component installation, agent connectivity, OS sandbox avai
 - [[Install FutureOS|Installation]] — where the tool ships.
 - [[Skills]] — the same skills, managed from the app.
 - [[FAQ]] — common issues.
+- [Host mode](../../guide/desktop-host.md), [self-hosted relay](../../guide/self-hosted-relay.md), [scheduled tasks](../../architecture/tasks.md) and [data and storage](../../architecture/sqlite-migration.md) — the guides behind `future host`, `future relay`, `future task` and `future data`.

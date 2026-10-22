@@ -20,7 +20,7 @@ gate。这些是 agent 的工作记录，不是面向用户的产品文档——
 | [dimension-matrix.md](dimension-matrix.md) | 从各模块记录中摘引的 boundary / error-path / concurrency / property / platform-cfg / serialization 证据索引 |
 | [waiver-ledger.md](waiver-ledger.md) | waiver 注册表与类别政策 |
 | `flaky-*.md` | 每个测试套件一篇：把偶发失败追到根因的调查、机制，以及它最终如何被关掉 |
-| `headless-*.md`、`headless-*.json` | headless 发布验收：手工验收脚本、未签名下载结果，以及这两篇页面所引用的原始 CI run 载荷（`headless-ci-*.json`、`headless-baseline-*.json`） |
+| `headless-*.md`、`headless-*.json` | headless 发布验收：手工验收脚本、未签名下载结果，以及 headless 抽取过程中的逐次改动载荷（`headless-<主题>-*.json`：基准提交、本次改动、测试所有权、本地结果与限制），其中也包含这两篇页面引用的 CI run 与基线载荷（`headless-ci-*.json`、`headless-baseline-*.json`） |
 | [real-network.md](real-network.md) | 跑真实 NATS 服务与真实网络路径的那套测试，以及运行它需要什么 |
 | [remote-client-fixtures.md](remote-client-fixtures.md)、[remote-interop.md](remote-interop.md) | remote 技术栈的 fixture 与跨实现互操作运行记录 |
 | [remote-package-manual-acceptance.md](remote-package-manual-acceptance.md) | 抽出的 remote 包的手工验收记录（有中文对照） |
