@@ -1400,9 +1400,13 @@ records to every interface for abstraction's sake.
 **Mobile settings manage the selected Desktop, not a second preference store.**
 The phone uses a full-screen, scrollable Settings page with separate Model
 visibility, Provider, and Skill management subpages. The Current desktop
-section exposes `autoUpgradeSkills`, `autoTitleFirstTurn`, and
-`autoConnectRemote` (explicitly labelled **Keep the remote desktop on after a
-restart** — the same switch state the Desktop's Remote page shows). Model
+section exposes `autoUpgradeSkills`, `autoTitleFirstTurn` and
+`skillRecommend`. The remote desktop switch is **not** offered here: on that
+machine the Desktop's Remote page switch *is* the whole preference (its own
+state after a restart), and a phone row would write the value the host reads at
+launch — so the two surfaces would describe one state differently until that
+computer restarted. It is changed on the desktop only; the `autoConnectRemote`
+key stays in the host's allowlist so an older phone build keeps working. Model
 visibility edits the same Desktop `hiddenModels` list, using
 provider-qualified identifiers; the management catalogue includes hidden
 entries so they can be enabled again. The phone's language, update check and

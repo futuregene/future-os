@@ -264,8 +264,12 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
                 predates the toggle), matching the desktop's own default. */}
             <SettingsSwitch label={t("desktopSettings.skillRecommend")} description={t("desktopSettings.skillRecommendHint")}
               value={resource.data?.skillRecommend ?? false} disabled={disabled} onChange={skillRecommend => void changeSettings({ skillRecommend })} />
-            <SettingsSwitch label={t("desktopSettings.autoConnectRemote")} description={t("desktopSettings.autoConnectRemoteHint")}
-              value={resource.data?.autoConnectRemote ?? false} disabled={disabled} onChange={autoConnectRemote => void changeSettings({ autoConnectRemote })} />
+            {/* The remote desktop switch is deliberately absent: on that machine
+                the Remote page's switch *is* the whole preference, and this row
+                would write the value the host reads at launch, so a second
+                control here would describe one state two ways (that switch keeps
+                showing the old answer until a restart). It is changed on the
+                desktop only. */}
             {enabled ? <ResourceStatus loading={resource.loading || saving} failed={resource.failed} onReload={() => void resource.reload()} /> : null}
           </SettingsSection>
           <SettingsSection title={t("approvalTier.title")}>
