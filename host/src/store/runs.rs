@@ -1537,8 +1537,30 @@ mod tests {
         }
     }
 
+    /// Serialize the tests that share [`TOOL_PROJECTION_CACHE`].
+    ///
+    /// The cache is process-global and capacity-bounded (64). Two sibling tests
+    /// deliberately fill it past that bound
+    /// (`bulk_sweep_cannot_evict_a_run_with_an_open_tool_call` and the snapshot
+    /// test), which evicts *other* tests' entries — including one that is
+    /// mid-sequence. That is a real failure, reproduced locally: a run whose
+    /// entry is evicted between two advances restarts from `last_sequence = -1`,
+    /// so the next advance returns one tool instead of two and
+    /// `tool_projection_advances_incrementally_without_duplicates` fails on
+    /// `third.len() == 2`.
+    ///
+    /// Serializing the users of one process-global fixture is what makes these
+    /// tests measure the projection logic instead of their neighbours.
+    fn hold_projection_cache() -> std::sync::MutexGuard<'static, ()> {
+        static CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        CACHE_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
     #[test]
     fn tool_projection_advances_incrementally_without_duplicates() {
+        let _cache = hold_projection_cache();
         let run_id = format!("test_tools_{}", std::process::id());
 
         let first = advance_tool_projection(
@@ -1589,6 +1611,7 @@ mod tests {
 
     #[test]
     fn tool_projection_accepts_object_args_and_enriches_streaming_start() {
+        let _cache = hold_projection_cache();
         let run_id = format!("test_object_args_{}", std::process::id());
         let tools = advance_tool_projection(
             &run_id,
@@ -1623,6 +1646,7 @@ mod tests {
 
     #[test]
     fn tool_projection_empty_advance_on_uncached_run_returns_nothing() {
+        let _cache = hold_projection_cache();
         // A read-only advance for a run with no cached projection must not
         // create an entry — it returns the empty list.
         let uncached = format!("test_uncached_{}", std::process::id());
@@ -1631,6 +1655,7 @@ mod tests {
 
     #[test]
     fn tool_projection_accumulates_streaming_arg_deltas() {
+        let _cache = hold_projection_cache();
         let run_id = format!("test_arg_deltas_{}", std::process::id());
         let tools = advance_tool_projection(
             &run_id,
@@ -1678,6 +1703,7 @@ mod tests {
 
     #[test]
     fn tool_projection_keeps_partial_input_until_execution_start() {
+        let _cache = hold_projection_cache();
         let run_id = format!("test_partial_args_{}", std::process::id());
         let tools = advance_tool_projection(
             &run_id,
@@ -1708,6 +1734,7 @@ mod tests {
 
     #[test]
     fn tool_projection_snapshot_delta_replaces_and_idless_delta_targets_newest_running() {
+        let _cache = hold_projection_cache();
         let run_id = format!("test_delta_attrs_{}", std::process::id());
         let tools = advance_tool_projection(
             &run_id,
@@ -1747,6 +1774,7 @@ mod tests {
 
     #[test]
     fn tool_projection_ignores_delta_without_a_running_call() {
+        let _cache = hold_projection_cache();
         let run_id = format!("test_orphan_delta_{}", std::process::id());
         let tools = advance_tool_projection(
             &run_id,
@@ -1772,6 +1800,7 @@ mod tests {
 
     #[test]
     fn bulk_sweep_cannot_evict_a_run_with_an_open_tool_call() {
+        let _cache = hold_projection_cache();
         // Regression (review round 2): list_runs is created_at DESC, so the
         // context panel's bulk poll advances the NEWEST (active) run first
         // and then 64+ history runs. Plain recency then leaves the active run
@@ -1882,6 +1911,7 @@ mod tests {
 
     #[test]
     fn get_tool_call_input_reads_the_tool_projection() {
+        let _cache = hold_projection_cache();
         let run_id = format!("test_tool_input_{}", std::process::id());
         advance_tool_projection(
             &run_id,
@@ -2085,8 +2115,32 @@ mod tests {
         );
     }
 
+    /// Serialize tests that append to [`RUN_EVENT_BUFFER`] and then read it
+    /// back.
+    ///
+    /// The buffer and the disk-writer fixture are **process-global**, and the
+    /// HOME fixture clears both whenever it swaps HOME
+    /// (`auth_store::test_support::cleanup_host` →
+    /// `reset_run_event_writer_for_test`). A read that lands between those two
+    /// points sees neither the buffered events nor, because the writer was
+    /// closed and the directory may be gone, the persisted ones — which is how
+    /// `tool_call_input_legacy_fallback_paths` failed intermittently on CI
+    /// (`left: None, right: Some("{\"path\":\"/x\"}")`) while passing on a
+    /// retry of the same commit.
+    ///
+    /// The HOME fixture already holds `TEST_HOME_LOCK` for its whole lifetime,
+    /// so taking the same lock here is what puts these tests on the same side of
+    /// that boundary. It does not order them among themselves: their run ids are
+    /// per-test, so they do not interfere.
+    fn hold_run_event_fixtures() -> std::sync::MutexGuard<'static, ()> {
+        crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
     #[test]
     fn append_run_event_dedups_replayed_sequences() {
+        let _fixtures = hold_run_event_fixtures();
         let run_id = format!("test_dedup_{}", std::process::id());
         let input = |sequence: i64| AppendRunEventInput {
             run_id: run_id.clone(),
@@ -2410,6 +2464,7 @@ mod tests {
 
     #[test]
     fn append_dedup_tolerates_gaps_and_empty_buffer_entries() {
+        let _fixtures = hold_run_event_fixtures();
         // A sparse buffer: a replay-window sequence that isn't present is
         // appended, not mistaken for a duplicate.
         let run_id = format!("test_gap_{}", std::process::id());
@@ -2429,6 +2484,7 @@ mod tests {
 
     #[test]
     fn tool_call_input_legacy_fallback_paths() {
+        let _fixtures = hold_run_event_fixtures();
         let run_id = format!("test_legacy_input_{}", std::process::id());
 
         // No projection state at all → straight to the legacy log.
