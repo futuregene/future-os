@@ -1,7 +1,7 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredThread } from "../../integrations/storage/threadStore";
-import { modelLabel, modelSupportsThinking, normalizeThinkingLevel } from "../../integrations/agent/agentClient";
+import { modelLabel, modelSupportsThinking, modelThinkingLevel, resolveThinkingLevel } from "../../integrations/agent/agentClient";
 import { updateCachedAgentState, useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { updateThreadModel, updateThreadThinkingLevel } from "../../integrations/storage/threads";
 
@@ -46,7 +46,6 @@ export function useVibeCellSettings(thread: StoredThread | null, fallback: {
   const state = useCachedAgentState(thread?.id);
   const modelId = state?.model ?? fallback.modelId;
   const supportsThinking = modelSupportsThinking(modelId, fallback.modelOptions);
-  const rawLevel = state?.thinkingLevel ?? fallback.thinkingLevel;
   return {
     // The approval tier is an application setting, not a conversation's: the menu says
     // so where it is changed, or a reader will expect per-cell tiers that do not exist.
@@ -54,7 +53,7 @@ export function useVibeCellSettings(thread: StoredThread | null, fallback: {
     modelId,
     modelName: modelLabel(modelId, fallback.modelOptions) ?? modelId,
     supportsThinking,
-    thinkingLevel: supportsThinking ? normalizeThinkingLevel(rawLevel) : "off",
+    thinkingLevel: resolveThinkingLevel(state?.thinkingLevel ?? fallback.thinkingLevel, modelId, fallback.modelOptions),
   };
 }
 
@@ -64,9 +63,7 @@ export async function setVibeCellModel(
   modelId: string,
   modelOptions: AgentModelOption[],
 ): Promise<void> {
-  const thinkingLevel = modelSupportsThinking(modelId, modelOptions)
-    ? normalizeThinkingLevel(undefined)
-    : "off";
+  const thinkingLevel = modelThinkingLevel(modelId, modelOptions);
   await updateThreadModel({ modelId, threadId });
   await updateThreadThinkingLevel({ thinkingLevel, threadId });
   // The cache is what the panel reads, so the change shows on the next render

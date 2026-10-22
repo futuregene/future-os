@@ -625,6 +625,22 @@ it("writes the auto-connect switch's own key", async () => {
 });
 
 /**
+ * This row writes the *host's* Remote switch, so the copy has to say when.
+ *
+ * The write lands on one preference the host reads at launch, which means the
+ * switch on that machine keeps showing what it was until it restarts — from
+ * here the change looks like nothing happened. A row that read as an immediate
+ * toggle ("turn the remote desktop on") would leave the two surfaces
+ * disagreeing about one state, so the description names the next launch as the
+ * moment it takes effect.
+ */
+it("says the auto-connect row takes effect at that machine's next launch", async () => {
+  const view = await mount();
+  expect(view.text()).toContain("its own Remote switch changes then, not now");
+  await view.unmount();
+});
+
+/**
  * The machine's icon is written back as a *label* update, by icon id.
  *
  * The id is what the list draws (the glyph is derived from it), so sending the

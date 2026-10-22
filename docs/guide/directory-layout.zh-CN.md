@@ -221,6 +221,7 @@ GUI 的每线程聊天工作区，每个子目录以 agent 会话 id（已知时
 │   ├── events.jsonl               # 事件源账本（权威状态）
 │   ├── runs.jsonl                 # 权威花费/运行账本
 │   ├── next_action.txt            # 内核 should-run 决策快照
+│   ├── next_action.stamp          # 该快照写入时刻（本机时钟）
 │   ├── schema.json                # 事件 store schema 版本戳
 │   ├── ACTIVE_GOAL_STATE.md       # 人可读的活跃状态投影
 │   ├── status-cache.json          # status 投影缓存

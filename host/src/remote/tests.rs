@@ -997,6 +997,165 @@ mod runtime_tests {
         stop();
     }
 
+    /// An invitation the desktop handed out and nobody claimed must still pair
+    /// after an automatic recovery.
+    ///
+    /// `add` is "pair one more device", and the platform answers a desktop it
+    /// already knows with the SAME `pair_id` — the one that device already
+    /// claimed. The new invitation is deliberately not in the book, because an
+    /// unconfirmed invitation is not a device yet. A rebuild, though, is written
+    /// from the book alone (`establish_slots`, and `restart_slot` through
+    /// `recovery_plan`), so it brings the *paired* identity back and the pending
+    /// one is served by nobody. Redeeming the code the user is holding then fails
+    /// against that identity — the request says `pairing=true` and the identity has
+    /// already pinned a peer (`invitation_already_used`) — which the desktop
+    /// reports with its catch-all "pairing expired, generate a new link".
+    ///
+    /// This is the reported shape: a code works on a phone, the same machine's
+    /// next invitation fails on a desktop, and the advice to regenerate is what
+    /// the user already did. The invariant is the product's, not the fix's: a code
+    /// that was handed out and not yet claimed has to survive a recovery the user
+    /// cannot see.
+    #[tokio::test]
+    async fn an_unclaimed_invitation_still_pairs_after_a_generation_rebuild() {
+        let _home = HomeGuard::new("remote-pending-invitation-rebuild");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let pair_id = format!("pair_{}", unique("pending"));
+
+        // The book as a successful pairing leaves it: the peer's key pinned, the
+        // invitation's own secret gone.
+        let mut paired = pairing_creds(&pair_id);
+        paired.nats_url = nats.url().to_string();
+        paired.nats_ws_url = nats.url().replace("nats://", "ws://");
+        {
+            let identity = paired.secure.as_mut().expect("v2 credentials");
+            identity.peer_public_key = Some(nkeys::KeyPair::new_user().public_key());
+            identity.secret = None;
+        }
+        super::pairing::save_creds(&paired).expect("store the paired device");
+
+        // "Add device" for the same pair id: the platform's answer for a desktop
+        // it already knows, and the invitation a second device would scan.
+        platform.respond_pair_code_for(&pair_id, nats.url());
+        let added = crate::remote::supervisor::add_device()
+            .await
+            .expect("add device");
+        assert_eq!(added.pair_id, pair_id, "the platform reuses the pair id");
+        let shown = added
+            .pairing_code
+            .clone()
+            .expect("the new device is still an invitation");
+        assert!(
+            !SUPERVISOR
+                .state
+                .lock()
+                .unwrap()
+                .get(&pair_id)
+                .is_some_and(|state| state.pairing_confirmed.load(Ordering::Acquire)),
+            "nobody has claimed it yet, which is what makes it pending"
+        );
+
+        // The recovery a dead subscription task triggers: rebuild from the book.
+        platform.respond_refresh(nats.url());
+        let rebuilt = super::start_once(true).await.expect("rebuilt generation");
+        assert!(matches!(rebuilt.phase, RemotePhase::Ready), "{rebuilt:?}");
+
+        // Nobody claimed it, so it must still be redeemable.
+        let mobile = nats_connect(&nats).await;
+        let _channel = super::test_support::secure_pair(&mobile, &shown, &pair_id).await;
+
+        stop();
+    }
+
+    /// An invitation whose five minutes are up is not carried across a rebuild.
+    ///
+    /// Carrying it would keep a code on screen that every client refuses, and the
+    /// remedy — generate another — would look like it had already been done. The
+    /// book's own slot is what the rebuild falls back to, which is exactly the
+    /// state a desktop that has never paired anything is in.
+    #[tokio::test]
+    async fn an_expired_invitation_is_not_carried_across_a_rebuild() {
+        let _home = HomeGuard::new("remote-expired-invitation-rebuild");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let pair_id = format!("pair_{}", unique("expired"));
+
+        platform.respond_pair_code_for(&pair_id, nats.url());
+        let added = crate::remote::supervisor::add_device()
+            .await
+            .expect("add device");
+        assert!(added.pairing_code.is_some(), "an invitation is on screen");
+
+        // Five minutes later: `exp` is inclusive-upper, the same rule the client
+        // and the handshake apply.
+        SUPERVISOR
+            .state
+            .lock()
+            .unwrap()
+            .get_mut(&pair_id)
+            .expect("the pending slot is running")
+            .pairing_code_expires_at = Some(super::test_support::now_secs());
+
+        let rebuilt = super::start_once(true).await.expect("rebuilt generation");
+        assert!(
+            rebuilt.pairing_code.is_none(),
+            "an expired code must not be carried: {rebuilt:?}"
+        );
+
+        stop();
+    }
+
+    /// Once a device has claimed it, the same invitation is spent — a rebuild
+    /// takes the book's binding and shows no code at all.
+    #[tokio::test]
+    async fn a_claimed_invitation_is_not_carried_across_a_rebuild() {
+        let _home = HomeGuard::new("remote-claimed-invitation-rebuild");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let pair_id = format!("pair_{}", unique("claimed"));
+
+        platform.respond_pair_code_for(&pair_id, nats.url());
+        let added = crate::remote::supervisor::add_device()
+            .await
+            .expect("add device");
+        let shown = added.pairing_code.clone().expect("an invitation is shown");
+
+        // The device the invitation was for redeems it, which pins it and clears
+        // the invitation's own secret.
+        let mobile = nats_connect(&nats).await;
+        let _channel = super::test_support::secure_pair(&mobile, &shown, &pair_id).await;
+        assert!(
+            SUPERVISOR
+                .state
+                .lock()
+                .unwrap()
+                .get(&pair_id)
+                .expect("the slot is running")
+                .pairing_confirmed
+                .load(Ordering::Acquire),
+            "the pairing completed"
+        );
+
+        // A rebuild now must not resurrect a code that is already spent, and it
+        // must not lose the device either.
+        platform.respond_refresh(nats.url());
+        let rebuilt = super::start_once(true).await.expect("rebuilt generation");
+        assert!(matches!(rebuilt.phase, RemotePhase::Ready), "{rebuilt:?}");
+        assert!(
+            rebuilt.pairing_code.is_none(),
+            "a spent invitation is not on offer again: {rebuilt:?}"
+        );
+
+        stop();
+    }
+
     /// `re_pair` runs the Remote page's two buttons in the order that works: the
     /// stored pairing is revoked *before* the invitation is minted. The order is
     /// the whole content of the helper, and it is observable here — a start-first

@@ -275,6 +275,7 @@ is not the default). See [goal-control-plane.md](../architecture/goal-control-pl
 │   ├── events.jsonl               # event-sourced ledger (the authoritative state)
 │   ├── runs.jsonl                 # authoritative spend/run ledger
 │   ├── next_action.txt            # kernel should-run decision snapshot
+│   ├── next_action.stamp          # when that snapshot was written (this machine's clock)
 │   ├── schema.json                # event-store schema version stamp
 │   ├── ACTIVE_GOAL_STATE.md       # human-readable active-state projection
 │   ├── status-cache.json          # status projection cache

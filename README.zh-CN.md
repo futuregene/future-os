@@ -126,6 +126,21 @@ future auth login
 }
 ```
 
+模型只支持部分思考等级时（不少自建服务只认 `low`/`high`），用 `thinkingLevels` 声明它接受的档位——provider 级作默认，model 级覆盖；不写就是全部六档（`off`/`minimal`/`low`/`medium`/`high`/`xhigh`），`reasoning: false` 的模型只有 `off`。选择器只列出声明过的档位，存量的档位不在其中时会按深度就近吸附（距离相同时取更浅的一档，不会比你选的更费 token）：
+
+```json
+{
+  "providers": {
+    "my-provider": {
+      "apiKey": "sk-...",
+      "baseUrl": "https://my-api.example.com/v1",
+      "thinkingLevels": ["off", "low", "high"],
+      "models": [{ "id": "my-model" }]
+    }
+  }
+}
+```
+
 </details>
 
 ### 安装技能（可选）

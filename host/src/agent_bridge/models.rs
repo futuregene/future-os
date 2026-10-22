@@ -20,6 +20,17 @@ pub struct AgentModelOption {
     reasoning: Option<bool>,
     #[serde(default)]
     thinking_level: Option<String>,
+    /// The levels this model offers, canonical order (`list_models` sends it
+    /// already resolved: `off` alone for a model without thinking controls, the
+    /// full six for one that declares nothing). Clients filter their pickers with
+    /// it so they never offer a level the agent would clamp away.
+    #[serde(default)]
+    thinking_levels: Option<Vec<String>>,
+    /// The level a conversation starts at on this model, already clamped by the
+    /// agent. Clients seed their own default from it instead of carrying a copy
+    /// of the snapping rule.
+    #[serde(default)]
+    default_thinking_level: Option<String>,
     #[serde(default)]
     context_window: Option<i32>,
     #[serde(default)]
@@ -115,6 +126,8 @@ mod tests {
                 "provider": "future",
                 "supportsImages": true,
                 "thinkingLevel": "high",
+                "thinkingLevels": ["off", "low", "high"],
+                "defaultThinkingLevel": "low",
                 "contextWindow": 256000,
                 "isDefault": true,
                 "description": "经济实用版",
@@ -135,6 +148,14 @@ mod tests {
         assert_eq!(model.id, "future/k3");
         assert!(model.supports_images);
         assert_eq!(model.thinking_level.as_deref(), Some("high"));
+        // The level list and the agent's starting level travel to the desktop:
+        // without them every picker would fall back to all six and offer an
+        // effort the agent clamps away.
+        assert_eq!(
+            model.thinking_levels.as_deref(),
+            Some(vec!["off".to_string(), "low".to_string(), "high".to_string()].as_slice())
+        );
+        assert_eq!(model.default_thinking_level.as_deref(), Some("low"));
         assert_eq!(model.context_window, Some(256000));
         assert!(model.is_default);
         assert_eq!(model.description_en.as_deref(), Some("Budget-friendly"));

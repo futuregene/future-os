@@ -612,6 +612,8 @@ fn model_entry_to_proto(model: &crate::payloads_ext::ModelEntryPayload) -> proto
         supports_images: model.supports_images,
         reasoning: model.reasoning,
         thinking_level: model.thinking_level.clone(),
+        thinking_levels: model.thinking_levels.clone(),
+        default_thinking_level: model.default_thinking_level.clone(),
         context_window: model.context_window,
         is_default: model.is_default,
         description: model.description.clone(),

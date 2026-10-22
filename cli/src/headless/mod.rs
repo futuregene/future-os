@@ -132,8 +132,8 @@ pub fn run(options: Options) -> Result<(), String> {
     let result = runtime.block_on(async {
         let signals = ShutdownSignals::new()?;
         let mut agent = agent::Agent::default();
-        let result = until_shutdown(signals.wait(), session(&mut agent)).await;
-        agent.shutdown().await?;
+        let (result, cause) = until_shutdown(signals.wait(), session(&mut agent)).await;
+        agent.shutdown(cause.reason()).await?;
         result
     });
     // Do not let a stuck blocking task make Ctrl+C wait forever.
@@ -156,14 +156,72 @@ fn with_log_hint(message: String) -> String {
     }
 }
 
+/// What ended this entry's foreground run.
+///
+/// A login node can take the process away without the operator asking: an SSH
+/// session closes, a scheduler reclaims the node, a supervisor sends SIGTERM.
+/// Every one of those arrives on the same shutdown path, so without this the log
+/// of "the host stopped at 13:17" is identical for all of them and the cause is
+/// only inferable afterwards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StopCause {
+    /// The serving loop returned on its own — a reported failure, not a signal.
+    Session,
+    /// Ctrl+C in the foreground terminal.
+    Interrupt,
+    /// SIGTERM: `systemctl stop`, a scheduler, or a process supervisor.
+    #[cfg(unix)]
+    Terminate,
+    /// SIGHUP: the terminal closed or the SSH session went away.
+    #[cfg(unix)]
+    Hangup,
+    /// The console window was closed (Windows).
+    #[cfg(windows)]
+    Close,
+}
+
+impl StopCause {
+    /// The shared stop operation's reason, so a cleanup that runs out of its
+    /// budget reports which signal it was finishing.
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Session => "headless_exit",
+            Self::Interrupt => "headless_sigint",
+            #[cfg(unix)]
+            Self::Terminate => "headless_sigterm",
+            #[cfg(unix)]
+            Self::Hangup => "headless_sighup",
+            #[cfg(windows)]
+            Self::Close => "headless_console_close",
+        }
+    }
+
+    /// What to call it on the terminal, where the operator reads the cause once.
+    fn describe(self) -> &'static str {
+        match self {
+            Self::Session => "an internal stop",
+            Self::Interrupt => "SIGINT (Ctrl+C)",
+            #[cfg(unix)]
+            Self::Terminate => "SIGTERM",
+            #[cfg(unix)]
+            Self::Hangup => "SIGHUP (the terminal or SSH session ended)",
+            #[cfg(windows)]
+            Self::Close => "a console-close event",
+        }
+    }
+}
+
+/// Whichever comes first, together with what ended the run. The signal arm
+/// carries its own cause so the cleanup that follows can record it; the session
+/// arm is this entry's own loop returning, which is not a signal at all.
 async fn until_shutdown(
-    shutdown: impl std::future::Future<Output = Result<(), AppError>>,
+    shutdown: impl std::future::Future<Output = StopCause>,
     session: impl std::future::Future<Output = Result<(), AppError>>,
-) -> Result<(), AppError> {
+) -> (Result<(), AppError>, StopCause) {
     tokio::select! {
         biased;
-        result = shutdown => result,
-        result = session => result,
+        cause = shutdown => (Ok(()), cause),
+        result = session => (result, StopCause::Session),
     }
 }
 
@@ -687,19 +745,28 @@ impl ShutdownSignals {
         }
     }
 
-    async fn wait(mut self) -> Result<(), AppError> {
+    async fn wait(mut self) -> StopCause {
         #[cfg(unix)]
-        tokio::select! {
-            _ = self.interrupt.recv() => {},
-            _ = self.terminate.recv() => {},
-            _ = self.hangup.recv() => {},
-        }
+        let cause = tokio::select! {
+            _ = self.interrupt.recv() => StopCause::Interrupt,
+            _ = self.terminate.recv() => StopCause::Terminate,
+            _ = self.hangup.recv() => StopCause::Hangup,
+        };
         #[cfg(windows)]
-        tokio::select! {
-            _ = self.interrupt.recv() => {},
-            _ = self.close.recv() => {},
-        }
-        Ok(())
+        let cause = tokio::select! {
+            _ = self.interrupt.recv() => StopCause::Interrupt,
+            _ = self.close.recv() => StopCause::Close,
+        };
+        // Before the first cleanup stage: several of the lines that follow look
+        // like faults (a cancelled run, a rebuilt remote generation, a cleanup
+        // deadline), and none of them say why the entry decided to stop. Mirrored
+        // into the host log, because a detached terminal keeps no scrollback.
+        future_host::environment::report(&format!(
+            "received {}; stopping. This is a clean shutdown request, not a crash: cleanup stages \
+             follow and a failure in them is reported as this exit's error.",
+            cause.describe()
+        ));
+        cause
     }
 }
 
@@ -827,22 +894,41 @@ mod tests {
         assert_eq!(parse(&["-h"]).unwrap(), Launch::Help);
     }
 
+    /// How a supervisor takes the host away without the operator asking:
+    /// `systemctl stop` / a scheduler (SIGTERM) where there are unix signals, the
+    /// console-close event where there are not. Which one exists differs by
+    /// platform, and each must reach the cleanup as the cause and as its own
+    /// reason — naming the signal is the whole point of it.
+    #[cfg(unix)]
+    const SUPERVISOR_STOP: (StopCause, &str) = (StopCause::Terminate, "headless_sigterm");
+    #[cfg(windows)]
+    const SUPERVISOR_STOP: (StopCause, &str) = (StopCause::Close, "headless_console_close");
+
     #[tokio::test]
     async fn interrupt_drops_pending_startup_before_it_can_complete() {
         let completed = std::sync::atomic::AtomicBool::new(false);
-        until_shutdown(async { Ok(()) }, async {
+        let (stop, reason) = SUPERVISOR_STOP;
+        let (result, cause) = until_shutdown(async { stop }, async {
             completed.store(true, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         })
-        .await
-        .unwrap();
+        .await;
+        result.unwrap();
+        // The signal is what the cleanup records as the stop reason, so a
+        // cleanup deadline names the signal instead of a generic exit.
+        assert_eq!(cause, stop);
+        assert_eq!(cause.reason(), reason);
         assert!(!completed.load(std::sync::atomic::Ordering::Relaxed));
     }
 
     #[tokio::test]
     async fn startup_errors_are_not_hidden_as_success() {
-        let result =
+        let (result, cause) =
             until_shutdown(std::future::pending(), async { Err("setup failed".into()) }).await;
+        // A serving loop that returned is not a signal, and must not be reported
+        // as one: the operator reads the entry's own error.
+        assert_eq!(cause, StopCause::Session);
+        assert_eq!(cause.reason(), "headless_exit");
         assert_eq!(result.unwrap_err().to_string(), "setup failed");
     }
 
@@ -1006,10 +1092,10 @@ mod tests {
         let poll_dropped = dropped.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let mut tx = Some(tx);
-        until_shutdown(
+        let (result, _cause) = until_shutdown(
             async {
                 rx.await.unwrap();
-                Ok(())
+                StopCause::Interrupt
             },
             wait_for_login(Duration::from_secs(1), Duration::from_secs(600), || {
                 let guard = Dropped(poll_dropped.clone());
@@ -1021,8 +1107,8 @@ mod tests {
                 }
             }),
         )
-        .await
-        .unwrap();
+        .await;
+        result.unwrap();
         assert!(dropped.load(Ordering::SeqCst));
     }
 

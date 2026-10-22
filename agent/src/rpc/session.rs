@@ -37,6 +37,22 @@ const DEFAULT_PERMISSION_LEVEL: &str = "all";
 /// different effort than the desktop would pick.
 pub const DEFAULT_THINKING_LEVEL: &str = "medium";
 
+/// Thinking budget (in tokens) an internal level implies. `off` and unknown
+/// levels budget nothing.
+///
+/// One definition because both `set_thinking_level` and `set_model` (which
+/// re-derives the budget when a model switch clamps the level) need it.
+pub fn thinking_budget_for(level: &str) -> i32 {
+    match level {
+        "minimal" => 2000,
+        "low" => 4000,
+        "medium" => 8000,
+        "high" => 16000,
+        "xhigh" => 24000,
+        _ => 0,
+    }
+}
+
 // ─── ServerSession ────────────────────────────────────────────────────────
 
 /// In-memory representation of one agent session.
@@ -604,6 +620,9 @@ impl ServerSession {
             .map(|m| format!("{}/{}", m.provider, m.id))
             .unwrap_or_else(|| model.to_string());
 
+        // The level this session ran at before the switch: a switch that clamps
+        // it is a change clients have to hear about (and that persists).
+        let original_level = self.thinking_level.clone();
         // Construct the selected provider before changing any session state.
         // This keeps the switch atomic from the next run's perspective. Context
         // fit is deliberately NOT checked here: a selector click must not write
@@ -624,15 +643,29 @@ impl ServerSession {
             canonical_model.clone(),
             self.model_registry.clone(),
         );
-        if !self.thinking_level.is_empty() {
-            client = client.with_thinking_level(&self.thinking_level);
+        // A model switch can shrink the level vocabulary (`models.json`
+        // `thinkingLevels`), and the level travels with every request. Snap it
+        // against the *new* model before the client is built, so the run that
+        // follows never carries a level this model does not offer. The RPC layer
+        // announces the change to clients.
+        let clamped_level = resolved
+            .as_ref()
+            .map(|model_config| model_config.clamp_thinking_level(&self.thinking_level))
+            .unwrap_or_else(|| self.thinking_level.clone());
+        if !clamped_level.is_empty() {
+            client = client.with_thinking_level(&clamped_level);
         }
-        let thinking_budget = self
-            .agent_loop
-            .try_read()
-            .map_err(|_| anyhow::anyhow!("session configuration is busy; retry /model"))?
-            .config
-            .thinking_budget;
+        // Only a clamp changes the budget; otherwise the loop's own value stands
+        // (unchanged behaviour for a switch the vocabulary does not constrain).
+        let thinking_budget = if clamped_level != self.thinking_level {
+            thinking_budget_for(&clamped_level)
+        } else {
+            self.agent_loop
+                .try_read()
+                .map_err(|_| anyhow::anyhow!("session configuration is busy; retry /model"))?
+                .config
+                .thinking_budget
+        };
         if thinking_budget > 0 {
             client = client.with_thinking_budget(thinking_budget);
         }
@@ -649,6 +682,10 @@ impl ServerSession {
             .map_err(|_| anyhow::anyhow!("session configuration is busy; retry /model"))?;
         self.model = canonical_model;
         loop_.model_ref = self.model.clone();
+        if clamped_level != original_level {
+            self.thinking_level = clamped_level.clone();
+            loop_.config.thinking_budget = thinking_budget;
+        }
         // Set agent loop model to bare canonical ID for LLM API calls.
         // The session-level self.model already holds the full provider/id.
         if let Some(ref mc) = resolved {
@@ -669,6 +706,12 @@ impl ServerSession {
         if self.session_manager.contains(&self.session_id)? {
             self.persistence
                 .update_info("model", serde_json::Value::String(self.model.clone()))?;
+            if clamped_level != original_level {
+                self.persistence.update_info(
+                    "thinking_level",
+                    serde_json::Value::String(self.thinking_level.clone()),
+                )?;
+            }
         }
 
         Ok(())
@@ -697,20 +740,49 @@ impl ServerSession {
         self.set_model(&replacement)
     }
 
+    /// The thinking levels the cycle command walks for this session's model.
+    ///
+    /// Resolved from the shared registry on every read so a model switch or a
+    /// `models.json` reload is picked up without a session restart. An
+    /// unresolvable model keeps the full vocabulary: a model we cannot see is
+    /// not evidence that it refuses a level, and refusing there would change
+    /// behaviour for a catalogue that is merely cold.
+    pub fn cycling_thinking_levels(&self) -> Vec<String> {
+        self.model_registry
+            .read()
+            .resolve(&self.model)
+            .map(|model| model.cycling_thinking_levels())
+            .unwrap_or_else(|| {
+                crate::llm::schema::THINKING_LEVELS
+                    .iter()
+                    .map(|level| level.to_string())
+                    .collect()
+            })
+    }
+
+    /// Snap a requested level onto what this session's model actually offers.
+    ///
+    /// The single clamp every entry point goes through: `set_thinking_level`
+    /// (and therefore the RPC command, channel/task config and the cycle
+    /// command), `set_model` when the new model offers a smaller set, session
+    /// creation with an explicit level, and hydration of a stored one. A model
+    /// that declares no `thinkingLevels` is left untouched — see
+    /// [`crate::models::Model::clamp_thinking_level`].
+    pub fn normalize_thinking_level(&self, level: &str) -> String {
+        self.model_registry
+            .read()
+            .resolve(&self.model)
+            .map(|model| model.clamp_thinking_level(level))
+            .unwrap_or_else(|| level.to_string())
+    }
+
     pub fn set_thinking_level(&mut self, level: &str) {
-        self.thinking_level = level.to_string();
-        let budget = match level {
-            "off" => 0,
-            "minimal" => 2000,
-            "low" => 4000,
-            "medium" => 8000,
-            "high" => 16000,
-            "xhigh" => 24000,
-            _ => 0,
-        };
+        let level = self.normalize_thinking_level(level);
+        self.thinking_level = level.clone();
+        let budget = thinking_budget_for(&level);
         if let Ok(mut loop_) = self.agent_loop.try_write() {
             loop_.config.thinking_budget = budget;
-            loop_.provider.update_thinking(level, budget);
+            loop_.provider.update_thinking(&level, budget);
         }
 
         // Keep metadata writes ordered with active-run persistence. This setter
@@ -1572,7 +1644,11 @@ impl ServerSession {
                     self.custom_system_prompt = v.to_string();
                 }
                 if let Some(tl) = info.get("thinking_level").and_then(|v| v.as_str()) {
-                    self.thinking_level = tl.to_string();
+                    // A level stored before the model's vocabulary changed (or
+                    // stored by another client for another model) is snapped
+                    // here, so a hydrated session never runs at a level its own
+                    // model does not offer.
+                    self.thinking_level = self.normalize_thinking_level(tl);
                 }
                 // NOTE: no session_name fallback here — load_path derives
                 // session.name from this same last session_info entry, so
