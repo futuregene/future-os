@@ -83,6 +83,44 @@ test("thinking choices remain selectable after redesign", () => {
   expect(remote.setThinkingLevel).toHaveBeenCalledWith("xhigh");
 });
 
+test("thinking choices are the selected model's own levels", () => {
+  // `models.json` can narrow a model's vocabulary; the host's agent clamps
+  // anything outside that list, so the sheet must not offer it.
+  act(() => tree.update(createElement(ModelSelectorSheet, {
+    ...props,
+    selector: "thinking",
+    remote: {
+      ...props.remote,
+      models: [{ id: "model-a", provider: "provider", thinkingLevels: ["off", "low", "high"] }],
+      thinkingLevel: "low",
+    },
+  })));
+  expect(options()).toHaveLength(3);
+  expect(options()[1]!.props.accessibilityState.checked).toBe(true);
+  act(() => options()[2]!.props.onPress());
+  expect(remote.setThinkingLevel).toHaveBeenCalledWith("high");
+});
+
+test("a model with no thinking controls offers off alone", () => {
+  act(() => tree.update(createElement(ModelSelectorSheet, {
+    ...props,
+    selector: "thinking",
+    remote: {
+      ...props.remote,
+      models: [{ id: "model-a", provider: "provider", thinkingLevels: ["off"] }],
+      thinkingLevel: "off",
+    },
+  })));
+  expect(options()).toHaveLength(1);
+  expect(options()[0]!.props.accessibilityState.checked).toBe(true);
+});
+
+test("a host that sends no list keeps all six levels", () => {
+  // An older desktop (or a model that declares nothing) must not lose levels.
+  act(() => tree.update(createElement(ModelSelectorSheet, { ...props, selector: "thinking" })));
+  expect(options()).toHaveLength(6);
+});
+
 test("tapping the scrim outside the sheet dismisses it without changing a setting", () => {
   const scrim = tree.root.findAll(node =>
     node.props.accessible === false && typeof node.props.onPress === "function")[0]!;

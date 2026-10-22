@@ -20,6 +20,17 @@ pub struct AgentModelOption {
     reasoning: Option<bool>,
     #[serde(default)]
     thinking_level: Option<String>,
+    /// The levels this model offers, canonical order (`list_models` sends it
+    /// already resolved: `off` alone for a model without thinking controls, the
+    /// full six for one that declares nothing). Clients filter their pickers with
+    /// it so they never offer a level the agent would clamp away.
+    #[serde(default)]
+    thinking_levels: Option<Vec<String>>,
+    /// The level a conversation starts at on this model, already clamped by the
+    /// agent. Clients seed their own default from it instead of carrying a copy
+    /// of the snapping rule.
+    #[serde(default)]
+    default_thinking_level: Option<String>,
     #[serde(default)]
     context_window: Option<i32>,
     #[serde(default)]

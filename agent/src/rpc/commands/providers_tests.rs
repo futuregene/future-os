@@ -489,6 +489,64 @@ fn list_models_uses_id_label_for_unnamed_model() {
     assert_eq!(model["label"], "unnamed-model");
 }
 
+/// Each catalogue row carries the model's own level list and the level a
+/// conversation starts at on it — resolved here, so no client re-derives either
+/// rule and none can disagree with the clamp.
+#[test]
+fn list_models_sends_each_models_thinking_levels_and_starting_level() {
+    let home = TestHome::new();
+    let path = home.models_path();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        serde_json::json!({"providers": {
+            "levels-test": {
+                "api": "openai-completions",
+                "baseUrl": "https://example.test/v1",
+                "apiKey": "k",
+                "models": [
+                    {"id": "narrow", "thinkingLevels": ["low", "high"]},
+                    {"id": "undeclared"},
+                    {"id": "plain", "reasoning": false}
+                ]
+            }
+        }})
+        .to_string(),
+    )
+    .unwrap();
+    let state = make_app_state();
+    *state.model_registry.write() = crate::models::Registry::new();
+
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("list_models")));
+    let models = resp["data"]["models"].as_array().unwrap();
+    let row = |id: &str| {
+        models
+            .iter()
+            .find(|model| model["provider"] == "levels-test" && model["id"] == id)
+            .unwrap_or_else(|| panic!("{id} listed"))
+    };
+
+    assert_eq!(
+        row("narrow")["thinkingLevels"],
+        serde_json::json!(["low", "high"])
+    );
+    // Its starting level is the agent's clamp of the app default (`medium`),
+    // not `medium` itself: a client seeding from it never starts on a level the
+    // model would snap away from.
+    assert_eq!(row("narrow")["defaultThinkingLevel"], "low");
+
+    // The unchanged path: a model that declares nothing still offers all six and
+    // still starts at `medium`.
+    assert_eq!(
+        row("undeclared")["thinkingLevels"],
+        serde_json::json!(["off", "minimal", "low", "medium", "high", "xhigh"])
+    );
+    assert_eq!(row("undeclared")["defaultThinkingLevel"], "medium");
+
+    assert_eq!(row("plain")["thinkingLevels"], serde_json::json!(["off"]));
+    assert_eq!(row("plain")["defaultThinkingLevel"], "off");
+}
+
 /// The two `list_models` filters are a conjunction, and the cheap one
 /// (`output` contains text) runs first purely for cost. A reorder must not
 /// change the set — in particular, "user-defined" does not exempt a model from

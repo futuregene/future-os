@@ -1,7 +1,10 @@
 use super::*;
 use crate::llm::{
     adapters::AdapterRegistry,
-    schema::{ApiProtocol, ModelRequest, ReasoningEffortValues, ResolvedModelTarget},
+    schema::{
+        clamp_thinking_level, normalize_declared_levels, ApiProtocol, ModelRequest,
+        ReasoningEffortValues, ResolvedModelTarget, THINKING_LEVELS,
+    },
 };
 use serde_json::{json, Value};
 use std::str::FromStr;
@@ -430,4 +433,142 @@ fn provider_level_compat_carries_the_effort_vocabulary() {
         json!("high"),
         "medium snaps to the deeper neighbor on a tie"
     );
+}
+
+// ─── thinkingLevels: the product-level vocabulary a model offers ─────────
+
+/// A user model loaded from a provider block exactly as `models.json` files it,
+/// so the provider-level default and the model-level override are exercised
+/// through the real loader rather than a hand-built `Model`.
+fn configured_model_with_provider(mut provider: Value, entry: Value) -> Model {
+    provider["api"] = json!("openai-completions");
+    provider["baseUrl"] = json!("https://example.test/v1");
+    provider["models"] = json!([entry]);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("models.json");
+    std::fs::write(
+        &path,
+        json!({"providers": {"custom": provider}}).to_string(),
+    )
+    .unwrap();
+    let (mut models, _) = load_user_models_with_overrides(path.to_str().unwrap()).unwrap();
+    enrich_user_models(&mut models, &builtin_models_shared());
+    models.remove(0)
+}
+
+fn all_six() -> Vec<String> {
+    THINKING_LEVELS
+        .iter()
+        .map(|level| level.to_string())
+        .collect()
+}
+
+#[test]
+fn undeclared_thinking_levels_keep_all_six_and_clamp_nothing() {
+    // The whole point of scoping this change: a model that says nothing about its
+    // vocabulary behaves exactly as it did before `thinkingLevels` existed.
+    let model = configured_model("openai-completions", json!({"id": "unlisted"}));
+    assert_eq!(model.allowed_thinking_levels(), all_six());
+    for level in THINKING_LEVELS {
+        assert_eq!(
+            clamp_thinking_level(level, &model.allowed_thinking_levels()),
+            level,
+            "{level}"
+        );
+    }
+    // A name outside the scale is not a level this build can snap: it is passed
+    // through, exactly as the request path does today.
+    assert_eq!(
+        clamp_thinking_level("ultra", &model.allowed_thinking_levels()),
+        "ultra"
+    );
+}
+
+#[test]
+fn provider_level_thinking_levels_are_the_default_and_a_model_may_override() {
+    let inherited = configured_model_with_provider(
+        json!({"thinkingLevels": ["low", "high"]}),
+        json!({"id": "local"}),
+    );
+    assert_eq!(
+        inherited.allowed_thinking_levels(),
+        vec!["low".to_string(), "high".to_string()]
+    );
+
+    let overridden = configured_model_with_provider(
+        json!({"thinkingLevels": ["low", "high"]}),
+        json!({"id": "local", "thinkingLevels": ["off", "xhigh"]}),
+    );
+    assert_eq!(
+        overridden.allowed_thinking_levels(),
+        vec!["off".to_string(), "xhigh".to_string()],
+        "the model-level list wins over the provider default"
+    );
+
+    // An explicit empty list is a declaration too: "this model constrains
+    // nothing", which is six levels — not "inherit the provider's two".
+    let emptied = configured_model_with_provider(
+        json!({"thinkingLevels": ["low", "high"]}),
+        json!({"id": "local", "thinkingLevels": []}),
+    );
+    assert_eq!(emptied.allowed_thinking_levels(), all_six());
+}
+
+#[test]
+fn a_model_without_thinking_controls_offers_only_off() {
+    let bare = configured_model(
+        "openai-completions",
+        json!({"id": "plain", "reasoning": false}),
+    );
+    assert_eq!(bare.allowed_thinking_levels(), vec!["off".to_string()]);
+
+    // A contradictory record (levels declared, thinking disabled) follows the
+    // stronger statement: no thinking controls means `off` alone is reachable.
+    let declared = configured_model(
+        "openai-completions",
+        json!({"id": "plain", "reasoning": false, "thinkingLevels": ["off", "high"]}),
+    );
+    assert_eq!(declared.allowed_thinking_levels(), vec!["off".to_string()]);
+    assert_eq!(declared.clamp_thinking_level("high"), "off");
+}
+
+#[test]
+fn a_declared_vocabulary_is_normalized_to_canonical_order() {
+    let model = configured_model(
+        "openai-completions",
+        json!({"id": "local", "thinkingLevels": ["high", "off", "low"]}),
+    );
+    assert_eq!(
+        model.allowed_thinking_levels(),
+        vec!["off".to_string(), "low".to_string(), "high".to_string()],
+        "the pickers and the cycle command walk the scale, not the file order"
+    );
+
+    // A typo is reported (to the log) and dropped rather than offered as a level
+    // no i18n label or budget arm knows.
+    let (levels, unknown) = normalize_declared_levels(["low", "mid", "high"]);
+    assert_eq!(levels, vec!["low".to_string(), "high".to_string()]);
+    assert_eq!(unknown, vec!["mid".to_string()]);
+}
+
+#[test]
+fn clamp_snaps_to_the_nearest_declared_level_and_ties_go_shallow() {
+    let allowed = vec!["off".to_string(), "low".to_string(), "high".to_string()];
+    for (level, expected) in [
+        ("off", "off"),
+        ("minimal", "off"),
+        // One step from both neighbours: the shallower one wins, because the
+        // unmatched value was never a level this model let the user pick.
+        ("medium", "low"),
+        ("high", "high"),
+        ("xhigh", "high"),
+    ] {
+        assert_eq!(clamp_thinking_level(level, &allowed), expected, "{level}");
+    }
+
+    // No off switch at all: the shallowest declared level is as low as it goes.
+    let always_thinking = vec!["low".to_string(), "high".to_string()];
+    assert_eq!(clamp_thinking_level("off", &always_thinking), "low");
+    assert_eq!(clamp_thinking_level("medium", &always_thinking), "low");
+    assert_eq!(clamp_thinking_level("xhigh", &always_thinking), "high");
 }

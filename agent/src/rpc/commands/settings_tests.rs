@@ -62,6 +62,163 @@ fn set_thinking_level_works() {
     assert_eq!(resp["success"], true);
 }
 
+/// A catalogue of custom models, loaded through the real `models.json` path so a
+/// provider-level default and a model-level override are exercised as filed.
+fn state_from_models(providers: serde_json::Value) -> (TestHome, crate::rpc::AppState) {
+    let home = TestHome::new();
+    let path = home.models_path();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        serde_json::json!({"providers": providers}).to_string(),
+    )
+    .unwrap();
+    let state = make_app_state();
+    // Behind the command boundary the registry is swapped atomically on a
+    // provider commit; mimic that swap for a file written by the test.
+    *state.model_registry.write() = crate::models::Registry::new();
+    (home, state)
+}
+
+fn select_model(state: &crate::rpc::AppState, model: &str) -> serde_json::Value {
+    let mut cmd = make_cmd("set_model");
+    cmd.model_id = model.to_string();
+    let resp = parse_response(&handle_command_internal(state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    resp
+}
+
+/// The agent's clamp is the one place a level is snapped, so the RPC echo must
+/// report the level the session actually took rather than the requested one.
+#[test]
+fn set_thinking_level_snaps_onto_the_models_declared_levels() {
+    let (_home, state) = state_from_models(serde_json::json!({
+        "narrow": {
+            "api": "openai-completions",
+            "baseUrl": "https://example.test/v1",
+            "apiKey": "k",
+            "models": [{"id": "m", "thinkingLevels": ["low", "high"]}]
+        }
+    }));
+    select_model(&state, "narrow/m");
+
+    let mut cmd = make_cmd("set_thinking_level");
+    cmd.level = "medium".to_string();
+    let resp = parse_response(&handle_command_internal(&state, cmd));
+    assert_eq!(resp["success"], true, "{resp}");
+    // One step from both neighbours: the shallower one wins.
+    assert_eq!(resp["data"]["level"], "low");
+    assert_eq!(
+        state.get_session("default").unwrap().read().thinking_level,
+        "low"
+    );
+}
+
+/// Cycling walks the model's own list, not the full six: stepping onto a level
+/// that is immediately clamped away would read as a stuck key.
+#[test]
+fn cycle_thinking_level_walks_only_the_declared_levels() {
+    let (_home, state) = state_from_models(serde_json::json!({
+        "narrow": {
+            "api": "openai-completions",
+            "baseUrl": "https://example.test/v1",
+            "apiKey": "k",
+            "models": [{"id": "m", "thinkingLevels": ["low", "high"]}]
+        }
+    }));
+    select_model(&state, "narrow/m");
+
+    let seen: Vec<String> = (0..4)
+        .map(|_| {
+            let resp = parse_response(&handle_command_internal(
+                &state,
+                make_cmd("cycle_thinking_level"),
+            ));
+            assert_eq!(resp["success"], true, "{resp}");
+            resp["data"]["level"].as_str().unwrap().to_string()
+        })
+        .collect();
+    assert_eq!(seen, ["high", "low", "high", "low"]);
+}
+
+/// A model switch can narrow the vocabulary, and the level travels with every
+/// request — so the switch itself has to re-clamp, persist, and announce it.
+#[test]
+fn switching_to_a_narrower_model_reclamps_the_running_level() {
+    let (_home, state) = state_from_models(serde_json::json!({
+        "wide": {
+            "api": "openai-completions",
+            "baseUrl": "https://example.test/v1",
+            "apiKey": "k",
+            "models": [{"id": "m"}]
+        },
+        "narrow": {
+            "api": "openai-completions",
+            "baseUrl": "https://example.test/v1",
+            "apiKey": "k",
+            "models": [{"id": "m", "thinkingLevels": ["off", "low", "high"]}]
+        }
+    }));
+    // Declaring nothing keeps the six-level default, so xhigh is accepted here.
+    select_model(&state, "wide/m");
+    let mut cmd = make_cmd("set_thinking_level");
+    cmd.level = "xhigh".to_string();
+    assert_eq!(
+        parse_response(&handle_command_internal(&state, cmd))["data"]["level"],
+        "xhigh"
+    );
+
+    let session = state.get_session("default").unwrap();
+    let mut events = session.read().broadcaster.subscribe();
+    let resp = select_model(&state, "narrow/m");
+    assert_eq!(resp["data"]["thinkingLevel"], "high");
+    assert_eq!(session.read().thinking_level, "high");
+
+    let mut announced = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if event.event_type == "thinking_level_changed" {
+            let data: serde_json::Value = serde_json::from_str(&event.data).unwrap();
+            announced.push(data["level"].as_str().unwrap().to_string());
+        }
+    }
+    assert_eq!(announced, ["high"], "clients must hear the clamped level");
+}
+
+/// Switching to a model that offers the running level changes nothing: no
+/// announce, no rewrite — the default path, untouched.
+#[test]
+fn switching_to_a_model_that_allows_the_level_keeps_it_silently() {
+    let (_home, state) = state_from_models(serde_json::json!({
+        "wide": {
+            "api": "openai-completions",
+            "baseUrl": "https://example.test/v1",
+            "apiKey": "k",
+            "models": [{"id": "m"}]
+        },
+        "also-wide": {
+            "api": "openai-completions",
+            "baseUrl": "https://example.test/v1",
+            "apiKey": "k",
+            "models": [{"id": "m", "thinkingLevels": ["off", "minimal", "low", "medium", "high", "xhigh"]}]
+        }
+    }));
+    select_model(&state, "wide/m");
+    let mut cmd = make_cmd("set_thinking_level");
+    cmd.level = "medium".to_string();
+    handle_command_internal(&state, cmd);
+
+    let session = state.get_session("default").unwrap();
+    let mut events = session.read().broadcaster.subscribe();
+    let resp = select_model(&state, "also-wide/m");
+    assert_eq!(resp["data"]["thinkingLevel"], "medium");
+    assert_eq!(session.read().thinking_level, "medium");
+    let changed: Vec<String> = std::iter::from_fn(|| events.try_recv().ok())
+        .map(|event| event.event_type)
+        .filter(|kind| kind == "thinking_level_changed")
+        .collect();
+    assert!(changed.is_empty(), "{changed:?}");
+}
+
 #[test]
 fn set_auto_compaction_works() {
     let state = make_app_state();
