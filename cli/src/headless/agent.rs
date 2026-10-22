@@ -141,8 +141,13 @@ impl Agent {
         waited.as_secs() % 60 < 1
     }
 
-    pub(super) async fn shutdown(&mut self) -> Result<(), future_host::Error> {
-        tokio::task::spawn_blocking(|| super::stop("headless_exit"))
+    /// `reason` is the shared stop operation's reason, so a cleanup that runs out
+    /// of time names what ended the entry instead of a generic exit.
+    pub(super) async fn shutdown(
+        &mut self,
+        reason: &'static str,
+    ) -> Result<(), future_host::Error> {
+        tokio::task::spawn_blocking(move || super::stop(reason))
             .await
             .map_err(|error| error.to_string())?
     }
@@ -190,7 +195,7 @@ mod tests {
         let _mock = future_host::test_support::agent::mock_agent();
         let mut agent = Agent::default();
         agent.check_running().unwrap();
-        agent.shutdown().await.unwrap();
+        agent.shutdown("headless_exit").await.unwrap();
         assert!(!super::host().owns_agent());
     }
 }
