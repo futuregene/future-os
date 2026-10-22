@@ -104,7 +104,12 @@ export function remoteErrorPresentation(message: string): RemoteErrorPresentatio
       supportCode: "NW001",
     };
   if (
-    /invalid_remote_credential|credentials_revoked|invalid_jwt|pairing_signature|confirmation_mismatch|incomplete_desktop_credentials|desktop_credential_mismatch/i.test(
+    // The platform's own sentence, which is what the serialized error carries:
+    // the desktop was unpaired on the other side and this phone's credential is
+    // refused. It sat below the network rule, so a phone that lost the machine
+    // read it as a connection failure and offered "reconnect" — a button that
+    // can only fail — instead of "pairing expired" and the way out.
+    /credential is invalid or revoked|invalid_remote_credential|credentials_revoked|invalid_jwt|pairing_signature|confirmation_mismatch|incomplete_desktop_credentials|desktop_credential_mismatch/i.test(
       trimmed,
     )
   )

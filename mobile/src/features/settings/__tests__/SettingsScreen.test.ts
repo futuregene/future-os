@@ -42,6 +42,13 @@ const mockRemote = {
   // them — which a test that writes an icon cannot do without.
   desktops: pairedDesktops(),
   desktopOnline: true,
+  // The provider's own rule: reads need the machine to be online *and* to be
+  // this phone's to drive.
+  get desktopReadable() {
+    return this.desktopOnline && (this.presence?.control ?? "active") !== "standby";
+  },
+  presence: null as { control?: "active" | "standby"; holder?: { name?: string } | null } | null,
+  takeControl: jest.fn(async () => {}),
   capabilities: new Set(["desktop_settings_v1", "skill_management_v1", "tasks_v1"]),
   desktopSettingsRevision: 0,
   skillsRevision: 0,
@@ -111,6 +118,8 @@ beforeEach(async () => {
   mockRemote.desktopOnline = true;
   mockRemote.sandboxAvailable = true;
   mockRemote.sandboxCode = undefined;
+  mockRemote.presence = null;
+  mockRemote.takeControl = jest.fn(async () => {});
   mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "tasks_v1"]);
   tasksPageProps = null;
   mockRemote.desktopSettingsRevision = 0;
@@ -129,6 +138,40 @@ beforeEach(async () => {
   await act(async () => { tree = create(createElement(SettingsScreen, deviceProps)); });
 });
 afterEach(() => act(() => tree.unmount()));
+
+// A machine another device is driving refuses every read, so the page used to
+// answer "无法读取桌面端数据，请重试" over a desktop that was working perfectly — just
+// not for this phone. It says what is happening and offers the one action that
+// changes it, and it does not ask for data it knows will be refused.
+test("a taken-over desktop says so and offers the takeover instead of a read failure", async () => {
+  mockRemote.presence = { control: "standby", holder: { name: "Studio laptop" } };
+  mockRemote.desktopOnline = true;
+  mockRemote.getDesktopSettings.mockClear();
+
+  await act(async () => { tree = create(createElement(SettingsScreen, deviceProps)); });
+  await flush();
+
+  expect(strings()).toContain("connection.controlHeldBy: Studio laptop");
+  expect(strings()).toContain("connection.standbyPageHint");
+  // No read was attempted against a machine that would refuse it, so there is
+  // no "could not read the desktop" banner to explain away.
+  expect(mockRemote.getDesktopSettings).not.toHaveBeenCalled();
+  expect(strings()).not.toContain("desktopSettings.loadFailed");
+
+  await act(async () => button("connection.takeControl").props.onPress());
+  expect(mockRemote.takeControl).toHaveBeenCalledTimes(1);
+});
+
+test("a refused takeover is reported beside the button, not swallowed", async () => {
+  mockRemote.presence = { control: "standby", holder: { name: "Studio laptop" } };
+  mockRemote.takeControl = jest.fn(async () => { throw new Error("device_offline"); });
+  await act(async () => { tree = create(createElement(SettingsScreen, deviceProps)); });
+  await flush();
+
+  await act(async () => button("connection.takeControl").props.onPress());
+  await flush();
+  expect(strings()).toContain("connection.takeControlFailed");
+});
 
 test("the device page configures the desktop, and keeps the phone's own rows out", async () => {
   expect(tree.root.findAllByType(ScrollView).length).toBeGreaterThan(0);

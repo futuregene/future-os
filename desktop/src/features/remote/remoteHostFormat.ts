@@ -29,10 +29,19 @@ export function formatPairId(pairId: string | null | undefined): string {
 /**
  * The platform's cap is a count over rows it owns, so the only honest place to
  * learn that a device cannot be added is the refusal itself.
+ *
+ * Three shapes reach here, because an `AppError` serializes as a display string
+ * and the typed code can be lost on the way:
+ *
+ * - `pairing_limit_reached` — what the command now reports, translated from the
+ *   typed refusal;
+ * - the platform's sentence ("This desktop already holds 5 devices…"), which is
+ *   all the display string carries when the code is not translated;
+ * - the code inside a Debug-shaped error, which older builds produced.
  */
 export function isLimitError(err: unknown): boolean {
   const text = err instanceof Error ? err.message : String(err);
-  return text.includes("pairing_limit_reached");
+  return /pairing_limit_reached|already holds \d+ devices|maximum number of devices/i.test(text);
 }
 
 /**

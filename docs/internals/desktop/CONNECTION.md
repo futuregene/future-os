@@ -420,6 +420,17 @@ and `unpair` are the only commands it may speak, plus the two presence commands
 below. The payload it gets back from `get_presence` is the light one: the
 conversation list is the machine's, not every paired device's.
 
+**A standby phone stops asking, and says why (2026-10-22).** The phone's settings
+pages (automation, models, providers, skills, scheduled tasks) kept reading a
+machine that refused every read, so a perfectly healthy desktop was reported as
+"could not read the desktop, try again" on a whole page. Those reads are now
+gated on `desktopReadable` (online **and** in control), and the page header names
+the holder and offers the takeover; a successful takeover restores the reads in
+the same render. The list page follows the same rule: when **every machine that
+answers** is in standby, the merged view shows the takeover page rather than
+"no conversations yet", because a standby machine is sent no catalogue and an
+empty list described somebody else's machine as an empty one.
+
 **Whether the client is there (2026-10-20).** Everything above describes the
 *machine's* half of a device: its bridge, its connection, its credential. None
 of it says whether anybody is behind it. A client that was disconnected (or
@@ -535,9 +546,11 @@ original pairing can migrate and recover legacy pending operations. An explicit
 user unpair only cleans that Desktop's registration and data; on receiving a
 revocation notice, invalid credentials, or corrupt credentials, the connection
 stops and that Desktop's mirrored business state clears, but the local Desktop
-registration is kept. The UI shows a red "Pairing invalid"; only the user's
-explicit "Unpair" deletes the registration — historical operations must not be
-made to look like the system lost information.
+registration is deleted along with a one-time notice naming the machine — the
+desktop ended the pairing, so there is nothing to retry, and a kept registration
+only offered a "Reconnect" that could never succeed. A connection that merely
+failed without revocation evidence keeps it and offers a reconnect, so a sleeping
+desktop is still one tap away.
 
 ### 2.2.2 The Desktop as a client: connecting out (2026-10-10)
 
@@ -1516,7 +1529,7 @@ connection-readiness threshold.
 | Invitation creation or pairing claim result uncertain | end the attempt and let the user regenerate the QR code and re-scan; no automatic re-consuming of the invitation |
 | Credential expiry | only one refresh at a time; network failures follow the backoff policy |
 | Newly issued and still-valid credentials rejected by NATS | terminal `service_authorization`; no automatic loop of issuing and connecting |
-| Pairing revoked, credentials invalid or corrupt | terminal `revoked`/pairing invalid; stop all connections and retries, clear mirrored business state but keep the local Desktop registration; only explicit user unpair deletes the registration |
+| Pairing revoked, credentials invalid or corrupt | terminal `revoked`/pairing invalid; stop all connections and retries, clear mirrored business state, and **delete that Desktop's local registration** (the desktop unpaired this device, or the platform refused to renew its credentials: neither is recoverable, and keeping the registration only leaves a "Reconnect" page that can never succeed), telling the user once which machine needs a new pairing code. Only a connection failure without revocation evidence keeps the registration and offers a reconnect |
 | Protocol errors or key subscription/task failures after readiness | at most three full-generation recoveries in ten minutes; beyond that enter `generation_unhealthy`; 60 continuous healthy seconds or a user manual reconnect resets the budget |
 | Build failures before readiness | attributed to this connection attempt; cleaning candidate subscriptions must not re-consume the critical-task recovery budget |
 | Receiving a Desktop active-disconnect, sleep, exit, or shutdown notice | the phone stops auto-recovery immediately, clears the list/timeline mirror, and enters a red standalone status page; after wake or reopen the user reconnects manually |
@@ -1835,10 +1848,14 @@ substitute for those results.
   non-ready or Desktop-unavailable states makes the unified business gate
   reject all remote communication.
 - App launch first publishes the Desktop registrations from SecureStore, then
-  asynchronously reads active credentials and connects. Revocation notices and
-  invalid/corrupt credentials enter the red pairing-invalid state without
-  auto-calling `clearCredentials`; a registration is removed only when the user
-  confirms unpair or deletes that Desktop.
+  asynchronously reads active credentials and connects. The desktop's `unpaired`
+  notice, a platform refusal to renew the credentials (`revoked`), and a
+  revocation confirmed by asking the platform after a terminal connection failure
+  all delete **that one** Desktop's registration and tell the user to pair again;
+  a connection that merely failed (timeout, sleep, no network) keeps the
+  registration and offers a reconnect. The first screen after a revocation is
+  therefore the picker or the pairing screen, not a "Disconnected" page whose
+  retry can never succeed.
 - New regressions verify notification merging, follow-up recovery during an
   in-progress reconnect, old-client exit, the new client not blocked, recovery
   possible again after failure, and no duplicate refresh after foreground

@@ -312,6 +312,13 @@ pub async fn command_loop_with_ready(
                         if let Ok(command) = parsed.as_ref() {
                             apply_declared_features(&handshake, &pair_id, &command.features);
                             record_client_identity(handshake.runtime.as_ref(), &pair_id, command);
+                            // Which physical device this is. The platform cannot
+                            // tell that a new pairing belongs to a device this
+                            // machine already serves, and the second pairing could
+                            // never take control because the first still held it.
+                            handshake
+                                .runtime
+                                .note_client_device(&pair_id, &command.device_id);
                         }
                         // The sealed `secure_ready` is the client saying it is
                         // here on the channel it will keep beating on.
@@ -1128,6 +1135,13 @@ pub(crate) trait CommandRuntime: crate::secure::HandshakeHost {
     ) -> Option<Arc<Mutex<Option<crate::types::ClientIdentity>>>>;
     /// The pairing's record of whether its client is at the other end.
     fn client_link(&self, pair: &str) -> Option<Arc<crate::supervisor::ClientLink>>;
+    /// Record which physical device this pairing's client says it is.
+    ///
+    /// The desktop serves one pairing per device; a second pairing of the same
+    /// device is retired here (see `Supervisor::note_client_device`).
+    fn note_client_device(&self, pair: &str, device_id: &str) {
+        let _ = (pair, device_id);
+    }
     /// The client on `pair` said it is leaving.
     fn client_left(&self, pair: &str);
     fn coalesce_events(&self, pair: &str) -> Arc<AtomicBool>;

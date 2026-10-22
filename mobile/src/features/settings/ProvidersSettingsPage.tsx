@@ -39,7 +39,7 @@ export function ProvidersSettingsPage({ onOpenBuiltin, onOpenCustom }: {
   const [showAllBuiltin, setShowAllBuiltin] = useState(false);
   const supported = remote.capabilities?.has("provider_management_v1") ?? false;
   const enabled = remote.desktopOnline && supported;
-  const resource = useDesktopResource(remote.listProviders, remote.desktopSettingsRevision, enabled);
+  const resource = useDesktopResource(remote.listProviders, remote.desktopSettingsRevision, enabled && remote.desktopReadable);
   const builtin = orderBuiltin(resource.data?.builtin ?? []);
   const custom = resource.data?.custom ?? [];
   const visibleBuiltin = showAllBuiltin ? builtin : builtin.slice(0, BUILTIN_PREVIEW_COUNT);

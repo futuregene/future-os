@@ -362,6 +362,10 @@ impl Supervisor {
 
     pub fn stop_slot(self: &Arc<Self>, pair_id: &str) {
         let state = self.state.lock().unwrap().remove(pair_id);
+        // The pairing is not being served any more, so its device record must
+        // not make the next pairing of that device look like a duplicate. Taken
+        // after the state lock is released, matching `note_client_device`.
+        self.client_devices.lock().unwrap().remove(pair_id);
         if let Some(state) = state {
             self.announce_slot_offline(&state);
             abort_generation(state);

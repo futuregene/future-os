@@ -13,6 +13,12 @@ pub enum Event<'a> {
     ReviewUpdated(&'a str),
     RemoteActivity(&'a str),
     ThreadsUpdated,
+    /// A scheduled task was created, changed, deleted or asked to run — by a
+    /// phone over Remote, or by any other process sharing this home. The
+    /// conversation list did not change, so this is its own signal: a panel
+    /// listening for `ThreadsUpdated` would re-list every conversation to learn
+    /// that one task's switch moved.
+    TasksUpdated,
     /// One conversation's activity stamp advanced. Carries the value so a GUI
     /// can patch that row instead of re-listing every conversation.
     ThreadActivity {
@@ -80,6 +86,9 @@ pub fn emit_remote_activity(thread_id: &str) {
 pub fn emit_threads_updated() {
     publish(Event::ThreadsUpdated);
 }
+pub fn emit_tasks_updated() {
+    publish(Event::TasksUpdated);
+}
 
 /// The desktop-side `takeover` moved control; the windowed desktop presents
 /// its main window. Headless runs no-op (no presentation sink).
@@ -124,6 +133,7 @@ mod tests {
         publish_to(None, Event::ReviewUpdated("thread"));
         publish_to(None, Event::RemoteActivity("thread"));
         publish_to(None, Event::ThreadsUpdated);
+        publish_to(None, Event::TasksUpdated);
         publish_to(None, Event::ControlClaimed);
         publish_to(
             None,

@@ -6,6 +6,8 @@ import type { DesktopSettings } from "../../../remote/types";
 import { SettingsSection } from "../SettingsPrimitives";
 import type { SettingsPageBack } from "../pageBack";
 import { TasksSettingsPage } from "../TasksSettingsPage";
+import { loadTaskDraft, saveTaskDraft, taskDraftKey } from "../taskDraftStorage";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import type { RemoteTaskDetail, RemoteTaskRow, RemoteTaskRun } from "../../../remote/taskTypes";
 
 let rows: RemoteTaskRow[];
@@ -19,6 +21,8 @@ let mockLanguage = "en";
 // Untyped jest mocks: the seam under test is which command the page sends with
 // which payload, and a narrower fake would fight the real signatures.
 const mockRemote = {
+  // A paired desktop that nothing else is driving: reads are allowed.
+  desktopReadable: true,
   // The page offers the paired desktop's workspaces as working-directory
   // candidates, so the fake control plane has to carry them.
   workspaces: [
@@ -100,6 +104,25 @@ const input = (label: string) => tree.root
 const chip = (label: string) => tree.root
   .findAll(node => node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function")
   .find(node => node.findAllByType(Text).some(text => text.props.children === label))!;
+/**
+ * The time picker's trigger, and the `HH:MM` it currently shows.
+ *
+ * The time is a picker now, not a text field: the value is read from the
+ * accessibility value it announces, which is the same string the form sends.
+ */
+const timeTrigger = () => tree.root
+  .findAll(node => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === "tasks.form.time")
+  .find(node => typeof node.props.onPress === "function")!;
+const timeValue = (): string => timeTrigger().props.accessibilityValue.text;
+/** Open the picker and choose a value, the way a user does. */
+async function pickTime(hour: string, minute: string) {
+  await act(async () => timeTrigger().props.onPress());
+  const radio = (label: string) => tree.root
+    .findAll(node => node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function")
+    .find(node => node.props.accessibilityLabel === label)!;
+  await act(async () => radio(`tasks.form.hourOption:{"hour":"${hour}"}`).props.onPress());
+  await act(async () => radio(`tasks.form.minuteOption:{"minute":"${minute}"}`).props.onPress());
+}
 
 /** Pressable is a wrapper type, so rows are located by their press behaviour. */
 const pressables = () => tree.root.findAll(node => typeof node.props.onPress === "function" && node.props.accessibilityRole === "button");
@@ -114,10 +137,10 @@ const firstTask = () => rowFor("daily report");
 /**
  * The button that opens the form, one level down from the task. Located by the
  * label it carries rather than by index, so a control added to the row cannot
- * silently retarget what "open the settings" means.
+ * silently retarget what "open the editor" means.
  */
 const settingsToggle = () => pressables()
-  .find(node => node.findAllByType(Text).some(text => typeof text.props.children === "string" && text.props.children.includes("tasks.settings")))!;
+  .find(node => node.findAllByType(Text).some(text => typeof text.props.children === "string" && text.props.children.includes("tasks.edit")))!;
 /** Open a task and its form: the shape almost every editing test wants. */
 async function openTask() {
   await act(async () => firstTask().props.onPress());
@@ -149,6 +172,8 @@ async function remount(extra: Record<string, unknown> = {}) {
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  // Drafts live in the mock store, which outlives one test's mount.
+  await AsyncStorage.clear();
   mockLanguage = "en";
   mockRemote.capabilities = new Set(["tasks_v1"]);
   rows = [taskRow()];
@@ -194,8 +219,8 @@ test("opens a task on its runs, with the form a level down", async () => {
   // The task's own page: what it did, and the way into its settings.
   expect(sections()).toContain("daily report");
   expect(texts().some(text => String(text).includes("all good"))).toBe(true);
-  // The form is the only level down from here.
-  expect(button("tasks.settings")).toBeDefined();
+  // The form is the only level down from here, and it is named after the act.
+  expect(button("tasks.edit")).toBeDefined();
 
   // The form is its own page, carrying the prompt.
   await act(async () => settingsToggle().props.onPress());
@@ -237,7 +262,9 @@ test("edits every trigger shape and sends only its own fields", async () => {
 
   await act(async () => chip("tasks.triggerMode.once").props.onPress());
   await act(async () => input("tasks.form.date").props.onChangeText("2026-12-24"));
-  await act(async () => input("tasks.form.time").props.onChangeText("18:00"));
+  // The picker, not a keystroke: this is the path a phone user takes.
+  await pickTime("18", "00");
+  expect(timeValue()).toBe("18:00");
   expect(await save()).toMatchObject({ triggerKind: "schedule", trigger: { mode: "once", date: "2026-12-24", time: "18:00" } });
 
   await act(async () => chip("tasks.triggerMode.interval").props.onPress());
@@ -295,7 +322,7 @@ test("the level back leaves the form first, then the task", async () => {
   });
   await act(async () => firstTask().props.onPress());
   await act(async () => settingsToggle().props.onPress());
-  expect(sections()).toContain("tasks.settings");
+  expect(sections()).toContain("tasks.editTitle");
 
   // Back from the form is the task it changes…
   await act(async () => { expect(goBackLevel()).toBe(true); });
@@ -359,7 +386,7 @@ test("starts on a weekly trigger's selected weekdays", async () => {
   await remount();
   await openTask();
   expect(input("tasks.form.days").props.value).toBe("mon,fri");
-  expect(input("tasks.form.time").props.value).toBe("10:00");
+  expect(timeValue()).toBe("10:00");
 });
 
 test("summarises every trigger shape on the list row", async () => {
@@ -816,15 +843,17 @@ test("a press that slips past the disabled save still does not write", async () 
   expect(mockRemote.updateTask).not.toHaveBeenCalled();
 });
 
-// A blanked numeric or time field falls back rather than sending NaN to the
-// desktop, which would either be rejected or stored as a broken trigger.
+// A blanked numeric field falls back rather than sending NaN to the desktop,
+// which would either be rejected or stored as a broken trigger. (The time is a
+// picker, so it can no longer be blanked at all — it always writes HH:MM.)
 test("falls back on a blanked trigger field instead of sending nonsense", async () => {
   await openTask();
 
   await act(async () => chip("tasks.triggerMode.daily").props.onPress());
-  await act(async () => input("tasks.form.time").props.onChangeText("  "));
+  await pickTime("07", "03");
+  expect(timeValue()).toBe("07:03");
   await act(async () => button("tasks.form.save").props.onPress());
-  expect(mockRemote.updateTask).toHaveBeenLastCalledWith("tsk_1", expect.objectContaining({ trigger: { mode: "daily", time: "09:00" } }));
+  expect(mockRemote.updateTask).toHaveBeenLastCalledWith("tsk_1", expect.objectContaining({ trigger: { mode: "daily", time: "07:03" } }));
 
   // The save landed, so the form closed; open it again for the next shape.
   await act(async () => settingsToggle().props.onPress());
@@ -837,7 +866,7 @@ test("falls back on a blanked trigger field instead of sending nonsense", async 
   await act(async () => chip("tasks.triggerMode.monthly").props.onPress());
   await act(async () => input("tasks.form.day").props.onChangeText(""));
   await act(async () => button("tasks.form.save").props.onPress());
-  expect(mockRemote.updateTask).toHaveBeenLastCalledWith("tsk_1", expect.objectContaining({ trigger: { mode: "monthly", day: 1, time: "09:00" } }));
+  expect(mockRemote.updateTask).toHaveBeenLastCalledWith("tsk_1", expect.objectContaining({ trigger: { mode: "monthly", day: 1, time: "07:03" } }));
 });
 
 // A write that lands after the page is gone must not set state on a dead
@@ -865,7 +894,7 @@ test("copes with a schedule that carries no trigger body", async () => {
   await openTask();
   // And the form opens on a usable trigger rather than an empty one.
   expect(chip("tasks.triggerMode.daily").props.accessibilityState.selected).toBe(true);
-  expect(input("tasks.form.time").props.value).toBe("09:00");
+  expect(timeValue()).toBe("09:00");
 });
 
 test("copes with a task that declares none of its policies", async () => {
@@ -881,6 +910,142 @@ test("copes with a task that declares none of its policies", async () => {
 });
 
 // A task with no due time is a manual one: the row must not render a date.
+// ─── the form's unfinished work across a cold start ─────────────────────────
+
+const createDraftKey = () => taskDraftKey("unknown", null);
+const editDraftKey = () => taskDraftKey("unknown", "tsk_1");
+/** The form's own shape, as the draft store keeps it. */
+const storedDraft = (overrides: Record<string, unknown> = {}) => ({
+  name: "half typed",
+  prompt: "still writing it",
+  cwd: "",
+  modelId: "",
+  thinkingLevel: "",
+  timezone: "",
+  sessionPolicy: "new",
+  sessionRetention: "keep",
+  conversationMode: "chat",
+  enabled: true,
+  trigger: {
+    mode: "daily",
+    date: "",
+    time: "07:30",
+    everyMinutes: "60",
+    days: "mon",
+    day: "1",
+    month: "12",
+  },
+  ...overrides,
+});
+/** Past the draft write's debounce, so the store has what was typed. */
+const settleDraftWrite = async () => {
+  await act(async () => { await new Promise(resolve => setTimeout(resolve, 320)); });
+};
+
+// The reported bug: leaving the app while filling the new-task form came back
+// to the same page with nothing in it.
+test("restores a new task's draft after the app was killed", async () => {
+  await saveTaskDraft(createDraftKey(), storedDraft(), null);
+  await act(async () => button("tasks.new").props.onPress());
+  await flush();
+
+  expect(input("tasks.form.name").props.value).toBe("half typed");
+  expect(input("tasks.form.prompt").props.value).toBe("still writing it");
+  expect(timeValue()).toBe("07:30");
+});
+
+test("restores an existing task's draft, including the picker's time", async () => {
+  detail = taskDetail({ promptVersion: 3 });
+  await saveTaskDraft(editDraftKey(), storedDraft({ prompt: "edited locally" }), 3);
+  await remount();
+  await openTask();
+  await flush();
+
+  expect(input("tasks.form.prompt").props.value).toBe("edited locally");
+  expect(timeValue()).toBe("07:30");
+});
+
+// A prompt that moved underneath the draft (edited from the desktop) is not
+// what the draft was written against: the stored task wins and the slot is
+// dropped rather than offered back as a page that would overwrite it.
+test("drops a draft written against a prompt that has since changed", async () => {
+  detail = taskDetail({ promptVersion: 3 });
+  await saveTaskDraft(editDraftKey(), storedDraft({ prompt: "edited locally" }), 2);
+  await remount();
+  await openTask();
+  await flush();
+
+  expect(input("tasks.form.prompt").props.value).toBe("summarize yesterday");
+  expect(await loadTaskDraft(editDraftKey())).toBeNull();
+});
+
+// A stored value is data from disk, not from this component: a wrong shape must
+// be ignored field by field rather than rendered.
+test("ignores a stored draft whose fields have the wrong shape", async () => {
+  await saveTaskDraft(createDraftKey(), { name: 42, prompt: { text: "x" }, trigger: "daily" }, null);
+  await act(async () => button("tasks.new").props.onPress());
+  await flush();
+
+  expect(input("tasks.form.name").props.value).toBe("");
+  expect(input("tasks.form.prompt").props.value).toBe("");
+  // The unreadable trigger falls back to the new-task default (manual, so no
+  // time is asked for at all) rather than to a half-read schedule.
+  expect(chip("tasks.triggerMode.manual").props.accessibilityState.selected).toBe(true);
+});
+
+// Merely opening a task is not work in progress: storing the task's own values
+// would later be restored over a task somebody edited elsewhere.
+test("stores no draft for a task nobody edited", async () => {
+  await remount();
+  await openTask();
+  await flush();
+  await settleDraftWrite();
+  expect(await loadTaskDraft(editDraftKey())).toBeNull();
+});
+
+test("writes what is typed and forgets it once the task is saved", async () => {
+  await act(async () => button("tasks.new").props.onPress());
+  await act(async () => input("tasks.form.name").props.onChangeText("nightly"));
+  await act(async () => input("tasks.form.prompt").props.onChangeText("summarise"));
+  await settleDraftWrite();
+  expect(await loadTaskDraft(createDraftKey())).toMatchObject({
+    draft: expect.objectContaining({ name: "nightly", prompt: "summarise" }),
+  });
+
+  await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
+  await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
+  await act(async () => button("tasks.form.save").props.onPress());
+  expect(await loadTaskDraft(createDraftKey())).toBeNull();
+});
+
+// Backing out of the form is leaving the work behind: the next open must show
+// the task as the desktop has it, not a page of edits nobody kept.
+test("forgets the draft when the user backs out of the form", async () => {
+  await saveTaskDraft(editDraftKey(), storedDraft({ prompt: "edited locally" }), detail.promptVersion);
+  let goBackLevel: () => boolean = () => false;
+  await remount({
+    onBackLevel: (handle: SettingsPageBack | null) => {
+      goBackLevel = handle ? () => handle.goBack() : () => false;
+    },
+  });
+  await openTask();
+  await flush();
+  expect(input("tasks.form.prompt").props.value).toBe("edited locally");
+
+  await act(async () => { expect(goBackLevel()).toBe(true); });
+  expect(await loadTaskDraft(editDraftKey())).toBeNull();
+});
+
+test("forgets a new task's draft when it is cancelled", async () => {
+  await act(async () => button("tasks.new").props.onPress());
+  await act(async () => input("tasks.form.name").props.onChangeText("nightly"));
+  await settleDraftWrite();
+  expect(await loadTaskDraft(createDraftKey())).not.toBeNull();
+
+  await act(async () => button("tasks.form.cancel").props.onPress());
+  expect(await loadTaskDraft(createDraftKey())).toBeNull();
+});
+
 test("a row with no due time omits the date", async () => {
   rows = [taskRow({ triggerKind: "manual", trigger: {}, nextDueAt: null })];
   await remount();
@@ -962,7 +1127,7 @@ test("the Settings button is above the run history", async () => {
     .map(node => node.props.children)
     .flat()
     .filter(child => typeof child === "string");
-  const toggle = labels.findIndex(text => (text as string).includes("tasks.settings"));
+  const toggle = labels.findIndex(text => (text as string).includes("tasks.edit"));
   const heading = labels.indexOf("tasks.runs");
   expect(toggle).toBeGreaterThanOrEqual(0);
   expect(heading).toBeGreaterThanOrEqual(0);

@@ -225,12 +225,22 @@ describe("the rail's rows above the list", () => {
     const list = container.querySelector("[data-activity-rail-content]")!;
     expect(list.textContent).not.toContain("Beta chat");
 
-    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Close search']")!.click());
+    // One `×` answers the state of the field: with a query it clears, and with
+    // an empty field it closes. Closing directly (rather than clearing first) is
+    // Escape, or a second press of the same control — both covered below.
+    act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     await flushAsync();
 
     // No field, and no forgotten filter: the whole list is back.
     expect(searchField(container)).toBeNull();
     expect(list.textContent).toContain("Beta chat");
+
+    // And the same close, from the empty field's `×`.
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Close search']")!.click());
+    await flushAsync();
+    expect(searchField(container)).toBeNull();
   });
 
   /** The machine picker stays beside the glyph, and beside the open field. */

@@ -41,6 +41,11 @@ impl CommandRuntime for Context {
     fn client_link(&self, pair: &str) -> Option<Arc<ClientLink>> {
         Some(self.server.upgrade()?.client_link(pair))
     }
+    fn note_client_device(&self, pair: &str, device_id: &str) {
+        if let Some(server) = self.server.upgrade() {
+            server.note_client_device(pair, device_id);
+        }
+    }
     fn client_left(&self, pair: &str) {
         if let Some(server) = self.server.upgrade() {
             server.client_left(pair);
