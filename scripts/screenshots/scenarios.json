@@ -2965,6 +2965,147 @@
             "shot": "d-settings-themes-dark.png"
           }
         ]
+      },
+      "settings-shortcuts": {
+        "note": "Settings → Keyboard shortcuts without the two paragraphs that used to explain the key levels and the terminal's rule. The page is the search box, the reset button and the list; nothing above the list has to be read first.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "lixin"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "设置"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "快捷键"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const dialog = document.querySelector(\"[role='dialog']\"); if (!dialog) throw new Error('the settings dialog did not open'); const text = dialog.textContent || ''; const stray = ['在不同工作区与对话之间切换', '终端获得焦点时不生效']; const found = stray.filter(line => text.includes(line)); if (found.length) throw new Error('the removed paragraphs are still on the page: ' + found.join(' / ')); if (!text.includes('全部恢复默认')) throw new Error('the reset button is gone too'); const search = dialog.querySelector(\"input[aria-label='搜索命令']\"); if (!search) throw new Error('the search box is gone too'); if (!dialog.textContent.includes('新建对话')) throw new Error('the command list is empty'); const recorders = dialog.querySelectorAll('button[title], button'); if (recorders.length < 10) throw new Error('the page has no controls to bind: ' + recorders.length); return 'no paragraphs above the list';})()"
+          },
+          {
+            "shot": "d-settings-shortcuts.png"
+          }
+        ]
+      },
+      "tasks-timezone-picker": {
+        "note": "The scheduled task's time zone, open. Each row names the zone in the UI's language and gives its offset (中国时间 · UTC+8) instead of quoting Asia/Shanghai; this machine's zone and the common ones lead.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "定时任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "编辑"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "时区"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => { const rows = [...document.querySelectorAll(\"[data-testid='timezone-option']\")]; if (rows.length < 20) throw new Error('the zone list did not open: ' + rows.length); const text = rows.map(row => (row.textContent || '').trim()).join(' | '); if (/Asia\\/Shanghai|Europe\\/Berlin/.test(text)) throw new Error('a raw identifier is still shown in the list: ' + text.slice(0, 200)); if (!text.includes('UTC+8')) throw new Error('no offset is printed beside the name: ' + text.slice(0, 200)); if (!/[\\u4e00-\\u9fff]/.test(text)) throw new Error('the zone names are not in Chinese: ' + text.slice(0, 200)); return 'names in Chinese, offsets beside them';})()"
+          },
+          {
+            "shot": "d-tasks-timezone-picker.png"
+          }
+        ]
+      },
+      "tasks-timezone-search": {
+        "note": "The same picker narrowed by what a reader would type: '+' and the number of hours they are away, rather than a name they may not know.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "定时任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "编辑"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "时区"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => { document.querySelector(\"[data-testid='timezone-search']\").focus(); return 'search focused'; })()"
+          },
+          {
+            "type": "+8"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const zones = [...document.querySelectorAll(\"[data-testid='timezone-option']\")].map(row => row.dataset.zone); if (!zones.includes('Asia/Shanghai')) throw new Error('+8 does not find Shanghai: ' + zones.join(',')); if (zones.includes('Europe/Berlin')) throw new Error('+8 kept a zone four hours away: ' + zones.join(',')); return zones.length + ' zones match +8';})()"
+          },
+          {
+            "shot": "d-tasks-timezone-search.png"
+          }
+        ]
+      },
+      "remote-peers-held": {
+        "note": "A paired computer another device is driving. The row says who drives it in one sentence, and Settings is refused before the machine has been taken over — a control that cannot work reads as a broken app.",
+        "url": "http://localhost:5299/shot/?lang=zh&peers=held",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "远程"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => { const row = document.querySelector(\"[data-testid='peer-held']\"); if (!row) throw new Error('the held row is not marked'); const text = (row.textContent || '').trim(); if (!text.includes('另一台设备')) throw new Error('the sentence does not name who drives it: ' + text); if (!text.includes('正在接管')) throw new Error('the sentence does not say what is happening: ' + text); const buttons = [...row.closest(\"[data-testid='peer-row']\").querySelectorAll('button')]; const settings = buttons.find(button => (button.textContent || '').trim() === '设置'); if (!settings) throw new Error('the row has no Settings button'); if (!settings.disabled) throw new Error('Settings is offered on a machine this device does not drive'); const takeOver = buttons.find(button => (button.textContent || '').trim() === '接管'); if (!takeOver || takeOver.disabled) throw new Error('the way to take the machine back is missing'); return text;})()"
+          },
+          {
+            "shot": "d-remote-peers-held.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",

@@ -772,14 +772,7 @@ async fn handle_command_inner(
             let pair_id = handshake.creds.pair_id.clone();
             reply(client, &msg, true, json!({}), None).await;
             let runtime = handshake.runtime.clone();
-            runtime.spawn(Box::pin(async move {
-                if !handshake.access_current() {
-                    return;
-                }
-                if let Err(error) = handshake.runtime.unpair_slot(&pair_id).await {
-                    eprintln!("remote: phone-initiated unpair failed: {error}");
-                }
-            }));
+            runtime.spawn(Box::pin(finish_phone_unpair(handshake, pair_id)));
         }
         _ => {
             handshake
@@ -793,6 +786,34 @@ async fn handle_command_inner(
 use future_remote_protocol::handshake::{
     handshake_transcript, HandshakeTranscript, HANDSHAKE_PROTOCOL_VERSION,
 };
+
+/// The half of a phone-initiated unpair that destroys something.
+///
+/// Split out of the match arm because it is the half that must be guarded, and
+/// the guard is about *when* it runs: the acknowledgement above is sent while
+/// the generation still owns its epoch, and `stop()` may invalidate that epoch
+/// before this task is scheduled. A detached task therefore re-checks before it
+/// touches the book — an unpair from a connection that has already been torn
+/// down must not delete the pairing of a device the user never asked to remove.
+///
+/// Named rather than an inline closure so the guard can be exercised where it
+/// decides something. Racing a detached task against the invalidation proves
+/// nothing either way: whichever side the scheduler picks first is the answer
+/// the test reads, which is how this path used to fail one run in five.
+async fn finish_phone_unpair(handshake: HandshakeState, pair_id: String) {
+    // Cheap early return, and the one that keeps the error log quiet: going one
+    // layer down under a dead epoch answers `remote_server_stopped`, which is a
+    // normal event here and not a failure worth a line. The guarantee itself
+    // lives in that layer (`supervisor::context` refuses every command from a
+    // generation whose epoch moved), so a race here could delay the answer but
+    // never reach the book.
+    if !handshake.access_current() {
+        return;
+    }
+    if let Err(error) = handshake.runtime.unpair_slot(&pair_id).await {
+        eprintln!("remote: phone-initiated unpair failed: {error}");
+    }
+}
 
 async fn handle_pair_handshake(
     client: &async_nats::Client,

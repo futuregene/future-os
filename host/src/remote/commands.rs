@@ -4629,70 +4629,110 @@ mod bridge_tests {
 
     /// A phone-initiated unpair acknowledges first and does the destructive work
     /// in a spawned task — which must re-check the epoch, because `stop()`
-    /// invalidates it in between. Both halves are asserted: with a live epoch the
-    /// local pairing is cleared, and with a revoked one it is left exactly as it
-    /// was, so an unpair from a torn-down generation cannot destroy a pairing the
-    /// user never asked to remove.
+    /// invalidates it in between. So an unpair from a torn-down generation cannot
+    /// destroy a pairing the user never asked to remove.
+    ///
+    /// The two halves are separate tests because they need opposite timing, and a
+    /// single test cannot have both. The acknowledgement is what proves the live
+    /// path reaches the cleanup — it is published before the task is even spawned
+    /// — and the guard is only meaningful when the epoch it will read is decided
+    /// *before* it runs. The cleanup is therefore called directly under a revoked
+    /// epoch, rather than racing the invalidation against a task the runtime's
+    /// own threads may have started first: whichever side a scheduler picks is
+    /// not an assertion, and the version of this test that raced them failed
+    /// about one run in five.
     #[tokio::test]
-    async fn an_unpair_whose_epoch_was_revoked_leaves_the_pairing_alone() {
+    async fn a_phone_unpair_clears_the_pairing_it_names() {
+        let _home = HomeGuard::new("cmd-unpair-live");
+        init_store();
+        let nats = FakeNats::start().await;
+        let client = nats_connect(&nats).await;
+        // The device that asks to be unpaired must be the one on disk: an unpair
+        // is "remove me", so a fixture whose two halves name different pairings
+        // would be asking to remove a device that was never saved.
+        let creds = secure_bridge_creds();
+        crate::remote::pairing::save_creds(&creds).expect("seed a pairing");
+        let handshake = new_handshake_state(
+            creds,
+            Arc::new(AtomicBool::new(false)),
+            format!("bridge_{}", unique("cmd")),
+        )
+        .with_access(SUPERVISOR.access.current());
+        handshake.active_flag().store(true, Ordering::Release);
+        let reply_subject = "rep_unpair_live".to_string();
+        let msg = async_nats::Message {
+            subject: "p.pair.cmd.unpair".into(),
+            reply: Some(reply_subject.clone().into()),
+            payload: serde_json::to_vec(&json!({"id": unique("cmd"), "type": "unpair"}))
+                .unwrap()
+                .into(),
+            headers: None,
+            status: None,
+            description: None,
+            length: 0,
+        };
+        let mut tap = nats.tap();
+        handle_command(&client, msg, handshake).await;
+        let ack: Value = await_publish(&mut tap, &reply_subject, Duration::from_secs(5))
+            .await
+            .json();
+        assert_eq!(ack["success"], json!(true), "got: {ack}");
+        wait_until(
+            "the live unpair clears the local pairing",
+            Duration::from_secs(5),
+            || crate::remote::pairing::load_creds().is_none(),
+        )
+        .await;
+    }
+
+    /// The same cleanup, run once its connection's epoch is gone, must leave the
+    /// book exactly as it found it.
+    ///
+    /// `invalidate` is what `stop()` does to the epoch, so this is the state an
+    /// unpair request finds itself in when the bridge was torn down while its
+    /// acknowledgement was in flight. The device stays paired: it was never asked
+    /// to leave, and the phone can pair again without the desktop having silently
+    /// dropped a device the user still holds.
+    #[tokio::test]
+    async fn a_phone_unpair_finishing_after_its_epoch_went_away_leaves_the_pairing_alone() {
         let _home = HomeGuard::new("cmd-unpair-epoch");
         init_store();
-        for (label, stale) in [("live", false), ("revoked", true)] {
-            let nats = FakeNats::start().await;
-            let client = nats_connect(&nats).await;
-            // The device that asks to be unpaired must be the one on disk: an
-            // unpair is "remove me", so a fixture whose two halves name
-            // different pairings would be asking to remove a device that was
-            // never saved.
-            let creds = secure_bridge_creds();
-            crate::remote::pairing::save_creds(&creds).expect("seed a pairing");
-            let handshake = new_handshake_state(
-                creds,
-                Arc::new(AtomicBool::new(false)),
-                format!("bridge_{}", unique("cmd")),
-            )
-            .with_access(SUPERVISOR.access.current());
-            handshake.active_flag().store(true, Ordering::Release);
-            let reply_subject = format!("rep_unpair_{label}");
-            let msg = async_nats::Message {
-                subject: "p.pair.cmd.unpair".into(),
-                reply: Some(reply_subject.clone().into()),
-                payload: serde_json::to_vec(&json!({"id": unique("cmd"), "type": "unpair"}))
-                    .unwrap()
-                    .into(),
-                headers: None,
-                status: None,
-                description: None,
-                length: 0,
-            };
-            let mut tap = nats.tap();
-            handle_command(&client, msg, handshake).await;
-            if stale {
-                // The generation is torn down before the spawned cleanup runs;
-                // the current-thread test runtime has not scheduled it yet.
-                SUPERVISOR.access.invalidate(|| {});
-            }
-            let ack: Value = await_publish(&mut tap, &reply_subject, Duration::from_secs(5))
-                .await
-                .json();
-            assert_eq!(ack["success"], json!(true), "got: {ack}");
-            if stale {
-                // Nothing observable marks the skipped cleanup, so give it the
-                // same window the live case needs to complete.
-                tokio::time::sleep(Duration::from_millis(200)).await;
-                assert!(
-                    crate::remote::pairing::load_creds().is_some(),
-                    "a revoked epoch must not clear the pairing"
-                );
-            } else {
-                wait_until(
-                    "the live unpair clears the local pairing",
-                    Duration::from_secs(5),
-                    || crate::remote::pairing::load_creds().is_none(),
-                )
-                .await;
-            }
-        }
+        let creds = secure_bridge_creds();
+        crate::remote::pairing::save_creds(&creds).expect("seed a pairing");
+        let pair_id = creds.pair_id.clone();
+        let handshake = new_handshake_state(
+            creds,
+            Arc::new(AtomicBool::new(false)),
+            format!("bridge_{}", unique("cmd")),
+        )
+        .with_access(SUPERVISOR.access.current());
+        // The generation goes away between the acknowledgement and the cleanup.
+        SUPERVISOR.access.invalidate(|| {});
+
+        test_support::finish_phone_unpair(handshake, pair_id).await;
+
+        assert!(
+            crate::remote::pairing::load_creds().is_some(),
+            "a revoked epoch must not clear the pairing"
+        );
+        // And the same call under a live epoch does clear it, so the assertion
+        // above is about the guard and not about the cleanup being broken.
+        let creds = crate::remote::pairing::load_creds().expect("still paired");
+        let live = new_handshake_state(
+            creds,
+            Arc::new(AtomicBool::new(false)),
+            format!("bridge_{}", unique("cmd")),
+        )
+        .with_access(SUPERVISOR.access.current());
+        test_support::finish_phone_unpair(
+            live,
+            crate::remote::pairing::load_creds().unwrap().pair_id,
+        )
+        .await;
+        assert!(
+            crate::remote::pairing::load_creds().is_none(),
+            "the live epoch must still unpair"
+        );
     }
 
     /// A standby device may ask about itself — that is how the phone shows

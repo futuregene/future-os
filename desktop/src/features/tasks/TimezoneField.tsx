@@ -71,6 +71,7 @@ export function TimezoneField({ value, onChange, locale }: TimezoneFieldProps) {
         <Button
           aria-expanded={open}
           aria-haspopup="listbox"
+          aria-label={t("form.timezone")}
           className="w-full justify-between"
           data-testid="timezone-trigger"
           onClick={() => {
