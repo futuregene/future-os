@@ -130,10 +130,9 @@ struct Store {
 }
 
 impl DeliveryQueue {
-    /// Default location: `~/.future/channels/deliveries.json`.
+    /// Default location: `<future home>/channels/deliveries.json`.
     pub fn default_path() -> PathBuf {
-        crate::config::home_dir()
-            .join(".future")
+        crate::config::future_home()
             .join("channels")
             .join("deliveries.json")
     }

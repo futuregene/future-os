@@ -149,16 +149,21 @@ FUTURE_HOME=/tmp/futureos-b future tui
 
 Everything FutureOS owns moves with the override: `<home>/agent` (settings,
 models, `auth.json`, `agent.db`, sessions, `agent-instance.lock`, skills,
-images, logs), `<home>/run/agent.sock`, `<home>/approval_rule.json` and
+images, logs), `<home>/run/agent.sock`, `<home>/app/` (the desktop app's
+database, images, review repos, previews and logs), `<home>/tasks/tasks.db`,
+`<home>/workspaces/chat/`, `<home>/channels/`, `<home>/tui/`, `<home>/bin/`,
+`<home>/mcp.json`, `<home>/approval_rule.json`, the remote pairing books and
 `<home>/windows-capabilities.json`. Two instances therefore never share a lock,
 a database or an endpoint, and neither has to be stopped for the other.
 
 What does **not** move is the operating-system home: sandbox guards over
-`~/.ssh` and the shared `~/.agents/skills` scope still refer to the real user
-home. The override must be an absolute path — a relative or empty value is
-ignored — and the directory is created if missing. Clients select the instance by setting the same `FUTURE_HOME`; their
-own UI state (`~/.future/tui/`, the desktop app's `~/.future/app/`) stays in
-the real home.
+`~/.ssh`, the Messages.app database the iMessage channel reads, and the shared
+`~/.agents/skills` scope still refer to the real user home. Project-local state
+(`<workspace>/.future/approval_rule.json`, `<workspace>/.future/goal/`) stays
+with its project. The override must be an absolute path — a relative or empty
+value is ignored — and the directory is created if missing. Clients select the
+instance by setting the same `FUTURE_HOME`, and their own UI state
+(`<home>/tui/`, the desktop app's `<home>/app/`) moves with it.
 
 ## `~/.future/agent-app/` — legacy credential directory
 
@@ -182,7 +187,9 @@ asking you to edit it and restart.
 
 `<channel>/` holds whatever that channel persists: its conversation-to-session
 file, and any attachments it downloaded. `feishu/` is the Feishu bridge's
-directory, which also keeps the files it received from the platform.
+directory, which also keeps the files it received from the platform. The whole
+directory follows `FUTURE_HOME` (see below), so an isolated instance has its own
+channel config, queue and status.
 
 ## `~/.future/tui/` — terminal UI
 
@@ -195,7 +202,9 @@ skill-recommendation budget (which skills were already offered and which
 drafts were already evaluated — rolled over, never read across days);
 `debug.log` is written when `PI_DEBUG_REDRAW=1`, and `write.log` records raw
 screen writes when `PI_TUI_WRITE_LOG=1`; `crash.log` receives the panic
-backtrace when the TUI crashes. See [tui.md](tui.md).
+backtrace when the TUI crashes. See [tui.md](tui.md). The whole directory
+follows `FUTURE_HOME` (see below), so client state is per instance like the rest
+of that instance's data.
 
 ## `~/.future/app/` — desktop GUI
 
