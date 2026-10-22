@@ -10277,13 +10277,12 @@ impl<T: TerminalIo> App<T> {
         self.previous_height = h;
     }
 
-    /// Debug redraw logging (PI_DEBUG_REDRAW=1 → ~/.future/tui/debug.log).
+    /// Debug redraw logging (PI_DEBUG_REDRAW=1 → `<future home>/tui/debug.log`).
     fn log_redraw(&self, reason: &str, new_len: usize, w: usize, h: usize) {
         if std::env::var("PI_DEBUG_REDRAW").as_deref() != Ok("1") {
             return;
         }
-        let log_path = crate::home::home_dir_or_default()
-            .join(".future")
+        let log_path = crate::home::future_state_dir()
             .join("tui")
             .join("debug.log");
         let ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -16364,11 +16363,13 @@ mod tests {
         let dir = std::env::temp_dir().join("tui");
         assert!(std::fs::read_dir(&dir).unwrap().count() > 0);
 
-        // PI_DEBUG_REDRAW logs to ~/.future/tui/debug.log.
+        // PI_DEBUG_REDRAW logs to <future home>/tui/debug.log.
         let home = tempfile::tempdir().unwrap();
         let old_home = std::env::var_os("HOME");
+        let old_future_home = std::env::var_os("FUTURE_HOME");
         let old_redraw = std::env::var_os("PI_DEBUG_REDRAW");
         std::env::set_var("HOME", home.path());
+        std::env::remove_var("FUTURE_HOME");
         std::fs::create_dir_all(home.path().join(".future/tui")).unwrap();
         std::env::set_var("PI_DEBUG_REDRAW", "1");
         app.terminal.cols = 90; // force a full redraw reason
@@ -16389,6 +16390,7 @@ mod tests {
         restore_env2("PI_TUI_DEBUG", old_debug);
         restore_env2("PI_DEBUG_REDRAW", old_redraw);
         restore_env2("HOME", old_home);
+        restore_env2("FUTURE_HOME", old_future_home);
 
         // Termux: height change does NOT full-redraw.
         let old_termux = std::env::var_os("TERMUX_VERSION");
@@ -19741,6 +19743,51 @@ mod tests {
         app.handle_agent_event(&make_event("agent_end", r#"{"state":"completed"}"#));
         assert!(app.pending_approvals.is_empty());
         assert!(!top_overlay_is::<ApprovalOverlay>(&app));
+    }
+
+    /// A manual-approval run: tool call → "Allowed: …" transcript row → final
+    /// text. The answer must be the transcript's last line, after the call and
+    /// the approval row — not appended to the run's opening assistant message
+    /// above them (that rendered the answer before the activity that produced
+    /// it, measured on a `[manual]` session 2026-10-22).
+    #[tokio::test]
+    async fn the_final_answer_follows_the_approval_rows_it_came_after() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.handle_agent_event(&make_event("agent_start", "{}"));
+        app.handle_agent_event(&make_event(
+            "tool_start",
+            r#"{"tool_id":"t1","tool_name":"shell","tool_args":"{\"command\":\"sinfo\"}"}"#,
+        ));
+        app.handle_agent_event(&make_event("tool_end", r#"{"tool_id":"t1","text":"ok"}"#));
+        app.add_system_message("Allowed: Approve shell command".into());
+        app.handle_agent_event(&make_event_with_run(
+            "text_chunk",
+            r#"{"text":"the final answer"}"#,
+            "run-1",
+        ));
+        app.handle_agent_event(&make_event_with_run(
+            "agent_end",
+            r#"{"state":"completed","text":"the final answer"}"#,
+            "run-1",
+        ));
+
+        let transcript = app.chat.plain_messages();
+        assert_eq!(
+            transcript.last().map(|(role, _)| *role),
+            Some(ChatRole::Assistant),
+            "the answer is the transcript's last message: {transcript:?}"
+        );
+        assert_eq!(transcript.last().unwrap().1.trim(), "the final answer");
+        let approval_row = transcript
+            .iter()
+            .position(|(role, content)| {
+                *role == ChatRole::System && content.contains("Allowed: Approve shell command")
+            })
+            .expect("the approval row is in the transcript");
+        assert!(
+            approval_row + 1 < transcript.len(),
+            "the answer has to come after the approval row: {transcript:?}"
+        );
     }
 
     /// A reconnect rebuilds the queue from `get_state`'s `pendingApprovals`:

@@ -79,10 +79,9 @@ pub struct StatusSnapshot {
 }
 
 impl StatusSnapshot {
-    /// Default location: `~/.future/channels/status.json`.
+    /// Default location: `<future home>/channels/status.json`.
     pub fn default_path() -> PathBuf {
-        crate::config::home_dir()
-            .join(".future")
+        crate::config::future_home()
             .join("channels")
             .join("status.json")
     }
