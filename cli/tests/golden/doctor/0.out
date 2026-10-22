@@ -35,7 +35,7 @@
         openai [2m([key])[0m
 
 [32m[ok][0m [32mSessions[0m
-      No session directory — no sessions created yet
+      No legacy session directory (/tmp/cli-diff-work/homes/doctor/.future/agent/sessions is absent); whether the database holds sessions was not verified
 
 [33m[--][0m [33mSkills[0m
       No skills installed.
