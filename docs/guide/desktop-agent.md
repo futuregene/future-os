@@ -169,8 +169,7 @@ custom wrappers remain intact. An ongoing permission/service failure still
 requires fixing the actual execution environment; the launcher does not conceal
 it by compiling without sccache. When invoking Cargo from an agent's restricted
 sandbox, grant the build the permissions needed to access the configured cache
-and local cache service. The initial historical permission failure may no longer
-be reproducible even while Cargo continues replaying its saved result.
+and local cache service.
 
 Quit from the app for coordinated cleanup. Development-script Ctrl+C interrupts
 the toolchain. Unix cleanup targets only this launch's process group and can
@@ -178,12 +177,11 @@ force termination after its deadline; it does not guarantee normal app cleanup,
 scan/stop external Agents or edit databases/locks. The actual host entry point
 handles Ctrl+C directly; see [host mode](desktop-host.md).
 
-## Change notes and acceptance
+## Acceptance status
 
-Desktop's default host changes from a child process to a complete embedded
-service. External connections, independent CLI/TUI, tool capabilities and storage
-formats remain. Exit now interrupts other clients of an embedded owner too;
-users should understand that before upgrading.
+Desktop hosts the complete Agent in process by default; external connections,
+independent CLI/TUI use, tool capabilities and storage formats all remain
+available, and exiting an embedded owner interrupts that owner's other clients.
 
 Three-platform native lifecycle CI, offline Windows update fixtures, macOS ad-hoc
 packaging and Linux/Windows daily unsigned package checks have passing records.

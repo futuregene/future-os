@@ -24,7 +24,8 @@ install "Microsoft Edge WebView2 Runtime" (Evergreen) from the Microsoft
 website and try again.
 
 [Notes]
-· An internet connection is required for the first-time login.
+· An internet connection is required for the first-time login; your own provider
+  can be configured in Settings instead.
   Personal data is stored in C:\Users\<username>\.future.
 · Exiting an embedded owner cancels every client's active, queued and approval
   work, including CLI/TUI conversations; GUI prompts when work exists. Attached

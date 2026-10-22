@@ -8,7 +8,7 @@
 
 ## 0. 定位
 
-- **位置**：新增 crate `orchestration/tasks`（crate 名 `future-tasks`），与 `orchestration/goal` 同层。
+- **位置**：crate `orchestration/tasks`（crate 名 `future-tasks`）持有内核、类型与 store，与 `orchestration/goal` 同层；执行器与 tick 循环住在 `future-host`（`host/src/tasks.rs`、`host/src/tasks/service.rs`），两个 desktop 宿主与 `future task` CLI 共用这一份。
 - **宿主**：desktop（GUI）与 headless desktop 已接，共用同一份 tick 循环；TUI 未接；mobile 不 host，走 desktop 远程桥。
 - **分层**：确定性内核（`next_due` / 截断 / prompt 版本）全是纯函数，与 host 无关；执行器只有一份，host 差异收敛成 `Notifier` 闭包（见 §8）。
 
@@ -214,21 +214,25 @@ Completion contract:
 
 ## 8. Host 抽象（实际实现：`Notifier`，不是 Executor trait）
 
-执行器只有一份，住在 desktop 的 `tasks.rs`；host 差异只有「跑完之后怎么通知」，因此抽象是一个闭包而不是 trait：
+执行器只有一份，住在 `future_host::tasks`（`host/src/tasks.rs`）；同名的 desktop 模块只是通知适配器。host 差异只有「跑完之后怎么通知」，因此抽象是一个闭包而不是 trait：
 
 ```rust
 pub type Notifier = Arc<dyn Fn(Option<&str /* thread_id */>) + Send + Sync>;
 
-pub fn start<R: tauri::Runtime>(app: AppHandle<R>)  // GUI：emit_remote_activity + emit_threads_updated
+// future-host：执行器与其循环
+pub fn start_with_notifier(notify: Notifier)       // 常驻监管，30s tick
 pub fn start_headless()                            // 无 GUI：通知降级为空，台账就是信号
 async fn run_loop(notify: Notifier)                // 启动对账 + 每 30s tick
+
+// desktop/src-tauri/src/tasks.rs：GUI 适配器
+pub fn start<R: tauri::Runtime>(app: AppHandle<R>) // emit_remote_activity + emit_threads_updated
 ```
 
 理由：`Executor` trait 需要 5 个方法，但它们全部只被这一份实现调用，且都是对 `agent_bridge` 既有函数的薄包装——加一层 trait 只增加间接性。tick 循环本身与 GUI 无关（`start_headless` 与 GUI 走同一个 `run_loop`），所以"headless 也支持"是同一份代码少一个通知出口，而不是第二套实现。
 
 host 现状：
-- **GUI desktop**：已接（`lib.rs` setup 里 `tasks::start`）。
-- **headless desktop**：已接（`headless/mod.rs` 里 `tasks::start_headless`）。
+- **GUI desktop**：已接（`desktop/src-tauri/src/lib.rs` setup 里调用本地的 `tasks::start`，它装上 notifier 后再调 `future_host::tasks::start_with_notifier`）。
+- **headless desktop**：已接（`cli/src/headless/mod.rs` 里 `future_host::tasks::start_headless`）。
 - **mobile**：不 host；经 remote 桥管理（能力 `tasks_v1`）。
 - **TUI**：**未接**。crate 与 CLI 已经可用，TUI 面板是后续增量。
 
@@ -320,7 +324,7 @@ HOME=/tmp/try FUTURE_AGENT_GRPC_ADDR=127.0.0.1:5099 \
 
 ## 12. 明确不做
 
-**已移除**：任务之间的依赖（边、join、链式运行、`--depends-on`/`--join-any` 两个 flag，以及两端编辑器里的依赖块）——定时任务只由自己的计划或手动触发。**不在范围内**：cron 表达式；任务之间的编排；OS 常驻服务；shell/goal/skill 类动作；系统通知；每任务工具白名单（全权限是唯一策略）。
+**已移除**：任务之间的依赖（边、join、链式运行、`--depends-on`/`--join-any` 两个 flag，以及两端编辑器里的依赖块）——定时任务只由自己的计划或手动触发。host 的 `list_task_deps`、`set_task_dep`、`remove_task_dep` 三条 IPC 命令仍为旧版本客户端作答（空列表；明确拒绝），等没有已发布客户端再问时再删（`host/src/tasks/service.rs`）。**不在范围内**：cron 表达式；任务之间的编排；OS 常驻服务；shell/goal/skill 类动作；系统通知；每任务工具白名单（全权限是唯一策略）。
 
 ---
 

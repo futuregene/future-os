@@ -13,11 +13,15 @@ current controls and limitations, and vulnerability reporting.
   the configured model provider. FutureOS-hosted models and online tools use
   FutureOS services; other providers/tools use their respective endpoints.
 - **Optional remote surfaces.** Enabling Remote sends commands, conversation events
-  and requested files through the configured NATS relay. Mobile requires TLS
-  WebSocket (`wss://`), and the desktop's NATS client requires verified TLS too —
-  outside unit tests there is no runtime switch that allows a plaintext
-  downgrade. Feishu/DingTalk messages and replies also pass through those
-  platforms. Local storage does not mean no data leaves the device.
+  and requested files through the configured NATS relay. A platform pairing
+  requires TLS WebSocket (`wss://`) on mobile and verified TLS in the desktop's
+  NATS client. The one exception is a pairing issued by a self-hosted relay that
+  declares a plaintext endpoint: both clients accept it as-is, so that hop — and
+  the join token, refresh token and NATS credential crossing it — is
+  unencrypted, while the Noise channel above still seals the payloads (see
+  [self-hosted relay](docs/guide/self-hosted-relay.md)). Feishu/DingTalk messages
+  and replies also pass through those platforms. Local storage does not mean no
+  data leaves the device.
 - **Encrypted remote channel.** Once a phone is paired, the phone↔desktop channel
   is end-to-end encrypted. The two endpoints authenticate each other with a Noise
   handshake (`XXpsk0` while pairing, `IK` afterwards) and encrypt every
@@ -72,6 +76,11 @@ Desktop Settings → General, or the composer shield, selects:
   protection. A definitive unavailable probe falls back to manual approval;
   initialization failure for a real sandboxed command fails that call rather
   than silently running it unrestricted.
+- `auto` — the `sandbox` tier plus model review: a request the rules would have
+  asked about is classified by the model and allowed or denied by a
+  deterministic policy instead of prompting you. It needs a FutureOS sign-in and
+  an Agent that reports model-review support; without the sign-in the setting
+  falls back to `sandbox`.
 
 Separate legacy permission levels are `all` (unrestricted), `workspace`
 (approval-gated access), and `none` (deny all tool calls). They are not aliases

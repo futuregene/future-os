@@ -450,8 +450,10 @@ diff; sensitive files matching credential rules (`.env`, `*.pem`, `*.key`,
 etc.) are only marked "sensitive file changed, content not saved" — the content
 is not saved.
 
-In the long-term goal, Review will also cover change review of text files like
-markdown, documents, and tables.
+Any non-binary file is reviewed as a text diff, source or not — markdown and
+documents included (`host/src/git_review.rs` reads the bytes as UTF-8 and marks
+only what does not decode as binary). There is no parsed, cell-level view for
+spreadsheets or tables: those are reviewed as text too.
 
 ### 4.8 Skill
 

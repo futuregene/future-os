@@ -142,6 +142,21 @@ struct Runtime {
     /// Kept after a disconnect, so reconnecting comes back on the lane the user
     /// left the window on rather than re-subscribing the whole host first.
     visible: HashMap<String, tokio::sync::watch::Sender<Option<String>>>,
+    /// How many retries each host's supervisor has **dispatched** (test-only).
+    ///
+    /// This is the quantity `reconnect_attempt_budget` bounds: one increment per
+    /// wake-up that actually tries the host again. Counting something else makes
+    /// a budget assertion measure that other thing. Sockets are the trap here —
+    /// a suite can observe accepted connections, but one dispatched attempt is
+    /// not one socket: a library-internal reconnect, a second loop, or a stale
+    /// loop dialling a port the OS has since reused all move a socket count
+    /// without moving the retry policy at all.
+    ///
+    /// Per host rather than per loop, because two loops for one host is exactly
+    /// the defect a budget check should catch: they share this counter, so the
+    /// count would run past the budget instead of agreeing with it.
+    #[cfg(any(test, feature = "test-support"))]
+    retry_attempts: HashMap<String, std::sync::Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 /// The retry schedule for a dropped connection, in seconds.
@@ -242,7 +257,12 @@ type SessionChannel = std::sync::Arc<std::sync::Mutex<future_remote_crypto::Chan
 /// The schedule's length times three: the window is what makes a failure
 /// terminal, and a client that retries forever looks identical, to the user, to
 /// one that hung.
-fn reconnect_attempt_budget() -> usize {
+///
+/// Public because it is a contract, not an implementation detail: a test that
+/// asserts a loop stopped after "the full window" has to be able to name the
+/// window instead of hard-coding a number that would silently stop matching the
+/// schedule it claims to exercise.
+pub fn reconnect_attempt_budget() -> usize {
     RECONNECT_DELAYS_SECS.len() * 3
 }
 
@@ -1179,6 +1199,35 @@ impl Client {
         self.inner.state.lock().await.supervisors.len()
     }
     #[cfg(any(test, feature = "test-support"))]
+    /// How many retries this host's supervisor has dispatched so far.
+    ///
+    /// The budget is counted in these, so a caller can assert a loop spent
+    /// exactly its window instead of counting sockets (see `retry_attempts`).
+    pub async fn retry_attempts(&self, desktop_id: &str) -> usize {
+        self.inner
+            .state
+            .lock()
+            .await
+            .retry_attempts
+            .get(desktop_id)
+            .map_or(0, |count| count.load(std::sync::atomic::Ordering::SeqCst))
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    /// Record one dispatched retry for `desktop_id`.
+    async fn note_retry_attempt(&self, desktop_id: &str) {
+        let counter = {
+            let mut state = self.inner.state.lock().await;
+            state
+                .retry_attempts
+                .entry(desktop_id.to_string())
+                .or_default()
+                .clone()
+        };
+        // Incremented outside the lock: the loop takes it on every attempt and
+        // the map itself only ever gains a key once per host.
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    #[cfg(any(test, feature = "test-support"))]
     /// Abort every retry loop and forget them.
     ///
     /// `teardown()` calls this: a supervisor started by a *failed connect* (or by a
@@ -1234,6 +1283,15 @@ impl Client {
         // Register before the task can attempt a connection. A transient
         // failure otherwise sees no owner and starts a second retry loop.
         let mut state = self.inner.state.lock().await;
+        // Retire a loop this call supersedes, exactly as an explicit connect does
+        // (`begin_connect_attempt`). Overwriting the map entry alone would leave
+        // the old loop running with no owner left to abort it: a second loop
+        // dialling the same host, invisible to `supervisor_count` and immortal
+        // for `abort_supervisors_for_test`. The handle's drop does not cancel the
+        // task, so "replace the entry" is not "stop the old loop".
+        if let Some(previous) = state.supervisors.remove(desktop_id) {
+            previous.abort();
+        }
         let handle = self.spawn_supervisor(desktop_id.to_string(), None);
         state
             .supervisors
@@ -1897,6 +1955,11 @@ impl Client {
                         .get(&desktop_id)
                         .cloned(),
                 };
+                // One retry is being dispatched: this is the seam the budget
+                // counts. Recorded before the attempt, so a connect still in
+                // flight is already accounted for rather than only once it fails.
+                #[cfg(any(test, feature = "test-support"))]
+                client.note_retry_attempt(&desktop_id).await;
                 match client.resume(&desktop_id, watcher.clone()).await {
                     Ok(()) => {
                         // Say so, and say it *after* the subscriptions are attached:

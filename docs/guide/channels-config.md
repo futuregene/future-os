@@ -120,7 +120,7 @@ at a time. Enabling a channel this build cannot run is reported as
 | `domain` | `api.dingtalk.com` | API domain. |
 | `sender_allowlist` | `[]` | Authorized sender IDs in both DMs and groups. Empty denies every sender, including slash commands; `["*"]` explicitly trusts everyone who can reach the bot. |
 
-**Upgrade note:** previously configured DingTalk bridges must populate `sender_allowlist` before receiving prompts. Group membership alone does not authorize access to the agent.
+**Access gate:** a DingTalk bridge only receives prompts from senders listed in `sender_allowlist`. Group membership alone does not authorize access to the agent.
 
 ## Runtime behavior
 

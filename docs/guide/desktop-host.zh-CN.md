@@ -9,7 +9,7 @@
 **默认前台运行、持续占用终端；按 Ctrl+C 关闭远程入口并退出。**
 不会自动转入后台，也不会安装系统服务。
 
-本分支已接入统一命令，跨平台、发布与最终验收仍待完成。进度见 [Headless 拆分开发计划](../architecture/headless-package-development.zh-CN.md)。
+统一命令随 CLI 发布；正式打包、签名与同候选验收进度见 [Headless 拆分开发计划](../architecture/headless-package-development.zh-CN.md)。
 
 ## 1. 启动前准备
 
@@ -311,7 +311,7 @@ Agent 归属、日志和恢复见[Desktop Agent 生命周期](desktop-agent.zh-C
 ## 6. 数据、权限与排障
 
 主机模式沿用运行用户的现有数据目录，包括 `~/.future/agent/auth.json`、
-`~/.future/remote_pairing.json` 和 `~/.future/app/`。本机已经登录，不代表 SSH 服务器已登录；
+`~/.future/remote_pairings.json` 和 `~/.future/app/`。本机已经登录，不代表 SSH 服务器已登录；
 更换系统用户或 HOME 也不会自动继承原凭证。后台托管时应使用与首次交互设置相同的用户和目录。
 
 启动时会打印日志文件路径，退出报错时再次给出该路径。Desktop 及其内置 Agent 写入

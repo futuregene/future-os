@@ -6,7 +6,7 @@
 
 ## 0. Scope
 
-- **Crate:** `orchestration/tasks` (`future-tasks`), alongside `orchestration/goal`.
+- **Crate:** `orchestration/tasks` (`future-tasks`) holds the kernel, types and store, alongside `orchestration/goal`. The executor and its tick loop live in `future-host` (`host/src/tasks.rs`, `host/src/tasks/service.rs`), which is what both desktop hosts and the `future task` CLI share.
 - **Hosts:** GUI and headless desktop share the same tick loop. TUI hosting is not connected. Mobile uses the desktop remote bridge.
 - **Layers:** the deterministic `next_due`, truncation and prompt-revision helpers are host-independent pure functions. One executor serves both desktop hosts; their difference is a `Notifier` closure (§8).
 
@@ -201,20 +201,24 @@ Automatic post-run reflection, proposed prompt rewrites, proposal cards and acce
 
 ## 8. Hosts: `Notifier`, not an Executor trait
 
-One executor lives in desktop `tasks.rs`. Only its completion notification differs between hosts:
+One executor lives in `future_host::tasks` (`host/src/tasks.rs`); the desktop module of the same name is only the notification adapter. Only its completion notification differs between hosts:
 
 ```rust
 pub type Notifier = Arc<dyn Fn(Option<&str /* thread_id */>) + Send + Sync>;
 
-pub fn start<R: tauri::Runtime>(app: AppHandle<R>)  // GUI activity/thread events
+// future-host: the executor and its loop
+pub fn start_with_notifier(notify: Notifier)       // resident supervision, 30s tick
 pub fn start_headless()                            // ledger-only notification
 async fn run_loop(notify: Notifier)                // reconcile, then tick every 30s
+
+// desktop/src-tauri/src/tasks.rs: the GUI adapter
+pub fn start<R: tauri::Runtime>(app: AppHandle<R>) // emit_remote_activity + emit_threads_updated
 ```
 
 An Executor trait would add indirection around five thin `agent_bridge` wrappers used by this one implementation. GUI and headless both call `run_loop`; headless omits the notification outlet.
 
-- **GUI desktop:** connected in `lib.rs` setup through `tasks::start`.
-- **Headless desktop:** connected in `headless/mod.rs` through `tasks::start_headless`.
+- **GUI desktop:** `desktop/src-tauri/src/lib.rs` setup calls the local `tasks::start`, which installs the notifier and calls `future_host::tasks::start_with_notifier`.
+- **Headless desktop:** `cli/src/headless/mod.rs` calls `future_host::tasks::start_headless`.
 - **Mobile:** manages tasks through the remote bridge (`tasks_v1`), without hosting.
 - **TUI:** hosting is not connected. The crate and CLI already work; a panel is future work.
 
@@ -292,7 +296,7 @@ The run ledger follows the task's actions. Desktop's Settings disclosure precede
 
 ## 12. Out of scope
 
-Removed: task dependencies (edges, joins, chained runs, the `--depends-on`/`--join-any` flags and both dependency editors) — a scheduled task is started by its own schedule or on demand. Out of scope: cron expressions, orchestration between tasks, OS background services, shell/goal/skill action kinds, system notifications and per-task tool allowlists. Full permissions remain the only policy.
+Removed: task dependencies (edges, joins, chained runs, the `--depends-on`/`--join-any` flags and both dependency editors) — a scheduled task is started by its own schedule or on demand. The host IPC commands `list_task_deps`, `set_task_dep` and `remove_task_dep` still answer for clients of older builds (an empty list; an explicit refusal), and go away once no shipped client asks for them (`host/src/tasks/service.rs`). Out of scope: cron expressions, orchestration between tasks, OS background services, shell/goal/skill action kinds, system notifications and per-task tool allowlists. Full permissions remain the only policy.
 
 ## 13. Core invariants
 

@@ -344,8 +344,15 @@ mod bridge_tests {
     /// The whole feature is only real if the flag reaches the encoder through
     /// the running command loop. Drive it end to end: a large reply is plain
     /// JSON until the connection declares the capability, and compressed after.
+    ///
+    /// Holds the HOME fixture like every other bridge fixture: it needs no
+    /// database itself, but the control gate consults the process-global
+    /// `SUPERVISOR`, which a concurrently starting bridge re-points at its own
+    /// pairing. Without the shared lock this test's command came back
+    /// `superseded` (CI runs 39724323762 and 39540018985).
     #[tokio::test]
     async fn declared_capability_reaches_the_running_command_loop() {
+        let _home = HomeGuard::new("cmd-gzip-capability");
         struct Big;
         impl future_remote_server::services::BusinessHost for Big {
             fn execute<'a>(
@@ -419,6 +426,9 @@ mod bridge_tests {
 
     #[tokio::test]
     async fn protocol_routes_to_a_substitute_host_and_rejects_a_stale_access_identity() {
+        // Same shared fixture lock as every bridge test: the control gate reads
+        // process-global supervisor state (see the gzip test above).
+        let _home = HomeGuard::new("cmd-substitute-host");
         struct Echo;
         impl future_remote_server::services::BusinessHost for Echo {
             fn execute<'a>(
@@ -3131,17 +3141,14 @@ mod bridge_tests {
             .await;
         assert_eq!(conflict["error"], json!("command_id_conflict"));
 
-        // Retirement runs on the Host executor, separately from this test's
-        // runtime. Observe the real eviction instead of assuming its task has
-        // run after a fixed sleep on a loaded native runner. Never clear the
-        // cache or repeat the command until the actual slot is gone.
-        tokio::time::timeout(Duration::from_secs(60), async {
-            while bridge.reply_slots.contains_command(&command_id) {
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-        })
-        .await
-        .expect("the configured reply-slot TTL must retire the real cache entry");
+        // Retirement is reclamation, not the expiry: the slot carries its own
+        // deadline and a read past it replaces the entry even if the Host
+        // executor never ran the cleanup task. Wait the TTL out and assert the
+        // contract — the expired id executes again — rather than waiting on the
+        // process-global task registry, whose cancellation another fixture can
+        // trigger.
+        let ttl = test_support::reply_ttl(&bridge.handshake);
+        tokio::time::sleep(ttl + Duration::from_millis(250)).await;
         let third = bridge.call(cmd()).await;
         assert_eq!(third["success"], json!(true));
         let executions = agent
@@ -3173,8 +3180,12 @@ mod bridge_tests {
         let command = json!({"id": id, "type": "get_state", "sessionId": session});
         // The first delivery inserted a slot and was descheduled before taking
         // its response mutex. A later delivery performs the actual execution.
-        let response =
-            test_support::insert_reply_slot(&bridge.reply_slots, id.clone(), command.clone());
+        let response = test_support::insert_reply_slot(
+            &bridge.reply_slots,
+            id.clone(),
+            command.clone(),
+            test_support::reply_ttl(&bridge.handshake),
+        );
         let first = bridge.call(command.clone()).await;
         let second = bridge.call(command.clone()).await;
         assert_eq!(first, second);
@@ -3191,13 +3202,11 @@ mod bridge_tests {
                 .count()
         };
         assert_eq!(executions(), 1, "the pending slot still single-flights");
-        tokio::time::timeout(Duration::from_secs(60), async {
-            while bridge.reply_slots.contains_command(&id) {
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-        })
-        .await
-        .expect("the executor must retire a slot it did not insert");
+        // The executing delivery owns the expiry, and the slot's own deadline
+        // enforces it even if that cleanup task is never polled (see
+        // `CachedReply::expires_at`).
+        tokio::time::sleep(test_support::reply_ttl(&bridge.handshake) + Duration::from_millis(250))
+            .await;
         assert_eq!(bridge.call(command).await["success"], json!(true));
         assert_eq!(executions(), 2, "the expired command executes again");
         bridge.stop().await;
@@ -4320,7 +4329,12 @@ mod bridge_tests {
         .with_access(SUPERVISOR.access.current());
         let slots = new_reply_slots();
         let request = json!({"id": "contended", "type": "get_state"});
-        let response = test_support::insert_reply_slot(&slots, "contended".into(), request.clone());
+        let response = test_support::insert_reply_slot(
+            &slots,
+            "contended".into(),
+            request.clone(),
+            test_support::reply_ttl(&handshake),
+        );
         let in_flight = response.lock().await;
         let msg = async_nats::Message {
             subject: "p.pair.cmd.rpc".into(),

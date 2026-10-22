@@ -11,7 +11,7 @@ SDK.
 **The process stays in the foreground. Press Ctrl+C to close remote access and exit.**
 It does not daemonize or install a system service.
 
-The unified entry is implemented on this branch; final cross-platform and release acceptance remains pending. See the [Headless extraction plan](../architecture/headless-package-development.md).
+The unified entry ships with the CLI. Release packaging, signing and same-candidate acceptance are tracked in the [Headless extraction plan](../architecture/headless-package-development.md).
 
 ## 1. Before you start
 
@@ -399,7 +399,7 @@ logs and recovery.
 ## 6. Data, permissions and troubleshooting
 
 Host mode uses the running user's existing directories, including
-`~/.future/agent/auth.json`, `~/.future/remote_pairing.json` and `~/.future/app/`.
+`~/.future/agent/auth.json`, `~/.future/remote_pairings.json` and `~/.future/app/`.
 Being signed in on your laptop does not sign in the SSH server. Changing the
 system user or HOME does not automatically inherit credentials. For later service
 hosting, use the same user and directories as the initial interactive setup.

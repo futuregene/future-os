@@ -311,7 +311,7 @@ future init                                  # install skills and, on macOS/Linu
 ## Verify
 
 ```bash
-make test        # all 7 suites: agent, channels, CLI, TUI, GUI, GUI Rust, mobile
+make test        # all 8 suites: agent, channels, CLI, app-settings, TUI, GUI, GUI Rust, mobile
 make lint        # lint all: agent, channels, TUI, CLI, GUI (+stylelint), mobile
 ```
 
@@ -322,8 +322,8 @@ Source builds use the repo Makefile from the repo root:
 ```bash
 make build          # build GUI + unified CLI (no system install; agent/tui/channel/goal embedded in future, GUI stages its own sidecars)
 make lint           # lint all: agent, channels, TUI, CLI, GUI (+stylelint), mobile
-make fmt            # cargo fmt --all (workspace) + desktop/src-tauri + mobile formatting
-make test           # all 7 suites: agent, channels, CLI, TUI, GUI, GUI Rust, mobile
+make fmt            # cargo fmt --all (the whole Rust workspace, desktop/src-tauri included)
+make test           # all 8 suites: agent, channels, CLI, app-settings, TUI, GUI, GUI Rust, mobile
 make clean          # remove build artifacts (use make uninstall for installed binaries)
 ```
 
@@ -336,10 +336,11 @@ make setup
 make run-desktop
 ```
 
-`make setup` installs the JavaScript workspaces, initializes built-in skills, and
-creates a compile-only CLI placeholder, which runtime tool discovery rejects.
+`make setup` installs the JavaScript workspaces and initializes built-in skills.
 `make run-desktop` uses the platform launcher to build/stage the real CLI and
-start Desktop in development mode. Desktop embeds Agent when absent, so no
+start Desktop in development mode; when no CLI artifact exists the launcher
+writes a compile-only placeholder, which runtime tool discovery rejects.
+Desktop embeds Agent when absent, so no
 separate `future agent` is needed. (If a compatible
 agent is already reachable through per-user local IPC or the explicit
 `FUTURE_AGENT_GRPC_ADDR` override, the app reuses it instead and does not own its

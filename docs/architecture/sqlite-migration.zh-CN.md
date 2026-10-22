@@ -43,8 +43,8 @@ review 目录登记到 `managed_directory_cleanup`，保留原位置及原始内
 先停止该用户的 Agent 及可能启动它的客户端；始终遵守每 OS 用户一个 Agent，不通过改 socket/端口启动第二个实例。
 
 ```sh
-future-agent --migrate-sessions
-future-agent --retry-session-import 会话ID
+future agent --migrate-sessions
+future agent --retry-session-import 会话ID
 ```
 
 报告只含会话标识、状态、错误来源/行号/受控类别和警告数，不含对话正文。只有 skipped 项可重试；修复来源后显式执行，不覆盖成功项或已删除项。
@@ -52,8 +52,8 @@ future-agent --retry-session-import 会话ID
 隔离验证时将 `sessions/` 与同级 `run-events/` 复制到独立目录，使用：
 
 ```sh
-future-agent --migrate-sessions --migration-source /绝对路径/隔离副本/sessions
-future-agent --retry-session-import 会话ID --migration-source /绝对路径/隔离副本/sessions
+future agent --migrate-sessions --migration-source /绝对路径/隔离副本/sessions
+future agent --retry-session-import 会话ID --migration-source /绝对路径/隔离副本/sessions
 ```
 
 数据库创建在该 `sessions/` 的父目录。隔离路径不豁免 Agent 实例锁。
@@ -149,10 +149,10 @@ run_started 在同一事务内消费。重启只将未执行输入恢复为历�
 无法恢复的排队输入和待重建索引。Agent 连接失败会显示未验证，不把空目录当健康。
 这是目录诊断，不是完整 SQLite 完整性扫描；离线备份验证执行完整性和文件哈希检查。
 
-## 本轮手工验收
+## 手工验收
 
-本轮不在本地执行单元测试。新增故障用例随代码提交，待后续允许创建 PR 后由 CI 执行。
-先用完整测试副本（`FUTURE_HOME` 指向独立目录）验收；旧数据库和附件/会话目录应来自同一份数据集。
+下面这些场景是人守的那一半，自动化的那一半在 CI 里跑（`cargo test -p future-agent`、
+桌面与 host 套件）。先用完整测试副本（`FUTURE_HOME` 指向独立目录）验收；旧数据库和附件/会话目录应来自同一份数据集。
 
 | 场景 | 应观察到的结果 |
 | --- | --- |
@@ -194,7 +194,7 @@ Desktop 契约 3 增加 `agent_delete_sources`。删除线程、工作区或显�
 
 补充手工场景：历史读取中重启换库、恢复后事件序号降低、另一个 SQLite 写入者占用写锁、
 保留区文件丢失或变更、合并排队输入启动失败、带未登记 sidecar 的备份、旧版恢复日志续做，
-以及删除重试遇到不同数据库或未知来源。新增用例仅编译检查，本地不执行单元测试。
+以及删除重试遇到不同数据库或未知来源。这些用例在 CI 中执行；本地通过不能代替 CI 矩阵。
 
 ### 继续恢复前的完整性检查与后台来源校验
 

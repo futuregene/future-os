@@ -48,7 +48,7 @@ agent executes one bounded turn (gRPC) → writes evidence → kernel decides th
 |---|---|---|
 | Goal | `init` | Project-local state at `<cwd>/.future/goal/`, event-sourced and replayable |
 | Todo | `todo add/update/claim/complete/archive/supersede` | Classes: advancement / user-gate / user-action / monitor / blocker / coordination; `--blocks` dependency chains; `--priority`; `todo add --parent T` creates an immutable organizational parent link within the same goal (maximum three levels, independent of dependencies/completion) |
-| Evidence | `todo complete --evidence` | **Non-empty, enforced**: closing a todo must state what actually landed (paths, attempt ids, measurements); `--force` is the explicit operator override |
+| Evidence | `todo complete --evidence` | **Non-empty, enforced**: closing a todo must state what actually landed (paths, attempt ids, measurements); `--force` is the explicit operator override. Closing an advancement todo also requires exit intent — `--no-follow-up` or `--successor <todo>`; a silent completion is rejected |
 | Acceptance contract | `todo add --acceptance "tok1,tok2"` | Completion evidence must contain every token (case-insensitive) — the hard form of "done ≠ delivered" |
 | Verifier | `todo add --verify "cmd"` | The kernel runs the command after each **run turn boundary**; only exit 0 lets that turn's todo complete (bounded by `--max-validation-attempts`). A machine-checkable gate for deterministic deliverables. **Not** for exploratory todos (research/report) whose correctness the kernel cannot judge — the orchestrator judges those by reading the artifact, and a manual `todo complete` deliberately does not re-run `--verify` |
 | Lease | `lease claim/renew/release/expire/status` | Who holds a todo and until when. **Lease liveness**: the holder's pid is recorded; a dead process's leases are auto-reclaimed — no manual cleanup after killing a worker |
@@ -170,6 +170,7 @@ explicit monitor/adapter. A queued external request is not a verified result.
 
 ## Hard checks first (conventions fail, gates hold)
 - Empty-evidence closures are **refused** (fail-closed by default; `--force` opens)
+- An advancement completion must declare its exit intent: `--no-follow-up` or `--successor <todo>`. The kernel does not invent a successor and does not accept a silent close
 - `--verify` checks deterministic deliverables (e.g. compilation/file existence); use it where a meaningful machine check exists, not as a substitute for reviewing research correctness
 - `--acceptance` turns "accepted by an external observable" into a hard check
 - Lease liveness self-heals: dead-process leases are reclaimed automatically — relaunching workers needs no manual release
@@ -239,7 +240,7 @@ Because the state lives in the project and the skill runs through the agent
 service, a goal started in one client (e.g. the TUI) can be driven from any
 other (e.g. a Feishu chat).
 
-## CLI surface (7 groups, 41 commands)
+## CLI surface (7 groups, 43 commands)
 
 ```bash
 future goal registry        # every command (groups/commands)
@@ -252,7 +253,7 @@ Multi-verb commands (`supervisor`, `worker`, `todo`) expose per-verb usage:
 --help` lists its subcommands — so an orchestrator can discover flags without
 parsing a merged top-level line.
 
-- **goal group** (5): `goal` `status` `ui` `models` `diagnose`
+- **goal group** (7): `init` `cancel` `delete` `status` `ui` `models` `diagnose`
 - **todo group** (6): `todo` `gate` `replan` `frontier` `lease` `task-graph`
 - **agent group** (6): `agent` `scope` `lane` `supervisor` `report` `worker` (list / stop / **tail**)
 - **ops group** (18): `version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `run`

@@ -33,10 +33,19 @@ pub fn insert_pending(
         },
     );
 }
+/// Insert a slot for a delivery that was descheduled before executing it.
+///
+/// `ttl` is the connection's reply TTL: the slot has to expire on the same
+/// schedule a real first delivery would have given it, or a fixture that waits
+/// past the TTL would still be served from cache.
+pub fn reply_ttl(state: &HandshakeState) -> std::time::Duration {
+    state.reply_ttl
+}
 pub fn insert_reply_slot(
     slots: &ReplySlots,
     id: String,
     request: Value,
+    ttl: std::time::Duration,
 ) -> Arc<tokio::sync::Mutex<Option<Vec<u8>>>> {
     let response = Arc::new(tokio::sync::Mutex::new(None));
     slots.0.lock().unwrap().insert(
@@ -44,6 +53,7 @@ pub fn insert_reply_slot(
         Arc::new(CachedReply {
             request,
             response: response.clone(),
+            expires_at: std::time::Instant::now() + ttl,
         }),
     );
     response
