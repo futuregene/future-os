@@ -22,7 +22,7 @@ records do.
 | [dimension-matrix.md](dimension-matrix.md) | index of the boundary / error-path / concurrency / property / platform-cfg / serialization evidence quoted from the module records |
 | [waiver-ledger.md](waiver-ledger.md) | the waiver registry and the category policy |
 | `flaky-*.md` | one record per suite: the investigations that traced an intermittent failure to its cause, the mechanism, and what closed it |
-| `headless-*.md`, `headless-*.json` | headless release acceptance: the manual acceptance scripts, the unsigned-download results, and the raw CI run payloads (`headless-ci-*.json`, `headless-baseline-*.json`) those two pages cite |
+| `headless-*.md`, `headless-*.json` | headless release acceptance: the manual acceptance scripts, the unsigned-download results, and the per-change payloads from the headless extraction (`headless-<topic>-*.json`: base commit, the change, test ownership, local results and limits), including the CI run and baseline payloads (`headless-ci-*.json`, `headless-baseline-*.json`) those two pages cite |
 | [real-network.md](real-network.md) | the suite that exercises a real NATS server and real network paths, and what it needs to run |
 | [remote-client-fixtures.md](remote-client-fixtures.md), [remote-interop.md](remote-interop.md) | the remote-stack fixtures and the cross-implementation interoperability run |
 | [remote-package-manual-acceptance.md](remote-package-manual-acceptance.md) | the manual acceptance record for the extracted remote packages (has a Chinese pair) |
