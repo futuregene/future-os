@@ -230,7 +230,7 @@ pub enum QuitDecision {
     Proceed,
     Confirm { open_dialog: bool },
 }
-fn active_work_count() -> Result<usize, crate::AppError> {
+pub(crate) fn active_work_count() -> Result<usize, crate::AppError> {
     if matches!(
         crate::agent_host::host().phase(),
         crate::agent_host::Phase::Stopped

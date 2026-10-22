@@ -55,6 +55,10 @@ fn install_after_cleanup(
     )))
 }
 
+fn update_needs_confirmation(activity: Result<usize, AppError>, running_terminals: usize) -> bool {
+    !matches!(activity, Ok(0)) || running_terminals > 0
+}
+
 #[path = "update_journal.rs"]
 mod journal;
 #[cfg(not(target_os = "windows"))]
@@ -455,6 +459,17 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn idle_updates_skip_the_stop_work_warning_but_activity_and_unknown_state_do_not() {
+        assert!(!update_needs_confirmation(Ok(0), 0));
+        assert!(update_needs_confirmation(Ok(1), 0));
+        assert!(update_needs_confirmation(Ok(0), 1));
+        assert!(update_needs_confirmation(
+            Err("activity unavailable".into()),
+            0
+        ));
+    }
 
     /// The maintenance status reports the CLI it can actually use. `discover`
     /// runs `<cli> version --json` and validates the declared Agent contract
@@ -1446,10 +1461,18 @@ async fn install_app_update_inner<R: tauri::Runtime>(
     #[cfg(target_os = "windows")]
     let installer = windows::PreparedInstaller::new(&bytes)?;
     operation.stage("verified", None)?;
-    // Confirm after signature verification, before closing admission. The
-    // embedded host owns CLI work too; installation must disclose that scope.
+    // Check the same live activity as quit, including other clients of an
+    // embedded Agent. Retained idle conversations are not active work.
     let confirmation_app = app.clone();
     let confirmed = tokio::task::spawn_blocking(move || {
+        let running_terminals = crate::terminal::server::manager()
+            .map_or(0, |manager| manager.running_count());
+        if !update_needs_confirmation(
+            crate::agent_supervisor::active_work_count(),
+            running_terminals,
+        ) {
+            return true;
+        }
         let scope = if crate::agent_host::host().owns_agent() {
             "Installing stops all Agent work, including CLI conversations, shells and queued tasks."
         } else {
@@ -1461,9 +1484,7 @@ async fn install_app_update_inner<R: tauri::Runtime>(
             .blocking_show()
     }).await.map_err(|error| updater_error("Update confirmation failed", error))?;
     if !confirmed {
-        return Err(AppError::Message(
-            "Update installation cancelled; work is still running.".into(),
-        ));
+        return Err(AppError::Message("Update installation cancelled.".into()));
     }
     // Download verifies the signature before freezing work. An exit hook
     // cannot veto NSIS, so return cleanup failures before calling install.

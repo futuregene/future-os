@@ -311,7 +311,6 @@ impl Manager {
         }
     }
 
-    #[cfg(test)]
     pub fn running_count(&self) -> usize {
         let registry = self.registry.lock().unwrap();
         registry
