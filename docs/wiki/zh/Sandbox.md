@@ -21,7 +21,7 @@ FutureOS 可以在文件访问前询问并限制 shell 命令，但**桌面默�
 | 平台 | 后端 | 重要限制 |
 |---|---|---|
 | macOS | Seatbelt（`sandbox-exec`） | 文件系统规则；网络仍开放。 |
-| 原生 Linux | 系统 Bubblewrap ≥ 0.9.0 | 基于快照的文件系统挂载；网络开放、没有 seccomp filter。WSL 不在支持的验证范围内。 |
+| 原生 Linux | 系统 Bubblewrap（按实际能力探测） | 基于快照的文件系统挂载；网络开放、没有 seccomp filter。WSL 不在支持的验证范围内。 |
 | Windows | 非提权受限令牌 + 文件系统 ACL | 仅写保护；shell 读取和网络开放。既有 ACL 和父目录删除权限可能削弱保护。 |
 
 Linux 在命令启动时保护已有匹配路径。尚不存在的受保护名称，以及命令执行中产生的新 glob
@@ -41,8 +41,8 @@ future agent --probe-sandbox
 future doctor
 ```
 
-FutureOS 不捆绑或下载 Bubblewrap。旧发行版软件包可能低于 0.9.0，应通过受支持的可信渠道
-升级，不要换成来源不明的二进制。版本下限是兼容要求，不保证包含所有上游安全修复。
+FutureOS 不捆绑或下载 Bubblewrap。基本写保护可用但读保护不足时，保留原模式并仅提示升级；缺少基本写保护时不提供沙箱。
+请使用受维护、包含安全修复的可信系统包，不要换成来源不明的二进制。
 安装或修复后，请完全退出并重启 FutureOS。
 
 Linux 沙箱选项在检测中或不可用时仍显示但禁用。设置页提供原因、建议操作和诊断 code：

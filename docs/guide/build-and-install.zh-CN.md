@@ -154,8 +154,8 @@ make package-desktop    # 命名后的 .deb 与便携包位于仓库根目录
 
 ### 可选 OS 沙箱
 
-安装可信系统 Bubblewrap ≥ 0.9.0（`sudo apt install bubblewrap`；Fedora 用
-`sudo dnf install bubblewrap`），然后完全重启 FutureOS。旧发行版包可能需要可信渠道升级；
+安装可信系统 Bubblewrap（按实际能力探测）（`sudo apt install bubblewrap`；Fedora 用
+`sudo dnf install bubblewrap`），然后完全重启 FutureOS。旧包可能仅提供写保护，选择器提示升级以启用完整保护；缺少基本写保护时不可用。
 应用不捆绑它。运行 `future agent --probe-sandbox` 和 `future doctor`，主机策略必须允许
 所需 user namespace 与 fresh `/proc` 挂载。回退、快照、凭据和网络限制见
 [沙箱指南](../wiki/zh/Sandbox.md)；可用不代表所有发行版与架构已通过认证。

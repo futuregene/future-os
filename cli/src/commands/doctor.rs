@@ -167,7 +167,7 @@ async fn check_login() -> CheckResult {
 fn check_sandbox() -> CheckResult {
     match future_agent::sandbox::platform_sandbox_probe_product() {
         Ok(probe) => {
-            let status = if probe.available {
+            let status = if probe.available && probe.code != "available_write_only" {
                 Status::Ok
             } else {
                 Status::Warn
@@ -181,6 +181,9 @@ fn check_sandbox() -> CheckResult {
             }
             if let Some(version) = probe.version {
                 lines.push(format!("version={version}"));
+            }
+            if probe.code == "available_write_only" {
+                lines.push("Upgrade system Bubblewrap and restart FutureOS to enable full sandbox protection.".to_string());
             }
             if cfg!(target_os = "linux") && !probe.available {
                 lines.push(sandbox_remedy(&probe.code));
@@ -214,12 +217,9 @@ fn sandbox_remedy(code: &str) -> String {
                 .to_string()
         }
         "version_too_old" => {
-            let (major, minor, patch) = future_agent::sandbox::linux::probe::MINIMUM_BWRAP_VERSION;
-            format!(
-                "Bubblewrap is installed but older than {major}.{minor}.{patch} — the distro \
-                 package may be too old for this host; install a newer Bubblewrap (backport or \
-                 build from source), then restart the agent"
-            )
+            "This Bubblewrap package cannot provide the required protection — upgrade it, \
+             then restart the agent"
+                .to_string()
         }
         "path_rejected" => {
             "No trusted system Bubblewrap was found — check PATH and confirm bwrap is \
@@ -999,8 +999,7 @@ mod tests {
     #[test]
     fn sandbox_remedy_follows_the_diagnostic_code() {
         let old = sandbox_remedy("version_too_old");
-        let (major, minor, patch) = future_agent::sandbox::linux::probe::MINIMUM_BWRAP_VERSION;
-        assert!(old.contains(&format!("{major}.{minor}.{patch}")), "{old}");
+        assert!(old.contains("required protection"), "{old}");
         assert!(!old.contains("Install system Bubblewrap"), "{old}");
 
         let missing = sandbox_remedy("binary_missing");

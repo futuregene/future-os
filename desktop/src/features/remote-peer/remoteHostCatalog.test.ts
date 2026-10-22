@@ -267,3 +267,18 @@ describe("the host's own announcements", () => {
     hook.unmount();
   });
 });
+
+it("invalidates all catalogues only for the resumed host", async () => {
+  const moved: string[] = [];
+  const hook = renderHook(() => useHostCatalogueInvalidation("desktop_a", domain => void moved.push(domain)));
+  await settle();
+  act(() => {
+    listeners.forEach(listener => listener({ payload: { desktopId: "desktop_b", kind: "resumed", payload: {} } }));
+  });
+  expect(moved).toEqual([]);
+  act(() => {
+    listeners.forEach(listener => listener({ payload: { desktopId: "desktop_a", kind: "resumed", payload: {} } }));
+  });
+  expect(moved).toEqual(["settings", "models", "skills"]);
+  hook.unmount();
+});

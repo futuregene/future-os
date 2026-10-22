@@ -207,6 +207,7 @@
       "auto": "自动审批"
     },
     "approvalTierDesc": {
+      "sandboxLinuxWriteOnly": "请升级系统 Bubblewrap 并重启 FutureOS，以启用完整沙箱保护。",
       "manual": "每步操作前询问",
       "sandbox": "在沙箱中运行，必要时询问",
       "sandboxWindows": "限制越界写入，必要时询问",

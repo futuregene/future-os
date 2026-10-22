@@ -1,8 +1,9 @@
 import type { RemotePeer } from "./remotePeerClient";
 import { ChevronDown, ShieldCheck, ShieldKeyhole, ShieldOff, ShieldQuestion } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
+import { useHostCatalogueInvalidation } from "./remoteHostCatalog";
 import { getRemoteApprovalSettings, setRemoteApprovalTier } from "./remotePeerClient";
 
 /**
@@ -44,28 +45,52 @@ export function RemoteApprovalMenu({
   const { t } = useTranslation("remotePeer");
   const [tier, setTier] = useState<string | null>(null);
   const [sandboxAvailable, setSandboxAvailable] = useState(false);
+  const [sandboxCode, setSandboxCode] = useState<string>();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   // A capability the host declares, not something to assume: an older build that
   // cannot review automatically must not be offered the mode.
   const supportsAuto = peer?.features.includes("auto_approval_v1") === true;
 
+  const [revision, setRevision] = useState(0);
+  const generationRef = useRef(0);
+  const scopeRef = useRef<string | null>(null);
+  useHostCatalogueInvalidation(desktopId, (domain) => {
+    if (domain === "settings") {
+      generationRef.current += 1;
+      setRevision(value => value + 1);
+    }
+  });
+
   useEffect(() => {
+    const current = ++generationRef.current;
+    const scope = JSON.stringify([desktopId, peer?.bridgeInstanceId, peer?.connected]);
+    if (scopeRef.current !== scope) {
+      scopeRef.current = scope;
+      setTier(null);
+      setSandboxAvailable(false);
+      setSandboxCode(undefined);
+      setOpen(false);
+    }
+    setBusy(true);
     let cancelled = false;
     void getRemoteApprovalSettings(desktopId).then((settings) => {
-      if (cancelled)
+      if (cancelled || current !== generationRef.current)
         return;
       setTier(settings.approvalTier);
       setSandboxAvailable(settings.sandboxAvailable);
+      setSandboxCode(settings.sandboxCode);
+      setBusy(false);
     }).catch(() => {
       // A host too old to report its settings has no control to offer.
-      if (!cancelled)
+      if (!cancelled && current === generationRef.current)
         setTier(null);
     });
     return () => {
       cancelled = true;
+      generationRef.current += 1;
     };
-  }, [desktopId]);
+  }, [desktopId, peer?.bridgeInstanceId, peer?.connected, revision]);
 
   // Nothing to show until the host has said what it is in: a control that
   // guessed would report a mode the host is not running.
@@ -73,10 +98,13 @@ export function RemoteApprovalMenu({
     return null;
 
   async function choose(next: string) {
+    const current = ++generationRef.current;
     setOpen(false);
     setBusy(true);
     try {
       const settled = await setRemoteApprovalTier(desktopId, next);
+      if (current !== generationRef.current)
+        return;
       setTier(settled);
       onChanged?.();
     }
@@ -85,7 +113,8 @@ export function RemoteApprovalMenu({
       // showing that.
     }
     finally {
-      setBusy(false);
+      if (current === generationRef.current)
+        setBusy(false);
     }
   }
 
@@ -112,7 +141,7 @@ export function RemoteApprovalMenu({
       {TIERS.map(item => (
         <SelectMenuItem
           className="py-1.5"
-          disabled={(item === "sandbox" && !sandboxAvailable) || (item === "auto" && !supportsAuto)}
+          disabled={((item === "sandbox" || item === "auto") && !sandboxAvailable) || (item === "auto" && !supportsAuto)}
           key={item}
           onSelect={() => void choose(item)}
           selected={tier === item}
@@ -129,7 +158,9 @@ export function RemoteApprovalMenu({
                   : t(`approvalTierLabel.${item}`, { defaultValue: item })}
             </span>
             <span className="block text-xs leading-tight text-ink-muted">
-              {t(`approvalTierDescription.${item}`, { defaultValue: t("approvalTierDescription.default") })}
+              {sandboxAvailable && sandboxCode === "available_write_only" && (item === "sandbox" || item === "auto")
+                ? t("approvalTierUpgrade")
+                : t(`approvalTierDescription.${item}`, { defaultValue: t("approvalTierDescription.default") })}
             </span>
           </span>
         </SelectMenuItem>

@@ -23,7 +23,17 @@ pub fn prepare(
     let (Some(bwrap_path), Some(bwrap_identity)) = (&probe.path, &probe.identity) else {
         return Err(LinuxSandboxRunnerError::InvalidProbeReceipt);
     };
-    if !probe.available {
+    if !probe.available
+        || !probe
+            .capabilities
+            .as_ref()
+            .is_some_and(|caps| caps.write_protection)
+        || (!plan.unreadable_paths.is_empty()
+            && !probe
+                .capabilities
+                .as_ref()
+                .is_some_and(|caps| caps.read_protection))
+    {
         return Err(LinuxSandboxRunnerError::InvalidProbeReceipt);
     }
     let mut mounts = Vec::new();
@@ -131,7 +141,9 @@ mod tests {
                 size: 3,
                 modified_nanos: 4,
             }),
-            capabilities: None,
+            capabilities: Some(super::super::probe::LinuxSandboxCapabilities::baseline(
+                true,
+            )),
             expires_at_unix_ms: None,
             diagnostic: None,
         }
@@ -149,6 +161,21 @@ mod tests {
             glob_snapshots: Vec::new(),
             policy_digest: "a".repeat(64),
         }
+    }
+
+    #[test]
+    fn write_only_receipt_cannot_launch_an_unreadable_mount_plan() {
+        let mut limited = probe();
+        limited.capabilities.as_mut().unwrap().read_protection = false;
+        let mut policy = plan();
+        policy.unreadable_paths.push(abs("/tmp/work/secret"));
+        assert!(matches!(
+            prepare(&limited, policy, "true", &abs("/tmp/work")),
+            Err(LinuxSandboxRunnerError::InvalidProbeReceipt)
+        ));
+        assert!(prepare(&limited, plan(), "true", &abs("/tmp/work")).is_ok());
+        limited.capabilities.as_mut().unwrap().write_protection = false;
+        assert!(prepare(&limited, plan(), "true", &abs("/tmp/work")).is_err());
     }
 
     #[test]

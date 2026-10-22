@@ -77,6 +77,7 @@ export function useSessionCatalog(
   const [models, setModels] = useState<RemoteModel[]>([]);
   const [approvalTier, setApprovalTier] = useState("off");
   const [sandboxAvailable, setSandboxAvailable] = useState(false);
+  const [sandboxCode, setSandboxCode] = useState<string>();
   const [titleOverrides, setTitleOverridesState] = useState<Record<string, string>>({});
   const versionGate = useRef(new CatalogVersionGate());
   const authenticatedEpoch = useRef<string | undefined>(undefined);
@@ -370,6 +371,7 @@ export function useSessionCatalog(
       const data = await client.requestRetry<{
         approvalTier: string;
         sandboxAvailable: boolean;
+        sandboxCode?: string;
       }>({ type: "get_settings" }, "list");
       if (
         clientRef.current !== client ||
@@ -380,6 +382,7 @@ export function useSessionCatalog(
       markSync("settings", "ready");
       setApprovalTier(data.data.approvalTier);
       setSandboxAvailable(data.data.sandboxAvailable);
+      setSandboxCode(typeof data.data.sandboxCode === "string" ? data.data.sandboxCode : undefined);
     } catch {
       if (
         clientRef.current === client &&
@@ -522,6 +525,7 @@ export function useSessionCatalog(
     setUnreadSessions(new Set());
     setApprovalTier("off");
     setSandboxAvailable(false);
+    setSandboxCode(undefined);
     modelRecoveryRef.current.generation += 1;
     if (modelRecoveryRef.current.timer) clearTimeout(modelRecoveryRef.current.timer);
     modelRecoveryRef.current.timer = null;
@@ -746,6 +750,7 @@ export function useSessionCatalog(
     approvalTier,
     setApprovalTier,
     sandboxAvailable,
+    sandboxCode,
     titleOverrides,
     setTitleOverrides,
     applySessionSnapshot,

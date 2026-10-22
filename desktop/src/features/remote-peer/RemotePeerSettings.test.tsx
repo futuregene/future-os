@@ -48,6 +48,26 @@ vi.mock("./RemoteSkillsPanel", () => ({
   ),
 }));
 
+let listeners: Array<(event: { payload: unknown }) => void> = [];
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (_name: string, handler: (event: { payload: unknown }) => void) => {
+    listeners.push(handler);
+    return () => {
+      listeners = listeners.filter(item => item !== handler);
+    };
+  },
+}));
+
+async function announce(desktopId: string, kind = "event") {
+  await act(async () => {
+    listeners.forEach(listener => listener({ payload: {
+      desktopId,
+      kind,
+      payload: { type: "app_settings_changed", sessionId: "_global" },
+    } }));
+  });
+}
+
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 function peer(overrides: Partial<RemotePeer> = {}): RemotePeer {
@@ -137,6 +157,7 @@ async function settle(): Promise<void> {
 }
 
 beforeEach(() => {
+  listeners = [];
   document.body.innerHTML = "";
   request.mockReset();
   invoke.mockReset();
@@ -354,6 +375,16 @@ describe("the host's approval mode", () => {
     const view = await mount({ peer: peer({ features: [] }) });
     expect(select(view.container)).toBeNull();
     expect(sent("get_settings")).toEqual([]);
+    await view.unmount();
+  });
+
+  it("shows the upgrade hint for a limited host without disabling its modes", async () => {
+    answerHostApproval({ approvalTier: "auto", sandboxAvailable: true, sandboxCode: "available_write_only" });
+    const view = await mount({ peer: withApproval() });
+    expect(view.container.textContent).toContain("Upgrade system Bubblewrap on that computer");
+    const options = [...select(view.container).options];
+    expect(options.find(option => option.value === "sandbox")!.disabled).toBe(false);
+    expect(options.find(option => option.value === "auto")!.disabled).toBe(false);
     await view.unmount();
   });
 
@@ -666,5 +697,38 @@ it("writes the picked icon back as an icon label", async () => {
     expect.objectContaining({ icon: "phone" }),
     expect.anything(),
   );
+  await view.unmount();
+});
+
+it("reloads settings for its host on changes and reconnect, ignoring other hosts", async () => {
+  const view = await mount({ peer: peer({ features: ["approval_tier_v1", "auto_approval_v1"] }) });
+  invoke.mockResolvedValue({ approvalTier: "sandbox", sandboxAvailable: true, sandboxCode: "available_write_only" });
+  const before = request.mock.calls.length;
+  await announce("desktop_b");
+  expect(request.mock.calls.length).toBe(before);
+  await announce("desktop_a");
+  await settle();
+  expect(view.container.textContent).toContain("Upgrade system Bubblewrap on that computer");
+  invoke.mockResolvedValue({ approvalTier: "manual", sandboxAvailable: false });
+  await announce("desktop_a", "resumed");
+  await settle();
+  expect(view.container.textContent).not.toContain("Upgrade system Bubblewrap on that computer");
+  expect(view.container.querySelector<HTMLOptionElement>("option[value=\"sandbox\"]")?.disabled).toBe(true);
+  await view.unmount();
+});
+
+it("does not restore stale capabilities from a superseded settings read", async () => {
+  let finishOld: (value: unknown) => void = () => {};
+  invoke.mockReturnValueOnce(new Promise((resolve) => {
+    finishOld = resolve;
+  }));
+  const view = await mount({ peer: peer({ features: ["approval_tier_v1", "auto_approval_v1"] }) });
+  invoke.mockResolvedValue({ approvalTier: "manual", sandboxAvailable: false });
+  await announce("desktop_a");
+  await settle();
+  await act(async () => finishOld({ approvalTier: "auto", sandboxAvailable: true, sandboxCode: "available_write_only" }));
+  expect(view.container.querySelector<HTMLSelectElement>("select")?.value).toBe("manual");
+  expect(view.container.querySelector<HTMLOptionElement>("option[value=\"sandbox\"]")?.disabled).toBe(true);
+  expect(view.container.textContent).not.toContain("Upgrade system Bubblewrap on that computer");
   await view.unmount();
 });

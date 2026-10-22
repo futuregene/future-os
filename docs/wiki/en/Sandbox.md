@@ -24,7 +24,7 @@ and `none` denies **all** tool calls. It does not select an OS sandbox.
 | Platform | Backend | Important limits |
 |---|---|---|
 | macOS | Seatbelt (`sandbox-exec`) | Filesystem rules; network remains open. |
-| Native Linux | System Bubblewrap ≥ 0.9.0 | Snapshot-based filesystem mounts; network open, no seccomp filter. WSL is outside the supported validation scope. |
+| Native Linux | System Bubblewrap with runtime-probed capabilities | Snapshot-based filesystem mounts; network open, no seccomp filter. WSL is outside the supported validation scope. |
 | Windows | Unelevated restricted token + filesystem ACLs | Write protection only; shell reads/network remain open. Existing ACLs and parent deletion rights can weaken protection. |
 
 Linux protects existing matching paths at command launch. A protected name that
@@ -47,10 +47,7 @@ future agent --probe-sandbox
 future doctor
 ```
 
-FutureOS does not bundle or download Bubblewrap. An older distribution package
-may be below 0.9.0; use a supported, trusted upgrade rather than an arbitrary
-binary. The version floor is compatibility, not a guarantee of all upstream
-security fixes. Completely quit and restart FutureOS after installing or fixing it.
+FutureOS does not bundle or download Bubblewrap. A package with basic write protection remains usable when read protection is unavailable; the selector suggests upgrading. Missing basic protection disables the sandbox. Use maintained, trusted packages with security fixes. Completely quit and restart FutureOS after installing or fixing it.
 
 The Linux option stays visible but disabled while checking or unavailable.
 Settings shows the reason, a suggested action and a diagnostic code:
