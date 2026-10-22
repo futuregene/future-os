@@ -156,6 +156,77 @@ pub(super) fn future_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "The Desktop data directory has no parent".to_string())
 }
 
+/// The secure-handshake block of a slot, reduced to what the terminal can say
+/// about a pairing from the file alone.
+///
+/// Nothing here is printed: `secret` is an unredeemed invitation's PSK and the
+/// keys are credential material. What matters is the *shape* — whether a peer
+/// key is pinned, and when the invitation's window closes — because that is what
+/// separates a device that can connect from a row that only occupies a slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SecureSlot {
+    /// The peer's pinned key. Present once the phone has claimed the invitation;
+    /// from then on reconnects authenticate against it.
+    peer_public_key: Option<String>,
+    /// When the *invitation* stops being claimable. It gates pairing only: the
+    /// runtime checks it on `secure_open`/`secure_finish` for a `pairing=true`
+    /// opening and never on the reconnect path, so a claimed device keeps working
+    /// after this instant. Reporting it as an expiry of the pairing would be
+    /// wrong, which is why the field below is named for the invitation.
+    expires_at: i64,
+}
+
+/// What a pairing-file slot actually is, decided the way the runtime decides it.
+///
+/// `future remote devices` used to call every non-controller row `standby`, which
+/// was false for the rows that cannot connect at all — most visibly an invitation
+/// no phone ever claimed. The runtime's own rule is the source of truth: the
+/// secure transport is built only for `handshakeVersion == 2` with a `secure`
+/// block present, and a `pairing=true` opening is refused once the peer key is
+/// pinned or the invitation window has passed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlotState {
+    /// A peer key is pinned: the device can reconnect, and the invitation's
+    /// deadline is history that no longer gates anything.
+    Paired,
+    /// An invitation nobody has claimed yet, still inside its window.
+    Unclaimed { expires_at: i64 },
+    /// An invitation nobody claimed whose window has passed. It can neither be
+    /// claimed (the invitation expired) nor connect (no peer key); nothing will
+    /// ever happen here, so it is only holding a slot.
+    Expired { expires_at: i64 },
+    /// No secure identity at all: a credential from before the v2 handshake. The
+    /// runtime does not even build a transport for it.
+    Legacy,
+}
+
+impl SlotState {
+    fn is_paired(self) -> bool {
+        matches!(self, Self::Paired)
+    }
+
+    /// The word the `STATE` column shows.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Paired => "paired",
+            Self::Unclaimed { .. } => "unclaimed",
+            Self::Expired { .. } => "expired",
+            Self::Legacy => "legacy",
+        }
+    }
+
+    /// The stable name `--json` carries, so a reader can switch on it without
+    /// parsing prose.
+    fn wire(self) -> &'static str {
+        match self {
+            Self::Paired => "paired",
+            Self::Unclaimed { .. } => "unclaimed",
+            Self::Expired { .. } => "expired",
+            Self::Legacy => "legacy",
+        }
+    }
+}
+
 /// One paired device, with only the fields the terminal shows or needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Device {
@@ -168,6 +239,10 @@ struct Device {
     /// Never printed or logged — kept because a relay pairing's room can only
     /// be deleted with a request signed by this key.
     nkey_seed: Option<String>,
+    /// The v2 handshake block, when the slot has one.
+    secure: Option<SecureSlot>,
+    /// The slot's declared handshake version; `handshakeVersion` in the file.
+    handshake_version: u32,
 }
 
 impl Device {
@@ -197,7 +272,56 @@ impl Device {
             desktop_id: text("desktopId"),
             control_url: text("controlUrl"),
             nkey_seed: text("nkeySeed"),
+            secure: object.get("secure").and_then(SecureSlot::from_value),
+            handshake_version: object
+                .get("handshakeVersion")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32,
         })
+    }
+
+    /// What this slot is, by the runtime's own rule.
+    ///
+    /// `now` is passed in so the answer is a function of the file and one clock
+    /// reading, not of when the caller happened to look.
+    fn state(&self, now: i64) -> SlotState {
+        // The runtime builds its secure transport only for this shape
+        // (`packages/remote-server/src/secure.rs`, `Transport::new`); anything
+        // else serves nothing, whatever the row is called.
+        let Some(secure) = self.secure.as_ref().filter(|_| self.handshake_version == 2) else {
+            return SlotState::Legacy;
+        };
+        if secure.peer_public_key.is_some() {
+            return SlotState::Paired;
+        }
+        if now >= secure.expires_at {
+            SlotState::Expired {
+                expires_at: secure.expires_at,
+            }
+        } else {
+            SlotState::Unclaimed {
+                expires_at: secure.expires_at,
+            }
+        }
+    }
+
+    /// The sentence a non-paired row carries after its endpoint: what the slot
+    /// is waiting for, or that it is waiting for nothing at all.
+    fn state_detail(&self, state: SlotState, now: i64) -> Option<String> {
+        match state {
+            SlotState::Paired => None,
+            SlotState::Unclaimed { expires_at } => {
+                let when = deadline_phrase(expires_at, now)
+                    .unwrap_or_else(|| format!("Unix time {expires_at}"));
+                Some(format!("invitation expires {when}"))
+            }
+            SlotState::Expired { expires_at } => {
+                let when = local_wall_clock(expires_at)
+                    .unwrap_or_else(|| format!("Unix time {expires_at}"));
+                Some(format!("invitation expired {when} local time"))
+            }
+            SlotState::Legacy => Some("no secure identity (predates the v2 handshake)".to_string()),
+        }
     }
 
     fn endpoint_label(&self) -> String {
@@ -209,6 +333,30 @@ impl Device {
 
     fn is_relay(&self) -> bool {
         self.control_url.is_some()
+    }
+}
+
+impl SecureSlot {
+    /// Parse the `secure` block, keeping only what the terminal reports.
+    ///
+    /// A block that is not an object, or that carries no `expiresAt`, is treated
+    /// as absent: the runtime's `PairingIdentity` has no default for that field
+    /// either, so such a slot fails to load as a v2 credential and builds no
+    /// transport. Reading it as `legacy` says the same thing the runtime does —
+    /// this row cannot serve — instead of claiming a binding nobody can verify
+    /// here.
+    fn from_value(value: &Value) -> Option<Self> {
+        let object = value.as_object()?;
+        let peer_public_key = object
+            .get("peerPublicKey")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        Some(Self {
+            peer_public_key,
+            expires_at: object.get("expiresAt").and_then(Value::as_i64)?,
+        })
     }
 }
 
@@ -607,37 +755,120 @@ fn list(args: &[String], out: &Output) -> Result<(), String> {
         .map(|device| display_pair_id(&device.pair_id))
         .collect();
     let id_width = ids.iter().map(String::len).max().unwrap_or(0).max(6);
+    // One clock reading for the whole listing, so two rows minted minutes apart
+    // cannot be judged against two different "now"s.
+    let now = now_seconds();
+    let states: Vec<SlotState> = book
+        .devices
+        .iter()
+        .map(|device| device.state(now))
+        .collect();
+    let paired = states.iter().filter(|state| state.is_paired()).count();
+    let silent = book.devices.len() - paired;
+    let any_expired = states
+        .iter()
+        .any(|state| matches!(state, SlotState::Expired { .. }));
+    let any_unclaimed = states
+        .iter()
+        .any(|state| matches!(state, SlotState::Unclaimed { .. }));
+    let any_legacy = states.contains(&SlotState::Legacy);
+    // The count is of devices that can connect. A row nobody ever claimed is in
+    // the file, but saying it is "paired to this machine" is what made an expired
+    // invitation indistinguishable from a live pairing.
+    let headline = if paired == 0 {
+        "No device is paired to this machine".to_string()
+    } else {
+        format!(
+            "{paired} {} {} paired to this machine",
+            if paired == 1 { "device" } else { "devices" },
+            if paired == 1 { "is" } else { "are" }
+        )
+    };
     out.log(&format!(
-        "{} {} paired to this machine:",
-        book.devices.len(),
-        if book.devices.len() == 1 {
-            "device is"
+        "{headline}{}:",
+        if silent == 0 {
+            String::new()
         } else {
-            "devices are"
+            format!(
+                ", and {silent} {} cannot serve",
+                if silent == 1 { "pairing" } else { "pairings" }
+            )
         }
     ));
     out.log("");
     out.log(&format!(
         "  {:>2}  {:<id_width$}  {:<10}  {}",
-        "#", "DEVICE", "CONTROL", "ENDPOINT"
+        "#", "DEVICE", "STATE", "ENDPOINT"
     ));
+    // Control follows the persisted pointer, but only a pairing that can connect
+    // can hold it: a pointer naming a row that cannot serve describes a device
+    // that is gone, not one that commands this machine.
+    let controlling = book
+        .devices
+        .iter()
+        .enumerate()
+        .find(|(index, device)| {
+            states[*index].is_paired() && controller.as_deref() == Some(device.pair_id.as_str())
+        })
+        .map(|(index, _)| index);
     for (index, device) in book.devices.iter().enumerate() {
-        let control = if controller.as_deref() == Some(device.pair_id.as_str()) {
+        let state = states[index];
+        let cell = if !state.is_paired() {
+            state.label()
+        } else if Some(index) == controlling {
             "in control"
         } else {
             "standby"
         };
+        let detail = device
+            .state_detail(state, now)
+            .map(|detail| format!("  ({detail})"))
+            .unwrap_or_default();
         out.log(&format!(
-            "  {:>2}  {:<id_width$}  {:<10}  {}",
+            "  {:>2}  {:<id_width$}  {:<10}  {}{}",
             index + 1,
             ids[index],
-            control,
-            device.endpoint_label()
+            cell,
+            device.endpoint_label(),
+            detail
         ));
     }
     out.log("");
-    out.log("The device in control is the one allowed to command this machine; the others stay");
-    out.log("paired in standby.");
+    if controlling.is_some() {
+        out.log(
+            "The device in control is the one allowed to command this machine; the others stay",
+        );
+        out.log("paired in standby.");
+    } else if paired > 0 {
+        out.log("No paired device is in control: the one that last claimed this machine cannot be");
+        out.log("reached, and nothing may command it until one takes over —");
+        out.log("`future remote devices use <#>`.");
+    }
+    if any_expired {
+        out.log("");
+        out.log(
+            "An `expired` row is an invitation no phone ever claimed. Its window has passed, so it",
+        );
+        out.log(
+            "can neither be claimed nor connect; nothing will ever happen behind it. It only holds",
+        );
+        out.log(
+            "a slot — remove it with `future remote devices remove <#>`. (The Desktop also clears",
+        );
+        out.log("such rows itself the next time it pairs a device.)");
+    }
+    if any_unclaimed {
+        out.log("");
+        out.log(
+            "An `unclaimed` row is an invitation no device has taken yet: nothing is paired behind",
+        );
+        out.log("it until one scans it, and it stops being usable at the deadline in the row.");
+    }
+    if any_legacy {
+        out.log("");
+        out.log("A `legacy` row carries no secure identity, so it cannot connect on this version.");
+        out.log("Unpair it with `future remote devices remove <#>` and pair the device again.");
+    }
     out.log("");
     // "Serving these pairings" was printed whenever a Desktop held the lock, which
     // was false whenever the switch was off: such a Desktop serves nobody. What is
@@ -655,25 +886,40 @@ fn list(args: &[String], out: &Output) -> Result<(), String> {
 
 /// The machine-readable document `--json` prints, and the same shape a mutation
 /// prints for the state it leaves behind.
+///
+/// `state` is the slot as the runtime sees it (`paired`, `unclaimed`, `expired`,
+/// `legacy`); `control` is `null` for every state but `paired`, because a row that
+/// cannot connect cannot be the device allowed to command this machine, however
+/// the persisted `active` pointer reads. `invitationExpiresAt` is that
+/// invitation's deadline — for a `paired` row it is history, not an expiry of the
+/// pairing.
 fn document(book: &Book, running: bool) -> Value {
     let controller = book.controller().map(|device| device.pair_id.clone());
+    let now = now_seconds();
     json!({
         "desktopRunning": running,
         "active": controller,
         "devices": book
             .devices
             .iter()
-            .map(|device| json!({
-                "pairId": device.pair_id,
-                "desktopId": device.desktop_id,
-                "control": if controller.as_deref() == Some(device.pair_id.as_str()) {
-                    "active"
-                } else {
-                    "standby"
-                },
-                "endpoint": if device.is_relay() { "relay" } else { "platform" },
-                "relayUrl": device.control_url,
-            }))
+            .map(|device| {
+                let state = device.state(now);
+                json!({
+                    "pairId": device.pair_id,
+                    "desktopId": device.desktop_id,
+                    "state": state.wire(),
+                    "control": if !state.is_paired() {
+                        Value::Null
+                    } else if controller.as_deref() == Some(device.pair_id.as_str()) {
+                        json!("active")
+                    } else {
+                        json!("standby")
+                    },
+                    "invitationExpiresAt": device.secure.as_ref().map(|secure| secure.expires_at),
+                    "endpoint": if device.is_relay() { "relay" } else { "platform" },
+                    "relayUrl": device.control_url,
+                })
+            })
             .collect::<Vec<_>>(),
     })
 }
@@ -2010,15 +2256,28 @@ fn stdin_is_terminal() -> bool {
 
 /// Ask before a security-relevant removal. A redirected stdin is refused
 /// rather than read: the answer to a prompt nobody saw must not be "yes".
+/// The question `remove <id|#>` asks, worded for what the row actually is: a
+/// claimed device loses access, while a row nothing is behind cannot lose what it
+/// never had. Telling a reader that an expired invitation "loses remote access"
+/// would be the same fiction the listing just stopped telling.
 fn confirmed(device: &Device, remaining: usize) -> Result<bool, String> {
+    let stays = format!(
+        "{remaining} {} stay paired.",
+        if remaining == 1 { "device" } else { "devices" }
+    );
+    let state = device.state(now_seconds());
     ask(&format!(
-        "Unpair {}? It loses remote access to this machine; {} {} paired.",
-        display_pair_id(&device.pair_id),
-        remaining,
-        if remaining == 1 {
-            "device stays"
+        "{} {}? {}",
+        if state.is_paired() {
+            "Unpair"
         } else {
-            "devices stay"
+            "Remove"
+        },
+        display_pair_id(&device.pair_id),
+        if state.is_paired() {
+            format!("It loses remote access to this machine; {stays}")
+        } else {
+            format!("Nothing is paired behind it, so no device loses access; {stays}")
         }
     ))
 }
@@ -2529,6 +2788,31 @@ mod tests {
 
     /// A book with two devices: `AAAA` on the platform (out of control) and
     /// `BBBB` at `relay` (in control), both with seedless credentials.
+    /// The `secure` block a paired slot really carries, with the peer's key
+    /// pinned: this is the shape the Desktop writes once a phone has claimed the
+    /// invitation.
+    fn claimed_secure(peer: &str, expires_at: i64) -> Value {
+        json!({
+            "privateKey": "PRIVATE",
+            "publicKey": "PUBLIC",
+            "peerPublicKey": peer,
+            "secret": null,
+            "expiresAt": expires_at,
+        })
+    }
+
+    /// An invitation minted but never claimed: `peerPublicKey` is unset and the
+    /// PSK is still there for the phone to use.
+    fn unclaimed_secure(expires_at: i64) -> Value {
+        json!({
+            "privateKey": "PRIVATE",
+            "publicKey": "PUBLIC",
+            "peerPublicKey": null,
+            "secret": "PSK",
+            "expiresAt": expires_at,
+        })
+    }
+
     fn two_device_book(relay: &str) -> String {
         serde_json::to_string_pretty(&json!({
             "version": 2,
@@ -2536,6 +2820,7 @@ mod tests {
             "slots": [
                 {
                     "handshakeVersion": 2,
+                    "secure": claimed_secure("PEER-A", now_seconds() + 86_400),
                     "pairId": "pair_AAAA",
                     "desktopId": "desk-1",
                     "nkeySeed": "SUAAAA",
@@ -2544,6 +2829,7 @@ mod tests {
                 },
                 {
                     "handshakeVersion": 2,
+                    "secure": claimed_secure("PEER-B", now_seconds() + 86_400),
                     "pairId": "pair_BBBB",
                     "desktopId": "desk-1",
                     "nkeySeed": "SUBBBB",
@@ -2617,11 +2903,185 @@ mod tests {
         assert_eq!(value["active"], "pair_BBBB");
         assert_eq!(value["devices"][0]["control"], "standby");
         assert_eq!(value["devices"][0]["endpoint"], "platform");
+        assert_eq!(value["devices"][0]["state"], "paired");
         assert_eq!(value["devices"][1]["control"], "active");
         assert_eq!(value["devices"][1]["endpoint"], "relay");
         assert_eq!(value["devices"][1]["relayUrl"], "https://relay.example.com");
+        // The invitation deadline travels as its own field, named for what it
+        // is: on a paired row it is history, not an expiry of the pairing.
+        assert!(
+            value["devices"][0]["invitationExpiresAt"].is_i64(),
+            "{value}"
+        );
         // No seed survives into the machine-readable form either.
         assert!(!stdout.contains("SUAAAA"), "{stdout}");
+        // Neither does any key material from the secure block.
+        assert!(!stdout.contains("PRIVATE"), "{stdout}");
+        assert!(!stdout.contains("PUBLIC"), "{stdout}");
+        assert!(!stdout.contains("PSK"), "{stdout}");
+    }
+
+    /// The distinction this listing exists for: an invitation nobody claimed is
+    /// not a paired device, an expired one can never become one, and only a
+    /// pinned peer key makes the deadline irrelevant.
+    #[tokio::test]
+    async fn list_separates_claimed_pending_and_dead_slots() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let now = now_seconds();
+        home.write(
+            BOOK_FILE,
+            &serde_json::to_string_pretty(&json!({
+                "version": 2,
+                "active": "pair_DEAD",
+                "slots": [
+                    // Claimed long ago: its invitation deadline is in the past and
+                    // that changes nothing — reconnects never read it.
+                    {
+                        "handshakeVersion": 2,
+                        "secure": claimed_secure("PEER-LIVE", now - 86_400),
+                        "pairId": "pair_LIVE", "desktopId": "desk-1", "nkeySeed": "S1",
+                    },
+                    // Minted, never scanned, still inside its window.
+                    {
+                        "handshakeVersion": 2,
+                        "secure": unclaimed_secure(now + 600),
+                        "pairId": "pair_PEND", "desktopId": "desk-1", "nkeySeed": "S2",
+                    },
+                    // Minted, never scanned, window gone: the leftover the report
+                    // could not tell apart from a live pairing.
+                    {
+                        "handshakeVersion": 2,
+                        "secure": unclaimed_secure(1792637925),
+                        "pairId": "pair_DEAD", "desktopId": "desk-1", "nkeySeed": "S3",
+                    }
+                ]
+            }))
+            .unwrap(),
+        );
+
+        let (code, stdout, stderr) = run(&["remote", "devices"]).await;
+        assert_eq!(code, 0, "{stderr}");
+        assert!(
+            stdout.contains("1 device is paired to this machine, and 2 pairings cannot serve:"),
+            "{stdout}"
+        );
+        // The claimed device is the only row that could hold control; the
+        // `active` pointer names the dead one, so no row is in control and the
+        // listing says so instead of crediting a device that cannot connect.
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line.contains("LIVE") && line.contains("standby")),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.lines().any(|line| (line.contains("LIVE")
+                || line.contains("PEND")
+                || line.contains("DEAD"))
+                && line.contains("in control")),
+            "no row may claim control here: {stdout}"
+        );
+        assert!(
+            stdout.contains("No paired device is in control"),
+            "{stdout}"
+        );
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line.contains("PEND") && line.contains("unclaimed")),
+            "{stdout}"
+        );
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line.contains("DEAD") && line.contains("expired")),
+            "{stdout}"
+        );
+        // A claimed row is never described with the invitation's deadline, and the
+        // rows that are waiting say what they are waiting for.
+        assert!(stdout.contains("invitation expires"), "{stdout}");
+        assert!(stdout.contains("invitation expired"), "{stdout}");
+        assert!(
+            stdout.contains("future remote devices remove <#>"),
+            "{stdout}"
+        );
+
+        let (_, json_stdout, _) = run(&["remote", "devices", "--json"]).await;
+        let value: Value = serde_json::from_str(&json_stdout).unwrap();
+        assert_eq!(value["devices"][0]["state"], "paired");
+        // The pointer still names pair_DEAD; `control` is null because that row
+        // cannot serve, and LIVE is standby until something takes over.
+        assert_eq!(value["active"], "pair_DEAD");
+        assert_eq!(value["devices"][0]["control"], "standby");
+        assert_eq!(value["devices"][1]["state"], "unclaimed");
+        assert!(value["devices"][1]["control"].is_null(), "{value}");
+        assert_eq!(value["devices"][2]["state"], "expired");
+        assert!(
+            value["devices"][2]["control"].is_null(),
+            "the row the active pointer names cannot be reported as controlling: {value}"
+        );
+        assert_eq!(value["devices"][2]["invitationExpiresAt"], 1792637925);
+    }
+
+    /// A claimed slot keeps serving after its invitation window closes. Reading
+    /// `secure.expiresAt` as an expiry of the *pairing* is what made the report
+    /// conclude a working device had only "one usable pairing left".
+    #[test]
+    fn a_claimed_slot_ignores_its_invitation_deadline() {
+        let claimed = Device {
+            pair_id: "pair_LIVE".into(),
+            desktop_id: None,
+            control_url: None,
+            nkey_seed: None,
+            secure: Some(SecureSlot {
+                peer_public_key: Some("PEER".into()),
+                expires_at: 1,
+            }),
+            handshake_version: 2,
+        };
+        assert_eq!(claimed.state(now_seconds()), SlotState::Paired);
+        assert!(claimed
+            .state_detail(SlotState::Paired, now_seconds())
+            .is_none());
+
+        let unclaimed = Device {
+            secure: Some(SecureSlot {
+                peer_public_key: None,
+                expires_at: 1,
+            }),
+            ..claimed.clone()
+        };
+        assert_eq!(
+            unclaimed.state(now_seconds()),
+            SlotState::Expired { expires_at: 1 }
+        );
+        // One second before the deadline it is still claimable.
+        assert_eq!(unclaimed.state(0), SlotState::Unclaimed { expires_at: 1 });
+
+        // Without a v2 secure block the row cannot serve at all, whatever its
+        // key or version claims.
+        for (secure, handshake_version) in [
+            (None, 2),
+            (None, 1),
+            (
+                Some(SecureSlot {
+                    peer_public_key: Some("PEER".into()),
+                    expires_at: i64::MAX,
+                }),
+                1,
+            ),
+        ] {
+            let device = Device {
+                pair_id: "pair_X".into(),
+                desktop_id: None,
+                control_url: None,
+                nkey_seed: None,
+                secure,
+                handshake_version,
+            };
+            assert_eq!(device.state(now_seconds()), SlotState::Legacy);
+        }
     }
 
     #[tokio::test]
@@ -2679,8 +3139,13 @@ mod tests {
         assert_eq!(book.devices.len(), 2);
     }
 
+    /// A pre-multi-device file is read as a book with one slot, and that slot is
+    /// the `active` pointer — but a credential from before the v2 handshake
+    /// carries no `secure` block, so the runtime builds no transport for it and
+    /// the row cannot serve. The listing says exactly that instead of calling it
+    /// the device in control.
     #[tokio::test]
-    async fn a_legacy_single_pairing_reads_as_one_device_in_control() {
+    async fn a_legacy_single_pairing_reads_as_one_slot_that_cannot_serve() {
         let _guard = crate::test_env::lock_env().await;
         let home = Home::new();
         home.write(
@@ -2693,7 +3158,11 @@ mod tests {
         let value: Value = serde_json::from_str(&stdout).unwrap();
         assert_eq!(value["devices"][0]["pairId"], "pair_OLD");
         assert_eq!(value["active"], "pair_OLD");
-        assert_eq!(value["devices"][0]["control"], "active");
+        assert_eq!(value["devices"][0]["state"], "legacy");
+        assert!(
+            value["devices"][0]["control"].is_null(),
+            "a slot with no secure identity cannot command the machine: {value}"
+        );
     }
 
     #[tokio::test]
@@ -4310,6 +4779,8 @@ mod tests {
             desktop_id: Some("desk-1".into()),
             control_url: Some(relay.into()),
             nkey_seed: Some("S".into()),
+            secure: None,
+            handshake_version: 2,
         }
     }
 
@@ -4360,6 +4831,8 @@ mod tests {
             desktop_id: None,
             control_url: None,
             nkey_seed: None,
+            secure: None,
+            handshake_version: 2,
         };
         assert_eq!(relay_ca_for(&platform_device), None);
     }
