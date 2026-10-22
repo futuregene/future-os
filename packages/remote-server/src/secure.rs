@@ -115,6 +115,27 @@ impl Transport {
     pub fn enabled(&self) -> bool {
         self.server.is_some()
     }
+    /// The invitation this bridge is still waiting for, if it is still waiting.
+    ///
+    /// `None` once a peer has pinned its key (the code is spent) and for a
+    /// transport that serves no invitation at all. The server keeps the creds it
+    /// was built from, so this is the invitation's own identity — the one the QR
+    /// code on screen can prove — not the upgraded identity a completed pairing
+    /// leaves behind.
+    ///
+    /// It exists for recovery: a rebuild that re-reads the pairing book would
+    /// otherwise bring back the *paired* identity and leave the pending one served
+    /// by nobody, so a code the desktop handed out would stop pairing the moment an
+    /// automatic reconnect ran.
+    pub fn pending_invitation(&self) -> Option<crate::PairingCreds> {
+        let server = self.server.as_ref()?;
+        let server = server.lock().unwrap();
+        let identity = server.creds.secure.as_ref()?;
+        identity
+            .peer_public_key
+            .is_none()
+            .then(|| server.creds.clone())
+    }
     pub fn clear(&self) {
         if let Some(server) = &self.server {
             let mut server = server.lock().unwrap();

@@ -35,6 +35,46 @@ pub(super) fn add_connect_pause(attempt: u8) -> std::time::Duration {
 pub(super) fn add_retryable(attempt: u8, error: &crate::Error) -> bool {
     attempt < ADD_CONNECT_ATTEMPTS && pairing::error_code(error) == Some("network")
 }
+/// The invitation this pair is still waiting for.
+pub(super) struct CarriedInvitation {
+    /// The code the desktop showed, so the rebuilt slot keeps showing it.
+    pub code: String,
+    pub expires_at: Option<i64>,
+    /// The invitation's own credentials: its identity is what the code proves.
+    pub creds: PairingCreds,
+}
+
+/// The invitation a device is still waiting for, if it is still waiting.
+///
+/// The one piece of a slot that is **not** in the pairing book: an unconfirmed
+/// device is not a device yet, so its invitation lives only in the running
+/// bridge. Everything that rebuilds a slot from the book alone therefore drops it
+/// — `establish_slots` when a start or a retry re-runs, and `restart_slot` when a
+/// generation dies — and brings back the identity of the *previous* pairing on the
+/// same `pair_id` (the platform hands a known desktop the same one). The code on
+/// screen then pairs nothing: the rebuilt identity has already pinned a peer, so
+/// the still-correct invitation is refused with `invitation_already_used`.
+///
+/// Recovery asks this first. `None` is the ordinary case and means "nothing
+/// pending": the device confirmed (the code is spent), the code expired (it would
+/// be refused anyway), or no slot for it is running.
+pub(super) fn carried_invitation(state: &RemoteState) -> Option<CarriedInvitation> {
+    if state.pairing_confirmed.load(Ordering::Acquire) {
+        return None;
+    }
+    let code = state.pairing_code.clone()?;
+    let expires_at = state.pairing_code_expires_at;
+    // `exp` is inclusive-upper, the same rule the client and the handshake use.
+    if expires_at.is_some_and(|exp| crate::supervisor::unix_timestamp() >= exp.max(0) as u64) {
+        return None;
+    }
+    Some(CarriedInvitation {
+        code,
+        expires_at,
+        creds: state.security.pending_invitation()?,
+    })
+}
+
 /// What a reconnect must do with one device, decided from the pairing book alone.
 ///
 /// Split out of [`Supervisor::restart_slot`] so the three decisions are assertable
@@ -331,6 +371,33 @@ impl Supervisor {
         self.add_device().await
     }
 
+    /// The plan for a book slot, keeping the invitation it is still waiting for.
+    ///
+    /// The refreshed credentials carry the current grant; the *identity* and the
+    /// code come from the pending invitation, because that is what the QR on
+    /// screen proves. Without this, a start or a retry re-runs `establish_slots`
+    /// and the pending device silently becomes the previously paired one.
+    fn with_carried_invitation(&self, pair_id: &str, creds: PairingCreds) -> SlotPlan {
+        let carried = {
+            let state = self.state.lock().unwrap();
+            state.get(pair_id).and_then(carried_invitation)
+        };
+        match carried {
+            Some(carried) => SlotPlan {
+                creds: PairingCreds {
+                    secure: carried.creds.secure,
+                    ..creds
+                },
+                pairing_code: Some(carried.code),
+                pairing_code_expires_at: carried.expires_at,
+            },
+            None => SlotPlan {
+                creds,
+                pairing_code: None,
+                pairing_code_expires_at: None,
+            },
+        }
+    }
     pub async fn establish_slots(self: &Arc<Self>) -> Result<Vec<SlotPlan>, crate::Error> {
         let mut plans = Vec::new();
         // The revocation a start *acted* on, kept as the error itself so the
@@ -347,11 +414,7 @@ impl Supervisor {
                 continue;
             }
             match self.host.refresh(creds).await {
-                Ok(creds) => plans.push(SlotPlan {
-                    creds,
-                    pairing_code: None,
-                    pairing_code_expires_at: None,
-                }),
+                Ok(creds) => plans.push(self.with_carried_invitation(&pair_id, creds)),
                 Err(error) if pairing::is_invalid_or_revoked_error(&error) => {
                     // The platform no longer honours this device's credential —
                     // someone revoked it. It is not this machine's device any more,
@@ -686,6 +749,27 @@ impl Supervisor {
     }
 
     async fn restart_slot(self: &Arc<Self>, pair_id: &str) -> Result<RemoteStatus, crate::Error> {
+        // A device the desktop is still waiting for has no book entry — the
+        // invitation is what will make it one — so the book-first recovery below
+        // would answer `Stop` for it and take the bridge serving the code on
+        // screen down with it. It also has no *stored* identity to bring back when
+        // it does: the slot's own invitation identity is the one to rebuild from.
+        let carried = {
+            let state = self.state.lock().unwrap();
+            state.get(pair_id).and_then(carried_invitation)
+        };
+        if let Some(carried) = carried {
+            let plan = SlotPlan {
+                creds: carried.creds,
+                pairing_code: Some(carried.code),
+                pairing_code_expires_at: carried.expires_at,
+            };
+            let epoch = self.access.current();
+            return match self.start_slot(plan, epoch, true, false).await {
+                Ok(()) => Ok(self.status_focused(Some(pair_id))),
+                Err(error) => self.start_failure(error),
+            };
+        }
         let creds = match recovery_plan(&self.host.load_slots(), pair_id) {
             // The device is gone; the runtime must not outlive its credential.
             SlotRecovery::Stop => {
@@ -709,11 +793,7 @@ impl Supervisor {
             }
             Err(error) => return self.start_failure(error),
         };
-        let plan = SlotPlan {
-            creds,
-            pairing_code: None,
-            pairing_code_expires_at: None,
-        };
+        let plan = self.with_carried_invitation(pair_id, creds);
         let epoch = self.access.current();
         match self.start_slot(plan, epoch, true, false).await {
             Ok(()) => Ok(self.status_focused(Some(pair_id))),
