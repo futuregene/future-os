@@ -12,8 +12,8 @@ use super::runtime::{
     close_socket_for_test, connect, connect_all, connect_with_emitter, disconnect,
     ensure_connected, forget_connection_for_test, install_supervisor_for_test, list, live_count,
     pair_with_emitter, request, sessions, set_label, set_visible_session, spawn_supervisor,
-    stream_count, supervisor_count, unpair, workspaces, Emitter, PeerEvent, PeerSummary,
-    INJECT_CONNECTION_LOST,
+    stream_count, supervisor_attempts, supervisor_count, unpair, workspaces, Emitter, PeerEvent,
+    PeerSummary, INJECT_CONNECTION_LOST,
 };
 use super::testing::{fixture, teardown, Fixture};
 use crate::remote::test_support::{HomeGuard, MockPlatform};
@@ -1371,6 +1371,15 @@ async fn a_supervisor_stops_when_the_host_is_already_connected() {
 /// The window is finite: an unreachable host is retried a bounded number of
 /// times and then left alone. A loop that never ends is indistinguishable, to
 /// the user, from one that hung.
+///
+/// The count is taken at the supervisor's own seam — one increment per retry it
+/// *dispatches* — not on the fake broker. The broker counts **sockets**, which is
+/// a different quantity: one loop dispatches at most `reconnect_attempt_budget()`
+/// attempts and each of those dials once (`async-nats` does not retry the initial
+/// connect), so an accepted-socket count above the budget is not a longer window —
+/// it is a second dialling source, such as a leftover loop reaching this listener
+/// or a port the OS reused. The old assertion was `accepted == 18`, and 34 accepted
+/// sockets against an 18-attempt budget is what that mistake reports.
 #[tokio::test]
 async fn a_supervisor_gives_up_after_its_window() {
     let (_home, mut fx) = start("peer-rt-supervisor-giveup").await;
@@ -1381,12 +1390,12 @@ async fn a_supervisor_gives_up_after_its_window() {
         .await
         .unwrap();
     fx.paired.creds.nats_url = format!("nats://{}", listener.local_addr().unwrap());
-    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let accepted = attempts.clone();
+    let accepted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let broker_accepted = accepted.clone();
     let broker = tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.expect("accept failed handshake");
-            accepted.fetch_add(1, Ordering::SeqCst);
+            broker_accepted.fetch_add(1, Ordering::SeqCst);
             drop(stream);
         }
     });
@@ -1401,12 +1410,26 @@ async fn a_supervisor_gives_up_after_its_window() {
         .expect("the supervisor must stop once its window is spent")
         .expect("no panic");
 
-    assert_eq!(
-        attempts.load(Ordering::SeqCst),
-        18,
-        "the full retry window was exercised"
-    );
+    let dispatched = supervisor_attempts(&desktop_id).await;
+    let accepts = accepted.load(Ordering::SeqCst);
     broker.abort();
+    // The budget is the contract, so it is pinned as well as used: a schedule
+    // change must be a deliberate edit to this number, not a silent one.
+    let budget = future_remote_client::runtime::reconnect_attempt_budget();
+    assert_eq!(
+        budget, 18,
+        "the window is RECONNECT_DELAYS_SECS.len() * 3: six delays, three rounds"
+    );
+    assert!(
+        accepts >= 1,
+        "the loop must actually reach the broker; {accepts} accepted sockets means \
+         the attempts failed before any connection was made"
+    );
+    assert_eq!(
+        dispatched, budget,
+        "the full retry window was exercised ({accepts} sockets accepted; a socket \
+         count is not an attempt count)"
+    );
 
     assert!(
         !find(&list().await.expect("list"), &desktop_id).connected,
