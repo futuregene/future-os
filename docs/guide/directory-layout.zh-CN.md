@@ -199,7 +199,7 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
 这里没有数据，只有「运行中的进程」和「终端」互相找到对方的方式。
 
 - `agent.sock` —— Agent 的 Unix IPC 端点（Windows 用命名管道；指定 `--grpc-addr` 时走 TCP）。见上文的端点章节。
-- `remote-control/` —— `future remote devices add|remove|use`、`future remote peers connect|disconnect|takeover|remove` 用来请求运行中的 Desktop 签发邀请、停止服务某台设备、或把机器交给某台设备的请求/回复文件。请求里写的是发起进程自己在系统临时目录建好的回复路径，所以这个目录除了「即将被打印出来的邀请」之外没有别的秘密，也从不进入备份：被恢复的请求只指向一个早已退出的读者。超过两分钟的请求会被 Desktop 删除而不是执行。见 [desktop-host.zh-CN.md](desktop-host.zh-CN.md) §3.1。
+- `remote-control/` —— `future remote devices add|remove|use`、`future remote peers connect|disconnect|takeover|remove` 用来请求运行中的 Desktop 签发邀请、停止服务某台设备、或把机器交给某台设备的请求/回复文件。请求里写的是发起进程自己在系统临时目录建好的回复路径，所以这个目录除了「即将被打印出来的邀请」之外没有别的秘密，也从不进入备份：被恢复的请求只指向一个早已退出的读者。超过两分钟的请求会被 Desktop 删除而不是执行；这个「多老」按文件名里发起进程自己的毫秒时钟判断，文件系统的修改时间只在名字里没有时间戳时兜底——共享文件系统（例如时钟慢了几分钟的 NFS 家目录）盖的戳不能把刚写出的请求当成早就没人等的。见 [desktop-host.zh-CN.md](desktop-host.zh-CN.md) §3.1。
 
 ## `~/.future/workspaces/chat/` — 聊天工作区
 

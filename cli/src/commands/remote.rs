@@ -1540,14 +1540,19 @@ fn control_directory() -> Result<PathBuf, String> {
 
 /// What a timed-out request means, told apart by whether anything picked it up.
 ///
-/// The two silences are different faults with different fixes, and a single
-/// "did not answer" sends the user to the wrong one. A request still sitting in
-/// the directory was never claimed: no process is watching it, which in practice
+/// The silences are different faults with different fixes, and a single "did not
+/// answer" sends the user to the wrong one. A request still sitting in the
+/// directory was never claimed: no process is watching it, which in practice
 /// means the Desktop running for this data directory predates device requests —
 /// it was started before the update and keeps serving from its old code until it
-/// is restarted. A request that disappeared was claimed by a Desktop that then
-/// failed or was killed mid-request. `unchanged` says what the silence left
-/// behind, which is not the same sentence for an addition and a removal.
+/// is restarted. A request that disappeared was either claimed by a Desktop that
+/// then failed or was killed mid-request, or deleted as stale without being
+/// served at all: this CLI cannot tell those two apart, because both leave
+/// nothing behind, and a Desktop that predates the asker's own timestamp in the
+/// name will read a share's clock instead — the measured case, an NFS home whose
+/// server ran minutes slow, deleted every fresh request on sight. `unchanged`
+/// says what the silence left behind, which is not the same sentence for an
+/// addition and a removal.
 fn timeout_message(
     timeout: Duration,
     request_still_there: &dyn Fn() -> bool,
@@ -1563,8 +1568,12 @@ fn timeout_message(
         )
     } else {
         format!(
-            "A Desktop took the request but did not answer within {}s. It may have failed or been \
-             stopped while pairing; check its own output, then try again.",
+            "A Desktop took the request but did not answer within {}s: it may have failed or been \
+             stopped while pairing, or it discarded the request as stale instead of serving it — \
+             a Desktop that predates this CLI trusts the modification time the file system gives \
+             the request, and that is minutes wrong when the transient `run/` directory lives on \
+             a share whose clock disagrees with this machine's (a network home, for instance). \
+             Check the Desktop's own output, then try again; {unchanged}.",
             timeout.as_secs()
         )
     }
@@ -4038,6 +4047,16 @@ mod tests {
             "{claimed}"
         );
         assert!(!claimed.contains("older build"), "{claimed}");
+        // A vanished request has a second cause this side cannot rule out: a
+        // Desktop that discards it as stale (a share's clock, not the asker's).
+        // Naming only "it failed or was stopped" is the advice that sent the NFS
+        // bug's user looking for a Desktop that had never seen the request.
+        assert!(
+            claimed.contains("discarded the request as stale"),
+            "{claimed}"
+        );
+        assert!(claimed.contains("clock disagrees"), "{claimed}");
+        assert!(claimed.contains("nothing was paired"), "{claimed}");
     }
 
     #[tokio::test]
