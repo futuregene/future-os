@@ -32,7 +32,7 @@ future doctor
 
 安装或修复后**完全退出并重启 FutureOS**。Linux Settings/Composer 保持选项布局稳定：检测中/不可用时禁用，成功才可选，不是失败时把选项删除。提示结构是“原因 + 方案 + code”，例如“系统未安装 Bubblewrap，请安装 Bubblewrap。(`binary_missing`)”；安装命令与重启提示可在设置页查看。普通卡片不额外堆叠网络说明。
 
-probe CLI 不启动常驻 Agent，不受 singleton 锁阻塞；统一 `future agent` 与独立 `future-agent` 使用同一实现，doctor 消费同一结果。JSON 含 `available/backend/code`，成功时含 system path/version/capabilities；不输出完整敏感路径集合。
+probe CLI 不启动常驻 Agent，不受 singleton 锁阻塞；统一 `future agent` 与独立 `future-agent` 使用同一实现，doctor 消费同一结果。JSON 含 `available/backend/code`，成功时含 system path/version/capabilities；不输出完整敏感路径集合。远程 `get_settings` 同时携带可选 `sandboxCode`，桌面远程选择器和手机设置对 `available_write_only` 显示相同的升级提示；旧主机不返回该字段时保留原界面。远程自动审批选择同时要求基本沙箱可用和主机支持 `auto_approval_v1`。
 
 | code | 原因 / 处理 |
 |---|---|

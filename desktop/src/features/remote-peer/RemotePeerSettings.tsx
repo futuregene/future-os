@@ -1,5 +1,5 @@
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
-import type { RemotePeer } from "./remotePeerClient";
+import type { RemoteApprovalSettings, RemotePeer } from "./remotePeerClient";
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
@@ -55,7 +55,7 @@ export function RemotePeerSettings({
   const { t } = useTranslation("remotePeer");
   const [name, setName] = useState(peer.name ?? "");
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
-  const [approval, setApproval] = useState<{ approvalTier: string; sandboxAvailable: boolean } | null>(null);
+  const [approval, setApproval] = useState<RemoteApprovalSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** Which page of these settings is open. See `SettingsSectionPage`. */
@@ -300,6 +300,9 @@ export function RemotePeerSettings({
                     <option value="off">{t("approvalTierLabel.off")}</option>
                   </Select>
                 </SettingsRow>
+                {approval.sandboxAvailable && approval.sandboxCode === "available_write_only"
+                  ? <SettingsRow title={t("approvalTierLabel.sandbox")} description={t("approvalTierUpgrade")} />
+                  : null}
               </SettingsList>
             </SettingsSection>
           )

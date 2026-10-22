@@ -841,6 +841,7 @@ export const resources = {
       },
       approvalTier: {
         title: "Approval mode",
+        upgrade: "Upgrade system Bubblewrap on that computer and restart FutureOS to enable full sandbox protection.",
         manual: "Manual",
         sandbox: "Sandboxed",
         auto: "Automatic review",
@@ -1756,6 +1757,7 @@ export const resources = {
       },
       approvalTier: {
         title: "审批模式",
+        upgrade: "请升级那台电脑上的系统 Bubblewrap 并重启 FutureOS，以启用完整沙箱保护。",
         manual: "手动审批",
         sandbox: "沙箱保护",
         auto: "自动审批",

@@ -31,6 +31,7 @@ const {
   forkRemoteConversation,
   generateRemoteTitle,
   getRemoteConversationSettings,
+  getRemoteApprovalSettings,
   installRemoteSkill,
   listRemoteAvailableSkills,
   listRemoteInstalledSkills,
@@ -1180,6 +1181,22 @@ describe("remote machine commands", () => {
     expect(lastCall()).toEqual({
       args: { desktopId: "desktop_a", command: { type: "get_prompt_receipt", promptId: "cmd_1" }, lane: "list" },
       command: "remote_peer_request",
+    });
+  });
+});
+
+describe("remote sandbox compatibility", () => {
+  it("preserves the limited capability diagnostic and accepts older hosts", async () => {
+    invokeMock.mockResolvedValue({ approvalTier: "auto", sandboxAvailable: true, sandboxCode: "available_write_only" });
+    await expect(getRemoteApprovalSettings("desktop_a")).resolves.toEqual({
+      approvalTier: "auto",
+      sandboxAvailable: true,
+      sandboxCode: "available_write_only",
+    });
+    invokeMock.mockResolvedValue({ approvalTier: "sandbox", sandboxAvailable: true });
+    await expect(getRemoteApprovalSettings("desktop_a")).resolves.toEqual({
+      approvalTier: "sandbox",
+      sandboxAvailable: true,
     });
   });
 });

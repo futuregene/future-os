@@ -55,7 +55,11 @@ The probe CLI does not start a resident Agent and is not blocked by the
 singleton lock; the unified `future agent` and standalone `future-agent` share
 one implementation, and doctor consumes the same result. The JSON contains
 `available/backend/code`, and on success the system path/version/capabilities;
-no full sensitive path sets are printed.
+no full sensitive path sets are printed. Remote `get_settings` also carries optional
+`sandboxCode`; desktop remote selectors and phone Settings show the same upgrade
+hint for `available_write_only`. Older hosts without this field keep their
+existing UI. Remote automatic-review selection requires both a usable sandbox
+and the host's `auto_approval_v1` capability.
 
 | code | Cause / handling |
 |---|---|

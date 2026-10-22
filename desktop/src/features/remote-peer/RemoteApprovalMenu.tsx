@@ -44,6 +44,7 @@ export function RemoteApprovalMenu({
   const { t } = useTranslation("remotePeer");
   const [tier, setTier] = useState<string | null>(null);
   const [sandboxAvailable, setSandboxAvailable] = useState(false);
+  const [sandboxCode, setSandboxCode] = useState<string>();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   // A capability the host declares, not something to assume: an older build that
@@ -57,6 +58,7 @@ export function RemoteApprovalMenu({
         return;
       setTier(settings.approvalTier);
       setSandboxAvailable(settings.sandboxAvailable);
+      setSandboxCode(settings.sandboxCode);
     }).catch(() => {
       // A host too old to report its settings has no control to offer.
       if (!cancelled)
@@ -112,7 +114,7 @@ export function RemoteApprovalMenu({
       {TIERS.map(item => (
         <SelectMenuItem
           className="py-1.5"
-          disabled={(item === "sandbox" && !sandboxAvailable) || (item === "auto" && !supportsAuto)}
+          disabled={((item === "sandbox" || item === "auto") && !sandboxAvailable) || (item === "auto" && !supportsAuto)}
           key={item}
           onSelect={() => void choose(item)}
           selected={tier === item}
@@ -129,7 +131,9 @@ export function RemoteApprovalMenu({
                   : t(`approvalTierLabel.${item}`, { defaultValue: item })}
             </span>
             <span className="block text-xs leading-tight text-ink-muted">
-              {t(`approvalTierDescription.${item}`, { defaultValue: t("approvalTierDescription.default") })}
+              {sandboxAvailable && sandboxCode === "available_write_only" && (item === "sandbox" || item === "auto")
+                ? t("approvalTierUpgrade")
+                : t(`approvalTierDescription.${item}`, { defaultValue: t("approvalTierDescription.default") })}
             </span>
           </span>
         </SelectMenuItem>

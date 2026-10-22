@@ -357,6 +357,16 @@ describe("the host's approval mode", () => {
     await view.unmount();
   });
 
+  it("shows the upgrade hint for a limited host without disabling its modes", async () => {
+    answerHostApproval({ approvalTier: "auto", sandboxAvailable: true, sandboxCode: "available_write_only" });
+    const view = await mount({ peer: withApproval() });
+    expect(view.container.textContent).toContain("Upgrade system Bubblewrap on that computer");
+    const options = [...select(view.container).options];
+    expect(options.find(option => option.value === "sandbox")!.disabled).toBe(false);
+    expect(options.find(option => option.value === "auto")!.disabled).toBe(false);
+    await view.unmount();
+  });
+
   it("reads the mode that host is in", async () => {
     answerHostApproval({ approvalTier: "off", sandboxAvailable: true });
     const view = await mount({ peer: withApproval() });

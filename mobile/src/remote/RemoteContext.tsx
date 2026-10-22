@@ -101,6 +101,7 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   refreshSessionUsage: () => Promise<void>;
   approvalTier: string;
   sandboxAvailable: boolean;
+  sandboxCode?: string;
   busy: boolean;
   compacting: boolean;
   fileTransferSupported: boolean;
@@ -318,6 +319,7 @@ function samePublishedData(previous: RuntimeEntry | undefined, next: RuntimeEntr
     && previous.catalog.catalogSync === next.catalog.catalogSync
     && previous.catalog.approvalTier === next.catalog.approvalTier
     && previous.catalog.sandboxAvailable === next.catalog.sandboxAvailable
+    && previous.catalog.sandboxCode === next.catalog.sandboxCode
     && previous.conversation.modelId === next.conversation.modelId
     && previous.conversation.thinkingLevel === next.conversation.thinkingLevel
     && previous.conversation.sessionUsage === next.conversation.sessionUsage;
@@ -494,6 +496,7 @@ function machineSurface(
     refreshSessionUsage: runtime?.conversation.refreshSessionUsage ?? noop,
     approvalTier: runtime?.catalog.approvalTier ?? "off",
     sandboxAvailable: runtime?.catalog.sandboxAvailable ?? false,
+    sandboxCode: runtime?.catalog.sandboxCode,
     busy: runtime?.busy ?? false,
     fileTransferSupported: connection?.fileTransferSupported ?? false,
     capabilities: connection?.capabilities ?? new Set<string>(),
@@ -1006,6 +1009,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     activeRuntime?.catalog.rename,
     activeRuntime?.catalog.renameWorkspace,
     activeRuntime?.catalog.sandboxAvailable,
+    activeRuntime?.catalog.sandboxCode,
     activeRuntime?.catalog.sessions,
     activeRuntime?.catalog.setSessionPinned,
     activeRuntime?.catalog.setWorkspacePinned,
