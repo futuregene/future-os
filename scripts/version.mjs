@@ -221,6 +221,11 @@ function main() {
       // reject `-`/`+` suffixes, so every non-release build reads 0.0.0). The
       // display version (with the -<hash>[+local] suffix) is injected separately
       // via FUTURE_VERSION.
+      //
+      // ⚠️ This rewrites a TRACKED file, so it is only safe in CI, which throws
+      // the checkout away. A local build must snapshot tauri.conf.json first and
+      // restore it on exit — scripts/build/build-desktop-*.{sh,ps1} all do, and
+      // leaving it modified is what dirties the tree after `make package-desktop`.
       const bundle = bundleVersion(version);
       // fileURLToPath (not .pathname) so this resolves correctly on Windows too.
       const root = fileURLToPath(new URL("../", import.meta.url));
