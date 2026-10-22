@@ -29,10 +29,10 @@ futureos starts only the GUI; its former --headless option has been removed.
 
 [Optional Sandbox]
 The desktop defaults to Full access. Select Manual or Sandboxed in Settings.
-Linux Sandboxed mode needs trusted system Bubblewrap >= 0.9.0 (not bundled):
+Linux Sandboxed mode needs trusted system Bubblewrap with runtime-probed capabilities (not bundled):
     Debian/Ubuntu: sudo apt install bubblewrap
     Fedora:        sudo dnf install bubblewrap
-Old distribution packages may need a trusted upgrade. Fully restart FutureOS,
+Basic write protection is required; limited support keeps the same modes and suggests upgrading for full protection. Fully restart FutureOS,
 then run future agent --probe-sandbox and future doctor. Host namespace policy
 may prevent use; a definite unavailable result falls back to Manual.
 Network remains open; missing protected paths/new matches have detection-only

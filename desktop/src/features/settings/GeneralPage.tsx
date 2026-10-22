@@ -7,7 +7,7 @@ import { useTranslation } from "react-i18next";
 import { Select } from "../../components/ui/Select";
 import { getLanguage, LANGUAGE_LABELS, setLanguage, SUPPORTED_LANGUAGES } from "../../i18n";
 import { automaticApprovalAvailable, effectiveApprovalTier } from "../../integrations/agent/automaticApproval";
-import { useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
+import { isWriteOnlySandbox, useSandboxAvailability } from "../../integrations/agent/useSandboxAvailability";
 import { FONT_SIZES, setFontSize, useFontSize } from "../../lib/fontSize";
 import { isLinux, isWindows } from "../../lib/platform";
 import { REPLY_DETAIL_LEVELS, setReplyDetail, useReplyDetail } from "../../lib/replyDisplay";
@@ -50,6 +50,7 @@ export function GeneralPage({
   const fontSize = useFontSize();
   const replyDetail = useReplyDetail();
   const sandboxAvailability = useSandboxAvailability();
+  const writeOnlySandbox = isWriteOnlySandbox(sandboxAvailability);
   const autoAvailable = automaticApprovalAvailable(futureSessionStatus);
   const visibleApprovalTier = effectiveApprovalTier(approvalTier, futureSessionStatus);
 
@@ -165,6 +166,9 @@ export function GeneralPage({
         </SettingsRow>
         {visibleApprovalTier === "auto" && sandboxAvailability.resolved && !sandboxAvailability.available
           ? <SettingsRow title={t("approvalTier.auto")} description={t("approvalTier.autoUnavailable")} />
+          : null}
+        {writeOnlySandbox
+          ? <SettingsRow title={t("approvalTier.sandbox")} description={t("approvalTier.linuxWriteOnly")} />
           : null}
         {isLinux && sandboxAvailability.resolved && !sandboxAvailability.available
           ? (

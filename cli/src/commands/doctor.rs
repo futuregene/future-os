@@ -167,7 +167,7 @@ async fn check_login() -> CheckResult {
 fn check_sandbox() -> CheckResult {
     match future_agent::sandbox::platform_sandbox_probe_product() {
         Ok(probe) => {
-            let status = if probe.available {
+            let status = if probe.available && probe.code != "available_write_only" {
                 Status::Ok
             } else {
                 Status::Warn
@@ -182,9 +182,12 @@ fn check_sandbox() -> CheckResult {
             if let Some(version) = probe.version {
                 lines.push(format!("version={version}"));
             }
+            if probe.code == "available_write_only" {
+                lines.push("Upgrade system Bubblewrap and restart FutureOS to enable full sandbox protection.".to_string());
+            }
             if cfg!(target_os = "linux") && !probe.available {
                 lines.push(
-                    "Install system Bubblewrap (apt/dnf package: bubblewrap); WSL is unsupported"
+                    "Install or upgrade system Bubblewrap (apt/dnf package: bubblewrap); WSL is unsupported"
                         .to_string(),
                 );
             }

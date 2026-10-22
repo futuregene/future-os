@@ -11,15 +11,15 @@
 | L-D3 | sandbox 开发分支直接接入产品，不另加隐藏开关；可用性与正式发布门槛分开 |
 | L-D5 | 启动前既有 glob 匹配硬保护，命令内新匹配仅事后检测 |
 | L-D6 | on-request：失败返回模型；单命令精确 read/write execution_grants |
-| L-D7 / D10 | 安全 PATH、版本/参数、真实运行三层 probe；最低 bwrap **0.9.0** |
+| L-D7 / D10 | 安全 PATH、版本/参数、真实运行三层 probe；按写保护/读保护能力分级，无固定版本下限 |
 | L-D8 / D9 | 仅原生 Linux；不支持/不专门检测 WSL，不扫描额外兼容安装目录，不做 argv0 兼容分支 |
 | 2026-09-04 补充 | 缺失 Ask/Deny（包括 approval_rule）、复杂 reopen、缺失 writable allow 不再作为本期必改项；详见 §4 |
 
-0.9.0 是产品兼容下限，不承诺包含全部上游安全修复。只要求 bwrap 文件 root-owned，不递归审计父目录权限与模式位；这是维护者明确接受的阶段性取舍。若攻击者已可用 root 修改系统程序，本沙箱不再是其安全边界。普通用户可修改的 root-owned 路径链等进一步加固留后续，不能描述为已验证。
+兼容性由实际能力决定，不以版本号推定能力或安全补丁状态。发行版仍应安装受维护、包含安全修复的系统包。只要求 bwrap 文件 root-owned，不递归审计父目录权限与模式位；这是维护者明确接受的阶段性取舍。若攻击者已可用 root 修改系统程序，本沙箱不再是其安全边界。普通用户可修改的 root-owned 路径链等进一步加固留后续，不能描述为已验证。
 
 ## 2. 安装、可用性与排障
 
-通过发行版受信任渠道安装；安装到低于 0.9.0 时仍须升级：
+通过发行版受信任渠道安装；能力不足时升级：
 
 ```bash
 # Ubuntu / Debian
@@ -36,11 +36,12 @@ probe CLI 不启动常驻 Agent，不受 singleton 锁阻塞；统一 `future ag
 
 | code | 原因 / 处理 |
 |---|---|
-| `available` | 完整探测通过 |
+| `available` | 写保护与读保护探测均通过 |
+| `available_write_only` | 基本写保护通过、读保护不可用；保持原模式可选，只提示升级 Bubblewrap 并重启 |
 | `binary_missing` | 未找到系统 bwrap；安装并确保可信绝对系统目录在 PATH |
 | `path_rejected` | 相对/项目目录候选或非 root-owned；使用发行版系统包 |
 | `binary_invalid` | 非可执行普通文件或身份读取不安全；修复系统包 |
-| `version_unreadable` / `version_too_old` | 版本无法解析或低于 0.9.0；升级 |
+| `version_unreadable` / `version_too_old` | 版本无法解析；后一个 code 仅为旧客户端兼容保留，新探测不按版本拒绝 |
 | `required_feature_missing` | 缺 `--args` 等必需参数；升级完整系统包 |
 | `user_namespace_disabled` | 主机/容器/安全策略禁止 userns；由管理员评估支持配置 |
 | `proc_mount_restricted` | 无法建立 fresh `/proc`；检查主机策略 |
@@ -50,7 +51,7 @@ probe CLI 不启动常驻 Agent，不受 singleton 锁阻塞；统一 `future ag
 
 probe 各子命令当前超时 1 秒，成功 receipt 缓存 300 秒并核验二进制 identity；失败不永久缓存。忽略空/相对 PATH 与 workspace/cwd 内候选，canonicalize 后固定同一绝对路径执行 version/help/runtime。
 
-runtime probe 运行只读 root、user/PID/IPC namespace、cap-drop、最小 dev/proc 和 mode-0700 `/tmp` tmpfs，验证临时写入与只读 root。**它不是完整真实 workspace/HOME 生产计划的预演**，probe 成功不能保证每条规则组合、资源状态、cwd 都可启动。
+基础 runtime probe 运行只读 root、user/PID/IPC namespace、cap-drop、最小 dev/proc 和可写 `/tmp` bind，检查 root mount 的只读标记、临时写入以及 effective/permitted capability 为零。支持 `--perms` 与 `--tmpfs` 时，再独立运行 mode-000 目录遮罩探测；该阶段失败或超时只关闭读保护。**它不是完整真实 workspace/HOME 生产计划的预演**，probe 成功不能保证每条规则组合、资源状态、cwd 都可启动。
 
 基础 probe 明确不可用时 Agent/解析层转 manual，Desktop 持久化回退并显示原因；瞬时连接失败保留设置。运行期 plan/helper 错误返回工具失败，既不自动降级也不裸跑。模型可显式申请整命令脱沙箱，用户批准才执行；对话本身不必停止。避免对可能已有副作用的命令盲目重放。
 
@@ -78,6 +79,8 @@ RuleSet 快照 → LinuxSandboxPlan → PreparedShell + request FD
 | `linux/report.rs`、`linux/violation.rs` | 私有报告认证、英文检测说明、非权威输出清洗、拒绝启发式 |
 
 ### 3.1 Mount 与进程边界
+
+有限模式保持模式名称、模型提示词、原生文件工具规则和自动审批行为不变，只在设置/选择器提示升级。shell 挂载计划保留每条规则的 write 部分与原有优先级，省略 read-only 规则和读遮罩；Both 的 Ask/Deny 仍以只读 bind 实施写保护。返回 `capabilities.writeProtection/readProtection`，helper receipt 必须允许该计划所需能力。有限模式不承诺 shell 读保护。
 
 生产使用 `--new-session --die-with-parent --unshare-user --unshare-pid --unshare-ipc --cap-drop ALL`；先 `--ro-bind / /`，再开放 workspace/temp/allow-write 根，叠加保护及受支持的窄重开。`--dev /dev`、fresh `/proc`；不加 `--unshare-net`。
 
@@ -163,7 +166,7 @@ mount source 以 O_PATH FD 固定，bwrap 通过 `/proc/self/fd/N` 挂载；内�
 | SR-03 | 旧“namespace-only 创建”假设已撤销；当前省略，legacy wire mount 拒绝 |
 | SR-04 / SR-05 | 原 stdout marker 信任方案被私有报告替代；复扫失败 detection-only、保留 exit，避免副作用后二次执行 |
 | SR-06 / SR-07 | helper JSON 和 bwrap OPTIONS 双 FD transport；后补9000参数与RLIMIT预算 |
-| SR-08 / SR-09 / SR-10 | 0.9.0、capget/no_new_privs、无 seccomp；UI 稳定布局/禁用项/原因方案code/重启 |
+| SR-08 / SR-09 / SR-10 | 能力分级、capget/no_new_privs、无 seccomp；UI 稳定布局/禁用项/原因方案code/重启 |
 
 bwrap/inner 没有 completion 且非信号终止时 helper 返回 infrastructure 125，stderr 合并捕获。**用户命令自己也能 exit 125，缺 completion 不能证明完全没执行**；不得仅看退出码自动重放。
 
@@ -213,7 +216,7 @@ cargo test -p future-agent --lib sandbox::linux::glob_scan::tests::large_workspa
 
 | ID | 原生主机 | 架构 / 预期 |
 |---|---|---|
-| RH-01 | Ubuntu22.04 | x86_64；官方包若<0.9.0验证version_too_old，正常运行需受信任升级 |
+| RH-01 | Ubuntu22.04 | x86_64；官方旧包验证仅写保护可用与升级提示；新包验证完整保护 |
 | RH-02 / RH-03 / RH-04 | Ubuntu24.04 / Debian stable / Fedora支持版 | x86_64，记录具体版本 |
 | RH-05 | Ubuntu24.04 | aarch64 |
 | RH-06 | Debian stable或Fedora | aarch64，再覆盖一种发行版 |
@@ -264,4 +267,4 @@ sign-off记录Reviewer/UTC/Candidate/Decision/Blocking issues/Follow-ups/Evidenc
 | P2 | 诊断包、扫描预算与FD性能校准、helper/cwd可达性提示；凭据通道见COMMON |
 | P3 / 已接受 | root owner之外路径链加固（OR-07）；缺失Deny、复杂reopen、缺失allow保持现状，不擅自升级本期范围 |
 
-OR-02（mount argv的ARG_MAX）以双FDtransport关闭但保留资源上限；OR-05最低版本已收口；OR-04 seccomp转为后续。任何“所有环境都能启动”的承诺均不成立：无法安全准备该次命令时应明确失败，继续对话/显式审批，不静默降低保护。
+OR-02（mount argv的ARG_MAX）以双FDtransport关闭但保留资源上限；OR-05由固定版本下限改为能力探测；OR-04 seccomp转为后续。任何“所有环境都能启动”的承诺均不成立：无法安全准备该次命令时应明确失败，继续对话/显式审批，不静默降低保护。

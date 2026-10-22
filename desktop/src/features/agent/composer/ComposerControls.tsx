@@ -7,7 +7,7 @@ import { SelectMenu, SelectMenuItem } from "../../../components/ui/SelectMenu";
 import { localizedModelDescription, modelKey, modelLabel, modelOption, modelSupportsThinking, normalizeThinkingLevel, thinkingLevels } from "../../../integrations/agent/agentClient";
 import { automaticApprovalAvailable, effectiveApprovalTier } from "../../../integrations/agent/automaticApproval";
 import { useProviderNames } from "../../../integrations/agent/useProviderNames";
-import { useSandboxAvailability } from "../../../integrations/agent/useSandboxAvailability";
+import { isWriteOnlySandbox, useSandboxAvailability } from "../../../integrations/agent/useSandboxAvailability";
 import { isLinux, isWindows } from "../../../lib/platform";
 import { useCommand } from "../../keyboard/commands";
 
@@ -70,6 +70,7 @@ interface Props {
 export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyReason, onModelChange, thinkingLevel, onThinkingLevelChange, approvalTier, futureSessionStatus, onChangeApprovalTier, sending, onAbort, handleAttachFiles, inputEmpty, attachmentCount, sendPending, recommendPending, compactionPending }: Props) {
   const { t, i18n } = useTranslation("agent");
   const sandboxAvailability = useSandboxAvailability();
+  const writeOnlySandbox = isWriteOnlySandbox(sandboxAvailability);
   const autoAvailable = automaticApprovalAvailable(futureSessionStatus);
   const visibleApprovalTier = effectiveApprovalTier(approvalTier ?? "off", futureSessionStatus);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
@@ -196,13 +197,15 @@ export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyR
                                 ? t("composer.approvalTierDesc.sandboxChecking")
                                 : (tier === "sandbox" || tier === "auto") && !sandboxAvailability.available
                                     ? t("composer.approvalTierDesc.sandboxUnavailable")
-                                    : tier === "off"
-                                      ? <Trans t={t} i18nKey="composer.approvalTierDesc.off" components={{ em: <span className="font-semibold" /> }} />
-                                      : t(tier === "sandbox" && isWindows
-                                          ? "composer.approvalTierDesc.sandboxWindows"
-                                          : tier === "sandbox" && isLinux
-                                            ? "composer.approvalTierDesc.sandboxLinux"
-                                            : `composer.approvalTierDesc.${tier}`)}
+                                    : (tier === "sandbox" || tier === "auto") && writeOnlySandbox
+                                        ? t("composer.approvalTierDesc.sandboxLinuxWriteOnly")
+                                        : tier === "off"
+                                          ? <Trans t={t} i18nKey="composer.approvalTierDesc.off" components={{ em: <span className="font-semibold" /> }} />
+                                          : t(tier === "sandbox" && isWindows
+                                              ? "composer.approvalTierDesc.sandboxWindows"
+                                              : tier === "sandbox" && isLinux
+                                                ? "composer.approvalTierDesc.sandboxLinux"
+                                                : `composer.approvalTierDesc.${tier}`)}
                         </span>
                       </span>
                     </SelectMenuItem>
