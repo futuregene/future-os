@@ -280,6 +280,17 @@ impl SandboxPlatform {
         }
     }
 
+    /// The backend reported by the connected Agent, independent of the TUI OS.
+    pub fn from_backend(backend: &str) -> Option<Self> {
+        match backend {
+            "macos_seatbelt" => Some(Self::Macos),
+            "linux_bubblewrap" | "bubblewrap" => Some(Self::Linux),
+            "windows_restricted" => Some(Self::Windows),
+            "none" => Some(Self::Other),
+            _ => None,
+        }
+    }
+
     /// The host this binary was built for.
     pub fn current() -> SandboxPlatform {
         SandboxPlatform::from_os(std::env::consts::OS)
@@ -619,6 +630,11 @@ impl SandboxStatus {
                     }
                     _ => AccountState::Checking,
                 };
+                let platform = probe
+                    .backend
+                    .as_deref()
+                    .and_then(SandboxPlatform::from_backend)
+                    .unwrap_or(platform);
                 SandboxStatus {
                     mode,
                     requested_mode,
@@ -975,6 +991,9 @@ impl SandboxView {
     }
 
     fn platform_rows(&self, width: usize) -> Vec<String> {
+        if self.status.platform == SandboxPlatform::Other && !self.status.probe.resolved {
+            return Vec::new();
+        }
         match platform_note(self.status.platform) {
             Some(note) => wrapped_rows(note, width, DESCRIPTION_INDENT)
                 .into_iter()
