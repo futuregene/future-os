@@ -97,6 +97,12 @@ A *different* login or a logout while the host is running closes remote access a
 asks for a restart: the previous account's remote entry must not stay open until
 its own credential expires. Everything local keeps running either way.
 
+A stored credential is still verified against the platform at startup, exactly as
+before: accepted means it serves; refused (401/403) prints `Platform authorization
+is no longer valid. Please sign in again.` and continues in the signed-out state
+until `future auth login` stores a new one; a transport failure is still reported
+as an error rather than being mistaken for a logout.
+
 ### Step two: mobile app pairing
 
 The host prints no pairing code of its own. Pairing is a request the operator
@@ -109,6 +115,11 @@ future remote devices add
 That command asks the running host to mint an invitation and prints it where it
 was asked for: a QR code, the complete `futureos://remote/pair?...` link, and the
 time left before it expires.
+
+An invitation is minted by the platform, so this is the one local-looking command
+that needs an account: signed out, `add` refuses with `future auth login`. The
+host itself is not broken when that happens — sessions, runs, tasks and your own
+model providers keep working, and `add` succeeds once a login has been adopted.
 
 - Scan with **Add device / Scan inside the FutureOS app**.
 - Alternatively, paste the complete link into the app's **Paste pairing code**

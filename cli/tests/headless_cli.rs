@@ -81,9 +81,19 @@ fn relay_flags_are_accepted_in_both_spellings() {
     }
 }
 
-/// The headless entry point starts with no runtime flag at all, and a first
-/// launch with no Future account is a supported state: it serves everything
-/// local and keeps the remote desktop closed instead of exiting.
+/// Successor to `a_plain_launch_needs_no_headless_flag`, which guarded two
+/// properties at once:
+///
+/// 1. `future host` starts with **no runtime flag** (the old `--headless` is
+///    gone). Still true, and still what this test's command line shows.
+/// 2. A first launch with no account **refuses a redirected terminal before
+///    touching any state** (exit 1, no `app.db`, no pairing book, empty stdout).
+///    Property 2's premise is gone on purpose: a signed-out machine is a
+///    supported state now, so the assertions about *refusing* are replaced by
+///    assertions about the state it reaches instead — the local store really
+///    exists, the pairing book really does not, and the process is still
+///    serving. The safety half of it (a redirected log never receives
+///    authorization material) is kept, in the test below.
 #[cfg(unix)]
 #[test]
 fn a_plain_launch_serves_locally_without_an_account() {
@@ -115,9 +125,13 @@ fn a_plain_launch_serves_locally_without_an_account() {
     );
 }
 
-/// A redirected log never receives authorization material — and since this
-/// entry point no longer runs a login of its own, it prints none of it at all.
-/// What it does print says where to sign in.
+/// Successor to `first_setup_refuses_redirected_logs_without_printing_authorization_material`,
+/// which guarded the *safety* property of a non-interactive launch: it must not
+/// write authorization material (a device code, an invitation, a QR) into a
+/// redirected log, and stdout — reserved for exactly that material — must stay
+/// empty. That property still holds and is asserted here unchanged; only its
+/// cause moved, because this entry point runs no login of its own any more, so
+/// `future auth login` is named instead of a prompt being printed.
 #[cfg(unix)]
 #[test]
 fn first_setup_prints_no_authorization_material() {
@@ -142,6 +156,19 @@ fn first_setup_prints_no_authorization_material() {
     signal(child, "-INT");
     let status = wait_for_signal_exit(child, &mut log, Duration::from_secs(120));
     assert!(status.success(), "{status}\n{}", log.collected);
+    // The original assertion, kept: stdout carries authorization material when
+    // there is any, so a run that printed nothing here printed none of it. In
+    // this arm there is none at all — but it must be *observed*, not assumed.
+    let mut stdout = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        use std::io::Read;
+        pipe.read_to_string(&mut stdout)
+            .expect("read the child's stdout");
+    }
+    assert!(
+        stdout.is_empty(),
+        "a signed-out launch must print no authorization material on stdout: {stdout:?}"
+    );
 }
 
 #[test]
