@@ -1173,6 +1173,16 @@ export interface MockPeer {
   bridgeInstanceId: string | null;
   features: string[];
   agentAvailable: boolean;
+  /**
+   * Who may drive that machine, as its own presence last stated.
+   *
+   * Optional because every scenario written before a capture needed the held
+   * state answers without it, and the UI reads its absence as "no statement" —
+   * which is an older host, and means "assume ours".
+   */
+  control?: "active" | "standby" | null;
+  /** The device holding it, when `control` is `standby`. */
+  holder?: { pairId: string; name?: string; kind?: string } | null;
 }
 
 export const remotePeers: MockPeer[] = [
