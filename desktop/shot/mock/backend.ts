@@ -63,8 +63,11 @@ let settings: typeof appSettings = { ...appSettings };
 let harnessStreamingThreadIds: string[] = [];
 /** Thread ids `?pinned=` added to the fixture's own pin (see `HarnessState`). */
 let harnessPinnedThreadIds: string[] = [];
+let harnessUpdate = "";
 
 export interface HarnessState {
+  /** Update screen fixtures, including recovery after the main UI stops. */
+  update?: string | null;
   /** Thread ids the agent reports as streaming (drives the row's running ring). */
   streaming?: string[];
   /**
@@ -88,6 +91,7 @@ export interface HarnessState {
 }
 
 export function seedHarnessState(state: HarnessState) {
+  harnessUpdate = state.update ?? "";
   // Recorded, not applied: `threadList` is built below this function, so the flag
   // is stamped on when the list is read (see `list_threads`). Stamping is
   // idempotent, which is what makes that safe to do per read.
@@ -299,7 +303,8 @@ const handlers: Record<string, (args: any) => unknown> = {
   // The desktop gates all account/provider work behind this handshake; without
   // it the app never leaves its splash ("请稍候").
   get_agent_status: () => ({
-    phase: "ready",
+    phase: harnessUpdate.startsWith("stopped-") ? "stopping" : "ready",
+    ...(harnessUpdate.startsWith("stopped-") ? { shutdown: { operationId: "shutdown-raw-id", reason: "update", state: "stopped", stage: "complete", elapsedMs: 500, errors: [] } } : {}),
     desktopVersion: buildInfo.version,
     agentVersion: buildInfo.version,
   }),
@@ -307,7 +312,22 @@ const handlers: Record<string, (args: any) => unknown> = {
   // reserved slot's spinning ring — is reachable in a capture. Empty by
   // default: a plain page load has nothing running.
   list_streaming_thread_ids: () => harnessStreamingThreadIds,
-  check_app_update: () => ({ available: false, version: null, notes: null }),
+  check_app_update: () => ({ currentVersion: buildInfo.version, latestVersion: "2.1.0", hasUpdate: Boolean(harnessUpdate), platformSupported: true, canInstallInApp: true, downloadUrl: "https://future-os.cn/" }),
+  app_maintenance_status: () => ({
+    cli: { tool: { path: "C:\\Program Files\\FutureOS\\future.exe", source: "bundled", version: buildInfo.version }, error: "CLI diagnostic must stay private" },
+    update: !harnessUpdate || harnessUpdate === "available"
+      ? null
+      : {
+          operationId: "update-raw-id",
+          fromVersion: buildInfo.version,
+          targetVersion: "2.1.0",
+          stage: "finished",
+          outcome: harnessUpdate.includes("repair") ? "repair-required" : harnessUpdate.includes("ready") ? "pending-validation" : "failed-restored",
+          diagnostic: "Cannot start update observer: os error 50; C:\\Program Files\\FutureOS",
+          restartSafe: !harnessUpdate.includes("repair"),
+          repairAcknowledged: false,
+        },
+  }),
   get_skill_guide: () => ({
     links: { help: "https://future-os.cn/docs" },
     skills: {

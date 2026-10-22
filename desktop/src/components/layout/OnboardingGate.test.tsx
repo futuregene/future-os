@@ -623,3 +623,38 @@ describe("onboarding gate environment switcher", () => {
     view.unmount();
   });
 });
+
+describe("community edition setup", () => {
+  it("opens provider setup without starting account login or showing signup offers", () => {
+    const props = baseProps({ communityEdition: true });
+    const view = mount(<OnboardingGate {...props} />);
+    try {
+      expect(view.container.textContent).toContain("Configure your own model provider");
+      expect(view.container.textContent).not.toContain("New users get free credits");
+      expect(buttonByText(view.container, "Sign in / Sign up")).toBeUndefined();
+      act(() => buttonByText(view.container, "Use your own API key")!.click());
+      expect(props.onEnableBYOK).toHaveBeenCalledTimes(1);
+      expect(mocks.begin).not.toHaveBeenCalled();
+    }
+    finally {
+      view.unmount();
+    }
+  });
+
+  it("keeps explicitly requested account authorization usable without advertising", () => {
+    mocks.loginFlow = { message: null, phase: "waiting" };
+    const props = baseProps({ communityEdition: true, autoLogin: true, hasAnyProvider: true });
+    const view = mount(<OnboardingGate {...props} />);
+    try {
+      expect(mocks.begin).toHaveBeenCalledTimes(1);
+      expect(buttonByText(view.container, "Signing in")?.disabled).toBe(true);
+      expect(view.container.textContent).not.toContain("New users get free credits");
+      act(() => buttonByText(view.container, "Cancel")!.click());
+      expect(mocks.cancel).toHaveBeenCalledTimes(1);
+      expect(props.onEnableBYOK).toHaveBeenCalledTimes(1);
+    }
+    finally {
+      view.unmount();
+    }
+  });
+});

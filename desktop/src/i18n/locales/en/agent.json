@@ -134,7 +134,7 @@
     },
     "needsLogin": {
       "title": "No model configured",
-      "detail": "The background service is connected, but no models are available yet. Sign in with FutureOS, or set up your own model service (OpenAI, DeepSeek, etc.).",
+      "detail": "The background service is connected. Configure a model provider in Settings to get started.",
       "action": "Configure providers"
     },
     "noModels": {

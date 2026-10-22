@@ -53,6 +53,8 @@ jobs:
       version: ${{ needs.version.outputs.version }}
       artifact_version: ${{ needs.version.outputs.artifact_version }}
       signed: ${{ inputs.nightly }}
+      # Test/nightly rehearsals report verification failures without blocking.
+      # Formal releases enforce strict verification in release.yml.
       strict_verification: false
       coordinated: true
     secrets: inherit

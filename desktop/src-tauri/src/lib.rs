@@ -64,6 +64,8 @@ mod window_caption;
 mod windows_power;
 
 #[cfg(feature = "gui")]
+pub use commands::dispatch_update_helper;
+#[cfg(feature = "gui")]
 use commands::*;
 use error::AppError;
 

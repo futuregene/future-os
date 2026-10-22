@@ -1299,7 +1299,10 @@ mod end_to_end {
             .to_string();
         assert_ne!(replay_ticket, ticket);
 
-        let url = format!("ws://127.0.0.1:{port}/terminal/{id}/connect?cursor=-1&ticket={ticket}");
+        // A new terminal has no saved screen, so request its startup output as
+        // TerminalView does. Tailing from -1 can discard PowerShell's cursor
+        // query before we attach, leaving the shell waiting for a lost reply.
+        let url = format!("ws://127.0.0.1:{port}/terminal/{id}/connect?cursor=0&ticket={ticket}");
         let (mut socket, response) = tokio_tungstenite::connect_async(url.as_str())
             .await
             .expect("websocket handshake");
@@ -1330,7 +1333,7 @@ mod end_to_end {
         let mut meta: Option<Meta> = None;
         let deadline = Instant::now() + Duration::from_secs(15);
         while Instant::now() < deadline && !output.contains("marker-42") {
-            let next = tokio::time::timeout(Duration::from_secs(5), socket.next()).await;
+            let next = tokio::time::timeout_at(deadline.into(), socket.next()).await;
             match next {
                 Ok(Some(Ok(Message::Binary(bytes)))) => {
                     if bytes.first() == Some(&protocol::CONTROL_PREFIX) {
@@ -1358,9 +1361,10 @@ mod end_to_end {
             "the shell's output must arrive over the socket: {output:?}"
         );
         let meta = meta.expect("a control frame must precede live output");
-        // Tailing from -1 asks for no history: nothing is replayed, so the
-        // replay starts exactly at the cursor the client must resume from.
-        assert_eq!(meta.start, meta.cursor);
+        // The initial connection includes the shell's startup screen and then
+        // transitions to live output without dropping the terminal handshake.
+        assert_eq!(meta.start, 0);
+        assert!(meta.cursor >= meta.start);
         assert!(meta.exit_code.is_none(), "the shell is still running");
 
         // A resize over the control route is reflected in the session info.

@@ -31,6 +31,16 @@ fn build_gui() -> Result<(), Box<dyn std::error::Error>> {
         .map(|value| serde_json::from_str(&value.to_string_lossy()))
         .transpose()?
         .unwrap_or_else(|| serde_json::json!({}));
+    // The privileged Linux executor must verify its private archive with the
+    // same compile-time key as the UI updater, never a caller-supplied key.
+    let base_config: serde_json::Value = serde_json::from_str(include_str!("tauri.conf.json"))?;
+    let updater_key = config
+        .pointer("/plugins/updater/pubkey")
+        .or_else(|| base_config.pointer("/plugins/updater/pubkey"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    println!("cargo:rustc-env=FUTURE_UPDATER_PUBLIC_KEY={updater_key}");
     config["bundle"]["externalBin"] = serde_json::json!([]);
     std::env::set_var("TAURI_CONFIG", serde_json::to_string(&config)?);
     // Tauri embeds its default common-controls v6 manifest only into the bin

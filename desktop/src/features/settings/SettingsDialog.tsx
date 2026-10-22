@@ -214,7 +214,7 @@ export function SettingsDialog({
                 )
               : null}
             {tab === "update" ? <UpdatePage cachedStatus={cachedUpdateStatus} /> : null}
-            {tab === "about" ? <AboutPage /> : null}
+            {tab === "about" ? <AboutPage communityEdition={appSettings.communityEdition} /> : null}
             {tab === "providers"
               ? (
                   <ProvidersPage
