@@ -222,7 +222,10 @@ future remote devices use <id|#>       # choose the one in control
   row is removed, and `control` keeps its meaning (the stored pointer): `paired`,
   `unclaimed` (an invitation no phone has scanned yet), `unclaimed, expired` (an
   invitation nobody ever claimed, past its deadline — it can neither be claimed nor
-  connect, so nothing happens behind it until `remove` clears it), and `legacy` (a
+  connect, so nothing happens behind it until `remove` clears it, and `remove` does
+  clear it on the platform: the invitation's row counts against the platform's
+  per-desktop cap whether or not anyone scans it, so discarding it is a real
+  deletion rather than bookkeeping), and `legacy` (a
   credential from before the v2 handshake, which cannot connect on this version).
   The `expiresAt` in a pairing is the invitation's deadline, not the pairing's: a
   device that claimed its invitation keeps working after that instant, because only

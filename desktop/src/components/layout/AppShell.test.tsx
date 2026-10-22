@@ -1194,7 +1194,7 @@ describe("app shell layout", () => {
     expect(labeledButton(view.container, "Held Mac").disabled).toBe(true);
     // A held machine is connected, so its status says nothing; the reason has to
     // be the one the device picker gives for the same fact.
-    expect(view.container.textContent).toContain("Hui's phone is in control · click Take over to switch");
+    expect(view.container.textContent).toContain("Another device (Hui's phone) is in control");
     expect(view.container.textContent).toContain("Offline");
     view.unmount();
   });
