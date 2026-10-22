@@ -304,6 +304,19 @@ impl Supervisor {
         epoch: u64,
     ) -> Result<RemoteStatus, crate::Error> {
         self.spawn_revoke_cleanup();
+        // One live invitation at a time.
+        //
+        // An unclaimed code already belongs to a running bridge and is on this
+        // machine's screen (or was, a moment ago). Minting a second one spent a
+        // *second* row of the platform's per-desktop allowance — every pending
+        // invitation counts against it — and answering with the newest code
+        // orphaned the older ones, which nothing could claim and nothing
+        // displayed. Pressing "add a device" five times therefore reached the cap
+        // and refused the sixth with a limit error about a cap the user had
+        // filled without ever pairing anything.
+        if let Some(pair_id) = self.shown_invitations().into_iter().next() {
+            return Ok(self.status_focused(Some(&pair_id)));
+        }
         let keep_existing = !self.host.load_slots().is_empty();
         let Invitation {
             creds,
@@ -359,7 +372,17 @@ impl Supervisor {
                 }
                 // Reported as it is, so the caller can name the class: a code
                 // nothing serves is worse than an error that says why.
-                Err(error) => return Err(error),
+                Err(error) => {
+                    // The code was never shown — this call is what would have
+                    // returned it — so nobody can claim it. Give the platform's
+                    // allowance back now instead of leaving the row for the
+                    // sweep that only clears invitations older than three
+                    // minutes: a person retrying a failing add would otherwise
+                    // fill the cap with codes that were never on screen.
+                    let _ = self.host.queue_revoke(&creds);
+                    self.spawn_revoke_cleanup();
+                    return Err(error);
+                }
             }
         }
     }

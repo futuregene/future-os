@@ -98,6 +98,20 @@ describe("remotePeerErrorText", () => {
       .toBe(en.errorSecureChannel);
   });
 
+  /**
+   * The exact string the platform returns when the *other* computer unpairs:
+   * this side keeps its half of the pairing, and the next connect is refused.
+   * It used to reach the screen in English, because no class matched it — the
+   * row then offered "Connect" forever, on a pairing that could never work.
+   */
+  it("names a pairing the other computer removed", () => {
+    const raw = "Remote credential is invalid or revoked.";
+    expect(remotePeerErrorKind(raw)).toBe("revoked");
+    expect(remotePeerErrorText(raw, t)).toBe(en.errorRevoked);
+    // The wire code, when one reaches this side, means the same thing.
+    expect(remotePeerErrorKind("invalid_remote_credential")).toBe("revoked");
+  });
+
   it("names an account and a refusal where those are the cause", () => {
     expect(remotePeerErrorKind("Not signed in to FutureOS.")).toBe("signedOut");
     expect(remotePeerErrorKind("Authorization Violation")).toBe("refused");

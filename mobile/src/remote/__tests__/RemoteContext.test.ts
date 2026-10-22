@@ -2,8 +2,9 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { prepareTaskNotifications } from "../../notifications/taskNotifications";
 import { DesktopScope, RemoteProvider, useRemote, useRemoteControls, type RemoteControls } from "../RemoteContext";
-import { claimPairingCode } from "../pairing";
-import { loadCredentials, loadPairedDesktops } from "../storage";
+import { claimPairingCode, serverRevoke } from "../pairing";
+import { loadCredentials, loadPairedDesktops, savePendingRevoke } from "../storage";
+import { currentAppAlert } from "../../components/appAlerts";
 import type { DownloadInfo, HistoryAttachment, Presence, RemoteCredentials, RemoteSession } from "../types";
 
 /**
@@ -43,6 +44,7 @@ jest.mock("../pairing", () => ({
   attemptPendingRevoke: jest.fn(async () => {}),
   claimPairingCode: jest.fn(async () => null),
   ensureFreshCredentials: jest.fn(async (credentials: unknown) => credentials),
+  refreshCredentials: jest.fn(async (credentials: unknown) => credentials),
   serverRevoke: jest.fn(async () => {}),
 }));
 
@@ -768,6 +770,34 @@ describe("RemoteProvider over several desktops", () => {
     expect(remote.desktops.map((desktop) => desktop.desktopId)).toEqual(["desktop_1"]);
     expect(remote.catalogs.catalogs.map((entry) => entry.desktopId)).toEqual(["desktop_1"]);
     expect(remote.catalogs.machines).toEqual([]);
+  });
+
+  // The desktop's own "解除配对" ends the pairing on its side. A phone that kept
+  // the record showed "已断开 / 重试" against a pairing that could never come back;
+  // it drops the machine, says why, and leaves the rest alone.
+  test("a desktop that unpaired this phone is dropped, with its record and rows", async () => {
+    await mount();
+    await settle();
+    const office = clientFor("desktop_2");
+    jest.mocked(loadCredentials).mockImplementation(async (desktopId?: string) =>
+      desktopId === "desktop_2" ? credentialsFor("desktop_2") : null);
+    jest.mocked(loadPairedDesktops).mockResolvedValue([
+      { desktopId: "desktop_1", pairId: "pair-desktop_1", name: "Studio" },
+    ]);
+
+    act(() => { office.callbacks.onPresence?.({ ...onlinePresence("desktop_2"), unpaired: true } as never); });
+    await settle();
+
+    expect(office.close).toHaveBeenCalled();
+    expect(remote.desktops.map((desktop) => desktop.desktopId)).toEqual(["desktop_1"]);
+    expect(remote.catalogs.catalogs.map((entry) => entry.desktopId)).toEqual(["desktop_1"]);
+    // Nothing is asked of the platform: the desktop revoked this device itself.
+    expect(serverRevoke).not.toHaveBeenCalled();
+    expect(savePendingRevoke).not.toHaveBeenCalled();
+    // And the user is told, rather than watching a machine disappear.
+    const notice = currentAppAlert();
+    expect(notice).not.toBeNull();
+    expect(notice!.message).toContain("Office");
   });
 
   test("rebuilding one machine's runtime leaves the other machine's alone", async () => {

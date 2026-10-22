@@ -25,8 +25,9 @@
   "statusOffline": "离线",
   "statusAgentUnavailable": "本机服务不可用",
   "statusTakenOver": "已被接管",
-  "heldBy": "{{name}} 正在使用",
-  "heldByUnknown": "另一台设备正在使用",
+  "heldBy": "{{name}} 正在接管，如需接管请点击“接管”",
+  "heldByUnknown": "另一台设备正在接管，如需接管请点击“接管”",
+  "takeOverHint": "请先点击“接管”，再修改这台电脑的设置",
   "takeOver": "接管",
   "peersSummary": "已连接 {{connected}}/{{total}} 台",
   "peersSummaryHeld": "已连接 {{connected}}/{{total}} 台 · {{held}} 台已被接管",
@@ -242,5 +243,7 @@
   "deleteFailed": "部分会话删除失败：{{message}}",
   "renameWorkspaceTitle": "重命名“{{name}}”",
   "renameWorkspaceLabel": "工作区名称",
-  "renameWorkspaceHint": "名称只会改在拥有该目录的电脑上，不会移动任何文件，也不会影响其中的对话。"
+  "renameWorkspaceHint": "名称只会改在拥有该目录的电脑上，不会移动任何文件，也不会影响其中的对话。",
+  "statusPairingRevoked": "配对已失效",
+  "errorRevoked": "这台电脑与对方的配对已在对方解除，无法再连接。请在这里解除配对，然后重新添加这台电脑。"
 }

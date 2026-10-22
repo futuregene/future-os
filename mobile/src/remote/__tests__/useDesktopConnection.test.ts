@@ -239,6 +239,81 @@ describe("useDesktopConnection", () => {
       expect(result.current.credentials).toEqual(credentials);
     });
 
+    // The desktop's own "you were unpaired" notice is not a connection problem:
+    // the app is told to drop the machine instead of offering a retry.
+    test("the host's unpaired notice tells the app to drop this desktop", async () => {
+      options.onUnpaired = jest.fn();
+      await mountConnected();
+      act(() => client().callbacks.onPresence({ ...presence, unpaired: true }));
+      await flush();
+
+      expect(options.onUnpaired).toHaveBeenCalledTimes(1);
+      expect(result.current.phase).toBe("revoked");
+    });
+
+    // A credential the platform refused to renew is the same ending as the
+    // host's own notice: nothing here can be retried, so the app is told.
+    test("a revoked credential tells the app to drop this desktop too", async () => {
+      options.onUnpaired = jest.fn();
+      await mountConnected();
+      act(() => client().callbacks.onConnectionState("revoked"));
+      await flush();
+
+      expect(options.onUnpaired).toHaveBeenCalledTimes(1);
+    });
+
+    // The FSM reports `unpaired` as its initial state and on a shutdown; it is
+    // not a verdict about the pairing and must not remove anything.
+    test("the client's own unpaired state is not a verdict", async () => {
+      options.onUnpaired = jest.fn();
+      await mountConnected();
+      act(() => client().callbacks.onConnectionState("unpaired"));
+      await flush();
+
+      expect(options.onUnpaired).not.toHaveBeenCalled();
+    });
+
+    // A handshake that got no answer is also what a pairing revoked while the
+    // phone was in the background looks like. The platform is the only authority
+    // on which one it is.
+    test("a failed connection asks the platform whether the pairing still exists", async () => {
+      options.verifyPairing = jest.fn(async () => {
+        throw new RemoteApiError("revoked", "invalid_remote_credential", 401);
+      });
+      options.onUnpaired = jest.fn();
+      await mountConnected();
+      act(() => client().callbacks.onConnectionState("failed"));
+      await flush();
+
+      expect(options.verifyPairing).toHaveBeenCalledWith(credentials);
+      expect(options.onUnpaired).toHaveBeenCalledTimes(1);
+    });
+
+    test("a pairing that can still renew its credentials is left to the desktop", async () => {
+      options.verifyPairing = jest.fn(async () => credentials);
+      options.onUnpaired = jest.fn();
+      await mountConnected();
+      act(() => client().callbacks.onConnectionState("failed"));
+      await flush();
+
+      expect(options.verifyPairing).toHaveBeenCalledTimes(1);
+      expect(options.onUnpaired).not.toHaveBeenCalled();
+    });
+
+    // A check that fails for another reason (the platform is unreachable) says
+    // nothing about the pairing, and must not drop it.
+    test("a verification that failed for an unrelated reason keeps the pairing", async () => {
+      options.verifyPairing = jest.fn(async () => {
+        throw new Error("network unreachable");
+      });
+      options.onUnpaired = jest.fn();
+      await mountConnected();
+      act(() => client().callbacks.onConnectionState("failed"));
+      await flush();
+
+      expect(options.onUnpaired).not.toHaveBeenCalled();
+    });
+
     test("no stored credentials leaves the machine failed, not silently empty", async () => {
       cast<jest.Mock>(loadCredentials).mockResolvedValue(null);
       render();

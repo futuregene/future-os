@@ -237,6 +237,33 @@ describe("activity rail conversation search", () => {
     expect(list.textContent).not.toContain("Beta chat");
   });
 
+  it("draws one × while a query is typed, not a clear and a close side by side", async () => {
+    const p = props([thread("a", "Alpha chat")], []);
+    const { container } = await render(p);
+    act(() => container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!.click());
+    await flushAsync();
+    const input = container.querySelector<HTMLInputElement>("input[aria-label='Search conversations']")!;
+    await act(async () => {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+      descriptor?.set?.call(input, "Alpha");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await flushAsync();
+
+    // One button, and it is the one that answers the state: clear.
+    const dismiss = container.querySelectorAll("button[aria-label='Clear search'], button[aria-label='Close search']");
+    expect(dismiss).toHaveLength(1);
+    expect(dismiss[0]!.getAttribute("aria-label")).toBe("Clear search");
+
+    act(() => (dismiss[0] as HTMLButtonElement).click());
+    await flushAsync();
+    const close = container.querySelector<HTMLButtonElement>("button[aria-label='Close search']");
+    expect(close).not.toBeNull();
+    act(() => close!.click());
+    await flushAsync();
+    expect(container.querySelector("input[aria-label='Search conversations']")).toBeNull();
+  });
+
   it("empties the filter from the clear button, which only exists while there is a query", async () => {
     const p = props([thread("a", "Alpha chat"), thread("b", "Beta chat")], []);
     const { container } = await render(p);
