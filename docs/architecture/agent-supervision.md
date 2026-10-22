@@ -486,7 +486,7 @@ model endpoint so no real credential was spent on the verification.
 | 2 | headless owns the Agent, TUI attached → end headless | nobody took over within 40s; the TUI sat on `Connection to agent lost` | the TUI brings a new Agent up **within 1s** |
 | 3 | Lock held, default endpoint absent (Agent bound to TCP only) → start the TUI | the TUI **exited 1** with "Cannot start a local Agent" | the TUI **keeps waiting**, printing `waiting for the Agent another process is starting (30s of 180s)` plus the holder's pid/host |
 | 4 | Same, with another headless | exit 1 | the same wait through `supervise()` |
-| 5 | `resumeInterruptedOnStart=true`, an interrupted run and a model → start `future agent` | no continuation | `1 conversation(s) checked, 1 continued`; the stub received one request whose last user message is the continuation prompt; `interruptedRun` becomes null and `queryCount` goes 1→2 |
+| 5 | `resumeInterruptedOnStart=true`, an interrupted run and a model → start `future agent` | no continuation | `1 conversation(s) checked, 1 interrupted, 1 continued` (a healthy start with nothing interrupted prints nothing); the stub received one request whose last user message is the continuation prompt; `interruptedRun` becomes null and `queryCount` goes 1→2 |
 | 6 | The same but the switch is **off** (the default) | — | **zero** continuations; the session honestly stays `interrupted_by_restart` |
 | 7 | An interrupted session with no usable model | — | reported as `has no model configured; left interrupted`, never a fake success |
 | 8 | An interruption older than seven days | — | skipped (counted as checked, not continued) |

@@ -31,6 +31,7 @@ FutureOS 的多数持久用户状态存放在 `~/.future/` 下（Windows 为
 │   ├── skill_reco.json        # 当天技能推荐配额（当天已推荐过的技能与已评估的草稿）
 │   ├── debug.log              # 调试重绘日志（仅 PI_DEBUG_REDRAW=1）
 │   ├── write.log              # 原始屏幕写入日志（仅 PI_TUI_WRITE_LOG=1）
+│   ├── stderr.log             # TUI 占用终端期间进程内 Agent 的 stderr
 │   └── crash.log              # 崩溃时的 panic 回溯
 ├── app/                       # 桌面 GUI（FutureOS App）
 │   ├── app.db                 # SQLite 数据库（会话线程、run、审批等）

@@ -535,7 +535,12 @@ The TUI persists client-side settings to `~/.future/tui/settings.json`:
 `defaultModel`, `defaultThinkingLevel` and `defaultPermissionLevel` are applied
 to the agent when the TUI starts. Logs: `PI_DEBUG_REDRAW=1` writes debug redraw
 logging to `~/.future/tui/debug.log`; `PI_TUI_WRITE_LOG=1` logs raw screen writes
-to `~/.future/tui/write.log`.
+to `~/.future/tui/write.log`. While the alternate screen is up, the TUI also
+points stderr at `~/.future/tui/stderr.log`: `future tui` may host the Agent in
+its own process, and anything that process prints must not be written into the
+screen the TUI owns (a raw-mode line feed does not return to column 0, and the
+diff renderer cannot see writes it did not make). The real stderr comes back on
+exit, so crash reports and shutdown messages still reach the terminal.
 
 The keys in the table above are the defaults. `/keymap` opens an editor over
 every registered action: press a key on a highlighted row to rebind it, and the
