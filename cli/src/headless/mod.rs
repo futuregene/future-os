@@ -28,6 +28,13 @@ account up and starts serving the remote desktop without a restart. A different
 login, or a logout, while it is running closes remote access and asks for a
 restart. With --relay there is no account at all.
 
+Signed out, everything that needs the platform is refused together, while nothing
+local is: `future remote devices add` cannot mint an invitation (the platform
+issues those, so it asks you to run `future auth login` first), and the remote
+desktop switch can be turned on without effect. Sessions, runs, tasks and your
+own model providers keep working throughout — a refusal there is not a broken
+host.
+
 Pair a device with `future remote devices add` — from another terminal, while
 this entry is running: the invitation's link and QR code are printed in the
 terminal that asked, never here. Dropping one or choosing which one is in
@@ -242,6 +249,12 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     std::thread::spawn(future_host::store::reconcile_after_startup);
     ensure_agent_running(agent).await?;
     install_channel_runtime();
+    // A key the platform already refused is not offered again. It is the one
+    // credential this run knows to be dead, so adopting it would only repeat a
+    // rejection; a *different* key is a new login. Filled in below and never
+    // afterwards: a rejection that arrives as a remote phase while an account is
+    // pinned still stops the run, exactly as it always did.
+    let mut refused: Option<String> = None;
     let mut account = if let Some(url) = relay.as_deref() {
         eprintln!(
             "Self-hosted relay ({url}). No Future account is used for phone pairing; \
@@ -249,13 +262,32 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
         );
         None
     } else {
+        // Exactly the check this entry made before it served a signed-in machine:
+        // a key the platform still accepts is reused silently, a key it refuses is
+        // named as such, and a transport failure is not a logout. Only the step
+        // that used to follow a refusal — this entry's own device-code login — is
+        // gone: signing in is `future auth login`'s job now, and this run waits for
+        // it (see [`account_action`]) instead of replacing itself with a login
+        // prompt.
         match future_login::future_api_key() {
-            Ok(key) => {
-                let account = Account::pin(key);
-                eprintln!("Platform account signed in ({}).", account.platform);
-                refresh_catalogue().await;
-                Some(account)
-            }
+            Ok(key) => match future_login::fetch_profile().await {
+                Ok(_) => {
+                    let account = Account::pin(key);
+                    eprintln!("Platform account signed in ({}).", account.platform);
+                    refresh_catalogue().await;
+                    Some(account)
+                }
+                Err(AppError::Remote {
+                    status: 401 | 403, ..
+                }) => {
+                    eprintln!("Platform authorization is no longer valid. Please sign in again.");
+                    refused = Some(key);
+                    None
+                }
+                // Unchanged: a network failure while verifying is not a logout and
+                // is not silently downgraded to "signed out" either.
+                Err(error) => return Err(error),
+            },
             Err(_) => {
                 eprintln!(
                     "Not signed in to FutureOS: serving local runs, tasks and the Agent. The \
@@ -267,10 +299,6 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
             }
         }
     };
-    // A key the platform already refused is not offered again; it is kept out of
-    // the adoption check below so a rejected account cannot become a per-second
-    // retry loop. Only a *different* key is a new login.
-    let mut rejected: Option<String> = None;
     // The window's fixed-interval maintenance (app updates and the balance
     // event need a WebView; see `scheduler::start_headless`).
     future_host::scheduler::start_headless();
@@ -354,7 +382,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
                 account.as_ref(),
                 stored.as_deref(),
                 &platform,
-                rejected.as_deref(),
+                refused.as_deref(),
             ) {
                 AccountAction::Keep => {}
                 AccountAction::Close => return Err(
@@ -397,38 +425,36 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
         // What this run has to serve the remote desktop with: an account, or a
         // relay that supplies its own. Nothing else can authorize a device.
         let serving = relay.is_some() || account.is_some();
-        // The platform refusing *this machine's account* is not a fault of the
-        // entry point: the run keeps working locally and the next
-        // `future auth login` is adopted. Drop the pin so that login is seen as
-        // new, and never rewrite the stored key on the account's behalf.
-        if status.phase == remote::RemotePhase::Failed
-            && status.reason == Some(remote::RemoteFailureReason::AccountAuthorization)
-        {
-            if let Some(adopted) = account.take() {
-                rejected = Some(adopted.key);
-                said_signed_out = false;
-                eprintln!(
-                    "The platform did not authorize this machine's FutureOS account, so the \
-                     remote desktop stays closed. Everything local keeps working; sign in again \
-                     with `future auth login` and this entry enables it without a restart."
-                );
-            } else if !said_signed_out {
-                // Reached when the switch was turned on from another terminal
-                // (`future remote enable`) with no account to serve it.
-                said_signed_out = true;
-                eprintln!(
-                    "The remote desktop needs a FutureOS account: sign in with `future auth \
-                     login` (from another terminal) and this entry starts serving it without a \
-                     restart. Everything local keeps working meanwhile."
-                );
+        // The three terminal-looking phases are not one state, and collapsing
+        // them would hide the difference the operator has to act on:
+        //
+        // * `Failed(AccountAuthorization)` **without** an account is this run's
+        //   ordinary signed-out state (the remote desktop was switched on by
+        //   `future remote enable` while nothing could serve it). It is not a
+        //   fault: say it once and keep serving locally until a login appears.
+        // * The very same phase **with** an account pinned means the platform
+        //   refused this machine's credential. That is a fault, and a signed-in
+        //   run stops on it exactly as it always has.
+        // * `Revoked` and every other `Failed` need a person either way, and they
+        //   stop the run with the reason named — unchanged.
+        match phase_action(serving, status.phase, status.reason) {
+            PhaseAction::Keep => {}
+            PhaseAction::NeedsAccount => {
+                if !said_signed_out {
+                    said_signed_out = true;
+                    eprintln!(
+                        "The remote desktop needs a FutureOS account: sign in with `future auth \
+                         login` (from another terminal) and this entry starts serving it without a \
+                         restart. Everything local keeps working meanwhile."
+                    );
+                }
+            }
+            PhaseAction::Stop => {
+                return Err(format!("Remote connection stopped ({:?}). Check platform login/network, then restart; use `future remote devices` to pair or drop a device.", status.reason).into());
             }
         }
-        if matches!(
-            status.phase,
-            remote::RemotePhase::Failed | remote::RemotePhase::Revoked
-        ) && serving
-        {
-            return Err(format!("Remote connection stopped ({:?}). Check platform login/network, then restart; use `future remote devices` to pair or drop a device.", status.reason).into());
+        if serving {
+            said_signed_out = false;
         }
         // A stop is only a fault while the switch says on. Turning the switch off
         // is the user's decision: a server told to stop serving stays up and keeps
@@ -585,6 +611,50 @@ async fn refresh_catalogue() {
         eprintln!(
             "Model catalog refresh failed; existing configured models remain available: {error}"
         );
+    }
+}
+
+/// What one supervision iteration must do about the remote phase it just read.
+#[derive(Debug, PartialEq, Eq)]
+enum PhaseAction {
+    /// Not terminal for this run: serving, connecting, reconnecting, idle.
+    Keep,
+    /// Signed out and the remote desktop has nothing to serve it with. Say so
+    /// once and keep running locally; a login can still arrive.
+    NeedsAccount,
+    /// Stop the run, naming the phase's reason.
+    Stop,
+}
+
+/// Decide what a remote phase means for this run.
+///
+/// `serving` is whether this run has anything to authorize a device with — a
+/// pinned Future account, or a relay that supplies its own. It is the *only*
+/// thing that changes the answer, and it must: `Failed(AccountAuthorization)`
+/// on a signed-out run is "nothing to serve with yet", while the same phase on a
+/// signed-in run is the platform refusing this machine's credential. `Revoked`
+/// and every other `Failed` stop the run either way.
+fn phase_action(
+    serving: bool,
+    phase: remote::RemotePhase,
+    reason: Option<remote::RemoteFailureReason>,
+) -> PhaseAction {
+    use remote::{RemoteFailureReason, RemotePhase};
+    match phase {
+        RemotePhase::Failed
+            if !serving && reason == Some(RemoteFailureReason::AccountAuthorization) =>
+        {
+            PhaseAction::NeedsAccount
+        }
+        RemotePhase::Failed | RemotePhase::Revoked => PhaseAction::Stop,
+        // `Stopped` is not terminal here: the switch can turn it back on from
+        // another terminal, and the loop reports the idle state itself.
+        RemotePhase::Stopped
+        | RemotePhase::Enabled
+        | RemotePhase::Connecting
+        | RemotePhase::Ready
+        | RemotePhase::Reconnecting
+        | RemotePhase::Refreshing => PhaseAction::Keep,
     }
 }
 
@@ -1180,6 +1250,104 @@ mod tests {
                 None
             ),
             AccountAction::Close
+        );
+    }
+
+    /// The signed-out state that has an account to say nothing about is still
+    /// *serving*: every non-terminal phase must leave the run alone, or a local
+    /// host would exit on its own once a second.
+    #[test]
+    fn ordinary_phases_never_stop_a_run() {
+        use remote::RemotePhase;
+        for serving in [true, false] {
+            for phase in [
+                RemotePhase::Stopped,
+                RemotePhase::Enabled,
+                RemotePhase::Connecting,
+                RemotePhase::Ready,
+                RemotePhase::Reconnecting,
+                RemotePhase::Refreshing,
+            ] {
+                assert_eq!(
+                    phase_action(serving, phase, None),
+                    PhaseAction::Keep,
+                    "{phase:?} with serving={serving} must not stop the run"
+                );
+            }
+        }
+    }
+
+    /// The one phase whose meaning depends on whether this run has anything to
+    /// serve with. Signed out it is "nothing to serve with yet" and the run keeps
+    /// working locally; signed in it is the platform refusing this machine's
+    /// credential, which stops the run exactly as it always has.
+    #[test]
+    fn account_authorization_is_fatal_only_when_an_account_is_serving() {
+        use remote::{RemoteFailureReason, RemotePhase};
+        assert_eq!(
+            phase_action(
+                false,
+                RemotePhase::Failed,
+                Some(RemoteFailureReason::AccountAuthorization)
+            ),
+            PhaseAction::NeedsAccount
+        );
+        assert_eq!(
+            phase_action(
+                true,
+                RemotePhase::Failed,
+                Some(RemoteFailureReason::AccountAuthorization)
+            ),
+            PhaseAction::Stop
+        );
+    }
+
+    /// `Revoked` and the remaining failures need a person either way: neither the
+    /// signed-out tolerance nor a relay may swallow them, so they are not folded
+    /// into "not signed in".
+    #[test]
+    fn revocation_and_other_failures_still_stop_the_run() {
+        use remote::{RemoteFailureReason, RemotePhase};
+        for serving in [true, false] {
+            assert_eq!(
+                phase_action(
+                    serving,
+                    RemotePhase::Revoked,
+                    Some(RemoteFailureReason::CredentialRevoked)
+                ),
+                PhaseAction::Stop
+            );
+            for reason in [
+                RemoteFailureReason::Network,
+                RemoteFailureReason::RemoteServer,
+                RemoteFailureReason::CredentialExpired,
+                RemoteFailureReason::ServiceAuthorization,
+                RemoteFailureReason::Protocol,
+                RemoteFailureReason::GenerationUnhealthy,
+                RemoteFailureReason::Local,
+                RemoteFailureReason::SystemSleep,
+            ] {
+                assert_eq!(
+                    phase_action(serving, RemotePhase::Failed, Some(reason)),
+                    PhaseAction::Stop,
+                    "{reason:?} with serving={serving} must still stop the run"
+                );
+            }
+        }
+    }
+
+    /// A `Failed` without an account-authorization reason is not the signed-out
+    /// state, whatever `serving` says: only that exact pair is tolerated.
+    #[test]
+    fn a_failure_without_an_account_reason_is_not_tolerated() {
+        use remote::{RemoteFailureReason, RemotePhase};
+        assert_eq!(
+            phase_action(false, RemotePhase::Failed, None),
+            PhaseAction::Stop
+        );
+        assert_eq!(
+            phase_action(false, RemotePhase::Failed, Some(RemoteFailureReason::Local)),
+            PhaseAction::Stop
         );
     }
 
