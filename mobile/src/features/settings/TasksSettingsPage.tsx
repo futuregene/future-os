@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/Button";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { DesktopSettings, RemoteModel } from "../../remote/types";
-import { modelReference, modelThinkingLevels } from "../../remote/types";
+import { modelReference, modelThinkingLevels, resolveModelThinkingLevel } from "../../remote/types";
 import type { RemoteTaskDetail, RemoteTaskRow, RemoteTaskRun } from "../../remote/taskTypes";
 import { layout, radius, spacing } from "../../theme/tokens";
 import { createThemedStyles } from "../../theme/ThemeContext";
@@ -572,6 +572,21 @@ function TaskForm({
     enabledModels.find(model => modelKey(model) === draft.modelId),
     THINKING_LEVELS,
   );
+  /**
+   * The level this form shows and saves.
+   *
+   * A task written when the model offered `medium`, against a model whose
+   * `models.json` list has since dropped it, would otherwise show no selected
+   * chip while its save wrote a level the run replaces. An *empty* level stays
+   * empty: that is "not chosen yet", which the form asks for rather than filling
+   * in. Derived rather than written back, so opening the form does not edit the
+   * stored task behind the user's back.
+   */
+  const resolvedLevel = resolveModelThinkingLevel(
+    draft.thinkingLevel || null,
+    enabledModels.find(model => modelKey(model) === draft.modelId),
+  );
+  const thinkingLevel = draft.thinkingLevel ? (resolvedLevel ?? draft.thinkingLevel) : "";
   const patch = (values: Partial<Draft>) => setDraft(current => ({ ...current, ...values }));
   const patchTrigger = (values: Partial<DraftTrigger>) =>
     setDraft(current => ({ ...current, trigger: { ...current.trigger, ...values } }));
@@ -584,11 +599,11 @@ function TaskForm({
     // Requiring both would make either mode silently do nothing.
     if (problem) return;
     if (kind === "create") {
-      onCreate?.(draft);
+      onCreate?.({ ...draft, thinkingLevel });
       return;
     }
     const saved = await onMutate?.(async () => {
-      await remote.updateTask(detail!.id, draftPayload(draft));
+      await remote.updateTask(detail!.id, draftPayload({ ...draft, thinkingLevel }));
     });
     // A save that did not land keeps the form open: the draft is its own retry.
     if (saved) onCloseSettings?.();
@@ -802,7 +817,7 @@ function TaskForm({
                       key={level}
                       label={t(`tasks.thinkingLabels.${level}`)}
                       onPress={() => patch({ thinkingLevel: level })}
-                      selected={draft.thinkingLevel === level}
+                      selected={thinkingLevel === level}
                     />
                   ))}
                 </View>
