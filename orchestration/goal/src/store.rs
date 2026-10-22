@@ -24,16 +24,6 @@ const REGISTRY_FILE: &str = "registry.json";
 const EVENTS_FILE: &str = "events.jsonl";
 const RUNS_FILE: &str = "runs.jsonl";
 const NEXT_ACTION_FILE: &str = "next_action.txt";
-/// When `next_action.txt` was written, as Unix seconds in the file's *content*.
-///
-/// Beside the projection rather than in it, because that file is read back
-/// verbatim as the next-action text. It exists because the projection's
-/// modification time is the file system's stamp, and a `next_action.txt` on a
-/// share whose clock disagrees with this machine would otherwise date active
-/// state by a clock the ledger never used (see `runtime::stale_latest_run`). The
-/// content is written by the same process, from the same clock, as the ledger's
-/// run records.
-pub(crate) const NEXT_ACTION_STAMP_FILE: &str = "next_action.stamp";
 const BACKUPS_DIR: &str = "backups";
 const SCHEMA_FILE: &str = "schema.json";
 /// Per-goal ledger read diagnostics (O1): written when the read path skips
@@ -1247,15 +1237,6 @@ impl Store {
     pub fn set_next_action(&self, goal_id: &str, next_action: &str) -> Result<()> {
         let dir = self.ensure_goal_dir(goal_id)?;
         fs::write(dir.join(NEXT_ACTION_FILE), next_action).context("write next_action")?;
-        // The projection's own clock, so nothing downstream has to read a file
-        // system's modification time to know when active state last moved.
-        // Written second: a crash between the two leaves a stamp older than the
-        // text, which can only under-report a touch, never invent one.
-        fs::write(
-            dir.join(NEXT_ACTION_STAMP_FILE),
-            crate::state::now_epoch().to_string(),
-        )
-        .context("write next_action stamp")?;
         Ok(())
     }
 
@@ -1283,13 +1264,7 @@ impl Store {
         let ts = crate::state::now_epoch();
         let dest = self.root.join(BACKUPS_DIR).join(format!("{ts}-{goal_id}"));
         fs::create_dir_all(&dest)?;
-        for file in [
-            EVENTS_FILE,
-            RUNS_FILE,
-            NEXT_ACTION_FILE,
-            NEXT_ACTION_STAMP_FILE,
-            SCHEMA_FILE,
-        ] {
+        for file in [EVENTS_FILE, RUNS_FILE, NEXT_ACTION_FILE, SCHEMA_FILE] {
             let src = dir.join(file);
             if src.exists() {
                 fs::copy(&src, dest.join(file))?;
@@ -1316,22 +1291,10 @@ impl Store {
             bail!("backup at {backup_dir} has no events.jsonl");
         }
         let dest = self.ensure_goal_dir(goal_id)?;
-        for file in [
-            EVENTS_FILE,
-            RUNS_FILE,
-            NEXT_ACTION_FILE,
-            NEXT_ACTION_STAMP_FILE,
-            SCHEMA_FILE,
-        ] {
+        for file in [EVENTS_FILE, RUNS_FILE, NEXT_ACTION_FILE, SCHEMA_FILE] {
             let s = src.join(file);
             if s.exists() {
                 fs::copy(&s, dest.join(file))?;
-            } else if file == NEXT_ACTION_STAMP_FILE {
-                // A backup taken before the stamp existed: the current goal's
-                // stamp belongs to text this restore is about to replace, so it
-                // is dropped rather than left to date the restored projection.
-                // The reader then falls back to the file system's own stamp.
-                let _ = fs::remove_file(dest.join(file));
             }
         }
         copy_dir_if_present(&src.join("scheduler-state"), &dest.join("scheduler-state"))?;
