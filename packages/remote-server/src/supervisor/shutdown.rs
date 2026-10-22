@@ -441,6 +441,9 @@ impl Supervisor {
             self.publish_standby(&previous);
         }
         self.publish_control(pair_id, "active");
+        // The windowed desktop raises its main window so the person taking
+        // control sees the machine they now own; a headless host no-ops.
+        self.host.on_control_claimed();
         Ok(self.status())
     }
 }

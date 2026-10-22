@@ -2065,7 +2065,7 @@ mod bridge_tests {
         // The phone renders this snapshot, so a writable field missing from the
         // reply reads as absent and snaps its toggle back to the default — the
         // recommendation switch could not be turned off that way.
-        assert_eq!(defaults["data"]["skillRecommend"], true);
+        assert_eq!(defaults["data"]["skillRecommend"], false);
         assert!(defaults["data"].get("communityEdition").is_none());
 
         // Deliberately every writable field: `assert_eq!(updated["data"], patch)`

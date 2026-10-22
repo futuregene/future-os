@@ -41,8 +41,8 @@ export interface AppSettings {
   communityEdition: boolean;
   /**
    * Recommend at most one uninstalled skill when a message is sent (PRD v1.6
-   * §3, any turn — not just a conversation's first). **On by default**; the
-   * Settings toggle opts out.
+   * §3, any turn — not just a conversation's first). **Off by default**; the
+   * Settings toggle opts in.
    */
   skillRecommend: boolean;
   /**
@@ -66,7 +66,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   autoTitleFirstTurn: true,
   titleLanguage: "en",
   communityEdition: false,
-  skillRecommend: true,
+  skillRecommend: false,
   autoResumeInterrupted: true,
 };
 
