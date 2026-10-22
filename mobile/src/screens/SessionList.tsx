@@ -258,8 +258,13 @@ export function SessionList({
    */
   const [recentLimit, setRecentLimit] = useState(RECENT_PAGE_SIZE);
   const recent = useMemo(
-    () => (tab === "recent" ? recentRows(recentSource, query, recentLimit) : null),
-    [tab, recentSource, query, recentLimit],
+    () => (tab === "recent"
+      // The fold set and the active desktop are the other pages': one
+      // conversation opens and closes the same on all three, instead of a fold
+      // that depends on which page the reader happens to be on.
+      ? recentRows(recentSource, query, recentLimit, expanded, activeDesktopId)
+      : null),
+    [tab, recentSource, query, recentLimit, expanded, activeDesktopId],
   );
   const rows = useMemo(() => {
     // `recent` is this page's own rows, computed above under the same conditions

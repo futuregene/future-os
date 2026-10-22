@@ -859,6 +859,49 @@ function confirmAlert(): void {
   act(() => modal.props.onDismiss());
 }
 
+test("the recency page keeps a child session inside its conversation", () => {
+  // The page's own reason for existing is "what did I last touch", and a
+  // `/future-goal` worker is not one of those: it is the work of a conversation
+  // that is. So it is not a row of either stretch — it is inside its parent's
+  // fold, which is the same `+`/`−` the other two pages draw.
+  const render = () => act(() => tree.update(createElement(SessionList, {
+    tab: "recent",
+    empty: null,
+    onMenu,
+    onTabChange,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+  })));
+  expect(mockRemote.sessions.map(session => session.sessionId)).toEqual(expect.arrayContaining(["s1", "child"]));
+  render();
+  // `s1` has a child in the fixture. The child is a session like any other to a
+  // page that ranks every one of them; here it is inside its conversation, which
+  // is why it is drawn only once that row is opened.
+  expect(recentPage()).toEqual(["#sessions.earlierSection", "s1", "s2"]);
+  expect(sessionBody("Child")).toBeUndefined();
+
+  act(() => button("sessions.expandChildren").props.onPress());
+  // Under its conversation, one level in, still inside the same stretch.
+  expect(recentPage()).toEqual(["#sessions.earlierSection", "s1", "child", "s2"]);
+  expect(rowInset("Child")).toBeGreaterThan(rowInset("First"));
+  // The caption counts conversations, not the session it just revealed.
+  const caption = tree.root.findAll(
+    node => node.props.accessibilityRole === "header" && typeof node.type === "string",
+  ).map(node => node.findAllByType(Text).map(text => text.props.children));
+  expect(caption).toEqual([["sessions.earlierSection", 2]]);
+
+  act(() => button("sessions.collapseChildren").props.onPress());
+  expect(sessionBody("Child")).toBeUndefined();
+  act(() => tree.update(createElement(SessionList, {
+    tab: "chat",
+    empty: null,
+    onMenu,
+    onTabChange,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+  })));
+});
+
 test.each(["workspace", "chat"] as const)("%s parents fold with +/−, not the workspace header chevron", (tab) => {
   // A 44px touch target keeps the row toggle and the workspace header's fold
   // control in the same column, so the glyph is the only thing separating them.
