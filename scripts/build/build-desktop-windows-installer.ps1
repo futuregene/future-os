@@ -142,7 +142,14 @@ if (-not $SkipDeps) {
     Push-Location desktop; try { Invoke-Native { npm ci } } finally { Pop-Location }
 }
 
-Invoke-Native { node scripts/version.mjs --set-bundle }
+# `--set-bundle` rewrites the tracked desktop/src-tauri/tauri.conf.json, which is
+# deliberately pinned at 0.0.0 (the real version is injected via FUTURE_VERSION).
+# Snapshot it before the rewrite and put it back in the `finally` below, so even
+# a failed build leaves the checkout clean: a modified tracked file here blocks
+# every merge other sessions run in the same worktree.
+$tauriConf = Join-Path $Root 'desktop\src-tauri\tauri.conf.json'
+$tauriConfSnapshot = [System.IO.File]::ReadAllBytes($tauriConf)
+$versionScript = Join-Path $Root 'scripts\version.mjs'
 
 Write-Host "==> Building desktop installers (Tauri)" -ForegroundColor Cyan
 $overlay = $null
@@ -164,6 +171,7 @@ if ($Sign) {
 
 Push-Location desktop
 try {
+    Invoke-Native { node $versionScript --set-bundle }
     Invoke-Native { npm run tauri:build -- --no-bundle @tauriArgs }
     # The joint build stages the CLI. Sign that copy before the bundler
     # embeds it as-is into the installer.
@@ -178,6 +186,8 @@ try {
 }
 finally {
     Pop-Location
+    # Byte-exact restore: no encoding or line-ending guessing on the way back.
+    [System.IO.File]::WriteAllBytes($tauriConf, $tauriConfSnapshot)
     if ($overlay -and (Test-Path $overlay)) { Remove-Item -Force $overlay }
 }
 
