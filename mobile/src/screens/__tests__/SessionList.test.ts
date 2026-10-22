@@ -1780,7 +1780,7 @@ function renderMerged(
     session: RemoteSession;
   }[],
   activeDesktopId = "desk-a",
-  tab: "workspace" | "chat" = "workspace",
+  tab: "workspace" | "chat" | "recent" = "workspace",
 ): void {
   act(() => tree.update(createElement(SessionList, {
     tab,
@@ -1918,6 +1918,38 @@ test("a conversation with no heading above it keeps its machine's glyph", () => 
   expect(rowGlyphs("Pinned elsewhere", "desk-b")).toBe(1);
   // Under the heading: it does not.
   expect(rowGlyphs("Remote plan", "desk-b")).toBe(0);
+});
+
+/**
+ * The recency row's under-line opens with the machine.
+ *
+ * "Where it lives" is the quieter fact on that page, so it reads as one line
+ * under the title — and the machine comes first on that line, at the row's own
+ * left edge, so the glyph starts in the column the title above it starts in
+ * instead of trailing whatever the workspace happens to be called. The margin
+ * the glyph carried as a follower would read as an indent there; it sits on the
+ * far side instead, keeping the pair's spacing.
+ */
+test("the recency row puts the machine before the workspace name", () => {
+  renderMerged(
+    [mergedRow("desk-a", "a1", "Local plan"), mergedRow("desk-b", "b1", "Remote plan")],
+    "desk-a",
+    "recent",
+  );
+
+  const glyph = sessionBody("Remote plan").findAllByType(Text)
+    .find(child => child.props.accessibilityLabel === "desk-b");
+  expect(glyph).toBeTruthy();
+
+  // One line of two texts, in that order: the glyph, then the name it belongs to.
+  const texts = glyph!.parent!.findAllByType(Text)
+    .map(child => child.props.accessibilityLabel ?? child.props.children);
+  expect(texts).toEqual(["desk-b", "Project"]);
+
+  // Flush with the row's left edge (no indent against the title's column), with
+  // the spacing it needs on the far side of the glyph.
+  expect(StyleSheet.flatten(glyph!.props.style)).toMatchObject({ marginLeft: 0 });
+  expect(StyleSheet.flatten(glyph!.props.style).marginRight).toBeGreaterThan(0);
 });
 
 /**
