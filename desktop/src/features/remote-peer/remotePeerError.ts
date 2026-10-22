@@ -19,6 +19,7 @@ export type RemotePeerErrorKind
   = | "unreachable"
     | "timeout"
     | "pairing"
+    | "pairingInUse"
     | "secureChannel"
     | "signedOut"
     | "refused";
@@ -27,6 +28,7 @@ const ERROR_KEYS: Record<RemotePeerErrorKind, string> = {
   unreachable: "errorUnreachable",
   timeout: "errorTimeout",
   pairing: "errorPairing",
+  pairingInUse: "errorPairingInUse",
   secureChannel: "errorSecureChannel",
   signedOut: "errorSignedOut",
   refused: "errorRefused",
@@ -62,6 +64,12 @@ export function remotePeerErrorKind(message: string): RemotePeerErrorKind | null
   const refusal = /remote_secure_channel_invalid\s*\(([^)]*)\)/i.exec(text);
   if (refusal) {
     const detail = refusal[1]!.toLowerCase();
+    // A code another device already claimed is not an expired one: one invitation
+    // pairs one device, and the remedy is a *separate* link, not regenerating the
+    // same one. Both used to land on "pairing expired", which is the sentence this
+    // report was filed against.
+    if (detail === "invitation_already_used")
+      return "pairingInUse";
     if (/invitation_|peer_mismatch|peer_unknown|identity|^peer$/.test(detail))
       return "pairing";
     if (detail === "disabled")
@@ -70,7 +78,9 @@ export function remotePeerErrorKind(message: string): RemotePeerErrorKind | null
       return "timeout";
     return "secureChannel";
   }
-  if (/pairing_link_|pairing_code|invalid_pairing|invalid_jwt|invitation_expired|invitation_already_used|pairing_signature_invalid|pairing_identity_mismatch|pairing_challenge_expired|challenge_expired|peer_mismatch|peer_not_paired/i.test(text))
+  if (/invitation_already_used/i.test(text))
+    return "pairingInUse";
+  if (/pairing_link_|pairing_code|invalid_pairing|invalid_jwt|invitation_expired|pairing_signature_invalid|pairing_identity_mismatch|pairing_challenge_expired|challenge_expired|peer_mismatch|peer_not_paired/i.test(text))
     return "pairing";
   // The two builds never completed the encrypted handshake. That is a version
   // mismatch (or a corrupted pairing), not a network fault: retrying changes

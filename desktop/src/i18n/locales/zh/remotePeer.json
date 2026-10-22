@@ -8,6 +8,7 @@
   "errorUnreachable": "暂时连不上那台电脑。请确认它已开机并打开 FutureOS，且已开启「远程桌面」。",
   "errorTimeout": "那台电脑没有及时回应，请稍后重试。如果一直这样，请检查两边的网络连接。",
   "errorPairing": "配对已失效，请在那台电脑上重新生成配对链接，再添加一次。",
+  "errorPairingInUse": "这张配对码已经被另一台设备用掉了。一张码只能配一台设备，请在那台电脑上为这台电脑单独生成一张新的配对链接。",
   "errorSecureChannel": "两端没能建立加密连接。请把两台电脑上的 FutureOS 更新到同一版本后重试。",
   "errorSignedOut": "本机还没有登录 FutureOS，请先登录再连接。",
   "errorRefused": "那台电脑拒绝了本机的访问，请重新配对后再试。",

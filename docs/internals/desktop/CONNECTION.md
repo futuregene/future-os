@@ -321,6 +321,14 @@ kills, crashes, or tool subprocess termination all complete.
 - The current database marks active the moment the phone claims, while the
   Desktop only persists the pairing when the handshake confirms; the two phases
   differ and must not share one "connected" description.
+- An invitation that nobody has claimed lives **only in the running bridge** — it
+  is not a device yet, so it is not in the pairing book. Everything that rebuilds
+  a slot therefore has to carry it: a generation rebuild (`restart_slot`) or a
+  re-run of a start (`establish_slots`) that consulted the book alone would bring
+  back the identity of the previous pairing on the same `pair_id`, and the code on
+  screen would pair nothing (`invitation_already_used`, since the old identity has
+  already pinned a peer). Recovery carries the pending invitation, its expiry and
+  its identity; once it expires it is dropped rather than served.
 
 | Platform endpoint | Responsibility |
 | --- | --- |
@@ -1569,10 +1577,13 @@ Support codes are used uniformly for logs and user-understandable error hints;
 | Service authorization failure (`service_authorization`) | `AU001` |
 | Credential expired or connection auth anomaly (`credential_expired`, `credential_connect`) | `AU002` |
 | Pairing or credential revoked (`revoked`, `credential_revoked`) | `PA001` |
-| Pairing code invalid or expired, or the handshake was refused (the bridge serves a different identity than the code it displays) | `PA002` |
+| Pairing code invalid or expired, or the handshake was refused (the bridge serves a different identity than the code it displays). A code another device already claimed is not this case: one invitation pairs one device, and the UI asks for a separate link instead of a new code for the same device | `PA002` |
 | Pairing claim address untrusted (the phone picks the trusted production/test platform from the QR code; the environment is not limited by the APK version) | `PA003` |
 | Pairing interface used an insecure transport | `PA004` |
 | Desktop identity verification failed (the two builds cannot complete the handshake) | `PA005` |
+| The pasted text is not a `futureos://remote/pair` link at all (usually a truncated copy) | `PA006` |
+| A well-formed link from an older shape (`v` other than 2 or 3) | `PA007` |
+| A required field is missing or malformed (again usually a truncated copy) | `PA008` |
 | Unknown pairing fault | `PA999` |
 | Protocol error (`protocol`) | `PT001` |
 | Connection recovery budget exhausted (`generation_unhealthy`) | `RT001` |

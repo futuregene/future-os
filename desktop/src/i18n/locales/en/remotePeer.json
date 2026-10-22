@@ -8,6 +8,7 @@
   "errorUnreachable": "Couldn't reach that desktop. Make sure it's on and FutureOS is open, with Remote desktop enabled there.",
   "errorTimeout": "That desktop didn't answer in time. Try again in a moment — if it keeps happening, check both computers' network.",
   "errorPairing": "That pairing has expired. Generate a new pairing link on the other computer and add it again.",
+  "errorPairingInUse": "Another device already used that pairing code. One code pairs one device — generate a separate link on the other computer for this one.",
   "errorSecureChannel": "The two computers couldn't set up a secure connection. Update FutureOS on both to the same version, then try again.",
   "errorSignedOut": "This computer isn't signed in to FutureOS. Sign in, then connect again.",
   "errorRefused": "That desktop refused this computer's access. Pair them again to restore the connection.",
