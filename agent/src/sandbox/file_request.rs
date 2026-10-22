@@ -351,7 +351,10 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn child_of_an_opaque_directory_is_rejected_before_approval() {
-        let (_dir, sandbox, _secret) = fixture();
+        let (_dir, mut sandbox, _secret) = fixture();
+        // This rejection comes from Linux read masks, so the receipt must
+        // describe a Linux backend with read protection rather than Seatbelt.
+        sandbox.set_linux_backend_available_for_test();
         let home = sandbox.workspace.parent().unwrap().join("home");
         let key = home.join(".ssh/key");
         std::fs::write(&key, "secret").unwrap();
