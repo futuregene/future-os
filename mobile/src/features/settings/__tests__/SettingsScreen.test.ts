@@ -173,6 +173,46 @@ test("a refused takeover is reported beside the button, not swallowed", async ()
   expect(strings()).toContain("connection.takeControlFailed");
 });
 
+// The stack behind the device page was the last way in: every row on it opened a
+// page whose reads that desktop refuses while another device drives it, and the
+// approval radios were not even disabled — a tap wrote into a refusal. None of
+// that is offered now: the banner is what the page keeps, and it carries the one
+// action that changes the state.
+test("a taken-over desktop offers no way into its settings", async () => {
+  mockRemote.presence = { control: "standby", holder: { name: "Studio laptop" } };
+  await mountDevice("other-desktop");
+
+  const labels = tree.root.findAllByType(SettingsLink).map(node => node.props.label);
+  for (const page of ["preferences", "models", "providers", "skills", "tasks"])
+    expect(labels).not.toContain(`desktopSettings.${page}`);
+
+  // The machine's name is this phone's own record of it, not the machine's, so
+  // renaming keeps working while somebody else has the desktop.
+  await act(async () => nameField().props.onChangeText("Renamed"));
+  await act(async () => nameField().props.onSubmitEditing());
+  expect(mockRemote.renameDesktop).toHaveBeenCalledWith("other-desktop", "Renamed");
+
+  await act(async () => button("connection.takeControl").props.onPress());
+  expect(mockRemote.takeControl).toHaveBeenCalledTimes(1);
+});
+
+// Control can move while a level is open — another device takes the machine
+// mid-edit. Its data is the last thing that read returned and every write from
+// it would be refused, so the level gives way to the banner and comes back with
+// the machine.
+test("a settings page gives way to the banner when the machine is taken over", async () => {
+  await mountDevice("other-desktop");
+  await act(async () => link("desktopSettings.preferences").props.onPress());
+  expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.manual" }).length).toBeGreaterThan(0);
+
+  mockRemote.presence = { control: "standby", holder: { name: "Studio laptop" } };
+  await act(async () => { tree.update(createElement(SettingsScreen, { ...props, deviceId: "other-desktop" })); });
+  await flush();
+
+  expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.manual" })).toHaveLength(0);
+  expect(strings()).toContain("connection.standbyPageHint");
+});
+
 test("the device page configures the desktop, and keeps the phone's own rows out", async () => {
   expect(tree.root.findAllByType(ScrollView).length).toBeGreaterThan(0);
   const keys = () => tree.root.findAllByType(Text).map(node => node.props.children);
