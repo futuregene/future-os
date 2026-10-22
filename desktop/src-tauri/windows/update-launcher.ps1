@@ -110,7 +110,9 @@ try {
         } catch { $restored = $false }
     }
     $outcome = $(if (-not $installationStarted) { 'not-installed' } elseif ($restored) { 'failed-restored' } else { 'repair-required' })
-    try { Write-Result 'finished' $outcome $failure $restored } catch { Write-Diagnostic "Cannot persist update failure: $($_.Exception.Message)"; $restored = $false }
+    # A parent that never exited is still serving; do not offer a second launch.
+    $restartSafe = $restored -and $parentExited
+    try { Write-Result 'finished' $outcome $failure $restartSafe } catch { Write-Diagnostic "Cannot persist update failure: $($_.Exception.Message)"; $restored = $false }
     if (-not $restored) { Write-Diagnostic 'Original executable hashes were not restored; automatic recovery is disabled.' }
     if ($restored -and $parentExited -and [IO.File]::Exists($Desktop) -and
         -not [IO.File]::Exists((Join-Path ([IO.Path]::GetDirectoryName($Desktop)) 'futureos-recovery-failed'))) {
