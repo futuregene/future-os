@@ -414,9 +414,16 @@ test-screenshot-harness:
 	python3 scripts/tests/test-screenshot-upright-check.py
 
 # Wire codegen owners: packages/rpc (future.proto) + channels (feishu_ws pbbp2).
+#
+# `REGENERATE_PROTO` is a target-specific exported variable, not a `VAR=1 cmd`
+# prefix: that prefix is POSIX shell syntax, and a Windows make runs recipes
+# through cmd.exe, which reads the first word as the program to run. Cargo's
+# build script is what consumes the variable (`packages/rpc/build.rs`), and it
+# receives it from the environment either way.
+generate-proto: export REGENERATE_PROTO := 1
 generate-proto:
-	cd packages/rpc && REGENERATE_PROTO=1 cargo build
-	cd channels && REGENERATE_PROTO=1 cargo build
+	cd packages/rpc && cargo build
+	cd channels && cargo build
 
 # ─── Clean ──────────────────────────────────────────────────────────────────
 # Build artifacts only — installed binaries are removed by `uninstall`.
