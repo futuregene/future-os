@@ -1206,10 +1206,11 @@ impl Bridge {
     }
 }
 
-/// Base dir for channel data (files etc.), anchored at the user's home
-/// directory (see [`crate::config::home_dir`] for the resolution order).
+/// Base dir for channel data (files etc.): the FutureOS home root, so the
+/// `FUTURE_HOME` override moves it along with the config (see
+/// [`crate::config::future_home`]).
 fn dirs_next_path() -> std::path::PathBuf {
-    crate::config::home_dir().join(".future")
+    crate::config::future_home()
 }
 
 /// Save a downloaded file to {base_dir}/files/{filename}.

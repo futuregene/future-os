@@ -1133,6 +1133,7 @@ mod tests {
     #[test]
     fn failed_cleanup_prevents_relaunch_and_stays_failed_on_retry() {
         let _home = crate::auth_store::test_support::HomeGuard::new("update-failed-stop");
+        let _root = journal::CaseRoot::bind();
         crate::desktop_shutdown::fail_for_test("Agent drain failed");
         let app = tauri::test::mock_app();
         for _ in 0..2 {
@@ -1242,6 +1243,7 @@ mod tests {
     #[test]
     fn a_restart_is_refused_without_a_safe_record() {
         let _home = crate::auth_store::test_support::HomeGuard::new("update-restart-unsafe");
+        let _root = journal::CaseRoot::bind();
         let app = tauri::test::mock_app();
         let operation = journal::Operation::begin("0.0.2-abcdef+local").expect("journal record");
         operation
@@ -1288,6 +1290,7 @@ mod tests {
             } else {
                 "update-restart-restored-unverified"
             });
+            let _root = journal::CaseRoot::bind();
             let app = tauri::test::mock_app();
             let operation =
                 journal::Operation::begin("0.0.2-abcdef+local").expect("journal record");

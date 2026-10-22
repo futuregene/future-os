@@ -21,3 +21,15 @@ pub fn home_dir() -> Option<std::path::PathBuf> {
 pub fn home_dir_or_default() -> std::path::PathBuf {
     home_dir().unwrap_or_default()
 }
+
+/// The FutureOS home root — `~/.future`, or the absolute `FUTURE_HOME` override
+/// that replaces it.
+///
+/// Every TUI file the tool owns lives below it (`<root>/tui/...`), so an
+/// isolated instance — which is what `FUTURE_HOME` exists for — keeps its own
+/// settings, key bindings and logs instead of sharing the default home's. It
+/// is deliberately *not* [`home_dir`]: `~` expansion for /cwd and the footer's
+/// path shortening must keep naming the user's real home.
+pub fn future_state_dir() -> std::path::PathBuf {
+    future_rpc::home::future_home()
+}

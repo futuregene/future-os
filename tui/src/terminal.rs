@@ -487,18 +487,16 @@ impl Terminal {
 
     pub fn write(&self, data: &str) {
         if std::env::var("PI_TUI_WRITE_LOG").as_deref() == Ok("1") {
-            if let Ok(home) = std::env::var("HOME") {
-                use std::io::Write as _;
-                let log_dir = format!("{home}/.future/tui");
-                let log_path = format!("{log_dir}/write.log");
-                let _ = std::fs::create_dir_all(&log_dir);
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_path)
-                {
-                    let _ = f.write_all(data.as_bytes());
-                }
+            use std::io::Write as _;
+            let log_dir = crate::home::future_state_dir().join("tui");
+            let log_path = log_dir.join("write.log");
+            let _ = std::fs::create_dir_all(&log_dir);
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
+                let _ = f.write_all(data.as_bytes());
             }
         }
         write_str(&self.write_lock, data);
@@ -1119,12 +1117,13 @@ mod tests {
 
     #[test]
     fn write_log_gated_by_env() {
+        use crate::test_env::EnvVarGuard;
         let _guard = crate::test_env::lock();
         let home = tempfile::tempdir().unwrap();
-        let old_log = std::env::var_os("PI_TUI_WRITE_LOG");
-        let old_home = std::env::var_os("HOME");
-        std::env::set_var("PI_TUI_WRITE_LOG", "1");
-        std::env::set_var("HOME", home.path());
+        let isolated = tempfile::tempdir().unwrap();
+        let _log = EnvVarGuard::set("PI_TUI_WRITE_LOG", "1");
+        let _home = EnvVarGuard::set("HOME", home.path());
+        let future_home = EnvVarGuard::remove("FUTURE_HOME");
         #[cfg(unix)]
         let t = terminal_for_methods();
         #[cfg(windows)]
@@ -1134,11 +1133,19 @@ mod tests {
         t.write("log-me");
         let log = std::fs::read_to_string(home.path().join(".future/tui/write.log")).unwrap();
         assert!(log.contains("log-me"));
-        // With HOME unset the log write is skipped (output still written).
-        std::env::remove_var("HOME");
-        t.write("not-logged");
-        restore_env("PI_TUI_WRITE_LOG", old_log);
-        restore_env("HOME", old_home);
+        // An isolated FutureOS home keeps its own write log, so two instances
+        // writing in the same user home do not share one file.
+        drop(future_home);
+        let _isolated = EnvVarGuard::set("FUTURE_HOME", isolated.path());
+        t.write("isolated-log");
+        let isolated_log = std::fs::read_to_string(isolated.path().join("tui/write.log")).unwrap();
+        assert!(isolated_log.contains("isolated-log"));
+        assert!(
+            !std::fs::read_to_string(home.path().join(".future/tui/write.log"))
+                .unwrap()
+                .contains("isolated-log"),
+            "the default home's log must not receive the isolated instance's writes"
+        );
     }
 
     fn restore_env(key: &str, old: Option<std::ffi::OsString>) {
