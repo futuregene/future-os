@@ -609,14 +609,17 @@ pub enum UiCmd {
     ScopedModelsSaved(Vec<String>),
 
     // ── sandbox / permission ──────────────────────────────────────────
-    /// `/sandbox` — a `probe_sandbox` / `probe_windows_sandbox` answer.
+    /// `/sandbox` — the connected Agent's `probe_sandbox` answer.
     SandboxProbeLoaded {
+        generation: u64,
         result: Result<Value, String>,
     },
     /// `/sandbox` — a `set_sandbox_policy` answer. The payload carries the
     /// agent's *actual* mode, so a downgrade is visible rather than assumed
     /// away.
     SandboxPolicySet {
+        generation: u64,
+        session_id: String,
         result: Result<Value, String>,
     },
     /// `/sandbox` / `/mode` — apply this approval mode (the panel's `enter`).
@@ -625,6 +628,7 @@ pub enum UiCmd {
     /// `auto` gate. Silent on failure: an unanswered account check keeps the
     /// row disabled as "(checking)", never as "(sign in)".
     SandboxAccountLoaded {
+        generation: u64,
         signed_in: Option<bool>,
     },
     /// `/sandbox` / `/permission` — apply a permission level.
@@ -1754,6 +1758,10 @@ pub struct App<T: TerminalIo> {
     /// opens (the desktop probes once per webview process too). `r` inside the
     /// panel forces a fresh probe and a fresh account check.
     sandbox: Option<SandboxStatus>,
+    sandbox_probe_generation: u64,
+    sandbox_account_generation: u64,
+    sandbox_policy_generation: u64,
+    sandbox_agent_instance: Option<String>,
     /// `/skills` — the platform catalogue as `future skills list --json` last
     /// reported it: the source of the version an install pins and the one an
     /// upgrade compares against. Kept here rather than only in the panel, so a
@@ -1919,6 +1927,10 @@ impl<T: TerminalIo> App<T> {
             provider_notice: None,
             input_tx: None,
             sandbox: None,
+            sandbox_probe_generation: 0,
+            sandbox_account_generation: 0,
+            sandbox_policy_generation: 0,
+            sandbox_agent_instance: None,
             skills_catalogue: None,
             skills_cli: skills_cli_for_host(),
             skills_catalogue_prefetch_started: false,
@@ -3153,21 +3165,33 @@ impl<T: TerminalIo> App<T> {
                 // the panel depends on: the backend probe and the account gate
                 // `auto` needs. Re-asking both is what makes a sign-in or
                 // sign-out made while the TUI runs visible without a restart.
-                self.request_sandbox_probe(Self::host_sandbox_platform());
+                self.request_sandbox_probe();
                 self.request_sandbox_account();
             }
-            UiCmd::SandboxProbeLoaded { result } => match result {
-                Ok(payload) => {
-                    let probe = SandboxProbe::from_probe_response(&payload);
-                    self.update_sandbox_status(|status| status.probe = probe);
+            UiCmd::SandboxProbeLoaded { generation, result } => {
+                if generation != self.sandbox_probe_generation {
+                    return;
                 }
-                Err(err) => {
-                    // A transport failure is not "unavailable": keep the probe
-                    // unresolved so the panel keeps saying "checking" instead of
-                    // claiming the sandbox is missing.
-                    self.add_system_message(format!("Sandbox probe failed: {err}"));
+                match result {
+                    Ok(payload) => {
+                        let probe = SandboxProbe::from_probe_response(&payload);
+                        self.update_sandbox_status(|status| {
+                            status.platform = probe
+                                .backend
+                                .as_deref()
+                                .and_then(SandboxPlatform::from_backend)
+                                .unwrap_or(SandboxPlatform::Other);
+                            status.probe = probe;
+                        });
+                    }
+                    Err(err) => {
+                        // A transport failure is not "unavailable": keep the probe
+                        // unresolved so the panel keeps saying "checking" instead of
+                        // claiming the sandbox is missing.
+                        self.add_system_message(format!("Sandbox probe failed: {err}"));
+                    }
                 }
-            },
+            }
             UiCmd::SandboxModeRequested(mode) => {
                 // A mode pick closes the card — the same "select ⇒ apply ⇒
                 // dismiss" contract as every other menu. The pick is a
@@ -3182,7 +3206,13 @@ impl<T: TerminalIo> App<T> {
                 }
                 self.apply_approval_mode(mode, true);
             }
-            UiCmd::SandboxAccountLoaded { signed_in } => {
+            UiCmd::SandboxAccountLoaded {
+                generation,
+                signed_in,
+            } => {
+                if generation != self.sandbox_account_generation {
+                    return;
+                }
                 // A transport failure keeps the account signal unresolved —
                 // the `auto` row stays "(checking)" instead of claiming the
                 // user is signed out.
@@ -3191,48 +3221,63 @@ impl<T: TerminalIo> App<T> {
                     self.update_sandbox_status(|status| status.account = account);
                 }
             }
-            UiCmd::SandboxPolicySet { result } => match result {
-                Ok(payload) => {
-                    let status = SandboxStatus::from_policy_response(
-                        Self::host_sandbox_platform(),
-                        &payload,
-                    );
-                    // The answer is authoritative: it already reflects the
-                    // account gate (a `reviewer: "user"` after an `auto`
-                    // request means the account was missing). It must land in
-                    // the cache even with no panel open — the footer badge and
-                    // the next `/sandbox` both read it.
-                    self.sandbox = Some(match self.sandbox.clone() {
-                        Some(mut cached) => {
-                            cached.mode = status.mode;
-                            cached.requested_mode = status.requested_mode;
-                            cached.probe = status.probe;
-                            if status.account != AccountState::Checking {
-                                cached.account = status.account;
+            UiCmd::SandboxPolicySet {
+                generation,
+                session_id,
+                result,
+            } => {
+                if generation != self.sandbox_policy_generation
+                    || session_id != self.state.session_id
+                {
+                    return;
+                }
+                match result {
+                    Ok(payload) => {
+                        let status = SandboxStatus::from_policy_response(
+                            self.host_sandbox_platform(),
+                            &payload,
+                        );
+                        // The answer is authoritative: it already reflects the
+                        // account gate (a `reviewer: "user"` after an `auto`
+                        // request means the account was missing). It must land in
+                        // the cache even with no panel open — the footer badge and
+                        // the next `/sandbox` both read it.
+                        self.sandbox = Some(match self.sandbox.clone() {
+                            Some(mut cached) => {
+                                cached.mode = status.mode;
+                                cached.requested_mode = status.requested_mode;
+                                cached.platform = status.platform;
+                                cached.probe = status.probe;
+                                if status.account != AccountState::Checking {
+                                    cached.account = status.account;
+                                }
+                                cached
                             }
-                            cached
+                            None => status.clone(),
+                        });
+                        let cached = self.sandbox.clone();
+                        if let (Some(overlay), Some(status)) = (self.top_sandbox_overlay(), cached)
+                        {
+                            overlay.set_status(status);
                         }
-                        None => status.clone(),
-                    });
-                    let cached = self.sandbox.clone();
-                    if let (Some(overlay), Some(status)) = (self.top_sandbox_overlay(), cached) {
-                        overlay.set_status(status);
+                        self.request_render(false);
+                        if let Some(notice) =
+                            self.sandbox.as_ref().and_then(|s| s.fallback_notice())
+                        {
+                            self.add_system_message(notice);
+                        } else if let Some(mode) = status.mode {
+                            self.add_system_message(format!(
+                                "Approval mode: {} — {}",
+                                mode.label(),
+                                mode.description(self.host_sandbox_platform())
+                            ));
+                        }
                     }
-                    self.request_render(false);
-                    if let Some(notice) = self.sandbox.as_ref().and_then(|s| s.fallback_notice()) {
-                        self.add_system_message(notice);
-                    } else if let Some(mode) = status.mode {
-                        self.add_system_message(format!(
-                            "Approval mode: {} — {}",
-                            mode.label(),
-                            mode.description(Self::host_sandbox_platform())
-                        ));
+                    Err(err) => {
+                        self.add_system_message(format!("Failed to set the approval mode: {err}"))
                     }
                 }
-                Err(err) => {
-                    self.add_system_message(format!("Failed to set the approval mode: {err}"))
-                }
-            },
+            }
             UiCmd::PermissionLevelRequested(level) => self.set_permission_level(level, false),
             UiCmd::PermissionLevelSet { level, result } => match result {
                 Ok(()) => {
@@ -3683,6 +3728,8 @@ impl<T: TerminalIo> App<T> {
                 }
             }
             TimerId::ReconnectRefresh => {
+                self.request_sandbox_probe();
+                self.request_sandbox_account();
                 self.spawn_refresh();
             }
         }
@@ -7605,34 +7652,20 @@ impl<T: TerminalIo> App<T> {
     ///
     /// The probe answer is cached across opens (the desktop probes once per
     /// webview process); `r` inside the panel forces a fresh probe and a fresh
-    /// account check. Only Linux and Windows need an RPC to learn the probe
-    /// answer — macOS has Seatbelt by construction and an unsupported platform
-    /// is definitive too.
+    /// account check. Every platform is learned from the connected Agent, and
+    /// reconnecting invalidates the cached answer.
     fn show_sandbox(&mut self) {
-        self.open_sandbox_panel(Self::host_sandbox_platform());
+        self.open_sandbox_panel(self.host_sandbox_platform());
     }
 
-    /// The platform the sandbox panel assumes this process runs on. One place
-    /// to override: `show_sandbox`, `show_permission`, the probe request and
-    /// the status reconstruction all read it, so a test pinning the platform
-    /// stays consistent across the whole panel lifecycle. Pinned to macOS in
-    /// the test build — the platform whose copy most panel tests assert — so
-    /// the assertions hold on a Linux CI host the same way they do on a
-    /// developer's Mac.
-    #[cfg(test)]
-    fn host_sandbox_platform() -> SandboxPlatform {
-        SandboxPlatform::Macos
+    /// Platform reported by the connected Agent; never guess from the TUI OS.
+    fn host_sandbox_platform(&self) -> SandboxPlatform {
+        self.sandbox
+            .as_ref()
+            .map_or(SandboxPlatform::Other, |status| status.platform)
     }
 
-    /// The real platform outside tests.
-    #[cfg(not(test))]
-    fn host_sandbox_platform() -> SandboxPlatform {
-        SandboxPlatform::current()
-    }
-
-    /// [`Self::show_sandbox`] for an explicit platform: the parameter is what
-    /// makes the Linux/Windows probe decision reachable from a test on any
-    /// host.
+    /// Open using the last platform the Agent reported, until its probe arrives.
     fn open_sandbox_panel(&mut self, platform: SandboxPlatform) {
         self.open_sandbox_card(platform);
     }
@@ -7641,10 +7674,11 @@ impl<T: TerminalIo> App<T> {
     /// The commands differ in *when they are useful*, not in what they open —
     /// `/mode` with an argument skips the card entirely.
     fn open_sandbox_card(&mut self, platform: SandboxPlatform) {
-        let status = self
-            .sandbox
-            .clone()
-            .unwrap_or_else(|| SandboxStatus::new(platform));
+        let status = self.sandbox.clone().unwrap_or_else(|| {
+            let mut status = SandboxStatus::new(platform);
+            status.probe = SandboxProbe::checking();
+            status
+        });
         // Cache the status we are about to show: the probe answer comes back
         // later and has to update *this* platform's status, not a fresh one.
         self.sandbox = Some(status.clone());
@@ -7667,7 +7701,7 @@ impl<T: TerminalIo> App<T> {
             },
         );
         if status.probe_state() == ProbeState::Checking {
-            self.request_sandbox_probe(platform);
+            self.request_sandbox_probe();
         }
         // Ask on every open, not only while unresolved: the account can change
         // under a long-running TUI (`future auth login` in another shell), and
@@ -7680,6 +7714,8 @@ impl<T: TerminalIo> App<T> {
     /// `auth.json` entry, so the two agree unless one side is stale — and the
     /// agent's `set_sandbox_policy` answer remains authoritative either way.
     fn request_sandbox_account(&mut self) {
+        self.sandbox_account_generation += 1;
+        let generation = self.sandbox_account_generation;
         let client = self.client.clone();
         let tx = self.op_tx.clone();
         tokio::spawn(async move {
@@ -7690,24 +7726,22 @@ impl<T: TerminalIo> App<T> {
                     .map(|provider| provider.has_api_key),
                 Err(_) => None,
             };
-            let _ = tx.send(UiCmd::SandboxAccountLoaded { signed_in });
+            let _ = tx.send(UiCmd::SandboxAccountLoaded {
+                generation,
+                signed_in,
+            });
         });
     }
 
-    /// `probe_sandbox` (macOS/Linux/other) or `probe_windows_sandbox`
-    /// (Windows). The platform is a parameter so both arms are reachable from a
-    /// test on any host.
-    fn request_sandbox_probe(&mut self, platform: SandboxPlatform) {
+    /// Use the Agent's platform-neutral probe, including for Windows.
+    fn request_sandbox_probe(&mut self) {
+        self.sandbox_probe_generation += 1;
+        let generation = self.sandbox_probe_generation;
         let client = self.client.clone();
         let tx = self.op_tx.clone();
         tokio::spawn(async move {
-            let result = match platform {
-                SandboxPlatform::Windows => client.probe_windows_sandbox().await,
-                SandboxPlatform::Macos | SandboxPlatform::Linux | SandboxPlatform::Other => {
-                    client.probe_sandbox().await
-                }
-            };
-            let _ = tx.send(UiCmd::SandboxProbeLoaded { result });
+            let result = client.probe_sandbox().await;
+            let _ = tx.send(UiCmd::SandboxProbeLoaded { generation, result });
         });
     }
 
@@ -7853,9 +7887,16 @@ impl<T: TerminalIo> App<T> {
         }
         let client = self.client.clone();
         let tx = self.op_tx.clone();
+        self.sandbox_policy_generation += 1;
+        let generation = self.sandbox_policy_generation;
+        let session_id = self.state.session_id.clone();
         tokio::spawn(async move {
             let result = client.set_sandbox_policy(mode).await;
-            let _ = tx.send(UiCmd::SandboxPolicySet { result });
+            let _ = tx.send(UiCmd::SandboxPolicySet {
+                generation,
+                session_id,
+                result,
+            });
         });
     }
 
@@ -8006,10 +8047,11 @@ impl<T: TerminalIo> App<T> {
         // and account answers describe *this host* regardless of which
         // platform a panel was opened with, and the seeded probe state is
         // exactly what a host-platform panel would show.
-        let mut status = self
-            .sandbox
-            .clone()
-            .unwrap_or_else(|| SandboxStatus::new(Self::host_sandbox_platform()));
+        let mut status = self.sandbox.clone().unwrap_or_else(|| {
+            let mut status = SandboxStatus::new(self.host_sandbox_platform());
+            status.probe = SandboxProbe::checking();
+            status
+        });
         update(&mut status);
         self.sandbox = Some(status.clone());
         if let Some(overlay) = self.top_sandbox_overlay() {
@@ -9469,12 +9511,26 @@ impl<T: TerminalIo> App<T> {
         self.set_connection_lost(!connected);
     }
 
+    fn invalidate_sandbox_probe(&mut self) {
+        self.sandbox_policy_generation += 1;
+        self.sandbox_probe_generation += 1;
+        self.sandbox_account_generation += 1;
+        if self.sandbox.is_some() {
+            self.update_sandbox_status(|status| {
+                status.platform = SandboxPlatform::Other;
+                status.probe = SandboxProbe::checking();
+                status.account = AccountState::Checking;
+            });
+        }
+    }
+
     fn set_connection_lost(&mut self, lost: bool) {
         if self.connection_lost == lost {
             return;
         }
         self.connection_lost = lost;
         if lost {
+            self.invalidate_sandbox_probe();
             self.state.streaming = false;
             self.state.active_tool_count = 0;
             self.state.tool_start_time = None;
@@ -9514,6 +9570,18 @@ impl<T: TerminalIo> App<T> {
 
     /// `refresh()` success path (also used by setter flows).
     fn apply_refresh_state(&mut self, s: RpcSessionState) {
+        if let Some(instance) = s.agent_instance_id.as_ref() {
+            let changed = self
+                .sandbox_agent_instance
+                .as_ref()
+                .is_some_and(|old| old != instance);
+            self.sandbox_agent_instance = Some(instance.clone());
+            if changed {
+                self.invalidate_sandbox_probe();
+                self.request_sandbox_probe();
+                self.request_sandbox_account();
+            }
+        }
         for run_id in self.client.take_lost_queued_run_ids() {
             self.chat
                 .update_run_state(&run_id, RunState::LostOnAgentRestart);
@@ -9699,6 +9767,8 @@ impl<T: TerminalIo> App<T> {
 
         // Clear connection-lost flag if we successfully reached the agent.
         if self.connection_lost {
+            self.request_sandbox_probe();
+            self.request_sandbox_account();
             self.connection_lost = false;
             self.chat.add_message(ChatMessage::new(
                 random_id(),
@@ -22066,6 +22136,7 @@ mod tests {
     #[tokio::test]
     async fn sandbox_panel_warns_about_the_unknown_tier_and_shows_a_downgrade() {
         let (mut app, mut rx) = make_app(100, 30);
+        app.sandbox = Some(SandboxStatus::new(SandboxPlatform::Macos));
         app.handle_submit("/sandbox");
         assert!(top_overlay_is::<SandboxOverlay>(&app));
         let text = top_overlay_text(&mut app, 80);
@@ -22085,6 +22156,8 @@ mod tests {
         // …and the agent's answer (a downgrade) lands in the cache and the
         // transcript — never reported as applied.
         app.handle_cmd(UiCmd::SandboxPolicySet {
+            generation: app.sandbox_policy_generation,
+            session_id: app.state.session_id.clone(),
             result: Ok(json_parse(
                 r#"{"tier":"manual","requestedTier":"sandbox","sandboxAvailable":false,"sandboxCode":"binary_missing","sandboxBackend":"none"}"#,
             )),
@@ -22144,6 +22217,8 @@ mod tests {
         app.handle_submit("/sandbox");
         let opening = app.sandbox.clone().expect("the panel caches its status");
         app.handle_cmd(UiCmd::SandboxPolicySet {
+            generation: app.sandbox_policy_generation,
+            session_id: app.state.session_id.clone(),
             result: Err("session gone".into()),
         });
         assert!(last_system(&app).contains("Failed to set the approval mode: session gone"));
@@ -22170,11 +22245,11 @@ mod tests {
     /// Windows probe is a different command (`probe_windows_sandbox`), so the
     /// two platforms are driven separately.
     #[tokio::test(flavor = "multi_thread")]
-    async fn linux_and_windows_sandbox_panels_use_their_own_probe_rpcs() {
+    async fn sandbox_panels_use_the_connected_agents_platform_neutral_probe() {
         let mock = AppMockAgent {
             overrides: std::collections::HashMap::from([(
                 "probe_sandbox".to_string(),
-                r#"{"available":false,"code":"binary_missing","backend":"none","path":"/usr/bin/bwrap"}"#
+                r#"{"available":false,"code":"binary_missing","backend":"linux_bubblewrap","path":"/usr/bin/bwrap"}"#
                     .to_string(),
             )]),
             ..Default::default()
@@ -22184,7 +22259,7 @@ mod tests {
         let (mut app, mut rx) = make_app_at(&addr, &CliOptions::default());
         app.start(mpsc::unbounded_channel().0).await.unwrap();
 
-        app.open_sandbox_panel(SandboxPlatform::Linux);
+        app.handle_submit("/sandbox");
         let opening = top_overlay_text(&mut app, 80);
         assert!(
             opening.contains("checking the system sandbox"),
@@ -22197,16 +22272,16 @@ mod tests {
             "the diagnostic reason must reach the panel: {text}"
         );
         assert!(
-            text.contains("Sandboxing is native only to macOS"),
+            text.contains("Linux uses system Bubblewrap"),
             "the platform caveat is rendered: {text}"
         );
 
-        // The Windows probe is its own command. The wait is on the *condition*,
+        // Windows uses the same platform-neutral command. Wait on the condition,
         // with the file's shared patience rather than a fresh 5 s guess: one
         // round trip to the in-process mock, on a host that is also running the
         // rest of this suite, is not a five-second operation — and `Err(Elapsed)`
         // here would report a slow machine as a broken panel.
-        app.request_sandbox_probe(SandboxPlatform::Windows);
+        app.request_sandbox_probe();
         let sent = tokio::time::timeout(
             Duration::from_millis(PUMP_BUDGET_ITERS as u64 * PUMP_INTERVAL_MS),
             async {
@@ -22215,7 +22290,9 @@ mod tests {
                         .lock()
                         .unwrap()
                         .iter()
-                        .any(|cmd| cmd.r#type == "probe_windows_sandbox")
+                        .filter(|cmd| cmd.r#type == "probe_sandbox")
+                        .count()
+                        >= 2
                     {
                         break true;
                     }
@@ -22225,6 +22302,88 @@ mod tests {
         )
         .await;
         assert_eq!(sent, Ok(true));
+        app.stop();
+    }
+
+    #[tokio::test]
+    async fn sandbox_reconnect_discards_old_probe_and_account_answers() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.sandbox = Some(SandboxStatus::new(SandboxPlatform::Macos));
+        let old_probe = app.sandbox_probe_generation;
+        let old_account = app.sandbox_account_generation;
+        app.on_connection_change(false);
+        app.handle_cmd(UiCmd::SandboxProbeLoaded {
+            generation: old_probe,
+            result: Ok(serde_json::json!({ "available": true, "backend": "macos_seatbelt", "code": "available" })),
+        });
+        app.handle_cmd(UiCmd::SandboxAccountLoaded {
+            generation: old_account,
+            signed_in: Some(true),
+        });
+        let status = app.sandbox.as_ref().unwrap();
+        assert_eq!(status.probe_state(), ProbeState::Checking);
+        assert_eq!(status.account, AccountState::Checking);
+        app.on_connection_change(true);
+        app.fire_timer(TimerId::ReconnectRefresh);
+        assert!(app.sandbox_probe_generation > old_probe + 1);
+        assert!(app.sandbox_account_generation > old_account + 1);
+        app.handle_cmd(UiCmd::SandboxProbeLoaded {
+            generation: app.sandbox_probe_generation,
+            result: Ok(serde_json::json!({ "available": true, "backend": "linux_bubblewrap", "code": "available_write_only" })),
+        });
+        let status = app.sandbox.as_ref().unwrap();
+        assert_eq!(status.platform, SandboxPlatform::Linux);
+        assert_eq!(status.probe.code.as_deref(), Some("available_write_only"));
+        app.stop();
+    }
+
+    #[tokio::test]
+    async fn sandbox_policy_reply_cannot_restore_a_previous_connection_or_session() {
+        let (mut app, _rx) = make_app(100, 30);
+        let previous_generation = app.sandbox_policy_generation;
+        app.sandbox = Some(SandboxStatus::new(SandboxPlatform::Macos));
+        app.on_connection_change(false);
+        let response = serde_json::json!({ "tier": "sandbox", "sandboxAvailable": true, "sandboxBackend": "macos_seatbelt" });
+        app.handle_cmd(UiCmd::SandboxPolicySet {
+            generation: previous_generation,
+            session_id: app.state.session_id.clone(),
+            result: Ok(response.clone()),
+        });
+        assert_eq!(
+            app.sandbox.as_ref().unwrap().probe_state(),
+            ProbeState::Checking
+        );
+        app.handle_cmd(UiCmd::SandboxPolicySet {
+            generation: app.sandbox_policy_generation,
+            session_id: "previous-session".into(),
+            result: Ok(response),
+        });
+        assert_eq!(
+            app.sandbox.as_ref().unwrap().probe_state(),
+            ProbeState::Checking
+        );
+        app.stop();
+    }
+
+    #[tokio::test]
+    async fn sandbox_agent_instance_change_invalidates_cached_capabilities() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.sandbox_agent_instance = Some("old-agent".into());
+        app.sandbox = Some(SandboxStatus::new(SandboxPlatform::Macos));
+        app.apply_refresh_state(RpcSessionState {
+            agent_instance_id: Some("new-agent".into()),
+            ..Default::default()
+        });
+        assert_eq!(
+            app.sandbox.as_ref().unwrap().probe_state(),
+            ProbeState::Checking
+        );
+        assert_eq!(
+            app.sandbox.as_ref().unwrap().account,
+            AccountState::Checking
+        );
+        assert!(app.sandbox_probe_generation > 0);
+        assert!(app.sandbox_account_generation > 0);
         app.stop();
     }
 
@@ -22356,6 +22515,7 @@ mod tests {
         app.start(mpsc::unbounded_channel().0).await.unwrap();
 
         // No argument: the shared card, mode half focused.
+        app.sandbox = Some(SandboxStatus::new(SandboxPlatform::Macos));
         app.handle_submit("/mode");
         assert!(top_overlay_is::<SandboxOverlay>(&app));
         let text = top_overlay_text(&mut app, 80);
@@ -22425,6 +22585,7 @@ mod tests {
         // unavailable probe first.
         let (mut plain, _plain_rx) = make_app(100, 30);
         plain.handle_cmd(UiCmd::SandboxProbeLoaded {
+            generation: 0,
             result: Ok(json_parse(
                 r#"{"available":false,"code":"binary_missing","backend":"none"}"#,
             )),
@@ -22450,6 +22611,8 @@ mod tests {
         let (mut app, _rx) = make_app(100, 30);
         let manual_answer = r#"{"tier":"manual","effectiveMode":"manual","configuredMode":"manual","reviewer":"user","sandboxAvailable":true,"sandboxBackend":"macos_seatbelt"}"#;
         app.handle_cmd(UiCmd::SandboxPolicySet {
+            generation: app.sandbox_policy_generation,
+            session_id: app.state.session_id.clone(),
             result: Ok(json_parse(manual_answer)),
         });
         assert_eq!(
@@ -22460,9 +22623,12 @@ mod tests {
 
         // A known signed-in account survives later non-auto answers.
         app.handle_cmd(UiCmd::SandboxAccountLoaded {
+            generation: app.sandbox_account_generation,
             signed_in: Some(true),
         });
         app.handle_cmd(UiCmd::SandboxPolicySet {
+            generation: app.sandbox_policy_generation,
+            session_id: app.state.session_id.clone(),
             result: Ok(json_parse(manual_answer)),
         });
         assert_eq!(
@@ -22472,6 +22638,7 @@ mod tests {
 
         // Signed out is the only thing that refuses the request.
         app.handle_cmd(UiCmd::SandboxAccountLoaded {
+            generation: app.sandbox_account_generation,
             signed_in: Some(false),
         });
         app.handle_submit("/mode auto");
@@ -22484,7 +22651,10 @@ mod tests {
 
         // Unknown (the account check failed or is still in flight) does not.
         let (mut plain, _plain_rx) = make_app(100, 30);
-        plain.handle_cmd(UiCmd::SandboxAccountLoaded { signed_in: None });
+        plain.handle_cmd(UiCmd::SandboxAccountLoaded {
+            generation: 0,
+            signed_in: None,
+        });
         plain.handle_submit("/mode auto");
         assert!(
             !system_messages(&plain)
@@ -22506,6 +22676,7 @@ mod tests {
     #[tokio::test]
     async fn a_mode_picked_in_the_panel_is_persisted() {
         let (mut app, mut rx) = make_app(100, 30);
+        app.sandbox = Some(SandboxStatus::new(SandboxPlatform::Macos));
         app.handle_submit("/sandbox");
         // macOS starts on Sandboxed; `auto` is disabled while the account is
         // unresolved, so ↓ lands on Full access.
@@ -22529,6 +22700,8 @@ mod tests {
     async fn a_refresh_keeps_the_downgrade_explanation() {
         let (mut app, _rx) = make_app(100, 30);
         app.handle_cmd(UiCmd::SandboxPolicySet {
+            generation: app.sandbox_policy_generation,
+            session_id: app.state.session_id.clone(),
             result: Ok(json_parse(
                 r#"{"tier":"sandbox","effectiveMode":"sandbox","configuredMode":"auto","reviewer":"user","sandboxAvailable":true,"sandboxBackend":"macos_seatbelt"}"#,
             )),
@@ -22566,6 +22739,8 @@ mod tests {
     async fn a_refresh_clears_a_request_the_policy_no_longer_explains() {
         let (mut app, _rx) = make_app(100, 30);
         app.handle_cmd(UiCmd::SandboxPolicySet {
+            generation: app.sandbox_policy_generation,
+            session_id: app.state.session_id.clone(),
             result: Ok(json_parse(
                 r#"{"tier":"sandbox","effectiveMode":"sandbox","configuredMode":"auto","reviewer":"user","sandboxAvailable":true,"sandboxBackend":"macos_seatbelt"}"#,
             )),
@@ -22632,6 +22807,8 @@ mod tests {
 
         // An applied auto policy flips the badge.
         app.handle_cmd(UiCmd::SandboxPolicySet {
+            generation: app.sandbox_policy_generation,
+            session_id: app.state.session_id.clone(),
             result: Ok(json_parse(
                 r#"{"tier":"sandbox","effectiveMode":"auto","configuredMode":"auto","reviewer":"model","sandboxAvailable":true,"sandboxBackend":"macos_seatbelt"}"#,
             )),

@@ -5,6 +5,26 @@ import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
 import { RemoteApprovalMenu } from "./RemoteApprovalMenu";
 
+let listeners: Array<(event: { payload: unknown }) => void> = [];
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (_name: string, handler: (event: { payload: unknown }) => void) => {
+    listeners.push(handler);
+    return () => {
+      listeners = listeners.filter(item => item !== handler);
+    };
+  },
+}));
+
+async function announce(desktopId: string, kind = "event") {
+  await act(async () => {
+    listeners.forEach(listener => listener({ payload: {
+      desktopId,
+      kind,
+      payload: { type: "app_settings_changed", sessionId: "_global" },
+    } }));
+  });
+}
+
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 /**
@@ -35,11 +55,12 @@ const peer = {
 };
 
 beforeEach(() => {
+  listeners = [];
   read.mockReset().mockResolvedValue({ approvalTier: "manual", sandboxAvailable: true });
   set.mockReset().mockImplementation(async (_desktopId, tier) => tier);
 });
 
-async function mount(props: { features?: string[] } = {}) {
+async function mount(props: { features?: string[]; desktopId?: string } = {}) {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -47,7 +68,7 @@ async function mount(props: { features?: string[] } = {}) {
   await act(async () => {
     root.render(
       <RemoteApprovalMenu
-        desktopId="desktop_a"
+        desktopId={props.desktopId ?? "desktop_a"}
         onChanged={onChanged}
         peer={{ ...peer, features: props.features ?? peer.features }}
       />,
@@ -59,6 +80,9 @@ async function mount(props: { features?: string[] } = {}) {
     container,
     item,
     onChanged,
+    switchHost: async (desktopId: string) => {
+      await act(async () => root.render(<RemoteApprovalMenu desktopId={desktopId} peer={{ ...peer, desktopId }} onChanged={onChanged} />));
+    },
     trigger,
     open: async () => {
       await act(async () => trigger().click());
@@ -187,5 +211,74 @@ it("keeps limited protection selectable and shows only the upgrade hint", async 
   expect(view.container.textContent).toContain("Upgrade system Bubblewrap on that computer");
   await act(async () => view.item("Sandboxed").click());
   expect(set).toHaveBeenCalledWith("desktop_a", "sandbox");
+  await view.unmount();
+});
+
+it("refreshes only the matching host, and follows a resumed connection", async () => {
+  const a = await mount();
+  read.mockResolvedValue({ approvalTier: "off", sandboxAvailable: false });
+  const b = await mount({ desktopId: "desktop_b" });
+  read.mockImplementation(async id => id === "desktop_a"
+    ? { approvalTier: "sandbox", sandboxAvailable: true, sandboxCode: "available_write_only" }
+    : { approvalTier: "manual", sandboxAvailable: false });
+  const before = read.mock.calls.length;
+  await announce("desktop_a");
+  expect(read.mock.calls.slice(before)).toEqual([["desktop_a"]]);
+  expect(a.trigger().textContent).toContain("Sandboxed");
+  expect(b.trigger().textContent).toContain("Full access");
+  await a.open();
+  expect(a.container.textContent).toContain("Upgrade system Bubblewrap on that computer");
+  await announce("desktop_b", "resumed");
+  expect(b.trigger().textContent).toContain("Manual");
+  await a.unmount();
+  await b.unmount();
+});
+
+it("discards an older read when newer host settings arrive first", async () => {
+  let oldRead: (value: RemoteApprovalSettings) => void = () => {};
+  read.mockReturnValueOnce(new Promise((resolve) => {
+    oldRead = resolve;
+  }));
+  const view = await mount();
+  read.mockResolvedValue({ approvalTier: "manual", sandboxAvailable: false });
+  await announce("desktop_a");
+  await act(async () => oldRead({ approvalTier: "auto", sandboxAvailable: true, sandboxCode: "available_write_only" }));
+  expect(view.trigger().textContent).toContain("Manual");
+  await view.open();
+  expect(view.item("Sandboxed").disabled).toBe(true);
+  expect(view.container.textContent).not.toContain("Upgrade system Bubblewrap on that computer");
+  await view.unmount();
+});
+
+it("discards a write response superseded by a settings notification", async () => {
+  let finishWrite: (tier: string) => void = () => {};
+  set.mockReturnValueOnce(new Promise((resolve) => {
+    finishWrite = resolve;
+  }));
+  const view = await mount();
+  await view.open();
+  await act(async () => view.item("Full access").click());
+  read.mockResolvedValue({ approvalTier: "manual", sandboxAvailable: false });
+  await announce("desktop_a");
+  await act(async () => finishWrite("off"));
+  expect(view.trigger().textContent).toContain("Manual");
+  expect(view.onChanged).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+it("never shows the previous host's delayed capability after switching hosts", async () => {
+  let finishA: (value: RemoteApprovalSettings) => void = () => {};
+  read.mockReturnValueOnce(new Promise((resolve) => {
+    finishA = resolve;
+  }));
+  const view = await mount();
+  read.mockResolvedValue({ approvalTier: "manual", sandboxAvailable: false });
+  await view.switchHost("desktop_b");
+  await act(async () => finishA({ approvalTier: "auto", sandboxAvailable: true, sandboxCode: "available_write_only" }));
+  expect(read).toHaveBeenLastCalledWith("desktop_b");
+  expect(view.trigger().textContent).toContain("Manual");
+  await view.open();
+  expect(view.item("Sandboxed").disabled).toBe(true);
+  expect(view.container.textContent).not.toContain("Upgrade system Bubblewrap on that computer");
   await view.unmount();
 });

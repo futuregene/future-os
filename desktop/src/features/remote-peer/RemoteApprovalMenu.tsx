@@ -1,8 +1,9 @@
 import type { RemotePeer } from "./remotePeerClient";
 import { ChevronDown, ShieldCheck, ShieldKeyhole, ShieldOff, ShieldQuestion } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
+import { useHostCatalogueInvalidation } from "./remoteHostCatalog";
 import { getRemoteApprovalSettings, setRemoteApprovalTier } from "./remotePeerClient";
 
 /**
@@ -51,23 +52,45 @@ export function RemoteApprovalMenu({
   // cannot review automatically must not be offered the mode.
   const supportsAuto = peer?.features.includes("auto_approval_v1") === true;
 
+  const [revision, setRevision] = useState(0);
+  const generationRef = useRef(0);
+  const scopeRef = useRef<string | null>(null);
+  useHostCatalogueInvalidation(desktopId, (domain) => {
+    if (domain === "settings") {
+      generationRef.current += 1;
+      setRevision(value => value + 1);
+    }
+  });
+
   useEffect(() => {
+    const current = ++generationRef.current;
+    const scope = JSON.stringify([desktopId, peer?.bridgeInstanceId, peer?.connected]);
+    if (scopeRef.current !== scope) {
+      scopeRef.current = scope;
+      setTier(null);
+      setSandboxAvailable(false);
+      setSandboxCode(undefined);
+      setOpen(false);
+    }
+    setBusy(true);
     let cancelled = false;
     void getRemoteApprovalSettings(desktopId).then((settings) => {
-      if (cancelled)
+      if (cancelled || current !== generationRef.current)
         return;
       setTier(settings.approvalTier);
       setSandboxAvailable(settings.sandboxAvailable);
       setSandboxCode(settings.sandboxCode);
+      setBusy(false);
     }).catch(() => {
       // A host too old to report its settings has no control to offer.
-      if (!cancelled)
+      if (!cancelled && current === generationRef.current)
         setTier(null);
     });
     return () => {
       cancelled = true;
+      generationRef.current += 1;
     };
-  }, [desktopId]);
+  }, [desktopId, peer?.bridgeInstanceId, peer?.connected, revision]);
 
   // Nothing to show until the host has said what it is in: a control that
   // guessed would report a mode the host is not running.
@@ -75,10 +98,13 @@ export function RemoteApprovalMenu({
     return null;
 
   async function choose(next: string) {
+    const current = ++generationRef.current;
     setOpen(false);
     setBusy(true);
     try {
       const settled = await setRemoteApprovalTier(desktopId, next);
+      if (current !== generationRef.current)
+        return;
       setTier(settled);
       onChanged?.();
     }
@@ -87,7 +113,8 @@ export function RemoteApprovalMenu({
       // showing that.
     }
     finally {
-      setBusy(false);
+      if (current === generationRef.current)
+        setBusy(false);
     }
   }
 
