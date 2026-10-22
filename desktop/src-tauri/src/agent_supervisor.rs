@@ -83,6 +83,8 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
                         == future_rpc::supervision::Attached::Stable
                     {
                         budget.reset();
+                        #[cfg(not(test))]
+                        crate::commands::confirm_update_startup();
                     }
                     lost_notice = None;
                 }
@@ -202,6 +204,8 @@ pub async fn agent_status() -> AgentStatus {
             status.phase = "ready".into();
             status.agent_version = Some(info.version);
             status.error = None;
+            #[cfg(not(test))]
+            crate::commands::confirm_update_startup();
         }
         Err(crate::AppError::AgentIncompatible {
             agent_version,

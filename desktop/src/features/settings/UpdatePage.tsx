@@ -37,8 +37,12 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
   const recovery = maintenance?.update;
+  const awaitingRestart = installed || recovery?.outcome === "pending-validation";
+  const updateStage = recovery?.stage ?? "downloading";
+  const preparing = ["verified", "preparing", "prepared"].includes(updateStage);
+  const installing = ["cleanup", "awaiting-exit", "installing"].includes(updateStage);
   const needsRecovery = Boolean(installError && recovery?.outcome && ["failed-restored", "repair-required", "cleanup-failed"].includes(recovery.outcome));
-  const needsManualRepair = Boolean(recovery && !recovery.repairAcknowledged && (recovery.outcome === null || recovery.outcome === "repair-required" || (recovery.outcome === "interrupted" && ["installing", "awaiting-exit"].includes(recovery.stage))));
+  const needsManualRepair = Boolean(recovery && !recovery.repairAcknowledged && (recovery.outcome === "repair-required" || (recovery.outcome === "interrupted" && ["installing", "awaiting-exit"].includes(recovery.stage))));
 
   // Tear down the streamed-progress listener if the page unmounts mid-download
   // (the download command itself still settles in the background).
@@ -96,7 +100,7 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
         const result = await invokeCommand<MaintenanceStatus>("app_maintenance_status");
         if (mountedRef.current) {
           setMaintenance(result ?? null);
-          setInstalled(result?.update?.outcome === "installed");
+          setInstalled(["installed", "pending-validation"].includes(result?.update?.outcome ?? ""));
         }
       }
     }
@@ -188,7 +192,7 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
           {maintenance?.update
             ? (
                 <div role="status" className="space-y-1 border-t border-line-soft pt-3 text-xs text-ink-muted">
-                  <p>{t("update.operation", { id: maintenance.update.operationId, stage: maintenance.update.stage, outcome: maintenance.update.outcome ?? t("update.unconfirmed") })}</p>
+                  <p>{t("update.operation", { id: maintenance.update.operationId, stage: t(`update.stages.${maintenance.update.stage}`, { defaultValue: maintenance.update.stage }), outcome: maintenance.update.outcome ? t(`update.outcomes.${maintenance.update.outcome}`, { defaultValue: maintenance.update.outcome }) : t("update.unconfirmed") })}</p>
                   {maintenance.update.diagnostic ? <p className="text-danger">{maintenance.update.diagnostic}</p> : null}
                   {!maintenance.update.outcome ? <p>{t("update.awaitingResult")}</p> : null}
                   {needsManualRepair && !downloading
@@ -212,7 +216,7 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
                           {status.canInstallInApp
                             ? (
                                 <div className="space-y-2">
-                                  {installed
+                                  {awaitingRestart
                                     ? (
                                         <div className="flex flex-wrap items-center gap-2">
                                           <span className="text-xs text-success">{t("update.installed")}</span>
@@ -235,7 +239,7 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
                                                 style={{ width: `${progress}%` }}
                                               />
                                             </div>
-                                            <div className="text-xs text-ink-muted">{`${t("update.downloading")} ${progress}%`}</div>
+                                            <div className="text-xs text-ink-muted">{preparing ? t("update.preparing") : installing ? t("update.installing") : `${t("update.downloading")} ${progress}%`}</div>
                                           </div>
                                         )
                                       : (
@@ -250,6 +254,10 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
                                           </Button>
                                         )}
                                   {installError ? <p className="text-xs text-danger">{`${t("update.installFailed")}: ${installError}`}</p> : null}
+                                  {installError && status.downloadUrl
+                                    ? <Button onClick={() => void handleManualDownload()} size="sm" variant="secondary">{t("update.manualFallback")}</Button>
+                                    : null}
+                                  {downloadError ? <p role="alert" className="text-xs text-danger">{`${t("update.downloadFailed")}: ${downloadError}`}</p> : null}
                                   {needsRecovery && maintenance?.update?.restartSafe
                                     ? <Button onClick={() => void handleRestart()} size="sm" variant="primary">{t("update.restart")}</Button>
                                     : null}

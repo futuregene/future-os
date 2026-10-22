@@ -27,6 +27,16 @@ fn main() -> std::process::ExitCode {
             }
         };
     }
+    #[cfg(feature = "gui")]
+    if let Some(result) = futureos_lib::dispatch_update_helper(&args) {
+        return match result {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::ExitCode::FAILURE
+            }
+        };
+    }
     match Launch::parse(&args) {
         Ok(Launch::Help) => {
             println!("{}", launch::HELP);

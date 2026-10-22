@@ -150,7 +150,7 @@
     "cliTool": "CLI {{version}} · {{source}} · {{path}}",
     "operation": "Update {{id}} · {{stage}} · {{outcome}}",
     "unconfirmed": "result unconfirmed",
-    "awaitingResult": "Installer handoff is not installation success. If this state persists after restarting, inspect app/updates and app/logs/update-recovery.log and repair the installation before trying again.",
+    "awaitingResult": "The update is in progress. Preparation can be safely retried after an interruption; program replacement requires a confirmed result.",
     "sectionTitle": "Software update",
     "title": "Check for updates",
     "description": "Securely download and install signed updates from the official source",
@@ -168,7 +168,32 @@
     "download": "Download latest version",
     "downloadFailed": "Could not open download link",
     "checkFailed": "Update check failed",
-    "installFailed": "Update failed"
+    "installFailed": "Update failed",
+    "preparing": "Preparing update; your work is still running",
+    "installing": "Installing update…",
+    "stages": {
+      "checking": "Checking",
+      "downloading": "Downloading",
+      "verified": "Verified",
+      "preparing": "Preparing",
+      "prepared": "Ready to install",
+      "cleanup": "Stopping services",
+      "awaiting-exit": "Waiting for exit",
+      "installing": "Installing",
+      "awaiting-validation": "Waiting for first startup",
+      "finished": "Finished"
+    },
+    "outcomes": {
+      "installed": "Startup confirmed",
+      "pending-validation": "Restart to finish",
+      "failed": "Failed",
+      "interrupted": "Interrupted",
+      "not-installed": "Not installed; safe to retry",
+      "failed-restored": "Previous version restored",
+      "repair-required": "Installation repair required",
+      "cleanup-failed": "Service shutdown failed"
+    },
+    "manualFallback": "Download installer to update manually"
   },
   "dialog": {
     "ariaLabel": "Settings",

@@ -9,13 +9,13 @@ vi.mock("../../integrations/tauri/useMaintenanceStatus", () => ({ useMaintenance
 vi.mock("../../integrations/tauri/invoke", () => ({ invokeCommand: (...args: unknown[]) => mocks.invoke(...args) }));
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-it.each(["installed", "failed-restored", null, "repair-required"])("offers restart on the stopped screen only when the result permits it: %s", async (outcome) => {
+it.each(["installed", "pending-validation", "failed-restored", "not-installed", null, "repair-required"])("offers restart on the stopped screen only when the result permits it: %s", async (outcome) => {
   mocks.invoke.mockReset().mockResolvedValue(undefined);
   mocks.status = { maintenance: { update: {
     operationId: "update-fixture",
     stage: "finished",
     outcome,
-    restartSafe: outcome === "installed" || outcome === "failed-restored",
+    restartSafe: ["installed", "pending-validation", "failed-restored", "not-installed"].includes(outcome ?? ""),
     diagnostic: outcome === "repair-required" ? "Original files changed" : null,
   } }, maintenanceError: null };
   const container = document.createElement("div");
@@ -23,7 +23,7 @@ it.each(["installed", "failed-restored", null, "repair-required"])("offers resta
   try {
     await act(async () => root.render(<UpdateRecoveryPanel />));
     const button = container.querySelector("button");
-    if (outcome === "installed" || outcome === "failed-restored") {
+    if (["installed", "pending-validation", "failed-restored", "not-installed"].includes(outcome ?? "")) {
       expect(button?.textContent).toBe("Restart FutureOS");
       await act(async () => button!.click());
       expect(mocks.invoke).toHaveBeenCalledWith("restart_after_app_update");

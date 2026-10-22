@@ -59,11 +59,23 @@ fn update_needs_confirmation(activity: Result<usize, AppError>, running_terminal
     !matches!(activity, Ok(0)) || running_terminals > 0
 }
 
+#[path = "update_adapters.rs"]
+mod adapters;
 #[path = "update_journal.rs"]
 mod journal;
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
+#[path = "update_linux.rs"]
+mod linux;
+#[cfg(target_os = "macos")]
+#[path = "update_macos.rs"]
+mod macos;
+#[path = "update_process.rs"]
+mod process;
+#[cfg(any(target_os = "macos", all(test, not(target_os = "windows"))))]
 #[path = "update_recovery.rs"]
 mod recovery;
+#[path = "update_state.rs"]
+mod state;
 #[cfg(target_os = "windows")]
 #[path = "update_windows.rs"]
 mod windows;
@@ -72,6 +84,30 @@ use crate::{
     build_info::{self, BuildChannel},
     AppError,
 };
+
+#[doc(hidden)]
+pub fn dispatch_update_helper(args: &[String]) -> Option<Result<(), String>> {
+    match args.first().map(String::as_str) {
+        #[cfg(target_os = "macos")]
+        Some("--app-update-macos-worker") => Some(helper_result(macos::worker(&args[1..]))),
+        #[cfg(target_os = "linux")]
+        Some("--app-update-deb-worker") => Some(helper_result(linux::worker(&args[1..]))),
+        _ => None,
+    }
+}
+#[cfg(not(target_os = "windows"))]
+fn helper_result(result: Result<(), String>) -> Result<(), String> {
+    if let Err(error) = &result {
+        println!("ERROR {}", serde_json::to_string(error).unwrap_or_default());
+    }
+    result
+}
+#[cfg(not(test))]
+pub(crate) fn confirm_update_startup() {
+    if let Err(error) = journal::confirm_startup(build_info::VERSION) {
+        crate::host_environment::report(&format!("Update startup confirmation deferred: {error}"));
+    }
+}
 
 const PROGRESS_EVENT: &str = "app-update-progress";
 const UPDATE_CHECK_TIMEOUT: Duration = Duration::from_secs(30);
@@ -254,7 +290,7 @@ fn is_debian_deb_install() -> bool {
 fn platform_allows_updates() -> bool {
     #[cfg(target_os = "macos")]
     {
-        true
+        macos::can_prepare()
     }
     #[cfg(target_os = "windows")]
     {
@@ -389,14 +425,7 @@ async fn check_app_update_impl<R: tauri::Runtime>(
     endpoint_url: &str,
 ) -> Result<UpdateStatus, AppError> {
     if !platform_allows_updates() {
-        return Ok(UpdateStatus {
-            latest_version: current_version.clone(),
-            current_version,
-            has_update: false,
-            platform_supported: false,
-            can_install_in_app: false,
-            download_url: None,
-        });
+        return check_manual_update(channel, current_version, endpoint_url).await;
     }
     if matches!(channel, BuildChannel::Dev | BuildChannel::Local) {
         return check_manual_update(channel, current_version, endpoint_url).await;
@@ -974,18 +1003,27 @@ mod tests {
         assert!(error.to_string().contains("Invalid update endpoint"));
     }
 
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(target_os = "linux")]
     #[tokio::test]
-    async fn check_app_update_reports_unsupported_without_touching_the_updater() {
-        // An unbundled Linux test binary is not a `.deb` install, so it must
-        // return unsupported without touching the updater plugin.
+    async fn unsupported_installation_still_discovers_manual_updates() {
+        let endpoint = serve_once("200 OK", "application/json", json!({
+            "version": "1.2.0", "assets": { (PLATFORM_ASSET_KEY): { "url": "https://example.com/update.deb" } }
+        }).to_string().into_bytes());
         let app = tauri::test::mock_app();
-        let status = check_app_update(app.handle().clone()).await.expect("check");
-        assert!(!status.has_update);
-        assert!(!status.platform_supported);
+        let status = check_app_update_impl(
+            app.handle().clone(),
+            BuildChannel::Release,
+            "1.0.0".into(),
+            &endpoint,
+        )
+        .await
+        .unwrap();
+        assert!(status.has_update);
         assert!(!status.can_install_in_app);
-        assert_eq!(status.latest_version, build_info::VERSION);
-        assert_eq!(status.download_url, None);
+        assert_eq!(
+            status.download_url.as_deref(),
+            Some("https://example.com/update.deb")
+        );
     }
 
     #[tokio::test]
@@ -1115,22 +1153,17 @@ mod tests {
     #[tokio::test]
     async fn a_manual_build_check_uses_the_endpoint_it_is_given() {
         let platform_supported = platform_allows_updates();
-        let manifest_url = if platform_supported {
-            serve_once(
-                "200 OK",
-                "application/json",
-                json!({
-                    "version": "0.0.2-121+nightly",
-                    "assets": {
-                        (PLATFORM_ASSET_KEY): { "url": "https://dl.future-os.cn/nightly/x" }
-                    }
-                })
-                .to_string()
-                .into_bytes(),
-            )
-        } else {
-            "http://127.0.0.1:1/not-fetched".to_string()
-        };
+        let manifest_url = serve_once(
+            "200 OK",
+            "application/json",
+            json!({
+                "version": "0.0.2-121+nightly", "assets": {
+                    (PLATFORM_ASSET_KEY): { "url": "https://dl.future-os.cn/nightly/x" }
+                }
+            })
+            .to_string()
+            .into_bytes(),
+        );
         let app = tauri::test::mock_app();
         let status = check_app_update_impl(
             app.handle().clone(),
@@ -1140,11 +1173,9 @@ mod tests {
         )
         .await
         .expect("manual check through the impl");
-        assert_eq!(
-            status.has_update, platform_supported,
-            "only supported installations check for updates"
-        );
-        assert_eq!(status.download_url.is_some(), platform_supported);
+        assert!(status.has_update);
+        assert!(status.download_url.is_some());
+        assert_eq!(status.platform_supported, platform_supported);
         assert!(!status.can_install_in_app);
     }
 
@@ -1154,15 +1185,11 @@ mod tests {
     #[tokio::test]
     async fn a_signed_build_check_uses_the_endpoint_it_is_given() {
         let platform_supported = platform_allows_updates();
-        let manifest_url = if platform_supported {
-            serve_once(
-                "200 OK",
-                "application/json",
-                manifest_json("1.2.0", "http://127.0.0.1:1/not-fetched"),
-            )
-        } else {
-            "http://127.0.0.1:1/not-fetched".to_string()
-        };
+        let manifest_url = serve_once("200 OK", "application/json", json!({
+            "version": "1.2.0", "platforms": {
+                (PLATFORM_ASSET_KEY): { "url": "http://127.0.0.1:1/not-fetched", "signature": "unused" }
+            }, "assets": { (PLATFORM_ASSET_KEY): { "url": "https://example.com/installer" } }
+        }).to_string().into_bytes());
         let app = mock_app_with_updater(&[&manifest_url]);
         let status = check_app_update_impl(
             app.handle().clone(),
@@ -1172,7 +1199,7 @@ mod tests {
         )
         .await
         .expect("signed check through the impl");
-        assert_eq!(status.has_update, platform_supported);
+        assert!(status.has_update);
         assert_eq!(status.can_install_in_app, platform_supported);
     }
 
@@ -1458,30 +1485,44 @@ async fn install_app_update_inner<R: tauri::Runtime>(
         )
         .await
         .map_err(|error| updater_error("Failed to download and verify the update", error))?;
-    #[cfg(target_os = "windows")]
-    let installer = windows::PreparedInstaller::new(&bytes)?;
     operation.stage("verified", None)?;
+    operation.stage("preparing", None)?;
+    let preparation_operation = operation.clone();
+    let signature = update.signature.clone();
+    let prepared = tokio::task::spawn_blocking(move || {
+        adapters::prepare(&bytes, &signature, &preparation_operation)
+    })
+    .await
+    .map_err(|error| updater_error("Update preparation worker failed", error))?
+    .map_err(|error| {
+        updater_error(
+            "Update preparation failed; current services are still running",
+            error,
+        )
+    })?;
+    operation.stage("prepared", None)?;
     // Check the same live activity as quit, including other clients of an
     // embedded Agent. Retained idle conversations are not active work.
     let confirmation_app = app.clone();
-    let confirmed = tokio::task::spawn_blocking(move || {
+    let (confirmed, stop_work_authorized) = tokio::task::spawn_blocking(move || {
         let running_terminals = crate::terminal::server::manager()
             .map_or(0, |manager| manager.running_count());
-        if !update_needs_confirmation(
+        if crate::agent_host::host().owns_agent() && !update_needs_confirmation(
             crate::agent_supervisor::active_work_count(),
             running_terminals,
         ) {
-            return true;
+            return (true, false);
         }
         let scope = if crate::agent_host::host().owns_agent() {
             "Installing stops all Agent work, including CLI conversations, shells and queued tasks."
         } else {
             "Installing stops this Desktop's work. An external Agent using the same data will block Windows installation; stop it yourself before continuing."
         };
-        confirmation_app.dialog().message(scope).title("Install FutureOS update?")
+        let confirmed = confirmation_app.dialog().message(scope).title("Install FutureOS update?")
             .kind(MessageDialogKind::Warning)
             .buttons(MessageDialogButtons::OkCancelCustom("Install and stop work".into(), "Keep running".into()))
-            .blocking_show()
+            .blocking_show();
+        (confirmed, true)
     }).await.map_err(|error| updater_error("Update confirmation failed", error))?;
     if !confirmed {
         return Err(AppError::Message("Update installation cancelled.".into()));
@@ -1498,57 +1539,66 @@ async fn install_app_update_inner<R: tauri::Runtime>(
             Ok(action) => action,
             Err(error) => return (Err(error), false),
         };
-        #[cfg(not(target_os = "windows"))]
-        let original = match recovery::ProgramFingerprint::capture() {
-            Ok(original) => original,
-            Err(error) => {
-                return (
-                    Err(updater_error(
-                        "Cannot verify program files before cleanup",
-                        error,
-                    )),
-                    false,
-                )
-            }
-        };
-        #[cfg(not(target_os = "windows"))]
-        if let Err(error) = original.save(&operation.path()) {
-            return (Err(error), false);
+        // macOS can prove restoration of the whole bundle. A DEB transaction
+        // must instead use the package manager's result and configuration state.
+        #[cfg(target_os = "macos")]
+        if let Err(error) = recovery::ProgramFingerprint::capture().and_then(|original| {
+            original
+                .save(&operation.path())
+                .map_err(std::io::Error::other)
+        }) {
+            return (
+                Err(updater_error(
+                    "Cannot save original application identity",
+                    error,
+                )),
+                false,
+            );
         }
+        let shutdown_began = std::cell::Cell::new(false);
         let cleanup_succeeded = std::cell::Cell::new(false);
+        let restored = std::cell::Cell::new(false);
         let installed = install_after_cleanup(
             || {
                 operation.stage("cleanup", None)?;
+                if !stop_work_authorized {
+                    let terminals = crate::terminal::server::manager().map(|manager| manager.reserve_idle());
+                    if matches!(terminals, Some(None)) || !crate::agent_host::host().reserve_idle_update()? {
+                        return Err("New work arrived while preparing the update; current work was not stopped. Retry when idle.".into());
+                    }
+                    if let Some(Some(reservation)) = terminals { reservation.commit(); }
+                }
+                shutdown_began.set(true);
                 crate::desktop_shutdown::stop("update")?;
                 cleanup_succeeded.set(true);
                 Ok(())
             },
             || {
-                #[cfg(target_os = "windows")]
-                {
-                    operation
-                        .stage("awaiting-exit", None)
-                        .map_err(|e| e.to_string())?;
-                    installer.launch(&operation)
-                }
-                #[cfg(not(target_os = "windows"))]
-                {
-                    operation
-                        .stage("installing", None)
-                        .map_err(|e| e.to_string())?;
-                    update.install(&bytes).map_err(|error| error.to_string())
+                operation
+                    .stage(
+                        if cfg!(windows) {
+                            "awaiting-exit"
+                        } else {
+                            "installing"
+                        },
+                        None,
+                    )
+                    .map_err(|e| e.to_string())?;
+                let result = adapters::commit(prepared, &operation)?;
+                restored.set(result.restored);
+                if result.ok {
+                    Ok(())
+                } else {
+                    Err(result.diagnostic)
                 }
             },
         );
-        #[cfg(not(target_os = "windows"))]
-        let safe = cleanup_succeeded.get() && (installed.is_ok() || original.unchanged());
-        #[cfg(target_os = "windows")]
-        let safe = cleanup_succeeded.get(); // launch errors occurred before installer handoff.
+        let safe = !shutdown_began.get() || (cleanup_succeeded.get() && (installed.is_ok() || restored.get()));
         let persisted = match &installed {
             Ok(()) => {
                 #[cfg(not(target_os = "windows"))]
                 {
-                    operation.finish("installed", None, true)
+                    operation.finish("pending-validation", None, true)
                 }
                 #[cfg(target_os = "windows")]
                 {
@@ -1556,7 +1606,9 @@ async fn install_app_update_inner<R: tauri::Runtime>(
                 }
             }
             Err(error) => operation.finish(
-                if !cleanup_succeeded.get() {
+                if !shutdown_began.get() {
+                    "not-installed"
+                } else if !cleanup_succeeded.get() {
                     "cleanup-failed"
                 } else if safe {
                     "failed-restored"
@@ -1663,7 +1715,7 @@ fn restart_after_app_update_with<R: tauri::Runtime>(
         if !record.restart_safe {
             return Err("Update result does not permit restart. Inspect app/updates and repair the installation if its outcome is unknown.".into());
         }
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(target_os = "macos")]
         if record.outcome.as_deref() == Some("failed-restored") {
             recovery::ProgramFingerprint::verify_saved(&record.operation_id)?;
         }

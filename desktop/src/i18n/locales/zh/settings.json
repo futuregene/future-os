@@ -150,7 +150,7 @@
     "cliTool": "CLI {{version}} · {{source}} · {{path}}",
     "operation": "更新 {{id}} · {{stage}} · {{outcome}}",
     "unconfirmed": "结果尚未确认",
-    "awaitingResult": "安装器接管不代表安装成功。如果重启后仍处于此状态，请检查 app/updates 和 app/logs/update-recovery.log，修复安装后再重试。",
+    "awaitingResult": "更新正在进行。准备阶段中断后可以安全重试；程序替换阶段需要确认安装结果。",
     "sectionTitle": "软件更新",
     "title": "检查更新",
     "description": "从官方源安全下载并安装经过签名验证的更新",
@@ -168,7 +168,32 @@
     "download": "前往下载",
     "downloadFailed": "无法打开下载链接",
     "checkFailed": "检查更新失败",
-    "installFailed": "更新失败"
+    "installFailed": "更新失败",
+    "preparing": "正在准备更新，当前工作仍在运行",
+    "installing": "正在安装更新…",
+    "stages": {
+      "checking": "检查中",
+      "downloading": "下载中",
+      "verified": "已验证",
+      "preparing": "准备中",
+      "prepared": "安装准备就绪",
+      "cleanup": "正在停止服务",
+      "awaiting-exit": "等待程序退出",
+      "installing": "安装中",
+      "awaiting-validation": "等待首次启动确认",
+      "finished": "已完成"
+    },
+    "outcomes": {
+      "installed": "新版本启动已确认",
+      "pending-validation": "重启以完成更新",
+      "failed": "失败",
+      "interrupted": "已中断",
+      "not-installed": "尚未安装，可安全重试",
+      "failed-restored": "旧版本已恢复",
+      "repair-required": "需要修复安装",
+      "cleanup-failed": "服务停止失败"
+    },
+    "manualFallback": "下载安装包，手动更新"
   },
   "dialog": {
     "ariaLabel": "设置",

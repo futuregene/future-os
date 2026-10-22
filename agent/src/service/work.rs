@@ -68,6 +68,16 @@ impl ServiceWork {
         state.revision = state.revision.wrapping_add(1);
     }
 
+    pub(crate) fn close_if_revision(&self, revision: u64) -> bool {
+        let mut state = self.state.lock();
+        if state.closed || state.revision != revision {
+            return false;
+        }
+        state.closed = true;
+        state.revision = state.revision.wrapping_add(1);
+        true
+    }
+
     pub(crate) fn retire(&self) {
         self.state.lock().retired = true;
     }
@@ -200,6 +210,18 @@ pub(crate) fn process_auxiliary_work() -> Option<WorkGuard> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_idle_update_reservation_refuses_a_changed_admission_revision() {
+        let work = Arc::new(ServiceWork::default());
+        let before = work.revision();
+        let command = work.enter().unwrap();
+        assert!(!work.close_if_revision(before));
+        assert!(!work.is_closed());
+        drop(command);
+        assert!(work.close_if_revision(work.revision()));
+        assert!(work.enter().is_err());
+    }
 
     #[test]
     fn accepted_work_remains_owned_after_admission_closes() {
