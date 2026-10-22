@@ -14,6 +14,10 @@ pub(super) async fn initialize(
 ) -> Result<(crate::rpc::AppState, crate::grpc::AgentListener)> {
     cancellation.check()?;
     config.validate_environment()?;
+    // Housekeeping, not a precondition: a temp file left by an interrupted cache
+    // write is removed if it is provably not from this process and at least an
+    // hour old. It cannot fail the start, and it never touches a live temp.
+    crate::models::sweep_stale_cache_temps();
     let cwd = crate::utils::home_dir().to_string_lossy().to_string();
 
     let all_models = model_registry.read().all_models();
