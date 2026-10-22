@@ -46,18 +46,27 @@ fn the_cli_binary_reserves_the_platform_stack() {
 ///
 /// `build.rs` passes the link argument as `rustc-link-arg-bins`, so every target
 /// of the package that is not a `[[bin]]` — this test binary included — keeps
-/// the linker default. Asserting the default here is what keeps the scope
-/// honest: widening `-bins` to a bare `rustc-link-arg` would silently apply the
-/// reserve to every test binary in the workspace, and nothing else would notice.
+/// the linker default. Asserting that here is what keeps the scope honest:
+/// widening `-bins` to a bare `rustc-link-arg` would silently apply the reserve
+/// to every test binary in the crate, and nothing else would notice.
+///
+/// The assertion is relative on purpose. Pinning this binary to the 1 MB default
+/// would also pass today, but it would fail on an unrelated linker or toolchain
+/// change that moves that default, reporting a stack-reserve bug that does not
+/// exist. What has to hold is only that this binary did not receive the reserve
+/// the CLI got — which is exactly `test_reserve < binary_reserve`.
 #[test]
 fn the_reserve_does_not_reach_the_test_binaries() {
-    let image = std::fs::read(std::env::current_exe().expect("path to the test binary"))
+    let binary =
+        std::fs::read(Path::new(env!("CARGO_BIN_EXE_future"))).expect("read the built CLI");
+    let test = std::fs::read(std::env::current_exe().expect("path to the test binary"))
         .expect("read the test binary");
-    let reserve = stack_reserve(&image);
-    assert_eq!(
-        reserve,
-        1024 * 1024,
-        "this test binary reserves {reserve} bytes; build.rs must keep its /STACK argument on \
-         `rustc-link-arg-bins` so it applies to the shipped `future` binary only"
+    let binary_reserve = stack_reserve(&binary);
+    let test_reserve = stack_reserve(&test);
+    assert!(
+        test_reserve < binary_reserve,
+        "this test binary reserves {test_reserve} bytes and the CLI reserves {binary_reserve}; \
+         build.rs must keep its /STACK argument on `rustc-link-arg-bins`, so the reserve applies \
+         to the shipped `future` binary and not to every target of the crate"
     );
 }
