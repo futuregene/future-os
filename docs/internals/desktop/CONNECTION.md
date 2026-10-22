@@ -209,9 +209,13 @@ nothing to send it commands), and the terminal then reports the recorded choice 
 applying at the next start, which is what a book-only edit always did. The reply
 path is a temporary file the asking process created for itself, so two terminals
 asking at once cannot read each other's invitation, and a request older than two
-minutes is deleted rather than served: its asker has given up. The Desktop refuses
-with a sentence, not silence, when the remote switch is off (`RemotePhase::Stopped`)
-or when the request names an operation it does not know.
+minutes is deleted rather than served: its asker has given up. That "two minutes"
+is read from the asker's own millisecond clock in the file name, with the file
+system's modification time only as a fallback — `run/` is transient state and may
+live on a share whose clock is minutes off, which must not make a brand-new
+request look abandoned. The Desktop refuses with a sentence, not silence, when the
+remote switch is off (`RemotePhase::Stopped`) or when the request names an
+operation it does not know.
 
 Two details make the answer scannable in practice. It is the invitation itself,
 judged only by whether it can still be scanned, so the Agent availability probe —
