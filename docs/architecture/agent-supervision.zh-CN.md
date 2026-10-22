@@ -483,7 +483,7 @@ D10 优先于"发 prompt"的初版：先做"尾部是 tool"和"assistant 带 too
 | 2 | headless 拥有 Agent，TUI 附着 → 结束 headless | 40s 内无人接管，TUI 停在 `Connection to agent lost` | **1s 内** TUI 拉起新 Agent |
 | 3 | 锁被占用、默认端点不存在（Agent 只绑 TCP）→ 启动 TUI | TUI **exit 1**，报 "Cannot start a local Agent" | TUI **不退出**，等待并打印 `waiting for the Agent another process is starting (30s of 180s)` + 持锁者 pid/host |
 | 4 | 同上，另一个 headless | exit 1 | 同样等待（`supervise()` 路径） |
-| 5 | 开关 `resumeInterruptedOnStart=true`，有中断 run 且有模型 → 启动 `future agent` | 无续跑 | 日志 `1 conversation(s) checked, 1 continued`；假端点收到 1 次请求，最后一条 user 消息是续跑 prompt；会话 `interruptedRun` 变为 null、`queryCount` 1→2 |
+| 5 | 开关 `resumeInterruptedOnStart=true`，有中断 run 且有模型 → 启动 `future agent` | 无续跑 | 日志 `1 conversation(s) checked, 1 interrupted, 1 continued`（没有中断 run 的健康启动不打印任何内容）；假端点收到 1 次请求，最后一条 user 消息是续跑 prompt；会话 `interruptedRun` 变为 null、`queryCount` 1→2 |
 | 6 | 同上但**开关未开**（默认） | — | **0 次**续跑，会话如实保持 `interrupted_by_restart` |
 | 7 | 中断会话没有可用模型 | — | 如实报告 `has no model configured; left interrupted`，不假装成功 |
 | 8 | 中断时间超过 7 天 | — | 跳过（计入 `checked`，不计入 `continued`） |
