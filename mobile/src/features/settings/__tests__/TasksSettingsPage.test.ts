@@ -124,6 +124,46 @@ async function pickTime(hour: string, minute: string) {
   await act(async () => radio(`tasks.form.minuteOption:{"minute":"${minute}"}`).props.onPress());
 }
 
+/**
+ * The date picker's trigger, and the `YYYY-MM-DD` it announces.
+ *
+ * A picker rather than a text field, for the reason the desktop replaced its
+ * own: a `2026-12-24` placeholder read as a date already chosen. The value is
+ * read from the accessibility value, which is the string the form sends.
+ */
+const dateTrigger = () => tree.root
+  .findAll(node => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === "tasks.form.date")
+  .find(node => typeof node.props.onPress === "function")!;
+/** The announced date, or the "not chosen" copy while the draft has none. */
+const dateValue = (): string => dateTrigger().props.accessibilityValue.text;
+/** Open the date picker and choose a day, the way a user does. */
+async function pickDate(year: number, month: number, day: number) {
+  await act(async () => dateTrigger().props.onPress());
+  const radio = (label: string) => tree.root
+    .findAll(node => node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function")
+    .find(node => node.props.accessibilityLabel === label)!;
+  await act(async () => radio(`tasks.form.yearOption:{"year":${year}}`).props.onPress());
+  await act(async () => radio(`tasks.form.monthOption:{"month":${month}}`).props.onPress());
+  await act(async () => radio(`tasks.form.dayOption:{"day":${day}}`).props.onPress());
+  await act(async () => button("tasks.form.done").props.onPress());
+}
+
+/** The zone field's trigger, and the name it announces. */
+const zoneTrigger = () => tree.root
+  .findAll(node => node.props.accessibilityRole === "button" && node.props.accessibilityLabel === "tasks.form.timezone")
+  .find(node => typeof node.props.onPress === "function")!;
+/** The announced zone: a concrete name, or the "desktop's zone" copy. */
+const zoneValue = (): string => zoneTrigger().props.accessibilityValue.text;
+/** Open the zone picker and choose one of its rows. */
+async function pickZone(label: string) {
+  await act(async () => zoneTrigger().props.onPress());
+  const option = tree.root
+    .findAll(node => node.props.accessibilityRole === "radio" && typeof node.props.onPress === "function")
+    .find(node => node.props.accessibilityLabel === label)!;
+  await act(async () => option.props.onPress());
+  await act(async () => button("tasks.form.done").props.onPress());
+}
+
 /** Pressable is a wrapper type, so rows are located by their press behaviour. */
 const pressables = () => tree.root.findAll(node => typeof node.props.onPress === "function" && node.props.accessibilityRole === "button");
 /**
@@ -261,8 +301,9 @@ test("edits every trigger shape and sends only its own fields", async () => {
   };
 
   await act(async () => chip("tasks.triggerMode.once").props.onPress());
-  await act(async () => input("tasks.form.date").props.onChangeText("2026-12-24"));
   // The picker, not a keystroke: this is the path a phone user takes.
+  await pickDate(2026, 12, 24);
+  expect(dateValue()).toBe("2026-12-24");
   await pickTime("18", "00");
   expect(timeValue()).toBe("18:00");
   expect(await save()).toMatchObject({ triggerKind: "schedule", trigger: { mode: "once", date: "2026-12-24", time: "18:00" } });
@@ -275,15 +316,18 @@ test("edits every trigger shape and sends only its own fields", async () => {
   expect(await save()).toMatchObject({ triggerKind: "schedule", trigger: { mode: "daily", time: "18:00" } });
 
   await act(async () => chip("tasks.triggerMode.weekly").props.onPress());
-  await act(async () => input("tasks.form.days").props.onChangeText("mon, fri"));
+  // Seven toggles, not a typed list: the desktop draws the same seven boxes.
+  await act(async () => chip("tasks.weekday.fri").props.onPress());
   expect(await save()).toMatchObject({ triggerKind: "schedule", trigger: { mode: "weekly", days: ["mon", "fri"], time: "18:00" } });
 
   await act(async () => chip("tasks.triggerMode.monthly").props.onPress());
   await act(async () => input("tasks.form.day").props.onChangeText("31"));
   expect(await save()).toMatchObject({ triggerKind: "schedule", trigger: { mode: "monthly", day: 31, time: "18:00" } });
 
-  await act(async () => chip("tasks.triggerMode.manual").props.onPress());
-  expect(await save()).toMatchObject({ triggerKind: "manual", trigger: {} });
+  // "Manual" is not a fresh choice any more: nothing starts such a task, so the
+  // desktop dropped it with the run-now button and the phone follows (a task
+  // that is already manual keeps its own chip — see the round-trip test).
+  expect(tree.root.findAll(node => node.props.accessibilityLabel === "tasks.triggerMode.manual")).toHaveLength(0);
 });
 
 test("explains the short-month rule and the full-permission warning", async () => {
@@ -385,8 +429,31 @@ test("starts on a weekly trigger's selected weekdays", async () => {
   rows = [{ ...rows[0]!, trigger: detail.trigger }];
   await remount();
   await openTask();
-  expect(input("tasks.form.days").props.value).toBe("mon,fri");
+  // The same seven toggles the desktop draws, with the stored set already on.
+  expect(chip("tasks.weekday.mon").props.accessibilityState.selected).toBe(true);
+  expect(chip("tasks.weekday.fri").props.accessibilityState.selected).toBe(true);
+  expect(chip("tasks.weekday.tue").props.accessibilityState.selected).toBe(false);
   expect(timeValue()).toBe("10:00");
+});
+
+// A task that is already manual keeps that option, so opening and saving it does
+// not quietly turn it into something that runs. Only *new* tasks lose the choice.
+test("keeps a manual task manual when it is edited", async () => {
+  detail = taskDetail({ triggerKind: "manual", trigger: {} });
+  rows = [{ ...rows[0]!, triggerKind: "manual", trigger: {} }];
+  await remount();
+  await openTask();
+
+  expect(chip("tasks.triggerMode.manual").props.accessibilityState.selected).toBe(true);
+  // No clock is read, so no time and no zone are asked for.
+  expect(tree.root.findAllByProps({ accessibilityLabel: "tasks.form.time" })).toHaveLength(0);
+  expect(tree.root.findAllByProps({ accessibilityLabel: "tasks.form.timezone" })).toHaveLength(0);
+
+  await act(async () => button("tasks.form.save").props.onPress());
+  expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({
+    triggerKind: "manual",
+    trigger: {},
+  }));
 });
 
 test("summarises every trigger shape on the list row", async () => {
@@ -537,26 +604,41 @@ test("carries the time zone the trigger times are read in", async () => {
   detail = taskDetail({ timezone: "Asia/Shanghai" });
   await openTask();
 
-  // The stored zone is shown, and the "desktop's zone" chip is not selected.
-  expect(input("tasks.form.timezone").props.value).toBe("Asia/Shanghai");
-  expect(chip("tasks.form.timezoneDesktop").props.accessibilityState.selected).toBe(false);
+  // The zone belongs to the schedule, so it is asked inside the trigger.
+  expect(zoneValue()).toBe("Asia/Shanghai");
 
-  await act(async () => chip("Europe/Berlin").props.onPress());
+  await pickZone("Europe/Berlin");
+  expect(zoneValue()).toBe("Europe/Berlin");
   await act(async () => button("tasks.form.save").props.onPress());
   expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({
     timezone: "Europe/Berlin",
   }));
 });
 
+// A zone outside the runtime's own list is still offered when the task carries
+// it: an edit never silently rewrites what the task already has.
+test("keeps a stored zone the picker's list does not contain", async () => {
+  detail = taskDetail({ timezone: "Antarctica/Troll" });
+  await openTask();
+  expect(zoneValue()).toBe("Antarctica/Troll");
+  await act(async () => button("tasks.form.save").props.onPress());
+  expect(mockRemote.updateTask).toHaveBeenCalledWith("tsk_1", expect.objectContaining({
+    timezone: "Antarctica/Troll",
+  }));
+});
+
 test("a new task sends the desktop's zone as an empty value", async () => {
   await act(async () => button("tasks.new").props.onPress());
-  expect(chip("tasks.form.timezoneDesktop").props.accessibilityState.selected).toBe(true);
 
+  // Nothing is asked about a clock until a mode reads one.
+  expect(tree.root.findAllByProps({ accessibilityLabel: "tasks.form.timezone" })).toHaveLength(0);
   await act(async () => input("tasks.form.name").props.onChangeText("zoned"));
   await act(async () => input("tasks.form.prompt").props.onChangeText("p"));
   await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
   await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
   await act(async () => chip("tasks.triggerMode.daily").props.onPress());
+  expect(zoneValue()).toBe("tasks.form.timezoneDesktop");
+
   await act(async () => button("tasks.form.save").props.onPress());
 
   // 空值 = "跟随桌面"——由桌面解析并落具体时区，手机不猜。
@@ -626,12 +708,18 @@ test("refuses to save a task that cannot run, and says which field is missing", 
   expect(texts()).toContain("tasks.form.problem.thinking");
   await act(async () => chip("tasks.thinkingLabels.medium").props.onPress());
 
+  // Nothing starts a scheduled task but its trigger, so the form asks for one
+  // the way it asks for a model — and says so before naming the date.
+  expect(texts()).toContain("tasks.form.problem.trigger");
+  expect(button("tasks.form.save").props.disabled).toBe(true);
+
   // A one-off needs a real date, which is the last field that can be wrong.
   await act(async () => chip("tasks.triggerMode.once").props.onPress());
   expect(texts()).toContain("tasks.form.problem.date");
   expect(button("tasks.form.save").props.disabled).toBe(true);
 
-  await act(async () => input("tasks.form.date").props.onChangeText("2026-12-24"));
+  await pickDate(2026, 12, 24);
+  expect(dateValue()).toBe("2026-12-24");
   expect(texts()).not.toContain("tasks.form.problem.date");
   expect(button("tasks.form.save").props.disabled).toBe(false);
 });
@@ -642,6 +730,7 @@ test("asks for a directory only for a workspace conversation, and is refused wit
   await act(async () => input("tasks.form.prompt").props.onChangeText("work"));
   await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
   await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
+  await act(async () => chip("tasks.triggerMode.daily").props.onPress());
   expect(button("tasks.form.save").props.disabled).toBe(false);
 
   await act(async () => chip("tasks.form.conversationWorkspace").props.onPress());
@@ -679,6 +768,7 @@ test("reports a create that the desktop refused, and keeps the draft", async () 
   await act(async () => input("tasks.form.prompt").props.onChangeText("work"));
   await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
   await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
+  await act(async () => chip("tasks.triggerMode.daily").props.onPress());
   mockRemote.createTask.mockRejectedValueOnce(new Error("desktop refused"));
   await act(async () => button("tasks.form.save").props.onPress());
 
@@ -774,6 +864,7 @@ test("creates a task that starts disabled", async () => {
   await act(async () => input("tasks.form.prompt").props.onChangeText("work"));
   await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
   await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
+  await act(async () => chip("tasks.triggerMode.daily").props.onPress());
   await act(async () => chip("tasks.form.disabled").props.onPress());
   await act(async () => button("tasks.form.save").props.onPress());
 
@@ -988,9 +1079,11 @@ test("ignores a stored draft whose fields have the wrong shape", async () => {
 
   expect(input("tasks.form.name").props.value).toBe("");
   expect(input("tasks.form.prompt").props.value).toBe("");
-  // The unreadable trigger falls back to the new-task default (manual, so no
-  // time is asked for at all) rather than to a half-read schedule.
-  expect(chip("tasks.triggerMode.manual").props.accessibilityState.selected).toBe(true);
+  // The unreadable trigger falls back to "not chosen" rather than to a half-read
+  // schedule or to the dead manual default: nothing is selected, and no clock is
+  // asked for (the time and zone rows only exist for a mode that reads one).
+  expect(tree.root.findAll(node => node.props.accessibilityLabel?.startsWith("tasks.triggerMode.") && node.props.accessibilityState?.selected === true)).toHaveLength(0);
+  expect(tree.root.findAllByProps({ accessibilityLabel: "tasks.form.timezone" })).toHaveLength(0);
 });
 
 // Merely opening a task is not work in progress: storing the task's own values
@@ -1014,13 +1107,16 @@ test("writes what is typed and forgets it once the task is saved", async () => {
 
   await act(async () => chip("DeepSeek V4 Pro · Future 平台").props.onPress());
   await act(async () => chip("tasks.thinkingLabels.high").props.onPress());
+  await act(async () => chip("tasks.triggerMode.daily").props.onPress());
   await act(async () => button("tasks.form.save").props.onPress());
   expect(await loadTaskDraft(createDraftKey())).toBeNull();
 });
 
-// Backing out of the form is leaving the work behind: the next open must show
-// the task as the desktop has it, not a page of edits nobody kept.
-test("forgets the draft when the user backs out of the form", async () => {
+// Back is not "throw this away": the system gesture and the header arrow are how
+// the phone leaves a screen, and a form interrupted by a phone call is exactly
+// why this draft exists. Only the two deliberate endings clear it — Cancel, and
+// a save that landed.
+test("keeps the draft when the user backs out of the form", async () => {
   await saveTaskDraft(editDraftKey(), storedDraft({ prompt: "edited locally" }), detail.promptVersion);
   let goBackLevel: () => boolean = () => false;
   await remount({
@@ -1033,7 +1129,11 @@ test("forgets the draft when the user backs out of the form", async () => {
   expect(input("tasks.form.prompt").props.value).toBe("edited locally");
 
   await act(async () => { expect(goBackLevel()).toBe(true); });
-  expect(await loadTaskDraft(editDraftKey())).toBeNull();
+  // The form is gone, the work is not.
+  expect(tree.root.findAllByProps({ accessibilityLabel: "tasks.form.prompt" })).toHaveLength(0);
+  expect(await loadTaskDraft(editDraftKey())).toMatchObject({
+    draft: expect.objectContaining({ prompt: "edited locally" }),
+  });
 });
 
 test("forgets a new task's draft when it is cancelled", async () => {
