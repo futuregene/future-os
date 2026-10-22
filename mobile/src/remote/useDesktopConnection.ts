@@ -97,6 +97,25 @@ export interface DesktopConnectionOptions {
    * `state.control` packet.
    */
   controlChanged?(control: "active" | "standby"): void;
+  /**
+   * This machine ended the pairing — deliberately, or because the platform
+   * revoked this device's credentials.
+   *
+   * Both are definitive and neither is a connection problem: the phone must
+   * drop the desktop instead of offering a retry that can never succeed. The
+   * runtime decides how (see `RemoteContext`), because removing a pairing is
+   * the app's business rather than one connection's.
+   */
+  onUnpaired?(): void;
+  /**
+   * Ask the platform whether this pairing still exists.
+   *
+   * Injected rather than imported: pairing is the app's business, and a
+   * connection should not know how a pairing is kept. Resolves while the pairing
+   * is still valid (the challenge is the platform's answer), rejects with a
+   * credential error once it is not.
+   */
+  verifyPairing?(credentials: RemoteCredentials): Promise<unknown>;
   closeConversation(): void;
   resetConversation(): void;
   resetCatalog(): void;
@@ -175,6 +194,8 @@ export function useDesktopConnection({
   refreshWorkspaces,
   noteCatalogRevisions,
   controlChanged,
+  onUnpaired,
+  verifyPairing,
   closeConversation,
   resetConversation,
   resetCatalog,
@@ -355,10 +376,16 @@ export function useDesktopConnection({
         },
         onPresence: (nextPresence) => {
           if (access !== accessRef.current) return;
-          // Both terminal notices describe *this* pairing ending, and both mean
-          // the same thing to the phone: stop, mirror nothing, and keep the
-          // local pairing so the user can retry or remove it deliberately.
+          // `unpaired` is the desktop ending this pairing, and `disconnected` is
+          // it merely stepping away. Only the first is final: the second keeps
+          // the local pairing so the user can retry, which is why the two take
+          // different branches here.
           if (nextPresence.unpaired) {
+            // The desktop ended the pairing on its side. Nothing is left to
+            // retry, so the app is told to forget this machine outright — the
+            // teardown below is only what keeps the screen sane for the moment
+            // before that lands.
+            onUnpaired?.();
             accessRef.current += 1;
             connectionReadyRef.current = false;
             clientRef.current = null;
@@ -481,6 +508,11 @@ export function useDesktopConnection({
             // than leaving the UI disabled until the next heartbeat/timer.
             updateDesktopOnline(latestPresenceRef.current, Date.now());
           } else if (state === "revoked" || state === "unpaired") {
+            // `revoked` is the client's word for a credential the platform
+            // refused to renew — definitive, and the same ending as the host's
+            // own unpaired notice. (`unpaired` here is the FSM's initial state,
+            // not a verdict: it arrives on a shutdown, so it decides nothing.)
+            if (state === "revoked") onUnpaired?.();
             void discardPendingPrompt(nextCredentials.pairId);
             void discardPendingContinuation(nextCredentials.pairId);
             setCapabilities(new Set());
@@ -529,6 +561,7 @@ export function useDesktopConnection({
       handleEvent,
       noteCatalogRevisions,
       noteControl,
+      onUnpaired,
       reconcileSession,
       recordError,
       stopClient,
@@ -572,7 +605,7 @@ export function useDesktopConnection({
       void stopClient(clientRef.current);
       clientRef.current = null;
     };
-  }, [clientRef, connect, desktopId, stopClient]);
+  }, [clientRef, connect, desktopId, onUnpaired, stopClient]);
 
   /**
    * Recover this connection.
@@ -647,6 +680,44 @@ export function useDesktopConnection({
   }, [clientRef]);
 
   const clearError = useCallback(() => setError(null), []);
+
+  /**
+   * A connection that gave up asked the platform whether the pairing still
+   * exists.
+   *
+   * "Failed" is the terminal state of a handshake that got no answer — the
+   * desktop is asleep, its bridge is gone, or the pairing was revoked while the
+   * phone was in the background and the host's `unpaired` notice was published
+   * to nobody. The first two are retryable and belong to the desktop; the third
+   * only looks like one, and used to leave the phone on "已断开 / 重试" against a
+   * pairing that no longer exists. A credential refresh is the one question the
+   * phone can ask itself: the platform answers `invalid_remote_credential` for a
+   * pairing it no longer has, and hands out a fresh JWT for one it does. A
+   * refresh rotates nothing here (the platform issues no new refresh token), so
+   * a successful check costs one request and changes nothing.
+   */
+  const verificationRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (phase !== "failed") {
+      verificationRef.current = null;
+      return;
+    }
+    const current = credentialsRef.current;
+    if (!current) return;
+    // One check per failure episode: `phase` stays "failed" while the screen
+    // offers its retry, and a rebuild bumps the phase before it can fail again.
+    const episode = current.pairId;
+    if (verificationRef.current === episode) return;
+    verificationRef.current = episode;
+    // A caller without the check (an embedding that has no platform) leaves the
+    // failure as it is rather than reading it as a revocation.
+    if (!verifyPairing) return;
+    void verifyPairing(current).catch((failure) => {
+      if (classifyError(failure) !== "authTerminal") return;
+      // Definitive: this device is not paired to that desktop any more.
+      onUnpaired?.();
+    });
+  }, [credentialsRef, onUnpaired, phase, verifyPairing]);
 
   // A heartbeat that stopped is only visible against the clock. Judging it here
   // (rather than on a push) is what makes a silently dead desktop read as
