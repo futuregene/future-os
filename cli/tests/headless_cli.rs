@@ -81,30 +81,67 @@ fn relay_flags_are_accepted_in_both_spellings() {
     }
 }
 
-/// The headless entry point starts with no runtime flag at all, and first-time
-/// setup refuses a redirected terminal *before* any state is touched.
+/// The headless entry point starts with no runtime flag at all, and a first
+/// launch with no Future account is a supported state: it serves everything
+/// local and keeps the remote desktop closed instead of exiting.
+#[cfg(unix)]
 #[test]
-fn a_plain_launch_needs_no_headless_flag() {
+fn a_plain_launch_serves_locally_without_an_account() {
+    use std::time::Duration;
+
     let home = tempfile::tempdir().unwrap();
-    let result = headless(home.path()).output().unwrap();
-    assert_eq!(result.status.code(), Some(1));
-    let error = String::from_utf8_lossy(&result.stderr);
-    assert!(error.contains("interactive terminal"), "{error}");
-    assert!(result.stdout.is_empty());
+    let mut guard = ChildGuard(foreground(home.path()).spawn().unwrap());
+    let child = &mut guard.0;
+    let mut log = Stderr::take(child);
+    log.wait_for("Not signed in to FutureOS", Duration::from_secs(300));
+    log.wait_for("Remote: Stopped", Duration::from_secs(300));
+    // The run is *serving*, not stuck: it is still up a few sleeps later, which
+    // is what a local-only host has to be able to promise.
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "a signed-out host must keep serving locally:\n{}",
+        log.collected
+    );
+    // Local state is real: the app store and the Agent exist, pairing does not.
+    assert!(home.path().join(".future/app/app.db").exists());
     assert!(!home.path().join(".future/remote_pairing.json").exists());
-    assert!(!home.path().join(".future/app/app.db").exists());
+    signal(child, "-INT");
+    let status = wait_for_signal_exit(child, &mut log, Duration::from_secs(120));
+    assert!(
+        status.success(),
+        "SIGINT must stop it cleanly: {status}\n{}",
+        log.collected
+    );
 }
 
+/// A redirected log never receives authorization material — and since this
+/// entry point no longer runs a login of its own, it prints none of it at all.
+/// What it does print says where to sign in.
+#[cfg(unix)]
 #[test]
-fn first_setup_refuses_redirected_logs_without_printing_authorization_material() {
+fn first_setup_prints_no_authorization_material() {
+    use std::time::Duration;
+
     let home = tempfile::tempdir().unwrap();
-    let result = headless(home.path()).output().unwrap();
-    assert!(!result.status.success());
-    let error = String::from_utf8_lossy(&result.stderr);
-    assert!(error.contains("interactive terminal"), "{error}");
-    assert!(result.stdout.is_empty());
-    assert!(!home.path().join(".future/remote_pairing.json").exists());
-    assert!(!error.contains("Started the bundled Agent"));
+    let mut guard = ChildGuard(foreground(home.path()).spawn().unwrap());
+    let child = &mut guard.0;
+    let mut log = Stderr::take(child);
+    log.wait_for("Not signed in to FutureOS", Duration::from_secs(300));
+    log.drain();
+    assert!(
+        !log.collected.contains("PHONE PAIRING") && !log.collected.contains("user code"),
+        "a signed-out launch must print no invitation or device code:\n{}",
+        log.collected
+    );
+    assert!(
+        log.collected.contains("future auth login"),
+        "it must say how to sign in instead:\n{}",
+        log.collected
+    );
+    signal(child, "-INT");
+    let status = wait_for_signal_exit(child, &mut log, Duration::from_secs(120));
+    assert!(status.success(), "{status}\n{}", log.collected);
 }
 
 #[test]
@@ -250,8 +287,8 @@ fn terminal_signals_cancel_startup_and_leave_the_external_endpoint_alone() {
 // remote supervision (`src/headless/mod.rs::session`).
 //
 // `src/headless/mod.rs` has a `#[cfg(test)] mod tests` that can drive the parts
-// of that module which take their inputs as parameters (`ensure_login`,
-// `wait_for_login`, `print_invitation`, …). The session body is different: it is
+// of that module which take their inputs as parameters (`account_action`, the
+// startup notice, the skill bootstrap, …). The session body is different: it is
 // the entry point itself — it reads the real account file, starts the real
 // embedded Agent, spawns the background observers and then supervises the remote
 // bridge for the lifetime of the process. No unit test can run it, because the
@@ -265,9 +302,10 @@ fn terminal_signals_cancel_startup_and_leave_the_external_endpoint_alone() {
 // so both arms below are deterministic and offline.
 // ---------------------------------------------------------------------------
 
-/// What a loopback platform answers on its *pairing* endpoints. Both modes serve
-/// the account profile, because passing that check is what lets the session get
-/// past login at all.
+/// What a loopback platform answers on its *pairing* endpoints. The account
+/// profile endpoint always answers 200: no arm here depends on the entry point
+/// asking the platform about the account any more (that is the remote
+/// supervisor's job now), so the fixture only has to keep requests answered.
 #[cfg(unix)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Platform {
@@ -582,6 +620,28 @@ fn wait_for_exit(
 }
 
 #[cfg(unix)]
+fn wait_for_signal_exit(
+    child: &mut std::process::Child,
+    log: &mut Stderr,
+    budget: std::time::Duration,
+) -> std::process::ExitStatus {
+    let deadline = std::time::Instant::now() + budget;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            log.drain();
+            return status;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            log.drain();
+            panic!("the run did not exit within {budget:?}:\n{}", log.collected);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+#[cfg(unix)]
 fn signal(child: &std::process::Child, signal: &str) {
     let sent = Command::new("kill")
         .args([signal, &child.id().to_string()])
@@ -612,7 +672,7 @@ fn a_deferred_remote_start_keeps_serving_and_stops_on_a_signal() {
 
     // The whole preamble has to have run for this line to appear: the account
     // file was read, the embedded Agent started, the profile check passed.
-    log.wait_for("Platform login authorized", Duration::from_secs(300));
+    log.wait_for("Platform account signed in", Duration::from_secs(300));
     // …and this one proves the remote supervision loop was entered, with the
     // phase the platform's failure must produce rather than a terminal one.
     log.wait_for("Remote: Reconnecting", Duration::from_secs(300));
@@ -685,9 +745,9 @@ fn a_login_change_while_supervising_stops_the_run_with_that_reason() {
     let mut log = Stderr::take(child);
 
     // The whole preamble has to have run before either line appears: the account
-    // file was read, the embedded Agent started, the profile check passed, and
-    // the remote supervision loop produced its first phase.
-    log.wait_for("Platform login authorized", Duration::from_secs(300));
+    // file was read, the embedded Agent started, the account was pinned, and the
+    // remote supervision loop produced its first phase.
+    log.wait_for("Platform account signed in", Duration::from_secs(300));
     log.wait_for("Remote: Reconnecting", Duration::from_secs(300));
     // A deferred phase is not terminal, so the run is still serving here — which
     // is what makes the exit below the rotation's effect and not a startup
@@ -735,7 +795,7 @@ fn a_login_change_while_supervising_stops_the_run_with_that_reason() {
     // carries the bare loopback origin.)
     assert!(
         log.collected
-            .contains(&format!("Platform login authorized ({}).", platform.url)),
+            .contains(&format!("Platform account signed in ({}).", platform.url)),
         "the run must have authorized the original account first:\n{}",
         log.collected
     );
@@ -751,6 +811,72 @@ fn a_login_change_while_supervising_stops_the_run_with_that_reason() {
         "a stopped run may not print an invitation:\n{}",
         log.collected
     );
+}
+
+/// Signed out is a supported state, and a login that arrives while the run is up
+/// is served without a restart — the flow a fresh machine uses: `future host`
+/// first, then `future auth login` from another terminal.
+///
+/// The assertion is deliberately about effects the login alone can produce: the
+/// run never asked the platform anything before the account appeared, and the
+/// pairing call afterwards is proof the remote supervisor was really started for
+/// the new account rather than merely printed about.
+#[cfg(unix)]
+#[test]
+fn a_login_that_appears_under_a_running_host_is_served_without_a_restart() {
+    use std::time::Duration;
+
+    let home = tempfile::tempdir().unwrap();
+    let platform = FakePlatform::start(Platform::PairingDown);
+
+    let mut guard = ChildGuard(foreground(home.path()).spawn().unwrap());
+    let child = &mut guard.0;
+    let mut log = Stderr::take(child);
+
+    // Local-only first: no account file at all is what this entry point sees on
+    // a machine that has never signed in.
+    log.wait_for("Not signed in to FutureOS", Duration::from_secs(300));
+    log.wait_for("Remote: Stopped", Duration::from_secs(300));
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "a signed-out host must keep serving locally:\n{}",
+        log.collected
+    );
+    assert!(
+        !platform
+            .served()
+            .iter()
+            .any(|path| path.ends_with("/client/v1/remote/auth/token")),
+        "signed out must not start the remote desktop: {:?}",
+        platform.served()
+    );
+
+    // `future auth login` from another terminal: the durable state it writes
+    // (through the Agent when one answers, straight into auth.json otherwise).
+    signed_in_home(home.path(), &platform.url);
+
+    log.wait_for("Platform account signed in", Duration::from_secs(60));
+    // The phase names the platform's answer to the pairing call, which only a
+    // real remote start produces — a message alone would not prove it.
+    log.wait_for("Remote: Reconnecting", Duration::from_secs(120));
+    assert!(
+        platform
+            .served()
+            .iter()
+            .any(|path| path.ends_with("/client/v1/remote/auth/token")),
+        "adopting the login must start the remote desktop: {:?}",
+        platform.served()
+    );
+    assert!(
+        child.try_wait().unwrap().is_none(),
+        "the run must keep serving after adopting the login:\n{}",
+        log.collected
+    );
+
+    signal(child, "-INT");
+    let status = wait_for_signal_exit(child, &mut log, Duration::from_secs(120));
+    assert!(status.success(), "{status}\n{}", log.collected);
 }
 
 /// The other terminal phase: a pairing the platform has revoked cannot be used,
@@ -781,7 +907,7 @@ fn a_revoked_pairing_stops_the_run_with_the_reason_and_drops_the_credential() {
         "the revoked arm must have asked for a credential refresh: {served:?}"
     );
     assert!(
-        log.collected.contains("Platform login authorized"),
+        log.collected.contains("Platform account signed in"),
         "the stop must come from the pairing, not from login:\n{}",
         log.collected
     );
@@ -856,7 +982,7 @@ fn a_non_auto_agent_mode_never_starts_an_embedded_agent() {
         // The refusal precedes login: no platform request was ever made for a
         // run that cannot have an Agent to serve it.
         assert!(
-            !log.collected.contains("Platform login authorized"),
+            !log.collected.contains("Platform account signed in"),
             "agent mode {mode:?} must fail before login:\n{}",
             log.collected
         );
