@@ -133,8 +133,8 @@ fn read_latest() -> Result<Option<Record>, AppError> {
     Ok(Some(record))
 }
 
-// The process lock survives page unmounts and distinguishes a live operation
-// from a record left behind by a crash (where Drop never runs).
+/// The process lock survives page unmounts and distinguishes a live operation
+/// from a record left behind by a crash (where Drop never runs).
 fn transaction_lock() -> Result<std::fs::File, AppError> {
     std::fs::create_dir_all(root())?;
     Ok(std::fs::OpenOptions::new()
@@ -143,6 +143,25 @@ fn transaction_lock() -> Result<std::fs::File, AppError> {
         .create(true)
         .truncate(false)
         .open(root().join("transaction.lock"))?)
+}
+
+/// Takes the transaction lease, giving a lock that only a just-forked child still
+/// holds the moment it needs to exec the chance to disappear first (see
+/// [`LEASE_SETTLE_STEP`]). A lease another process really is holding is still
+/// refused — after the wait, and with the same message.
+fn acquire_transaction_lease() -> Result<std::fs::File, AppError> {
+    let lease = transaction_lock()?;
+    let mut waited = 0;
+    loop {
+        match lease.try_lock_exclusive() {
+            Ok(()) => return Ok(lease),
+            Err(_) if waited < LEASE_SETTLE_ATTEMPTS => {
+                waited += 1;
+                std::thread::sleep(LEASE_SETTLE_STEP);
+            }
+            Err(_) => return Err(AppError::from("Another update transaction is active")),
+        }
+    }
 }
 
 pub(super) fn latest() -> Result<Option<Record>, AppError> {
@@ -302,14 +321,29 @@ impl Drop for Inner {
 
 #[derive(Clone)]
 pub(super) struct Operation(Arc<Mutex<Inner>>);
+
+/// How long `begin` waits for a lease that is only *transiently* held.
+///
+/// The lease is a file lock, and this process spawns children constantly — the
+/// CLI runner, the installer, terminal shells. A child forked by another thread
+/// keeps a copy of every descriptor that is open at that instant, including this
+/// lease, until it execs; until then the lock reads as held by nobody in
+/// particular. That window was reported as
+/// `Another update transaction is active` — measured on CI: a red desktop run
+/// whose own case had started no update at all (run 39802801818).
+///
+/// Waiting before refusing costs a genuinely concurrent installation nothing: it
+/// holds the lease for the length of that installation, which is minutes, so the
+/// outcome is the same refusal either way. The window being waited out is the
+/// fork-to-exec gap, which is microseconds.
+const LEASE_SETTLE_STEP: std::time::Duration = std::time::Duration::from_millis(10);
+const LEASE_SETTLE_ATTEMPTS: usize = 25;
+
 impl Operation {
     pub(super) fn begin(version: &str) -> Result<Self, AppError> {
         // Recover an abandoned pre-install record before reserving a new one.
         let _ = latest()?;
-        let lease = transaction_lock()?;
-        lease
-            .try_lock_exclusive()
-            .map_err(|_| AppError::from("Another update transaction is active"))?;
+        let lease = acquire_transaction_lease()?;
         if read_latest()?.is_some_and(|record| {
             !record.repair_acknowledged
                 && (record.outcome.is_none()

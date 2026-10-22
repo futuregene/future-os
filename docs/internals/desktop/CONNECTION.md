@@ -431,6 +431,19 @@ answers** is in standby, the merged view shows the takeover page rather than
 "no conversations yet", because a standby machine is sent no catalogue and an
 empty list described somebody else's machine as an empty one.
 
+**A standby machine's settings are not reachable at all (2026-10-22).** Gating
+the reads left the way in open: all five rows on the device page opened a page
+of greyed-out switches under a red line, and the approval radios were not even
+disabled — they only asked whether the machine was online, so a tap wrote a
+command the host answers with `superseded`. The gate therefore moved to the
+entrance: while `presence.control === "standby"` the device page draws no rows
+at all, and what is left is the banner above them (holder, reason, takeover).
+The machine's name and icon stay editable — those are this phone's own record of
+it. A level that is already open when control is taken gives way to the banner,
+and comes back in the same render once this phone has the machine again.
+Desktop-scoped writes are also refused in their handler rather than only at the
+route, so the rule does not depend on a caller remembering to ask.
+
 **Whether the client is there (2026-10-20).** Everything above describes the
 *machine's* half of a device: its bridge, its connection, its credential. None
 of it says whether anybody is behind it. A client that was disconnected (or

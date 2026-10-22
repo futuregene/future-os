@@ -117,6 +117,16 @@ pub trait PairingHost: Send + Sync {
     ) -> BoxFuture<'_, HostResult<Invitation>>;
     fn refresh(&self, creds: PairingCreds) -> BoxFuture<'_, HostResult<PairingCreds>>;
     fn queue_revoke(&self, creds: &PairingCreds) -> HostResult<()>;
+    /// Queue a revoke for an invitation that never became a pairing.
+    ///
+    /// An invitation nobody claimed has no credential here — it enters the book
+    /// only when a device completes the handshake — so `queue_revoke` cannot
+    /// describe it. The platform still holds the row it minted, and that row
+    /// counts against the per-desktop cap until it expires: several presses of
+    /// "add a device" and then "cancel" therefore left the machine unable to add
+    /// anything, with nothing on screen to explain it. The pair id is enough to
+    /// delete the row, and the delivery is retried like any other revoke.
+    fn queue_revoke_invitation(&self, pair_id: &str) -> HostResult<()>;
     fn retry_revokes(&self) -> BoxFuture<'_, HostResult<()>>;
 }
 pub trait FileHost: Send + Sync {

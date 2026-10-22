@@ -161,13 +161,18 @@ PAIR_EXEMPT = ("docs/testing/", "docs/archives/testing/")
 # Docs whose missing language pair is scheduled for the bilingualization PR.
 # Each entry is the path of the existing file (relative to the repo root,
 # POSIX separators). Adding a pair without removing the entry is an error.
+#
+# Empty, and it should stay that way: `docs/hpc-westlake-guide.zh-CN.md` was its
+# only entry, and that page was removed from the tree rather than given an
+# English pair — a guide for one institution's cluster, which the repository
+# does not otherwise document. With no debt left, --strict-pending passes and
+# `make check-docs` is a clean gate again instead of a standing red that every
+# unrelated change had to explain.
+#
+# Kept as a dict literal rather than `set()`: `scripts/tests/test-check-docs.py`
+# builds its debt fixture by inserting an entry after this assignment's opening
+# brace.
 BILINGUAL_PENDING = {
-    # The HPC guide was written Chinese-first and its English pair is still to
-    # be written (#1296 added it without either). Registered here so the
-    # ordinary run reports it as pending debt instead of a failure that every
-    # unrelated change has to explain; --strict-pending still fails until the
-    # pair lands and this entry is removed.
-    "docs/hpc-westlake-guide.zh-CN.md",
 }
 
 

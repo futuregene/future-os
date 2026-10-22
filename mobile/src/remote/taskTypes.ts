@@ -28,6 +28,12 @@ export interface RemoteTaskRow {
   enabled: boolean;
   triggerKind: string;
   trigger: Record<string, unknown>;
+  /**
+   * IANA zone the trigger times are read in (absent on a desktop that predates
+   * the field in list rows). `nextDueAt` is an instant, so this is what lets a
+   * row describe it on the task's clock rather than the phone's.
+   */
+  timezone?: string;
   nextDueAt?: number | null;
   queued?: boolean;
   /**
@@ -45,8 +51,6 @@ export interface RemoteTaskDetail extends RemoteTaskRow {
   cwd: string;
   modelId?: string | null;
   thinkingLevel?: string | null;
-  /** IANA zone the trigger times are read in; absent on an older desktop. */
-  timezone?: string;
   sessionPolicy: string;
   /** `keep` (default) or `delete`; only meaningful with `sessionPolicy: "new"`. */
   sessionRetention?: string;
