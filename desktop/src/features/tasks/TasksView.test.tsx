@@ -551,6 +551,30 @@ describe("tasksView", () => {
     expect(created?.[1]).toMatchObject({ input: { timezone: "" } });
   });
 
+  // The zone says which clock the trigger's times are read on, so it belongs to
+  // the trigger: the form asks which trigger first and offers a zone only for a
+  // mode that has times, inside the trigger's fieldset. "Every N minutes" counts
+  // from the previous run and a manual task has no schedule, so neither has a
+  // clock to name.
+  it("asks for the time zone inside the trigger, only for a mode that has times", async () => {
+    const { container } = await renderView([]);
+    await click(buttonByText(container, "New scheduled task"));
+
+    expect(fieldOrNull(container, "Time zone")).toBeNull();
+
+    await setValue(triggerModeSelect(container), "interval");
+    expect(fieldOrNull(container, "Time zone")).toBeNull();
+
+    await setValue(triggerModeSelect(container), "daily");
+    const select = field(container, "Time zone");
+    const fieldset = select.closest("fieldset");
+    expect(fieldset, "the zone is asked for inside the trigger").not.toBeNull();
+    const controls = [...fieldset!.querySelectorAll("select")];
+    // The trigger mode is still the first question; the zone follows it.
+    expect(controls.indexOf(triggerModeSelect(container))).toBe(0);
+    expect(controls.indexOf(select as HTMLSelectElement)).toBeGreaterThan(0);
+  });
+
   it("refuses a save without a model or a thinking level", async () => {
     const { container } = await renderView([]);
     await click(buttonByText(container, "New scheduled task"));
