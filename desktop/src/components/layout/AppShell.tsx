@@ -304,7 +304,10 @@ function ReadyAppShell({
     refreshBalance: refreshFutureBalance,
     status: futureSessionStatus,
   } = useFutureAccount(initialAuth);
-  const { appSettings, changeSettings } = useAppSettings(futureSessionStatus);
+  const { appSettings, appSettingsReady, changeSettings } = useAppSettings(futureSessionStatus);
+  // Startup defaults must never briefly expose commercial entries before the
+  // persisted community preference has arrived.
+  const communityEdition = !appSettingsReady || appSettings.communityEdition;
   // Remote desktops (client role). Enabled for the whole session: the merged
   // conversation list is the chat section's own list, so a peer appearing must
   // update it without the user having visited the Remote Desktops screen first.
@@ -1466,7 +1469,7 @@ function ReadyAppShell({
     futureBalance,
     futureSessionStatus,
     userEmail: futureEmail,
-    communityEdition: appSettings.communityEdition,
+    communityEdition,
     onRecharge: handleRecharge,
     onOpenUpdate: handleOpenUpdate,
     skillIntroDismissed: appSettings.skillIntroDismissed,
@@ -1531,7 +1534,7 @@ function ReadyAppShell({
   // The startup coordinator has already settled the first account/provider
   // snapshot, so this branch can choose its first visible page atomically.
   if (showGate)
-    return <OnboardingGate autoLogin={forceOnboarding} hasAnyProvider={hasAnyProvider} initPending={initPending} modelsReady={modelOptions.length > 0} onEnableBYOK={enableBYOK} onInitComplete={finishInit} onCancelLogin={cancelLogin} />;
+    return <OnboardingGate communityEdition={communityEdition} autoLogin={forceOnboarding} hasAnyProvider={hasAnyProvider} initPending={initPending} modelsReady={modelOptions.length > 0} onEnableBYOK={enableBYOK} onInitComplete={finishInit} onCancelLogin={cancelLogin} />;
 
   return (
     <div className="relative flex h-full min-h-0 overflow-hidden bg-canvas text-ink">

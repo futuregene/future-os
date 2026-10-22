@@ -145,7 +145,8 @@
     "envTest": "Test",
     "chooseModelTitle": "Choose your AI model",
     "chooseModelHint": "You can switch models anytime during the conversation",
-    "start": "Get started"
+    "start": "Get started",
+    "communitySubtitle": "Configure your own model provider to get started."
   },
   "agentStatus": {
     "wait": "Please wait a moment.",
