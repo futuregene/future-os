@@ -794,6 +794,18 @@ impl ChatArea {
     }
 
     pub fn update_last_message(&mut self, content: &str) {
+        // The run's final text belongs below the activity that produced it. A
+        // tool result or an approval decision row is a *later* message than the
+        // assistant message that started the turn, so writing the text back
+        // into `find_assistant_index()` would paint the answer above those
+        // rows — the manual-approval case ("Allowed: …" is a `System` row
+        // pushed between the tool calls and the final answer).
+        if self.starts_new_assistant_segment() {
+            if !content.is_empty() {
+                self.add_message(ChatMessage::new(new_id(), ChatRole::Assistant, content));
+            }
+            return;
+        }
         if let Some(idx) = self.find_assistant_index() {
             self.messages[idx].content = content.to_string();
             self.messages[idx].pending = true;
@@ -805,13 +817,10 @@ impl ChatArea {
     }
 
     pub fn append_to_last_message(&mut self, delta: &str) {
-        // When the last message is a tool result from a previous turn, a new
-        // assistant response is starting — push a fresh message.
-        if self
-            .messages
-            .last()
-            .is_some_and(|m| m.role == ChatRole::Tool)
-        {
+        // Text that follows this turn's activity starts a fresh assistant
+        // message, so it renders after the tool/approval rows instead of being
+        // appended to the turn's opening assistant message above them.
+        if self.starts_new_assistant_segment() {
             self.add_message(ChatMessage::new(new_id(), ChatRole::Assistant, ""));
         }
         if let Some(idx) = self.find_assistant_index() {
@@ -819,6 +828,19 @@ impl ChatArea {
             self.messages[idx].pending = true;
             self.mark_message_dirty(idx);
         }
+    }
+
+    /// Whether the transcript's tail is activity rows this turn owns (`Tool`
+    /// result, `System` notice such as an approval decision) rather than the
+    /// assistant message that the next text continues.
+    ///
+    /// A trailing `User` message is deliberately *not* activity: it is a prompt
+    /// queued for the next turn (`enqueue_if_busy`), and the running turn's
+    /// text still belongs to the assistant message above it.
+    fn starts_new_assistant_segment(&self) -> bool {
+        self.messages
+            .last()
+            .is_some_and(|m| matches!(m.role, ChatRole::Tool | ChatRole::System))
     }
 
     pub fn mark_last_assistant_stopped(&mut self) {
@@ -3634,6 +3656,68 @@ mod tests {
         // A fresh assistant message was pushed after the tool result.
         assert_eq!(chat.messages.last().unwrap().role, ChatRole::Assistant);
         assert_eq!(chat.messages.last().unwrap().content, "hello");
+    }
+
+    /// A manual-approval session interleaves a `System` row ("Allowed: …")
+    /// between the tool call and the text that follows it. The text has to land
+    /// *after* that row, not in the turn's opening assistant message above the
+    /// call — otherwise the final answer renders before the calls that produced
+    /// it (measured on a `[manual]` session, 2026-10-22).
+    #[test]
+    fn append_to_last_message_after_an_approval_row_starts_new_assistant() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "prompt"));
+        chat.add_message(ChatMessage::new("a".into(), ChatRole::Assistant, ""));
+        chat.add_tool_start("c1", "shell", None);
+        chat.finish_tool("c1", None, false);
+        chat.add_message(ChatMessage::new(
+            "s1".into(),
+            ChatRole::System,
+            "Allowed: Approve shell command",
+        ));
+        chat.append_to_last_message("final answer");
+        assert_eq!(chat.messages.last().unwrap().role, ChatRole::Assistant);
+        assert_eq!(chat.messages.last().unwrap().content, "final answer");
+        assert_eq!(
+            chat.messages[1].content, "",
+            "the assistant message above the tool call must not collect the answer"
+        );
+    }
+
+    /// `agent_end` carries the run's final text; it takes the same position
+    /// decision as a streamed delta.
+    #[test]
+    fn the_final_text_lands_after_the_approval_rows_it_followed() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_message(ChatMessage::new("u".into(), ChatRole::User, "prompt"));
+        chat.add_message(ChatMessage::new("a".into(), ChatRole::Assistant, ""));
+        chat.add_tool_start("c1", "shell", None);
+        chat.finish_tool("c1", None, false);
+        chat.add_message(ChatMessage::new(
+            "s1".into(),
+            ChatRole::System,
+            "Allowed: Approve shell command",
+        ));
+        chat.update_last_message("final answer");
+        assert_eq!(chat.messages.last().unwrap().role, ChatRole::Assistant);
+        assert_eq!(chat.messages.last().unwrap().content, "final answer");
+        assert_eq!(chat.messages[1].content, "");
+    }
+
+    /// A prompt queued mid-stream (`enqueue_if_busy`) is the *next* turn: it
+    /// must not split the running turn, whose remaining text still belongs to
+    /// the assistant message above the queued row.
+    #[test]
+    fn a_queued_prompt_does_not_split_the_running_turn() {
+        let mut chat = new_chat();
+        chat.render(W);
+        chat.add_message(ChatMessage::new("a".into(), ChatRole::Assistant, "stream"));
+        chat.add_message(ChatMessage::new("u2".into(), ChatRole::User, "queued"));
+        chat.append_to_last_message(" tail");
+        assert_eq!(chat.messages[0].content, "stream tail");
+        assert_eq!(chat.messages.last().unwrap().role, ChatRole::User);
     }
 
     #[test]
