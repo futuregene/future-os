@@ -1036,9 +1036,23 @@ async fn config_wizard_saves_through_a_running_agent() {
 /// A stand-in for the Future platform during `auth login`: the two POSTs the
 /// device-code flow makes, with fixed answers, and a record of the paths it was
 /// asked for (so a login that never consulted the platform cannot pass).
+///
+/// The fixture answers requests; it does not police the client. A connection that
+/// carries no request is closed and ignored, and anything malformed gets a `400`
+/// and a line in [`MockPlatform::faults`] instead of a panic. That is not
+/// leniency for its own sake: an `assert!` here runs on the listener thread, so a
+/// panic kills the thread and drops the listener, and the request the test is
+/// actually about then fails with `Network error` — a red run that blames the
+/// login for something the fixture did to itself (see the note on
+/// [`MockPlatform::faults`]).
 struct MockPlatform {
     base_url: String,
     paths: Arc<Mutex<Vec<String>>>,
+    /// Requests this fixture could not serve. Empty for a healthy run; a test
+    /// that cares asserts on it. Every entry names what arrived, because the
+    /// alternative — panicking on the thread that owns the listener — turned an
+    /// empty connection into a red login test with no mention of the connection.
+    faults: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -1053,9 +1067,11 @@ impl MockPlatform {
             .set_nonblocking(true)
             .expect("non-blocking listener");
         let paths = Arc::new(Mutex::new(Vec::new()));
+        let faults = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let paths = Arc::clone(&paths);
+            let faults = Arc::clone(&faults);
             let stop = Arc::clone(&stop);
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
@@ -1081,31 +1097,83 @@ impl MockPlatform {
                         .unwrap();
                     let mut request = std::io::BufReader::new(&mut socket);
                     let mut line = String::new();
-                    request.read_line(&mut line).expect("request line");
+                    match request.read_line(&mut line) {
+                        Ok(0) => {
+                            // Connected, then gone without a byte. Seen on a loaded
+                            // Windows runner roughly every other full-suite run, and
+                            // followed by the same client's real request on a new
+                            // connection — a connect the client abandoned and retried.
+                            // Nothing was asked of this fixture, so there is nothing to
+                            // answer and nothing to report.
+                            continue;
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            faults
+                                .lock()
+                                .expect("faults")
+                                .push(format!("request line unreadable: {error}"));
+                            continue;
+                        }
+                    }
                     let path = line
                         .split_whitespace()
                         .nth(1)
                         .unwrap_or_default()
                         .to_string();
                     let mut content_length = 0;
+                    let mut headers_complete = false;
                     loop {
                         line.clear();
-                        assert!(request.read_line(&mut line).expect("request headers") > 0);
+                        match request.read_line(&mut line) {
+                            Ok(0) => break,
+                            Ok(_) => {}
+                            Err(error) => {
+                                faults
+                                    .lock()
+                                    .expect("faults")
+                                    .push(format!("{path}: request headers unreadable: {error}"));
+                                break;
+                            }
+                        }
                         if line == "\r\n" {
+                            headers_complete = true;
                             break;
                         }
                         if let Some((name, value)) = line.split_once(':') {
                             if name.eq_ignore_ascii_case("content-length") {
-                                content_length =
-                                    value.trim().parse::<usize>().expect("body length");
+                                match value.trim().parse::<usize>() {
+                                    Ok(length) => content_length = length,
+                                    Err(error) => faults.lock().expect("faults").push(format!(
+                                        "{path}: unreadable content-length {value:?}: {error}"
+                                    )),
+                                }
                             }
                         }
                     }
-                    assert!(content_length <= 4096, "unexpected fixture request size");
+                    if !headers_complete {
+                        faults
+                            .lock()
+                            .expect("faults")
+                            .push(format!("{path}: request headers ended early"));
+                        continue;
+                    }
+                    if content_length > 4096 {
+                        faults.lock().expect("faults").push(format!(
+                            "{path}: request body of {content_length} bytes is larger than this fixture serves"
+                        ));
+                        let _ = socket.write_all(
+                            b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                        continue;
+                    }
                     let mut body = vec![0; content_length];
-                    request
-                        .read_exact(&mut body)
-                        .expect("complete request body");
+                    if let Err(error) = request.read_exact(&mut body) {
+                        faults.lock().expect("faults").push(format!(
+                            "{path}: request body incomplete ({content_length} bytes expected): {error}"
+                        ));
+                        continue;
+                    }
                     drop(request);
                     paths.lock().expect("paths").push(path.clone());
                     let (status, body) = match path.as_str() {
@@ -1130,6 +1198,7 @@ impl MockPlatform {
         Self {
             base_url: format!("http://127.0.0.1:{}", addr.port()),
             paths,
+            faults,
             stop,
             thread: Some(thread),
         }
@@ -1137,6 +1206,11 @@ impl MockPlatform {
 
     fn requested_paths(&self) -> Vec<String> {
         self.paths.lock().expect("paths").clone()
+    }
+
+    /// Requests this fixture could not serve: a healthy run reports none.
+    fn faults(&self) -> Vec<String> {
+        self.faults.lock().expect("faults").clone()
     }
 
     fn stop(self) {
@@ -1201,6 +1275,45 @@ fn login_against(
     )
 }
 
+/// A client may open a connection and close it without sending anything: a
+/// connect it abandoned and immediately retried, which arrives under load
+/// (measured on a Windows runner in roughly every other full-suite run, and
+/// never in isolation).
+///
+/// This is the regression the fixture's assertions used to turn into an
+/// unrelated failure. `request.read_line(..) > 0` was asserted *on the listener
+/// thread*, so the empty connection panicked that thread, the listener was
+/// dropped with it, and the login this test is about then failed with
+/// `Network error` — three failures away from the cause. The fixture now skips
+/// such a connection: it was asked nothing, so there is nothing to answer, and
+/// the real requests that follow must still be served.
+#[test]
+fn a_connection_that_sends_nothing_does_not_poison_the_mock_platform() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let platform = MockPlatform::start();
+    let address = platform.base_url.trim_start_matches("http://").to_string();
+    // The bare connection the client itself makes and abandons.
+    std::net::TcpStream::connect(&address).expect("open a connection to the fixture");
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let (code, stdout, stderr) = login_against(&platform.base_url, home.path(), None);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        platform.requested_paths(),
+        vec![
+            "/client/v1/oauth/device/code".to_string(),
+            "/client/v1/oauth/device/token".to_string()
+        ],
+        "the login after the empty connection is still served"
+    );
+    assert_eq!(
+        platform.faults(),
+        Vec::<String>::new(),
+        "an empty connection is not a fault: it asked for nothing"
+    );
+    platform.stop();
+}
+
 /// `save_auth` without an agent: the credential the platform handed out is
 /// written to `auth.json` by the CLI's own writer, and the fallback line says
 /// so. The two request paths are asserted, so a login that never consulted the
@@ -1226,6 +1339,11 @@ fn auth_login_writes_the_key_itself_when_no_agent_is_running() {
             "/client/v1/oauth/device/code".to_string(),
             "/client/v1/oauth/device/token".to_string()
         ]
+    );
+    assert_eq!(
+        platform.faults(),
+        Vec::<String>::new(),
+        "nothing malformed arrived"
     );
     let stored: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(home.path().join(".future").join("agent").join("auth.json"))
@@ -1269,6 +1387,11 @@ async fn auth_login_saves_through_a_running_agent() {
             .join("auth.json")
             .exists(),
         "the agent is the sole writer"
+    );
+    assert_eq!(
+        platform.faults(),
+        Vec::<String>::new(),
+        "nothing malformed arrived"
     );
     let seen = seen.lock().expect("seen");
     let mutations: Vec<_> = seen
