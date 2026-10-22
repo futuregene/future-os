@@ -1,7 +1,7 @@
 import type { AgentConnectionState } from "../../components/layout/AppShell";
 import type { ContextTab } from "../../components/layout/ContextPanel";
 import type { ThreadRunInfo } from "../../components/layout/hooks/useThreadStore";
-import type { AgentModelOption } from "../../integrations/agent/agentClient";
+import type { AgentModelOption, ThinkingLevel } from "../../integrations/agent/agentClient";
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { AgentThreadChrome } from "../agent/AgentThread";
@@ -22,7 +22,7 @@ import { usePendingApprovalCounts } from "../../components/layout/hooks/usePendi
 import { useWindowWidth } from "../../components/layout/hooks/useWindowWidth";
 import { Badge } from "../../components/ui/Badge";
 import { IconButton } from "../../components/ui/IconButton";
-import { modelKey, thinkingLevels } from "../../integrations/agent/agentClient";
+import { modelKey, modelThinkingLevels } from "../../integrations/agent/agentClient";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { cn } from "../../lib/cn";
 import { emitFutureEvent } from "../../lib/futureEvents";
@@ -867,8 +867,8 @@ export function VibeStage({
                 value: t(`agent:composer.thinkingLevelLabels.${focusedSettings.thinkingLevel}`, { defaultValue: focusedSettings.thinkingLevel }),
                 onRun: () => {},
                 onAdjust: (delta: -1 | 1) => {
-                  const levels = thinkingLevels as readonly string[];
-                  const at = levels.indexOf(focusedSettings.thinkingLevel);
+                  const levels = modelThinkingLevels(focusedSettings.modelId, view.modelOptions);
+                  const at = levels.indexOf(focusedSettings.thinkingLevel as ThinkingLevel);
                   const next = levels[((at === -1 ? 0 : at) + delta + levels.length) % levels.length]!;
                   void setVibeCellThinkingLevel(focusedLocal.id, next);
                 },

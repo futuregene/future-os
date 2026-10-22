@@ -675,6 +675,10 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         },
         compat,
         thinking_level_map,
+        // The Future platform catalogue declares an effort *vocabulary*
+        // (`reasoningEffortValues`), not a product-level level list: this model
+        // keeps the full six levels.
+        thinking_levels: Vec::new(),
         headers: HashMap::new(),
         hide: false,
         description: entry.description,

@@ -264,6 +264,15 @@ export interface RemoteModel {
   isDefault?: boolean;
   /** Whether the model's input modality accepts images (agent catalogue). */
   supportsImages?: boolean;
+  /**
+   * The thinking levels this model offers, canonical order — the agent sends it
+   * already resolved (a model without thinking controls declares `off` alone, one
+   * that declares nothing offers all six). Absent on an older host; treat it as
+   * "the model constrains nothing".
+   */
+  thinkingLevels?: string[] | null;
+  /** The level a conversation starts at on this model, already clamped. */
+  defaultThinkingLevel?: string | null;
 }
 
 /** Stable agent model identifier; model ids are only unique within a provider. */
@@ -308,6 +317,27 @@ export interface RemoteSessionState {
 }
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+/** The product-level thinking vocabulary, shallowest first. */
+export const THINKING_LEVELS: readonly ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+/**
+ * The levels a model offers, canonical order.
+ *
+ * Filtering happens here and nowhere else on this side: the agent already
+ * resolved `thinkingLevels` (declared subset, or `off` alone for a model without
+ * thinking controls), so a picker that offers the intersection can never send a
+ * level the agent would clamp away. No list (an older host) keeps all six.
+ */
+export function modelThinkingLevels(
+  model: Pick<RemoteModel, "thinkingLevels"> | undefined,
+  all: readonly ThinkingLevel[] = THINKING_LEVELS,
+): readonly ThinkingLevel[] {
+  const declared = model?.thinkingLevels;
+  if (!declared || declared.length === 0)
+    return all;
+  return all.filter(level => declared.includes(level));
+}
 
 
 export interface HistoryMessage {

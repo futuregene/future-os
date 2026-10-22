@@ -9,7 +9,7 @@ import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
-import { defaultThinkingLevel, modelSupportsThinking, normalizeThinkingLevel } from "../../integrations/agent/agentClient";
+import { defaultThinkingLevel, modelSupportsThinking, modelThinkingLevels, resolveThinkingLevel } from "../../integrations/agent/agentClient";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { formatDateTime } from "../../lib/date";
 import { useTauriEvent } from "../../lib/useTauriEvent";
@@ -151,19 +151,6 @@ const emptyDraft = {
   enabled: true,
   trigger: { ...emptyTrigger },
 };
-
-/**
- * Thinking levels a task may pin, in the composer's order.
- *
- * Deliberately the full list rather than the selected model's declared
- * `ThinkingLevelMap`: those maps are sparse (several models declare none, and
- * `deepseek-flash` declares only `high`/`xhigh`), while an unmapped level is
- * passed through to the provider as-is and is accepted. Filtering by the map
- * would make the app default (`medium`) unselectable on most models. What the
- * form does mirror is the composer's one real rule: a model with no reasoning
- * support at all (`reasoning: false`) gets the control disabled.
- */
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 type Draft = typeof emptyDraft;
 
@@ -592,18 +579,17 @@ function TaskForm({
   // (`reasoning: false`) makes the level meaningless, so the control is
   // disabled rather than left offering a choice that does nothing.
   const supportsThinking = modelSupportsThinking(draft.modelId, models);
+  // The levels this task's model offers — the agent clamps anything else, so the
+  // form does not offer it in the first place.
+  const thinkingLevels = modelThinkingLevels(draft.modelId, models);
   /**
-   * Switching models normalises the level the way the composer does. A task can
-   * hold a level from an earlier model, and saving it unchanged onto a model
-   * that cannot think would pin an effort the model never runs at.
+   * Switching models keeps the level when the new model offers it and otherwise
+   * resets it to that model's starting level. A task can hold a level from an
+   * earlier model, and saving it unchanged onto a model that does not offer it
+   * would pin an effort the run snaps away from.
    */
   const chooseModel = (modelId: string) =>
-    onChange({
-      modelId,
-      thinkingLevel: modelSupportsThinking(modelId, models)
-        ? normalizeThinkingLevel(draft.thinkingLevel)
-        : "off",
-    });
+    onChange({ modelId, thinkingLevel: resolveThinkingLevel(draft.thinkingLevel, modelId, models) });
 
   /**
    * Pick the working directory in the OS directory chooser. Cancelling leaves
@@ -713,7 +699,11 @@ function TaskForm({
             onChange={e => onChange({ thinkingLevel: e.target.value })}
           >
             <option value="" disabled>{t("form.thinkingPlaceholder")}</option>
-            {THINKING_LEVELS.map(level => (
+            {/* The model's own list: a level outside it is clamped by the agent,
+                so offering the full six would let the user pin an effort the run
+                does not use. Not the model's `ThinkingLevelMap` (sparse, and an
+                unmapped level is still accepted) — see `modelThinkingLevels`. */}
+            {thinkingLevels.map(level => (
               <option key={level} value={level}>{t(`agent:composer.thinkingLevelLabels.${level}`)}</option>
             ))}
           </Select>

@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/Button";
 import { useRemoteControls } from "../../remote/RemoteContext";
 import type { DesktopSettings, RemoteModel } from "../../remote/types";
-import { modelReference } from "../../remote/types";
+import { modelReference, modelThinkingLevels } from "../../remote/types";
 import type { RemoteTaskDetail, RemoteTaskRow, RemoteTaskRun } from "../../remote/taskTypes";
 import { layout, radius, spacing } from "../../theme/tokens";
 import { createThemedStyles } from "../../theme/ThemeContext";
@@ -33,7 +33,7 @@ const defaultTrigger: DraftTrigger = {
   month: "12",
 };
 
-/** Thinking levels the agent accepts, in the composer's order. */
+/** Thinking levels a task may pin, in the composer's order. */
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 
 /**
@@ -566,6 +566,12 @@ function TaskForm({
     ? draft.modelId
     : null;
   const workspaceConversation = draft.conversationMode === "workspace";
+  // The levels the task's model offers. The agent clamps anything else when the
+  // run starts, so the form does not offer a level the task would not run at.
+  const thinkingLevels = modelThinkingLevels(
+    enabledModels.find(model => modelKey(model) === draft.modelId),
+    THINKING_LEVELS,
+  );
   const patch = (values: Partial<Draft>) => setDraft(current => ({ ...current, ...values }));
   const patchTrigger = (values: Partial<DraftTrigger>) =>
     setDraft(current => ({ ...current, trigger: { ...current.trigger, ...values } }));
@@ -790,7 +796,7 @@ function TaskForm({
 
               <SettingsField label={t("tasks.form.thinking")}>
                 <View style={settingsStyles.actions}>
-                  {THINKING_LEVELS.map(level => (
+                  {thinkingLevels.map(level => (
                     <Choice
                       disabled={busy}
                       key={level}

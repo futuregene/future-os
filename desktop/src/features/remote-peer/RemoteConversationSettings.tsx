@@ -3,16 +3,8 @@ import { ChevronDown } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
-import { remoteModelReference } from "./remotePeerClient";
-
-/**
- * The thinking levels the agent accepts.
- *
- * A fixed list, mirroring the desktop's own picker and the phone's: the host does
- * not publish one, and inventing a value would be a `set_thinking_level` it
- * rejects.
- */
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
+import { modelThinkingLevels } from "../../integrations/agent/agentClient";
+import { remoteAgentModelOptions, remoteModelReference } from "./remotePeerClient";
 
 /**
  * A remote conversation's model and thinking level.
@@ -59,6 +51,10 @@ export function RemoteConversationSettings({
   // The thinking level this control shows, and the one it started on when the
   // host has not said: `off` is what the host's own picker falls back to.
   const activeThinkingLevel = settings.thinkingLevel ?? "off";
+  // The host's model entry pages the same fields as a local one, so the same
+  // filter decides this picker: levels the host's agent would clamp away are not
+  // offered. A host that predates `thinkingLevels` keeps all six.
+  const thinkingLevels = modelThinkingLevels(settings.model ?? "", remoteAgentModelOptions(settings.models));
   // The host can name a model its catalogue lists without a label, and can be
   // using one the catalogue does not list at all — both of which the phone's
   // control already answers, in this order, so the two controls read the same.
@@ -147,7 +143,7 @@ export function RemoteConversationSettings({
             </button>
           )}
         >
-          {THINKING_LEVELS.map(level => (
+          {thinkingLevels.map(level => (
             <SelectMenuItem
               key={level}
               selected={activeThinkingLevel === level}

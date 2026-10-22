@@ -581,7 +581,8 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
         tracing::warn!("[new_session] could not sync model to fresh loop: {e}");
     }
     // Always start new sessions at the app's preferred thinking level.
-    new_sess.thinking_level = crate::rpc::session::DEFAULT_THINKING_LEVEL.to_string();
+    new_sess.thinking_level =
+        new_sess.normalize_thinking_level(crate::rpc::session::DEFAULT_THINKING_LEVEL);
 
     // Apply user settings (previously applied only to the startup "default
     // session" — with sessions as equal peers, every new session gets them).
@@ -644,7 +645,7 @@ pub(crate) fn cmd_new_session(state: &AppState, cmd: &RpcCommand, id: &str) -> S
         new_sess.model = cmd.model_id.clone();
     }
     if !cmd.level.is_empty() {
-        new_sess.thinking_level = cmd.level.clone();
+        new_sess.thinking_level = new_sess.normalize_thinking_level(&cmd.level);
     }
 
     // Initial persistent system-prompt append segment (same storage as

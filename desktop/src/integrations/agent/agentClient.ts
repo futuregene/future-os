@@ -12,6 +12,19 @@ export interface AgentModelOption {
   /** Whether the model accepts thinking controls, independent of the chosen level. */
   reasoning?: boolean | null;
   thinkingLevel?: ThinkingLevel | string | null;
+  /**
+   * The levels this model offers, canonical order. The agent sends it already
+   * resolved: `off` alone for a model without thinking controls, all six for one
+   * that declares nothing (`models.json` `thinkingLevels`). Absent on an older
+   * agent, which means "this model constrains nothing".
+   */
+  thinkingLevels?: string[] | null;
+  /**
+   * The level a conversation starts at on this model, already clamped by the
+   * agent — so seeding the picker from it cannot land on a level the model would
+   * snap away. Absent on an older agent; `defaultThinkingLevel` then stands.
+   */
+  defaultThinkingLevel?: ThinkingLevel | string | null;
   contextWindow?: number | null;
   isDefault?: boolean;
   /** Curated positioning blurb (Chinese) from the Future platform catalog; absent elsewhere. */
@@ -272,15 +285,16 @@ export function readLastUsedThinkingLevel(): string | null {
 
 /**
  * Pick the thinking level for a fresh draft. Priority: the last user-picked
- * level (if still a valid level) → the desktop default thinking level.
+ * level (if this model still offers a level) → the model's own starting level.
  */
 export function resolveInitialThinkingLevel(modelId: string, models: AgentModelOption[]): ThinkingLevel {
   if (!modelSupportsThinking(modelId, models))
     return "off";
+  const allowed = modelThinkingLevels(modelId, models);
   const lastUsed = readLastUsedThinkingLevel();
-  if (lastUsed && thinkingLevels.includes(lastUsed as ThinkingLevel))
+  if (lastUsed && allowed.includes(lastUsed as ThinkingLevel))
     return lastUsed as ThinkingLevel;
-  return normalizeThinkingLevel(modelThinkingLevel(modelId, models));
+  return modelThinkingLevel(modelId, models);
 }
 
 /**
@@ -296,12 +310,55 @@ export function modelSupportsThinking(modelId: string, models: AgentModelOption[
   return modelOption(modelId, models)?.reasoning !== false;
 }
 
-export function modelThinkingLevel(modelId: string, models: AgentModelOption[]) {
+/**
+ * The thinking levels a model offers, canonical order.
+ *
+ * The agent already resolved `thinkingLevels` (a declared subset, or `off` alone
+ * for a model with no thinking controls), so filtering here and nowhere else is
+ * enough to keep every picker, the keyboard ring and the task form on the same
+ * set. No list — an older agent — keeps all six, which is what every client
+ * offered before this field existed.
+ */
+export function modelThinkingLevels(modelId: string, models: AgentModelOption[]): readonly ThinkingLevel[] {
+  const option = modelOption(modelId, models);
+  if (!modelSupportsThinking(modelId, models))
+    return ["off"];
+  const declared = option?.thinkingLevels;
+  if (!declared || declared.length === 0)
+    return thinkingLevels;
+  return thinkingLevels.filter(level => declared.includes(level));
+}
+
+export function modelThinkingLevel(modelId: string, models: AgentModelOption[]): ThinkingLevel {
   if (!modelSupportsThinking(modelId, models))
     return "off";
-  // Desktop defaults to medium rather than inheriting the agent catalog's
-  // high default. Saved user choices and existing session levels win elsewhere.
-  return defaultThinkingLevel;
+  // Desktop defaults to medium rather than inheriting the agent catalog's high
+  // default. Saved user choices and existing session levels win elsewhere.
+  //
+  // For a model that offers a subset, the agent sends `defaultThinkingLevel`
+  // (its own clamp of this same default), so the picker starts on a level the
+  // model has instead of on one that would be snapped away. The clamp itself is
+  // not re-implemented here: one implementation, in the agent.
+  const declared = modelOption(modelId, models)?.defaultThinkingLevel;
+  return thinkingLevels.includes(declared as ThinkingLevel)
+    ? declared as ThinkingLevel
+    : defaultThinkingLevel;
+}
+
+/**
+ * A level to show for a model, replacing any value the model does not offer.
+ *
+ * Display-only: a stored level from another model (a thread saved before this
+ * model narrowed its list, a task written on a different machine) is not shown as
+ * the current effort, because it is not one this model can run at. The
+ * replacement is the model's own starting level — the agent's clamp of the
+ * desktop default — rather than a client-side "nearest level" rule.
+ */
+export function resolveThinkingLevel(level: string | null | undefined, modelId: string, models: AgentModelOption[]): ThinkingLevel {
+  const allowed = modelThinkingLevels(modelId, models);
+  if (level && allowed.includes(level as ThinkingLevel))
+    return level as ThinkingLevel;
+  return modelThinkingLevel(modelId, models);
 }
 
 export function normalizeThinkingLevel(level?: string | null): ThinkingLevel {

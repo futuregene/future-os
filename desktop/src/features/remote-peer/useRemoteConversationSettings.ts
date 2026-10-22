@@ -121,11 +121,22 @@ export function defaultRemoteThinkingLevel(
 ): string {
   if (!remoteModelSupportsThinking(models, reference))
     return "off";
-  // A remembered value is only a level if it is one of the six the agent accepts;
-  // anything else (a hand-edited localStorage entry) is not a choice to repeat.
-  return lastUsed && thinkingLevels.includes(lastUsed as ThinkingLevel)
-    ? lastUsed
-    : defaultThinkingLevel;
+  // The host's own model entry gives us both the usable set and the level it
+  // starts at. A remembered value is only a level if this model still offers it —
+  // the host's agent clamps anything else anyway, and repeating a value that will
+  // be snapped away would show one effort while running another. No declaration
+  // (an older host) keeps the old rule: any of the six, else the app default.
+  const chosen = models.find(model => remoteModelReference(model) === reference);
+  const declared = chosen?.thinkingLevels;
+  if (!declared || declared.length === 0) {
+    return lastUsed && thinkingLevels.includes(lastUsed as ThinkingLevel)
+      ? lastUsed
+      : defaultThinkingLevel;
+  }
+  if (lastUsed && declared.includes(lastUsed))
+    return lastUsed;
+  const starting = chosen?.defaultThinkingLevel;
+  return starting && declared.includes(starting) ? starting : declared[0]!;
 }
 
 /**
