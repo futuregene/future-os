@@ -125,14 +125,50 @@ fn with_stopped_home<T>(home: &Path, operation: impl FnOnce() -> Result<T>) -> R
             .truncate(false)
             .open(path)
     };
-    let desktop = open_lock(home.join("app/desktop.lock"))?;
-    fs2::FileExt::try_lock_exclusive(&desktop)
-        .context("Desktop is running; quit it before data maintenance")?;
-    let mut agent = fd_lock::RwLock::new(open_lock(home.join("agent/agent-instance.lock"))?);
-    let _guard = agent
-        .try_write()
-        .context("Agent is running; stop it before data maintenance")?;
+    let desktop_path = home.join("app/desktop.lock");
+    let desktop = open_lock(&desktop_path)?;
+    fs2::FileExt::try_lock_exclusive(&desktop).map_err(|error| {
+        lock_failure(
+            &error,
+            &desktop_path,
+            "Desktop is running; quit it before data maintenance",
+        )
+    })?;
+    let agent_path = home.join("agent/agent-instance.lock");
+    let mut agent = fd_lock::RwLock::new(open_lock(&agent_path)?);
+    let _guard = agent.try_write().map_err(|error| {
+        lock_failure(
+            &error,
+            &agent_path,
+            "Agent is running; stop it before data maintenance",
+        )
+    })?;
     operation()
+}
+
+/// Why an exclusive lock could not be taken, in the terms the user can act on.
+///
+/// Two different failures arrive through the same `io::Error`. One is the process
+/// this lock exists to detect — the Desktop or the Agent is up — and the fix is to
+/// quit it. The other is the file system declining to lock at all: `ENOLCK` on a
+/// network share without a lock manager, `ENOTSUP` on some FUSE mounts. Maintenance
+/// is refused either way, because it must not run against a live process and this
+/// is the only proof available, but reporting the second as "Desktop is running"
+/// sends the user to look for a process that does not exist — and quitting it, over
+/// and over, will never let the command through. `fs2` and `fd-lock` both surface
+/// the platform's own errno here, so one comparison covers the two callers.
+/// `host/src/instance.rs` draws the same line for the Desktop's own startup lock.
+fn lock_failure(error: &std::io::Error, path: &Path, contended: &str) -> anyhow::Error {
+    if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
+        anyhow::anyhow!(contended.to_string())
+    } else {
+        anyhow::anyhow!(
+            "this file system will not lock {} ({error}), so data maintenance cannot tell \
+             whether a Desktop or an Agent is running against it. Move the FutureOS home to a \
+             local disk (or one whose file system supports locks) and try again.",
+            path.display()
+        )
+    }
 }
 
 fn relative(root: &Path, logical: &str) -> Result<PathBuf> {
@@ -1229,5 +1265,33 @@ mod tests {
         let mut agent = fd_lock::RwLock::new(file);
         let _guard = agent.try_write().unwrap();
         assert!(with_stopped_home(&home, || Ok(())).is_err());
+    }
+
+    /// The two reasons a lock cannot be taken have different fixes, and the one
+    /// that is *not* a running process must not send the reader to quit one.
+    #[test]
+    fn a_lock_the_file_system_refuses_is_not_reported_as_a_running_process() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("desktop.lock");
+
+        let contended = lock_failure(
+            &fs2::lock_contended_error(),
+            &path,
+            "Desktop is running; quit it before data maintenance",
+        );
+        assert_eq!(
+            contended.to_string(),
+            "Desktop is running; quit it before data maintenance"
+        );
+
+        let refused = lock_failure(
+            &std::io::Error::from_raw_os_error(libc::EOPNOTSUPP),
+            &path,
+            "Desktop is running; quit it before data maintenance",
+        );
+        let text = refused.to_string();
+        assert!(!text.contains("Desktop is running"), "{text}");
+        assert!(text.contains("will not lock"), "{text}");
+        assert!(text.contains(&path.display().to_string()), "{text}");
     }
 }
