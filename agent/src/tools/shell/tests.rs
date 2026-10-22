@@ -153,15 +153,48 @@ async fn independent_calls_do_not_inherit_cd_or_variables() {
 
 #[tokio::test]
 async fn timeout_retains_partial_output_without_fabricated_exit() {
-    #[cfg(not(windows))]
-    let command = "echo partial; sleep 30";
+    // The window only has to outlast the shell's own startup. What this test
+    // proves is that output written before the deadline survives the timeout;
+    // it never meant to require that a shell starts inside one second.
+    //
+    // POSIX `sh` is running in milliseconds, so 1s is still ample there.
+    // PowerShell is not: 1s lost the race on a loaded Windows runner — run
+    // 39779594808, `Rust Windows test / agent`, 2026-10-22, where the same
+    // commit passed on macOS and Linux with
+    //   assertion failed: facts.attempts[0].output.contains("partial").
+    // That only bounds the cold start from below (it did not fit in 1s), so the
+    // Windows window is 8s: eight times the window that lost, and still more
+    // than twice a multi-second cold start. The failure below reports the
+    // elapsed time and the output actually captured, so a repeat measures the
+    // real cost instead of costing another guess.
     #[cfg(windows)]
-    let command = "Write-Output partial; Start-Sleep -Seconds 30";
-    let facts = captured(json!({"command":command,"timeout":1})).await;
+    let (command, timeout) = ("Write-Output partial; Start-Sleep -Seconds 30", 8u64);
+    #[cfg(not(windows))]
+    let (command, timeout) = ("echo partial; sleep 30", 1u64);
+
+    let started = Instant::now();
+    let facts = captured(json!({"command":command,"timeout":timeout})).await;
+    let elapsed = started.elapsed();
+    let output = &facts.attempts[0].output;
+
     assert_eq!(facts.status, ShellStatus::TimedOut);
     assert_eq!(facts.exit_code, None);
     assert_eq!(facts.attempts[0].exit_code, None);
-    assert!(facts.attempts[0].output.contains("partial"));
+    assert!(
+        output.contains("partial"),
+        "timeout={timeout}s ended without the `partial` line. The tool itself ran for {}ms \
+         ({elapsed:?} wall clock), so either the shell spent the whole window starting up \
+         (raise `timeout` for that platform) or output it had already written was dropped \
+         (a product bug). Output captured: {output:?}",
+        facts.duration_ms,
+    );
+    // The command sleeps far longer than this, so a tool that never honours its
+    // deadline fails here instead of turning this test into a slow pass.
+    assert!(
+        elapsed < Duration::from_secs(timeout + 10),
+        "timeout={timeout}s but the call returned after {elapsed:?} ({}ms of tool time)",
+        facts.duration_ms,
+    );
 }
 
 #[tokio::test]
