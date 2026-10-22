@@ -321,6 +321,11 @@ export function TasksView({
 
   /**
    * Open the editor on a stored task.
+   *
+   * The stored level is snapped to what the task's model offers, exactly as the
+   * agent will snap it when the run starts: the form would otherwise open with a
+   * blank picker (its value absent from the options) and then save a level the
+   * run immediately replaces. A level the model does offer is left untouched.
    */
   const startEdit = useCallback((task: TaskView) => {
     setSelectedId(task.id);
@@ -331,7 +336,9 @@ export function TasksView({
       prompt: task.prompt,
       cwd: task.cwd,
       modelId: task.modelId ?? "",
-      thinkingLevel: task.thinkingLevel ?? "",
+      thinkingLevel: task.thinkingLevel
+        ? resolveThinkingLevel(task.thinkingLevel, task.modelId ?? "", modelOptions)
+        : "",
       timezone: task.timezone ?? "",
       sessionPolicy: task.sessionPolicy,
       sessionRetention: task.sessionRetention,
@@ -339,7 +346,7 @@ export function TasksView({
       enabled: task.enabled,
       trigger: triggerFromTask(task),
     });
-  }, []);
+  }, [modelOptions]);
 
   const save = useCallback(async () => {
     const input: TaskInput = {

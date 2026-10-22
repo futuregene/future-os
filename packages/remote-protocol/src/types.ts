@@ -339,6 +339,30 @@ export function modelThinkingLevels(
   return all.filter(level => declared.includes(level));
 }
 
+/**
+ * The level to show for a conversation on `model`.
+ *
+ * A stored level the model no longer offers is not a level this conversation can
+ * run at — the agent clamps it — so it is replaced by the model's starting level
+ * (`defaultThinkingLevel`, which the agent computed from its own clamp) rather
+ * than displayed as the current effort. A model that declares nothing keeps the
+ * value untouched: display-side, that is the unchanged path.
+ */
+export function resolveModelThinkingLevel(
+  level: string | null | undefined,
+  model: Pick<RemoteModel, "thinkingLevels" | "defaultThinkingLevel"> | undefined,
+): ThinkingLevel | undefined {
+  if (!model)
+    return undefined;
+  const allowed = modelThinkingLevels(model);
+  if (level && allowed.includes(level as ThinkingLevel))
+    return level as ThinkingLevel;
+  const declared = model.defaultThinkingLevel;
+  if (declared && allowed.includes(declared as ThinkingLevel))
+    return declared as ThinkingLevel;
+  return allowed[0];
+}
+
 
 export interface HistoryMessage {
   role: "user" | "assistant" | "tool" | string;

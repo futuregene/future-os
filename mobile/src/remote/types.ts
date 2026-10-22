@@ -22,6 +22,7 @@ export {
   modelReference,
   modelProviderFromReference,
   modelThinkingLevels,
+  resolveModelThinkingLevel,
   THINKING_LEVELS,
   RemoteSessionUsage,
   RemoteSessionState,

@@ -1,5 +1,5 @@
 import { describe, test, expect } from "vitest";
-import { modelProviderFromReference, modelReference, modelThinkingLevels, THINKING_LEVELS, type RemoteModel } from "../src/types";
+import { modelProviderFromReference, modelReference, modelThinkingLevels, resolveModelThinkingLevel, THINKING_LEVELS, type RemoteModel } from "../src/types";
 
 /**
  * A catalogue row as the mobile pickers receive it. `modelThinkingLevels` reads
@@ -51,5 +51,29 @@ describe("modelThinkingLevels", () => {
     // smuggle in a level no label or budget arm knows.
     expect(modelThinkingLevels(catalogueModel(["low", "mid", "high"]))).toEqual(["low", "high"]);
     expect(modelThinkingLevels(catalogueModel(["off"]))).toEqual(["off"]);
+  });
+});
+
+describe("resolveModelThinkingLevel", () => {
+  const narrow: RemoteModel = { id: "m", thinkingLevels: ["off", "low", "high"], defaultThinkingLevel: "low" };
+
+  test("keeps a level the model offers", () => {
+    expect(resolveModelThinkingLevel("high", narrow)).toBe("high");
+  });
+
+  test("shows the model's starting level for one it does not offer", () => {
+    // `medium`/`xhigh` were stored by another model, or before this one narrowed
+    // its list; the agent clamps them, so displaying them as current is wrong.
+    expect(resolveModelThinkingLevel("medium", narrow)).toBe("low");
+    expect(resolveModelThinkingLevel("xhigh", narrow)).toBe("low");
+    expect(resolveModelThinkingLevel(null, narrow)).toBe("low");
+  });
+
+  test("leaves a model that declares nothing alone", () => {
+    expect(resolveModelThinkingLevel("xhigh", catalogueModel())).toBe("xhigh");
+  });
+
+  test("falls back to the shallowest offered level when no starting level is known", () => {
+    expect(resolveModelThinkingLevel("xhigh", catalogueModel(["low", "high"]))).toBe("low");
   });
 });

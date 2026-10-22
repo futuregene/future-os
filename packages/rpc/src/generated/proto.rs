@@ -568,6 +568,17 @@ pub struct ModelEntry {
     /// Whether the model accepts thinking controls; separate from the default level.
     #[prost(bool, optional, tag = "11")]
     pub reasoning: ::core::option::Option<bool>,
+    /// The thinking levels this model offers, in canonical order
+    /// (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`). Empty when the model
+    /// declares none — which is every model that predates `models.json`
+    /// `thinkingLevels`, and means the full six, i.e. unchanged behaviour. A model
+    /// without thinking controls lists `off` alone.
+    #[prost(string, repeated, tag = "12")]
+    pub thinking_levels: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// The level a conversation starts at on this model, already clamped to
+    /// `thinking_levels` by the agent. Unset when the model declares no list.
+    #[prost(string, optional, tag = "13")]
+    pub default_thinking_level: ::core::option::Option<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct BuiltinProvider {

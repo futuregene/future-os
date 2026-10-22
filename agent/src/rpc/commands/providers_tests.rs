@@ -949,3 +949,44 @@ fn suggest_skill_response_encodes_into_the_typed_payload() {
         other => panic!("expected a SuggestSkill payload, got {other:?}"),
     }
 }
+
+/// The declared level list must survive the typed wire form, not only the JSON
+/// envelope: clients read `payload.listModels` and the JSON `data` string is
+/// empty for a typed command.
+#[test]
+fn declared_thinking_levels_survive_the_typed_wire_payload() {
+    let home = TestHome::new();
+    let path = home.models_path();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        serde_json::json!({"providers": {
+            "wire-test": {
+                "api": "openai-completions",
+                "baseUrl": "https://example.test/v1",
+                "apiKey": "k",
+                "thinkingLevels": ["off", "low", "high"],
+                "models": [{ "id": "m" }]
+            }
+        }})
+        .to_string(),
+    )
+    .unwrap();
+    let state = make_app_state();
+    *state.model_registry.write() = crate::models::Registry::new();
+
+    let resp = parse_response(&handle_command_internal(&state, make_cmd("list_models")));
+    let payload = future_rpc::encode::response_payload("list_models", &resp["data"])
+        .expect("list_models encodes into its typed payload");
+    let future_rpc::proto::response_payload::Kind::ListModels(models) = payload.kind.unwrap()
+    else {
+        panic!("list_models payload kind");
+    };
+    let row = models
+        .models
+        .iter()
+        .find(|model| model.provider == "wire-test")
+        .expect("model listed");
+    assert_eq!(row.thinking_levels, ["off", "low", "high"]);
+    assert_eq!(row.default_thinking_level.as_deref(), Some("low"));
+}
