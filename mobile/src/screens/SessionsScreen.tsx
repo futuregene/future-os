@@ -808,6 +808,21 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
   const onlyMachineHeld = remote.desktops.length === 1
     && connected
     && remote.presence?.control === "standby";
+  /**
+   * Whether every machine that is answering is in somebody else's hands.
+   *
+   * The single-pairing case above has its own page; this is the same fact seen
+   * from the merged list, where the other pairings happen to be offline. A
+   * standby machine is sent no catalogue and refuses every read, so the list had
+   * nothing to draw and said "no conversations yet" — or, with the phone's own
+   * state read instead, "disconnected". Neither is what is happening, and both
+   * hid the one action that fixes it. The holder is the open machine's, because
+   * that is the machine every takeover here is about.
+   */
+  const everyAnsweringMachineHeld = machineCounts.connected > 0
+    && machines
+      .filter(machine => machine.status === "connected")
+      .every(machine => machine.control === "standby");
 
   const offlineEmpty = (
     <View style={styles.emptyState}>
@@ -1033,7 +1048,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
             onReconnect={reconnect}
             onUnpair={confirmUnpair}
           />
-        ) : onlyMachineHeld ? (
+        ) : onlyMachineHeld || everyAnsweringMachineHeld ? (
           <StandbyScreen
             holder={remote.presence?.holder ?? null}
             onTakeControl={remote.takeControl}

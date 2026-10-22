@@ -122,6 +122,7 @@ mod gui {
             Event::ReviewUpdated(thread_id) => emit_review_updated(thread_id),
             Event::RemoteActivity(thread_id) => emit_remote_activity(thread_id),
             Event::ThreadsUpdated => emit_threads_updated(),
+            Event::TasksUpdated => emit_tasks_updated(),
             Event::ControlClaimed => {
                 if let Some(app) = APP_HANDLE.get() {
                     activate_main_window(app);
@@ -508,6 +509,17 @@ mod gui {
     /// so the sidebar re-lists threads. No payload: a bare invalidation signal.
     pub(crate) fn emit_threads_updated() {
         emit_threads_updated_via(APP_HANDLE.get());
+    }
+
+    /// Notify the frontend that the scheduled-task list changed behind its back
+    /// — a phone toggled, edited, created or deleted one over Remote, or another
+    /// process wrote the store. The task panel re-reads its list; nothing else
+    /// does, because no conversation necessarily changed.
+    pub(crate) fn emit_tasks_updated() {
+        if let Some(handle) = APP_HANDLE.get() {
+            use tauri::Emitter;
+            let _ = handle.emit("tasks-updated", ());
+        }
     }
 
     /// Route the invalidation through an optional handle (see

@@ -2,9 +2,10 @@
 // Build the CLI and GUI in one Cargo invocation so their shared dependencies
 // use the same feature set. Tauri still owns asset embedding and platform flags.
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, mkdirSync, rmSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -16,11 +17,12 @@ const separator = args.indexOf('--');
 const tauriArgs = separator < 0 ? args : args.slice(0, separator);
 const cargoArgs = separator < 0 ? [] : args.slice(separator + 1);
 
-function run(command, argv, capture = false) {
+function run(command, argv, capture = false, env) {
   const result = spawnSync(command, argv, {
     cwd: desktop,
     stdio: capture ? ['inherit', 'pipe', 'inherit'] : 'inherit',
     encoding: 'utf8',
+    env: env ?? process.env,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
@@ -32,6 +34,21 @@ function option(argv, long, short) {
     if (argv[i] === long || (short && argv[i] === short)) return argv[i + 1];
     if (argv[i].startsWith(`${long}=`)) return argv[i].slice(long.length + 1);
   }
+}
+
+// macOS bundling ends by stripping quarantine attributes with `xattr -r`, which
+// only the system binary supports: Homebrew also ships an `xattr` (a Python
+// wrapper without -r) and its bin directory usually comes first on PATH, so the
+// bundle dies after the .app is already signed. Give that single tool the system
+// binary through a shim directory. Prepending /usr/bin itself would also shadow
+// git, python3 and friends for Cargo build scripts.
+function bundleEnv() {
+  const systemXattr = '/usr/bin/xattr';
+  if (process.platform !== 'darwin' || !existsSync(systemXattr)) return undefined;
+  const shim = mkdtempSync(join(tmpdir(), 'futureos-xattr-'));
+  symlinkSync(systemXattr, join(shim, 'xattr'));
+  process.on('exit', () => rmSync(shim, { recursive: true, force: true }));
+  return { ...process.env, PATH: `${shim}${delimiter}${process.env.PATH ?? ''}` };
 }
 
 function stage(source, destination) {
@@ -90,5 +107,5 @@ if (!tauriArgs.includes('--no-bundle')) {
     if (arg.startsWith('--runner=') || arg === '--ignore-version-mismatches') continue;
     bundleArgs.push(arg);
   }
-  run(process.execPath, [tauri, 'bundle', ...bundleArgs]);
+  run(process.execPath, [tauri, 'bundle', ...bundleArgs], false, bundleEnv());
 }

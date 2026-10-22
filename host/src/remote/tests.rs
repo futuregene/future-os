@@ -3945,6 +3945,54 @@ mod slot_tests {
         stop();
     }
 
+    /// Pressing "add a device" again while an invitation is live re-shows that
+    /// invitation instead of minting another.
+    ///
+    /// Every pending invitation is a row of the platform's per-desktop
+    /// allowance, and only one of them can be on screen. Minting on each press
+    /// filled that allowance with codes nobody could see, and the next press was
+    /// refused for reaching a cap the user had never spent on devices.
+    #[tokio::test]
+    async fn adding_twice_while_an_invitation_is_live_reuses_it() {
+        let _home = HomeGuard::new("remote-add-device-reuses-invitation");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let code = platform.respond_pair_code(nats.url());
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+        SUPERVISOR.restore_active(None);
+
+        let first = crate::remote::supervisor::add_device()
+            .await
+            .expect("first add");
+        let second = crate::remote::supervisor::add_device()
+            .await
+            .expect("second add");
+
+        assert_eq!(
+            second.pair_id, first.pair_id,
+            "the live invitation is the answer, not a new one"
+        );
+        assert_eq!(
+            second.pairing_code.as_deref(),
+            first.pairing_code.as_deref(),
+            "the same code is shown again"
+        );
+        assert!(first
+            .pairing_code
+            .as_deref()
+            .is_some_and(|shown| shown.contains(&code)));
+        let mints = platform
+            .requests()
+            .into_iter()
+            .filter(|(_, path, _)| path == "/client/v1/remote/pair/code")
+            .count();
+        assert_eq!(mints, 1, "the platform was asked for one code, not two");
+
+        stop();
+    }
+
     /// The device a request adds shows up in the machine's device list as a
     /// **standby** row carrying its invitation, while the device in control keeps
     /// the machine.

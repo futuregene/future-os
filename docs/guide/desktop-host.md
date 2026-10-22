@@ -29,10 +29,12 @@ The unified entry is implemented on this branch; final cross-platform and releas
   directory before starting host mode.
 
 Platform access requires valid Future OS account credentials, but **no browser is
-needed on the server**. Signing in requires an interactive terminal (it prints an
-authorization link and user code, which must never land in a redirected log);
-pairing a device does not — `future remote devices add` prints the invitation in
-the terminal that runs it.
+needed on the server** and no account is needed to start: a signed-out host runs
+everything local (Agent, runs, tasks, its own providers) and keeps the remote
+desktop closed. Signing in is a separate command — `future auth login`, which
+prints an authorization link and user code — and a running host picks that login
+up and starts serving without a restart. Pairing a device is separate again:
+`future remote devices add` prints the invitation in the terminal that runs it.
 
 ## 2. Start in the foreground
 
@@ -71,19 +73,35 @@ without a restart (section 3.2).
 
 ### Step one: platform authorization
 
-Without a valid login, the terminal displays **PLATFORM LOGIN**, a QR code, an
-authorization URL and a user code.
+The host does not run a login of its own. A server that is signed out starts
+anyway, says so, and serves everything local; only the remote desktop stays
+closed. Sign in from a second terminal on the same machine:
+
+```bash
+future auth login
+```
 
 1. Scan with your phone camera/browser, or open the URL in a browser on your own
    computer or phone.
 2. Sign in to Future OS and authorize this server. Enter the terminal's user code
    if the web page requests it.
-3. The server waits for authorization, saves credentials through the Agent and
-   starts serving the devices already paired to this machine.
+3. The login is saved through the running Agent, and the host adopts it within a
+   second: it prints `Platform account signed in`, fetches the model catalogue
+   and starts serving the devices already paired to this machine — no restart.
 
 This authorizes the server to access your platform account. It does not yet allow
 the mobile app to control the server. No server browser, SSH graphical forwarding
 or inbound browser callback port is required.
+
+A *different* login or a logout while the host is running closes remote access and
+asks for a restart: the previous account's remote entry must not stay open until
+its own credential expires. Everything local keeps running either way.
+
+A stored credential is still verified against the platform at startup, exactly as
+before: accepted means it serves; refused (401/403) prints `Platform authorization
+is no longer valid. Please sign in again.` and continues in the signed-out state
+until `future auth login` stores a new one; a transport failure is still reported
+as an error rather than being mistaken for a logout.
 
 ### Step two: mobile app pairing
 
@@ -97,6 +115,11 @@ future remote devices add
 That command asks the running host to mint an invitation and prints it where it
 was asked for: a QR code, the complete `futureos://remote/pair?...` link, and the
 time left before it expires.
+
+An invitation is minted by the platform, so this is the one local-looking command
+that needs an account: signed out, `add` refuses with `future auth login`. The
+host itself is not broken when that happens — sessions, runs, tasks and your own
+model providers keep working, and `add` succeeds once a login has been adopted.
 
 - Scan with **Add device / Scan inside the FutureOS app**.
 - Alternatively, paste the complete link into the app's **Paste pairing code**
@@ -115,7 +138,6 @@ phone can reconnect without scanning every time. A ready entry or saved pairing
 does not prove the phone is currently online: open the app and connect to the host.
 Ordinary network outages do not deliberately replace valid pairings; the existing
 Remote connection logic handles recovery.
-
 ### What the server maintains on its own
 
 The host serves the same backend as the window, so the phone sees the same
@@ -237,11 +259,12 @@ future remote disable              # turn it off now, and keep it off
 Future OS account: the platform mints the invitation, the credential and the
 relay connection. So `future remote enable` checks for a login before it touches
 the switch and refuses with `future auth login` when there is none — a switch
-that is on but unsigned-in serves nobody. `future host` runs the login flow
-itself before it serves (and says the same thing when its terminal is not
-interactive). `future remote disable` needs no account: turning serving off is
-never blocked by being unable to serve. With `--relay` there is no account at all,
-and none of this applies.
+that is on but unsigned-in serves nobody. `future host` itself does **not** need
+an account: it starts signed out, serves everything local, and turns the remote
+desktop on by itself the moment `future auth login` stores an account. `future
+remote disable` needs no account: turning serving off is never blocked by being
+unable to serve. With `--relay` there is no account at all, and none of this
+applies.
 
 - `status` prints the two halves under their own labels — the live state
   (`phase`, which devices are connected, what is in control) and the stored
@@ -309,7 +332,7 @@ future remote peers remove <id|#>       # unpair it: stop connecting, revoke
 
 ## 4. Ctrl+C, SSH disconnects and restarting
 
-Ctrl+C works while waiting for login, pairing, connection startup and normal
+Ctrl+C works while waiting for pairing, connection startup and normal
 operation. Exit first stops new remote operations and connection recovery, then
 performs bounded resource cleanup.
 
@@ -393,7 +416,7 @@ hang.
 | Agent unavailable/incompatible or instance lock occupied | Read the reported owner/version, check the same user/data root, and upgrade or exit the external owner; never delete the lock or bypass it. Explicit endpoints and external mode are attach-only |
 | Built-in skills were not installed | Check the `[skills]` lines on stderr: maintenance runs this same executable as `future init` and needs a network route to the skill catalogue. The phone can still install skills itself |
 | Interactive terminal required | Sign in from a real terminal, without pipes, redirection or non-interactive service startup; pairing a device needs no terminal |
-| Platform authorization denied or expired | Restart and sign in as instructed; the login code is not the app pairing code |
+| Platform authorization denied or expired | Sign in again with `future auth login`; a running host adopts it, or reports `Platform account signed in` and restarts serving. The login code is not the app pairing code |
 | Pairing invitation expired | Run `future remote devices add` for a new one; completed pairings do not require this |
 | `future remote devices add` times out | The running Desktop is asked, and it answers from *its own* build. If the message says nothing picked the request up, that process predates device requests — restart it with the current version (`futureos` or `future host`) and try again |
 | Another Desktop owns the directory | Exit its GUI or host process; do not delete the lock file to bypass mutual exclusion |

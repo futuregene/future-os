@@ -65,6 +65,19 @@ export function DisconnectedScreen({
             loading={reconnecting}
             onPress={pairingExpired ? onUnpair : onReconnect}
           />
+          {/* Removing the pairing was reachable only from Settings, or from this
+              page when the desktop had already been unpaired *and* the notice
+              reached us. A phone that merely lost the machine — the desktop
+              unpaired while it was away, the pairing is dead, the notice never
+              arrived — was left with one button that could not work and no way
+              out. The way out belongs here, on the page that says it is over. */}
+          {!reconnecting && !pairingExpired ? (
+            <Button
+              label={t("sessions.unpair")}
+              onPress={onUnpair}
+              variant="ghost"
+            />
+          ) : null}
         </View>
       </View>
     </View>
@@ -84,6 +97,6 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     justifyContent: "center",
     gap: spacing.xs,
   },
-  actionSlot: { minHeight: 48, alignItems: "center", justifyContent: "center" },
+  actionSlot: { minHeight: 48, alignItems: "center", justifyContent: "center", gap: spacing.sm },
   hint: { color: theme.colors.inkMuted, textAlign: "center", fontSize: theme.font(14) },
 }));

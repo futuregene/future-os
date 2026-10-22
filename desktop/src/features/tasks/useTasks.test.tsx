@@ -1,3 +1,4 @@
+import type { TaskBackend } from "./taskBackend";
 import type { TaskView } from "./useTasks";
 // @vitest-environment jsdom
 import { act } from "react";
@@ -59,7 +60,7 @@ function task(overrides: Partial<TaskView> = {}): TaskView {
 }
 
 /** Mount the hook and expose its API plus the latest render's snapshot. */
-async function renderHook() {
+async function renderHook(backend?: TaskBackend) {
   const seen: { tasks: TaskView[]; error: string | null; loading: boolean } = {
     tasks: [],
     error: null,
@@ -69,7 +70,7 @@ async function renderHook() {
   const container = document.createElement("div");
   const root = createRoot(container);
   function Probe() {
-    const value = useTasks();
+    const value = useTasks(backend);
     api = value;
     seen.tasks = value.tasks;
     seen.error = value.error;
@@ -178,6 +179,51 @@ describe("useTasks", () => {
     });
     expect(mocks.invokeCommand).toHaveBeenCalledWith("list_tasks");
     expect(hook.seen.tasks[0]?.queued).toBe(true);
+    hook.unmount();
+  });
+
+  // A phone disabling a task writes the same store this panel reads, so the
+  // host says "tasks-updated" and the row must change without the user leaving
+  // and coming back. The event carries no payload and names no task: a write
+  // may have created, deleted or renamed one, so the list is re-read whole.
+  it("re-reads the list when the host announces a task change", async () => {
+    mocks.invokeCommand.mockResolvedValue([task({ enabled: true })]);
+    const hook = await renderHook();
+    mocks.invokeCommand.mockClear();
+
+    mocks.invokeCommand.mockResolvedValueOnce([task({ enabled: false })]);
+    await act(async () => {
+      for (const handler of mocks.tauriEvents["tasks-updated"] ?? [])
+        handler({});
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(mocks.invokeCommand).toHaveBeenCalledWith("list_tasks");
+    expect(hook.seen.tasks[0]?.enabled).toBe(false);
+    hook.unmount();
+  });
+
+  // The event describes *this* app's store. A panel pointed at another desktop
+  // must not re-read that host because this app's own tasks moved.
+  it("leaves a remote panel alone when this app's own tasks change", async () => {
+    const list = vi.fn(async () => [] as TaskView[]);
+    const remote: TaskBackend = {
+      kind: "remote",
+      list,
+      create: vi.fn(async () => task()),
+      update: vi.fn(async () => task()),
+      remove: vi.fn(async () => undefined),
+      setEnabled: vi.fn(async () => undefined),
+      listRuns: vi.fn(async () => []),
+    };
+    const hook = await renderHook(remote);
+    const reads = list.mock.calls.length;
+
+    await act(async () => {
+      for (const handler of mocks.tauriEvents["tasks-updated"] ?? [])
+        handler({});
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    expect(list).toHaveBeenCalledTimes(reads);
     hook.unmount();
   });
 
