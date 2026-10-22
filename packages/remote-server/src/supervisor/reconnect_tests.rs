@@ -67,6 +67,57 @@ fn a_recoverable_device_is_refreshed_and_a_missing_one_is_stopped() {
     ));
 }
 
+/// An executor whose host has closed admission, which is exactly what a
+/// teardown creates. Every other behaviour is `TokioExecutor`'s, so the only
+/// difference the test below can measure is `is_stopping`.
+struct Stopping(TokioExecutor);
+impl TaskExecutor for Stopping {
+    fn spawn(&self, future: BoxFuture<'static, ()>) {
+        self.0.spawn(future);
+    }
+    fn spawn_native(&self, job: Box<dyn FnOnce() + Send + 'static>) {
+        self.0.spawn_native(job);
+    }
+    fn is_stopping(&self) -> bool {
+        true
+    }
+}
+
+/// A dead generation is rebuilt only while the host is serving. Once admission
+/// is closed the host is tearing down: the tasks that stopped are the teardown
+/// itself, so an `[RT001]` episode and a replacement generation are both wrong —
+/// the rebuild would spend the shutdown budget on a bridge that is dropped again
+/// moments later, and the episode survives as a `reconnect_required` code for a
+/// stop nobody suffered.
+///
+/// The serving case is asserted in the same test on purpose: it is what makes the
+/// stopping assertion falsifiable, since removing the guard makes both read 1.
+#[tokio::test]
+async fn a_stopping_host_neither_records_nor_rebuilds_a_dead_generation() {
+    let serving = Supervisor::new(Arc::new(MemoryHost::default()), Arc::new(TokioExecutor));
+    serving.spawn_runtime_reconnect("pair_serving".into());
+    assert_eq!(
+        serving.runtime_reconnect_attempts.load(Ordering::Acquire),
+        1,
+        "a serving host counts the failure and rebuilds the generation"
+    );
+
+    let stopping = Supervisor::new(
+        Arc::new(MemoryHost::default()),
+        Arc::new(Stopping(TokioExecutor)),
+    );
+    stopping.spawn_runtime_reconnect("pair_stopping".into());
+    assert_eq!(
+        stopping.runtime_reconnect_attempts.load(Ordering::Acquire),
+        0,
+        "a stopping host must not report its own teardown as a failure"
+    );
+    assert!(
+        stopping.last_error_code.lock().unwrap().is_none(),
+        "and must not arm the reconnect-required code"
+    );
+}
+
 /// A credential that cannot be upgraded in place is forgotten, not served: a
 /// pre-v2 slot, and a v2 slot that never learned its peer's identity.
 #[test]

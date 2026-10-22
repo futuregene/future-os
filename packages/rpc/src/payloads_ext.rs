@@ -112,6 +112,18 @@ pub struct ModelEntryPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
     pub thinking_level: String,
+    /// The levels this model offers, canonical order. Omitted when the model
+    /// declares none — every model that predates `models.json`
+    /// `thinkingLevels`, which means the full six. Omitted (rather than an empty
+    /// array) so a payload from an older agent and one from a model that declares
+    /// nothing stay byte-identical, and so clients that predate the field see no
+    /// change.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thinking_levels: Vec<String>,
+    /// The level a conversation starts at on this model, already clamped to
+    /// `thinking_levels` by the agent. Omitted when the model declares no list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_thinking_level: Option<String>,
     pub context_window: i64,
     pub is_default: bool,
     /// JSON null when the catalog carries no description (must serialize as
@@ -386,6 +398,8 @@ mod tests {
                 supports_images: true,
                 reasoning: Some(false),
                 thinking_level: "high".to_string(),
+                thinking_levels: Vec::new(),
+                default_thinking_level: None,
                 context_window: 200_000,
                 is_default: true,
                 description: Some("描述".to_string()),
@@ -401,6 +415,40 @@ mod tests {
         assert_eq!(value["models"][0]["contextWindow"], json!(200_000));
         assert_eq!(value["defaultModel"], json!("m1"));
         assert!(value.get("builtinProviders").is_none());
+        // A model that declares no level list omits both fields, so its payload is
+        // byte-identical to what an agent that predates `thinkingLevels` sends.
+        assert!(value["models"][0].get("thinkingLevels").is_none());
+        assert!(value["models"][0].get("defaultThinkingLevel").is_none());
+    }
+
+    #[test]
+    fn list_models_payload_carries_a_declared_level_list() {
+        let payload = ListModelsPayload {
+            models: vec![ModelEntryPayload {
+                id: "m1".to_string(),
+                label: "Model 1".to_string(),
+                provider: "custom".to_string(),
+                supports_images: false,
+                reasoning: Some(true),
+                thinking_level: "high".to_string(),
+                thinking_levels: vec!["off".to_string(), "low".to_string(), "high".to_string()],
+                default_thinking_level: Some("low".to_string()),
+                context_window: 128_000,
+                is_default: false,
+                description: None,
+                description_en: None,
+                recommended: false,
+            }],
+            default_model: "custom/m1".to_string(),
+            is_scoped: false,
+            builtin_providers: None,
+        };
+        let value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(
+            value["models"][0]["thinkingLevels"],
+            json!(["off", "low", "high"])
+        );
+        assert_eq!(value["models"][0]["defaultThinkingLevel"], json!("low"));
     }
 
     #[test]

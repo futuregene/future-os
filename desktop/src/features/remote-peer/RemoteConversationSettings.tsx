@@ -3,7 +3,7 @@ import { ChevronDown } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../components/ui/SelectMenu";
-import { modelThinkingLevels } from "../../integrations/agent/agentClient";
+import { modelThinkingLevels, resolveThinkingLevel } from "../../integrations/agent/agentClient";
 import { remoteAgentModelOptions, remoteModelReference } from "./remotePeerClient";
 
 /**
@@ -48,13 +48,20 @@ export function RemoteConversationSettings({
   const [thinkingMenuOpen, setThinkingMenuOpen] = useState(false);
   const busy = settings.saving;
   const activeModel = settings.models.find(model => remoteModelReference(model) === settings.model);
-  // The thinking level this control shows, and the one it started on when the
-  // host has not said: `off` is what the host's own picker falls back to.
-  const activeThinkingLevel = settings.thinkingLevel ?? "off";
-  // The host's model entry pages the same fields as a local one, so the same
-  // filter decides this picker: levels the host's agent would clamp away are not
-  // offered. A host that predates `thinkingLevels` keeps all six.
-  const thinkingLevels = modelThinkingLevels(settings.model ?? "", remoteAgentModelOptions(settings.models));
+  // The host's catalogue, in this app's model-option shape: the host's rows carry
+  // the same fields as a local one, so the same rule decides both pickers.
+  const modelOptions = remoteAgentModelOptions(settings.models);
+  // The thinking level this control shows. A level the host's model does not
+  // offer (stored before its `thinkingLevels` narrowed, or written by an older
+  // client) is shown as that model's own starting level — the host's agent clamps
+  // it, so displaying it as the running effort would be wrong. With no level yet
+  // the host's own picker falls back to `off`.
+  const activeThinkingLevel = settings.thinkingLevel
+    ? resolveThinkingLevel(settings.thinkingLevel, settings.model ?? "", modelOptions)
+    : "off";
+  // Levels the host's agent would clamp away are not offered. A host that
+  // predates `thinkingLevels` keeps all six.
+  const thinkingLevels = modelThinkingLevels(settings.model ?? "", modelOptions);
   // The host can name a model its catalogue lists without a label, and can be
   // using one the catalogue does not list at all — both of which the phone's
   // control already answers, in this order, so the two controls read the same.

@@ -358,7 +358,7 @@ impl AgentHost {
             let mut state = self.0.state.lock().unwrap();
             state.handle = Some(handle.clone());
             if state.phase != Phase::Starting {
-                handle.request_shutdown(Duration::from_secs(5));
+                handle.request_shutdown(AGENT_STOP_GRACE);
             }
         }
         #[cfg(test)]
@@ -406,7 +406,7 @@ impl AgentHost {
                 }
             }
         }
-        let report = handle.shutdown(Duration::from_secs(5)).await;
+        let report = handle.shutdown(AGENT_STOP_GRACE).await;
         anyhow::ensure!(
             report.status == ShutdownStatus::Stopped,
             "Agent cleanup failed: {}",
@@ -422,7 +422,14 @@ impl AgentHost {
         self.stop_until(Instant::now() + STOP_TIMEOUT)
     }
     pub fn stop_until(&self, overall: Instant) -> Result<(), crate::Error> {
-        let deadline = overall.min(Instant::now() + STOP_TIMEOUT);
+        let now = Instant::now();
+        let deadline = overall.min(now + STOP_TIMEOUT);
+        // Both windows come from `deadline`: the wait below observes it, and the
+        // Agent's own drain is given what is left of it. They therefore expire
+        // together — the host can no longer call a stop failed while the Agent is
+        // still inside the window it was handed.
+        let budget = deadline.saturating_duration_since(now);
+        let window = agent_stop_window(budget);
         let mut state = self.0.state.lock().unwrap();
         if matches!(state.phase, Phase::Idle | Phase::Stopped) {
             state.yield_reason = None;
@@ -438,14 +445,13 @@ impl AgentHost {
             state.phase = Phase::Stopping;
         }
         if let Some(handle) = &state.handle {
-            handle.request_shutdown(Duration::from_secs(5));
+            handle.request_shutdown(window);
         }
         self.0.changed.notify_all();
         while !state.finished {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                state.phase =
-                    Phase::Failed("Agent cleanup timed out; restart requires process exit".into());
+                state.phase = Phase::Failed(stop_timeout_message(budget));
                 break;
             }
             state = self.0.changed.wait_timeout(state, remaining).unwrap().0;
@@ -475,9 +481,43 @@ impl AgentHost {
         state.cancel.cancel();
         state.probe_cancel.notify_one();
         if let Some(handle) = &state.handle {
-            handle.request_shutdown(Duration::from_secs(5));
+            handle.request_shutdown(AGENT_STOP_GRACE);
         }
         self.0.changed.notify_all();
+    }
+}
+
+/// The window one stop hands the Agent for its own drain.
+///
+/// A stop has exactly one deadline, and this is the Agent's share of it: what is
+/// left of the caller's budget, capped by the fixed grace an ordinary stop has
+/// always given. Deriving it from that deadline instead of using the constant
+/// directly is what keeps the two in step — a fixed 5 s window next to a shorter
+/// wait meant the host could publish `Failed` ("restart requires process exit")
+/// while the Agent still had seconds of the time it had been given, and the stop
+/// then read as unrecoverable for no reason other than the two numbers
+/// disagreeing.
+pub const AGENT_STOP_GRACE: Duration = Duration::from_secs(5);
+
+/// What the Agent is told for one stop: never more than what is left of the
+/// budget, never more than the grace. An exhausted budget therefore hands out no
+/// window at all — the Agent's own verdict then lands with the host's instead of
+/// being cut off — rather than becoming an unbounded wait.
+fn agent_stop_window(remaining: Duration) -> Duration {
+    remaining.min(AGENT_STOP_GRACE)
+}
+
+/// The one wording of a stop's verdict. An ordinary timeout names the Agent's
+/// cleanup, which is what ran out; a budget that was already spent when the stop
+/// began says so instead, because nothing of the Agent's own had a chance to run
+/// and "cleanup timed out" would send the operator looking for a stuck drain.
+fn stop_timeout_message(budget: Duration) -> String {
+    if budget.is_zero() {
+        "Agent cleanup timed out before it began (the shutdown budget was already spent); \
+         restart requires process exit"
+            .into()
+    } else {
+        "Agent cleanup timed out; restart requires process exit".into()
     }
 }
 
@@ -863,6 +903,63 @@ mod coverage_tests {
         assert_eq!(host.phase(), Phase::Idle);
         assert!(!host.owns_agent());
         assert!(host.activity().unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod stop_budget_tests {
+    use super::*;
+
+    /// One deadline, two windows. An ordinary stop is unchanged (the Agent keeps
+    /// exactly the 5 s grace it had), a tighter budget is passed through whole,
+    /// and a spent budget is no window at all — never an unbounded wait.
+    #[test]
+    fn the_agent_window_is_the_budgets_remainder_capped_by_the_grace() {
+        assert_eq!(AGENT_STOP_GRACE, Duration::from_secs(5));
+        // `stop()` is `stop_until(now + STOP_TIMEOUT)`: the grace wins, unchanged.
+        assert_eq!(agent_stop_window(STOP_TIMEOUT), AGENT_STOP_GRACE);
+        // `ServiceStop` passes the process-wide shutdown deadline: same answer.
+        assert_eq!(agent_stop_window(Duration::from_secs(20)), AGENT_STOP_GRACE);
+        // A budget shorter than the grace is handed over whole, never padded.
+        for remaining in [
+            Duration::from_secs(4),
+            Duration::from_millis(300),
+            Duration::from_millis(1),
+        ] {
+            assert_eq!(agent_stop_window(remaining), remaining);
+        }
+        // Spent: no window at all, so the Agent's own verdict lands with the
+        // host's instead of after it.
+        assert_eq!(agent_stop_window(Duration::ZERO), Duration::ZERO);
+        // The wait is the budget itself, so the window can never outlive it.
+        for budget in [
+            Duration::ZERO,
+            Duration::from_millis(1),
+            Duration::from_secs(3),
+            AGENT_STOP_GRACE,
+            Duration::from_secs(30),
+        ] {
+            assert!(
+                agent_stop_window(budget) <= budget.min(AGENT_STOP_GRACE),
+                "{budget:?}"
+            );
+        }
+    }
+
+    /// Two wordings for one verdict: "cleanup timed out" points the operator at a
+    /// stuck Agent, which is the wrong lead when nothing of the Agent's own ran.
+    #[test]
+    fn an_already_spent_budget_is_not_reported_as_the_agents_own_timeout() {
+        assert_eq!(
+            stop_timeout_message(Duration::from_secs(10)),
+            "Agent cleanup timed out; restart requires process exit"
+        );
+        let spent = stop_timeout_message(Duration::ZERO);
+        assert!(spent.contains("before it began"), "{spent}");
+        assert!(
+            spent.contains("restart requires process exit"),
+            "the terminal consequence is unchanged: {spent}"
+        );
     }
 }
 
