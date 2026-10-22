@@ -194,7 +194,11 @@ fn hook_body(info: &std::panic::PanicHookInfo<'_>) {
 /// and print a note on stderr. `message` is [`std::panic::PanicHookInfo`]'s
 /// rendering of the panic (`panicked at <file>:<line>:\n<payload>`).
 fn report(message: &str) {
-    // 1. Restore the terminal (best-effort).
+    // 1. Restore the terminal (best-effort). While the TUI owns the screen,
+    // stderr points at `~/.future/tui/stderr.log` (see `stderr_log`); the
+    // teardown sequences and the note below have to reach the real terminal,
+    // so hand stderr back first.
+    let _ = crate::stderr_log::restore();
     raw_write_stderr(RESTORE_SEQUENCES.as_bytes());
     #[cfg(unix)]
     crate::terminal::panic_restore_raw();
