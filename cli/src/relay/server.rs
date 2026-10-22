@@ -483,50 +483,12 @@ fn verify(
         now(),
     )
     .map_err(|failure| {
-        // "Not signed by its caller" is untrue for the one failure that is about
-        // *time*: the signature is the caller's, and the two machines disagree
-        // about the clock. The skew is in the header this request carried, so the
-        // answer can name it instead of sending the reader to look for a forged
-        // request that does not exist.
-        let message = match failure {
-            sign::VerifyError::Stale => clock_skew_message(header("x-future-timestamp")),
-            _ => "This request is not signed by its caller.".to_string(),
-        };
-        error(401, failure.code(), &message)
+        error(
+            401,
+            failure.code(),
+            "This request is not signed by its caller.",
+        )
     })
-}
-
-/// Why a correctly signed request was refused, in the terms the reader can fix.
-///
-/// The relay compares the request's timestamp with its own clock
-/// (`sign::CLOCK_SKEW_SECONDS`), which is right — a signature that never expires
-/// is a signature that can be replayed — but the advice it used to give
-/// ("not signed by its caller") pointed at the wrong problem entirely. A machine
-/// whose clock is minutes off cannot reach the relay at all, and the fix is to
-/// correct its clock, not to re-pair.
-fn clock_skew_message(timestamp: Option<String>) -> String {
-    let limit = sign::CLOCK_SKEW_SECONDS;
-    match timestamp
-        .and_then(|value| value.trim().parse::<i64>().ok())
-        .map(|stamp| now() - stamp)
-    {
-        Some(skew) if skew > 0 => format!(
-            "This request's timestamp is {skew}s behind the relay's clock (the limit is {limit}s). \
-             The two machines disagree about the current time — check that both are set from a \
-             time service, then retry."
-        ),
-        Some(skew) => format!(
-            "This request's timestamp is {}s ahead of the relay's clock (the limit is {limit}s). \
-             The two machines disagree about the current time — check that both are set from a \
-             time service, then retry.",
-            -skew
-        ),
-        None => format!(
-            "This request's timestamp is more than {limit}s away from the relay's clock, or is not \
-             a Unix time. The two machines disagree about the current time — check that both are \
-             set from a time service, then retry."
-        ),
-    }
 }
 
 fn room_error(failure: RoomError) -> (StatusCode, Json<Value>) {
@@ -620,26 +582,5 @@ mod tests {
         assert_eq!(display_host("  "), "FutureOS");
         assert_eq!(display_host("a\u{0}b"), "ab");
         assert!(display_host(&"x".repeat(200)).len() <= 64);
-    }
-
-    /// A clock that disagrees is refused for the right reason, and the answer says
-    /// which direction and by how much — the reader's fix is to correct a clock, not
-    /// to look for a forged request.
-    #[test]
-    fn a_stale_signature_blames_the_clocks_and_names_the_skew() {
-        let behind = clock_skew_message(Some((now() - 749).to_string()));
-        assert!(behind.contains("749s behind"), "{behind}");
-        assert!(behind.contains("time service"), "{behind}");
-        assert!(!behind.contains("not signed"), "{behind}");
-
-        let ahead = clock_skew_message(Some((now() + 400).to_string()));
-        assert!(ahead.contains("400s ahead"), "{ahead}");
-
-        // An unparsable header still explains itself rather than claiming forgery.
-        for header in [None, Some("not-a-number".to_string())] {
-            let message = clock_skew_message(header);
-            assert!(message.contains("Unix time"), "{message}");
-            assert!(message.contains("time service"), "{message}");
-        }
     }
 }
