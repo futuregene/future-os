@@ -853,16 +853,20 @@ export function SessionList({
                 </Text>
               </View>
               <View style={styles.recentBottom}>
+                {/* The machine comes first, before the name it belongs to: it
+                    opens the under-line at the row's own left edge, so the
+                    glyph column lines up with the title above it instead of
+                    trailing whatever the name happens to be. */}
+                {showSource && item.desktopId && icons?.get(item.desktopId) ? (
+                  <Text accessibilityLabel={item.desktopId} style={[styles.sourceIcon, styles.leadingSourceIcon]}>
+                    {icons.get(item.desktopId)}
+                  </Text>
+                ) : null}
                 <Text numberOfLines={1} style={styles.recentWhere}>
                   {session.mode === "workspace"
                     ? session.workspaceName || t("sessions.workspace")
                     : t("sessions.chatLabel")}
                 </Text>
-                {showSource && item.desktopId && icons?.get(item.desktopId) ? (
-                  <Text accessibilityLabel={item.desktopId} style={styles.sourceIcon}>
-                    {icons.get(item.desktopId)}
-                  </Text>
-                ) : null}
                 {session.pinned && <Pin size={13} color={colors.accent} />}
               </View>
             </>
@@ -1333,6 +1337,10 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   checkboxChecked: { backgroundColor: theme.colors.accent, borderColor: theme.colors.accent },
   dot: { width: 7, height: 7, borderRadius: radius.pill },
   sourceIcon: { fontSize: theme.font(13), marginLeft: spacing.xs },
+  // First in its row, where the margin the glyph carried as a follower would
+  // read as an indent against the title's edge: the pair keeps its 8px
+  // separation (the row's own 4px gap plus this one) on the other side.
+  leadingSourceIcon: { marginLeft: 0, marginRight: spacing.xs },
   selectionBar: {
     flex: 1,
     minWidth: 0,

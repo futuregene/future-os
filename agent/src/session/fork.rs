@@ -436,7 +436,6 @@ mod tests {
         };
         use crate::types::ContentBlock;
         let dir = tempfile::tempdir().unwrap();
-        let manager = Manager::new(dir.path().to_owned());
         let output = format!(
             "head {} exact-middle-value {} tail",
             "x".repeat(2000),
@@ -489,12 +488,22 @@ mod tests {
         parent.entries.push(checkpoint_to_entry(&checkpoint));
         // Repeated forks must keep resolving the child-local IDs, not IDs in
         // either ancestor. Read through the actual indexed history API.
+        let mut manager = Manager::new(dir.path().to_owned());
         for _ in 0..2 {
             let checkpoint = latest_context_checkpoint(&parent.entries).unwrap();
             let child = fork_session(&parent, &checkpoint.entry_id);
             manager.save(&child).unwrap();
-            let restarted = Manager::new(dir.path().to_owned());
-            let child = restarted.load(&child.id).unwrap();
+            // A restart ends the store that wrote the child, so close it before
+            // reopening; the agent itself opens one store per process. Holding
+            // both open made this a two-writer experiment: the first store's
+            // idle space reclaimer writes to the same database, and while one of
+            // its slices held the lock the reopened store's load failed with
+            // "database is locked" (CI run 39828434841, job Rust Linux test /
+            // agent). One slice is 128 single-page commits - measured at 133 ms
+            // on an idle disk, and it fails a concurrent store's read outright.
+            manager.shutdown().unwrap();
+            manager = Manager::new(dir.path().to_owned());
+            let child = manager.load(&child.id).unwrap();
             let checkpoint = latest_context_checkpoint(&child.entries).unwrap();
             let ContentBlock::Text { text } = &checkpoint.summary[0] else {
                 panic!("text expected")
@@ -506,9 +515,7 @@ mod tests {
             assert_eq!(rows.len(), 1);
             let id = rows[0]["entryId"].as_str().unwrap();
             assert!(!parent.entries.iter().any(|entry| entry.id == id));
-            let full = restarted
-                .read_history_entry(&child.id, id, 0, 8192)
-                .unwrap();
+            let full = manager.read_history_entry(&child.id, id, 0, 8192).unwrap();
             assert_eq!(full["chunks"][0]["text"], output);
             assert_eq!(checkpoint.cutoff_entry_id.as_deref(), Some(id));
             parent = child;
