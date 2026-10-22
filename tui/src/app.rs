@@ -22888,6 +22888,7 @@ mod tests {
     async fn permission_selected_in_the_panel_applies_and_mirrors() {
         let (mut app, mut rx) = make_app(100, 30);
         app.handle_submit("/sandbox");
+        let mode_before = app.sandbox.as_ref().unwrap().effective_mode();
         app.handle_cmd(UiCmd::PermissionLevelRequested(PermissionKind::Workspace));
         // The dead client's failure must not move the mirrored level; the
         // failure lands only after the loopback connect is refused (seconds on
@@ -22914,7 +22915,11 @@ mod tests {
         // The card is mode-only now: an open sandbox panel is untouched by a
         // permission answer, and the mode rows it renders are still there.
         let text = top_overlay_text(&mut app, 80);
-        assert!(text.contains("current: Sandboxed"), "{text}");
+        assert_eq!(app.sandbox.as_ref().unwrap().effective_mode(), mode_before);
+        assert!(
+            text.contains(&format!("current: {}", mode_before.label())),
+            "{text}"
+        );
 
         // With no panel open the same command still mirrors the level.
         app.hide_overlay();

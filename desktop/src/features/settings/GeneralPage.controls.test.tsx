@@ -16,7 +16,8 @@ const mocks = vi.hoisted(() => ({
   isWindows: true,
 }));
 
-vi.mock("../../integrations/agent/useSandboxAvailability", () => ({
+vi.mock("../../integrations/agent/useSandboxAvailability", async importOriginal => ({
+  ...await importOriginal<typeof import("../../integrations/agent/useSandboxAvailability")>(),
   useSandboxAvailability: () => mocks.availability,
 }));
 vi.mock("../../lib/platform", () => ({

@@ -1970,7 +1970,8 @@ mod tests {
         let waiting = text(&mut view, 200);
         assert!(waiting.contains("Sandboxed (checking)"));
         assert!(waiting.contains("Sandbox: checking the system sandbox…"));
-        assert!(!waiting.contains("unavailable"));
+        assert!(!waiting.contains("Sandbox: unavailable"));
+        assert!(!waiting.contains("Sandboxed (unavailable)"));
 
         view.set_status(SandboxStatus {
             mode: Some(ApprovalMode::Manual),
@@ -2078,7 +2079,7 @@ mod tests {
     #[test]
     fn linux_and_windows_get_their_own_explanations() {
         let mut linux = SandboxView::new(SandboxPlatform::Linux);
-        assert!(text(&mut linux, 200).contains("runs it through the system Bubblewrap"));
+        assert!(text(&mut linux, 200).contains("Linux uses system Bubblewrap"));
 
         let mut windows = SandboxView::new(SandboxPlatform::Windows);
         let rows = text(&mut windows, 200);
@@ -2088,7 +2089,7 @@ mod tests {
         let mut macos = SandboxView::new(SandboxPlatform::Macos);
         let rows = text(&mut macos, 200);
         assert!(!rows.contains("Windows has no OS sandbox"));
-        assert!(!rows.contains("runs it through the system Bubblewrap"));
+        assert!(!rows.contains("Linux uses system Bubblewrap"));
 
         let mut other = SandboxView::new(SandboxPlatform::Other);
         assert!(text(&mut other, 200).contains("No sandbox backend exists on this platform"));
