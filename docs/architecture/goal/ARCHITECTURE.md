@@ -123,6 +123,22 @@ old notifications as prompts to reconcile CURRENT status, not unconditional orde
 to restart a worker. Foreground embedders without a watchdog may flush immediately;
 the same persistence and replay rules apply.
 
+## Active-state timestamps come from one clock
+
+The projection beside the ledger (`next_action.txt`) is read back as state, and
+`runs stale` compares when it was last written with the latest run's
+`recorded_at`. That comparison must use one clock: `set_next_action` writes
+`next_action.stamp` beside the text, holding the *writing process's* Unix
+seconds. A goal directory is project-local and often lives on a network share
+whose server clock can be minutes off, so a projection dated by the file
+system's modification time compared a share's clock with the ledger's — a fast
+share produced a warning no refresh could ever clear, and a slow one hid it. A
+goal written before the stamp existed falls back to the modification time,
+clamped to now, and the next projection write stamps it properly. Editing
+`next_action.txt` by hand does not move the stamp: the edit is still
+authoritative (`replay` reads the text), and the next command's projection write
+is what dates it.
+
 ## Bounded validators
 
 Validators run asynchronously with independent wall time (120 seconds default;
