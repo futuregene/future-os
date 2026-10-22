@@ -350,13 +350,49 @@ test("a lone taken-over desktop replaces the list with the takeover", async () =
  */
 test("a second paired desktop keeps the list while the open one is held", () => {
   const presence = mockRemote.presence;
+  const machines = mockCatalogs.machines;
   mockRemote.presence = { control: "standby", holder: { name: "Office" } };
+  // The other pairing answers, and nothing is driving it: its rows are what the
+  // list has to draw, so the list stays.
+  mockCatalogs.machines = [{
+    desktopId: "desktop_2", label: "Lab", active: false, status: "connected", control: "active",
+  }];
   try {
     act(() => { tree.update(createElement(SessionsScreen, { onManageDesktops })); });
     expect(tree.root.findAllByType(StandbyScreen)).toHaveLength(0);
     expect(tree.root.findAllByType(SessionList)).toHaveLength(1);
   } finally {
     mockRemote.presence = presence;
+    mockCatalogs.machines = machines;
+  }
+});
+
+/**
+ * Every machine that answers is somebody else's, so there is nothing to draw.
+ *
+ * The merged list used to say "还没有对话" here — a machine full of conversations
+ * reported as an empty one — and the settings pages said the desktop could not
+ * be read. Both read as a broken phone when the truth is a waiting takeover.
+ */
+test("every answering machine taken over asks for the takeover instead of an empty list", () => {
+  const presence = mockRemote.presence;
+  const machines = mockCatalogs.machines;
+  const catalogs = mockCatalogs.catalogs;
+  mockRemote.presence = { control: "standby", holder: { name: "Studio laptop" } };
+  mockCatalogs.machines = [
+    { desktopId: "desktop_2", label: "Lab", active: false, status: "connected", control: "standby" },
+    { desktopId: "desktop_3", label: "Attic", active: false, status: "offline" },
+  ];
+  mockCatalogs.catalogs = [];
+  try {
+    act(() => { tree.update(createElement(SessionsScreen, { onManageDesktops })); });
+    expect(tree.root.findAllByType(SessionList)).toHaveLength(0);
+    const standby = tree.root.findByType(StandbyScreen);
+    expect(standby.props.holder).toEqual({ name: "Studio laptop" });
+  } finally {
+    mockRemote.presence = presence;
+    mockCatalogs.machines = machines;
+    mockCatalogs.catalogs = catalogs;
   }
 });
 

@@ -338,7 +338,13 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     .map(|()| created)
                     .map_err(|e| crate::Error::Message(e.to_string()))
             }) {
-                Ok(task) => reply(sink, true, task_detail_view(&store, task), None).await,
+                Ok(task) => {
+                    // The panel in this very process is showing the list this
+                    // write just changed: tell it, the same way a write from its
+                    // own buttons would. A failed write says nothing.
+                    crate::emit_tasks_updated();
+                    reply(sink, true, task_detail_view(&store, task), None).await
+                }
                 Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
             },
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
@@ -396,7 +402,10 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         Ok(task)
                     });
                 match result {
-                    Ok(task) => reply(sink, true, task_detail_view(&store, task), None).await,
+                    Ok(task) => {
+                        crate::emit_tasks_updated();
+                        reply(sink, true, task_detail_view(&store, task), None).await
+                    }
                     Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
                 }
             }
@@ -422,6 +431,9 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         // anything (see `future_tasks` store schema).
                         Ok(())
                     });
+                if result.is_ok() {
+                    crate::emit_tasks_updated();
+                }
                 reply_unit(sink, result).await
             }
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
@@ -444,7 +456,10 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         Ok(task)
                     });
                 match result {
-                    Ok(task) => reply(sink, true, task_detail_view(&store, task), None).await,
+                    Ok(task) => {
+                        crate::emit_tasks_updated();
+                        reply(sink, true, task_detail_view(&store, task), None).await
+                    }
                     Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
                 }
             }
@@ -482,7 +497,12 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         Ok(task)
                     });
                 match result {
-                    Ok(task) => reply(sink, true, task_detail_view(&store, task), None).await,
+                    Ok(task) => {
+                        // Queued: the panel draws that state, and the run's own
+                        // progress reaches it through the tick's notifier.
+                        crate::emit_tasks_updated();
+                        reply(sink, true, task_detail_view(&store, task), None).await
+                    }
                     Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
                 }
             }
@@ -539,7 +559,10 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 // accepting a suggestion from the phone marks it applied and
                 // records the version the same way.
                 match crate::tasks::accept_revision(&store, &cmd.task_id, &cmd.revision_id) {
-                    Ok(task) => reply(sink, true, task_detail_view(&store, task), None).await,
+                    Ok(task) => {
+                        crate::emit_tasks_updated();
+                        reply(sink, true, task_detail_view(&store, task), None).await
+                    }
                     Err(error) => reply(sink, false, Value::Null, Some(&error)).await,
                 }
             }
