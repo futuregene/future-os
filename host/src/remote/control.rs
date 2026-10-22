@@ -385,6 +385,16 @@ pub(crate) struct StatusSnapshot {
     /// asking whether the switch is on has not asked to mint one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) invitation_expires_at: Option<i64>,
+    /// The build the answering process is running, so a reader can tell "this
+    /// Desktop is the code I just installed" from "a process still on the old
+    /// one" without `/proc`.
+    ///
+    /// Appended, and optional in both directions: a terminal written before it
+    /// existed ignores the field, and one written after it reads an older
+    /// Desktop's snapshot as absent rather than failing to parse — the same rule
+    /// the device list already follows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) build: Option<crate::build_info::BuildIdentity>,
 }
 
 impl StatusSnapshot {
@@ -420,6 +430,7 @@ impl StatusSnapshot {
                 .collect(),
             warning_code: status.warning_code.clone(),
             invitation_expires_at: status.pairing_code_expires_at,
+            build: Some(crate::build_info::BuildIdentity::of_this_process()),
         }
     }
 }
@@ -1274,6 +1285,85 @@ mod tests {
             "the invitation: {wire}"
         );
         assert!(!wire.contains("pairingCode"), "{wire}");
+    }
+
+    /// The answer says which build is **answering**, from this process's own
+    /// compile-time constants.
+    ///
+    /// The failure this exists for: a binary replaced on disk while its process
+    /// keeps serving the old code. `future version` describes the file the reader
+    /// invoked and answers with the new commit; only the running Desktop can say
+    /// what it is actually executing, so the identity travels in its answer.
+    #[tokio::test]
+    async fn a_status_request_names_the_build_that_answered_it() {
+        let request = Request {
+            op: OP_STATUS.into(),
+            reply: "/tmp/unused".into(),
+            desktop_id: None,
+            pair_id: None,
+        };
+        let snapshot = answer(&request, async { Ok(status(RemotePhase::Ready, None)) })
+            .await
+            .status
+            .expect("a status answer");
+        let build = snapshot.build.expect("the answer names its build");
+        assert_eq!(build, crate::build_info::BuildIdentity::of_this_process());
+        // Word for word against the compile-time constants, so a projection that
+        // re-spelled the value cannot pass.
+        let known =
+            |value: &'static str| (!value.is_empty() && value != "unknown").then_some(value);
+        assert_eq!(
+            build.git_commit.as_deref(),
+            known(future_agent::utils::GIT_COMMIT)
+        );
+        assert_eq!(
+            build.build_target.as_deref(),
+            known(future_agent::utils::BUILD_TARGET)
+        );
+    }
+
+    /// A snapshot written by a Desktop that predates `build` still reads, and one
+    /// written after it keeps every existing field where it was.
+    ///
+    /// The terminal parses this document by key, so the field is appended: an
+    /// older Desktop's answer is "no build recorded", never a parse failure, and a
+    /// terminal that has never heard of `build` ignores it.
+    #[test]
+    fn a_snapshot_from_an_older_desktop_still_reads() {
+        let older = serde_json::json!({
+            "phase": "ready",
+            "agentAvailable": true,
+            "transport": "tls://relay.example:4222",
+            "active": "pair_AAAA",
+            "devices": [{
+                "pairId": "pair_AAAA",
+                "phase": "ready",
+                "control": "active",
+                "connected": true,
+                "present": true,
+            }],
+            "invitationExpiresAt": 42,
+        });
+        let read: StatusSnapshot =
+            serde_json::from_value(older.clone()).expect("an older answer must still parse");
+        assert_eq!(read.phase, "ready");
+        assert_eq!(read.invitation_expires_at, Some(42));
+        assert!(read.build.is_none(), "an older Desktop records no build");
+
+        // Re-emitting it does not invent the field…
+        let written = serde_json::to_value(&read).unwrap();
+        assert!(written.get("build").is_none(), "{written}");
+        // …and every key the older document carried is still there, unchanged.
+        for key in [
+            "phase",
+            "agentAvailable",
+            "transport",
+            "active",
+            "devices",
+            "invitationExpiresAt",
+        ] {
+            assert_eq!(older.get(key), written.get(key), "{key} moved: {written}");
+        }
     }
 
     /// A takeover answers with the Desktop's own state, and the answer names the

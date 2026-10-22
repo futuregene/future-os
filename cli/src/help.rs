@@ -421,6 +421,24 @@ self-hosted relay).
   warningCode                a non-fatal local problem (e.g. the web listener)
   invitationExpiresAt        when an unscanned invitation lapses; the code itself
                              is never printed by this command
+  build                      the build the ANSWERING Desktop is running:
+                             gitCommit, gitCommitShort, gitDirty, buildTarget,
+                             buildProfile. null when that Desktop predates the
+                             field. It is the process's own compile-time identity,
+                             not this terminal's and not the file on disk
+
+Use `build` to decide whether a restart is even needed. A binary replaced on disk
+keeps its old code until its process restarts, and `future version` describes the
+file you ran — not the Desktop that is serving:
+
+  future remote status --json | jq -r '.build.gitCommitShort'
+  git -C /path/to/future-os rev-parse --short origin/dev-huichen
+
+Different commits mean the running Desktop is behind the checkout you updated:
+restart it (the window, or `future host`) and read this again. The same commit
+means the code is current and the problem is elsewhere. `null` means the Desktop
+answered from a build that predates this field, so restart it before trusting
+anything it reports.
 
 Exit codes:
   0  the status was read — including "off", "failed" and "revoked": a machine
