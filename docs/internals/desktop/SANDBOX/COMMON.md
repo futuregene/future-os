@@ -18,12 +18,12 @@ semantics.
 | Dimension | macOS | Linux | Windows |
 |---|---|---|---|
 | OS backend / name | Seatbelt / sandbox protection | system Bubblewrap / sandbox protection | Unelevated RestrictedToken + NTFS ACL / write protection |
-| shell read protection | SBPL path rules | masking of targets existing at launch | **not provided** |
+| shell read protection | SBPL path rules | masks for existing targets when supported; unavailable in write-only compatibility mode | **not provided** |
 | shell write protection | SBPL dynamic path rules | read-only root + writable/protected mounts | capability SID write boundary, limited by existing ACLs and delete permissions |
 | Missing protected target / new glob | matched by profile once the path appears | missing targets skipped; new targets only end-detection | no object to attach an ACE to; globs not enforced |
 | Extra authorization | precise per-command read/write grant, still sandboxed | precise per-command read/write grant, still sandboxed | declares concrete write capability, still restricted after approval |
 | Network | open | open, no seccomp | open |
-| Availability check | `sandbox-exec` existence check | PATH / version & args / real namespace-mount probe | real token/ACL/private desktop/shell/cleanup probe |
+| Availability check | `sandbox-exec` existence check | PATH / version & args / separate write/read runtime probes | real token/ACL/private desktop/shell/cleanup probe |
 | Progress | v2 implemented, historical smoke pass | L0–L4/L6 integration implemented; latest hardening and L5 release matrix pending re-verification | W1–W7 integrated, native and installer historical PASS; some product interactions need item-by-item re-verification |
 
 Note: sharing rules across three platforms does not mean each OS can express

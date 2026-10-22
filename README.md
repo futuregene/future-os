@@ -128,6 +128,21 @@ For providers with user-specific base URLs (e.g. Azure's `YOUR_RESOURCE`), add a
 }
 ```
 
+Many self-hosted endpoints accept only some thinking levels (often just `low`/`high`). Declare the ones your model accepts with `thinkingLevels` — provider-level as the default, overridable per model. Leave it out and all six levels are offered (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`); a model marked `reasoning: false` offers `off` alone. Pickers list only the declared levels, and a stored level outside the list snaps to the nearest one by depth — a tie goes to the shallower level, so the run never spends more than the level you asked for:
+
+```json
+{
+  "providers": {
+    "my-provider": {
+      "apiKey": "sk-...",
+      "baseUrl": "https://my-api.example.com/v1",
+      "thinkingLevels": ["off", "low", "high"],
+      "models": [{ "id": "my-model" }]
+    }
+  }
+}
+```
+
 </details>
 
 ### Install skills (optional)

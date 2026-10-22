@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import type { RemoteApprovalSettings } from "./remotePeerClient";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -13,7 +14,7 @@ import { RemoteApprovalMenu } from "./RemoteApprovalMenu";
  * where it would read as a property of the machine rather than of the next thing
  * sent — which is where this app's own approval control is.
  */
-const read = vi.fn<(desktopId: string) => Promise<{ approvalTier: string; sandboxAvailable: boolean }>>();
+const read = vi.fn<(desktopId: string) => Promise<RemoteApprovalSettings>>();
 const set = vi.fn<(desktopId: string, tier: string) => Promise<string>>();
 vi.mock("./remotePeerClient", () => ({
   getRemoteApprovalSettings: (...args: Parameters<typeof read>) => read(...args),
@@ -165,4 +166,26 @@ it("ignores a settings read that settles after unmount", async () => {
 
   await view.unmount();
   await act(async () => resolve({ approvalTier: "off", sandboxAvailable: true }));
+});
+
+it("disables automatic review when the host supports it but has no usable sandbox", async () => {
+  read.mockResolvedValue({ approvalTier: "manual", sandboxAvailable: false });
+  const view = await mount();
+  await view.open();
+  expect(view.item("Automatic review").disabled).toBe(true);
+  await act(async () => view.item("Automatic review").click());
+  expect(set).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+it("keeps limited protection selectable and shows only the upgrade hint", async () => {
+  read.mockResolvedValue({ approvalTier: "auto", sandboxAvailable: true, sandboxCode: "available_write_only" });
+  const view = await mount();
+  await view.open();
+  expect(view.item("Sandboxed").disabled).toBe(false);
+  expect(view.item("Automatic review").disabled).toBe(false);
+  expect(view.container.textContent).toContain("Upgrade system Bubblewrap on that computer");
+  await act(async () => view.item("Sandboxed").click());
+  expect(set).toHaveBeenCalledWith("desktop_a", "sandbox");
+  await view.unmount();
 });

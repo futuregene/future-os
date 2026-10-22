@@ -187,7 +187,7 @@ pub(crate) fn list_models_response(
     let payload_models: Vec<serde_json::Value> = models
         .into_iter()
         .map(|model| {
-            let id = model.id;
+            let id = model.id.clone();
             let qualified_id = format!("{}/{}", model.provider, id);
             let label = if model.name.is_empty() {
                 id.clone()
@@ -195,12 +195,26 @@ pub(crate) fn list_models_response(
                 model.name.clone()
             };
             let thinking_level = if model.reasoning { "high" } else { "off" };
+            // The levels this model offers (empty declaration → the full six, a
+            // model without thinking controls → `off` alone). Sent resolved so
+            // clients do not each re-derive the same rules, and so the pickers
+            // can drop levels this model would only clamp away.
+            let thinking_levels = model.allowed_thinking_levels();
+            // The level a conversation starts at for this model, already clamped
+            // to that list: clients pick their initial value from here instead of
+            // carrying a copy of the snapping rule.
+            let default_thinking_level = crate::llm::schema::clamp_thinking_level(
+                crate::rpc::session::DEFAULT_THINKING_LEVEL,
+                &thinking_levels,
+            );
             serde_json::json!({
                 "id": id.clone(),
                 "label": label,
                 "provider": model.provider.clone(),
                 "supportsImages": model.input.iter().any(|input| input == "image"),
                 "thinkingLevel": thinking_level.to_string(),
+                "thinkingLevels": thinking_levels,
+                "defaultThinkingLevel": default_thinking_level,
                 "reasoning": model.reasoning,
                 "contextWindow": model.context_window,
                 "isDefault": qualified_id == effective_default,

@@ -740,8 +740,6 @@ export const resources = {
         skillRecommendHint: "When on, sending a message suggests one skill you have not installed yet. Off by default.",
         autoTitleFirstTurn: "Generate a title after the first answer",
         autoTitleFirstTurnHint: "Generate and save a title after the first successful answer. Conversation context is not compacted.",
-        autoConnectRemote: "Keep the remote desktop on after a restart",
-        autoConnectRemoteHint: "The desktop serves its paired devices again when it launches. Turning this off means the switch is off at the desktop after a restart; the current connection is not cut.",
         followAccount: "Official account",
         followAccountDescription: "Follow {{name}} on WeChat for release notes, feature guides and research tips.",
         followAccountQrAlt: "WeChat QR code for the {{name}} official account",
@@ -843,6 +841,7 @@ export const resources = {
       },
       approvalTier: {
         title: "Approval mode",
+        upgrade: "Upgrade system Bubblewrap on that computer and restart FutureOS to enable full sandbox protection.",
         manual: "Manual",
         sandbox: "Sandboxed",
         auto: "Automatic review",
@@ -1657,8 +1656,6 @@ export const resources = {
         skillRecommendHint: "开启后，发送消息时会推荐一个你尚未安装的技能；默认关闭。",
         autoTitleFirstTurn: "首轮回答后自动生成标题",
         autoTitleFirstTurnHint: "在首轮回答成功结束后生成并保存标题，不压缩对话上下文。",
-        autoConnectRemote: "桌面端启动时开启远程桌面",
-        autoConnectRemoteHint: "桌面端下次启动会继续提供远程连接。关闭后，重启桌面端时「远程桌面」开关是关的；当前连接不会被断开。",
         followAccount: "微信公众号",
         followAccountDescription: "关注 {{name}} 公众号，获取版本更新、功能说明与研究技巧。",
         followAccountQrAlt: "{{name}} 公众号二维码",
@@ -1760,6 +1757,7 @@ export const resources = {
       },
       approvalTier: {
         title: "审批模式",
+        upgrade: "请升级那台电脑上的系统 Bubblewrap 并重启 FutureOS，以启用完整沙箱保护。",
         manual: "手动审批",
         sandbox: "沙箱保护",
         auto: "自动审批",

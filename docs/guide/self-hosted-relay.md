@@ -305,6 +305,14 @@ Residual risks you should decide about before exposing one publicly:
   credential rotation (signed with its pairing NKey), and its already-paired
   phone reconnects. The pairing lives in the endpoints' credentials, not in the
   relay.
+* **The relay checks your clock.** Every signed request carries its timestamp,
+  and the relay accepts it within five minutes of its own clock in either
+  direction — a signature that never expires is a signature that can be replayed.
+  A machine whose clock is further off than that cannot use the relay at all: the
+  request is refused with `signature_stale`, and the answer names how far off it
+  was and in which direction, because re-pairing will not help and the fix is to
+  put both machines on a time service. Containers, VMs restored from a snapshot
+  and machines that suspend for weeks are where this shows up.
 * **Credentials are short-lived.** The default JWT lifetime is five minutes and
   rotation is a signed request; there is no long-lived bearer token at the
   relay.

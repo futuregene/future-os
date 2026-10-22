@@ -398,14 +398,15 @@ fn worker_bridge_reports_a_selected_todo_that_vanished_mid_turn() {
     );
 }
 
-/// A watchdog that dies before it can take its lock must be REPORTED: the
-/// caller asked for the goal's automation to be alive, and a silently accepted
-/// dead watchdog is exactly the failure the readiness check exists for.
+/// A watchdog that cannot take its lock must be REPORTED: the caller asked for the
+/// goal's automation to be alive, and a silently accepted dead watchdog is exactly
+/// the failure the readiness check exists for.
 ///
-/// Fixture: a directory where the watchdog's lock file belongs. The parent's
-/// `running()` probe reports "not running" (it cannot open the lock either), its
-/// own log file opens normally, and the spawned `supervisor watch` then fails to
-/// take the lock and exits non-zero - which the parent must surface.
+/// Fixture: a directory where the watchdog's lock file belongs. The parent's probe
+/// cannot open the lock either, so it reports that before spawning a child to fail
+/// at the same open - the same "must be reported, never accepted" outcome one step
+/// earlier, which is also the honest one: nothing was started, so nothing can be
+/// said to have exited.
 #[test]
 fn a_watchdog_that_dies_before_its_lock_is_reported_not_accepted() {
     use sha2::{Digest, Sha256};
@@ -435,9 +436,10 @@ fn a_watchdog_that_dies_before_its_lock_is_reported_not_accepted() {
         "a watchdog that never became ready is not a success"
     );
     assert!(
-        err.contains("exited before acquiring its lock"),
-        "the failure must say the watchdog never took its lock: {err}"
+        err.contains("cannot open its lock"),
+        "the failure must say the watchdog could not take its lock: {err}"
     );
+    assert!(err.contains(&gid), "and which goal it was for: {err}");
     // The registration itself DID happen (it is the durable part); only the
     // watchdog failed to come up.
     let store = future_goal::store::Store::open(root).unwrap();

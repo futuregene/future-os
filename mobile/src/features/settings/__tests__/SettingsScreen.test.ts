@@ -47,6 +47,7 @@ const mockRemote = {
   skillsRevision: 0,
   approvalTier: "manual",
   sandboxAvailable: true,
+  sandboxCode: undefined as string | undefined,
   getDesktopSettings: jest.fn(async () => ({ ...stored })),
   updateDesktopSettings: jest.fn(async (patch: Partial<DesktopSettings>) => { stored = { ...stored, ...patch }; return stored; }),
   setApprovalTier: jest.fn(async () => {}),
@@ -108,6 +109,8 @@ beforeEach(async () => {
   mockRemote.desktops = pairedDesktops();
   mockRemote.credentials = { pairId: "pair", expectedDesktopId: "desktop" };
   mockRemote.desktopOnline = true;
+  mockRemote.sandboxAvailable = true;
+  mockRemote.sandboxCode = undefined;
   mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "tasks_v1"]);
   tasksPageProps = null;
   mockRemote.desktopSettingsRevision = 0;
@@ -151,10 +154,26 @@ test("the device page configures the desktop, and keeps the phone's own rows out
 
 test("reloads a desktop-originated change", async () => {
   await openPreferences();
-  stored.autoConnectRemote = true;
+  stored.autoUpgradeSkills = false;
   mockRemote.desktopSettingsRevision++;
   await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
-  expect(toggle("desktopSettings.autoConnectRemote").props.value).toBe(true);
+  expect(toggle("desktopSettings.autoUpgradeSkills").props.value).toBe(false);
+});
+
+/**
+ * The remote desktop switch is not the phone's to offer.
+ *
+ * On that machine the Remote page's switch *is* the whole preference, and this
+ * page would write the value the host reads at launch — so its own switch keeps
+ * showing the old answer until a restart, and one state would read two ways.
+ * The preference stays entirely on the desktop; the phone only shows the
+ * preferences that take effect at once.
+ */
+test("does not offer the remote desktop switch", async () => {
+  await openPreferences();
+  expect(toggle("desktopSettings.autoConnectRemote")).toBeUndefined();
+  expect(strings()).not.toContain("desktopSettings.autoConnectRemote");
+  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(3);
 });
 
 test("offline and old desktops cannot write new preferences", async () => {
@@ -396,8 +415,9 @@ test("subpages use the shared back control and rounded card styling", async () =
 test("preferences auto-load without a persistent refresh button", async () => {
   await openPreferences();
   expect(mockRemote.getDesktopSettings).toHaveBeenCalledTimes(1);
-  // auto-upgrade, auto-title, skill recommendation, auto-connect.
-  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(4);
+  // auto-upgrade, auto-title, skill recommendation. The remote desktop switch
+  // is the desktop's own (its Remote page), so the phone does not offer it.
+  expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(3);
   expect(tree.root.findAllByType(Button)).toHaveLength(0);
 });
 
@@ -452,11 +472,9 @@ test("each preference switch writes its own field and nothing else", async () =>
   expect(mockRemote.updateDesktopSettings).toHaveBeenLastCalledWith({ autoUpgradeSkills: false });
   await act(async () => toggle("desktopSettings.skillRecommend").props.onChange(false));
   expect(mockRemote.updateDesktopSettings).toHaveBeenLastCalledWith({ skillRecommend: false });
-  await act(async () => toggle("desktopSettings.autoConnectRemote").props.onChange(true));
-  expect(mockRemote.updateDesktopSettings).toHaveBeenLastCalledWith({ autoConnectRemote: true });
   // Each write re-read the desktop, so the switches show the stored values.
-  expect(mockRemote.getDesktopSettings).toHaveBeenCalledTimes(4);
-  expect(stored).toMatchObject({ autoUpgradeSkills: false, skillRecommend: false, autoConnectRemote: true });
+  expect(mockRemote.getDesktopSettings).toHaveBeenCalledTimes(3);
+  expect(stored).toMatchObject({ autoUpgradeSkills: false, skillRecommend: false });
 });
 
 test("a refused preference write is reported, and the page still re-reads the desktop", async () => {
@@ -849,4 +867,16 @@ test("automatic review is offered only by capable desktops with a working sandbo
   mockRemote.sandboxAvailable = false;
   await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
   expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.auto" })).toHaveLength(0);
+});
+
+test("limited protection keeps the usual approval choices and only adds the upgrade hint", async () => {
+  mockRemote.sandboxCode = "available_write_only";
+  mockRemote.capabilities.add("auto_approval_v1");
+  await openPreferences();
+  expect(texts()).toContain("approvalTier.upgrade");
+  expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.sandbox" })).toHaveLength(1);
+  expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.auto" })).toHaveLength(1);
+  mockRemote.sandboxAvailable = false;
+  await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
+  expect(texts()).not.toContain("approvalTier.upgrade");
 });

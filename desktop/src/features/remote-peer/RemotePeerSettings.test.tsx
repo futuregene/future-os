@@ -357,6 +357,16 @@ describe("the host's approval mode", () => {
     await view.unmount();
   });
 
+  it("shows the upgrade hint for a limited host without disabling its modes", async () => {
+    answerHostApproval({ approvalTier: "auto", sandboxAvailable: true, sandboxCode: "available_write_only" });
+    const view = await mount({ peer: withApproval() });
+    expect(view.container.textContent).toContain("Upgrade system Bubblewrap on that computer");
+    const options = [...select(view.container).options];
+    expect(options.find(option => option.value === "sandbox")!.disabled).toBe(false);
+    expect(options.find(option => option.value === "auto")!.disabled).toBe(false);
+    await view.unmount();
+  });
+
   it("reads the mode that host is in", async () => {
     answerHostApproval({ approvalTier: "off", sandboxAvailable: true });
     const view = await mount({ peer: withApproval() });
@@ -621,6 +631,22 @@ it("writes the auto-connect switch's own key", async () => {
   const calls = request.mock.calls;
   const settings = (calls[calls.length - 1]![1] as { settings: Record<string, unknown> }).settings;
   expect(Object.keys(settings)).toEqual(["autoConnectRemote"]);
+  await view.unmount();
+});
+
+/**
+ * This row writes the *host's* Remote switch, so the copy has to say when.
+ *
+ * The write lands on one preference the host reads at launch, which means the
+ * switch on that machine keeps showing what it was until it restarts — from
+ * here the change looks like nothing happened. A row that read as an immediate
+ * toggle ("turn the remote desktop on") would leave the two surfaces
+ * disagreeing about one state, so the description names the next launch as the
+ * moment it takes effect.
+ */
+it("says the auto-connect row takes effect at that machine's next launch", async () => {
+  const view = await mount();
+  expect(view.text()).toContain("its own Remote switch changes then, not now");
   await view.unmount();
 });
 

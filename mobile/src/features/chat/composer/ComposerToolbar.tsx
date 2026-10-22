@@ -2,6 +2,7 @@ import { ChevronDown, Paperclip, Send, Slash, Square } from "lucide-react-native
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import type { TFunction } from "i18next";
 import type { RemoteControls } from "../../../remote/RemoteContext";
+import { modelReference, resolveModelThinkingLevel } from "../../../remote/types";
 import { useTheme } from "../../../theme/ThemeContext";
 import { useComposerCompletion } from "../useComposerCompletion";
 import { useStopRequest } from "../useStopRequest";
@@ -26,6 +27,13 @@ interface Props {
 export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeModelLabel, selector, setSelector, completion, editable, openAttachmentMenu, stopRequest, skillEvaluating, canSend, send }: Props) {
   const styles = useStyles();
   const { colors } = useTheme();
+  // The effort this conversation actually runs at on the selected model. A level
+  // the model does not offer (stored before its `thinkingLevels` narrowed) is
+  // shown as the model's own starting level instead of as if it were running.
+  const thinkingLevel = resolveModelThinkingLevel(
+    remote.thinkingLevel,
+    remote.models.find(model => modelReference(model) === remote.modelId),
+  ) ?? remote.thinkingLevel;
   return (
     <View
       style={[
@@ -67,7 +75,7 @@ export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeM
           <ChevronDown color={colors.inkMuted} size={14} />
         </Pressable>
         <Pressable
-          accessibilityLabel={`${t("chat.thinkingLevel")}: ${t(`thinking.${remote.thinkingLevel}`)}`}
+          accessibilityLabel={`${t("chat.thinkingLevel")}: ${t(`thinking.${thinkingLevel}`)}`}
           accessibilityRole="button"
           accessibilityState={{
             expanded: selector === "thinking",
@@ -89,7 +97,7 @@ export function ComposerToolbar({ remote, t, compactToolbar, compacting, activeM
           ]}
         >
           <Text numberOfLines={1} style={styles.selectorText}>
-            {t(`thinking.${remote.thinkingLevel}`)}
+            {t(`thinking.${thinkingLevel}`)}
           </Text>
           <ChevronDown color={colors.inkMuted} size={14} />
         </Pressable>

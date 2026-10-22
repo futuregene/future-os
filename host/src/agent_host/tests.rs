@@ -93,6 +93,15 @@ fn a_stalled_client_fails_stop_without_releasing_the_lock_or_restarting() {
     run_case("stalled");
 }
 
+/// A stop's budget and the window it hands the Agent are one deadline. When the
+/// budget is spent the host may give up — but only on a drain the Agent has also
+/// given up on. Handing out a longer window than the wait watches is what turns
+/// "slow" into "restart requires a process exit" for a stop nobody suffered.
+#[test]
+fn a_short_stop_budget_does_not_outlive_the_window_it_hands_the_agent() {
+    run_case("short-budget");
+}
+
 #[test]
 fn a_cli_shell_is_cancelled_by_the_embedded_owner() {
     run_case("shell");
@@ -523,6 +532,68 @@ fn host_fixture() {
             Duration::from_secs(2),
         ))
         .unwrap();
+    }
+    if case == "short-budget" {
+        // A live client keeps the drain from finishing inside any budget, so the
+        // only question this measures is whether the host's verdict and the
+        // Agent's own expire together.
+        let client = rpc
+            .block_on(future_rpc::connection::connect_verified(
+                "auto",
+                crate::build_info::VERSION,
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+            ))
+            .unwrap();
+        // Taken before the stop: the handle reports the Agent's own verdict, and
+        // `stop_until` leaves the host `Failed`.
+        let handle = host
+            .0
+            .state
+            .lock()
+            .unwrap()
+            .handle
+            .clone()
+            .expect("an owned Agent publishes its handle before it serves");
+        let started = Instant::now();
+        let error = host
+            .stop_until(started + Duration::from_millis(300))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            matches!(host.phase(), Phase::Failed(_)),
+            "the budget is what fails this stop: {error}"
+        );
+        // Bounded: an exhausted budget is not an unbounded wait.
+        let verdict = started.elapsed();
+        assert!(
+            verdict < Duration::from_secs(5),
+            "the wait must stay inside the budget: {verdict:?}"
+        );
+        // How long after the host's verdict the Agent reaches its own. A host
+        // that hands out a 5 s window but watches a 300 ms budget reports the
+        // stop failed while the Agent still has seconds left to drain.
+        let verdict_at = Instant::now();
+        let agent = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            let report = runtime.block_on(handle.wait_for_shutdown());
+            (verdict_at.elapsed(), report)
+        });
+        let (gap, report) = agent.join().unwrap();
+        assert_eq!(
+            report.status,
+            ShutdownStatus::FailedStopping,
+            "the Agent's own window must expire with the host's: {:?}",
+            report.errors
+        );
+        assert!(
+            gap < Duration::from_secs(1),
+            "the host published `Failed` {gap:?} before the Agent's own window closed, so the \
+             verdict cannot have come from the drain: {:?}",
+            report.errors
+        );
+        drop(client);
+        return;
     }
     if case == "stalled" {
         let client = rpc

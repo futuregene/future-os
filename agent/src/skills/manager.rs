@@ -160,7 +160,7 @@ impl SkillManager {
                 skill.upgrade_available = matches!(
                     (installed, skill.latest_version.as_deref()),
                     (Some((source, Some(current))), Some(latest))
-                        if source == "managed" && newer(latest, &current)
+                        if source == "managed" && is_newer(latest, &current)
                 );
             }
             Ok(catalogue)
@@ -313,7 +313,7 @@ impl SkillManager {
                 let prior: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM skills WHERE name=?1)",
                     [skill.id.as_str()], |row| row.get(0))?;
                 let action = match installed {
-                    Some((source, Some(current))) if upgrade_existing && source == "managed" && newer(latest, &current) => Some("upgrade"),
+                    Some((source, Some(current))) if upgrade_existing && source == "managed" && is_newer(latest, &current) => Some("upgrade"),
                     None if skill.builtin && !prior => Some("install"),
                     _ => None,
                 };
@@ -714,9 +714,20 @@ fn validate_component(value: &str) -> Result<()> {
     Ok(())
 }
 
-fn newer(latest: &str, current: &str) -> bool {
-    match (Version::parse(latest), Version::parse(current)) {
-        (Ok(latest), Ok(current)) => latest > current,
+/// Whether `available` is a strictly newer release than `installed`.
+///
+/// The single verdict both readers of the catalogue use: `sync` decides with it
+/// whether there is anything to upgrade, and `future doctor` decides with it
+/// whether to advertise an update at all. They must not drift — comparing the
+/// version strings directly reports an *older* catalogue entry as an available
+/// update, which `future doctor` then recommends running `future skills update`
+/// for while that command correctly does nothing.
+///
+/// A pair that does not parse as `SemVer` is not an upgrade: an unrecognizable
+/// version is left installed rather than replaced by a guess.
+pub fn is_newer(available: &str, installed: &str) -> bool {
+    match (Version::parse(available), Version::parse(installed)) {
+        (Ok(available), Ok(installed)) => available > installed,
         _ => false,
     }
 }
@@ -1095,11 +1106,11 @@ mod tests {
 
     #[test]
     fn upgrade_order_uses_semver_including_prereleases() {
-        assert!(newer("1.2.0", "1.2.0-rc.1"));
-        assert!(newer("1.10.0", "1.9.0"));
-        assert!(!newer("1.2.0", "1.2.0"));
-        assert!(!newer("1.2", "1.1.0"));
-        assert!(!newer("1.2.0", "1.1"));
+        assert!(is_newer("1.2.0", "1.2.0-rc.1"));
+        assert!(is_newer("1.10.0", "1.9.0"));
+        assert!(!is_newer("1.2.0", "1.2.0"));
+        assert!(!is_newer("1.2", "1.1.0"));
+        assert!(!is_newer("1.2.0", "1.1"));
     }
 
     // ── Catalogue-driven sync: what each entry is classified as ────────────
