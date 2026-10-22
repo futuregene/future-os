@@ -136,13 +136,29 @@ pub fn ensure_table(conn: &Connection) -> Result<(), Error> {
     Ok(())
 }
 
-/// Every live workspace row, most recently opened first. Both kinds are
-/// returned; a caller that wants only the user's own directories filters on
-/// [`Workspace::kind`].
+/// Every live workspace row, most recently *active* first — the newest
+/// conversation filed under a workspace counts as its activity, not only the
+/// workspace's own open/edit timestamps. Both kinds are returned; a caller that
+/// wants only the user's own directories filters on [`Workspace::kind`].
 pub fn list(conn: &Connection) -> Result<Vec<Workspace>, Error> {
+    // Which workspace did the user work in last is answered by a conversation
+    // inside it as much as by opening the workspace itself. `last_opened_at`
+    // moves only on the latter, so ordering by it alone ranks a workspace the
+    // user has spent the day in below one they merely created: the pickers that
+    // read this order (the phone's new-conversation dialog, the Desktop's own
+    // workspace list) exist to offer the one used last. The threads table
+    // belongs to the Desktop, so a database the CLI created before any
+    // conversation existed falls back to the workspace's own timestamps.
+    let order = if threads_table_exists(conn)? {
+        "COALESCE((SELECT MAX(COALESCE(t.last_message_at, t.updated_at, t.created_at))
+                    FROM threads t
+                   WHERE t.workspace_id = workspaces.id AND t.status != 'deleted'),
+                  last_opened_at, updated_at) DESC"
+    } else {
+        "COALESCE(last_opened_at, updated_at) DESC"
+    };
     let mut statement = conn.prepare(&format!(
-        "SELECT {COLUMNS} FROM workspaces WHERE deleted_at IS NULL
-         ORDER BY COALESCE(last_opened_at, updated_at) DESC"
+        "SELECT {COLUMNS} FROM workspaces WHERE deleted_at IS NULL ORDER BY {order}"
     ))?;
     let rows = statement.query_map([], from_row)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -573,7 +589,7 @@ mod tests {
     fn a_directory_is_one_workspace_and_reopens_by_path() {
         let mut conn = test_conn();
         let dir = temp_dir("one");
-        let canonical = dir.canonicalize().expect("canonicalize");
+        let canonical = strip_verbatim_prefix(dir.canonicalize().expect("canonicalize"));
 
         let created = create(
             &mut conn,
@@ -725,6 +741,36 @@ mod tests {
         assert!(get(&conn, "ws_ghost").expect("get").is_none());
     }
 
+    /// A workspace is ranked by its most recent *activity*, and a conversation
+    /// filed under it is that activity: the picker's question is which one was
+    /// used last, and a workspace the user has been working in all day holds
+    /// conversations far newer than the row's own `last_opened_at` (which only
+    /// moves when the workspace itself is opened, or when it is created).
+    #[test]
+    fn list_ranks_a_workspace_by_its_newest_conversation() {
+        let conn = test_conn();
+        add_threads_table(&conn);
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, name, kind, path, last_opened_at, created_at, updated_at)
+                 VALUES ('ws_worked_in', 'Worked in', 'user', '/tmp/worked', 100, 1, 100),
+                        ('ws_just_created', 'Just created', 'user', '/tmp/created', 200, 1, 200),
+                        ('ws_untouched', 'Untouched', 'user', '/tmp/untouched', 150, 1, 150);
+             INSERT INTO threads (id, workspace_id, status, last_message_at, created_at, updated_at)
+                 VALUES ('t_live', 'ws_worked_in', 'active', 300, 1, 100),
+                        ('t_gone', 'ws_untouched', 'deleted', 900, 1, 900);",
+        )
+        .expect("seed");
+
+        let ids: Vec<String> = list(&conn)
+            .expect("list")
+            .into_iter()
+            .map(|workspace| workspace.id)
+            .collect();
+        // The conversation outranks the newer row; a deleted one counts for
+        // nothing, so its workspace keeps the rank its own timestamps give it.
+        assert_eq!(ids, vec!["ws_worked_in", "ws_just_created", "ws_untouched"]);
+    }
+
     /// A workspace path is stored canonicalized, and a `~` path is expanded
     /// with it, so every client's spelling maps to the one row.
     #[test]
@@ -735,8 +781,7 @@ mod tests {
             create(&mut conn, &dir.display().to_string(), None, None, false, 0).expect("create");
         assert_eq!(
             created.path,
-            dir.canonicalize()
-                .expect("canonicalize")
+            strip_verbatim_prefix(dir.canonicalize().expect("canonicalize"))
                 .display()
                 .to_string()
         );
@@ -744,7 +789,7 @@ mod tests {
     }
 
     /// A threads table shaped like the desktop's, for the filing tests. Only
-    /// the columns the filing reads and writes are declared.
+    /// the columns the filing and the activity ordering read are declared.
     fn add_threads_table(conn: &Connection) {
         conn.execute_batch(
             "CREATE TABLE threads (
@@ -752,6 +797,8 @@ mod tests {
                  workspace_id TEXT NOT NULL DEFAULT '',
                  agent_session_id TEXT,
                  status TEXT NOT NULL DEFAULT 'active',
+                 last_message_at INTEGER,
+                 created_at INTEGER NOT NULL DEFAULT 0,
                  updated_at INTEGER NOT NULL DEFAULT 0
              );",
         )
@@ -787,7 +834,7 @@ mod tests {
         bind_thread(&conn, "thread-1", "sess-1");
         bind_thread(&conn, "thread-2", "sess-2");
         let dir = temp_dir("filing");
-        let canonical = dir.canonicalize().expect("canonicalize");
+        let canonical = strip_verbatim_prefix(dir.canonicalize().expect("canonicalize"));
 
         let filing =
             file_session_for_cwd(&mut conn, "sess-1", &dir.display().to_string(), 5).expect("file");
@@ -919,7 +966,7 @@ mod tests {
     #[test]
     fn identity_falls_back_to_the_given_spelling_for_a_missing_directory() {
         let dir = temp_dir("normalize");
-        let canonical = dir.canonicalize().expect("canonicalize");
+        let canonical = strip_verbatim_prefix(dir.canonicalize().expect("canonicalize"));
         assert_eq!(normalize_path(&dir), canonical);
         // The same directory, spelled one level deeper and through `.`/`..`.
         let spelled = dir.join(".").join("..").join(dir.file_name().unwrap());

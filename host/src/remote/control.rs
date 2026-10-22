@@ -4,7 +4,7 @@
 //! A device can only be *added* by the process that will serve it: the invitation
 //! carries a single-use secret and the pair-scoped credential, and the bridge for
 //! that pairing has to be up when the phone scans. That process is whichever
-//! Desktop owns this data directory — the window, or `future headless` — so the
+//! Desktop owns this data directory — the window, or `future host` — so the
 //! request travels to it as a file and the answer comes back as one.
 //!
 //! A device can only be *removed immediately* by that same process, for the mirror
@@ -27,7 +27,10 @@
 //!
 //! * `*.request.json` — `{"op": "add-device", "reply": "<absolute path>"}`,
 //!   `{"op": "remove-device", "pairId": "<device>", "reply": "<absolute path>"}`,
-//!   or `{"op": "takeover", "pairId": "<device>", "reply": "<absolute path>"}`;
+//!   `{"op": "takeover", "pairId": "<device>", "reply": "<absolute path>"}`, or one
+//!   of the client role's: `{"op": "peer-state", "reply": "..."}`,
+//!   `{"op": "peer-connect|peer-disconnect|peer-takeover|peer-remove",
+//!   "desktopId": "<remote>", "reply": "..."}`;
 //! * the reply goes to the path the *asker* named, which it created for itself as
 //!   a temporary file — so two terminals asking at once cannot read each other's
 //!   invitation, and a process that exits takes its answer path with it.
@@ -59,6 +62,17 @@
 //!   start, so a `use` that only edited it would take effect at a restart; asking
 //!   the Desktop for a takeover is what moves the pointer now, and tells the
 //!   previous controller to stand by exactly as a device taking over does.
+//!
+//! # The client role
+//!
+//! The same file serves `future remote peers` — the machines *this* one connects
+//! out to — for the same single reason: the client runtime, its live connections
+//! and the user's deliberate "stopped" marks all live in this process, and none of
+//! them is on disk. `peer-state` is the read half; `peer-connect`,
+//! `peer-disconnect` and `peer-remove` are the three changes, and each answers
+//! with the list as it stands after the change. A peer is named by `desktopId`
+//! rather than `pairId`, because both roles call their own identifier a pair id
+//! and they mean different pairings.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -110,6 +124,26 @@ const OP_DISABLE: &str = "disable";
 /// control") rather than inventing a second meaning for the word.
 const OP_TAKEOVER: &str = "takeover";
 
+/// The *client* role, from a terminal: the remote desktops this machine is
+/// paired with as a controller (`~/.future/remote_peers.json`).
+///
+/// These are the mirror image of the operations above — "who do I connect to"
+/// rather than "who is connected to me" — and they are asked of the Desktop for
+/// the same single reason: the client runtime, the live connections and the
+/// user's deliberate "stopped" marks all live in that process. Editing the book
+/// from here is authoritative only for the next start.
+///
+/// `peer-state` reads the list without changing anything; the others name one
+/// host by `desktopId` and answer with the list as it stands after the change,
+/// so a terminal prints what happened instead of what it hoped. `peer-takeover`
+/// also carries the host's own answer whether control moved, because this side
+/// cannot see the pointer it asked the other machine to move.
+const OP_PEER_STATE: &str = "peer-state";
+const OP_PEER_CONNECT: &str = "peer-connect";
+const OP_PEER_DISCONNECT: &str = "peer-disconnect";
+const OP_PEER_TAKEOVER: &str = "peer-takeover";
+const OP_PEER_REMOVE: &str = "peer-remove";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Request {
@@ -121,6 +155,14 @@ pub(crate) struct Request {
     /// creates one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) pair_id: Option<String>,
+    /// The *remote* desktop a client-role operation names.
+    ///
+    /// Its own field rather than a second use of `pairId`: the two roles both
+    /// call their own identifier a pair id, and they mean different pairings:
+    /// a host request naming a peer's pair id would act on a device that has
+    /// nothing to do with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) desktop_id: Option<String>,
 }
 
 /// What a terminal is told once the request has been handled.
@@ -167,6 +209,22 @@ pub(crate) struct Reply {
     /// disappeared to make it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) cleared: Vec<String>,
+    /// The client role's paired hosts, answering `peer-state` and the operations
+    /// that change one.
+    ///
+    /// Every peer answer carries the list as it stands *after* the operation,
+    /// so a terminal prints what the Desktop actually holds instead of what it
+    /// asked for. Empty for the host-role operations above.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) peers: Vec<PeerSnapshot>,
+    /// Answering `peer-takeover`: the host's own report whether this call moved
+    /// control to this machine.
+    ///
+    /// Absent for every other request, and absent on a refusal (which is an
+    /// `error`): `Some(false)` is "this machine already drove it", an answer
+    /// rather than a failure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) took_over: Option<bool>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -199,6 +257,86 @@ pub(crate) struct DeviceSnapshot {
 pub(crate) struct ClientSnapshot {
     pub(crate) name: String,
     pub(crate) kind: String,
+}
+
+/// One remote desktop this machine is paired *with*, as a terminal needs it.
+///
+/// The client role's twin of [`DeviceSnapshot`], and deliberately not the same
+/// struct: a peer has no `phase` or `present` here, because those describe a
+/// bridge this machine serves. `control` and `holder` do belong, because they
+/// answer whether this machine may drive *that* one — a standby peer answers
+/// every heartbeat and refuses every command, which reads as "connected" and
+/// works as nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PeerSnapshot {
+    /// The remote machine's identity, and what a terminal names it by.
+    pub(crate) desktop_id: String,
+    /// This pairing, which is the remote side's id for it.
+    pub(crate) pair_id: String,
+    /// The user's local name for that machine, when they gave one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) name: Option<String>,
+    /// The user's glyph for that machine, when they picked one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) icon: Option<String>,
+    /// This Desktop holds a live connection to that machine right now.
+    pub(crate) connected: bool,
+    /// The user deliberately disconnected it, so the automatic reconnect pass
+    /// leaves it alone until something asks for it by name.
+    pub(crate) stopped: bool,
+    /// Why the last connection attempt failed, cleared by a successful one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) error: Option<String>,
+    /// The remote machine's own report that its agent is reachable.
+    pub(crate) agent_available: bool,
+    /// `active` while this machine drives it, `standby` while another paired
+    /// device does. Absent when it is not connected, or when the host predates
+    /// control arbitration and says nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) control: Option<String>,
+    /// Who holds it while this machine is in `standby`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) holder: Option<PeerHolder>,
+}
+
+/// The device driving a remote desktop, as that machine named it.
+///
+/// The client role's [`ClientSnapshot`]: every field is optional because a
+/// controller that never declared an identity leaves the terminal with "another
+/// device" rather than a name it invented.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PeerHolder {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) pair_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) kind: Option<String>,
+}
+
+impl PeerSnapshot {
+    pub(crate) fn of(peer: &crate::remote_peer::PeerSummary) -> Self {
+        Self {
+            desktop_id: peer.desktop_id.clone(),
+            pair_id: peer.pair_id.clone(),
+            name: peer.name.clone(),
+            icon: peer.icon.clone(),
+            connected: peer.connected,
+            stopped: peer.stopped,
+            error: peer.error.clone(),
+            agent_available: peer.agent_available,
+            // The wire's own spelling of the state, so a terminal and the
+            // window read one vocabulary rather than two translations.
+            control: peer.control.and_then(wire_name),
+            holder: peer.holder.as_ref().map(|holder| PeerHolder {
+                pair_id: holder.pair_id.clone(),
+                name: holder.name.clone(),
+                kind: holder.kind.clone(),
+            }),
+        }
+    }
 }
 
 /// Where a retrying connection has got to.
@@ -319,16 +457,16 @@ fn strip_userinfo(url: &str) -> String {
 impl Reply {
     /// The answer for a request that produced this status.
     ///
-    /// The invitation is extracted by the same rule the headless entry point
-    /// prints by (`headless::invitation_link`), not a second opinion: a link that
-    /// rule refuses (expired, or not a v2 invitation) is not one to hand a
-    /// terminal either.
+    /// The invitation is extracted by [`super::invitation_link`], which judges a
+    /// code only by whether it can still be scanned: a link that rule refuses
+    /// (expired, or not a v2 invitation) is not one to hand a terminal either.
     ///
-    /// Deliberately not `headless::pairing_link`: that also requires the Agent
-    /// availability probe, which starts with the bridge and cannot have answered
-    /// yet. A freshly minted code is valid and scannable regardless, and gating
-    /// the answer on the probe reported "no invitation" for one the user could
-    /// already use.
+    /// Deliberately no Agent-availability gate on top of it. That probe starts
+    /// with the bridge and cannot have answered yet when a request is served, and
+    /// a freshly minted code is valid and scannable regardless — gating the answer
+    /// on it reported "no invitation" for one the user could already use. Whether
+    /// the Agent is ready changes what a paired device can do, not whether the
+    /// invitation works.
     pub(crate) fn of_status(status: &crate::remote::RemoteStatus) -> Self {
         match super::invitation_link(status) {
             Some(link) => Self {
@@ -338,6 +476,8 @@ impl Reply {
                 error: None,
                 removed: false,
                 cleared: status.cleared_invitations.clone(),
+                peers: Vec::new(),
+                took_over: None,
                 status: None,
             },
             None => Self::of_error(format!(
@@ -368,6 +508,8 @@ impl Reply {
             error: Some(message.into()),
             removed: false,
             cleared: Vec::new(),
+            peers: Vec::new(),
+            took_over: None,
             status: None,
         }
     }
@@ -500,7 +642,14 @@ async fn serve_one(path: &Path) {
             return;
         }
     };
-    let reply = answer(&request, perform(&request)).await;
+    // The two roles answer different questions with different outcome types, so
+    // the client-role operations take their own path instead of widening
+    // `perform` into a union no host operation needs.
+    let reply = if is_peer_op(&request.op) {
+        answer_peer(&request, perform_peer(&request)).await
+    } else {
+        answer(&request, perform(&request)).await
+    };
     if let Err(error) = write_reply(Path::new(&request.reply), &reply) {
         eprintln!("remote: cannot answer a device request: {error}");
     }
@@ -618,6 +767,170 @@ fn perform(
             ))),
         }
     }
+}
+
+/// Whether `op` belongs to the client role (see [`perform_peer`]).
+pub(crate) fn is_peer_op(op: &str) -> bool {
+    matches!(
+        op,
+        OP_PEER_STATE | OP_PEER_CONNECT | OP_PEER_DISCONNECT | OP_PEER_TAKEOVER | OP_PEER_REMOVE
+    )
+}
+
+/// What a client-role request produced.
+///
+/// The list is every arm's answer, read after the change. `took_over` exists for
+/// the one arm whose outcome lives on the *other* machine: this side asked, and
+/// only that machine can say whether the pointer moved.
+pub(crate) struct PeerOutcome {
+    pub(crate) peers: Vec<crate::remote_peer::PeerSummary>,
+    /// `Some(changed)` for a takeover only; `None` for every other request.
+    pub(crate) took_over: Option<bool>,
+}
+
+impl PeerOutcome {
+    /// A request that changes nothing about control.
+    fn list(peers: Vec<crate::remote_peer::PeerSummary>) -> Self {
+        Self {
+            peers,
+            took_over: None,
+        }
+    }
+}
+
+/// What a client-role request asks for, as a future this Desktop can run.
+///
+/// Every arm answers with the whole peer list, read after the change: a
+/// terminal asking to connect a machine wants to know whether it worked, and
+/// the list it would print is the same read. A host this Desktop does not know
+/// is refused by name rather than silently ignored, because the terminal has a
+/// stale book and needs to hear it.
+///
+/// `peer-state` is the read half: it changes nothing and exists because whether
+/// a host is *connected* lives in this process and nowhere on disk.
+fn perform_peer(
+    request: &Request,
+) -> impl std::future::Future<Output = Result<PeerOutcome, crate::Error>> {
+    let op = request.op.clone();
+    let desktop_id = request.desktop_id.clone();
+    async move {
+        if op == OP_PEER_STATE {
+            return crate::remote_peer::runtime::list()
+                .await
+                .map(PeerOutcome::list);
+        }
+        let desktop_id = desktop_id
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                crate::Error::Message(format!(
+                    "the `{op}` request names no remote desktop (`desktopId` is missing)"
+                ))
+            })?;
+        let known = crate::remote_peer::runtime::list()
+            .await?
+            .iter()
+            .any(|peer| peer.desktop_id == desktop_id);
+        if !known {
+            return Err(crate::Error::Message(format!(
+                "`{desktop_id}` is not paired with this Desktop, so there is nothing to {}. Run \
+                 `future remote peers` to see the paired machines.",
+                match op.as_str() {
+                    OP_PEER_CONNECT => "connect",
+                    OP_PEER_DISCONNECT => "disconnect",
+                    OP_PEER_TAKEOVER => "take control of",
+                    _ => "remove",
+                }
+            )));
+        }
+        let mut took_over = None;
+        match op.as_str() {
+            // The same call the window's Connect makes, which is what clears a
+            // deliberate stop: nothing else may, or the automatic pass would
+            // undo the user's own answer on its next tick.
+            OP_PEER_CONNECT => {
+                crate::remote_peer::runtime::connect_with_emitter(&desktop_id, None).await?;
+            }
+            // Marks the host stopped in this process, which is the only place
+            // that mark lives. The book is untouched: the pairing stays, and
+            // the next Connect clears the mark.
+            OP_PEER_DISCONNECT => {
+                crate::remote_peer::runtime::disconnect(&desktop_id).await;
+            }
+            // Control comes back without a reconnection: the same `takeover`
+            // command a phone sends, from this side of the pairing. It is sent
+            // on the `list` lane because it names a pairing, not a
+            // conversation. The host's answer says whether the pointer moved —
+            // a machine this one already drives answers `changed: false`, which
+            // is a result, not a refusal.
+            OP_PEER_TAKEOVER => {
+                let reply = crate::remote_peer::runtime::request(
+                    &desktop_id,
+                    serde_json::json!({ "type": "takeover" }),
+                    "list",
+                )
+                .await?;
+                // A host that predates the counter answers without `changed`.
+                // The call only succeeds when this device now drives it, so
+                // that is the honest reading of a silent field.
+                took_over = Some(
+                    reply
+                        .get("changed")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(true),
+                );
+            }
+            // Local first, then a best-effort platform revoke: an unreachable
+            // platform must not leave a host the user removed still paired here.
+            // A revoke that fails is reported on this Desktop's own output; the
+            // pairing is gone either way, and re-pairing is a new invitation.
+            OP_PEER_REMOVE => {
+                if let Some(note) = crate::remote_peer::runtime::unpair(&desktop_id).await? {
+                    eprintln!(
+                        "remote: removed the pairing for {desktop_id}, but the platform could \
+                         not be told: {note}"
+                    );
+                }
+            }
+            other => {
+                return Err(crate::Error::Message(format!(
+                    "this Desktop does not know the `{other}` request; update the FutureOS \
+                     Desktop or the `future` CLI so the two match"
+                )))
+            }
+        }
+        Ok(PeerOutcome {
+            peers: crate::remote_peer::runtime::list().await?,
+            took_over,
+        })
+    }
+}
+
+/// Turn a client-role outcome into the answer the terminal prints.
+///
+/// Split from [`serve_one`] with the outcome injected for the same reason
+/// [`answer`] is: the failure arm must be reachable without a broker, a
+/// platform or a paired machine.
+pub(crate) async fn answer_peer(
+    request: &Request,
+    result: impl std::future::Future<Output = Result<PeerOutcome, crate::Error>>,
+) -> Reply {
+    match result.await {
+        Ok(outcome) => Reply {
+            peers: outcome.peers.iter().map(PeerSnapshot::of).collect(),
+            // A removal has no row to show afterwards, and the terminal has to
+            // tell "this Desktop dropped the pairing" from "it did not know the
+            // request" (which is an `error`).
+            removed: is_peer_removal(&request.op),
+            took_over: outcome.took_over,
+            ..Reply::default()
+        },
+        Err(error) => Reply::of_error(error.to_string()),
+    }
+}
+
+fn is_peer_removal(op: &str) -> bool {
+    op == OP_PEER_REMOVE
 }
 
 /// Turn the operation's outcome into the answer the terminal prints.
@@ -740,6 +1053,7 @@ mod tests {
         let request = Request {
             op: OP_ADD_DEVICE.into(),
             reply: "/tmp/unused".into(),
+            desktop_id: None,
             pair_id: None,
         };
         let link =
@@ -759,6 +1073,7 @@ mod tests {
         let request = Request {
             op: OP_ADD_DEVICE.into(),
             reply: "/tmp/unused".into(),
+            desktop_id: None,
             pair_id: None,
         };
         let reply = answer(&request, async {
@@ -776,6 +1091,7 @@ mod tests {
         let request = Request {
             op: OP_ADD_DEVICE.into(),
             reply: "/tmp/unused".into(),
+            desktop_id: None,
             pair_id: None,
         };
         let refused = RemoteStatus {
@@ -798,6 +1114,7 @@ mod tests {
         let request = Request {
             op: "remove-everything".into(),
             reply: "/tmp/unused".into(),
+            desktop_id: None,
             pair_id: None,
         };
         let mut performed = false;
@@ -825,6 +1142,7 @@ mod tests {
         let request = Request {
             op: OP_STATUS.into(),
             reply: "/tmp/unused".into(),
+            desktop_id: None,
             pair_id: None,
         };
         let mut running = status(RemotePhase::Ready, Some("futureos://remote/pair?v=2"));
@@ -883,6 +1201,7 @@ mod tests {
         let request = Request {
             op: OP_TAKEOVER.into(),
             reply: "/tmp/unused".into(),
+            desktop_id: None,
             pair_id: Some("pair_BBBB".into()),
         };
         let device = |pair_id: &str, control| future_remote_server::types::RemoteDevice {
@@ -927,6 +1246,7 @@ mod tests {
         let request = Request {
             op: OP_TAKEOVER.into(),
             reply: "/tmp/unused".into(),
+            desktop_id: None,
             pair_id: None,
         };
         let error = perform(&request)
@@ -942,6 +1262,7 @@ mod tests {
         let request = Request {
             op: OP_TAKEOVER.into(),
             reply: "/tmp/unused".into(),
+            desktop_id: None,
             pair_id: Some("pair_BBBB".into()),
         };
         let reply = answer(&request, async {
@@ -966,6 +1287,7 @@ mod tests {
             let request = Request {
                 op: op.into(),
                 reply: "/tmp/unused".into(),
+                desktop_id: None,
                 pair_id: None,
             };
             let performed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1026,6 +1348,7 @@ mod tests {
         let add = serde_json::to_value(Request {
             op: OP_ADD_DEVICE.into(),
             reply: "/tmp/x.json".into(),
+            desktop_id: None,
             pair_id: None,
         })
         .unwrap();
@@ -1041,6 +1364,8 @@ mod tests {
             error: None,
             removed: false,
             cleared: Vec::new(),
+            peers: Vec::new(),
+            took_over: None,
             status: None,
         };
         let value = serde_json::to_value(&reply).unwrap();
@@ -1056,6 +1381,7 @@ mod tests {
         let request = Request {
             op: OP_REMOVE_DEVICE.into(),
             reply: "/tmp/unused".into(),
+            desktop_id: None,
             pair_id: Some("pair_GONE".into()),
         };
         // The status after a removal describes whoever is left, not the device
@@ -1082,6 +1408,7 @@ mod tests {
         let request = Request {
             op: OP_REMOVE_DEVICE.into(),
             reply: "/tmp/unused".into(),
+            desktop_id: None,
             pair_id: Some("pair_GONE".into()),
         };
         let reply = answer(&request, async {
@@ -1100,6 +1427,7 @@ mod tests {
         let request = Request {
             op: OP_REMOVE_DEVICE.into(),
             reply: "/tmp/unused".into(),
+            desktop_id: None,
             pair_id: None,
         };
         let error = perform(&request)
@@ -1116,6 +1444,7 @@ mod tests {
             &Request {
                 op: OP_ADD_DEVICE.into(),
                 reply: "/tmp/a".into(),
+                desktop_id: None,
                 pair_id: None,
             },
         );
@@ -1124,6 +1453,7 @@ mod tests {
             &Request {
                 op: OP_ADD_DEVICE.into(),
                 reply: "/tmp/b".into(),
+                desktop_id: None,
                 pair_id: None,
             },
         );
@@ -1142,6 +1472,7 @@ mod tests {
             &Request {
                 op: OP_ADD_DEVICE.into(),
                 reply: "/tmp/a".into(),
+                desktop_id: None,
                 pair_id: None,
             },
         );
@@ -1164,6 +1495,7 @@ mod tests {
             &Request {
                 op: OP_ADD_DEVICE.into(),
                 reply: reply_path.display().to_string(),
+                desktop_id: None,
                 pair_id: None,
             },
         );
@@ -1203,6 +1535,7 @@ mod tests {
             &Request {
                 op: OP_ADD_DEVICE.into(),
                 reply: reply_path.display().to_string(),
+                desktop_id: None,
                 pair_id: None,
             },
         );
@@ -1233,6 +1566,8 @@ mod tests {
                 error: None,
                 removed: false,
                 cleared: Vec::new(),
+                peers: Vec::new(),
+                took_over: None,
                 status: None,
             },
         )
@@ -1260,5 +1595,183 @@ mod tests {
             directory().unwrap().parent(),
             Some(root.join("app").as_path())
         );
+    }
+
+    // -- the client role (`future remote peers`) ---------------------------
+
+    /// One peer as the client runtime reports it.
+    fn peer(desktop_id: &str, connected: bool) -> crate::remote_peer::PeerSummary {
+        crate::remote_peer::PeerSummary {
+            desktop_id: desktop_id.into(),
+            pair_id: "pair_1".into(),
+            name: Some("work".into()),
+            icon: None,
+            connected,
+            stopped: false,
+            error: None,
+            bridge_instance_id: None,
+            features: Vec::new(),
+            agent_available: connected,
+            control: None,
+            holder: None,
+        }
+    }
+
+    fn peer_request(op: &str, desktop_id: Option<&str>) -> Request {
+        Request {
+            op: op.into(),
+            reply: "/tmp/unused".into(),
+            pair_id: None,
+            desktop_id: desktop_id.map(str::to_string),
+        }
+    }
+
+    /// The client-role requests are routed away from the host ones. Getting this
+    /// wrong would send a `peer-connect` to a `match` that refuses it, or worse,
+    /// let a host request reach code that acts on a peer.
+    #[test]
+    fn the_client_role_operations_are_told_apart_from_the_host_ones() {
+        for op in [
+            OP_PEER_STATE,
+            OP_PEER_CONNECT,
+            OP_PEER_DISCONNECT,
+            OP_PEER_TAKEOVER,
+            OP_PEER_REMOVE,
+        ] {
+            assert!(is_peer_op(op), "{op} is a client-role request");
+        }
+        for op in [
+            OP_ADD_DEVICE,
+            OP_REMOVE_DEVICE,
+            OP_STATUS,
+            OP_ENABLE,
+            OP_DISABLE,
+            OP_TAKEOVER,
+            "peer",
+            "",
+        ] {
+            assert!(!is_peer_op(op), "{op} is not a client-role request");
+        }
+    }
+
+    /// The read half: the answer is the list, projected so no credential of any
+    /// kind can ride out on it.
+    #[tokio::test]
+    async fn a_peer_state_request_answers_with_the_live_list() {
+        let request = peer_request(OP_PEER_STATE, None);
+        let reply = answer_peer(&request, async {
+            Ok(PeerOutcome::list(vec![
+                peer("desktop_A", true),
+                peer("desktop_B", false),
+            ]))
+        })
+        .await;
+        assert_eq!(reply.error, None);
+        assert!(!reply.removed, "a read removes nothing");
+        assert_eq!(reply.took_over, None, "a read moves no control");
+        assert_eq!(reply.peers.len(), 2);
+        assert_eq!(reply.peers[0].desktop_id, "desktop_A");
+        assert!(reply.peers[0].connected);
+        assert_eq!(reply.peers[1].desktop_id, "desktop_B");
+        assert!(!reply.peers[1].connected);
+        assert_eq!(reply.peers[0].name.as_deref(), Some("work"));
+    }
+
+    /// A held machine says so, and says who holds it. "Connected" alone would
+    /// claim a peer usable whose every command comes back `superseded`.
+    #[test]
+    fn a_held_peer_carries_its_control_and_holder() {
+        let mut held = peer("desktop_A", true);
+        held.control = Some(future_remote_client::session::ControlState::Standby);
+        held.holder = Some(future_remote_client::session::Holder {
+            pair_id: Some("pair_phone".into()),
+            name: Some("phone".into()),
+            kind: Some("phone".into()),
+        });
+        let snapshot = PeerSnapshot::of(&held);
+        assert_eq!(snapshot.control.as_deref(), Some("standby"));
+        let value = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(value["control"], "standby");
+        assert_eq!(value["holder"]["name"], "phone");
+        // A controller nobody described leaves the holder out entirely, so the
+        // terminal falls back to "another device" instead of a stale name.
+        held.control = Some(future_remote_client::session::ControlState::Active);
+        held.holder = None;
+        let value = serde_json::to_value(PeerSnapshot::of(&held)).unwrap();
+        assert_eq!(value["control"], "active");
+        assert!(value.get("holder").is_none(), "{value}");
+    }
+
+    /// A removal answers with `removed` even when the list it carries is empty:
+    /// after the last pairing leaves there is no row left to say it worked.
+    #[tokio::test]
+    async fn a_peer_removal_says_it_happened_even_with_nothing_left_to_show() {
+        let request = peer_request(OP_PEER_REMOVE, Some("desktop_A"));
+        let reply = answer_peer(&request, async { Ok(PeerOutcome::list(Vec::new())) }).await;
+        assert!(reply.removed);
+        assert_eq!(reply.error, None);
+        assert!(reply.peers.is_empty());
+    }
+
+    /// A takeover carries the host's own verdict, and only a takeover does: the
+    /// terminal prints "already yours" for `false` instead of claiming control
+    /// just changed hands, and it cannot make that distinction up on its own.
+    #[tokio::test]
+    async fn a_peer_takeover_answers_with_whether_control_moved() {
+        for (changed, expected) in [(true, Some(true)), (false, Some(false))] {
+            let request = peer_request(OP_PEER_TAKEOVER, Some("desktop_A"));
+            let reply = answer_peer(&request, async move {
+                Ok(PeerOutcome {
+                    peers: vec![peer("desktop_A", true)],
+                    took_over: Some(changed),
+                })
+            })
+            .await;
+            assert_eq!(reply.error, None);
+            assert_eq!(reply.took_over, expected);
+            assert!(!reply.removed, "a takeover removes nothing");
+        }
+    }
+
+    /// A refusal is a sentence, not a silent empty list: a terminal has to be
+    /// able to tell "nothing is paired" from "it did not happen".
+    #[tokio::test]
+    async fn a_refused_peer_request_carries_the_reason() {
+        let request = peer_request(OP_PEER_CONNECT, Some("desktop_A"));
+        let reply = answer_peer(&request, async {
+            Err(crate::Error::Message(
+                "`desktop_A` is not paired with this Desktop".into(),
+            ))
+        })
+        .await;
+        assert_eq!(
+            reply.error.as_deref(),
+            Some("`desktop_A` is not paired with this Desktop")
+        );
+        assert!(!reply.removed);
+        assert!(reply.peers.is_empty());
+    }
+
+    /// The request carries the two roles' names in their own fields, and the
+    /// answer carries the list under `peers` - the shape the terminal reads.
+    #[test]
+    fn a_peer_request_names_a_desktop_and_the_answer_carries_the_list() {
+        let request = peer_request(OP_PEER_DISCONNECT, Some("desktop_A"));
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(value["desktopId"], "desktop_A");
+        assert!(value.get("pairId").is_none(), "{value}");
+        assert_eq!(value["op"], OP_PEER_DISCONNECT);
+
+        let reply = Reply {
+            peers: vec![PeerSnapshot::of(&peer("desktop_A", true))],
+            ..Reply::default()
+        };
+        let value = serde_json::to_value(&reply).unwrap();
+        assert_eq!(value["peers"][0]["desktopId"], "desktop_A");
+        assert_eq!(value["peers"][0]["connected"], true);
+        // An empty list is omitted, so a host-role answer is byte-identical to
+        // what it was before this channel learned the client role.
+        let empty = serde_json::to_value(Reply::default()).unwrap();
+        assert!(empty.get("peers").is_none(), "{empty}");
     }
 }

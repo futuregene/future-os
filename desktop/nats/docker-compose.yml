@@ -3,11 +3,11 @@ services:
   nats:
     image: nats:2.10-alpine
     container_name: future-nats-dev
-    command: ["-c", "/etc/nats/nats.conf"]
+    command: [-c, /etc/nats/nats.conf]
     ports:
-      - "4222:4222"   # NATS client port (Bridge / async-nats)
-      - "9090:9090"   # WebSocket (browser / NATS core)
-      - "8222:8222"   # Monitoring HTTP (optional)
+      - "4222:4222" # NATS client port (Bridge / async-nats)
+      - "9090:9090" # WebSocket (browser / NATS core)
+      - "8222:8222" # Monitoring HTTP (optional)
     volumes:
       - ./nats.conf:/etc/nats/nats.conf:ro
       - nats-data:/data

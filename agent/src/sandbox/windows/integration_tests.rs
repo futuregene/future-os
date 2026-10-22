@@ -523,7 +523,15 @@ async fn production_runner_preserves_cwd_env_output_and_exit_code() {
     let output = result.stdout.to_lowercase();
     assert!(output.contains("ready|"), "unexpected stdout: {output:?}");
     assert!(
-        output.contains(&fixture.workspace.to_string_lossy().to_lowercase()),
+        output.contains(
+            &fixture
+                .workspace
+                .canonicalize()
+                .expect("canonical workspace")
+                .to_string_lossy()
+                .trim_start_matches(r"\\?\")
+                .to_lowercase()
+        ),
         "cwd missing from stdout: {output:?}"
     );
     assert!(

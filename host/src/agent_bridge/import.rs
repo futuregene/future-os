@@ -3,9 +3,10 @@
 //! records + per-reply run records so they appear in the thread list and right
 //! panel immediately.
 
+use futures::{stream, FutureExt, StreamExt};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex, Weak};
-use tokio::sync::{Mutex as AsyncMutex, Semaphore};
+use tokio::sync::Mutex as AsyncMutex;
 
 use super::client::{
     connect_agent, get_session_entries_page_command, get_state_command, list_session_ids_command,
@@ -524,7 +525,7 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::Error
             // Sync the corrected title back to the agent.
             let session_id = summary.id.clone();
             let sync_title = best_title.clone();
-            tokio::spawn(async move {
+            crate::runtime::spawn(async move {
                 if let Ok(mut client) = connect_agent().await {
                     let cmd = set_session_name_command(sync_title, session_id);
                     let _ = client.execute_command(cmd).await;
@@ -584,7 +585,7 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::Error
     if explicit_name(summary, cwd_basename).is_none() {
         let session_id = summary.id.clone();
         let sync_title = title.clone();
-        tokio::spawn(async move {
+        crate::runtime::spawn(async move {
             if let Ok(mut client) = connect_agent().await {
                 let cmd = set_session_name_command(sync_title, session_id);
                 let _ = client.execute_command(cmd).await;
@@ -602,7 +603,7 @@ async fn import_one(summary: &AgentSessionSummary) -> Result<usize, crate::Error
         let cwd = super::session::workspace_path_for_thread(&thread.id)
             .expect("invariant: thread workspace exists immediately after create_thread");
         let sid = summary.id.clone();
-        tokio::spawn(async move {
+        crate::runtime::spawn(async move {
             if let Err(e) = write_back_cwd(&sid, &cwd).await {
                 eprintln!("FutureOS: cwd write-back failed for {sid}: {e}");
             }
@@ -739,36 +740,36 @@ pub async fn import_missing_sessions() {
     }
 
     let total = sessions.len();
-    let semaphore = Arc::new(Semaphore::new(IMPORT_CONCURRENCY));
     let mut imported = 0usize;
     let mut total_runs = 0usize;
 
     for generation in generations(sessions) {
-        let mut handles = Vec::new();
-        for summary in generation {
-            let permit = semaphore.clone().acquire_owned().await;
-            handles.push(tokio::spawn(async move {
-                let _permit = permit;
-                import_one(&summary).await
-            }));
-        }
-        for handle in handles {
-            match handle.await {
-                // `import_one` returns the created run count: 0 for an already-known
-                // session (title-heal only), >= 1 for a genuinely new import. Only
-                // count the latter, so the summary log fires when something actually
-                // landed — steady-state runs (all sessions known) stay silent.
+        // Keep child imports inside the parent's future. Dropping JoinHandles
+        // detaches spawned imports; cancelling startup must drop every in-flight
+        // import before the next fixture can publish a different HOME.
+        let mut results = stream::iter(generation)
+            .map(|summary| async move {
+                std::panic::AssertUnwindSafe(import_one(&summary))
+                    .catch_unwind()
+                    .await
+            })
+            .buffer_unordered(IMPORT_CONCURRENCY);
+        while let Some(result) = results.next().await {
+            match result {
                 Ok(Ok(runs)) => {
                     total_runs += runs;
                     if runs > 0 {
                         imported += 1;
                     }
                 }
-                Ok(Err(error)) => {
-                    eprintln!("FutureOS: session import error: {error}");
-                }
-                Err(join_error) => {
-                    eprintln!("FutureOS: session import panic: {join_error}");
+                Ok(Err(error)) => eprintln!("FutureOS: session import error: {error}"),
+                Err(panic) => {
+                    let detail = panic
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+                        .unwrap_or("non-string panic");
+                    eprintln!("FutureOS: session import panic: {detail}");
                 }
             }
         }

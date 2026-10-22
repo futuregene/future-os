@@ -34,6 +34,32 @@
           }
         ]
       },
+      "hash-session-menu": {
+        "note": "The composer's `#` menu: one list, newest activity first — a chat leads its workspace neighbours when it was used more recently, so there is no chats-first section — and each row names the workspace it lives in. The conversation being composed in is not offered.",
+        "steps": [
+          {
+            "wait": 1800
+          },
+          {
+            "eval": "(() => { const ed = document.querySelector('[contenteditable=\"true\"][role=\"textbox\"]'); if (!ed) throw new Error('no composer'); ed.focus(); return 'focused'; })()"
+          },
+          {
+            "wait": 400
+          },
+          {
+            "type": "#"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const rows = [...document.querySelectorAll('[data-menu-index]')]; if (rows.length < 6) throw new Error('the menu did not list the conversations: ' + rows.length); const title = row => ((row.querySelector('.flex-1') || {}).textContent || '').trim(); const ws = row => { const el = row.querySelector('[data-session-workspace]'); return el ? el.textContent.trim() : null; }; const titles = rows.map(title); const labels = rows.map(ws); const expected = ['基金申报书的创新点怎么写', '只看风险偏好那一段', '把结论改成中文表格', '表格加上样本量一列', '帮我把这段英文摘要改通顺']; for (let i = 0; i < expected.length; i += 1) { if (titles[i] !== expected[i]) throw new Error('row ' + i + ' is ' + JSON.stringify(titles[i]) + ', expected ' + JSON.stringify(expected[i]) + ' in ' + JSON.stringify(titles.slice(0, 6))); } if (labels[0] !== null) throw new Error('a chat names a workspace: ' + JSON.stringify(labels[0])); if (labels[1] !== '多巴胺与决策') throw new Error('the conversation does not name its workspace: ' + JSON.stringify(labels[1])); if (titles.includes('整理两篇文献的结论对比表')) throw new Error('the conversation being composed in is offered as a reference to itself'); return { titles: titles.slice(0, 5), labels: labels.slice(0, 5) }; })()"
+          },
+          {
+            "shot": "d-hash-session-menu.png"
+          }
+        ]
+      },
       "rail-pin-menu": {
         "steps": [
           {
@@ -1025,6 +1051,9 @@
             "wait": 900
           },
           {
+            "eval": "(() => {\n  const round = n => Math.round(n * 10) / 10;\n  const rows = [...document.querySelectorAll(\"[role='listbox'] [role='option']\")];\n  const marks = rows.map((row) => {\n    const slot = row.querySelector(':scope > span');\n    const name = [...row.querySelectorAll('span')].find(s => String(s.className).includes('truncate'));\n    return {\n      name: row.getAttribute('aria-label'),\n      slot: round(slot.getBoundingClientRect().width),\n      nameLeft: round(name.getBoundingClientRect().left),\n    };\n  });\n  if (marks.length < 3)\n    throw new Error('the picker does not list this machine and a host: ' + JSON.stringify(marks));\n  // Two of the marks are 14px line icons and the rest are emoji the user picked,\n  // which are wider: a slot sized by its glyph put each name at its own x, so the\n  // list read as two columns. Measured, because alignment is a position and a\n  // class list cannot state one.\n  if (new Set(marks.map(m => m.nameLeft)).size > 1)\n    throw new Error('the entries do not share a name column: ' + JSON.stringify(marks));\n  if (new Set(marks.map(m => m.slot)).size > 1)\n    throw new Error('the entries do not draw their mark in one slot: ' + JSON.stringify(marks));\n  return marks;\n})()"
+          },
+          {
             "eval": "(() => { const t = document.body.innerText; if (!t.includes('本机')) throw new Error('the selector does not offer this machine'); if (!t.includes('工作室 iMac')) throw new Error('the selector does not offer the connected host'); if (!t.includes('管理远程桌面')) throw new Error('the selector does not lead to managing the hosts'); })()"
           },
           {
@@ -1052,7 +1081,7 @@
             "wait": 2000
           },
           {
-            "eval": "(() => {\n  const msgs = [...document.querySelectorAll('[data-message-id]')];\n  if (msgs.length < 2) throw new Error('the transcript did not render: ' + msgs.length);\n\n  // The author line: one per turn, above the text. A transcript that rendered the\n  // host's raw entries had one above every *fragment* — a column of \"assistant\".\n  const authors = msgs.map(m => (m.innerText || '').split('\\n')[0].replace(/\\s+/g, ' ').trim().slice(0, 12));\n  if (authors.some(a => !a)) throw new Error('a turn has no author line: ' + JSON.stringify(authors));\n  const speaker = (label) => authors.filter(a => a.includes(label)).length;\n  if (speaker('你') < 1 || speaker('未来助手') < 1) throw new Error('the transcript is not a conversation: ' + JSON.stringify(authors));\n\n  // One reading column, at this app's width.\n  const boxes = msgs.map(m => { const r = m.getBoundingClientRect(); return Math.round(r.left) + ',' + Math.round(r.width); });\n  if (new Set(boxes).size !== 1) throw new Error('turns are not one column: ' + boxes.join(' | '));\n\n  // The header: this app's own, 48px, carrying the conversation's usage.\n  const header = document.querySelector('header');\n  const h = header.getBoundingClientRect();\n  if (Math.round(h.height) !== 48) throw new Error('header is not 48px: ' + h.height);\n  const headerLabels = [...header.querySelectorAll('button')].map(b => b.getAttribute('aria-label') || '');\n  if (header.querySelector(\"[data-testid='remote-thread-usage']\") === null)\n    throw new Error('no usage action in the header: ' + headerLabels.join('|'));\n  // Compacting is a request, and it lives behind `/` in the composer.\n  if (headerLabels.some(l => l.includes('压缩上下文')))\n    throw new Error('compact is still a header button: ' + headerLabels.join('|'));\n\n  // The right panel is this conversation's files: the collapsed affordance is a\n  // button over the header, and opening it lists that host's files.\n  const filesToggle = document.querySelector(\"button[aria-label='显示此对话的文件']\")\n    || document.querySelector(\"button[aria-label=\\\"Show this conversation's files\\\"]\");\n  if (!filesToggle) throw new Error('no files affordance for a remote conversation');\n\n  // The composer: this app's shell, the same width as the messages above it.\n  const form = document.querySelector('form');\n  if (!form) throw new Error('no composer');\n  const cls = form.className || '';\n  for (const part of ['rounded-lg', 'shadow-panel', 'border-line']) {\n    if (!cls.includes(part)) throw new Error('composer shell is not the local one: missing ' + part);\n  }\n  const f = form.getBoundingClientRect();\n  const firstMessage = msgs[0].getBoundingClientRect();\n  if (Math.abs(f.width - firstMessage.width) > 2)\n    throw new Error('the composer is not as wide as the messages: ' + Math.round(f.width) + ' vs ' + Math.round(firstMessage.width));\n  const attach = form.querySelector(\"button[aria-label='添加附件']\") || form.querySelector(\"button[aria-label='Attach']\");\n  // Found by its accessible name: this app's send control is an icon button.\n  const send = form.querySelector(\"button[aria-label='发送']\") || form.querySelector(\"button[aria-label='Send']\");\n  if ((send?.textContent || '').trim() !== '') throw new Error('send still carries a label: ' + send.textContent);\n  if (!attach || !send) throw new Error('composer controls missing: ' + (attach ? '' : 'attach ') + (send ? '' : 'send'));\n  const a = attach.getBoundingClientRect();\n  const s = send.getBoundingClientRect();\n  if (a.left > f.left + f.width / 2) throw new Error('attach is not at the left');\n  if (s.right < f.left + f.width / 2) throw new Error('send is not at the right');\n  // The field is the local composer's shape: a textarea the shell borders, rather than a bordered control nested inside the shell.\n  const field = form.querySelector('textarea');\n  if (!field) throw new Error('the field is not a textarea');\n  if ((field.className || '').includes('border')) throw new Error('the field draws its own border inside the shell');\n  for (const part of ['min-h-14', 'px-2', 'py-1', 'text-sm']) {\n    if (!(field.className || '').includes(part)) throw new Error('the field is not the local one: missing ' + part);\n  }\n  // The placeholder is this app's own, minus the `@` (a remote prompt attaches files\n  // with the paperclip, by id) and never naming the machine: the box describes the\n  // task, exactly as the local composer does.\n  if (field.placeholder !== '描述任务，按 / 使用工具或技能')\n    throw new Error('the placeholder does not match the local composer: ' + field.placeholder);\n\n  // The model and thinking controls are this app's own dropdowns, not native selects.\n  if (form.querySelector('select')) throw new Error('the control row still uses a native select');\n\n  // The transcript clears the composer. The composer rides *over* the transcript\n  // behind a fade rather than sitting under it, so the footer's own height is\n  // reserved at the end of the content; without it the last turn is drawn under\n  // the input box, which is what \"the bottom of the conversation is cut off\"\n  // looks like. Measured, because that is a distance and no class list says it.\n  const scroller = document.querySelector(\"[data-chat-scroll='true']\");\n  scroller.scrollTop = scroller.scrollHeight;\n  const lastTurn = [...document.querySelectorAll('[data-message-id]')].pop();\n  const covered = Math.round(lastTurn.getBoundingClientRect().bottom - form.getBoundingClientRect().top);\n  if (covered > 0)\n    throw new Error('the last turn is under the composer by ' + covered + 'px');\n  // The host's own name and glyph, in the header of its conversation: a reader who\n  // opened this from the merged list has no other way to see whose it is.\n  const machine = document.querySelector(\"[data-testid='thread-machine']\");\n  if (!machine) throw new Error('the remote conversation does not say which machine it is on');\n  if (!machine.textContent.includes('工作室 iMac'))\n    throw new Error('the header badge does not name the host: ' + machine.textContent);\n  if (!machine.textContent.includes('💻'))\n    throw new Error('the header badge does not carry the host glyph: ' + machine.textContent);\n  // The workspace it works in, beside the machine: the phone says this under its\n  // title, and a conversation opened from a workspace heading had no way to say\n  // which folder it was in once the list was out of sight.\n  const workspace = document.querySelector(\"[data-testid='remote-thread-workspace']\");\n  if (!workspace) throw new Error('the remote conversation does not say which workspace it is in');\n  if (!(workspace.textContent || '').includes('图表脚本'))\n    throw new Error('the header badge does not name the workspace: ' + workspace.textContent);\n  // A run in flight is watched in the transcript, not announced in the corner:\n  // the reply itself, its tool rows and its timer already say it.\n  if ((header.textContent || '').includes('运行中'))\n    throw new Error('the header still narrates the run');\n})()"
+            "eval": "(() => {\n  const msgs = [...document.querySelectorAll('[data-message-id]')];\n  if (msgs.length < 2) throw new Error('the transcript did not render: ' + msgs.length);\n\n  // The author line: one per turn, above the text. A transcript that rendered the\n  // host's raw entries had one above every *fragment* — a column of \"assistant\".\n  const authors = msgs.map(m => (m.innerText || '').split('\\n')[0].replace(/\\s+/g, ' ').trim().slice(0, 12));\n  if (authors.some(a => !a)) throw new Error('a turn has no author line: ' + JSON.stringify(authors));\n  const speaker = (label) => authors.filter(a => a.includes(label)).length;\n  if (speaker('你') < 1 || speaker('未来助手') < 1) throw new Error('the transcript is not a conversation: ' + JSON.stringify(authors));\n\n  // One reading column, at this app's width.\n  const boxes = msgs.map(m => { const r = m.getBoundingClientRect(); return Math.round(r.left) + ',' + Math.round(r.width); });\n  if (new Set(boxes).size !== 1) throw new Error('turns are not one column: ' + boxes.join(' | '));\n\n  // The header: this app's own, 48px, carrying the conversation's usage.\n  const header = document.querySelector('header');\n  const h = header.getBoundingClientRect();\n  if (Math.round(h.height) !== 48) throw new Error('header is not 48px: ' + h.height);\n  const headerLabels = [...header.querySelectorAll('button')].map(b => b.getAttribute('aria-label') || '');\n  if (header.querySelector(\"[data-testid='remote-thread-usage']\") === null)\n    throw new Error('no usage action in the header: ' + headerLabels.join('|'));\n  // Compacting is a request, and it lives behind `/` in the composer.\n  if (headerLabels.some(l => l.includes('压缩上下文')))\n    throw new Error('compact is still a header button: ' + headerLabels.join('|'));\n\n  // The right panel is this conversation's files: the collapsed affordance is a\n  // button over the header, and opening it lists that host's files.\n  const filesToggle = document.querySelector(\"button[aria-label='显示此对话的文件']\")\n    || document.querySelector(\"button[aria-label=\\\"Show this conversation's files\\\"]\");\n  if (!filesToggle) throw new Error('no files affordance for a remote conversation');\n\n  // The composer: this app's shell, the same width as the messages above it.\n  const form = document.querySelector('form');\n  if (!form) throw new Error('no composer');\n  const cls = form.className || '';\n  for (const part of ['rounded-lg', 'shadow-panel', 'border-line']) {\n    if (!cls.includes(part)) throw new Error('composer shell is not the local one: missing ' + part);\n  }\n  const f = form.getBoundingClientRect();\n  const firstMessage = msgs[0].getBoundingClientRect();\n  if (Math.abs(f.width - firstMessage.width) > 2)\n    throw new Error('the composer is not as wide as the messages: ' + Math.round(f.width) + ' vs ' + Math.round(firstMessage.width));\n  const attach = form.querySelector(\"button[aria-label='添加附件']\") || form.querySelector(\"button[aria-label='Attach']\");\n  // Found by its accessible name: this app's send control is an icon button.\n  const send = form.querySelector(\"button[aria-label='发送']\") || form.querySelector(\"button[aria-label='Send']\");\n  if ((send?.textContent || '').trim() !== '') throw new Error('send still carries a label: ' + send.textContent);\n  if (!attach || !send) throw new Error('composer controls missing: ' + (attach ? '' : 'attach ') + (send ? '' : 'send'));\n  const a = attach.getBoundingClientRect();\n  const s = send.getBoundingClientRect();\n  if (a.left > f.left + f.width / 2) throw new Error('attach is not at the left');\n  if (s.right < f.left + f.width / 2) throw new Error('send is not at the right');\n  // The field is the local composer's shape: a textarea the shell borders, rather than a bordered control nested inside the shell.\n  const field = form.querySelector('textarea');\n  if (!field) throw new Error('the field is not a textarea');\n  if ((field.className || '').includes('border')) throw new Error('the field draws its own border inside the shell');\n  for (const part of ['min-h-14', 'px-2', 'py-1', 'text-sm']) {\n    if (!(field.className || '').includes(part)) throw new Error('the field is not the local one: missing ' + part);\n  }\n  // The placeholder is this app's own, minus the `@` (a remote prompt attaches files\n  // with the paperclip, by id) and never naming the machine: the box describes the\n  // task, exactly as the local composer does.\n  if (field.placeholder !== '描述任务，按 / 使用工具或技能，按 # 引用会话')\n    throw new Error('the placeholder does not match the local composer: ' + field.placeholder);\n\n  // The model and thinking controls are this app's own dropdowns, not native selects.\n  if (form.querySelector('select')) throw new Error('the control row still uses a native select');\n\n  // The transcript clears the composer. The composer rides *over* the transcript\n  // behind a fade rather than sitting under it, so the footer's own height is\n  // reserved at the end of the content; without it the last turn is drawn under\n  // the input box, which is what \"the bottom of the conversation is cut off\"\n  // looks like. Measured, because that is a distance and no class list says it.\n  const scroller = document.querySelector(\"[data-chat-scroll='true']\");\n  scroller.scrollTop = scroller.scrollHeight;\n  const lastTurn = [...document.querySelectorAll('[data-message-id]')].pop();\n  const covered = Math.round(lastTurn.getBoundingClientRect().bottom - form.getBoundingClientRect().top);\n  if (covered > 0)\n    throw new Error('the last turn is under the composer by ' + covered + 'px');\n  // The host's own name and glyph, in the header of its conversation: a reader who\n  // opened this from the merged list has no other way to see whose it is.\n  const machine = document.querySelector(\"[data-testid='thread-machine']\");\n  if (!machine) throw new Error('the remote conversation does not say which machine it is on');\n  if (!machine.textContent.includes('工作室 iMac'))\n    throw new Error('the header badge does not name the host: ' + machine.textContent);\n  if (!machine.textContent.includes('💻'))\n    throw new Error('the header badge does not carry the host glyph: ' + machine.textContent);\n  // The workspace it works in, beside the machine: the phone says this under its\n  // title, and a conversation opened from a workspace heading had no way to say\n  // which folder it was in once the list was out of sight.\n  const workspace = document.querySelector(\"[data-testid='thread-workspace']\");\n  if (!workspace) throw new Error('the remote conversation does not say which workspace it is in');\n  if (!(workspace.textContent || '').includes('图表脚本'))\n    throw new Error('the header badge does not name the workspace: ' + workspace.textContent);\n  // A run in flight is watched in the transcript, not announced in the corner:\n  // the reply itself, its tool rows and its timer already say it.\n  if ((header.textContent || '').includes('运行中'))\n    throw new Error('the header still narrates the run');\n})()"
           },
           {
             "shot": "d-remote-conversation.png"
@@ -1721,7 +1750,7 @@
             "wait": 1200
           },
           {
-            "eval": "(() => {\n  const field = document.querySelector('textarea');\n  // The placeholder describes the task and points at `/`, as this app's own\n  // composer does. What it must not do is name the machine: that is the rail's\n  // business, and this app's composers never state it.\n  if (field.placeholder !== '描述任务，按 / 使用工具或技能')\n    throw new Error('the placeholder does not match the local composer: ' + field.placeholder);\n  const rows = [...document.querySelectorAll(\"[role='option']\")].map(r => (r.textContent || '').trim());\n  // The compact request leads, as this app's own context tool does.\n  if (!rows[0].startsWith('压缩上下文')) throw new Error('the compact command does not lead: ' + JSON.stringify(rows));\n  // Then the host's skills, by the name the host resolves, each with what it\n  // does — a list of bare names is not a menu anyone can choose from.\n  const skill = rows.find(r => r.startsWith('/Paper Search'));\n  if (!skill) throw new Error('the host skills are not in the menu: ' + JSON.stringify(rows));\n  if (!skill.includes('检索文献')) throw new Error('a skill row carries no description: ' + skill);\n  // Above the box, not over it: the box sits at the foot of the window.\n  const menu = document.querySelector(\"[role='listbox']\");\n  const box = document.querySelector('form');\n  if (!menu || !box) throw new Error('no menu over the box');\n  if (menu.getBoundingClientRect().bottom > box.getBoundingClientRect().top + 1)\n    throw new Error('the menu opens over the box instead of above it');\n  return rows.length + ' rows';\n})()"
+            "eval": "(() => {\n  const field = document.querySelector('textarea');\n  // The placeholder describes the task and points at `/`, as this app's own\n  // composer does. What it must not do is name the machine: that is the rail's\n  // business, and this app's composers never state it.\n  if (field.placeholder !== '描述任务，按 / 使用工具或技能，按 # 引用会话')\n    throw new Error('the placeholder does not match the local composer: ' + field.placeholder);\n  const rows = [...document.querySelectorAll(\"[role='option']\")].map(r => (r.textContent || '').trim());\n  // The reference hand-off leads when there is another conversation to point\n  // at — the row the phone's `/` also offers — and the compact request follows\n  // it, in the order the composer builds them.\n  if (!rows[0].startsWith('引用对话')) throw new Error('the reference hand-off does not lead: ' + JSON.stringify(rows));\n  if (!rows[1].startsWith('压缩上下文')) throw new Error('the compact request does not follow it: ' + JSON.stringify(rows));\n  // Then the host's skills, by the name the host resolves, each with what it\n  // does — a list of bare names is not a menu anyone can choose from.\n  const skill = rows.find(r => r.startsWith('/Paper Search'));\n  if (!skill) throw new Error('the host skills are not in the menu: ' + JSON.stringify(rows));\n  if (!skill.includes('检索文献')) throw new Error('a skill row carries no description: ' + skill);\n  // Above the box, not over it: the box sits at the foot of the window.\n  const menu = document.querySelector(\"[role='listbox']\");\n  const box = document.querySelector('form');\n  if (!menu || !box) throw new Error('no menu over the box');\n  if (menu.getBoundingClientRect().bottom > box.getBoundingClientRect().top + 1)\n    throw new Error('the menu opens over the box instead of above it');\n  return rows.length + ' rows';\n})()"
           },
           {
             "shot": "d-remote-slash-menu.png"
@@ -1912,6 +1941,48 @@
           },
           {
             "shot": "d-review-file-chevron.png"
+          }
+        ]
+      },
+      "remote-draft-workspace": {
+        "note": "A new conversation on a paired machine asks what this machine's own composer asks before the first prompt — a workspace on that computer, or a plain chat — and the answer is what the host creates the conversation in. The row used to exist only on the local screen: a remote draft was in a workspace only when it was started from that workspace's heading, and the plain new-conversation path made a chat without saying so.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 2500
+          },
+          {
+            "hover": "在 图表脚本 中新建对话"
+          },
+          {
+            "tap": "在 图表脚本 中新建对话"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => { const row = document.querySelector(\"[data-testid='remote-draft-target']\"); if (!row) throw new Error('a new conversation on a host has no workspace/chat row'); const labels = [...row.querySelectorAll('button')].map(b => (b.textContent || '').trim()); if (!labels.includes('图表脚本')) throw new Error('the row does not name the host workspace the draft was started from: ' + JSON.stringify(labels)); if (!labels.includes('普通对话')) throw new Error('the row offers no plain conversation: ' + JSON.stringify(labels)); if (!(row.textContent || '').includes('使用那台电脑上的项目文件夹及其工作区资源。')) throw new Error('the row does not say what a workspace means: ' + row.textContent); const badge = document.querySelector(\"[data-testid='thread-workspace']\"); if (!badge || !(badge.textContent || '').includes('图表脚本')) throw new Error('the draft header does not name its workspace: ' + (badge ? badge.textContent : 'no badge')); return 'draft in ' + JSON.stringify(labels); })()"
+          },
+          {
+            "eval": "(() => { const row = document.querySelector(\"[data-testid='remote-draft-target']\"); const chat = [...row.querySelectorAll('button')].find(b => (b.textContent || '').trim() === '普通对话'); if (!chat) throw new Error('no plain-conversation control in the row'); chat.click(); return 'tapped 普通对话'; })()"
+          },
+          {
+            "eval": "(() => { const row = document.querySelector(\"[data-testid='remote-draft-target']\"); const text = row.textContent || ''; if (text.includes('使用那台电脑上的项目文件夹')) throw new Error('the row still describes a workspace after choosing a plain chat'); if (!text.includes('在那台电脑上以 FutureOS 管理的临时工作区快速开始。')) throw new Error('the row does not describe a plain chat: ' + text); if (document.querySelector(\"[data-testid='thread-workspace']\")) throw new Error('the draft header still names a workspace it is not in'); return 'plain chat chosen'; })()"
+          },
+          {
+            "eval": "(() => { const row = document.querySelector(\"[data-testid='remote-draft-target']\"); const trigger = [...row.querySelectorAll('button')].find(b => b.getAttribute('aria-haspopup') === 'menu'); if (!trigger) throw new Error('the row has no workspace menu'); trigger.click(); return 'opened ' + (trigger.textContent || '').trim(); })()"
+          },
+          {
+            "eval": "(() => { const row = document.querySelector(\"[data-testid='remote-draft-target']\"); const menu = document.querySelector(\"[role='menu']\"); if (!menu) throw new Error('the workspace menu did not open'); const text = menu.textContent || ''; for (const name of ['图表脚本', '投稿稿件']) { if (!text.includes(name)) throw new Error('the menu is missing ' + name + ': ' + text); } if (!text.includes('/Users/studio/papers/submission')) throw new Error('a workspace row carries no path: ' + text); const m = menu.getBoundingClientRect(); const trigger = [...row.querySelectorAll('button')].find(b => b.getAttribute('aria-haspopup') === 'menu').getBoundingClientRect(); if (m.bottom > trigger.top + 1) throw new Error('the menu opens below its trigger, where the foot of the window is: ' + Math.round(m.bottom) + ' > ' + Math.round(trigger.top)); return 'menu above the row, listing ' + text; })()"
+          },
+          {
+            "eval": "(() => { const menu = document.querySelector(\"[role='menu']\"); const item = [...menu.querySelectorAll(\"[role='menuitem']\")].find(b => (b.textContent || '').trim().startsWith('投稿稿件')); if (!item) throw new Error('no row for the second workspace: ' + menu.textContent); item.click(); return 'tapped ' + item.textContent.trim(); })()"
+          },
+          {
+            "eval": "(() => { if (document.querySelector(\"[role='menu']\")) throw new Error('choosing a workspace left the menu open'); const row = document.querySelector(\"[data-testid='remote-draft-target']\"); if (!(row.textContent || '').includes('使用那台电脑上的项目文件夹及其工作区资源。')) throw new Error('the row does not describe the workspace it is in: ' + row.textContent); const badge = document.querySelector(\"[data-testid='thread-workspace']\"); if (!badge || !(badge.textContent || '').includes('投稿稿件')) throw new Error('the draft header does not name the workspace just chosen: ' + (badge ? badge.textContent : 'no badge')); return 'draft moved to 投稿稿件'; })()"
+          },
+          {
+            "shot": "d-remote-draft-workspace.png"
           }
         ]
       },
@@ -2687,6 +2758,110 @@
             "shot": "d-vibe-page-two.png"
           }
         ]
+      },
+      "rail-recent": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "最近"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "var list=document.querySelector('[data-testid=\"recent-rows\"]');if(!list) throw new Error('the recent view is not drawn');var secs=[...list.querySelectorAll('[data-recent-section]')].map(s=>s.getAttribute('data-recent-section'));if(JSON.stringify(secs)!==JSON.stringify(['active','earlier'])) throw new Error('stretches: '+JSON.stringify(secs));var counts=[...list.querySelectorAll('[data-recent-count]')].map(n=>Number(n.getAttribute('data-recent-count')));if(counts[0]!==3||counts[1]!==14) throw new Error('caption counts: '+JSON.stringify(counts));var rows=[...list.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));if(rows.length!==17) throw new Error('rows drawn: '+rows.length);'a11y: two stretches, 3 active over 14 earlier'"
+          },
+          {
+            "eval": "var rows=[...document.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));var sc=rows.indexOf('local::th_sc'), lf=rows.indexOf('local::th_longformer');if(sc<0||lf<0) throw new Error('the two running rows are missing: '+JSON.stringify(rows));if(sc>lf) throw new Error('the active stretch is not ordered by start time: th_sc at '+sc+', longformer at '+lf);if(rows.length>0 && rows.indexOf('desktop_studio::rs_forest')!==0)  throw new Error('a host run in flight is not the first row: '+rows[0]);'a11y: active ordered by creation, runs of both machines are in it'"
+          },
+          {
+            "eval": "var rows=[...document.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));var order=['local::th_review','local::th_chat1','local::th_review_a','local::th_review_b'];var idx=order.map(k=>rows.indexOf(k));if(idx.some(i=>i<0)) throw new Error('a finished row is missing: '+JSON.stringify(rows));if(idx[0]<3) throw new Error('the pinned conversation was lifted into the active stretch');for(var i=1;i<idx.length;i++) if(idx[i]<idx[i-1])  throw new Error('the earlier stretch is not ordered by last reply: '+JSON.stringify(idx));var pinnedHeadings=[...document.querySelectorAll('[data-testid=\"recent-rows\"] *')].filter(e=>e.children.length===0&&(e.textContent||'').trim()==='置顶');if(pinnedHeadings.length) throw new Error('the recent view drew a pinned section');'a11y: earlier by reply, pin is a marker'"
+          },
+          {
+            "shot": "d-rail-recent.png"
+          }
+        ]
+      },
+      "vibe-add-slot": {
+        "url": "http://localhost:5299/shot/?pinned=th_data&press=meta%2Bshift%2Bv",
+        "steps": [
+          {
+            "wait": 2600
+          },
+          {
+            "eval": "(() => {\n  const grid = document.querySelector('.grid');\n  const bar = document.querySelector('[data-vibe-drag=\"bar\"]');\n  const label = bar ? bar.querySelector('span') : null;\n  const barBox = bar.getBoundingClientRect();\n  const labelBox = label.getBoundingClientRect();\n  const items = [...grid.children].map((el) => {\n    const box = el.getBoundingClientRect();\n    const style = getComputedStyle(el);\n    return {\n      kind: el.getAttribute('data-vibe-cell') ? 'cell' + el.getAttribute('data-vibe-cell') : 'add',\n      size: [Math.round(box.width), Math.round(box.height)],\n      row: style.gridRowStart,\n      column: style.gridColumnStart,\n    };\n  });\n  const template = getComputedStyle(grid).gridTemplateRows.split(' ').map(v => Math.round(parseFloat(v)));\n  return JSON.stringify({\n    bar: { height: Math.round(barBox.height), labelCentre: Math.round(labelBox.top + labelBox.height / 2 - barBox.top) },\n    templateRows: template,\n    items,\n  });\n})()"
+          },
+          {
+            "shot": "d-vibe-add-slot.png"
+          }
+        ]
+      },
+      "settings-themes": {
+        "note": "Settings → General's color-theme picker: one card per palette, each painting itself while the app keeps the active theme. The assertion pins that separation — a card that inherited the app's surfaces would make every preview identical.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "lixin"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "eval": "(() => {\n        const cards = [...document.querySelectorAll('[role=radio][data-palette]')];\n        const expected = [\"futureos\",\"ayu\",\"catppuccin\",\"dracula\",\"everforest\",\"gruvbox\",\"kanagawa\",\"nightfox\",\"nord\",\"one-dark\",\"rose-pine\",\"solarized\",\"tokyo-night\",\"vesper\"];\n        if (cards.length !== expected.length) throw new Error('expected ' + expected.length + ' palette cards, found ' + cards.length);\n        const got = cards.map(card => card.dataset.palette);\n        if (got.join(',') !== expected.join(',')) throw new Error('cards are ' + got.join(','));\n        const canvases = cards.map(card => getComputedStyle(card).getPropertyValue('--color-canvas').trim());\n        const unique = new Set(canvases);\n        if (unique.size !== expected.length) throw new Error('previews share surfaces: ' + JSON.stringify(canvases));\n        return { count: cards.length, canvases };\n      })()"
+          },
+          {
+            "shot": "d-settings-themes.png"
+          },
+          {
+            "tap": "Nord"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "(() => {\n        const root = document.documentElement;\n        if (root.dataset.palette !== 'nord') throw new Error('the root palette is ' + root.dataset.palette);\n        const canvas = getComputedStyle(root).getPropertyValue('--color-canvas').trim();\n        if (canvas !== '#eceff4') throw new Error('canvas is ' + canvas + ', expected the Nord light value');\n        const body = getComputedStyle(document.body).backgroundColor;\n        if (body !== 'rgb(236, 239, 244)') throw new Error('body painted ' + body);\n        if (!localStorage.getItem('future.palette')?.includes('nord')) throw new Error('the choice was not stored');\n        return { canvas, body };\n      })()"
+          },
+          {
+            "shot": "d-settings-themes-nord.png"
+          }
+        ]
+      },
+      "settings-themes-dark": {
+        "url": "http://localhost:5299/shot/?theme=dark&palette=catppuccin",
+        "note": "The same picker in a dark window with Catppuccin active: previews follow the rendition as well as the palette, and the app itself is on Catppuccin Mocha.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "lixin"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "设置"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "eval": "(() => {\n        const root = document.documentElement;\n        if (!root.classList.contains('dark')) throw new Error('the harness did not boot dark');\n        const canvas = getComputedStyle(root).getPropertyValue('--color-canvas').trim();\n        if (canvas !== '#11111b') throw new Error('canvas is ' + canvas + ', expected Catppuccin Mocha');\n        const cards = [...document.querySelectorAll('[role=radio][data-palette]')];\n        const nord = cards.find(card => card.dataset.palette === 'nord');\n        if (!nord) throw new Error('no Nord card');\n        const nordCanvas = getComputedStyle(nord).getPropertyValue('--color-canvas').trim();\n        if (nordCanvas !== '#2e3440') throw new Error('the Nord card shows ' + nordCanvas + ', not its dark surface');\n        return { canvas, nordCanvas };\n      })()"
+          },
+          {
+            "shot": "d-settings-themes-dark.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label]')",
@@ -2703,6 +2878,50 @@
       "mobile": true
     },
     "scenarios": {
+      "hash-session-menu": {
+        "note": "The composer's `#` picker: conversations from every workspace in one list, newest activity first (even when that pulls a chat above a workspace's own conversations), and the workspace named on each row.",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "eval": "document.querySelector('[aria-label=\"给 FutureOS 发消息\"]').focus()"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "type": "#"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "(() => { const header = [...document.querySelectorAll('*')].find(el => el.children.length === 0 && (el.textContent || '').trim() === '引用会话'); if (!header) throw new Error('the picker did not open'); const panel = header.parentElement.parentElement; const rows = [...panel.querySelectorAll('[role=\"button\"]')].filter(el => (el.getAttribute('aria-label') || '') !== '关闭技能候选'); const labels = rows.map(el => el.getAttribute('aria-label') || ''); const texts = rows.map(el => (el.innerText || '').trim()); const expected = ['跑通 Longformer 的 baseline', '把这份问卷数据清洗一下', '只看风险偏好那一段']; for (let i = 0; i < expected.length; i += 1) { if (labels[i] !== expected[i]) throw new Error('row ' + i + ' is ' + JSON.stringify(labels[i]) + ', expected ' + JSON.stringify(expected[i]) + ' in ' + JSON.stringify(labels.slice(0, 5))); } if (!texts[0].includes('稀疏注意力复现')) throw new Error('a workspace conversation names no workspace: ' + JSON.stringify(texts[0])); if (!texts[0].startsWith('跑通 Longformer 的 baseline')) throw new Error('the row is not titled: ' + JSON.stringify(texts[0])); if (texts.some(text => text.includes('临时会话'))) throw new Error('a chat names a workspace: ' + JSON.stringify(texts)); if (labels.includes('整理两篇文献的结论对比表')) throw new Error('the conversation being composed in is offered as a reference to itself'); return { labels: labels.slice(0, 6), texts: texts.slice(0, 3) }; })()"
+          },
+          {
+            "shot": "m-hash-session-menu.png"
+          }
+        ]
+      },
       "list": {
         "steps": [
           {
@@ -2710,6 +2929,12 @@
           },
           {
             "tap": "稍后再说"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "对话"
           },
           {
             "wait": 1500
@@ -3682,7 +3907,19 @@
             "wait": 700
           },
           {
-            "tap": "工具调用"
+            "tap": "查看过程"
+          },
+          {
+            "wait": 1400
+          },
+          {
+            "eval": "(() => {\n  // The fold's own row carries the same counts in its spoken label, so the run\n  // is the row whose label *starts* with the tool wording.\n  const run = [...document.querySelectorAll('[role=button]')]\n    .find(node => (node.getAttribute('aria-label') || '').startsWith('工具调用'));\n  if (!run) throw new Error('no step summary row inside the opened process');\n  run.click();\n  return 'step run opened';\n})()"
+          },
+          {
+            "wait": 1600
+          },
+          {
+            "eval": "(() => {\n  const run = [...document.querySelectorAll('[role=button]')]\n    .find(node => (node.getAttribute('aria-label') || '').startsWith('工具调用'));\n  if (!run) throw new Error('the step summary row is gone');\n  // The reply block draws the summary line and, once opened, the rows under\n  // it — one child either way until the press lands.\n  if (run.parentElement.children.length < 2)\n    throw new Error('the step run did not open: only its summary line is drawn');\n  return 'the run is open';\n})()"
           },
           {
             "wait": 1600
@@ -3699,7 +3936,8 @@
           {
             "shot": "m-steps-expanded.png"
           }
-        ]
+        ],
+        "_comment": "The reply ships with its work folded onto the answer, so the individual step rows are two taps in: 查看过程 opens the answer's process, 工具调用 opens the run inside it."
       },
       "image": {
         "steps": [
@@ -4187,10 +4425,28 @@
             "wait": 1500
           },
           {
-            "eval": "(() => {\n  const labels = [...document.querySelectorAll('[role=radio]')].map(node => node.getAttribute('aria-label'));\n  for (const wanted of ['跟随系统', '浅色', '深色', '小', '中', '大', '特大']) {\n    if (!labels.includes(wanted)) throw new Error('the appearance page is missing ' + wanted + ': ' + JSON.stringify(labels));\n  }\n  // Each size chip is set at the size it picks, so the choice reads as a size.\n  const chipSize = label => getComputedStyle(document.querySelector(`[role=radio][aria-label=\"${label}\"]`).firstElementChild).fontSize;\n  const sizes = ['小', '中', '大', '特大'].map(chipSize);\n  if (new Set(sizes).size !== 4) throw new Error('the size chips are not all different: ' + JSON.stringify(sizes));\n  return 'appearance options ok: ' + JSON.stringify(sizes);\n})()"
+            "eval": "(() => {\n  const labels = [...document.querySelectorAll('[role=radio]')].map(node => node.getAttribute('aria-label'));\n  for (const wanted of ['跟随系统', '浅色', '深色', '小', '中', '大', '特大']) {\n    if (!labels.includes(wanted)) throw new Error('the appearance page is missing ' + wanted + ': ' + JSON.stringify(labels));\n  }\n  // Each size chip is set at the size it picks, so the choice reads as a size.\n  const chipSize = label => getComputedStyle(document.querySelector(`[role=radio][aria-label=\"${label}\"]`).firstElementChild).fontSize;\n  const sizes = ['小', '中', '大', '特大'].map(chipSize);\n  if (new Set(sizes).size !== 4) throw new Error('the size chips are not all different: ' + JSON.stringify(sizes));\n  // The reply level is this phone's own, offers both levels, and ships on 默认.\n  const replyLabels = [...document.querySelectorAll('[role=radio]')].map(node => node.getAttribute('aria-label'));\n  for (const wanted of ['默认', '详细']) {\n    if (!replyLabels.includes(wanted)) throw new Error('the reply level is missing ' + wanted + ': ' + JSON.stringify(replyLabels));\n  }\n  // A checked chip is painted with the accent border (react-native-web leaves\n  // `aria-checked` unset on a radio).\n  const checkedChip = label => getComputedStyle(document.querySelector(`[role=radio][aria-label=\"${label}\"]`)).borderColor === 'rgb(37, 99, 235)';\n  if (!checkedChip('默认') || checkedChip('详细'))\n    throw new Error('the reply level does not start on 默认');\n  return 'appearance options ok: ' + JSON.stringify(sizes);\n})()"
           },
           {
-            "eval": "(() => {\n  // The header is built from `desktopSettings.<level>`, so a level whose\n  // title key is missing paints the key itself instead of failing loudly.\n  const header = document.querySelector('[role=heading]');\n  if (!header) throw new Error('the appearance level has no header');\n  const title = (header.textContent || '').trim();\n  if (title !== '外观') throw new Error('the appearance header is not its title: ' + title);\n  // Each group shows exactly the stored choice, and nothing at all is stored\n  // until the reader chooses: the default is to follow the phone, at the\n  // size the app was designed at.\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance') || 'null') || { themeMode: 'system', fontSize: 'medium' };\n  const themeLabel = { system: '跟随系统', light: '浅色', dark: '深色' }[stored.themeMode];\n  const sizeLabel = { small: '小', medium: '中', large: '大', xlarge: '特大' }[stored.fontSize];\n  const accent = 'rgb(37, 99, 235)';\n  const chosen = [...document.querySelectorAll('[role=radio]')]\n    .filter(node => getComputedStyle(node).borderColor === accent)\n    .map(node => node.getAttribute('aria-label'));\n  if (JSON.stringify(chosen) !== JSON.stringify([themeLabel, sizeLabel])) {\n    throw new Error('the checked choices do not match the stored appearance ' + JSON.stringify(stored) + ': ' + JSON.stringify(chosen));\n  }\n  return 'header and checked appearance ok';\n})()"
+            "eval": "(() => {\n  // The header is built from `desktopSettings.<level>`, so a level whose\n  // title key is missing paints the key itself instead of failing loudly. It\n  // is the heading in the row that also holds the back control: the list\n  // behind the sheet has headings of its own and comes first in the document.\n  const back = document.querySelector('[aria-label=\"返回\"]');\n  const bar = back && back.parentElement && back.parentElement.parentElement;\n  const header = bar ? bar.querySelector('[role=heading]') : null;\n  if (!header) throw new Error('the appearance level has no header');\n  const title = (header.textContent || '').trim();\n  if (title !== '外观') throw new Error('the appearance header is not its title: ' + title);\n  // Each group shows exactly the stored choice, and nothing at all is stored\n  // until the reader chooses: the default is to follow the phone, at the\n  // size the app was designed at.\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance') || 'null') || { themeMode: 'system', fontSize: 'medium', replyDetail: 'default' };\n  const themeLabel = { system: '跟随系统', light: '浅色', dark: '深色' }[stored.themeMode];\n  const sizeLabel = { small: '小', medium: '中', large: '大', xlarge: '特大' }[stored.fontSize];\n  const replyLabel = { default: '默认', detailed: '详细' }[stored.replyDetail || 'default'];\n  const accent = 'rgb(37, 99, 235)';\n  // One checked chip per group, in the order the groups are drawn.\n  const chosen = [...document.querySelectorAll('[role=radio]')]\n    .filter(node => getComputedStyle(node).borderColor === accent)\n    .map(node => node.getAttribute('aria-label'));\n  if (JSON.stringify(chosen) !== JSON.stringify([themeLabel, sizeLabel, replyLabel])) {\n    throw new Error('the checked choices do not match the stored appearance ' + JSON.stringify(stored) + ': ' + JSON.stringify(chosen));\n  }\n  return 'header and checked appearance ok';\n})()"
+          },
+          {
+            "eval": "document.querySelector('[role=radio][aria-label=\"详细\"]').click(); 'detailed'"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance') || '{}');\n  if (stored.replyDetail !== 'detailed') throw new Error('the reply level was not stored: ' + JSON.stringify(stored));\n  const checked = label => getComputedStyle(document.querySelector(`[role=radio][aria-label=\"${label}\"]`)).borderColor === 'rgb(37, 99, 235)';\n  if (!checked('详细') || checked('默认')) throw new Error('the reply level did not switch to 详细');\n  return 'reply level stored and painted';\n})()"
+          },
+          {
+            "eval": "document.querySelector('[role=radio][aria-label=\"默认\"]').click(); 'default'"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  const stored = JSON.parse(window.localStorage.getItem('future.mobile.appearance') || '{}');\n  if (stored.replyDetail !== 'default') throw new Error('the reply level did not switch back: ' + JSON.stringify(stored));\n  const checked = label => getComputedStyle(document.querySelector(`[role=radio][aria-label=\"${label}\"]`)).borderColor === 'rgb(37, 99, 235)';\n  if (!checked('默认') || checked('详细')) throw new Error('the reply level did not switch back on screen');\n  return 'reply level back on 默认';\n})()"
           },
           {
             "shot": "m-appearance-light.png"
@@ -4280,7 +4536,7 @@
             "wait": 1000
           },
           {
-            "eval": "(() => {\n  const stored = window.localStorage.getItem('future.mobile.appearance');\n  if (!stored || JSON.parse(stored).themeMode !== 'system' || JSON.parse(stored).fontSize !== 'medium') {\n    throw new Error('the appearance was left changed: ' + stored);\n  }\n  return 'profile left on the default appearance';\n})()"
+            "eval": "(() => {\n  const stored = window.localStorage.getItem('future.mobile.appearance');\n  const parsed = stored ? JSON.parse(stored) : {};\n  if (parsed.themeMode !== 'system' || parsed.fontSize !== 'medium' || parsed.replyDetail !== 'default') {\n    throw new Error('the appearance was left changed: ' + stored);\n  }\n  return 'profile left on the default appearance';\n})()"
           }
         ]
       },
@@ -5088,22 +5344,43 @@
             "tap": "稍后再说"
           },
           {
-            "wait": 1200
+            "wait": 1500
           },
           {
-            "tap": "最近"
-          },
-          {
-            "wait": 900
-          },
-          {
-            "eval": "var titles=['再跑一遍 marker 富集','跑通 Longformer 的 baseline','把清洗脚本写到 ~/clean.py','整理两篇文献的结论对比表','把这份问卷数据清洗一下','只看风险偏好那一段','把结论改成中文表格','找一下这批细胞的 marker 基因','基金申报书的创新点怎么写','解释一下 p 值的常见误用'];var heads=['活跃','更早'];var leaves=[...document.querySelectorAll('div')].filter(d=>d.children.length===0&&d.textContent.trim());var seen=leaves.map(d=>d.textContent.trim()).filter(s=>titles.indexOf(s)>=0||heads.indexOf(s)>=0).filter((s,i,a)=>a.indexOf(s)===i);var expected=['活跃','再跑一遍 marker 富集','跑通 Longformer 的 baseline','把清洗脚本写到 ~/clean.py','更早','整理两篇文献的结论对比表','把这份问卷数据清洗一下','只看风险偏好那一段','把结论改成中文表格','找一下这批细胞的 marker 基因','基金申报书的创新点怎么写','解释一下 p 值的常见误用'];if(JSON.stringify(seen)!==JSON.stringify(expected)) throw new Error('recency order wrong: '+JSON.stringify(seen));'a11y: order ok'"
+            "eval": "var heads=['活跃','更早'];var titles=['把清洗脚本写到 ~/clean.py','再跑一遍 marker 富集','跑通 Longformer 的 baseline','整理两篇文献的结论对比表','把这份问卷数据清洗一下','只看风险偏好那一段','把结论改成中文表格','找一下这批细胞的 marker 基因','基金申报书的创新点怎么写','解释一下 p 值的常见误用'];var seen=[...document.querySelectorAll('div')].filter(d=>d.children.length===0&&d.textContent.trim()).map(d=>d.textContent.trim()).filter(s=>titles.indexOf(s)>=0||heads.indexOf(s)>=0).filter((s,i,a)=>a.indexOf(s)===i);var expected=['活跃','把清洗脚本写到 ~/clean.py','再跑一遍 marker 富集','跑通 Longformer 的 baseline','更早','整理两篇文献的结论对比表','把这份问卷数据清洗一下','只看风险偏好那一段','把结论改成中文表格','找一下这批细胞的 marker 基因','基金申报书的创新点怎么写','解释一下 p 值的常见误用'];if(JSON.stringify(seen)!==JSON.stringify(expected)) throw new Error('recency order wrong: '+JSON.stringify(seen));'a11y: order ok'"
           },
           {
             "eval": "var active=document.querySelector('[data-testid=\"recent-section:sessions.activeSection\"]');var earlier=document.querySelector('[data-testid=\"recent-section:sessions.earlierSection\"]');if(!active||!earlier) throw new Error('section captions missing');var txt=e=>[...e.querySelectorAll('div')].filter(d=>d.children.length===0).map(d=>d.textContent.trim()).filter(Boolean);var a=txt(active), e=txt(earlier);if(a[0]!=='活跃'||a[1]!=='3') throw new Error('active caption: '+JSON.stringify(a));if(e[0]!=='更早'||e[1]!=='7') throw new Error('earlier caption: '+JSON.stringify(e));'a11y: counts ok'"
           },
           {
+            "eval": "var rows=[...document.querySelectorAll('[data-testid^=\"recent-row:active:\"]')].map(r=>r.getAttribute('data-testid').split(':').slice(2).join(':'));var want=['sess_dopamine_approve','sess_sc_marker_run','sess_sparse_baseline'];if(JSON.stringify(rows)!==JSON.stringify(want)) throw new Error('active order is not by creation: '+JSON.stringify(rows));'a11y: active by creation'"
+          },
+          {
             "shot": "m-recent.png"
+          },
+          {
+            "tap": "会话列表操作"
+          },
+          {
+            "wait": 800
+          },
+          {
+            "tap": "多选会话"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "var rows=document.querySelectorAll('[data-testid^=\"recent-row:\"]').length;var boxes=document.querySelectorAll('[role=checkbox]').length;if(boxes!==rows) throw new Error('the batch does not offer every drawn row: '+boxes+' of '+rows);var pinned=[...document.querySelectorAll('[role=checkbox]')].filter(c=>c.getAttribute('aria-label')==='整理两篇文献的结论对比表');if(pinned.length!==1) throw new Error('the pinned row has no checkbox on the recency page: '+pinned.length);pinned[0].click(); 'a11y: pinned ticked'"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "var body=[...document.querySelectorAll('div')].find(d=>d.children.length===0 && (d.textContent||'').trim()==='已选 1 项');if(!body) throw new Error('the tick on the pinned row did not count');'a11y: 1 selected'"
+          },
+          {
+            "shot": "m-recent-selection.png"
           }
         ]
       },
@@ -5152,6 +5429,34 @@
           },
           {
             "shot": "m-recent-window-open.png"
+          }
+        ]
+      },
+      "recent-new-conversation": {
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "eval": "var body=document.body.innerText;if(body.includes('还没有对话')) throw new Error('a conversation was created without asking');'a11y: nothing created yet'"
+          },
+          {
+            "tap": "新对话"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "var radios=[...document.querySelectorAll('[role=radio]')];if(radios.length<3) throw new Error('the chooser is missing: '+radios.length+' radios');var kinds=radios.slice(0,2).map(r=>(r.textContent||'').trim());if(JSON.stringify(kinds)!=='[\"工作区\",\"对话\"]')  throw new Error('the two answers are not workspace-then-chat: '+JSON.stringify(kinds));var workspaces=radios.slice(2).map(r=>(r.textContent||'').trim());if(!workspaces.includes('多巴胺与决策'))  throw new Error('the workspace list is not behind the workspace answer: '+JSON.stringify(workspaces));'a11y: workspace-then-chat, workspace list drawn — the workspace answer is in force'"
+          },
+          {
+            "shot": "m-recent-newconv.png"
           }
         ]
       }

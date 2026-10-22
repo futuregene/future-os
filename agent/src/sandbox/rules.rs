@@ -1532,10 +1532,15 @@ mod tests {
         let rules = RuleSet::resolve_isolated_with_home(&workspace, &workspace.join("home"));
         // A path outside the workspace and outside the temp roots: the write
         // fallback asks, so a grant is the only way it can become Allow.
-        let target = Path::new("/futureos-ungranted/secret.txt");
-        assert_eq!(rules.evaluate(target, Op::Write), Decision::Ask);
+        let drive_root = workspace.ancestors().last().expect("absolute workspace");
+        let outside = drive_root.join("futureos-ungranted");
+        let target = outside.join("secret.txt");
+        assert_eq!(rules.evaluate(&target, Op::Write), Decision::Ask);
 
-        let over = format!("/futureos-ungranted/{}", "x".repeat(MAX_RULE_PATTERN_BYTES));
+        let over = outside
+            .join("x".repeat(MAX_RULE_PATTERN_BYTES))
+            .to_string_lossy()
+            .into_owned();
         assert!(!push_session_allow(
             &rules.session,
             &workspace,
@@ -1543,16 +1548,16 @@ mod tests {
             Access::Write
         ));
         assert_eq!(
-            rules.evaluate(target, Op::Write),
+            rules.evaluate(&target, Op::Write),
             Decision::Ask,
             "a refused grant must not widen access"
         );
         assert!(push_session_allow(
             &rules.session,
             &workspace,
-            "/futureos-ungranted/*.txt",
+            &outside.join("*.txt").to_string_lossy(),
             Access::Write
         ));
-        assert_eq!(rules.evaluate(target, Op::Write), Decision::Allow);
+        assert_eq!(rules.evaluate(&target, Op::Write), Decision::Allow);
     }
 }

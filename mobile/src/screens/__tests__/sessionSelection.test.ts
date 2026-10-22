@@ -44,12 +44,20 @@ describe("what a batch may hold", () => {
     session("pinned", { pinned: true }),
   ]);
 
-  it("skips pinned shortcuts, which carry no checkbox", () => {
-    expect(selectableTargets(targets, answers).map(target => target.session.sessionId))
+  it("skips pinned shortcuts on the tree pages, where a pin lifts the row out of its group", () => {
+    expect(selectableTargets(targets, answers, true).map(target => target.session.sessionId))
       .toEqual(["plain"]);
   });
 
-  it("skips a machine that cannot take the delete", () => {
-    expect(selectableTargets(targets, () => null)).toEqual([]);
+  it("keeps a pinned conversation on the recency page, where it is an ordinary row", () => {
+    // That page ignores pinning for its order and only draws the marker, so
+    // there is no shortcut section to have lifted the row out of.
+    expect(selectableTargets(targets, answers, false).map(target => target.session.sessionId))
+      .toEqual(["plain", "pinned"]);
+  });
+
+  it("skips a machine that cannot take the delete, whatever the page", () => {
+    expect(selectableTargets(targets, () => null, true)).toEqual([]);
+    expect(selectableTargets(targets, () => null, false)).toEqual([]);
   });
 });

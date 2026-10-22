@@ -1,6 +1,6 @@
 import type { ClipboardEvent as ReactClipboardEvent, KeyboardEvent as ReactKeyboardEvent, Ref } from "react";
 import type { WorkspaceFileResult } from "../../integrations/storage/threadStore";
-import type { SessionMentionGroup, SessionMentionOption } from "./sessionMention";
+import type { SessionMentionOption } from "./sessionMention";
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { searchWorkspaceFiles } from "../../integrations/storage/threadStore";
@@ -11,7 +11,7 @@ import { localPathsFromUriList } from "./clipboardAttachments";
 import { hashContext, isEditorEmpty, mentionContext, PILL_ATTR, serialize, slashContext } from "./composer/mentionDom";
 import { FileMenu, SessionMenu, SlashMenu } from "./composer/MentionMenus";
 import { parseMentionSegments } from "./mentionMarkdown";
-import { filterSessionMentions, groupSessionMentions } from "./sessionMention";
+import { filterSessionMentions } from "./sessionMention";
 import { buildSlashMenuGroups } from "./slashMenu";
 
 /** A skill offered by the `/` menu; `name` is the English slash-command name. */
@@ -152,16 +152,11 @@ export function MentionEditor({
   ], [slashGroups]);
   const slashMenuOpen = slashQuery !== null && (contextTools.length > 0 || (skills?.length ?? 0) > 0);
   const sessionMenuOpen = hashQuery !== null && sessions.length > 0;
-  // The `#` menu is grouped by workspace (chats first), unlike the flat `/` menu.
-  const sessionGroups = useMemo<SessionMentionGroup[]>(
-    () => (hashQuery === null ? [] : groupSessionMentions(filterSessionMentions(sessions, hashQuery))),
+  // The `#` menu is one list ordered by recency (see `sessionMentionOptions`),
+  // unlike the rail's workspace tree — the row most recently worked in leads.
+  const sessionItems = useMemo<SessionMentionOption[]>(
+    () => (hashQuery === null ? [] : filterSessionMentions(sessions, hashQuery)),
     [hashQuery, sessions],
-  );
-  // One flat row list, so keyboard navigation walks the same order the menu
-  // renders (group headings are not rows).
-  const sessionItems = useMemo(
-    () => sessionGroups.flatMap(group => group.sessions),
-    [sessionGroups],
   );
 
   // Live mirror of the skills prop so the imperative restore() can rebuild
@@ -719,11 +714,9 @@ export function MentionEditor({
       {sessionMenuOpen
         ? (
             <SessionMenu
-              groups={sessionGroups}
               items={sessionItems}
               selectedIndex={selectedSession}
               emptyLabel={t("composer.noSessionMatches")}
-              chatsLabel={t("composer.sessionsSection")}
               workspaceLabel={t("composer.workspaceSection")}
               onSelect={insertSession}
             />

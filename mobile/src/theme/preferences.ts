@@ -4,14 +4,37 @@ import type { FontSizePreference } from "./tokens";
 /** Follow the phone's own light/dark setting, or pin one scheme. */
 export type ThemeMode = "system" | "light" | "dark";
 
-/** This phone's appearance. Both fields are local to it; no desktop is written. */
-export type Appearance = { themeMode: ThemeMode; fontSize: FontSizePreference };
+/**
+ * How much of a settled reply the transcript shows.
+ *
+ * `default` keeps a finished reply to the answer it ends on — its reasoning,
+ * tool calls and notes fold into one "show process" row above it. `detailed`
+ * leaves the whole reply in place, work and answer interleaved in the order it
+ * happened. The two are the desktop's `replyDetail` levels; either client draws
+ * its own transcript from the same ordered slices.
+ */
+export const REPLY_DETAIL_LEVELS = ["default", "detailed"] as const;
+export type ReplyDetail = (typeof REPLY_DETAIL_LEVELS)[number];
+
+/** This phone's appearance. Every field is local to it; no desktop is written. */
+export type Appearance = {
+  themeMode: ThemeMode;
+  fontSize: FontSizePreference;
+  /**
+   * The reply reading level of *this phone*, not of the machine it is reading:
+   * the same choice applies to every paired desktop's conversation, because it
+   * is this client that decides how a transcript is drawn — the desktop sends
+   * the same ordered slices either way.
+   */
+  replyDetail: ReplyDetail;
+};
 
 const STORAGE_KEY = "future.mobile.appearance";
 
 /** Light at the size the app was designed at, which is also what a reader who
- * has never opened the setting should get. */
-export const DEFAULT_APPEARANCE: Appearance = { themeMode: "system", fontSize: "medium" };
+ * has never opened the setting should get — with a settled reply folded to its
+ * answer, the way it now ships. */
+export const DEFAULT_APPEARANCE: Appearance = { themeMode: "system", fontSize: "medium", replyDetail: "default" };
 
 let appearance = DEFAULT_APPEARANCE;
 let initialization: Promise<void> | undefined;
@@ -42,11 +65,17 @@ export function parseAppearance(value: string | null): Appearance {
   const record = typeof stored === "object" && stored !== null ? stored as Record<string, unknown> : {};
   const themeMode = record.themeMode;
   const fontSize = record.fontSize;
+  const replyDetail = record.replyDetail;
   return {
     themeMode: themeMode === "light" || themeMode === "dark" || themeMode === "system" ? themeMode : DEFAULT_APPEARANCE.themeMode,
     fontSize: fontSize === "small" || fontSize === "large" || fontSize === "xlarge" || fontSize === "medium"
       ? fontSize
       : DEFAULT_APPEARANCE.fontSize,
+    // A value this app never wrote (including the retired `finalAnswerOnly`
+    // boolean) reads as the default level.
+    replyDetail: replyDetail === "detailed" || replyDetail === "default"
+      ? replyDetail
+      : DEFAULT_APPEARANCE.replyDetail,
   };
 }
 

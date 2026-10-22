@@ -36,14 +36,36 @@ development and distribution maintenance.
 - Sessions support pin, rename, single delete, and multi-select batch delete;
   workspaces can be deleted wholesale (including their sessions; files inside
   the desktop's workspace directory are not deleted), and workspace
-  collapse state survives restarts.
-- The session list has three pages: workspaces (its conversations filed under
-  their workspace), conversations (the ones in no workspace), and recent (every
-  conversation, workspaces included, newest reply first). The recent page splits
-  into "active" — running, queued, or waiting on the reader's approval, which is
-  *not* streaming and would otherwise be filed under "earlier" — above
-  "earlier", each ordered by the last reply; a pin keeps its marker but not its
-  place, and a fork is a row of its own (the page draws no tree). A row's second
+  collapse state survives restarts. In a batch, a pinned conversation is left
+  out on the **workspace** and **conversation** pages, where it is a shortcut
+  lifted above the groups and a group's select-all must not sweep it up — and is
+  an ordinary tickable row on the **recent** page, which opens no shortcut
+  section of its own.
+- The "new conversation" button asks a different question on each page. The
+  **workspaces** and **recent** pages both list both kinds of conversation, so it
+  opens on that choice first (workspace / chat, workspace in force, with that
+  machine's workspace list behind the workspace answer). The **conversations**
+  page *is* the list of chats that belong to no workspace, so there is no second
+  possibility there and it creates a chat straight away. The recency page used to
+  do the latter, which made the same button skip the chooser on one page and open
+  it on the page beside it — and left no way to start a *workspace* conversation
+  from the one list that holds every workspace's. Choosing "chat" does not carry
+  a workspace picked for the workspace answer into the draft.
+- The session list opens on the **recent** page (`lastTab`), and returns there
+  when a chat is closed. Its three pages are, **in order**, recent, workspaces
+  (its conversations filed under their workspace) and conversations (the ones in
+  no workspace). Recent leads the row: it is where the app opens, it is the one
+  page that needs no knowledge of which workspace a conversation lives in, and a
+  row whose default sat in the middle started the reader in the middle of it.
+  It lists every conversation (workspaces included), newest reply first. The recent page
+  splits into "active" — running, queued, or waiting on the reader's approval,
+  which is *not* streaming and would otherwise be filed under "earlier" — above
+  "earlier". The two stretches use different clocks: active is ordered by when
+  each conversation **started** (`createdAt`, falling back to recency on a host
+  that does not send it) because a running turn rewrites the last-reply stamp
+  every second and re-ranked its row under the reader's thumb; earlier stays on
+  the last reply. A pin keeps its marker but not its place, and a fork is a row
+  of its own (the page draws no tree). A row's second
   line names its workspace (or says "chat"), with the age on the right (just now
   / minutes / hours / yesterday / days / a date). A search flattens the page,
   drops its captions, and ignores the window below. "Earlier" draws twenty rows
@@ -55,7 +77,7 @@ development and distribution maintenance.
   its own glyph and name, the name on up to two lines, and the row takes a line
   of its own at the reader's largest text size), the list-actions menu `⋯`
   (search, batch selection), the connection dot and settings; the row under it
-  belongs entirely to the page switch (workspaces / conversations). The search
+  belongs entirely to the page switch (recent / workspaces / conversations). The search
   field and the batch bar still replace that lower row, so the header — machine,
   connection, settings — stays visible while typing or selecting.
 - The workspace picker in the new-conversation dialog can register a directory
@@ -233,10 +255,10 @@ offline push.
   Workspace group headers use a 4px folder→name gap so the group name lines up
   with its first-level conversation titles.
   The list's three pages are the pages of one horizontal swipe, and they form a
-  loop: workspaces → conversations → recency by dragging left, with both ends
-  wrapping (right from workspaces lands on recency, left from recency lands on
-  workspaces). A swipe still moves one page, so the loop never skips
-  conversations.
+  loop: recent → workspaces → conversations by dragging left, with both ends
+  wrapping (right from recent lands on conversations, left from conversations
+  lands on recent). A swipe still moves one page, so the loop never skips
+  workspaces.
   A drag that is not clearly horizontal stays a list scroll, and the swipe is
   off while the toolbar is searching or selecting (the tab bar is hidden then,
   so the swipe would change mode unseen); the tabs themselves still switch on

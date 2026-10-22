@@ -70,7 +70,12 @@ fn task_list_view(store: &future_tasks::Store, task: future_tasks::Task) -> Valu
 /// The detail record (the only place the prompt crosses the wire).
 fn task_detail_view(store: &future_tasks::Store, task: future_tasks::Task) -> Value {
     let latest = store.latest_run_for_task(&task.id).ok().flatten();
+    // Resolved before `task`'s fields are moved into the value below. A phone
+    // of an older build ignores the field; a current one shows it and sends it
+    // back, so the zone survives a round trip through the editor.
+    let timezone = future_tasks::task_timezone(&task).name().to_string();
     json!({
+        "timezone": timezone,
         "id": task.id,
         "name": task.name,
         "enabled": task.enabled,
@@ -146,6 +151,41 @@ fn optional_str_field(payload: &Value, key: &str, base: Option<&String>) -> Opti
     }
 }
 
+/// The zone a payload asks for.
+///
+/// Absent keeps what the row already carries (and resolves the host's zone for
+/// a new task); null or an empty string asks for that zone explicitly; a name
+/// this build cannot resolve is refused rather than replaced silently, because
+/// a schedule quietly moved to another clock is the failure the setting exists
+/// to prevent.
+fn timezone_from_payload(
+    payload: &Value,
+    base: Option<&future_tasks::Task>,
+) -> Result<Option<String>, crate::Error> {
+    let resolve = |name: Option<&str>| -> Result<String, crate::Error> {
+        match name.map(str::trim).filter(|name| !name.is_empty()) {
+            None => Ok(future_tasks::resolve_timezone(None)),
+            Some(name) => future_tasks::parse_timezone(name)
+                .map(|tz| tz.name().to_string())
+                .ok_or_else(|| {
+                    crate::Error::Message(format!(
+                        "unknown timezone {name:?}: expected an IANA name like Asia/Shanghai"
+                    ))
+                }),
+        }
+    };
+    match payload.get("timezone") {
+        None => match base {
+            Some(task) => Ok(task.timezone.clone()),
+            None => Ok(Some(resolve(None)?)),
+        },
+        Some(Value::Null) => Ok(Some(resolve(None)?)),
+        Some(Value::String(raw)) => Ok(Some(resolve(Some(raw))?)),
+        // A wrong type is a caller error, not an instruction to clear the zone.
+        Some(_) => Ok(base.and_then(|task| task.timezone.clone())),
+    }
+}
+
 fn task_from_payload(
     payload: &Value,
     existing: Option<future_tasks::Task>,
@@ -183,6 +223,8 @@ fn task_from_payload(
         .or_else(|| base.as_ref().map(|t| t.trigger_json.clone()))
         .unwrap_or_else(|| json!({}));
 
+    let timezone = timezone_from_payload(payload, base.as_ref())?;
+
     let prompt_changed = base.as_ref().is_none_or(|t| t.prompt != prompt);
     let mut task = future_tasks::Task {
         id: base
@@ -208,6 +250,7 @@ fn task_from_payload(
             "thinkingLevel",
             base.as_ref().and_then(|t| t.thinking_level.as_ref()),
         ),
+        timezone,
         session_policy: payload
             .get("sessionPolicy")
             .and_then(Value::as_str)
@@ -537,6 +580,7 @@ mod tests {
             cwd: "/tmp/repo".into(),
             model_id: Some("future/gpt-5".into()),
             thinking_level: Some("high".into()),
+            timezone: None,
             session_policy: policy,
             session_retention: future_tasks::SessionRetention::Keep,
             conversation_mode: future_tasks::ConversationMode::Workspace,
@@ -1041,6 +1085,80 @@ mod tests {
             data["nextDueAt"],
             Value::Null,
             "nothing schedules a manual task"
+        );
+    }
+
+    /// The zone crosses the wire in both directions: the phone sees the one
+    /// the desktop resolved, and what it sends back is validated (a typo is
+    /// refused rather than replaced silently) and stored canonically.
+    #[tokio::test]
+    async fn the_task_zone_round_trips_through_the_phone_payload() {
+        let _home = home("business-tasks-timezone");
+
+        let sink = RecordingSink::default();
+        let mut cmd = command("create_task");
+        cmd.task = json!({
+            "name": "tokyo morning",
+            "prompt": "p",
+            "cwd": "/tmp/repo",
+            "triggerKind": "schedule",
+            "trigger": {"mode": "daily", "time": "09:00"},
+            "timezone": "asia/tokyo",
+        });
+        super::execute(&cmd, &sink).await;
+        let created = sink.ok_data();
+        assert_eq!(created["timezone"], "Asia/Tokyo", "stored canonically");
+        let task_id = created["id"].as_str().expect("an id").to_string();
+
+        // An update that does not mention the zone keeps the stored one.
+        let sink = RecordingSink::default();
+        let mut cmd = command("update_task");
+        cmd.task_id = task_id.clone();
+        cmd.task = json!({ "name": "tokyo morning", "prompt": "p2", "cwd": "/tmp/repo" });
+        super::execute(&cmd, &sink).await;
+        assert_eq!(sink.ok_data()["timezone"], "Asia/Tokyo");
+
+        // An explicit zone replaces it...
+        let sink = RecordingSink::default();
+        let mut cmd = command("update_task");
+        cmd.task_id = task_id.clone();
+        cmd.task = json!({
+            "name": "tokyo morning",
+            "prompt": "p2",
+            "cwd": "/tmp/repo",
+            "triggerKind": "schedule",
+            "trigger": {"mode": "daily", "time": "09:00"},
+            "timezone": "Europe/Berlin",
+        });
+        super::execute(&cmd, &sink).await;
+        assert_eq!(sink.ok_data()["timezone"], "Europe/Berlin");
+
+        // ...and a name nobody can resolve is refused, not quietly replaced.
+        let sink = RecordingSink::default();
+        let mut cmd = command("update_task");
+        cmd.task_id = task_id.clone();
+        cmd.task = json!({
+            "name": "tokyo morning",
+            "prompt": "p2",
+            "cwd": "/tmp/repo",
+            "timezone": "Mars/Olympus_Mons",
+        });
+        super::execute(&cmd, &sink).await;
+        assert!(
+            sink.error_text().contains("unknown timezone"),
+            "{}",
+            sink.error_text()
+        );
+        let store = open_store().expect("store");
+        assert_eq!(
+            store
+                .get_task(&task_id)
+                .unwrap()
+                .unwrap()
+                .timezone
+                .as_deref(),
+            Some("Europe/Berlin"),
+            "the refused write changed nothing"
         );
     }
 

@@ -1296,8 +1296,20 @@ mod tests {
     /// mistaken for a finished one.
     #[test]
     fn draining_a_quiet_viewer_waits_out_idle_moments() {
-        let session = spawn_idle();
-        let mut attachment = session.attach(Some(-1));
+        // Finish the real console startup handshake before observing quiet
+        // output; ConPTY emits cursor queries even for a silent command.
+        #[cfg(windows)]
+        let command = test_support::script_command("echo quiet-ready&ping -n 60 127.0.0.1 >NUL");
+        #[cfg(unix)]
+        let command = test_support::script_command("printf 'quiet-ready\\n'; /bin/sleep 60");
+        let session = spawn_with(command);
+        wait_until(&session, "the quiet child's readiness marker", || {
+            test_support::visible_text(&session.inner.lock().unwrap().buffer)
+                .contains("quiet-ready\r\n")
+        });
+        let cursor = session.inner.lock().unwrap().cursor;
+        let mut attachment =
+            session.attach(Some(cursor.try_into().expect("fixture cursor fits i64")));
         let mut events = attachment.activate().expect("activated");
         let started = Instant::now();
         let (bytes, meta) = drain_until(&mut events, "", Duration::from_millis(150));

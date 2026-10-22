@@ -51,11 +51,83 @@ pub(crate) static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(()
 /// Shared test scaffolding (unit tests only).
 #[cfg(test)]
 pub(crate) mod test_support {
+    /// Native subprocess probe for a PowerShell parent's console. Reuses the
+    /// already-built test executable instead of compiling C# through Add-Type.
+    #[cfg(windows)]
+    pub(crate) fn console_probe_command() -> String {
+        let executable = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .replace('\'', "''");
+        format!("$env:FUTURE_AGENT_CONSOLE_PROBE='1'; & '{executable}' --exact test_support::console_probe_child --nocapture")
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn console_probe_child() {
+        if std::env::var_os("FUTURE_AGENT_CONSOLE_PROBE").is_none() {
+            return; // Entry point used only by the two shell subprocess fixtures.
+        }
+        use windows_sys::Win32::Foundation::ERROR_INVALID_HANDLE;
+        use windows_sys::Win32::System::Console::{
+            AttachConsole, FreeConsole, GetConsoleWindow, ATTACH_PARENT_PROCESS,
+        };
+        // Inspect the shell's console, regardless of how it launched this child.
+        // FreeConsole affects only this isolated subprocess, never libtest's parent.
+        unsafe { FreeConsole() };
+        let attached = unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+        let window = if attached != 0 {
+            (unsafe { GetConsoleWindow() }) as usize
+        } else {
+            let error = std::io::Error::last_os_error();
+            assert_eq!(
+                error.raw_os_error(),
+                Some(ERROR_INVALID_HANDLE as i32),
+                "{error}"
+            );
+            0
+        };
+        println!("FUTUREOS_PARENT_CONSOLE={window}");
+    }
+
     /// Take the process-global HOME lock (poison-tolerant).
     pub(crate) fn home_env_lock() -> std::sync::MutexGuard<'static, ()> {
         crate::HOME_ENV_LOCK
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// Isolate tests that replace process-wide shell state and cached probes.
+    #[cfg(not(target_os = "windows"))]
+    pub(crate) fn reexec_env_test() -> bool {
+        let thread = std::thread::current();
+        let name = thread.name().expect("named libtest thread");
+        const CHILD: &str = "FUTURE_AGENT_ISOLATED_ENV_TEST";
+        if std::env::var(CHILD).as_deref() == Ok(name) {
+            return false;
+        }
+        let home = tempfile::tempdir().unwrap();
+        let child = {
+            let _lock = home_env_lock();
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", name, "--nocapture"])
+                .env(CHILD, name)
+                .env("HOME", home.path())
+                .env("USERPROFILE", home.path())
+                .env_remove("FUTURE_HOME")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn isolated shell test")
+        };
+        let output = child.wait_with_output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed; 0 failed"),
+            "isolated {name}: {stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        true
     }
 
     /// Unique temp path for a test fixture: timestamp plus a process-wide
@@ -96,19 +168,44 @@ pub(crate) mod test_support {
     pub(crate) struct TestHome {
         previous_home: Option<std::ffi::OsString>,
         previous_userprofile: Option<std::ffi::OsString>,
+        previous_future_home: Option<std::ffi::OsString>,
         dir: tempfile::TempDir,
         _guard: std::sync::MutexGuard<'static, ()>,
     }
 
     impl TestHome {
         pub(crate) fn new() -> Self {
+            Self::at(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .parent()
+                    .expect("workspace root")
+                    .join("target/test-homes"),
+            )
+        }
+
+        /// A home whose absolute path is short enough for a unix `sun_path`.
+        ///
+        /// [`TestHome::new`] anchors the home under `<workspace>/target/test-homes`
+        /// so sandbox rules keep matching (see its comment). That anchor is also
+        /// as long as the checkout is deep: in a git worktree the derived
+        /// `<home>/.future/run/agent.sock` measured 106 bytes against the 104-byte
+        /// `sun_path` limit, and binding then fails with `EPERM` — a test that
+        /// binds a local endpoint fails for a reason that has nothing to do with
+        /// the code under test.
+        ///
+        /// The platform temp root is short on every supported system, and a test
+        /// that starts a real listener does not depend on sandbox rule matching,
+        /// so it uses this instead. Everything else keeps `new()`.
+        #[cfg_attr(not(unix), allow(dead_code))] // the limit it avoids is unix-only
+        pub(crate) fn short() -> Self {
+            Self::at(std::env::temp_dir())
+        }
+
+        fn at(base: std::path::PathBuf) -> Self {
             let guard = home_env_lock();
             let previous_home = std::env::var_os("HOME");
             let previous_userprofile = std::env::var_os("USERPROFILE");
-            let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .expect("workspace root")
-                .join("target/test-homes");
+            let previous_future_home = std::env::var_os("FUTURE_HOME");
             std::fs::create_dir_all(&base).expect("create test-homes dir");
             let dir = tempfile::tempdir_in(base).expect("tempdir");
             // Use the CANONICAL dir as $HOME: on macOS /var -> /private/var
@@ -116,11 +213,13 @@ pub(crate) mod test_support {
             // (non-canonical) $HOME would make raw dirs::home_dir() paths never
             // match canonicalized rule bases.
             let canonical_home = crate::sandbox::paths::canonicalize_lenient(dir.path());
+            std::env::remove_var("FUTURE_HOME");
             std::env::set_var("HOME", &canonical_home);
             std::env::set_var("USERPROFILE", &canonical_home);
             Self {
                 previous_home,
                 previous_userprofile,
+                previous_future_home,
                 dir,
                 _guard: guard,
             }
@@ -147,6 +246,7 @@ pub(crate) mod test_support {
         fn drop(&mut self) {
             restore_env("HOME", &self.previous_home);
             restore_env("USERPROFILE", &self.previous_userprofile);
+            restore_env("FUTURE_HOME", &self.previous_future_home);
         }
     }
 
@@ -199,6 +299,34 @@ pub(crate) mod test_support {
 
     #[cfg(test)]
     mod env_restore_tests {
+        #[test]
+        fn test_home_isolates_and_restores_an_inherited_future_home() {
+            const CHILD: &str = "FUTURE_AGENT_HOME_GUARD_PROBE";
+            if std::env::var_os(CHILD).is_none() {
+                let inherited = tempfile::tempdir().unwrap();
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "test_support::env_restore_tests::test_home_isolates_and_restores_an_inherited_future_home", "--nocapture"])
+                    .env(CHILD, "1").env("FUTURE_HOME", inherited.path())
+                    .output().unwrap();
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert!(
+                    output.status.success() && stdout.contains("1 passed; 0 failed"),
+                    "{stdout}\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return;
+            }
+            let inherited = std::env::var_os("FUTURE_HOME").unwrap();
+            let home = super::TestHome::new();
+            assert!(std::env::var_os("FUTURE_HOME").is_none());
+            assert_eq!(
+                crate::utils::future_home(),
+                crate::sandbox::paths::canonicalize_lenient(home.path()).join(".future")
+            );
+            drop(home);
+            assert_eq!(std::env::var_os("FUTURE_HOME"), Some(inherited));
+        }
+
         /// Both restore arms, exercised directly (the Some/None mix a real
         /// TestHome sees depends on the host env, which unit tests can't
         /// control — HOME is always set under cargo test, USERPROFILE never).

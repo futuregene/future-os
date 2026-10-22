@@ -729,6 +729,7 @@ fn auth_login_against_an_unreachable_platform_reports_a_network_error() {
 /// agent-side writer applies are executed by one run — then "no more models".
 /// Each model is: id, display name, context window, output-token limit, image
 /// support, four per-1M prices.
+#[cfg(unix)]
 const CUSTOM_WIZARD_ANSWERS: &[&str] = &[
     "2",
     "revprobe",
@@ -850,16 +851,23 @@ fn config_wizard_reports_the_missing_console_at_the_secret_prompt() {
     use std::io::Write;
     use std::process::Stdio;
     let home = tempfile::tempdir().expect("tempdir");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_future"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_future"));
+    command
         .arg("config")
         .env("HOME", home.path())
         .env("USERPROFILE", home.path())
         .env("FUTURE_AGENT_GRPC_ADDR", "127.0.0.1:1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn future config");
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // Piped stdin still inherits the runner console. The secret reader
+        // opens CONIN$ directly, so this fixture must actually have no console.
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let mut child = command.spawn().expect("spawn future config");
     // Everything up to and including "Base URL" — the answers `read_line`
     // consumes over a pipe.
     child
@@ -868,6 +876,16 @@ fn config_wizard_reports_the_missing_console_at_the_secret_prompt() {
         .expect("stdin")
         .write_all(b"2\nrevprobe\n\n\nhttp://127.0.0.1:9/v1\n")
         .expect("write the wizard's answers");
+    drop(child.stdin.take());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while child.try_wait().expect("poll wizard").is_none() {
+        if std::time::Instant::now() >= deadline {
+            child.kill().expect("stop stuck wizard");
+            let output = child.wait_with_output().expect("reap wizard");
+            panic!("wizard did not exit without a console: {output:?}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     let output = child.wait_with_output().expect("wait");
     assert_eq!(output.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1027,7 +1045,7 @@ struct MockPlatform {
 
 impl MockPlatform {
     fn start() -> Self {
-        use std::io::{Read, Write};
+        use std::io::{BufRead, Read, Write};
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the mock platform");
         let addr = listener.local_addr().expect("mock platform addr");
@@ -1049,17 +1067,46 @@ impl MockPlatform {
                         }
                         Err(_) => break,
                     };
-                    // The request line is all this mock needs: both answers are
-                    // fixed and `login` sends no other request.
-                    let mut request = [0u8; 4096];
-                    let read = socket.read(&mut request).unwrap_or(0);
-                    let head = String::from_utf8_lossy(&request[..read]).into_owned();
-                    let path = head
-                        .lines()
-                        .next()
-                        .and_then(|line| line.split_whitespace().nth(1))
+                    // Accepted sockets can inherit nonblocking mode on Windows.
+                    // Read the complete POST before closing so fragmented headers
+                    // or an unread body cannot turn the reply into a TCP reset.
+                    socket
+                        .set_nonblocking(false)
+                        .expect("blocking request socket");
+                    socket
+                        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                        .unwrap();
+                    socket
+                        .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+                        .unwrap();
+                    let mut request = std::io::BufReader::new(&mut socket);
+                    let mut line = String::new();
+                    request.read_line(&mut line).expect("request line");
+                    let path = line
+                        .split_whitespace()
+                        .nth(1)
                         .unwrap_or_default()
                         .to_string();
+                    let mut content_length = 0;
+                    loop {
+                        line.clear();
+                        assert!(request.read_line(&mut line).expect("request headers") > 0);
+                        if line == "\r\n" {
+                            break;
+                        }
+                        if let Some((name, value)) = line.split_once(':') {
+                            if name.eq_ignore_ascii_case("content-length") {
+                                content_length =
+                                    value.trim().parse::<usize>().expect("body length");
+                            }
+                        }
+                    }
+                    assert!(content_length <= 4096, "unexpected fixture request size");
+                    let mut body = vec![0; content_length];
+                    request
+                        .read_exact(&mut body)
+                        .expect("complete request body");
+                    drop(request);
                     paths.lock().expect("paths").push(path.clone());
                     let (status, body) = match path.as_str() {
                         "/client/v1/oauth/device/code" => (
@@ -1092,10 +1139,19 @@ impl MockPlatform {
         self.paths.lock().expect("paths").clone()
     }
 
-    fn stop(mut self) {
+    fn stop(self) {
+        drop(self);
+    }
+}
+
+impl Drop for MockPlatform {
+    fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+            let result = thread.join();
+            if !std::thread::panicking() {
+                result.expect("mock platform thread");
+            }
         }
     }
 }
@@ -1104,7 +1160,8 @@ impl MockPlatform {
 /// spawn a browser: `PATH` points at an empty directory, so the platform opener
 /// (`open` / `xdg-open`) cannot be resolved and the CLI prints the verification
 /// URL instead of opening a window on whoever runs the suite. The callers
-/// assert that printed line, which is what proves no browser was launched.
+/// assert that printed line, which is what proves no browser was launched. On
+/// Windows an invalid application-local cmd.exe blocks the system opener too.
 /// `FUTURE_AGENT_GRPC_ADDR` is always set — to a dead loopback port by default —
 /// so the agent probe cannot depend on the host's own agent.
 fn login_against(
@@ -1114,7 +1171,19 @@ fn login_against(
 ) -> (Option<i32>, String, String) {
     let empty_path = home.join("empty-path");
     std::fs::create_dir_all(&empty_path).expect("empty PATH directory");
-    let output = Command::new(env!("CARGO_BIN_EXE_future"))
+    let executable = Path::new(env!("CARGO_BIN_EXE_future"));
+    #[cfg(windows)]
+    let executable = {
+        // Windows also searches the application and system directories even
+        // with an empty PATH. Put an invalid opener beside an isolated CLI copy
+        // so CreateProcess fails before it can launch the real system opener.
+        let copy = empty_path.join("future.exe");
+        std::fs::copy(executable, &copy).expect("copy isolated login CLI");
+        std::fs::write(empty_path.join("cmd.exe"), b"not an executable")
+            .expect("disable the browser opener in the isolated application directory");
+        copy
+    };
+    let output = Command::new(executable)
         .args(["auth", "login", "--url", base_url])
         .env("HOME", home)
         .env("USERPROFILE", home)

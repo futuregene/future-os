@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import type { DeviceFilter, MergedConversation, RemoteWorkspaceTarget } from "../../features/remote-peer/mergeConversations";
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import type { StoredThread } from "../../integrations/storage/threadStore";
+import type { RecentSection, RecentSectionKind } from "./recentOrder";
 import { Plus } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -10,7 +11,6 @@ import { iconGlyph } from "../../features/remote-peer/peerIcons";
 import { RemoteWorkspaceMenu } from "../../features/remote-peer/RemoteWorkspaceMenu";
 import { ChatSectionMenu } from "./ActivityRailMenus";
 import { RailGroupHeader, RailHeaderButton, RailSectionHeader, RailSectionToggle } from "./RailChrome";
-import { RailNewChatButton } from "./RailNewChatButton";
 import { RemoteConversationRow } from "./RemoteConversationRow";
 
 /**
@@ -42,6 +42,7 @@ import { RemoteConversationRow } from "./RemoteConversationRow";
  */
 export function MergedRows({
   activeKey,
+  ageLabels,
   chatSectionCollapsed,
   collapsedWorkspaces,
   filter,
@@ -62,6 +63,9 @@ export function MergedRows({
   peers,
   remoteSelection,
   renderLocalGroupHeader,
+  onShowMoreRecent,
+  recentMore,
+  recentSections,
   renderLocalRow,
   rowMeta,
   rowRoots,
@@ -69,9 +73,23 @@ export function MergedRows({
   selectionMode,
   threadById,
   expandedRemoteRows,
+  view = "tree",
   workspaceSectionCollapsed,
 }: {
   activeKey: string | null;
+  /** The age label to draw on a row, by row key (the recent view only). */
+  ageLabels?: ReadonlyMap<string, string>;
+  /**
+   * The recent view's stretches, already split and windowed.
+   *
+   * Split by the rail rather than here because the rail also has to walk the
+   * same rows with the keyboard: two splits of the same list would be two
+   * answers to "which row is next", and the window is a piece of that order.
+   */
+  recentSections?: RecentSection<MergedConversation>[];
+  /** Finished rows the window is holding back, and how to open it further. */
+  recentMore?: number;
+  onShowMoreRecent?: () => void;
   chatSectionCollapsed: boolean;
   /** The rail's fold state: the same instance that draws the local headings. */
   collapsedWorkspaces: ReadonlySet<string>;
@@ -92,6 +110,14 @@ export function MergedRows({
    * is what holds the open conversation; this list only knows its rows.
    */
   onDeletedRemote: (conversation: MergedConversation) => void;
+  /**
+   * Ask for a new conversation.
+   *
+   * The machine is *not* decided here: the list can hold one machine's rows or
+   * several, and a control that guessed would make something on a disk the
+   * reader was not looking at. The shell asks when there is something to ask
+   * and creates otherwise.
+   */
   onNewChat?: () => void;
   /**
    * Start a conversation on another machine: in a workspace, or with none.
@@ -166,7 +192,14 @@ export function MergedRows({
    * shorter than a top-level one — and the rail is what knows that, so it is
    * passed in rather than guessed at here.
    */
-  renderLocalRow: (thread: StoredThread, depth?: number, hasChildren?: boolean, compact?: boolean) => ReactNode;
+  renderLocalRow: (
+    thread: StoredThread,
+    depth?: number,
+    hasChildren?: boolean,
+    compact?: boolean,
+    /** The recent view's second column; absent in the tree view. */
+    ageLabel?: string,
+  ) => ReactNode;
   /**
    * Which conversation each listed row hangs under, by row key — its root.
    *
@@ -180,6 +213,16 @@ export function MergedRows({
   /** Whether a batch is being assembled, so "select chats" is not offered again. */
   selectionMode: boolean;
   threadById: Map<string, StoredThread>;
+  /**
+   * Which list to draw.
+   *
+   * `tree` is the rail's own shape — pinned, workspaces, chats — and the default.
+   * `recent` is the second view over the same rows: no headings for where a
+   * conversation lives, two stretches instead ("active", "earlier"), each ranked
+   * by one clock (`recentOrder.ts`). Both are drawn from the rows this component
+   * is handed, so switching views moves nothing about a conversation itself.
+   */
+  view?: "tree" | "recent";
   workspaceSectionCollapsed: boolean;
 }) {
   const { t } = useTranslation("layout");
@@ -187,6 +230,7 @@ export function MergedRows({
   // ranked by the conversation each one hangs under, and a fork lands in that
   // conversation's section rather than one its own fields would pick.
   const { chats, pinned, workspaces } = groupMergedRows(rows, rowRoots);
+
   // The chat section's menu is the rail's own control, which owns its open state
   // through props — so the state lives here, next to the header that draws it.
   const [chatMenuOpen, setChatMenuOpen] = useState(false);
@@ -198,7 +242,19 @@ export function MergedRows({
   // device's filter they would add something the user cannot see.
   const showLocalActions = filter.kind === "all" || filter.desktopId === null;
 
-  function renderRow(conversation: MergedConversation, compact: boolean, groupHasSource: boolean): ReactNode {
+  function renderRow(
+    conversation: MergedConversation,
+    compact: boolean,
+    groupHasSource: boolean,
+    /**
+     * The recent view's overrides.
+     *
+     * A flat list says both things itself: every row sits at depth 0 (there is
+     * no parent above it to indent under) and carries its own age. The tree view
+     * passes nothing, so its rows keep the depth its tree computed.
+     */
+    flat?: { age?: string; depth: 0 },
+  ): ReactNode {
     if (conversation.desktopId === null) {
       const thread = threadById.get(conversation.id);
       // A local row without a thread cannot happen (the merge is built from the
@@ -213,18 +269,27 @@ export function MergedRows({
       // 32px beside a remote one at 28px — and made the same local conversation
       // change height when the device filter changed, because the local-only list
       // always draws its workspace rows compact and this one did not.
-      return renderLocalRow(thread, meta?.depth ?? 0, meta?.hasChildren ?? false, compact);
+      return renderLocalRow(
+        thread,
+        flat?.depth ?? meta?.depth ?? 0,
+        // A fork has no fold control here: its children are rows of their own in
+        // this list, so folding it would promise a subtree that is not under it.
+        flat ? false : meta?.hasChildren ?? false,
+        compact,
+        flat?.age,
+      );
     }
     const selectable = remoteSelection?.selectable(conversation) === true;
     const meta = rowMeta.get(conversation.key);
     return (
       <RemoteConversationRow
         active={activeKey === conversation.key}
+        ageLabel={flat?.age}
         compact={compact}
         conversation={conversation}
-        depth={meta?.depth ?? 0}
+        depth={flat?.depth ?? meta?.depth ?? 0}
         expanded={expandedRemoteRows.has(conversation.key)}
-        hasChildren={meta?.hasChildren ?? false}
+        hasChildren={flat ? false : meta?.hasChildren ?? false}
         key={conversation.key}
         onChanged={onChangedRemote}
         onDeletedRemote={onDeletedRemote}
@@ -253,6 +318,55 @@ export function MergedRows({
 
   if (rows.length === 0) {
     return <div className="px-2 py-1 text-xs text-ink-muted">{t("activityRail.noChats")}</div>;
+  }
+
+  if (view === "recent" && recentSections) {
+    // The second view: two stretches, no headings for where a conversation
+    // lives. A row keeps the machine it is on (a merged list is several
+    // machines) and loses its indent — there is no parent above it here, and a
+    // fork is a row of its own at its own age.
+    const sectionLabel: Record<RecentSectionKind, string> = {
+      active: t("activityRail.recentActive"),
+      earlier: t("activityRail.recentEarlier"),
+    };
+    return (
+      <div className="space-y-0.5" data-testid="recent-rows">
+        {recentSections.map(section => (
+          <div className="space-y-0.5" data-recent-section={section.kind} key={section.kind}>
+            <RailSectionHeader>
+              {sectionLabel[section.kind]}
+              {/* What the caption counts is the whole stretch, not the drawn
+                  part: "Earlier 42" stays true whether 30 or all of them are
+                  under it. */}
+              <span className="ml-1 tabular-nums text-ink-muted/70" data-recent-count={section.all.length}>
+                {section.all.length}
+              </span>
+            </RailSectionHeader>
+            {section.rows.map(row => (
+              <div data-recent-row={row.key} data-testid="recent-row" key={row.key}>
+                {renderRow(row, false, false, {
+                  age: ageLabels?.get(row.key),
+                  depth: 0,
+                })}
+              </div>
+            ))}
+          </div>
+        ))}
+        {recentMore !== undefined && recentMore > 0
+          ? (
+              <button
+                aria-label={t("activityRail.recentShowMore", { count: recentMore })}
+                className="mt-1 flex h-7 w-full items-center justify-center rounded-md border border-line-soft bg-surface-subtle text-xs font-medium text-accent transition-colors hover:bg-surface"
+                data-testid="recent-show-more"
+                onClick={onShowMoreRecent}
+                type="button"
+              >
+                {t("activityRail.recentShowMore", { count: recentMore })}
+              </button>
+            )
+          : null}
+      </div>
+    );
   }
 
   return (
@@ -400,19 +514,21 @@ export function MergedRows({
                     />
                   )
                 : null}
-              {/* A conversation lives on one machine, and the list can be
-                  showing one or all of them — so this asks only when there is
-                  something to ask. Filtering to a host used to leave the reader
-                  no way to start a conversation *on* the host they had just
-                  chosen to look at. */}
-              <RailNewChatButton
-                filter={filter}
-                onNewChatLocal={onNewChat}
-                onNewChatRemote={onNewChatInWorkspace
-                  ? (desktopId, workspaceId) => onNewChatInWorkspace(desktopId, workspaceId)
-                  : undefined}
-                peers={peers}
-              />
+              {/* One button, one question: a conversation lives on one
+                  machine, and the shell asks which when the list shows several
+                  (`handleNewConversationRequest`). This control used to ask it
+                  here, in a menu of its own — so the same question had two
+                  shapes depending on which of the two "new" buttons was
+                  pressed. It now hands the request up, like ⌘N does. */}
+              {onNewChat
+                ? (
+                    <RailHeaderButton
+                      icon={<Plus className="size-3.5" />}
+                      label={t("activityRail.newChatShort")}
+                      onClick={onNewChat}
+                    />
+                  )
+                : null}
             </>
           )}
         >

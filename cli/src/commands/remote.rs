@@ -3,10 +3,14 @@
 //!
 //! The window's Remote page manages the same list through Tauri commands; a
 //! headless server has no window, and its only knob used to be
-//! `future headless --re-pair`, which revoked *every* device and issued a
+//! `future host --re-pair`, which revoked *every* device and issued a
 //! replacement invitation. That answered "switch phones" and nothing else: a
 //! machine with several paired clients could not say who they were, could not
 //! drop one of them, and could not choose which one drives it.
+//!
+//! The mirror group is [`super::remote_peers`]: `future remote peers` manages the
+//! desktops *this* machine connects out to. The two answer opposite questions and
+//! keep separate books, so neither command group can be read as the other.
 //!
 //! # What is authoritative
 //!
@@ -20,7 +24,7 @@
 //! `add`, `remove` and `use` cannot work that way while a Desktop is running.
 //! An invitation is only usable while the bridge for its pairing is connected, so
 //! it has to be minted by the process that serves the machine — the window, or
-//! `future headless`. A removal is the mirror image: the bridge is what a device
+//! `future host`. A removal is the mirror image: the bridge is what a device
 //! talks to, and only that process can stop it. A credential is a bearer JWT, valid
 //! until it lapses, so a book edited behind a running Desktop leaves the device
 //! served for minutes after the user was told it was unpaired. Choosing a
@@ -91,6 +95,7 @@ pub async fn remote(command: Option<&str>, rest: &[String], out: &Output) -> Res
             Ok(())
         }
         Some("devices") => devices(rest, out).await,
+        Some("peers") => super::remote_peers::peers(rest, out).await,
         Some("status") => status(rest, out).await,
         Some(action @ ("enable" | "disable")) => switch(action == "enable", rest, out).await,
         Some(other) => Err(format!(
@@ -143,7 +148,7 @@ async fn devices(args: &[String], out: &Output) -> Result<(), String> {
 // ── The pairing book ────────────────────────────────────────────────────────
 
 /// `~/.future/` — the root the Desktop writes its pairing files into.
-fn future_dir() -> Result<PathBuf, String> {
+pub(super) fn future_dir() -> Result<PathBuf, String> {
     future_app_settings::app_dir()
         .map_err(|error| error.to_string())?
         .parent()
@@ -438,7 +443,7 @@ fn display_pair_id(pair_id: &str) -> String {
 /// Atomic JSON write, `0600`, exactly like the Desktop's config writer: a
 /// pairing file is a credential, and a half-written one would make the next
 /// start fail rather than pair.
-fn write_json(path: &Path, value: &Value) -> Result<(), String> {
+pub(super) fn write_json(path: &Path, value: &Value) -> Result<(), String> {
     let serialized = format!(
         "{}\n",
         serde_json::to_string_pretty(value).map_err(|error| error.to_string())?
@@ -478,7 +483,7 @@ fn write_json(path: &Path, value: &Value) -> Result<(), String> {
 /// Only asked to explain when a change takes effect — never to refuse one. A
 /// missing lock file is "nothing is running" without creating it, so a
 /// read-only `list` does not invent an app directory.
-fn desktop_running() -> bool {
+pub(super) fn desktop_running() -> bool {
     let Ok(directory) = future_app_settings::app_dir() else {
         return false;
     };
@@ -582,7 +587,7 @@ fn list(args: &[String], out: &Output) -> Result<(), String> {
     }
     if book.devices.is_empty() {
         out.log("No devices are paired to this machine.");
-        out.log("Start the Desktop (windowed or future headless) to pair one.");
+        out.log("Start the Desktop (windowed or future host) to pair one.");
         if !switch {
             out.log("");
             out.log(switch_advice(running));
@@ -985,7 +990,7 @@ impl Observed {
         if !self.running {
             return Some(if on {
                 "Nothing is serving yet: no Desktop is running for this machine. The switch is \
-                 stored, and the next start — the window, or futureos-headless — serves the \
+                 stored, and the next start — the window, or `future host` — serves the \
                  paired devices."
                     .to_string()
             } else {
@@ -1320,8 +1325,9 @@ const ADD_LOCK_FILE: &str = "add.lock";
 /// The request goes to the running Desktop rather than being performed here: an
 /// invitation is only usable while a bridge for its pairing is connected, and
 /// that bridge lives in the Desktop process that owns this data directory. So
-/// this needs a Desktop running — the window, or `future headless` — and on a
-/// machine that has never paired, starting it already prints an invitation.
+/// this needs a Desktop running — the window, or `future host` — and it is the
+/// only thing that mints an invitation: a host entry point starts serving the
+/// devices it already knows and prints no code of its own.
 async fn add(args: &[String], out: &Output) -> Result<(), String> {
     let values = positional(args, &["--json"], help::REMOTE_USAGE)?;
     let json_flag = args.iter().any(|argument| argument == "--json");
@@ -1336,8 +1342,8 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
     if !desktop_running() {
         return Err(format!(
             "No Desktop is running for {} — a new device can only be paired by the process \
-             that serves it. Start the Desktop (the window, or future headless) and run this \
-             again. A machine with no device at all prints an invitation as it starts.{}",
+             that serves it. Start the Desktop (the window, or future host) and run this \
+             again — that is how a machine gets its first device.{}",
             future_dir()?.display(),
             if switch {
                 ""
@@ -1447,9 +1453,6 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
 /// A deadline as the reader's own clocks: the wall clock they can compare with
 /// their watch, and the time left to act (`2026-10-20 09:45:32 (local time, in
 /// 9m 58s)`). `None` for an instant no calendar can express.
-///
-/// Spelled the same way in `future headless`, which prints an invitation of
-/// its own — one wording, both entry points.
 fn deadline_phrase(expiry: i64, now: i64) -> Option<String> {
     let clock = local_wall_clock(expiry)?;
     Some(match time_left(expiry, now) {
@@ -1598,6 +1601,22 @@ async fn request_desktop_within(
     unchanged: &str,
     timeout: Duration,
 ) -> Result<Value, String> {
+    request_desktop_naming(op, pair_id, None, unchanged, timeout).await
+}
+
+/// [`request_desktop_within`] that can also name a *remote* desktop, which is
+/// what the client-role operations take (`remote_peers`).
+///
+/// The two roles name different things: `pair_id` is a device paired into this
+/// machine, `desktop_id` is a machine this one connects out to. They travel in
+/// their own fields for exactly that reason (see `host/src/remote/control.rs`).
+pub(super) async fn request_desktop_naming(
+    op: &str,
+    pair_id: Option<&str>,
+    desktop_id: Option<&str>,
+    unchanged: &str,
+    timeout: Duration,
+) -> Result<Value, String> {
     let directory = control_directory()?;
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1616,6 +1635,9 @@ async fn request_desktop_within(
     let mut body = json!({ "op": op, "reply": answer.display().to_string() });
     if let Some(pair_id) = pair_id {
         body["pairId"] = json!(pair_id);
+    }
+    if let Some(desktop_id) = desktop_id {
+        body["desktopId"] = json!(desktop_id);
     }
     write_json(&request, &body)?;
     let outcome = wait_for_answer(
@@ -1688,7 +1710,7 @@ async fn wait_for_answer(
         if !still_running() {
             return Err(format!(
                 "The Desktop stopped before it answered. Start it again (the window, or \
-                 future headless) and re-run this; {unchanged}."
+                 future host) and re-run this; {unchanged}."
             ));
         }
         tokio::time::sleep(REPLY_POLL).await;
@@ -1703,10 +1725,10 @@ fn terminal_columns() -> Option<usize> {
 /// The invitation block: a label, the complete link, and the same link as a QR
 /// code when the terminal is wide enough to hold it.
 ///
-/// The twin of the desktop entry point's renderer (`headless::invitation_text`):
-/// it cannot be shared, because the CLI must not depend on the Desktop binary,
-/// and the two must look and degrade the same way — a narrow terminal keeps the
-/// link and says why the code is missing.
+/// This is the only renderer for pairing invitations in the terminal: a host
+/// entry point prints no code of its own, so the terminal that runs `add` is the
+/// one that shows the QR. A narrow terminal keeps the link and says why the code
+/// is missing.
 fn invitation_text(label: &str, link: &str, columns: Option<usize>) -> String {
     let mut output = format!("\n{label}\n{link}\n");
     match qrcode::QrCode::new(link.as_bytes()) {
@@ -1958,7 +1980,7 @@ fn confirmed(device: &Device, remaining: usize) -> Result<bool, String> {
 /// One key answers (`prompt::ask_yes_no`): a `[y/N]` question that waits for
 /// Enter is a question that looks hung, and a typed `y` with no newline behind it
 /// was indistinguishable from a command that had stopped responding.
-fn ask(question: &str) -> Result<bool, String> {
+pub(super) fn ask(question: &str) -> Result<bool, String> {
     if !stdin_is_terminal() {
         return Err(format!(
             "Refusing to unpair without confirmation from a terminal: {question} Re-run with \
@@ -2318,7 +2340,11 @@ async fn ask_desktop_to_take_over(pair_id: &str) -> Result<Option<bool>, String>
 
 /// The positional arguments, rejecting any option the action does not accept: a
 /// typo must not silently do something else.
-fn positional(args: &[String], allowed: &[&str], usage: &str) -> Result<Vec<String>, String> {
+pub(super) fn positional(
+    args: &[String],
+    allowed: &[&str],
+    usage: &str,
+) -> Result<Vec<String>, String> {
     let mut values = Vec::new();
     for argument in args {
         if allowed.contains(&argument.as_str()) {
@@ -2332,7 +2358,7 @@ fn positional(args: &[String], allowed: &[&str], usage: &str) -> Result<Vec<Stri
     Ok(values)
 }
 
-fn one_device(mut values: Vec<String>, usage: &str) -> Result<String, String> {
+pub(super) fn one_device(mut values: Vec<String>, usage: &str) -> Result<String, String> {
     match values.len() {
         1 => Ok(values.remove(0)),
         0 => Err(format!(
@@ -4022,7 +4048,7 @@ mod tests {
         assert_eq!(code, 1);
         assert_eq!(stdout, "");
         assert!(stderr.contains("No Desktop is running"), "{stderr}");
-        assert!(stderr.contains("future headless"), "{stderr}");
+        assert!(stderr.contains("future host"), "{stderr}");
         // Nothing was written for a Desktop that is not there.
         assert!(!home.future().join("run").join(CONTROL_DIRECTORY).exists());
     }

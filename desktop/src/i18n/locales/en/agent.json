@@ -35,6 +35,10 @@
     },
     "inspectRun": "Click to inspect run"
   },
+  "process": {
+    "show": "Show process",
+    "hide": "Hide process"
+  },
   "thread": {
     "loading": "Loading FutureOS thread...",
     "noActiveThread": "No active thread.",
@@ -185,7 +189,6 @@
     "noSlashMatches": "No matching tools or skills.",
     "skillsSection": "Skills",
     "noSessionMatches": "No matching conversations.",
-    "sessionsSection": "Chats",
     "workspaceSection": "Workspace",
     "compactContext": "Compact",
     "compactContextDescription": "Compact this conversation's context",
@@ -199,7 +202,7 @@
     "approvalTier": {
       "manual": "Manual",
       "sandbox": "Sandboxed",
-      "off": "Unrestricted",
+      "off": "Full access",
       "auto": "Automatic review"
     },
     "approvalTierDesc": {
@@ -234,7 +237,7 @@
     "headerTitle": "New conversation",
     "chatSubtitle": "Chat",
     "welcome": "Welcome",
-    "placeholder": "Describe the task, @ to add files, / to use skills",
+    "placeholder": "Describe the task, @ to add files, / to use skills, # to reference a conversation",
     "workspace": "Workspace",
     "noWorkspaces": "No workspaces yet.",
     "openExisting": "Open workspace",

@@ -35,7 +35,7 @@
 
 ### agent 停下来问我东西
 
-所选审批模式/规则要求你决定。选**允许一次**、**拒绝**或在可用时保存项目规则；没有超时。默认不受限模式不会询问，保护模式也并非每次工具调用都弹卡。见 [[审批与沙箱|Sandbox]] 和 [[使用 FutureOS|Using-FutureOS]]。
+所选审批模式/规则要求你决定。选**允许一次**、**拒绝**或在可用时保存项目规则；没有超时。默认完全访问模式不会询问，保护模式也并非每次工具调用都弹卡。见 [[审批与沙箱|Sandbox]] 和 [[使用 FutureOS|Using-FutureOS]]。
 
 ### 会话和设置存在哪?
 
@@ -62,7 +62,7 @@
 
 ### 旧服务器上 Linux GUI 无法启动
 
-发布的 GUI 需要 glibc ≥ 2.39 和 WebKitGTK 4.1。同包中的 `future headless` 与 `future` CLI 是静态 musl 二进制，可在老系统上运行；无桌面主机也可改用对应架构的官方静态 CLI-only 包，见 [[安装|Installation]]。
+发布的 GUI 需要 glibc ≥ 2.39 和 WebKitGTK 4.1。同包中的 `future host` 与 `future` CLI 是静态 musl 二进制，可在老系统上运行；无桌面主机也可改用对应架构的官方静态 CLI-only 包，见 [[安装|Installation]]。
 
 ---
 

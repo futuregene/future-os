@@ -92,12 +92,28 @@ mod tests {
     /// ("should reject a malformed body") because the malformed body is accepted.
     #[tokio::test]
     async fn the_bootstrap_spawns_the_cli_runner_and_tolerates_a_missing_cli() {
+        #[cfg(unix)]
+        if future_host::test_support::reexec_test() {
+            return;
+        }
+        #[cfg(windows)]
+        if crate::test_process::reexec("commands::skills::tests::the_bootstrap_spawns_the_cli_runner_and_tolerates_a_missing_cli") {
+            return;
+        }
         let _home = crate::auth_store::test_support::HomeGuard::new("cmd-skills-bootstrap");
-        let app = tauri::test::mock_app();
+        let _path = future_host::test_support::EnvGuard::set("PATH", std::ffi::OsStr::new(""));
+        assert!(
+            crate::cli_tool::resolve_for("skills.init").is_err(),
+            "the fixture must have no runnable CLI"
+        );
+        let app = tauri::test::mock_builder()
+            .plugin(tauri_plugin_shell::init())
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app with shell support");
         bootstrap_builtin_skills(app.handle().clone()).await;
         spawn_builtin_skills(app.handle().clone());
-        // Let the native thread reach the CLI probe before the fixture drops.
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Keep the empty PATH until both native jobs have actually finished.
+        crate::runtime::cancel_test_tasks();
     }
 
     #[test]

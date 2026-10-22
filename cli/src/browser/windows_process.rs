@@ -289,20 +289,30 @@ mod tests {
     /// once hung past 60 s and then exited `0xffffffff`), and a bounded wait
     /// keeps that from being anyone else's problem. A timeout here is a test
     /// failure with a message that says so, not a hung suite.
+    ///
+    /// The bound is deliberately loose. It is not a latency assertion — what
+    /// this test pins is the *content* of the failure the launcher reports, and
+    /// the bound exists only so a hang cannot wedge the suite. At 30 s it was
+    /// measuring the runner instead: on a loaded Windows runner (1286 tests,
+    /// several of them spawning processes) a cold `powershell.exe` took longer
+    /// than that, and the test failed with `PowerShell must answer within 30s:
+    /// Elapsed(())` on one attempt and passed on the next. Three minutes is
+    /// still far below "hung" and well above any real cold start.
     #[cfg(windows)]
     #[tokio::test]
     async fn launch_reports_a_powershell_failure_without_starting_anything() {
+        const POWERSHELL_BUDGET: std::time::Duration = std::time::Duration::from_secs(180);
         let _guard = crate::test_env::lock_env().await;
         let missing = format!(
             "C:\\future-clitui-does-not-exist-{}.exe",
             std::process::id()
         );
         let result = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
+            POWERSHELL_BUDGET,
             launch_windows_detached(&missing, &["--flag".to_string()]),
         )
         .await
-        .expect("PowerShell must answer within 30s")
+        .expect("PowerShell must answer within its budget")
         .expect_err("a missing executable cannot be started");
         assert!(
             result.contains("PowerShell failed to launch browser"),
@@ -312,13 +322,11 @@ mod tests {
 
         // An empty argument list is rejected by Start-Process's own parameter
         // validation, which is also a non-zero exit rather than a silent no-op.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            launch_windows_detached(&missing, &[]),
-        )
-        .await
-        .expect("PowerShell must answer within 30s")
-        .expect_err("an empty -ArgumentList cannot start anything either");
+        let result =
+            tokio::time::timeout(POWERSHELL_BUDGET, launch_windows_detached(&missing, &[]))
+                .await
+                .expect("PowerShell must answer within its budget")
+                .expect_err("an empty -ArgumentList cannot start anything either");
         assert!(result.contains("exit code"), "{result}");
     }
 }

@@ -3,7 +3,7 @@
 所有 Rust 程序共用根 Cargo workspace、锁文件、`target/` 目录和 release 配置（Thin LTO）。
 桌面构建在一次 Cargo 调用中编译 CLI 与 GUI，再放置 CLI sidecar 并打包。
 `make build-cli` 仍可单独执行，不编译 GUI 依赖。Linux 正式发布将 musl 静态 CLI
-内含 headless 服务；GNU GUI 通过 `FUTURE_DESKTOP_CLI` 使用该 CLI 产物。
+内含 `future host` 服务；GNU GUI 通过 `FUTURE_DESKTOP_CLI` 使用该 CLI 产物。
 
 在 macOS、Linux 和 Windows 上构建与安装 FutureOS——包括 agent 后端、TUI/CLI 前端、桌面 GUI、渠道桥接，以及 goal 控制面（`future-goal`）。
 
@@ -37,7 +37,7 @@ JavaScript 依赖、初始化 `skills` 子模块。Rust 检查不需要 CLI side
 Windows 输出 `FutureOS_<version>_x64-setup[-unsigned].exe` 和
 `FutureOS_<version>_windows_x64-portable[-unsigned].zip`；`-Sign` 去掉
 `-unsigned`。两个 Windows 脚本默认将最终包复制到仓库根目录，可用 `-OutDir` 修改。
-`make package-desktop` 复用平台脚本，Linux 会先构建 headless，再生成安装包。
+`make package-desktop` 复用平台脚本，Linux 会先构建主机 CLI，再生成安装包。
 
 ### 分发产物命名
 
@@ -85,10 +85,10 @@ brew install protobuf                                             # 可选 —�
 构建：
 
 ```bash
-make install        # GUI + 无头桌面端 + 统一 `future` CLI + 技能（agent/tui/channel/goal 已内嵌）→ /opt/homebrew/bin
+make install        # GUI + 主机模式 + 统一 `future` CLI + 技能（agent/tui/channel/goal 已内嵌）→ /opt/homebrew/bin
 make install-cli    # 仅统一 `future` CLI
 make install-desktop    # 仅桌面应用（自带 agent/CLI sidecar）
-make install-desktop-headless   # 无 GUI CLI，包含 `future headless`
+make install-desktop-headless   # 无 GUI CLI，包含 `future host`
 make install-skills # 内置技能 + /future-goal 技能
 make package-desktop    # 命名后的 DMG 位于仓库根目录；原始包保留在 target/release/bundle/
 scripts/build/build-desktop-macos.sh  # 本地 DMG；有 Developer ID 证书时自动签名
@@ -109,12 +109,12 @@ curl -fsSL https://dl.future-os.cn/install.sh | bash
 脚本自动识别平台并从发布清单安装匹配的包，校验 SHA-256，然后执行
 `future init`：
 
-- **Debian/Ubuntu** —— `FutureOS_<version>_amd64.deb` 或 `FutureOS_<version>_arm64.deb`，通过 `apt` 安装并解析依赖；同时安装图形 `futureos` 和统一 `future` CLI（包含 headless）。
-- **其他 Linux** —— `FutureOS_<version>_linux_<arch>-portable.tar.gz`（`futureos` + 统一 `future`（包含 headless）），解压到 `/usr/local/bin`（不可写时为 `~/.local/bin`）；架构为 `x86_64` 或 `aarch64`。
+- **Debian/Ubuntu** —— `FutureOS_<version>_amd64.deb` 或 `FutureOS_<version>_arm64.deb`，通过 `apt` 安装并解析依赖；同时安装图形 `futureos` 和统一 `future` CLI（包含 `future host`）。
+- **其他 Linux** —— `FutureOS_<version>_linux_<arch>-portable.tar.gz`（`futureos` + 统一 `future`（包含 `future host`）），解压到 `/usr/local/bin`（不可写时为 `~/.local/bin`）；架构为 `x86_64` 或 `aarch64`。
 - **无桌面主机** —— 从官方发布渠道下载 `FutureOS_<version>_linux_<arch>-cli.tar.gz`，解压后运行 `./future config` 和 `./future tui`（或运行 `./future agent` 供 CLI 客户端连接）。官方静态 musl CLI 不需要 GUI 运行库。
 
 发布的 GUI 需要 glibc ≥ 2.39（约 Ubuntu 24.04+）和 WebKitGTK 4.1。同包中的
-`future` CLI（包含 headless）是完全静态的 musl 二进制，没有 glibc 版本要求，
+`future` CLI（包含 `future host`）是完全静态的 musl 二进制，没有 glibc 版本要求，
 可在更老的企业/HPC 系统（CentOS 7 / Rocky 8 年代）上运行。本地开发构建使用
 所选 host target，不一定是静态链接。
 
@@ -142,10 +142,10 @@ sudo apt install -y protobuf-compiler                             # 可选 —�
 ```bash
 scripts/build/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS_<version>_linux_<arch>-portable.tar.gz
 scripts/dev/start-desktop-linux.sh                    # 本地 Linux Desktop + agent 开发会话
-make install        # 或直接从源码安装：GUI + 无头桌面端 + 统一 `future` CLI + 技能 → /usr/local/bin（sudo）
+make install        # 或直接从源码安装：GUI + 主机模式 + 统一 `future` CLI + 技能 → /usr/local/bin（sudo）
 make install-cli    # 仅统一 `future` CLI
 make install-desktop    # 仅桌面应用（自带 agent/CLI sidecar）
-make install-desktop-headless   # 无 GUI CLI，包含 `future headless`
+make install-desktop-headless   # 无 GUI CLI，包含 `future host`
 make install-skills # 内置技能 + /future-goal 技能
 make package-desktop    # 命名后的 .deb 与便携包位于仓库根目录
 ```
@@ -198,7 +198,7 @@ Copy-Item target\release\future.exe $bin
 Copy-Item target\release\futureos.exe "$bin\futureos.exe"
 ```
 
-**无头桌面端** —— 等价于 `make install-desktop-headless`。包含共享后端的无 GUI CLI，
+**主机模式 / 纯 CLI** —— 等价于 `make install-desktop-headless`。包含共享后端的无 GUI CLI，
 一起装到 `%USERPROFILE%\.future\bin`：
 
 ```powershell

@@ -284,6 +284,29 @@ impl RunClient {
         .await
     }
 
+    /// The bounded tail of a session's display history: the last `exchanges`
+    /// user turns, newest entries included. `before` is the exclusive backward
+    /// cursor and a huge value means "start at the current tail"; `limit`
+    /// counts user exchanges rather than raw rows, so this is one cheap page
+    /// even for a session with a very long history.
+    pub async fn get_session_entries_tail(
+        &self,
+        session_id: &str,
+        exchanges: i64,
+    ) -> Result<Value, String> {
+        self.execute_command(
+            "get_session_entries",
+            RpcCommand {
+                before: Some(i64::MAX),
+                limit: Some(exchanges),
+                ..Default::default()
+            },
+            Some(session_id),
+            30,
+        )
+        .await
+    }
+
     /// One forward page of `get_session_entries`. `offset` is a display-entry
     /// ordinal (not a byte offset) and `limit` counts entries (the Agent clamps
     /// it to 1..=1000). A cut-short page answers with `hasMore`/`nextOffset`;
@@ -404,6 +427,18 @@ impl RunClient {
     pub async fn delete_session(&self, session_id: &str) -> Result<Value, String> {
         self.execute_command("delete_session", RpcCommand::default(), Some(session_id), 5)
             .await
+    }
+
+    /// `deleteSessions(sessionIds)` — `delete_sessions` → `{results: [...]}`.
+    /// The Agent answers per session (1..=32 distinct ids), so one refused
+    /// session (an active run, a running compaction) does not roll back the
+    /// others: the caller reports each outcome instead of one batch verdict.
+    pub async fn delete_sessions(&self, session_ids: &[String]) -> Result<Value, String> {
+        let cmd = RpcCommand {
+            session_ids: session_ids.to_vec(),
+            ..Default::default()
+        };
+        self.execute_command("delete_sessions", cmd, None, 30).await
     }
 
     // ─── Run orchestration (P2 — port of `RunClient.run`) ─────────────────
@@ -555,9 +590,12 @@ impl RunClient {
         Ok(())
     }
 
-    /// `setSandboxPolicy(tier, sessionId?)` — `set_sandbox_policy`. Only the
-    /// approval tier travels over the wire; the agent probes the OS sandbox
-    /// before accepting `sandbox`, so a failure here is a real refusal.
+    /// `setSandboxPolicy(tier, sessionId?)` — `set_sandbox_policy`. The mode
+    /// travels as `(tier, reviewer)`: `auto` is `sandbox` plus the `model`
+    /// reviewer, everything else keeps `user`. The agent probes the OS sandbox
+    /// (and, for `auto`, the Future account) before accepting the request, so a
+    /// downgrade is visible in the returned summary (`effectiveMode` vs
+    /// `configuredMode`).
     pub async fn set_sandbox_policy(&self, tier: &str, session_id: &str) -> Result<Value, String> {
         use future_rpc::proto::SandboxPolicy;
         let cmd = RpcCommand {

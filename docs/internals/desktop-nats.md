@@ -13,9 +13,13 @@ Mobile requires `wss://` in both production and test environments. The ports abo
 are deployment listener details, not instructions to connect mobile over plaintext
 `ws://`. The desktop connects directly to the server-issued NATS endpoint, and its
 client requires verified TLS even when that endpoint uses the `nats://` scheme, so
-a plaintext relay listener cannot serve the desktop. Only unit tests connect to an
-in-process plaintext fake broker; there is no runtime switch that permits a
-production plaintext downgrade. The desktop takes its trust anchors from a PEM
+a plaintext listener cannot serve a **platform** pairing. The one exception is a
+pairing a self-hosted relay issued whose endpoint it declared as `nats://`:
+`connect_nats` waives required TLS for exactly that shape (see
+[self-hosted-relay.md](../guide/self-hosted-relay.md)). The Future platform and
+any `tls://` endpoint keep verified TLS however they were issued. Unit tests also
+connect to an in-process plaintext fake broker; that fixture path is separate
+from the relay exception. The desktop takes its trust anchors from a PEM
 snapshot of the platform store it writes itself (`~/.future/app/
 relay-root-certs.pem`) instead of letting the NATS client read the platform
 store on every connection — that read is what fails intermittently on macOS,
@@ -41,7 +45,7 @@ for this test cutover.
 `future relay` (this repository) is the same relay without the platform: it
 mints the same pair-scoped NATS user JWTs, from the same claim/token endpoints,
 for rooms instead of accounts. A desktop selects it per launch with
-`futureos --relay URL` (or `futureos-headless --relay URL`); nothing is
+`futureos --relay URL` (or `future host --relay URL`); nothing is
 persisted, so a launch without the flag uses the Future platform. The choice is
 recorded per pairing, so official and self-hosted pairings coexist on one
 machine. Runbook, threat model and verification:

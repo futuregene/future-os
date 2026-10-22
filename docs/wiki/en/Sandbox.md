@@ -1,7 +1,7 @@
 # Approvals and sandboxing
 
 FutureOS can ask before file access and restrict shell commands, but **the desktop
-starts in Unrestricted (`off`) mode**. Choose **Settings → General → Approval
+starts in Full access (`off`) mode**. Choose **Settings → General → Approval
 mode**, or the shield in the message composer, before giving an untrusted task
 access to your files. Availability is checked on the machine running the agent.
 
@@ -9,7 +9,7 @@ access to your files. Availability is checked on the machine running the agent.
 
 | Mode | Behavior |
 |---|---|
-| **Unrestricted** (`off`, desktop default) | No approval rules or OS sandbox. Commands run with your user privileges. |
+| **Full access** (`off`, desktop default) | No approval rules or OS sandbox. Commands run with your user privileges. |
 | **Manual** (`manual`) | Path rules decide Allow/Ask/Deny; ordinary reads and workspace/temp writes can run without asking. Sensitive paths and external writes may ask or be denied. Shell commands ask except for the read-only allowlist. |
 | **Sandboxed** (`sandbox`) | File tools follow the same path rules. Shell commands run in the available OS backend, usually without a pre-execution prompt. |
 
@@ -86,9 +86,9 @@ Sandbox failures return to the model without automatic approval or replay. The m
 Sandboxing is not a network filter, an encrypted vault, a rollback system or a
 complete prompt-injection defense. Agent `auth.json` currently has a hard-deny
 exception for CLI-based skills and may be readable by arbitrary shell commands;
-do not assume the sandbox isolates all credentials. Saved rules and Unrestricted
-mode allow actions without another prompt. Inspect outputs and changes, and keep
-secrets out of untrusted tasks.
+do not assume the sandbox isolates all credentials. Saved rules and the Full
+access mode allow actions without another prompt. Inspect outputs and changes,
+and keep secrets out of untrusted tasks.
 
 See [[Using FutureOS|Using-FutureOS]], [[Settings]], [[CLI]] and [[FAQ]]. The
 repository's SECURITY.md and platform design documents describe further boundaries

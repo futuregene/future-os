@@ -31,6 +31,10 @@
     },
     "inspectRun": "点击查看运行详情"
   },
+  "process": {
+    "show": "查看过程",
+    "hide": "收起过程"
+  },
   "thread": {
     "loading": "正在加载 FutureOS 对话…",
     "noActiveThread": "没有活动对话。",
@@ -186,7 +190,6 @@
     "noSlashMatches": "没有匹配的工具或技能。",
     "skillsSection": "技能",
     "noSessionMatches": "没有匹配的对话。",
-    "sessionsSection": "对话",
     "workspaceSection": "工作区",
     "compactContext": "压缩",
     "compactContextDescription": "压缩此对话的上下文",
@@ -200,7 +203,7 @@
     "approvalTier": {
       "manual": "手动审批",
       "sandbox": "沙箱保护",
-      "off": "完全放开",
+      "off": "完全访问",
       "auto": "自动审批"
     },
     "approvalTierDesc": {
@@ -235,7 +238,7 @@
     "headerTitle": "新对话",
     "chatSubtitle": "普通对话",
     "welcome": "欢迎使用",
-    "placeholder": "描述任务，@文件 添加到上下文，按 / 使用技能",
+    "placeholder": "描述任务，@文件 添加到上下文，按 / 使用技能，按 # 引用会话",
     "workspace": "工作区",
     "noWorkspaces": "还没有工作区。",
     "openExisting": "打开工作区",

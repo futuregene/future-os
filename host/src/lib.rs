@@ -35,8 +35,8 @@ pub static TEST_HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub mod agent_events;
 pub mod store;
 pub(crate) use events::{
-    emit_approvals_updated, emit_remote_activity, emit_review_updated, emit_thread_runtime_updated,
-    emit_threads_updated,
+    emit_approvals_updated, emit_remote_activity, emit_review_updated, emit_thread_activity,
+    emit_thread_runtime_updated, emit_threads_updated,
 };
 
 pub mod device_identity;

@@ -17,6 +17,21 @@ use super::entry::{
 /// replace them (see `dedupe_tool_entries`).
 pub(crate) const TOOL_LOST_PLACEHOLDER_PREFIX: &str = "[Tool execution lost —";
 
+/// What the request says about a tool call whose result never existed.
+///
+/// The process died between the call and its result, so whether the tool ran is
+/// genuinely unknown. The text says *unknown* rather than "not executed": that
+/// is the one guess that makes a model re-run a side effect which may already
+/// have landed. Shared by the load-time repair and the continuation, so a model
+/// reads the same story whichever path assembled the request.
+pub(crate) fn interrupted_tool_placeholder(name: &str) -> String {
+    format!(
+        "{TOOL_LOST_PLACEHOLDER_PREFIX} the Agent was interrupted after this {name} call was \
+         issued and before its result was recorded, so whether it ran is unknown. Check whether \
+         it took effect before running it again]"
+    )
+}
+
 /// Strip assistant entries that have neither content nor tool_calls —
 /// the LLM API rejects these with HTTP 400.  Returns true if any were removed.
 pub(crate) fn strip_empty_assistants(entries: &mut Vec<SessionEntry>) -> bool {
@@ -197,11 +212,10 @@ pub(crate) fn repair_dangling_tool_calls(entries: &mut Vec<SessionEntry>) -> boo
                 .iter()
                 .filter(|tc| missing.contains(&tc.id))
                 .map(|tc| {
-                    let placeholder = format!(
-                        "{} {} was not executed before the session \
-                         was interrupted]",
-                        TOOL_LOST_PLACEHOLDER_PREFIX, tc.function.name,
-                    );
+                    // "Unknown", not "not executed": the process died between
+                    // the call and its result, so nobody knows whether the tool
+                    // ran.
+                    let placeholder = interrupted_tool_placeholder(&tc.function.name);
                     SessionEntry {
                         id: format!("missing-tool:{}:{}", entry.id, tc.id),
                         entry_type: ENTRY_TYPE_TOOL.to_string(),

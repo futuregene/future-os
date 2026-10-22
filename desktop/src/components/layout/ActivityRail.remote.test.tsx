@@ -3,7 +3,9 @@ import type { ComponentProps } from "react";
 import type { StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetAllCommandBindings } from "../../features/keyboard/shortcuts";
+import { installShortcuts } from "../../test/installShortcuts";
 import { flushAsync } from "../../test/renderHook";
 import { ActivityRail } from "./ActivityRail";
 
@@ -876,36 +878,103 @@ describe("the rail's remote row controls", () => {
 });
 
 /**
- * The device picker and the search field share one row above the list.
+ * The device picker and the search share one row above the list.
  *
- * They shared it half-and-half, so opening search squeezed the picker down to
- * its glyph and the field down to a few characters — reported as "they are
- * squeezed together".
+ * The picker is drawn `compact` — glyph, name, chevron in a quarter of the row
+ * instead of a band of its own — and the search is a single magnifier that opens
+ * into a field in the same row. So what this checks is that the row holds exactly
+ * those two things, before and after the magnifier is clicked: a second row for
+ * either of them is the regression.
  */
-describe("the search field and the device picker", () => {
-  it("gives the whole row to search while it is open, and hands it back on close", async () => {
+describe("the search and the device picker", () => {
+  it("shares one row between the picker and the search, closed or open", async () => {
     const view = await mountRail({
       deviceFilter: { kind: "all" },
       onChangeDeviceFilter: vi.fn(),
       remotePeers: [peer],
     });
     const picker = () => view.container.querySelector("button[aria-label='All devices']");
-    expect(picker()).not.toBeNull();
-
-    await act(async () => view.container
-      .querySelector<HTMLButtonElement>("button[aria-label='Search conversations']")!
-      .click());
-
-    expect(picker()).toBeNull();
-    // Search still filters within the chosen device; only the control is gone
-    // while the field needs the room.
-    expect(view.container.querySelector("input[aria-label='Search conversations']")).not.toBeNull();
-
-    await act(async () => view.container
-      .querySelector<HTMLButtonElement>("button[aria-label='Close search']")!
-      .click());
+    const glyph = () => view.container.querySelector<HTMLButtonElement>("button[aria-label='Search conversations']");
+    const field = () => view.container.querySelector("input[aria-label='Search conversations']");
+    const tools = () => view.container.querySelector<HTMLElement>("[data-testid='rail-list-tools']")!;
 
     expect(picker()).not.toBeNull();
+    // A glyph, not a field — the rail keeps the row narrow until it is asked.
+    expect(glyph()).not.toBeNull();
+    expect(field()).toBeNull();
+    expect(tools().contains(picker())).toBe(true);
+    expect(tools().contains(glyph())).toBe(true);
+    // The picker is the compact one — it kept its name, it gave up the band.
+    expect(picker()!.className).toContain("max-w-30");
+
+    act(() => glyph()!.click());
+    await flushAsync();
+    expect(field()).not.toBeNull();
+    expect(tools().contains(field())).toBe(true);
+    // The picker stays where it was: opening the field does not push it out.
+    expect(tools().contains(picker())).toBe(true);
+
+    view.unmount();
+  });
+});
+
+/**
+ * The device filter from the keyboard.
+ *
+ * The picker one row above the list is a pointer target, so the keyboard's way
+ * through the machines is the ring the picker draws them in: all machines, this
+ * one, each paired one, then all machines again.
+ */
+describe("the device filter from the keyboard", () => {
+  let uninstallShortcuts: () => void;
+  beforeEach(() => {
+    resetAllCommandBindings();
+    uninstallShortcuts = installShortcuts();
+  });
+  afterEach(() => {
+    uninstallShortcuts();
+    resetAllCommandBindings();
+  });
+
+  const press = (init: KeyboardEventInit) => act(() => {
+    window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+  });
+
+  /** One press from `filter`, with two machines paired. */
+  async function stepFrom(filter: ComponentProps<typeof ActivityRail>["deviceFilter"]) {
+    const onChangeDeviceFilter = vi.fn();
+    const view = await mountRail({
+      deviceFilter: filter,
+      onChangeDeviceFilter,
+      remotePeers: [peer, { ...peer, desktopId: "desktop_b", name: "Second machine" }],
+    });
+    press({ altKey: false, code: "KeyD", ctrlKey: true, key: "d", shiftKey: true });
+    const next = onChangeDeviceFilter.mock.calls[0]?.[0];
+    view.unmount();
+    return next;
+  }
+
+  it("walks all machines, this one and each paired one, then starts over", async () => {
+    expect(await stepFrom({ kind: "all" })).toEqual({ desktopId: null, kind: "device" });
+    expect(await stepFrom({ desktopId: null, kind: "device" })).toEqual({ desktopId: "desktop_a", kind: "device" });
+    expect(await stepFrom({ desktopId: "desktop_a", kind: "device" })).toEqual({ desktopId: "desktop_b", kind: "device" });
+    expect(await stepFrom({ desktopId: "desktop_b", kind: "device" })).toEqual({ kind: "all" });
+  });
+
+  it("starts the ring over from a machine this build no longer knows", async () => {
+    // A stored filter can name a machine that was unpaired since: the ring cannot
+    // place it, so the next press goes back to "all machines" rather than guessing.
+    expect(await stepFrom({ desktopId: "desktop_gone", kind: "device" })).toEqual({ kind: "all" });
+  });
+
+  it("leaves the key unclaimed when nothing else is paired", async () => {
+    const onChangeDeviceFilter = vi.fn();
+    const view = await mountRail({ onChangeDeviceFilter, remotePeers: [] });
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code: "KeyD", ctrlKey: true, key: "d", shiftKey: true });
+    act(() => window.dispatchEvent(event));
+    expect(onChangeDeviceFilter).not.toHaveBeenCalled();
+    // Nothing to switch to, so the press is not consumed either.
+    expect(event.defaultPrevented).toBe(false);
     view.unmount();
   });
 });

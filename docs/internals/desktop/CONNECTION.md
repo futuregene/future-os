@@ -171,11 +171,12 @@ the foreground, and does not start the Tauri Builder, window, WebView, or GUI
 plugins. When not signed in, the device authorization flow prints the browser
 login QR code, URL, and user code; no browser is opened on the server. The
 authorization result is saved by the Agent through the original config-write
-path. Phone pairing is the second phase: after the entry and the Agent are
-ready, it prints the terminal QR code generated from the same invitation and
-the full `futureos://remote/pair` link for the app to scan or paste — not a
-short numeric code. The graphical `futureos` entrypoint no longer accepts
-`--headless`; the standalone binary is built without GUI dependencies.
+path. Phone pairing is a separate, explicit step: the entry point never mints or
+prints an invitation of its own, and `future remote devices add` — run in another
+terminal while the host serves — is what prints the terminal QR code and the full
+`futureos://remote/pair` link for the app to scan or paste (not a short numeric
+code). The graphical `futureos` entrypoint no longer accepts `--headless`; the
+standalone binary is built without GUI dependencies.
 
 **Pairing is managed from the terminal, through the running Desktop.** Neither
 entry point takes a pairing flag. `future remote devices` (the `future` CLI) is the
@@ -234,9 +235,10 @@ the window can name the next step instead of "try again later".
 Valid login and pairing are reused; no proactive re-pairing on every launch or
 disconnect. The invitation is printed as a QR code with its complete link, with
 automatic fallback to the link alone on narrow terminals — which is why no flag
-suppresses the code. First login/pairing requires an interactive terminal; the
-invitation is refused for redirected logs. GUI and headless modes are mutually exclusive
-over the same data directory, preventing double takeover.
+suppresses the code. The platform login requires an interactive terminal and its
+authorization material is refused for redirected logs; pairing is a separate
+command (`future remote devices add`) and needs no terminal. GUI and host modes are
+mutually exclusive over the same data directory, preventing double takeover.
 
 Ctrl+C cancels during login, startup, pairing, and running phases; Unix
 additionally handles SIGTERM/SIGHUP. Exit first invalidates the remote entry,
@@ -260,7 +262,7 @@ The default build supports both GUI and headless entries;
 not link Tauri/GTK/WebKit (still needs the matching `future` CLI to provide the
 Agent). This is not another Remote SDK or a separate remote-protocol
 implementation. Phone, platform environment, and versions must match. Run
-instructions in the [desktop headless mode guide](../../guide/desktop-headless.md).
+instructions in the [host mode guide](../../guide/desktop-host.md).
 
 ## 2. Existing wiring, protocol, and trust boundaries
 
@@ -462,13 +464,16 @@ same state, so choosing a machine also tells you whether you may use it.
 **The desktop client role answers the same question.** What the host says in
 its presence packet and its `p.{pair}.state.control` packet (`control`, plus
 `holder` while somebody else has it) is kept on the connection and reported
-with `remote_peer_list` as `PeerSummary.control` / `holder`. Four surfaces read
+with `remote_peer_list` as `PeerSummary.control` / `holder`. Five surfaces read
 that one field: the device picker's entry says who is using the machine, the
 machine's row in the Remote section says "taken over" instead of "connected"
 and offers `takeover` (the same command a phone sends, on the `list` lane), the
-section's count names the taken-over machines beside "N of M connected", and the
+section's count names the taken-over machines beside "N of M connected", the
 Remote dot is amber as soon as one paired machine is held by another device —
-the same line the phone's set dot draws (`drivable === total`). A control move —
+the same line the phone's set dot draws (`drivable === total`) — and
+`future remote peers` prints it as that same word in its STATE column (with
+`control` / `holder` in `--json`), where `future remote peers takeover <id|#>`
+asks the running Desktop to send exactly that command. A control move —
 announced by the packet, or noticed in a presence tick — drops that host's
 snapshot gate and re-reads: a standby device is never sent a snapshot, so the
 gate can sit at a revision whose content this client has never applied and would
@@ -556,11 +561,24 @@ that machine, and no second journal is created here.
 
 **Merging the conversation list.** The shared list (left panel) interleaves this
 machine's conversations with every connected host's by time, each row carrying
-its source icon; the device selector narrows it to one machine. The ordering key
+its source icon; the device selector narrows it to one machine. **Creating one
+is device-first**: a new conversation lives on one machine and runs there, so
+the rail's "new conversation" control and `⌘N` ask which machine before
+anything is made — in a dialog, because the shortcut has no button to hang a
+menu under. The question is skipped when it has one answer: no host can take
+the work (the list already is one machine's), or the selector above the list
+names one machine already. A machine that is offline, restarting, or driven by
+another paired device is listed with the reason and not offered, since it would
+accept the tap and refuse the first prompt. The ordering key
 for **rows** is the one the local list already used —
 `pinned DESC, COALESCE(last_message_at, updated_at, created_at) DESC` — which is
 why the `state.sessions` snapshot gained an optional `lastMessageAt` (older
-clients ignore it). **A remote row's value is the host's own and is written only
+clients ignore it). The same snapshot also carries an optional `createdAt`
+(`threads.created_at`) for a different question: a run rewrites `lastMessageAt`
+about once a second, so a client that lists the *running* conversations by it
+reshuffles them under the reader's thumb — the mobile list ranks that stretch by
+when each conversation started instead, and falls back to recency on a host that
+does not send the field. **A remote row's value is the host's own and is written only
 by the host** — the snapshot when the list's structure moves, the `state.activity`
 packet when only the value did. A client that stamped a clock of its own on the
 row (the desktop's live-event handler once used `Date.now()`) put two clocks in
@@ -1159,7 +1177,7 @@ conflated with the immediacy of the Desktop's local entry close.
 | Desktop sleep/wake | power events integrated on macOS/Windows/Linux; recovery depends on the startup, credential, and sync chains |
 | NATS restart, long unreachable | retries exist; authorization-config faults and over-budget critical-task faults stop auto-recovery |
 | Platform HTTP fault, NATS still normal | existing chains may keep serving while credentials are valid; startup/renewal affected, phone requests lack bounded cancellation |
-| Desktop normal exit, process rebuild | remote disconnects; the owned sidecar exits, conversations end. Reopening can only recover the entry per the user's connection policy; old tasks are not auto-resumed |
+| Desktop normal exit, process rebuild | remote disconnects; the owned sidecar exits, conversations end. Reopening can only recover the entry per the user's connection policy; old *remote* tasks are not auto-resumed, while a local conversation the exit interrupted continues on the next launch per [ER](ER.md) (the `autoResumeInterrupted` setting turns that off) |
 | Agent unavailable, Desktop heartbeat normal | may show connected while business fails; needs separately published Agent availability |
 | Claim succeeded but response lost | self-recovery not guaranteed; currently the invitation may have to be regenerated |
 | User active disconnect/unbind | must stop, not self-recover; current cancel, late-result, and revocation compensation still need completion per the target contract |

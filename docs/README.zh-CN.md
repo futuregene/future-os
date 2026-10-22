@@ -13,12 +13,13 @@
 | 文档 | 内容 |
 |---|---|
 | [构建与安装](guide/build-and-install.zh-CN.md)（[en](guide/build-and-install.md)） | 前置条件、各平台工具链（macOS / Linux / Windows）、`make` 目标、GUI 打包、`future-goal` 安装、技能安装 |
+| [持续集成](guide/ci.zh-CN.md) ([English](guide/ci.md)) | 影响范围检测、依赖图、共享 runner、合并门禁与手动专项验证 |
 | [TUI](guide/tui.zh-CN.md)（[en](guide/tui.md)） | 终端界面（`future-tui`）：斜杠命令、快捷键、设置 |
 | [渠道配置](guide/channels-config.zh-CN.md)（[en](guide/channels-config.md)） | `~/.future/channels/config.json` 统一参考（agent / providers / Feishu / DingTalk 块、默认值） |
 | [通道 provider 参考](guide/channels-providers.zh-CN.md)（[en](guide/channels-providers.md)） | 共享桥上的通道：能力矩阵、逐通道配置、成熟度、诊断、主动外发 |
 | [通道 provider 契约](guide/channels-provider-contract.zh-CN.md)（[en](guide/channels-provider-contract.md)） | 新增通道：provider 契约、入站/出站边界、配置、错误、测试与覆盖率要求 |
 | [Desktop Agent](guide/desktop-agent.zh-CN.md)（[en](guide/desktop-agent.md)） | 默认内置/外部服务、退出中断范围、CLI 接入、开发启动、日志与升级恢复 |
-| [无头桌面](guide/desktop-headless.zh-CN.md)（[en](guide/desktop-headless.md)） | 前台 `future headless` 启动、终端登录/配对二维码与链接、Ctrl+C、无 GUI 服务器构建与排障 |
+| [主机模式](guide/desktop-host.zh-CN.md)（[en](guide/desktop-host.md)） | 前台 `future host` 启动、平台登录二维码、用 `future remote devices add` 配对、Ctrl+C、无 GUI 服务器构建与排障 |
 | [Headless 发布验收](testing/headless-release-acceptance.zh-CN.md)（[en](testing/headless-release-acceptance.md)） | 最终成功 CI、打包签名、真实安装升级、性能与同候选验收遗留清单 |
 | [Headless unsigned 下载与结果](testing/headless-unsigned-results.zh-CN.md)（[en](testing/headless-unsigned-results.md)） | 实际 dev 包、公开地址、SHA-256、CLI/sidecar 和静态/旧 Linux 验证 |
 | [目录布局](guide/directory-layout.zh-CN.md)（[en](guide/directory-layout.md)） | `~/.future/` 下各目录职责（agent、channels、TUI、GUI、goal） |
@@ -38,6 +39,7 @@
 | [定时任务](architecture/tasks.zh-CN.md)（[en](architecture/tasks.md)） | `future-tasks` — 可复用提示词 + 触发器（按计划或随时手动）、全权限运行、确定性 `next_due` 内核、运行台账与提示词版本历史 |
 | [SQLite 迁移](architecture/sqlite-migration.zh-CN.md)（[en](architecture/sqlite-migration.md)） | Agent/Desktop SQLite 存储布局与迁移策略 |
 | [Desktop 内置 Agent 开发计划](architecture/embedded-agent-development.zh-CN.md)（[en](architecture/embedded-agent-development.md)） | 进程内完整 Agent、服务与宿主生命周期、实例锁、退出清理、升级安装、开发工具及分阶段验收 |
+| [Agent 启动仲裁与自愈](architecture/agent-supervision.zh-CN.md)（[en](architecture/agent-supervision.md)） | 同一数据根下 `future agent` / `future host` / `future tui` 谁启动 Agent：实例锁仲裁、让位而非失败、有界等待、崩溃熔断，以及尚未拍板的产品决定 |
 | [回复结果语义](architecture/response-outcomes.zh-CN.md)（[en](architecture/response-outcomes.md)） | 回复结束的结果语义（停止 / 拒答 / 过滤 / 暂停） |
 | [goal/](architecture/goal/README.md) | `future-goal` crate：[架构](architecture/goal/ARCHITECTURE.md)（en/zh）、[上游来源](../orchestration/goal/UPSTREAM.md)、[决策内核快照](architecture/goal/snapshots.md) |
 | [共享包](architecture/packages.zh-CN.md)（[en](architecture/packages.md)） | `packages/` 约定：npm/workspace 包与 crate 边界 |

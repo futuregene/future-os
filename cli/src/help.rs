@@ -32,14 +32,14 @@ Apps (run the FutureOS components — same as their standalone binaries):
   tui       Launch the terminal UI (future-tui)
   channel   Start the IM channel bridge (future-channel)
   goal      Goal control plane: goals/todos/gates (future-goal)
-  headless  Foreground application host for mobile remote access
+  host      Foreground host: this machine as a remote desktop for your devices
   relay     Self-hosted, account-free NATS relay for remote control
 
 Quick start:
   future init                                Initialize Future OS
   future config                              Configure a model provider
   future auth login                          Sign in to the Future platform
-  future headless                            Start the foreground application host
+  future host                                Start the foreground host
   future agent                               Start the agent server
   future tui                                 Launch the terminal UI
   future run "Explain this project"          One-shot agent prompt
@@ -48,7 +48,7 @@ Quick start:
   future doctor                              Check everything is working
 
 Run 'future <group> --help' for per-group details.
-  future headless --help     Foreground host, login and pairing
+  future host --help         Foreground host, login and pairing
   future init --help         Initialization behavior
   future config --help       Interactive model-provider setup
   future desktop --help      Desktop app settings
@@ -217,6 +217,7 @@ Settable keys (camelCase, as the desktop API spells them):
   titleLanguage           en|zh              Language used for generated titles
   communityEdition        true|false         Use the community-edition UI
   skillRecommend          true|false         Recommend one uninstalled skill
+  autoResumeInterrupted   true|false         Continue interrupted conversations on app open
 
 A list value is a JSON array or a comma-separated list; an empty value clears it."#;
 
@@ -297,6 +298,11 @@ Usage:
   future remote devices remove <id|#> [--yes]        Unpair one device; the others stay paired
   future remote devices remove --all [--yes]         Unpair every device
   future remote devices use <id|#>                   Make a paired device the one in control
+  future remote peers [list] [--json]                Remote desktops THIS machine connects to
+  future remote peers add <invitation>               Pair with one by pasting its link
+  future remote peers connect|disconnect <id|#>      Take one up or down now
+  future remote peers takeover <id|#>                Take one back from the device driving it
+  future remote peers remove <id|#> [--yes]          Unpair it
 
 status answers two different questions and keeps them apart: whether this
 machine is serving its devices right now (runtime state, which only a running
@@ -305,7 +311,7 @@ serves again after a restart. Run `future remote status --help` for its fields,
 its --json document and its exit codes.
 
 enable and disable are that switch, from a terminal: they take effect at once
-when a Desktop is running (the window, or futureos-headless) and are stored for
+when a Desktop is running (the window, or `future host`) and are stored for
 the next launch either way, so neither needs a restart.
 
 Every action takes --json and prints the same document `future remote devices
@@ -313,7 +319,7 @@ Every action takes --json and prints the same document `future remote devices
 expiresAt).
 
 A device is a phone or another computer that paired with this machine's remote
-desktop — the Remote page in the window, or future headless. The list reads the
+desktop — the Remote page in the window, or future host. The list reads the
 pairing book the Desktop itself reads (~/.future/remote_pairings.json), and use
 writes it, so neither needs a running Desktop; a self-hosted relay needs no
 account either.
@@ -322,11 +328,12 @@ add, remove and use are the exceptions to "the book is enough", because the
 Desktop is what actually serves a device. An invitation is only usable while the
 bridge for that pairing is connected, and a removal only takes effect *now* if
 that bridge is stopped — so both ask the running Desktop (the window, or future
-headless) and carry its answer back. use asks it too: control is an in-memory
+host) and carry its answer back. use asks it too: control is an in-memory
 pointer in that process, so handing the machine over is what makes the choice
 take effect before the next restart. With no Desktop running, remove and use edit
-the book itself, which is what the next start reads. A machine with no device at
-all prints an invitation as the Desktop starts.
+the book itself, which is what the next start reads. Nothing pairs a device by
+itself: `add` is the only command that mints an invitation, so a machine with an
+empty book stays unmatched until somebody runs it.
 
 Self-hosted relays work the same way, and a machine may hold an official device
 and a self-hosted one at the same time: `list` names each device's endpoint, and
@@ -362,7 +369,14 @@ pub const REMOTE_USAGE: &str = r#"Usage:
   future remote devices add [--json]
   future remote devices remove <id|#> [--yes] [--json]
   future remote devices remove --all [--yes] [--json]
-  future remote devices use <id|#> [--json]"#;
+  future remote devices use <id|#> [--json]
+  future remote peers [list] [--json]
+  future remote peers add <invitation> [--json]
+  future remote peers connect <id|#> [--json]
+  future remote peers disconnect <id|#> [--json]
+  future remote peers takeover <id|#> [--json]
+  future remote peers rename <id|#> <name> [--json]
+  future remote peers remove <id|#> [--yes] [--json]"#;
 
 /// `future remote status --help` output.
 pub const REMOTE_STATUS_HELP: &str = r#"future remote status — is the remote desktop on, and who is connected
@@ -373,7 +387,7 @@ Usage:
 Two facts, printed separately because they are different facts:
 
   Remote desktop      Whether this machine is serving its devices right now.
-                      Only a running Desktop (the window, or futureos-headless)
+                      Only a running Desktop (the window, or `future host`)
                       can answer; with none running this reads "off — no
                       Desktop is running for this machine".
   Saved switch        autoConnectRemote, the same value the window's Remote page
@@ -386,7 +400,7 @@ name when it declared one, and where it was minted (the Future platform, or a
 self-hosted relay).
 
 --json prints one object:
-  desktopRunning             a Desktop owns this data directory (window or headless)
+  desktopRunning             a Desktop owns this data directory (window or host)
   state                      off | unknown | on | connecting | serving | degraded |
                              failed | revoked — the word to test in a script
   phase                      the Desktop's own phase, or null when it did not answer
@@ -428,7 +442,7 @@ Usage:
 Turns on the same switch the window's Remote page has, and stores it: the
 machine keeps serving its paired devices at the next launch.
 
-With a Desktop running (the window, or futureos-headless) it takes effect
+With a Desktop running (the window, or `future host`) it takes effect
 immediately — the request goes to that process, which starts the bridge, so
 nothing has to be restarted. With none running there is no bridge to start: the
 switch is stored, the command says so, and it exits 1 because the machine is not
@@ -456,7 +470,7 @@ machine does not serve again at the next launch.
 
 With a Desktop running it takes effect immediately — the bridge is stopped, and a
 connected device is told the machine went away, so nothing has to be restarted. A
-headless entry keeps running (it is the machine's control endpoint) and waits to
+host entry keeps running (it is the machine's control endpoint) and waits to
 be enabled again. With none running there is nothing to stop: the switch is
 stored, and that is the whole answer.
 
@@ -480,10 +494,10 @@ Add device and scan it, or paste the complete link. The same invitation is also
 on the Remote page while it lasts.
 
 The invitation is minted by the running Desktop, which is the only process that
-can serve the new device, so this needs one: a window, or future headless. With
-none running, the answer is "start the Desktop" — and a machine with no device at
-all prints an invitation as it starts, which is also the recovery path after
-`remove --all`.
+can serve the new device, so this needs one: a window, or future host. With
+none running, the answer is "start the Desktop" — this is the one command that
+pairs a machine, and it is also how a book emptied by `remove --all` gets a first
+device back.
 
 The invitation is whatever the Desktop is configured to mint: an official
 `v=2` link, or a self-hosted relay's `v=3` one. Relay mode needs no FutureOS
@@ -574,7 +588,7 @@ window's "Let this control" writes and the runtime restores at start. Control
 moves the way an explicit takeover moves it, so the previous controller is no
 longer allowed to command this machine.
 
-With a Desktop running (the window, or future headless) it also asks that Desktop
+With a Desktop running (the window, or future host) it also asks that Desktop
 to hand the machine over now, which is what makes the change immediate: control is
 an in-memory pointer there, and only a takeover — the same one a phone performs —
 moves it. Publishing the new controller and standing the previous one down is the
@@ -594,6 +608,207 @@ Two notes can follow, on stderr, and neither means the choice was lost:
 --json prints the resulting device document, like `future remote devices --json`."#;
 
 /// `future task --help` output.
+/// `future remote peers --help` output.
+///
+/// The client role, next to [`REMOTE_HELP`]'s host role. The two are one word
+/// apart in the running product and mean opposite things ("who drives me" vs
+/// "who do I drive"), so the help says which one this is before anything else.
+pub const REMOTE_PEERS_HELP: &str = r#"future remote peers - the remote desktops this machine connects to
+
+Usage:
+  future remote peers [list] [--json]                 Every remote desktop this machine drives
+  future remote peers add <invitation> [--json]       Pair with one: paste its invitation link
+  future remote peers connect <id|#> [--json]         Connect to one now
+  future remote peers disconnect <id|#> [--json]      Drop the connection, keep the pairing
+  future remote peers takeover <id|#> [--json]        Take it back from the device driving it
+  future remote peers rename <id|#> <name> [--json]   Name it here (--clear goes back to the id)
+  future remote peers remove <id|#> [--yes] [--json]  Unpair it: stop connecting, revoke
+
+This is the client role, the mirror of `future remote devices`. Devices are the
+phones and computers allowed to drive THIS machine; peers are the machines this
+one drives. The two pairings are independent: they have their own credentials,
+their own runtimes, and their own files (~/.future/remote_peers.json here,
+~/.future/remote_pairings.json there).
+
+A paired desktop is driven by one device at a time. The others stay connected
+and stand by: they answer, they cannot read or command. `list` says so in its
+STATE column, and `takeover` is how a standby machine becomes the one driving.
+
+add is the only action that runs here instead of in the Desktop: pairing is a
+one-time claim against the platform plus a handshake with the other machine, so
+it needs nothing running on this one. On the other machine open Remote, take the
+invitation it offers for connecting another computer, and paste the whole link
+here. The pairing is stored and this command connects once, so the answer is
+whether it works rather than whether it was written down. A running Desktop then
+keeps it connected; with none running it connects the next time one starts (the
+window - a host serves devices but does not drive other desktops).
+
+Everything else reads the book, and connect, disconnect, takeover and remove also
+ask the running Desktop, because a live connection, this machine's control state
+and the user's own "disconnected" mark live in that process and nowhere on disk.
+With no Desktop running:
+
+  - list still shows what is paired, with no connection state to report;
+  - rename still works: the name is this machine's private label for that host,
+    never sent anywhere, and the Desktop reads it from the same file;
+  - connect, disconnect and takeover have nothing to act on, and say so;
+  - remove unpairs here and revokes where it can reach the platform, so nothing
+    on this machine connects to it again.
+
+The id is the other machine's desktopId, as `list` shows it; its `desktop_`
+prefix is optional, and a row number (#1) names the same row.
+
+Every action takes --json. list prints {desktopRunning, answered, peers}: a
+peer's connected, stopped, error, agentAvailable, control and holder are null
+when no Desktop answered, which is the honest reading of "the book cannot know".
+add prints {desktopRunning, paired}; takeover prints {desktopRunning, answered,
+tookOver, peers}; the rest print the resulting list document, and remove also
+names what it removed."#;
+
+/// The one-line usage every `future remote peers` argument error repeats.
+pub const REMOTE_PEERS_USAGE: &str = r#"Usage:
+  future remote peers [list] [--json]
+  future remote peers add <invitation> [--json]
+  future remote peers connect <id|#> [--json]
+  future remote peers disconnect <id|#> [--json]
+  future remote peers takeover <id|#> [--json]
+  future remote peers rename <id|#> <name> [--json]
+  future remote peers rename <id|#> --clear [--json]
+  future remote peers remove <id|#> [--yes] [--json]"#;
+
+/// `future remote peers list --help` output.
+pub const REMOTE_PEERS_LIST_HELP: &str = r#"future remote peers list - every remote desktop this machine drives
+
+Usage:
+  future remote peers [list] [--json]
+
+Reads the client-role book (~/.future/remote_peers.json) and, when a Desktop is
+running, the connections that process holds. The two halves are kept apart in the
+STATE column because only one of them is knowable from disk:
+
+  connected       the Desktop holds a live connection to that machine
+  taken over      connected, but another paired device is driving it: it answers
+                  and refuses every command ("taken over by <name>" when the
+                  holder said who it is). `takeover` takes it back.
+  disconnected    the user turned it off from this machine; the automatic
+                  reconnect pass leaves it alone until `connect` asks for it
+  not connected   paired, no live connection
+  unknown         a Desktop is running but did not answer
+
+With no Desktop running every row reads "not connected", because that is the
+truth: a connection lives in that process.
+
+--json prints one object:
+  desktopRunning   a Desktop owns this data directory (window or host)
+  answered         that Desktop reported its connections
+  peers[]          desktopId, pairId, name, icon, connected, stopped, error,
+                   agentAvailable, control, holder - all null when nothing
+                   answered. `control` is "active" or "standby"; `holder` is
+                   {name, kind} and null when this machine drives it or nobody
+                   said who does."#;
+
+/// `future remote peers add --help` output.
+pub const REMOTE_PEERS_ADD_HELP: &str = r#"future remote peers add - pair this machine with another remote desktop
+
+Usage:
+  future remote peers add <invitation> [--json]
+
+Takes the `futureos://remote/pair?...` link the other machine shows in its
+Remote page ("connect another computer"). Paste it whole, in quotes: the link is
+long and every parameter matters.
+
+The pairing runs here, not in the Desktop: the claim and the handshake need
+nothing local to be serving, which is what lets a machine be paired before its
+Desktop is ever opened. The invitation is single-use and short-lived - an
+expired one is refused, and a fresh link from the other machine is the only fix.
+
+On success the pairing is stored in ~/.future/remote_peers.json and this command
+connects once, so a broken pairing is reported now instead of at the next start.
+A running Desktop keeps it connected from then on; with none running it connects
+when one starts (the window; a host does not drive other desktops).
+
+--json prints {desktopRunning, paired}, where paired is one peer row as
+`future remote peers list --json` prints it."#;
+
+/// `future remote peers connect|disconnect --help` output.
+pub const REMOTE_PEERS_CONNECT_HELP: &str = r#"future remote peers connect|disconnect - take a pairing up or down now
+
+Usage:
+  future remote peers connect <id|#> [--json]
+  future remote peers disconnect <id|#> [--json]
+
+Asks the running Desktop to connect or drop one remote desktop. This is the same
+call the window's own Connect and Disconnect buttons make, and it matters that it
+is the same one: a disconnect also records the host as stopped in that process,
+which is what keeps the automatic reconnect pass from undoing it a few seconds
+later. Nothing about the pairing changes - connect brings it back.
+
+With no Desktop running there is nothing to connect or drop (a connection lives
+in that process), so both actions say so instead of pretending. A paired host is
+connected by the Desktop as it starts, so start it and look at `list`.
+
+connect reports the state the Desktop answered with, not what was asked: an
+attempt that ended without a connection prints why, and exits 1."#;
+
+/// `future remote peers takeover --help` output.
+pub const REMOTE_PEERS_TAKEOVER_HELP: &str = r#"future remote peers takeover - take a remote desktop back from another device
+
+Usage:
+  future remote peers takeover <id|#> [--json]
+
+A paired desktop is driven by one device at a time. The others stay connected and
+stand by - they answer every heartbeat, and every command they send comes back
+`superseded` - which is how a machine that was fine a moment ago stops showing
+its conversations without any error. `list` draws that state as "taken over", and
+this is how it is undone, without reconnecting: the same `takeover` command a
+phone sends, from this side of the pairing.
+
+The device that had the machine is told to stand by on its own channel, exactly
+as when a phone asks for it. A machine this one already drove answers that
+nothing moved - that is a success, printed as one, not a refusal.
+
+Asked of the running Desktop: the connection that carries the command, and this
+machine's own live control state, exist only in that process. With no Desktop
+running the command says so instead of pretending. The row's word in `list`
+follows the host's next presence tick, so `tookOver` in the answer is what to
+read for "did it move".
+
+--json prints {desktopRunning, answered, tookOver, peers}, where peers is the
+list as `future remote peers list --json` prints it."#;
+
+/// `future remote peers rename --help` output.
+pub const REMOTE_PEERS_RENAME_HELP: &str = r#"future remote peers rename - name a remote desktop here
+
+Usage:
+  future remote peers rename <id|#> <name> [--json]
+  future remote peers rename <id|#> --clear [--json]
+
+Writes this machine's private label for that desktop into the client-role book.
+The name never leaves this machine: the other side neither sends nor stores it,
+and the Desktop reads it from the same file, so a running one shows it on its
+next refresh. --clear removes it and the machine id is shown again.
+
+No Desktop is needed for this one."#;
+
+/// `future remote peers remove --help` output.
+pub const REMOTE_PEERS_REMOVE_HELP: &str = r#"future remote peers remove - unpair a remote desktop
+
+Usage:
+  future remote peers remove <id|#> [--yes] [--json]
+
+Removes the pairing: this machine stops connecting to that desktop, and its
+credential is revoked where the platform can be reached.
+
+With a Desktop running it is asked first, because it owns the live connection and
+can drop it now; its answer is what makes the removal immediate. With none
+running, the entry is removed here and the revoke is attempted from this process,
+so a machine without a Desktop is still cleanly unpaired. A revoke that cannot be
+delivered is reported and is not fatal: the pairing is gone here, and the other
+side stops accepting that credential when it expires.
+
+Asks for confirmation; --yes skips the prompt, and a command without a terminal
+on stdin must pass it."#;
+
 pub const TASK_HELP: &str = r#"future task — manage scheduled tasks (reusable prompt + trigger + full-permission runs)
 
 A scheduled task is a reusable work unit: prompt + working directory +
@@ -605,7 +820,7 @@ Usage:
   future task list [--all] [--json]                 List scheduled tasks
   future task show <id|name> [--json] [--prompt]    Show one scheduled task
   future task add --name N --prompt P|--prompt-file F --cwd D
-        [--model M] [--thinking L] [--session new|existing]
+        [--model M] [--thinking L] [--timezone IANA] [--session new|existing]
         [--session-retention keep|delete]
         [--conversation workspace|chat] [--disabled] [--json]
         (--manual | --at "YYYY-MM-DD HH:MM" | --every 30m
@@ -628,7 +843,7 @@ Triggers:
   --manual    Only runs when triggered: `future task run`, the desktop panel,
               the phone, or another agent. This is also what an add without any
               trigger flag produces.
-  --at        One-shot on a calendar date/time (local time).
+  --at        One-shot on a calendar date/time (in the task's time zone).
   --every     Every N minutes (30m, 2h, 1d). Anchored to a grid; no drift.
   --daily     Every day at --time (default 09:00).
   --weekly    Every selected weekday at --time (default 09:00).
@@ -637,6 +852,14 @@ Triggers:
   --yearly    Once a year on --month (1-12) and --day (1-31) at --time
               (default 09:00). A day the month cannot hold runs on the last
               day of that month, so 2/29 runs on the 28th in a common year.
+
+Time zone:
+  --timezone IANA   The zone every wall-clock time above is read in, e.g.
+                    Asia/Shanghai, Europe/Berlin, America/New_York, UTC. A
+                    schedule keeps its meaning when the machine's own zone
+                    changes or the task is managed from elsewhere.
+                    Omitted: this machine's zone; when that cannot be read,
+                    Asia/Shanghai. `future task show` prints the resulting zone.
 
 Session:
   --session new       Each run opens a new conversation (default).
@@ -672,7 +895,7 @@ Reading a run:
   the conversation), and `feedback` records your verdict on a run.
 
 Execution:
-  Runs are executed by the desktop (or headless desktop) tick loop, not by
+  Runs are executed by the desktop (or host) tick loop, not by
   this CLI. `future task run` queues a request; the next tick picks it up.
   `--wait` blocks until the run reaches a terminal state and prints its
   status, thread/session ids, and result summary.

@@ -24,6 +24,9 @@
 //! 3. **Frontend invalidation** — `thread-runtime-updated` for persisted runs,
 //!    plus whitelisted settings events (`agent-event`) for every observed
 //!    session, so model/thinking/title changes land in the sidebar cache live.
+//!    A fresh observer first re-reads the session-scope log, and that lane is
+//!    narrowed: compaction signals are *events* (a client appends them to the
+//!    transcript), not restated state, so a replayed copy is not forwarded.
 //! 4. **Settlement** — observer-owned runs are settled on `agent_end`/`error`
 //!    (the pipeline settles its own runs).
 //!
@@ -345,6 +348,10 @@ static TEST_DISCOVERY_STOP: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 pub fn spawn_session_discovery() {
+    // A previous fixture may have been cancelled before consuming its stop
+    // flag. HOME cleanup has joined that task before the next fixture starts.
+    #[cfg(test)]
+    TEST_DISCOVERY_STOP.store(false, std::sync::atomic::Ordering::Relaxed);
     crate::runtime::spawn(async move {
         loop {
             tokio::time::sleep(discovery_interval()).await;
@@ -681,12 +688,28 @@ async fn record_message_activity(
         }
     }
     let thread_id = shared.thread_id.clone();
-    match tokio::task::spawn_blocking(move || {
+    match crate::runtime::run_blocking(move || {
         crate::store::record_thread_message_activity(&thread_id, timestamp)
     })
     .await
     {
-        Ok(Ok(())) => state.last_message_activity_ms = Some(timestamp),
+        Ok(Ok(advanced)) => {
+            state.last_message_activity_ms = Some(timestamp);
+            // The local GUI's sidebar is event-driven — a row's age label and its
+            // place in the list come from the stamp we just wrote — so without
+            // this signal a run driven from outside the GUI (CLI, scheduler,
+            // another machine) kept showing the age it had before the run.
+            // Announce only a write that moved the row: a deleted thread or a
+            // replayed older event has nothing for the row to show.
+            //
+            // This is the same throttle the store write sits behind (rapid
+            // token deltas are folded into at most one update a second, with
+            // prompts and terminals always flushing), so a streaming reply
+            // reaches the GUI about once a second and never per token.
+            if advanced {
+                crate::emit_thread_activity(&shared.thread_id, timestamp);
+            }
+        }
         result => eprintln!("FutureOS could not record message activity: {result:?}"),
     }
 }
@@ -919,19 +942,73 @@ async fn probe_active_run(
         .map(str::to_string)
 }
 
-/// Process one event. Returns false when the run's idx sequence broke — the
-/// caller re-attaches, and the replay/projection snapshot heals the gap.
+/// Where an incoming event came from. The two lanes are not equivalent for
+/// everything in [`FORWARDED_EVENTS`]: a session-scope replay walks a log with
+/// no time floor (see [`replay_session_events`]), so an event that happened
+/// days ago arrives looking exactly like one that happened now.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EventOrigin {
+    /// Arrived on the live subscription, in the order it happened.
+    Live,
+    /// Re-read from the session's own log because this observer is new, woke
+    /// from an idle sleep, or lost its place.
+    Replay,
+}
+
+/// A compaction lifecycle signal (`compaction_started` / `_committed` /
+/// `_failed` / `_unchanged`). Their `payload` is the checkpoint, and clients
+/// turn it into a divider in the transcript — so unlike a settings change,
+/// delivering a late copy is not idempotent at the message level.
+fn is_compaction_lifecycle(event_type: &str) -> bool {
+    event_type.starts_with("compaction_")
+}
+
+/// Whether an event should be handed to the webview as `agent-event`.
+///
+/// Session-scope replays must not deliver compaction signals. The session log
+/// is durable and has no time floor, so a replay reaches back to every manual
+/// compaction the conversation ever had; the webview turns each one into a
+/// divider appended at the end of the transcript (`useSessionMessageEvents`),
+/// which then vanishes the next time the thread is opened — because the
+/// durable transcript already renders that compaction at its real position.
+/// Measured 2026-10-21 on `20261014-083558…`: a compaction from 10-19 came back
+/// as a bottom-of-list divider on every fresh observer.
+///
+/// Everything else is a *state* statement that a replay may repeat safely: the
+/// cache applies `model_changed`/`cwd_changed`/`permission_level_changed` and
+/// converges on the last one, and `agent_start`/`agent_end` are reconciled
+/// against the run's own cursor before they get here.
+fn forwards_to_webview(event_type: &str, origin: EventOrigin) -> bool {
+    FORWARDED_EVENTS.contains(&event_type)
+        && !(origin == EventOrigin::Replay && is_compaction_lifecycle(event_type))
+}
+
+/// Process one event from the live subscription. Returns false when the run's
+/// idx sequence broke — the caller re-attaches, and the replay/projection
+/// snapshot heals the gap.
+async fn handle_event(
+    session_id: &str,
+    shared: &Arc<ObserverShared>,
+    state: &mut ObserverState,
+    event: future_rpc::proto::StreamEvent,
+) -> bool {
+    handle_event_from(session_id, shared, state, event, EventOrigin::Live).await
+}
+
+/// [`handle_event`] for a lane whose events may be old; only the webview
+/// fan-out differs, and [`forwards_to_webview`] decides it.
 ///
 /// Ordering rule: an event is validated against its run cursor BEFORE any
 /// fan-out (persistence, webview forward, NATS mirror). The observer is the
 /// sole NATS publisher, so nothing unvalidated may be mirrored — otherwise a
 /// gap-triggered re-attach would re-publish replayed events and remote
 /// clients would see the run out of order and duplicated.
-async fn handle_event(
+async fn handle_event_from(
     session_id: &str,
     shared: &Arc<ObserverShared>,
     state: &mut ObserverState,
     event: future_rpc::proto::StreamEvent,
+    origin: EventOrigin,
 ) -> bool {
     let event_type = event.r#type.as_str();
     let run_id = event.run_id.as_str();
@@ -963,7 +1040,7 @@ async fn handle_event(
             }
         }
         let event_data = future_rpc::decode::event_data_json(&event);
-        if FORWARDED_EVENTS.contains(&event_type) {
+        if forwards_to_webview(event_type, origin) {
             forward_settings_event(session_id, &shared.thread_id, event_type, &event_data);
         }
         crate::agent_events::publish_event(
@@ -1165,6 +1242,11 @@ async fn replay_session_events(
     shared: &Arc<ObserverShared>,
     state: &mut ObserverState,
 ) -> bool {
+    // A newly created observer carries `session_cursor = -1`, so this reads the
+    // whole session-scope log — every `model_changed`, `cwd_changed`,
+    // `sandbox_policy_changed` and every manual compaction the conversation ever
+    // had. Those are handed on as [`EventOrigin::Replay`] so nothing that only
+    // makes sense "now" reaches the webview as if it had just happened.
     let command = future_rpc::proto::RpcCommand {
         since_idx: state.session_cursor,
         ..base_command("get_session_events_since", session_id.to_string())
@@ -1216,7 +1298,7 @@ async fn replay_session_events(
             payload,
             ..Default::default()
         };
-        if !handle_event(session_id, shared, state, event).await {
+        if !handle_event_from(session_id, shared, state, event, EventOrigin::Replay).await {
             return false;
         }
     }
@@ -1916,6 +1998,118 @@ mod tests {
         assert_eq!(activity(), Some(base + 600));
     }
 
+    /// A run driven from outside the GUI (the CLI, a scheduler, another
+    /// machine) has no GUI-side sender to ping the sidebar, so the observer is
+    /// the only writer that can move a row. Every advance it records must be
+    /// announced with the value it wrote — that signal is what patches the row
+    /// — and it must ride the same coalescing window as the store write:
+    /// a streaming reply announces about once a second, never per token.
+    #[tokio::test]
+    async fn recorded_activity_announces_the_stamp_a_gui_must_patch() {
+        let home = TestHome::new("observer-activity-announce");
+        let workspace = seed_workspace(home.path(), "ws");
+        let thread = seed_thread(&workspace.id, Some("sess-activity-announce"));
+        let _lease = lease_run("run-activity-announce");
+        let shared = Arc::new(ObserverShared::new(&thread.id));
+        let mut state = ObserverState::default();
+        let base = crate::store::now_millis() + 2_000;
+        let event = |kind: &str, idx, ms| {
+            let mut event = stream_event(kind, "run-activity-announce", idx);
+            event.timestamp = chrono::DateTime::from_timestamp_millis(ms)
+                .unwrap()
+                .to_rfc3339();
+            event
+        };
+        record_webview_fanout();
+        activity_fanout(&thread.id); // drain anything recorded before this test
+
+        assert!(
+            handle_event(
+                "sess-activity-announce",
+                &shared,
+                &mut state,
+                event("text_chunk", 0, base)
+            )
+            .await
+        );
+        assert_eq!(
+            activity_fanout(&thread.id),
+            [base],
+            "the first recorded advance is announced with the stamp written"
+        );
+
+        // Inside the window: a token delta and a settings change write nothing,
+        // so there is nothing to announce.
+        assert!(
+            handle_event(
+                "sess-activity-announce",
+                &shared,
+                &mut state,
+                event("text_chunk", 1, base + 300)
+            )
+            .await
+        );
+        assert!(
+            handle_event(
+                "sess-activity-announce",
+                &shared,
+                &mut state,
+                event("model_changed", 2, base + 400)
+            )
+            .await
+        );
+        assert_eq!(
+            activity_fanout(&thread.id),
+            Vec::<i64>::new(),
+            "a delta inside the one-second window must not reach the GUI"
+        );
+
+        // Past the window: one announcement, carrying the advanced stamp.
+        assert!(
+            handle_event(
+                "sess-activity-announce",
+                &shared,
+                &mut state,
+                event("text_chunk", 3, base + 1_000)
+            )
+            .await
+        );
+        assert_eq!(activity_fanout(&thread.id), [base + 1_000]);
+
+        // A terminal always flushes, even inside the window: the row must end
+        // on the reply's exact last activity, not on the last throttled tick.
+        assert!(
+            handle_event(
+                "sess-activity-announce",
+                &shared,
+                &mut state,
+                event("agent_end", 4, base + 1_100)
+            )
+            .await
+        );
+        assert_eq!(activity_fanout(&thread.id), [base + 1_100]);
+        assert_eq!(
+            crate::store::get_thread(&thread.id)
+                .expect("get_thread")
+                .and_then(|thread| thread.last_message_at),
+            Some(base + 1_100),
+            "the announced stamp is the one the row holds"
+        );
+
+        // A replay older than the row is not an advance: no write, no signal.
+        let mut replay = ObserverState::default();
+        assert!(
+            handle_event(
+                "sess-activity-announce",
+                &shared,
+                &mut replay,
+                event("text_chunk", 0, base)
+            )
+            .await
+        );
+        assert_eq!(activity_fanout(&thread.id), Vec::<i64>::new());
+    }
+
     #[tokio::test]
     async fn ensure_observer_rejects_invalid_or_missing_owners() {
         let _home = TestHome::new("observer-ensure-err");
@@ -2185,6 +2379,206 @@ mod tests {
         assert!(!replay_session_events(&mut client, "sess-rp", &shared, &mut state).await);
     }
 
+    /// The webview fan-out, recorded where it actually leaves the host.
+    /// `crate::events::attach` is process-global and one-shot, so the sink is
+    /// installed once for the whole test binary; each test filters by its own
+    /// session id, and every other test's events are simply discarded.
+    static WEBVIEW_FANOUT: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+    /// Activity signals, by thread id, with the stamp each one carried.
+    static ACTIVITY_FANOUT: Mutex<Vec<(String, i64)>> = Mutex::new(Vec::new());
+    static WEBVIEW_SINK: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+    fn record_webview_event(event: crate::events::Event<'_>) {
+        match event {
+            crate::events::Event::AgentSettings {
+                session_id,
+                event_type,
+                ..
+            } => {
+                WEBVIEW_FANOUT
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push((session_id.to_string(), event_type.to_string()));
+            }
+            crate::events::Event::ThreadActivity {
+                thread_id,
+                last_message_at,
+            } => {
+                ACTIVITY_FANOUT
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push((thread_id.to_string(), last_message_at));
+            }
+            _ => {}
+        }
+    }
+
+    /// Install the recording sink and fail loudly if another sink already owns
+    /// the presentation outlet — a missing sink would make every "not
+    /// forwarded" assertion below pass for the wrong reason.
+    fn record_webview_fanout() {
+        let installed =
+            *WEBVIEW_SINK.get_or_init(|| crate::events::attach(record_webview_event).is_ok());
+        assert!(
+            installed,
+            "the presentation sink is already attached in this process; the webview fan-out cannot be observed"
+        );
+    }
+
+    /// Everything the webview fan-out emitted for one session since the last
+    /// drain, in order.
+    fn webview_fanout(session_id: &str) -> Vec<String> {
+        let mut recorder = WEBVIEW_FANOUT
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let recorded = std::mem::take(&mut *recorder);
+        recorded
+            .into_iter()
+            .filter(|(session, _)| session == session_id)
+            .map(|(_, event_type)| event_type)
+            .collect()
+    }
+
+    /// The activity stamps announced for one thread since the last drain, in
+    /// order — what the sidebar row would patch itself with.
+    fn activity_fanout(thread_id: &str) -> Vec<i64> {
+        let mut recorder = ACTIVITY_FANOUT
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let recorded = std::mem::take(&mut *recorder);
+        recorded
+            .into_iter()
+            .filter(|(thread, _)| thread == thread_id)
+            .map(|(_, at)| at)
+            .collect()
+    }
+
+    /// A session-scope event whose body is the payload a client reads (the
+    /// cursor-agnostic `session_event` above carries `{}`).
+    fn session_event_with_data(
+        event_type: &str,
+        session_idx: i64,
+        data: &str,
+    ) -> future_rpc::proto::StreamEvent {
+        let mut event = session_event(event_type, session_idx);
+        event.data = data.to_string();
+        event
+    }
+
+    /// The session-scope log has no time floor: a fresh observer reads every
+    /// manual compaction the conversation ever had. Replaying one must not hand
+    /// the webview a divider it would append at the bottom of the transcript —
+    /// the durable transcript already draws that compaction where it happened.
+    ///
+    /// The same pass must still deliver the state events a replay is allowed to
+    /// repeat, and must still advance the cursor past the compaction (dropping
+    /// the fan-out must not mean dropping the event).
+    #[tokio::test]
+    async fn a_replayed_compaction_does_not_reach_the_webview() {
+        let mock = mock_agent();
+        let mut client = super::super::client::connect_agent()
+            .await
+            .expect("connect");
+        let session = "sess-replay-fanout";
+        let shared = Arc::new(ObserverShared::new("thread-replay-fanout"));
+        let mut state = ObserverState::default();
+        record_webview_fanout();
+        webview_fanout(session); // drain anything recorded before this test
+
+        mock.push_data(
+            "get_session_events_since",
+            serde_json::json!({"events": [
+                {
+                    "type": "compaction_started",
+                    "data": r#"{"type":"compaction_started","operation_id":"cmp_old","trigger":"manual","phase":"standalone"}"#,
+                    "sessionIdx": 0,
+                },
+                {
+                    "type": "compaction_committed",
+                    "data": r#"{"type":"compaction_committed","operation_id":"cmp_old","checkpoint_id":"cp_old","trigger":"manual","phase":"standalone","tokens_before":62203,"tokens_after":33281}"#,
+                    "sessionIdx": 1,
+                },
+                {
+                    "type": "permission_level_changed",
+                    "data": r#"{"permissionLevel":"workspace"}"#,
+                    "sessionIdx": 2,
+                },
+                {
+                    "type": "cwd_changed",
+                    "data": r#"{"cwd":"/synthetic"}"#,
+                    "sessionIdx": 3,
+                },
+            ]}),
+        );
+        assert!(replay_session_events(&mut client, session, &shared, &mut state).await);
+
+        assert_eq!(
+            webview_fanout(session),
+            ["permission_level_changed", "cwd_changed"],
+            "a replay repeats states, not events that mean \"this just happened\""
+        );
+        assert_eq!(
+            state.session_cursor, 3,
+            "the compaction was consumed, not skipped past"
+        );
+    }
+
+    /// The same event on the live lane still reaches the webview: the narrowing
+    /// applies to replayed copies only, and a manual compaction made while the
+    /// thread is open has no other way to show up.
+    #[tokio::test]
+    async fn a_live_compaction_still_reaches_the_webview() {
+        let _mock = mock_agent();
+        let session = "sess-live-fanout";
+        let shared = Arc::new(ObserverShared::new("thread-live-fanout"));
+        let mut state = ObserverState::default();
+        record_webview_fanout();
+        webview_fanout(session);
+
+        let event = session_event_with_data(
+            "compaction_committed",
+            0,
+            r#"{"type":"compaction_committed","operation_id":"cmp_new","checkpoint_id":"cp_new","trigger":"manual","phase":"standalone","tokens_before":62203,"tokens_after":33281}"#,
+        );
+        assert!(handle_event(session, &shared, &mut state, event).await);
+        assert_eq!(webview_fanout(session), ["compaction_committed"]);
+    }
+
+    /// The narrowing itself, for every compaction type and for the state events
+    /// that must survive a replay.
+    #[test]
+    fn replay_fanout_is_narrowed_to_non_compaction_events() {
+        for event_type in [
+            "compaction_started",
+            "compaction_committed",
+            "compaction_failed",
+            "compaction_unchanged",
+        ] {
+            assert!(
+                !forwards_to_webview(event_type, EventOrigin::Replay),
+                "{event_type} is a replay of something that already happened"
+            );
+            assert!(
+                forwards_to_webview(event_type, EventOrigin::Live),
+                "{event_type} is the live signal a manual compaction has"
+            );
+        }
+        for event_type in [
+            "permission_level_changed",
+            "model_changed",
+            "thinking_level_changed",
+            "session_name_changed",
+            "cwd_changed",
+            "config_reloaded",
+        ] {
+            assert!(
+                forwards_to_webview(event_type, EventOrigin::Replay),
+                "{event_type} states a value, so a replay may repeat it"
+            );
+        }
+        assert!(!forwards_to_webview("text_chunk", EventOrigin::Live));
+    }
+
     #[test]
     fn settings_event_payload_enriches_objects_and_rejects_malformed() {
         let payload =
@@ -2257,12 +2651,21 @@ mod tests {
                 serde_json::json!({"entries": [], "hasMore": false}),
             );
         }
-        std::env::set_var("FUTURE_TEST_DISCOVERY_INTERVAL_MS", "10");
+        let _interval = crate::test_support::EnvGuard::set(
+            "FUTURE_TEST_DISCOVERY_INTERVAL_MS",
+            std::ffi::OsStr::new("10"),
+        );
         spawn_session_discovery();
-        tokio::time::sleep(Duration::from_millis(80)).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while crate::store::get_thread("t-empty").expect("get").is_some() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "discovery never reclaimed the empty mirror"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         TEST_DISCOVERY_STOP.store(true, std::sync::atomic::Ordering::Relaxed);
         tokio::time::sleep(Duration::from_millis(30)).await;
-        std::env::remove_var("FUTURE_TEST_DISCOVERY_INTERVAL_MS");
 
         assert!(
             crate::store::get_thread("t-empty").expect("get").is_none(),

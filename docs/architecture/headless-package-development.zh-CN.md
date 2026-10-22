@@ -5,9 +5,9 @@
 > 设计日期：2026-10-20。源码基线：`904eab2b`，Remote 拆包已通过 PR #1235 合入。
 > 状态：实现已随 PR #1259 合入，最终候选普通 CI 已全部完成并成功；dev unsigned 产物已全部通过，平台签名、真实安装升级及同候选最终验收仍未完成；性能对比已按用户决定取消。
 
-将无界面应用宿主从 Desktop crate 中剥离，统一通过 `future headless` 前台启动。新建无 GUI 的 Rust 库 `future-host`，承接 Desktop GUI 与 headless 共用的应用后端；Desktop 和 CLI 各自负责入口与交互。保持现有功能、数据、配对、审批、沙箱和退出行为兼容。
+将无界面应用宿主从 Desktop crate 中剥离，统一通过 `future host` 前台启动。新建无 GUI 的 Rust 库 `future-host`，承接 Desktop GUI 与 headless 共用的应用后端；Desktop 和 CLI 各自负责入口与交互。保持现有功能、数据、配对、审批、沙箱和退出行为兼容。
 
-现有使用契约见 [Headless 使用指南](../guide/desktop-headless.zh-CN.md)，Agent 归属见 [Desktop Agent](../guide/desktop-agent.zh-CN.md)，Remote 层次见 [Remote 拆包计划](remote-package-development.zh-CN.md)。源码入口现为 `future headless`；已发布安装包是否包含它，应以具体版本与产物验收记录为准。
+现有使用契约见 [Headless 使用指南](../guide/desktop-host.zh-CN.md)，Agent 归属见 [Desktop Agent](../guide/desktop-agent.zh-CN.md)，Remote 层次见 [Remote 拆包计划](remote-package-development.zh-CN.md)。源码入口现为 `future host`；已发布安装包是否包含它，应以具体版本与产物验收记录为准。
 
 ## 当前验收结论（2026-10-20）
 
@@ -20,7 +20,7 @@
 | 0 基线 | 源码、依赖、2193 项原测试归属已记录；性能对比已由用户取消 |
 | 1 共享库 | 普通无 GUI 库与独立/联合依赖边界已实现，三平台 Host CI 通过 |
 | 2 共享后端 | Store、Agent、应用业务、Remote、调度/观察器及停止协调已迁入，所属套件通过 |
-| 3 统一入口 | `future headless` 已实现，旧产品入口已删除；三平台入口/真实进程检查通过 |
+| 3 统一入口 | `future host` 已实现，旧产品入口已删除；三平台入口/真实进程检查通过 |
 | 4 测试迁移 | 原声明归属闭合，最终候选归属套件通过；平台条件和原忽略保留 |
 | 5 构建发布 | Cargo/make/sidecar/发布脚本接线与安装器回归已完成；dev unsigned 实际包已全部通过；平台签名、真实安装升级卸载仍待验 |
 | 6 最终验收 | 实现及普通自动化通过、PR 已合并；用户报告旧体验版人工完成，最终同候选人工及其余发布验收仍待闭合 |
@@ -32,10 +32,10 @@
 最终用户入口为：
 
 ```bash
-future headless
-future headless --relay http://192.168.1.10:8099
-future headless --relay https://relay.example.com --relay-ca relay-ca.pem
-future headless --help
+future host
+future host --relay http://192.168.1.10:8099
+future host --relay https://relay.example.com --relay-ca relay-ca.pem
+future host --help
 
 future remote devices
 future remote devices add
@@ -43,7 +43,7 @@ future remote devices remove <id>
 future remote devices use <id>
 ```
 
-`future headless` 默认保持前台运行，按需引导登录和配对，复用有效凭据，处理手机及现有远端请求，Ctrl+C 退出。`future agent` 继续只启动 Agent；`future headless` 负责完整无界面应用宿主，并按现有规则启动内置 Agent 或连接兼容的外部 Agent。
+`future host` 默认保持前台运行，按需引导登录和配对，复用有效凭据，处理手机及现有远端请求，Ctrl+C 退出。`future agent` 继续只启动 Agent；`future host` 负责完整无界面应用宿主，并按现有规则启动内置 Agent 或连接兼容的外部 Agent。
 
 最终发布以 `future` 提供 headless，不再要求独立的 `futureos-headless` 程序。Desktop GUI 仍使用 `futureos`。不在本次增加守护进程、系统服务安装、后台化参数、新 Remote 协议或新的 CLI/TUI 主控产品能力。
 
@@ -104,7 +104,7 @@ runtime 由入口拥有，`future-host` 的服务接口不自行创建 runtime �
 | 数据根 | 保留 `FUTURE_HOME`、HOME/USERPROFILE 解析及现有默认路径；不创建新的 headless 专用数据树 |
 | 应用与 Agent 数据 | 继续使用现有 `~/.future/app/app.db`、Agent 配置/会话及工作区布局；保留数据库迁移、run/审批恢复和文件引用 |
 | 设备与凭据 | 设备身份、Noise 身份、配对簿、控制指针、待撤销记录、账号凭据和原文件格式保持；旧配对无需重新扫码 |
-| 同目录互斥 | GUI 与 `future headless` 共用现有实例锁，包括 `app/desktop.lock`；不能因命令改名形成两把锁或删除活跃锁文件 |
+| 同目录互斥 | GUI 与 `future host` 共用现有实例锁，包括 `app/desktop.lock`；不能因命令改名形成两把锁或删除活跃锁文件 |
 | 远程入口 | 保留首次登录、首次配对、已有配对复用、多设备 active/standby、刷新/恢复和撤销语义；线上字段与 `futureos://remote/pair` 邀请 scheme 保持 |
 | 自建中继 | 保留 `--relay`、`--relay-ca`、已保存设置和当前邀请 origin/TLS 规则；不把自建中继登录条件改成强制平台账号 |
 | 本地设备管理 | `future remote devices` 现有子命令继续有效；`add` 由活跃宿主通过现有 `run/remote-control` 文件请求/应答机制签发可用邀请 |
@@ -127,10 +127,10 @@ GUI 和 headless 分别升级后都应能读取同一份旧数据。验收使用
 | 2 迁移共享后端 | 分批迁移 Store/配置、Agent 托管、业务桥、Remote 宿主、调度与退出协调；GUI 接回共享库 | GUI 业务不靠两份实现维持；原协议、数据及审批/沙箱路径保持 |
 | 3 接入命令 | 在 `future` 增加 `headless`，迁移终端交互、信号、维护与设备控制接线 | 单独的 `future` 即可启动完整宿主；参数、首次/已有配对及所有阶段退出行为兼容 |
 | 4 完成测试迁移 | 核心用例迁到所属库；CLI/GUI 留入口与真实产品集成；建立同版本兼容场景 | 迁移清单逐项闭合；无 GUI 测试命令独立，未重复运行整套共享核心用例 |
-| 5 调整构建发布 | CI、make、sidecar、安装/卸载、升级、静态构建和发布说明切换到统一 `future` | 支持平台的发行包与源码安装都能运行 `future headless`，无隐藏旧 binary 依赖 |
+| 5 调整构建发布 | CI、make、sidecar、安装/卸载、升级、静态构建和发布说明切换到统一 `future` | 支持平台的发行包与源码安装都能运行 `future host`，无隐藏旧 binary 依赖 |
 | 6 统一验收与清理 | 同一候选 CI、产物 smoke 及人工验收（性能对比已取消）；删除旧入口和过渡适配 | 必需自动化通过、人工结果确认、旧实现清理完成，文档与实际产物一致 |
 
-每阶段在独立工作分支中提交可追踪变更并更新此表。过渡期间允许旧入口转发至共享实现以维持可编译；最终不得仍由 `future headless` 启动外置 `futureos-headless`，也不保留完整后端副本。
+每阶段在独立工作分支中提交可追踪变更并更新此表。过渡期间允许旧入口转发至共享实现以维持可编译；最终不得仍由 `future host` 启动外置 `futureos-headless`，也不保留完整后端副本。
 
 ## 5 测试归属与验收边界
 
@@ -149,7 +149,8 @@ GUI 和 headless 分别升级后都应能读取同一份旧数据。验收使用
 | `headless/mod.rs` 的参数与终端行为用例 | CLI headless 模块/进程测试 | 参数拒绝、帮助无副作用、TTY、登录/配对展示、错误/退出码 |
 | `headless/agent.rs`、`agent_host`、退出协调及通用调度用例 | `future-host` 单元/集成测试 | Agent 归属、启动/readiness 失败、停止顺序、总截止时间、失败回收 |
 | Store、业务桥、配置/身份与 Remote 业务宿主测试 | `future-host` 或既有共享包 | 原数据库/文件/审批业务断言，不能仅断言调用了接口 |
-| [headless_cli.rs](../../desktop/src-tauri/tests/headless_cli.rs) | CLI 的真实 `future headless` 进程测试；GUI 特有部分留 Desktop | 真正构建的 `future`、首次非 TTY 拒绝、已有配置、信号、互斥、外部 Agent 存活 |
+| [headless_cli.rs](../../cli/tests/headless_cli.rs) | CLI 的真实 `future host` 进程测试 | 真正构建的 `future`、首次非 TTY 拒绝、已有配置、信号、互斥、外部 Agent 存活 |
+| [desktop_entry.rs](../../desktop/src-tauri/tests/desktop_entry.rs) | Desktop 入口接线；关闭 GUI 的兼容性归 Misc | 帮助、旧参数拒绝、CLI 提示、启动无状态副作用 |
 | [remote_start_refusal.rs](../../cli/tests/remote_start_refusal.rs) | CLI headless 产品进程测试；共用故障决策归宿主/Remote 包 | 活跃真实宿主、平台拒绝、撤销单设备、恢复预算及持久化结果 |
 | Remote 包与[独立互通工程](../../tests/remote-interop/Cargo.toml) | 保留原归属 | 协议、加密、主控/被控状态机与真实角色互通，不移回宿主 |
 | Tauri commands、窗口/菜单、IPC 与 GUI 生命周期 | Desktop | 使用共享后端的真实接线、窗口退出、GUI 插件行为 |
@@ -174,7 +175,7 @@ CI 分别报告共享库、CLI 入口、Desktop GUI 和产物检查。共同 fix
 
 | 人工项目 | 预期 |
 |---|---|
-| 全新环境执行 `future headless`，按需登录并配对 | 终端交互完整、手机可用；重启复用有效登录和配对 |
+| 全新环境执行 `future host`，按需登录并配对 | 终端交互完整、手机可用；重启复用有效登录和配对 |
 | 用旧版本配对与数据升级，GUI/headless 顺序启动 | 原会话、工作区、模型、任务、审批与文件可用，无需重配 |
 | 使用自建中继，另一终端执行 `future remote devices add` | 沿原中继认证/信任规则运行，新增邀请可连接且不破坏已有设备 |
 | 远程收发消息、流式工具结果、审批/沙箱、上传下载与任务 | 行为及结果与旧宿主一致，设备与会话不串 |
@@ -197,7 +198,7 @@ CI 分别报告共享库、CLI 入口、Desktop GUI 和产物检查。共同 fix
 | 发布路径 | 调整 |
 |---|---|
 | CLI-only 各平台压缩包 | 单个 `future` 含完整 headless；更新帮助、能力发现、版本和平台 smoke |
-| Linux musl 与服务器 | 静态构建 `future` 后执行 `future headless`；保持目标架构、无动态 GUI 依赖及旧 Linux 运行基线 |
+| Linux musl 与服务器 | 静态构建 `future` 后执行 `future host`；保持目标架构、无动态 GUI 依赖及旧 Linux 运行基线 |
 | Linux GUI deb/portable | 继续提供 GUI 与匹配 CLI；移除对 `futureos-headless` 文件存在的断言、复制和清单 |
 | macOS 应用与签名包 | 保留匹配 CLI sidecar 的版本、签名/公证、架构及发现方式；独立 CLI 可直接运行 headless |
 | Windows 安装器/portable | `future.exe headless` 可用，保留 CLI 签名、CRT/沙箱 helper 和升级后可执行路径；命令行输出/信号行为独立验证 |
@@ -205,7 +206,7 @@ CI 分别报告共享库、CLI 入口、Desktop GUI 和产物检查。共同 fix
 
 具体检查 [CI 工作流](../../.github/workflows/ci.yml)、[通用构建](../../.github/workflows/build.yml)、[Linux 构建](../../.github/workflows/build-linux.yaml)、[macOS 签名构建](../../.github/workflows/build-macos-signed.yml)、[Windows 签名构建](../../.github/workflows/build-windows-signed.yml)、release/installers 工作流、[Makefile](../../Makefile)及打包脚本。不要假设只有 Linux 工作流需要修改。
 
-将 [check-headless-linux.sh](../../scripts/ci/check-headless-linux.sh)改为检查真正发布的 `future`：验证 ELF 静态链接，并在无 GUI 栈、旧 Linux、无网络容器里执行 `future headless --help` 和首次非交互拒绝路径。静态链接检查本身与运行 smoke 都要保留。GUI 的 GNU 构建继续使用预构建 musl CLI 时，不重复编译无用 CLI，也不混用 target 的机器码。
+将 [check-headless-linux.sh](../../scripts/ci/check-headless-linux.sh)改为检查真正发布的 `future`：验证 ELF 静态链接，并在无 GUI 栈、旧 Linux、无网络容器里执行 `future host --help` 和首次非交互拒绝路径。静态链接检查本身与运行 smoke 都要保留。GUI 的 GNU 构建继续使用预构建 musl CLI 时，不重复编译无用 CLI，也不混用 target 的机器码。
 
 `future version --json`、help 和 Linux sandbox helper 的早期分发不能因加入宿主而触发数据库、日志、Agent 或锁初始化。匹配 CLI sidecar 的功能发现/版本兼容与原子替换规则继续有效。
 
@@ -221,7 +222,7 @@ CI 分别报告共享库、CLI 入口、Desktop GUI 和产物检查。共同 fix
 
 - [ ] `future-host` 是新增的无 GUI 普通 Rust 库，可独立编译、静态检查和测试。
 - [ ] Desktop 与 CLI 共用业务后端，CLI/宿主不依赖 `futureos` 或 GUI 框架，Remote 库保持独立。
-- [ ] 单独的 `future headless` 提供原有完整功能，帮助/版本无副作用，runtime 无嵌套。
+- [ ] 单独的 `future host` 提供原有完整功能，帮助/版本无副作用，runtime 无嵌套。
 - [ ] 旧数据、配对、身份、锁与本地控制通道兼容，GUI/headless 同目录继续互斥。
 - [ ] 登录、中继、任务/模型/技能、真实审批/沙箱/文件、恢复与退出归属保持。
 - [ ] 原测试去向逐项可追踪；共享库独立测试与 CLI/GUI 入口、真实产品集成边界落实。
@@ -248,7 +249,7 @@ CI 分别报告共享库、CLI 入口、Desktop GUI 和产物检查。共同 fix
 
 建立 `host/` 的普通库 `future-host`，无 bin、FFI 或 GUI feature。现有共用错误分类、边界转换及字符串序列化移入 `host/src/error.rs`，配置严格读取、逐路径锁、原子写入和权限处理移入 `host/src/config_io.rs`。Desktop 原模块暂为薄转发；13 个原测试声明随实现迁入，不在 Desktop 再复制执行。仅测试夹具使用的 lenient/snapshot/restore 工具通过 `test-support` 暴露给现有应用集成，包内测试仍属于新库。
 
-CLI 和 Desktop 已依赖新库，但 `future headless` 尚未接线。`scripts/ci/host-boundaries.py` 检查包含 Desktop GUI 的实际 Cargo 联合 feature 解析，禁止宿主与 CLI 引入 Desktop/GUI 框架，禁止宿主反向依赖 CLI 或生成产品二进制/FFI 产物。当前 macOS 目标验证通过；其他平台须由 CI 分别验证。
+CLI 和 Desktop 已依赖新库，但 `future host` 尚未接线。`scripts/ci/host-boundaries.py` 检查包含 Desktop GUI 的实际 Cargo 联合 feature 解析，禁止宿主与 CLI 引入 Desktop/GUI 框架，禁止宿主反向依赖 CLI 或生成产品二进制/FFI 产物。当前 macOS 目标验证通过；其他平台须由 CI 分别验证。
 
 [静态验证记录](../testing/headless-host-phase1-2026-10-20.json)包含 Host 默认/测试辅助配置、CLI+GUI 和原 headless 的 Clippy `--all-targets`、fmt 及依赖边界。测试目标只编译，执行数为 0。阶段 1 的生命周期/事件接口、阶段 2 大部分业务后端、阶段 3 命令及后续测试/发布验收仍未完成；薄转发将在迁移收尾移除。
 
@@ -354,7 +355,7 @@ Agent 的状态、发现/兼容性决策、服务锁作用域、准备、readine
 
 CI `39361847974` 的 Windows Desktop 编译通过，原缺失 trait 已修复；新增依赖图步骤却按 Windows 默认编码解码 Cargo UTF-8 JSON，产生 `UnicodeDecodeError`，导致后续原生生命周期和产物步骤未运行。脚本现在对 rustc/Cargo 输出显式指定 UTF-8，所有 GUI 依赖断言保持不变。本地真实 metadata 可复现 cp1252 解码错误；强制默认编码为 cp1252 后运行修复脚本，实际依赖遍历及全部断言通过，见[编码修复证据](../testing/headless-host-boundary-encoding-2026-10-20.json)。Windows 原生验证依用户安排继续由 CI 执行。
 
-按本地先测再开下一轮 CI 的安排，在 `caa99a78` 的共享宿主源码上运行独立 `cargo test -p future-host`：500 项通过、0 失败、0 忽略，10.31 秒；原有一个 `record_macro` 文档示例仍为 ignored，未新增跳过。无需 Desktop 或 npm 环境；500 项包含 498 个迁移原声明和 2 个新增事件出口测试，按实际输出逐项关联迁移清单，状态 `migrated-local-pass` 仅表示本地 macOS 通过。真实旧 headless 入口文件另有 13 项通过（7.51 秒），Remote 进程文件也有 13 项通过（184.80 秒），两份真实入口文件共 26 项通过、0 失败、0 忽略。详见[本地执行记录](../testing/headless-host-local-2026-10-20.json)。这不是最终 `future headless` CLI 入口验收，也不代表跨平台或性能验收完成。
+按本地先测再开下一轮 CI 的安排，在 `caa99a78` 的共享宿主源码上运行独立 `cargo test -p future-host`：500 项通过、0 失败、0 忽略，10.31 秒；原有一个 `record_macro` 文档示例仍为 ignored，未新增跳过。无需 Desktop 或 npm 环境；500 项包含 498 个迁移原声明和 2 个新增事件出口测试，按实际输出逐项关联迁移清单，状态 `migrated-local-pass` 仅表示本地 macOS 通过。真实旧 headless 入口文件另有 13 项通过（7.51 秒），Remote 进程文件也有 13 项通过（184.80 秒），两份真实入口文件共 26 项通过、0 失败、0 忽略。详见[本地执行记录](../testing/headless-host-local-2026-10-20.json)。这不是最终 `future host` CLI 入口验收，也不代表跨平台或性能验收完成。
 
 ### 2026-10-20 模型、技能和 Provider 服务迁移
 
@@ -452,7 +453,7 @@ CI `39371045462` 已完成，整体为 failure。Windows 独立 Host 分组、�
 
 本批迁入 17 个原测试（任务 13、工作区 4），测试主体逐项比对保持原样；两个直接操作真实 SQLite 的往返用例从入口归属改判为共享业务，GUI 仍保留两个 malformed-body IPC 用例。Host 全量本地 1047 通过、2 个原有忽略；GUI 两组各 1 通过；Remote 宿主 162 通过、1 个原有忽略。联合 Clippy `--all-targets`、旧 headless Clippy、fmt、严格 Rustdoc 和联合依赖边界通过。[验证证据](../testing/headless-host-application-services-2026-10-20.json)记录环境与摘要。运行中的 CI [39374836837](https://github.com/futuregene/future-os/actions/runs/39374836837)固定在 `70f3d786`，不包含本批；Remote 本体、完整生命周期和 CLI 接入仍未完成。
 
-工作区删除随后补齐展示绑定守卫：仅在入口绑定展示资源时读取终端归属，维持原 headless 不执行该 GUI 读取的路径；工作区相关 20 项与联合 Clippy 再验通过。`c32ddf29` 的真实旧入口两组进程测试各 13 项通过（4.73s / 68.99s）；它们不代表尚未接入的 `future headless`，也不覆盖随后发生的源码修改。
+工作区删除随后补齐展示绑定守卫：仅在入口绑定展示资源时读取终端归属，维持原 headless 不执行该 GUI 读取的路径；工作区相关 20 项与联合 Clippy 再验通过。`c32ddf29` 的真实旧入口两组进程测试各 13 项通过（4.73s / 68.99s）；它们不代表尚未接入的 `future host`，也不覆盖随后发生的源码修改。
 
 ### 2026-10-20 macOS 重试预算计时修复
 

@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 
-pub const STORE_SCHEMA_VERSION: i64 = 4;
+pub const STORE_SCHEMA_VERSION: i64 = 5;
 pub const STORE_FILE: &str = "tasks.db";
 pub const STORE_DIR: &str = "tasks";
 
@@ -21,15 +21,19 @@ const TASK_COLUMNS: &str = "
     id, name, enabled, prompt, prompt_version, cwd, model_id, thinking_level,
     session_policy, conversation_mode, thread_id, trigger_kind, trigger_json,
     next_due_at, pending_request_at, pending_origin, pending_actor,
-    session_retention, created_at, updated_at, deleted_at";
+    session_retention, created_at, updated_at, deleted_at,
+    -- Appended rather than slotted next to `thinking_level`: `task_from_row`
+    -- reads these positionally, so growing the list at the end keeps every
+    -- older index where it was.
+    timezone";
 
 const SQL_INSERT_TASK: &str = "
     INSERT INTO tasks (
         id, name, enabled, prompt, prompt_version, cwd, model_id, thinking_level,
         session_policy, conversation_mode, thread_id, trigger_kind, trigger_json,
         next_due_at, pending_request_at, pending_origin, pending_actor,
-        session_retention, created_at, updated_at, deleted_at
-    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)";
+        session_retention, created_at, updated_at, deleted_at, timezone
+    ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)";
 
 const SQL_UPDATE_TASK: &str = "
     UPDATE tasks SET
@@ -37,7 +41,7 @@ const SQL_UPDATE_TASK: &str = "
         thinking_level=?8, session_policy=?9, conversation_mode=?10, thread_id=?11,
         trigger_kind=?12, trigger_json=?13, next_due_at=?14,
         pending_request_at=?15, pending_origin=?16, pending_actor=?17,
-        session_retention=?18, updated_at=?19, deleted_at=?20
+        session_retention=?18, updated_at=?19, deleted_at=?20, timezone=?21
     WHERE id=?1";
 
 /// `(enabled = 1)` plus "due now or explicitly requested" — the tick's query.
@@ -162,6 +166,14 @@ const MIGRATIONS: &[Migration] = &[
         "session_deleted",
         "ALTER TABLE task_runs ADD COLUMN session_deleted INTEGER NOT NULL DEFAULT 0",
     ),
+    // The zone a schedule's wall-clock times are read in. Rows written before
+    // it existed keep NULL, which the kernel reads as "the host's zone, else
+    // Beijing" — see `timezone::task_timezone`.
+    Add(
+        "tasks",
+        "timezone",
+        "ALTER TABLE tasks ADD COLUMN timezone TEXT",
+    ),
 ];
 
 /// The full schema. Single source of truth for a fresh database (see the
@@ -194,6 +206,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   pending_origin   TEXT,
   pending_actor    TEXT,
   session_retention TEXT NOT NULL DEFAULT 'keep',
+  -- IANA zone the schedule's wall-clock times are in; NULL = the host's zone,
+  -- else Beijing (a row from before the setting existed, or a hand-written one).
+  timezone         TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   deleted_at INTEGER
@@ -352,6 +367,7 @@ impl Store {
             task.created_at,
             task.updated_at,
             task.deleted_at,
+            task.timezone,
         ];
         self.conn.execute(SQL_INSERT_TASK, values)?;
         Ok(())
@@ -379,6 +395,7 @@ impl Store {
             session_retention_str(task.session_retention),
             task.updated_at,
             task.deleted_at,
+            task.timezone,
         ];
         self.conn.execute(SQL_UPDATE_TASK, values)?;
         Ok(())
@@ -399,13 +416,19 @@ impl Store {
         Ok(rows.next().transpose()?)
     }
 
+    /// Newest first, so a task the user just created is at the top of the panel
+    /// and of `future task list`. `created_at` alone ties when several tasks are
+    /// created in the same millisecond (a script, a test), so `rowid` breaks the
+    /// tie by insertion order instead of leaving those rows arbitrary.
     pub fn list_tasks(&self, include_deleted: bool) -> Result<Vec<Task>> {
         let filter = if include_deleted {
             ""
         } else {
             "WHERE deleted_at IS NULL"
         };
-        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks {filter} ORDER BY created_at");
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks {filter} ORDER BY created_at DESC, rowid DESC"
+        );
         let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map([], task_from_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -636,6 +659,7 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         created_at: row.get(18)?,
         updated_at: row.get(19)?,
         deleted_at: row.get(20)?,
+        timezone: row.get(21)?,
     })
 }
 
@@ -801,6 +825,7 @@ mod tests {
             cwd: "/tmp".into(),
             model_id: None,
             thinking_level: None,
+            timezone: Some("Asia/Shanghai".into()),
             session_policy: SessionPolicy::New,
             conversation_mode: ConversationMode::Workspace,
             thread_id: None,
@@ -825,6 +850,27 @@ mod tests {
         let got = s.get_task(&t.id).unwrap().unwrap();
         assert_eq!(got.name, "a");
         assert_eq!(got.trigger_kind, TriggerKind::Schedule);
+        assert_eq!(got.timezone.as_deref(), Some("Asia/Shanghai"));
+    }
+
+    /// A row written before the zone column existed reads back with none, which
+    /// the kernel resolves to the host's zone rather than refusing to schedule.
+    #[test]
+    fn a_task_with_no_stored_zone_round_trips_as_none() {
+        let (_dir, s) = store();
+        let mut t = task("no-tz");
+        t.timezone = None;
+        s.insert_task(&t).unwrap();
+        assert_eq!(s.get_task(&t.id).unwrap().unwrap().timezone, None);
+
+        // And writing one through an update lands on the row.
+        let mut stored = s.get_task(&t.id).unwrap().unwrap();
+        stored.timezone = Some("Europe/Berlin".into());
+        s.update_task(&stored).unwrap();
+        assert_eq!(
+            s.get_task(&t.id).unwrap().unwrap().timezone.as_deref(),
+            Some("Europe/Berlin")
+        );
     }
 
     #[test]
@@ -1272,6 +1318,30 @@ mod tests {
         assert_eq!(live[0].name, "live");
         let all = s.list_tasks(true).unwrap();
         assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn list_tasks_returns_the_newest_first() {
+        let (_dir, s) = store();
+        let mut older = task("older");
+        older.created_at = 1_000;
+        s.insert_task(&older).unwrap();
+        let mut newer = task("newer");
+        newer.created_at = 2_000;
+        s.insert_task(&newer).unwrap();
+        // Same millisecond: insertion order decides, so a script that creates
+        // several tasks at once still reads back the order it made them in.
+        let mut tied = task("tied");
+        tied.created_at = 2_000;
+        s.insert_task(&tied).unwrap();
+
+        let names: Vec<String> = s
+            .list_tasks(false)
+            .unwrap()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
+        assert_eq!(names, ["tied", "newer", "older"]);
     }
 
     #[test]

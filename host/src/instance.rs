@@ -8,6 +8,15 @@ pub struct InstanceGuard {
     _file: File,
 }
 
+impl Drop for InstanceGuard {
+    fn drop(&mut self) {
+        // A concurrently forked child can retain this open file description
+        // until exec, even with CLOEXEC. Unlock explicitly when its owner ends
+        // rather than waiting for the last inherited descriptor to close.
+        let _ = fs2::FileExt::unlock(&self._file);
+    }
+}
+
 /// Namespace the native single-instance plugin by the same physical root as
 /// the file lock. The default identifier remains byte-for-byte compatible.
 pub fn gui_identifier(base: &str) -> Result<String, crate::Error> {
@@ -55,7 +64,7 @@ impl InstanceGuard {
                 format!(
                     "Desktop is already running for data directory {}. \
                      GUI and headless mode cannot use the same data directory at the same time. \
-                     Please quit the running Desktop first (Ctrl+C for future headless), \
+                     Please quit the running Desktop first (Ctrl+C for future host), \
                      then try again.",
                     directory.display()
                 )
@@ -76,6 +85,7 @@ impl InstanceGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::{Command, Stdio};
 
     #[test]
     fn distinct_future_homes_isolate_lock_namespace_and_storage_without_moving_legacy_data() {
@@ -136,47 +146,18 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(error.contains("Desktop is already running"), "{error}");
-        assert!(error.contains("future headless"), "{error}");
+        assert!(error.contains("future host"), "{error}");
         assert!(
             error.contains(&directory.path().display().to_string()),
             "{error}"
         );
         assert!(!error.contains("os error"), "{error}");
         drop(guard);
-        // Retry briefly before calling the lock leaked: a sibling test's
-        // `Command::spawn` forks while this guard is open, and the child shares
-        // the open file description until it execs. `flock` ownership follows
-        // the description rather than the fd, so the lock can still read as held
-        // for the length of that window -- an artifact of running the suite in
-        // parallel, not a lock that was never released. A lock that really is
-        // never released still fails here, just after the deadline.
-        //
-        // Report the reason rather than a bare `is_ok()`: this line failed
-        // intermittently under full-suite load (3 times in ~20 runs) with no way
-        // to tell a lock that was not released from an unrelated `open` failure,
-        // which is the difference between a product bug and a test-environment
-        // one. It has never reproduced in isolation (150 single runs, 320
-        // concurrent runs of this test, and several full-suite runs all pass).
-        //
-        // fd exhaustion was measured and ruled out: this test holds no fds (all
-        // three of its cases pass under `ulimit -n 128`, where 284 other tests
-        // fail with EMFILE), and the suite's peak demand stays below 256 against
-        // a 2560 soft limit.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            match InstanceGuard::at(directory.path()) {
-                Ok(_) => break,
-                Err(_) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                Err(error) => {
-                    panic!("re-acquiring the lock after release failed: {error}")
-                }
-            }
-        }
+        // Releasing the only owner makes the same directory available again.
+        assert_release_is_visible_in_a_fresh_process(directory.path());
     }
 
-    /// The re-acquire loop's *failure* half, and the non-contended lock error.
+    /// The *failure* half of the release check, and the non-contended lock error.
     ///
     /// `at()` maps two different `flock` failures through one `map_err`: taking a
     /// lock that someone else holds (covered by the tests above) and a lock that
@@ -234,6 +215,27 @@ mod tests {
         let _b = InstanceGuard::at(second.path()).unwrap();
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn releasing_the_owner_unlocks_a_description_still_held_by_a_child() {
+        let directory = tempfile::tempdir().unwrap();
+        let guard = InstanceGuard::at(directory.path()).unwrap();
+        // dup shares the same open file description as an inherited fork fd,
+        // without needing to fork from the multithreaded test runner.
+        let inherited = guard._file.try_clone().unwrap();
+        assert!(InstanceGuard::at(directory.path()).is_err());
+        drop(guard);
+        let next = InstanceGuard::at(directory.path())
+            .expect("the old owner's inherited description must not retain its lock");
+        drop(inherited);
+        assert!(
+            InstanceGuard::at(directory.path()).is_err(),
+            "the new owner keeps its lock"
+        );
+        drop(next);
+        assert!(InstanceGuard::at(directory.path()).is_ok());
+    }
+
     /// `acquire()` resolves the data directory from the process-global HOME, so
     /// this is the only test that needs the same fixture the store tests use.
     #[test]
@@ -259,8 +261,72 @@ mod tests {
 
         drop(guard);
         // Releasing the only owner makes the same directory available again.
-        let reacquired = InstanceGuard::acquire().expect("reacquire after release");
-        drop(reacquired);
+        assert_release_is_visible_in_a_fresh_process(&data_directory);
         drop(home);
+    }
+
+    /// Environment naming the directory a [`reacquire_fixture`] child checks.
+    /// Absent in an ordinary suite run, where the fixture is a no-op.
+    const REACQUIRE_FIXTURE_DIR: &str = "FUTURE_HOST_INSTANCE_REACQUIRE_DIR";
+
+    /// Assert that `drop`'s release is visible to another process.
+    ///
+    /// The acquire/release/acquire pair this checks cannot be asserted from the
+    /// test process itself: `flock` ownership follows the open file description,
+    /// so a sibling test's `Command::spawn` forks a child that keeps *this*
+    /// process's lock alive until it execs, and no amount of care in this
+    /// process makes the re-lock deterministic then. A retry loop hides that
+    /// window instead of removing it, and turns a real leak into a slow failure.
+    ///
+    /// The child shares nothing but the directory: it is the only process that
+    /// touches this lock, so its single attempt at each acquire is
+    /// deterministic. Measured while eight threads spawned 27,565 children: 3,098
+    /// rounds, no failure -- against 109 lost re-locks in 400 spawn-then-release
+    /// rounds in a process that held the lock across the spawn. A lock that is
+    /// really never released still fails here, once.
+    fn assert_release_is_visible_in_a_fresh_process(directory: &Path) {
+        let output = Command::new(std::env::current_exe().expect("the running test binary"))
+            .args([
+                "--exact",
+                "instance::tests::reacquire_fixture",
+                "--test-threads=1",
+            ])
+            // The directory, not `HOME`: the child takes the lock through the
+            // same `at()` the caller used, so the check does not depend on a
+            // process-global environment other tests rewrite concurrently.
+            .env(REACQUIRE_FIXTURE_DIR, directory)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run the re-acquire fixture");
+        let report = format!(
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.status.success(),
+            "re-acquiring the released directory failed: {report}"
+        );
+        // A filter that matches nothing also exits successfully, so without this
+        // a rename would leave the check above vacuous.
+        assert!(
+            report.contains("1 passed"),
+            "the fixture did not run: {report}"
+        );
+    }
+
+    /// The child half of [`assert_release_is_visible_in_a_fresh_process`].
+    #[test]
+    fn reacquire_fixture() {
+        let Some(directory) = std::env::var_os(REACQUIRE_FIXTURE_DIR) else {
+            return;
+        };
+        let directory = std::path::PathBuf::from(directory);
+        let guard = InstanceGuard::at(&directory).expect("the released directory is available");
+        drop(guard);
+        // A guard that leaked its descriptor instead of closing it still fails
+        // here, on this one attempt.
+        let reacquired = InstanceGuard::at(&directory).expect("a second acquire after release");
+        drop(reacquired);
     }
 }

@@ -66,7 +66,9 @@ capability SID按确定性名称生成account-domain-shaped SID，只用作Futur
 
 受限PowerShell5.1进入Constrained Language Mode。UTF8Encoding构造、Console.OutputEncoding setter或.NET写字节不是可靠方案；包装器编码设置放try中，按`$Error.Count`增量判定命令错误，避免初始化编码异常污染成功exit。
 
-捕获端`decode_restricted_shell_output`：5.1走`MultiByteToWideChar(CP_OEMCP)`，pwsh7走UTF-8。pipe无控制台时5.1使用OEM回退，不是CP_ACP；中文二者同936掩盖问题，西欧1252vs437/850、俄文1251vs866、希腊1253vs737不同。超OEM字符若已编码为`?`无法在解码端恢复，不宣称5.1任意Unicode无损。
+driver在私有desktop上创建隐藏控制台。受限`cmd.exe /d /s /c`启动器先执行`chcp 65001`，再使用固定参数和base64 `-EncodedCommand`启动PowerShell；用户命令文本不会经过cmd解析。这样在PowerShell缓存输出writer之前就确定UTF-8，即使CLM禁止编码setter也不丢失中文。启动器与shell使用同一个restricted token和no-breakaway Job，stdout/stderr仍仅通过显式允许继承的pipe传递。
+
+捕获端`decode_restricted_shell_output`优先读取UTF-8，对仍输出旧编码的原生工具保留`MultiByteToWideChar(CP_OEMCP)`回退。原生工具自己已替换为`?`的字符无法在解码端恢复。
 
 ### 2.4 Probe、维护与应用归属
 

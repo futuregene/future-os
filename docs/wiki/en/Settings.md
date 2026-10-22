@@ -14,11 +14,16 @@ Desktop-level options for the app:
 - **Approval mode** — how much the agent asks before acting:
   - **Manual** — file access follows Allow/Ask/Deny path rules; shell commands ask except for the read-only allowlist.
   - **Sandboxed** — uses macOS Seatbelt, Linux system Bubblewrap, or Windows restricted-token write protection when available; file access still follows path rules. Guarantees differ by platform.
-  - **Unrestricted** (default) — no prompts and no sandbox; everything runs.
+  - **Full access** (default) — no prompts and no sandbox; everything runs.
 - **Auto-upgrade skills** — silently upgrade installed skills to their latest version each time the app opens.
 - **Skill recommendations** (on by default) — when you send a message, suggest at most one skill you don't have installed yet.
 - **Generate a title after the first answer** (on by default) — title a new conversation from its first successful answer; later answers don't retrigger it.
 - **Completion bell** — play a sound and attract the window's attention when the agent finishes.
+- **Model output** — how much of a settled reply the transcript shows:
+  - **Default** (the shipped level) — the reply settles to its final answer, with its reasoning, tool calls and intermediate notes folded into a single **Show process** row above it. The work is still shown while the answer streams, and the row opens it again.
+  - **Detailed** — the whole reply stays in place, work and answer interleaved in the order it happened.
+
+  This is how *this client* draws a transcript, not a property of the machine: the phone has the same choice under **Appearance**, and there it covers every desktop the phone is paired with.
 
 Reasoning starts collapsed in the conversation and can always be expanded by clicking its row. There is no separate setting to enable access.
 

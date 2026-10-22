@@ -315,12 +315,21 @@ export function SessionList({
     () => listTargets(merged, remote.sessions),
     [merged, remote.sessions],
   );
-  // What a batch may hold: conversations that are not pinned shortcuts, on a
-  // machine that can take the command. Pinned sessions are promoted above the
-  // groups (and, on the workspace tab, out of their own workspace), so they
-  // carry no checkbox while selecting and select-all never sweeps them up. A
-  // machine that cannot answer is left out for the same reason its menu items
-  // are: a checkbox would promise a delete it would refuse.
+  /**
+   * Whether a pinned conversation is a shortcut on this page rather than an
+   * ordinary row.
+   *
+   * True on the two tree pages, where a pin lifts the row above the groups (and,
+   * on the workspace page, out of its own workspace) — so it keeps no checkbox
+   * and a group's "select all" never sweeps it up. False on the recency page,
+   * which ignores pinning for its order and only draws the marker: there a
+   * pinned conversation is a row like any other, and leaving it unselectable put
+   * one row of that list beyond the batch for no reason the reader could see.
+   */
+  const pinnedAreShortcuts = tab !== "recent";
+  // What a batch may hold: the rows above, on a machine that can take the
+  // command. A machine that cannot answer is left out because a checkbox would
+  // promise a delete it would refuse.
   //
   // Computed every render rather than memoized: it reads the machines through
   // `commandsFor`, whose answer can change while that callback's identity stays
@@ -329,7 +338,7 @@ export function SessionList({
   const selectableRows = rows.filter(
     (row): row is SessionRow =>
       row.kind === "session"
-      && !row.session.pinned
+      && (!pinnedAreShortcuts || !row.session.pinned)
       && commandsFor(row.desktopId ?? null) !== null,
   );
   /**
@@ -346,7 +355,7 @@ export function SessionList({
    * conversations; the desktop rail's own "select conversations" is offered
    * throughout.
    */
-  const batchTargets = selectableTargets(allSessions, commandsFor);
+  const batchTargets = selectableTargets(allSessions, commandsFor, pinnedAreShortcuts);
   /** The conversations the batch holds, folded away or not. */
   const targets = allSessions.filter(target => selected.has(target.key));
   const allSelected =
@@ -709,11 +718,12 @@ export function SessionList({
     }
     const session = item.session;
     const checked = selected.has(item.key);
-    // A pinned session is a shortcut outside the tab's own groups: it keeps no
-    // checkbox and cannot join the batch, so select-all never includes it. Nor
-    // can a conversation on a machine that cannot answer the delete: a checkbox
-    // would promise a removal that machine would refuse.
-    const selectable = !session.pinned && commands !== null;
+    // A pinned session is a shortcut on the tree pages — no checkbox, no place
+    // in a batch — but an ordinary row on the recency page (see
+    // `pinnedAreShortcuts`). Nor can a conversation on a machine that cannot
+    // answer the delete: a checkbox would promise a removal that machine would
+    // refuse.
+    const selectable = (!pinnedAreShortcuts || !session.pinned) && commands !== null;
     const status = effectiveRunStatus(session.status, session.streaming);
     const running = status === "running" || status === "queued";
     const unread = remote.unreadSessions.has(session.sessionId);

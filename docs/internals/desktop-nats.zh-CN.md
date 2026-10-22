@@ -11,8 +11,11 @@ token 不是多租户安全边界。
 
 移动端在生产与测试环境都要求 `wss://`。上面的端口是部署侧监听细节，不是让移动端
 走明文 `ws://` 连接的指引。桌面端直连服务端下发的 NATS 端点，其客户端即使在该端点
-使用 `nats://` 方案时也强制校验 TLS，因此明文的中继监听无法为桌面端提供服务。只有
-单元测试会连接进程内的明文假 broker，生产中不存在允许明文降级的运行时开关。桌面端的
+使用 `nats://` 方案时也强制校验 TLS，因此明文监听无法为**平台**配对服务。唯一例外是
+自建中继签发的配对、且该中继把端点声明为 `nats://`：`connect_nats` 只对这种形状
+放宽强制 TLS（见 [self-hosted-relay.zh-CN.md](../guide/self-hosted-relay.zh-CN.md)）。
+无论如何签发，Future 平台和任何 `tls://` 端点仍然强制校验 TLS。此外单元测试会连接
+进程内的明文假 broker，那条夹具路径与中继例外无关。桌面端的
 信任根来自它自己写出的平台信任库 PEM 快照（`~/.future/app/relay-root-certs.pem`），
 而不是让 NATS 客户端每次连接都去读平台信任库——在 macOS 上失败的正是这次读取，而
 读取失败过去会直接让连接失败。该快照就是平台信任库本身，因此不改变任何信任判断；
@@ -32,7 +35,7 @@ token 不是多租户安全边界。
 
 `future relay`（本仓库）是同一个中继去掉平台部分：它签发同样的「按配对限定」
 NATS user JWT，走同样的 claim/token 端点，只是以 room 为单位而不是账号。桌面端
-用 `futureos --relay URL`（或 `futureos-headless --relay URL`）按**每次启动**选择它，
+用 `futureos --relay URL`（或 `future host --relay URL`）按**每次启动**选择它，
 不写任何文件——不带这个参数就是官方平台；选择本身按配对记录，因此官方配对与自建
 配对可以在同一台机器上共存。运行手册、威胁模型与
 验证方法见 [../guide/self-hosted-relay.zh-CN.md](../guide/self-hosted-relay.zh-CN.md)。

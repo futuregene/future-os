@@ -909,16 +909,44 @@ mod tests {
         // Header + all 12 check sections present.
         assert!(stdout.starts_with("\u{1b}[1mFuture Doctor\u{1b}[0m — checking environment...\n"));
         assert!(stdout.contains("Not logged in — run `future auth login`"));
-        // `isolate_env`'s PATH holds no `which`, so nothing could be looked up:
-        // that is the honest line, and it is why the unreachable agent below is
-        // an issue rather than the optional-component note.
-        assert!(stdout.contains("Standalone future-agent could not be looked up on PATH"));
-        assert!(stdout.contains("future could not be looked up on PATH"));
-        assert!(stdout.contains("future-tui could not be looked up on PATH"));
-        assert!(stdout.contains("future-desktop could not be looked up on PATH"));
-        assert!(stdout.contains("future-channel could not be looked up on PATH"));
-        assert!(stdout.contains("Agent unavailable — open Desktop or start `future agent`"));
-        assert!(stdout.contains("[!!]"), "{stdout}");
+        #[cfg(not(windows))]
+        {
+            // Empty PATH removes `which` on Unix, so lookup itself fails.
+            assert!(stdout.contains("Standalone future-agent could not be looked up on PATH"));
+            for name in ["future", "future-tui", "future-desktop", "future-channel"] {
+                assert!(
+                    stdout.contains(&format!("{name} could not be looked up on PATH")),
+                    "{stdout}"
+                );
+            }
+            assert!(stdout.contains("Agent unavailable — open Desktop or start `future agent`"));
+            assert!(stdout.contains("[!!]"), "{stdout}");
+        }
+        #[cfg(windows)]
+        {
+            // Windows searches System32 for where.exe even with an empty PATH;
+            // lookup succeeds and reports that the optional binaries are absent.
+            assert!(
+                stdout.contains("Standalone future-agent is optional"),
+                "{stdout}"
+            );
+            for name in ["future", "future-tui", "future-desktop", "future-channel"] {
+                assert!(
+                    stdout.contains(&format!("{name} not found on PATH")),
+                    "{stdout}"
+                );
+            }
+            assert!(
+                stdout.contains(
+                    "Open Desktop for embedded hosting, or run `future agent` explicitly"
+                ),
+                "{stdout}"
+            );
+            assert!(
+                !stdout.contains("could not be looked up on PATH"),
+                "{stdout}"
+            );
+        }
         assert!(stdout.contains("Auth config"));
         assert!(stdout.contains("not found — run `future auth login` or create manually"));
         assert!(stdout.contains("Models config"));

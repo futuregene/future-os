@@ -13,6 +13,17 @@ pub struct ConnectionOptions {
     loopback_fixture: bool,
 }
 impl ConnectionOptions {
+    /// Sets the trust material the host supplies.
+    ///
+    /// Setters are the only way another crate can build this type under
+    /// `test-support`: the feature adds a private field, so a struct literal
+    /// (and therefore the `..Default::default()` update syntax) is not
+    /// constructible from outside, while the single-field literal that works
+    /// without the feature is `needless_update` with it on.
+    pub fn with_root_bundle(mut self, root_bundle: Option<std::path::PathBuf>) -> Self {
+        self.root_bundle = root_bundle;
+        self
+    }
     #[cfg(any(test, feature = "test-support"))]
     pub fn for_loopback_fixture(mut self) -> Self {
         self.loopback_fixture = true;

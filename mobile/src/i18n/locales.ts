@@ -29,6 +29,17 @@ export const resources = {
           large: "Large",
           xlarge: "Extra large",
         },
+        reply: "Model output",
+        replyDetail: {
+          default: "Default",
+          detailed: "Detailed",
+        },
+        replyDetailHint: {
+          default:
+            "A finished reply shows its final answer, with the reasoning, tool calls and notes that produced it folded into one row. Work is still shown while it streams. Applies to every computer this phone is paired with.",
+          detailed:
+            "A finished reply keeps everything: its reasoning, tool calls and notes stay in place, in the order they happened. Applies to every computer this phone is paired with.",
+        },
         saveFailed: "Could not save the appearance setting. Please try again.",
       },
       language: {
@@ -422,6 +433,8 @@ export const resources = {
         stepWrite: "Wrote",
         stepEdit: "Edited",
         stepsFailed: "{{count}} failed",
+        processShow: "Show process",
+        processHide: "Hide process",
         copy: "Copy",
         copyResponse: "Copy response",
         expandCode: "Expand code",
@@ -943,6 +956,10 @@ export const resources = {
           thinking: "Thinking",
           modelsFailed: "The model list could not be loaded; the scheduled task keeps its current model.",
           session: "Conversation policy",
+          timezone: "Time zone",
+          timezoneDesktop: "Desktop's zone",
+          timezoneHint: "The trigger times are read in this zone. Choose the desktop's zone to follow the computer that runs the task; a zone it cannot resolve is refused rather than replaced.",
+          timezonePlaceholder: "IANA name, e.g. Asia/Shanghai",
           sessionNew: "New conversation each run",
           sessionExisting: "Reuse one conversation",
           sessionExistingHint: "Each run continues that same conversation, so it can build on what earlier runs did. Nothing is compacted for you — compact it yourself if it gets long.",
@@ -1022,6 +1039,17 @@ export const resources = {
           medium: "中",
           large: "大",
           xlarge: "特大",
+        },
+        reply: "模型输出展示",
+        replyDetail: {
+          default: "默认",
+          detailed: "详细",
+        },
+        replyDetailHint: {
+          default:
+            "回答完成后只保留最终回答，思考、工具调用和中间说明收起到一行，可随时展开；生成过程中仍完整显示。对本手机连接的全部电脑生效。",
+          detailed:
+            "回答完成后保留完整过程：思考、工具调用和中间说明按发生顺序与正文一起显示。对本手机连接的全部电脑生效。",
         },
         saveFailed: "无法保存外观设置，请重试。",
       },
@@ -1362,6 +1390,8 @@ export const resources = {
         stepWrite: "写入",
         stepEdit: "编辑",
         stepsFailed: "{{count}} 次失败",
+        processShow: "查看过程",
+        processHide: "收起过程",
         copy: "复制",
         copyResponse: "复制回复",
         expandCode: "展开代码",
@@ -1844,6 +1874,10 @@ export const resources = {
           thinking: "思考等级",
           modelsFailed: "模型列表读取失败；该定时任务会保留当前模型。",
           session: "会话策略",
+          timezone: "时区",
+          timezoneDesktop: "桌面端时区",
+          timezoneHint: "触发时间按这个时区读取。选“桌面端时区”表示跟随运行该任务的电脑；填写的时区无法识别时会被拒绝，而不是悄悄替换。",
+          timezonePlaceholder: "IANA 名称，例如 Asia/Shanghai",
           sessionNew: "每次运行新建会话",
           sessionExisting: "复用同一条会话",
           sessionExistingHint: "每次运行都接着同一条会话，可以沿用之前几轮的结果。不会自动压缩；上下文变长时请自行压缩。",

@@ -79,11 +79,13 @@ const mocks = vi.hoisted(() => ({
   nudgeLeftPanel: undefined as undefined | ReturnType<typeof vi.fn>,
   remotePeers: undefined as undefined | { catalogs?: unknown[]; peers?: unknown[] },
   invoke: vi.fn<(command: string, args?: unknown) => Promise<unknown>>(async () => {}),
+  isFullscreen: false,
   refreshStore: vi.fn(async (_threadId?: string) => {}),
   remoteStatus: { phase: "idle" } as Record<string, unknown>,
   startRemote: vi.fn(async () => {}),
   stopRemote: vi.fn(async () => {}),
   store: {} as Record<string, unknown>,
+  setFullscreen: vi.fn(async (_value: boolean) => {}),
   approvalsThreadIds: [] as (string | null)[],
   tauriEvents: {} as Record<string, (payload: unknown) => void>,
   terminalTarget: null as string | null,
@@ -407,6 +409,9 @@ vi.mock("../../features/terminal/panelTarget", () => ({ terminalTarget: () => mo
 vi.mock("../../integrations/agent/agentStateCache", () => ({
   installAgentEventListener: () => mocks.hooks.installAgentEventListener?.(),
   revalidateAgentState: (threadId: string) => mocks.hooks.revalidateAgentState?.(threadId),
+  // The Vibe panel reads each cell's settings from the host's cached state; this shell
+  // test has no host, so every cell falls back to the shell's own view.
+  useCachedAgentState: () => undefined,
 }));
 vi.mock("../../integrations/agent/agentClient", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../integrations/agent/agentClient")>();
@@ -473,8 +478,16 @@ vi.mock("../../lib/useTauriEvent", () => ({
 // The client role's settings window raises itself through this API when it hands
 // a conversation to the main window; jsdom has no Tauri internals behind it.
 const setFocus = vi.fn(() => Promise.resolve());
+// The Vibe panel (mounted here by `vibe.toggle`) subscribes to the host's
+// `approvals-updated` push; jsdom has no Tauri IPC behind `listen`.
+vi.mock("@tauri-apps/api/event", () => ({ listen: () => Promise.resolve(() => {}) }));
 vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ setFocus: () => setFocus() }),
+  getCurrentWindow: () => ({
+    isFullscreen: () => Promise.resolve(mocks.isFullscreen),
+    onResized: () => Promise.resolve(() => {}),
+    setFocus: () => setFocus(),
+    setFullscreen: (value: boolean) => mocks.setFullscreen(value),
+  }),
 }));
 
 function thread(id: string, overrides: Partial<StoredThread> = {}): StoredThread {
@@ -598,6 +611,18 @@ function railButton(container: HTMLElement, label: string) {
   return [...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent === label)!;
 }
 
+/**
+ * A control found by its accessible name.
+ *
+ * The machine rows in a device dialog draw a glyph and a status note around the
+ * name, so `railButton`'s exact-text match cannot address them; the aria-label
+ * is the name, which is what the reader of a screen reader hears too.
+ */
+function labeledButton(container: HTMLElement, label: string) {
+  return [...container.querySelectorAll<HTMLButtonElement>("button[aria-label]")]
+    .find(button => button.getAttribute("aria-label") === label)!;
+}
+
 beforeEach(() => {
   // The child-prop captures are module-level, so a test that reads one without
   // first rendering that child would silently borrow whatever a *previous* test
@@ -619,6 +644,8 @@ beforeEach(() => {
   mocks.geometry = { left: true, right: true };
   mocks.nudgeLeftPanel = undefined;
   mocks.invoke.mockReset().mockResolvedValue(undefined);
+  mocks.isFullscreen = false;
+  mocks.setFullscreen.mockClear();
   mocks.hooks = {
     createWorkspace: vi.fn(async () => chatWorkspace),
     installAgentEventListener: vi.fn(),
@@ -647,6 +674,9 @@ beforeEach(() => {
   mocks.stopRemote.mockClear();
   mocks.tauriEvents = {};
   mocks.terminalTarget = null;
+  // The new-conversation target is remembered in webview storage, so without
+  // this one test's created workspace would be the next one's default.
+  localStorage.clear();
   resetStore();
 });
 
@@ -977,6 +1007,195 @@ describe("app shell layout", () => {
     act(() => rail().onNewChat("w-t2"));
     expect(children.newConversation).toMatchObject({ initialMode: "workspace", initialWorkspaceId: "w-t2" });
     expect(rail().active).toBe("workspace");
+    view.unmount();
+  });
+
+  /**
+   * The target the user created a conversation on last is where the next one
+   * opens. Every new conversation used to start on a plain chat, so a reader who
+   * works in one workspace re-picked it on every visit.
+   */
+  it("opens the new-conversation view on the target of the last created conversation", () => {
+    const store = mocks.store.threadStore as { workspaces: unknown[] };
+    store.workspaces = [chatWorkspace, workWorkspace];
+    localStorage.setItem("future.newConversationTarget", JSON.stringify({ mode: "workspace", workspaceId: "w-t2" }));
+
+    const view = mount(<AppShell />);
+    act(() => rail().onNewChat());
+    expect(children.newConversation).toMatchObject({ initialMode: "workspace", initialWorkspaceId: "w-t2" });
+    // The rail highlights where the composer points, not the plain chat the
+    // button used to imply.
+    expect(rail().active).toBe("workspace");
+    view.unmount();
+  });
+
+  /** A remembered workspace that is gone is not a target: the composer falls back to a plain chat. */
+  it("opens a plain chat when the remembered workspace no longer exists", () => {
+    const store = mocks.store.threadStore as { workspaces: unknown[] };
+    store.workspaces = [chatWorkspace, workWorkspace];
+    localStorage.setItem("future.newConversationTarget", JSON.stringify({ mode: "workspace", workspaceId: "w-gone" }));
+
+    const view = mount(<AppShell />);
+    act(() => rail().onNewChat());
+    expect(children.newConversation).toMatchObject({ initialMode: "chat", initialWorkspaceId: null });
+    expect(rail().active).toBe("chat");
+    view.unmount();
+  });
+
+  /** A paired machine that answers, as the shell's own peer list reports it. */
+  function connectedHost(overrides: Record<string, unknown> = {}) {
+    return {
+      agentAvailable: true,
+      bridgeInstanceId: "bridge_1",
+      connected: true,
+      desktopId: "desktop_a",
+      error: null,
+      features: [],
+      icon: "laptop",
+      name: "Studio iMac",
+      pairId: "pair_1",
+      stopped: false,
+      ...overrides,
+    };
+  }
+
+  /**
+   * A new conversation is made on one machine, so it is asked which — before
+   * anything is created.
+   *
+   * The merged list holds several machines' conversations, and "new" used to
+   * assume this computer: the button on the left made a local conversation
+   * while the reader was looking at another machine's rows. The machine is the
+   * question now, and ⌘N asks it too (see the test below), because a shortcut
+   * that skipped it was the same mistake without a button under the pointer.
+   */
+  it("asks which machine a new conversation belongs to", () => {
+    mocks.remotePeers = { catalogs: [], peers: [connectedHost()] };
+    const view = mount(<AppShell />);
+    expect(rail().deviceFilter).toEqual({ kind: "all" });
+
+    act(() => rail().onNewChat());
+
+    // Nothing was created: the machine comes first.
+    expect(view.container.querySelector("[data-child='new-conversation']")).toBeNull();
+    expect(view.container.textContent).toContain("Where should this conversation live?");
+    const pick = (label: string) => labeledButton(view.container, label);
+
+    act(() => pick("Studio iMac").click());
+    // The machine's own composer takes the column, with the empty session id
+    // that is the host's signal to create one.
+    expect((children.remoteComposer as { desktopId?: string }).desktopId).toBe("desktop_a");
+    expect((children.remoteComposer as { sessionId?: string }).sessionId).toBe("");
+    expect(view.container.textContent).not.toContain("Where should this conversation live?");
+
+    view.unmount();
+  });
+
+  /** This computer is one answer among the machines, not the assumption. */
+  it("offers this computer as one of the answers", () => {
+    mocks.remotePeers = { catalogs: [], peers: [connectedHost()] };
+    const view = mount(<AppShell />);
+    act(() => rail().onNewChat());
+    expect(view.container.querySelector("[data-child='new-conversation']")).toBeNull();
+
+    act(() => labeledButton(view.container, "This computer").click());
+
+    expect(view.container.querySelector("[data-child='new-conversation']")).not.toBeNull();
+    expect(view.container.textContent).not.toContain("Where should this conversation live?");
+    // Nothing was addressed to the host: this draft is this machine's.
+    expect(children.remoteComposer).toBeNull();
+    view.unmount();
+  });
+
+  /**
+   * The device picker above the list answers it when it names one machine, and
+   * nothing is asked twice: asking again would be a dialog whose only content
+   * is the label of the button beside it.
+   */
+  it("creates on the machine the picker names, without asking again", () => {
+    mocks.remotePeers = { catalogs: [], peers: [connectedHost()] };
+    const view = mount(<AppShell />);
+
+    act(() => rail().onChangeDeviceFilter({ desktopId: null, kind: "device" }));
+    act(() => rail().onNewChat());
+    expect(view.container.querySelector("[data-child='new-conversation']")).not.toBeNull();
+
+    act(() => rail().onChangeDeviceFilter({ desktopId: "desktop_a", kind: "device" }));
+    act(() => rail().onNewChat());
+    expect((children.remoteComposer as { desktopId?: string }).desktopId).toBe("desktop_a");
+    expect(view.container.textContent).not.toContain("Where should this conversation live?");
+    view.unmount();
+  });
+
+  /** With nothing paired there is one machine, and so no question to ask. */
+  it("asks nothing when no other machine is paired", () => {
+    mocks.remotePeers = { catalogs: [], peers: [] };
+    const view = mount(<AppShell />);
+    act(() => rail().onNewChat());
+    expect(view.container.querySelector("[data-child='new-conversation']")).not.toBeNull();
+    expect(view.container.textContent).not.toContain("Where should this conversation live?");
+    view.unmount();
+  });
+
+  /** ⌘N is the same command as the button, so it asks the same question. */
+  it("asks which machine from the new-conversation shortcut too", () => {
+    mocks.remotePeers = { catalogs: [], peers: [connectedHost()] };
+    const view = mount(<AppShell />);
+
+    act(() => runCommand("chat.new"));
+
+    expect(view.container.querySelector("[data-child='new-conversation']")).toBeNull();
+    expect(view.container.textContent).toContain("Where should this conversation live?");
+    act(() => labeledButton(view.container, "Studio iMac").click());
+    expect((children.remoteComposer as { desktopId?: string }).desktopId).toBe("desktop_a");
+    view.unmount();
+  });
+
+  /**
+   * ⌘N and then Enter, without touching the mouse: the dialog takes the caret
+   * when it opens, so the machine it opens on (this one) is reachable from the
+   * keyboard the shortcut was pressed with.
+   */
+  it("answers the machine dialog with the keyboard, from the shortcut", () => {
+    mocks.remotePeers = { catalogs: [], peers: [connectedHost()] };
+    const view = mount(<AppShell />);
+
+    act(() => runCommand("chat.new"));
+    const row = labeledButton(view.container, "This computer");
+    expect(document.activeElement).toBe(row);
+    act(() => {
+      row.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    });
+    expect(view.container.querySelector("[data-child='new-conversation']")).not.toBeNull();
+    view.unmount();
+  });
+
+  /**
+   * A machine that cannot take work says so instead of being offered.
+   *
+   * Two ways to be there and still unable: offline (the link is down) and held
+   * by another paired device (it answers, and refuses the work). Either would
+   * accept the tap and fail the first prompt, so the row is disabled with the
+   * reason the device picker already uses for it.
+   */
+  it("does not offer a machine that cannot take a new conversation", () => {
+    mocks.remotePeers = {
+      catalogs: [],
+      peers: [
+        connectedHost(),
+        { ...connectedHost(), connected: false, desktopId: "desktop_b", error: "gone", name: "Offline Mac" },
+        { ...connectedHost(), control: "standby", desktopId: "desktop_c", holder: { name: "Hui's phone" }, name: "Held Mac" },
+      ],
+    };
+    const view = mount(<AppShell />);
+    act(() => rail().onNewChat());
+
+    expect(labeledButton(view.container, "Offline Mac").disabled).toBe(true);
+    expect(labeledButton(view.container, "Held Mac").disabled).toBe(true);
+    // A held machine is connected, so its status says nothing; the reason has to
+    // be the one the device picker gives for the same fact.
+    expect(view.container.textContent).toContain("In use by Hui's phone");
+    expect(view.container.textContent).toContain("Offline");
     view.unmount();
   });
 
@@ -1662,6 +1881,58 @@ describe("app shell account + remote coordination", () => {
     const badge = (children.agentThread as { headerMachine?: { props: { label: string } } }).headerMachine;
     expect(badge?.props.label).toBe("This computer");
     paired.unmount();
+  });
+
+  /**
+   * A local conversation in a workspace names it in the header, as a remote one
+   * already did.
+   *
+   * The rail says it per heading, but a conversation read in the flat recent
+   * list, or in the transcript once the list is out of sight, had nothing left
+   * to say which folder it was in — while the same conversation on a paired host
+   * carried it. So the shell hands its own header the same badge, from the row
+   * the rail groups by: a workspace conversation names its workspace, and a chat
+   * conversation names nothing rather than the scratch directory it works in.
+   */
+  it("names the workspace a local conversation is in, and nothing for a chat", () => {
+    // Chat first. The fixture's chat conversation points at the only workspace
+    // there is, so a header keyed on the workspace row rather than on the mode
+    // would name a folder this conversation is not listed under — chat rows sit
+    // in the rail's chat section whatever their scratch directory is called.
+    const chat = mount(<AppShell />);
+    expect((children.agentThread as { headerWorkspace?: unknown }).headerWorkspace).toBeNull();
+    chat.unmount();
+
+    resetStore({
+      threadStore: {
+        ...(mocks.store.threadStore as Record<string, unknown>),
+        activeThread: workThread,
+        activeThreadId: "t2",
+        activeWorkspace: workWorkspace,
+        threads: [chatThread, workThread],
+        workspaces: [chatWorkspace, workWorkspace],
+      },
+    });
+    const inWorkspace = mount(<AppShell />);
+    const badge = (children.agentThread as { headerWorkspace?: { props: { name: string } } }).headerWorkspace;
+    expect(badge?.props.name).toBe("Work");
+    inWorkspace.unmount();
+
+    // A workspace the store has stopped listing is not replaced by the fallback:
+    // naming somebody else's folder is worse than naming none.
+    resetStore({
+      threadStore: {
+        ...(mocks.store.threadStore as Record<string, unknown>),
+        activeThread: workThread,
+        activeThreadId: "t2",
+        activeWorkspace: chatWorkspace,
+        threads: [workThread],
+        workspaces: [chatWorkspace],
+      },
+    });
+    const orphaned = mount(<AppShell />);
+    expect((children.agentThread as { headerWorkspace?: unknown }).headerWorkspace).toBeNull();
+    orphaned.unmount();
   });
 });
 
@@ -2597,6 +2868,54 @@ describe("app shell collapsed-panel affordances", () => {
     });
 
     /**
+     * A draft on a host asks the same question as this machine's own composer:
+     * a workspace, or a plain conversation.
+     *
+     * It used to ask nothing: a draft opened in a workspace only when it was
+     * started from that workspace's heading, and the new-conversation path made
+     * a chat without saying so. The answer is carried to the host as an id (it
+     * resolves the folder), and the header names the workspace — a draft has no
+     * catalogue row, so that name comes from the same read the menu draws from.
+     */
+    it("lets a draft choose a workspace on the host, or a plain conversation", async () => {
+      mocks.invoke.mockImplementation(async command => command === "remote_peer_workspaces"
+        ? { workspaces: [{ id: "ws_1", name: "future-os", path: "/Users/me/code/future-os" }] }
+        : undefined);
+      const view = mount(<AppShell />);
+      act(() => rail().onNewChatOnRemote?.("desktop_a", null));
+      await act(async () => {
+        for (let i = 0; i < 4; i += 1) await Promise.resolve();
+      });
+
+      // A draft starts on a plain conversation, and says so.
+      expect(view.container.querySelector("[data-testid='remote-draft-target']")).not.toBeNull();
+      expect((children.remoteComposer as { workspaceId?: string | null }).workspaceId).toBeNull();
+      expect((children.remoteConversationView as { title?: string }).title).toBe("New conversation");
+
+      // The host's folder is what the menu offers, and choosing it moves the
+      // draft — the composer sends the id, the header names the workspace.
+      act(() => railButton(view.container, "Workspaces").click());
+      act(() => railButton(view.container, "future-os/Users/me/code/future-os").click());
+      expect((children.remoteComposer as { workspaceId?: string | null }).workspaceId).toBe("ws_1");
+      expect((children.remoteConversationView as { workspaceName?: string | null }).workspaceName)
+        .toBe("future-os");
+
+      // And back: the chat control beside it is the other half of the question.
+      act(() => railButton(view.container, "Chat").click());
+      expect((children.remoteComposer as { workspaceId?: string | null }).workspaceId).toBeNull();
+      view.unmount();
+    });
+
+    /** A conversation that exists has a place already: there is nothing to ask. */
+    it("asks nothing about the place of a conversation that already exists", () => {
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+
+      expect(view.container.querySelector("[data-testid='remote-draft-target']")).toBeNull();
+      view.unmount();
+    });
+
+    /**
      * The conversation's account book is its own, on the host that spent it.
      *
      * Opened from the transcript's header, and quoting that host's figures: the
@@ -2773,6 +3092,23 @@ describe("app shell keyboard commands", () => {
     const view = mount(<AppShell />);
     press({ ctrlKey: true, key: "n" });
     expect(view.container.querySelector("[data-child=\"new-conversation\"]")).not.toBeNull();
+    view.unmount();
+  });
+
+  it("leaves fullscreen when the panel closes", async () => {
+    // The panel is the only surface that offers fullscreen, so a panel closed while
+    // fullscreen used to leave a window with no way back to windowed (Windows draws no
+    // title bar in fullscreen). Closing the panel is the state before it was opened.
+    mocks.isFullscreen = true;
+    const view = mount(<AppShell />);
+    press({ ctrlKey: true, shiftKey: true, key: "v" });
+    expect(view.container.querySelector("[data-vibe-layer]")).not.toBeNull();
+    press({ ctrlKey: true, shiftKey: true, key: "v" });
+    expect(view.container.querySelector("[data-vibe-layer]")).toBeNull();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mocks.setFullscreen).toHaveBeenCalledWith(false);
     view.unmount();
   });
 

@@ -827,6 +827,9 @@ mod tests {
     #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
     fn the_ps_based_session_query_parses_and_survives_a_broken_ps() {
+        if future_host::test_support::reexec_test() {
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
         let bin = root.path().join("bin");
         // Line 2 is not a pair, line 3 has an unparsable session, line 4 is the
@@ -865,6 +868,9 @@ mod tests {
     #[cfg(all(unix, not(target_os = "linux")))]
     #[test]
     fn the_session_sweep_signals_reported_members_and_escalates() {
+        if future_host::test_support::reexec_test() {
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
         let bin = root.path().join("bin");
         let mut victim = std::process::Command::new("/bin/sh")
@@ -888,14 +894,28 @@ mod tests {
             Some(value) => std::env::set_var("PATH", value),
             None => std::env::remove_var("PATH"),
         }
-        let member_status = member.try_wait().unwrap();
+        // SIGKILL delivery and the parent's wait status are asynchronous. Keep
+        // both death assertions, waiting for the OS to report the result as the
+        // other teardown tests above do.
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (member_status, victim_status) = loop {
+            if let (Some(member_status), Some(victim_status)) =
+                (member.try_wait().unwrap(), victim.try_wait().unwrap())
+            {
+                break (member_status, victim_status);
+            }
+            assert!(
+                Instant::now() < deadline,
+                "session teardown left a child alive"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
         assert!(
-            member_status.is_some_and(|status| !status.success()),
+            !member_status.success(),
             "the reported session member must have been signalled, not left running"
         );
-        let victim_status = victim.try_wait().unwrap();
         assert!(
-            victim_status.is_some_and(|status| !status.success()),
+            !victim_status.success(),
             "the shell itself must be gone once teardown returns"
         );
     }

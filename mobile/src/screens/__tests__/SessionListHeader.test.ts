@@ -155,6 +155,12 @@ const pressItem = (label: string) => {
   act(() => { headerMenu().findByType(Modal).props.onDismiss(); });
 };
 
+test("the list opens on the recency page", () => {
+  // The first question a phone answers is "what was I doing", and that page
+  // holds the runs still going above everything else by how recently it moved.
+  expect(tree.root.findByType(SessionList).props.tab).toBe("recent");
+});
+
 test("the header's search item opens the list's search field", () => {
   expect(tree.root.findAllByType(TextInput)).toHaveLength(0);
   openHeaderMenu();
@@ -187,14 +193,31 @@ test("the header's selection item enters a batch on the catalogued rows", () => 
     .toBeGreaterThan(0);
 });
 
-test("the selection item is unavailable when nothing may join a batch", () => {
-  // Pinned conversations are shortcuts no batch may hold, so a catalogue of
-  // nothing else has nothing to select — read from the catalogue, not from the
-  // rows on screen.
+test("a pin is a shortcut on the tree pages and an ordinary row on the recency page", () => {
+  // A catalogue of nothing but pinned conversations: the two tree pages lift
+  // every one of them above the groups, so no batch may hold any — while the
+  // recency page, which ignores pinning for its order, may hold them all.
   mockRemote.sessions = mockRemote.sessions.map(session => ({ ...session, pinned: true }));
   act(() => tree.update(createElement(SessionsScreen, { onManageDesktops })));
+
+  // The list opens on the recency page, where they are rows like any other.
+  act(() => tree.root.findByType(SessionList).props.onTabChange("recent"));
+  openHeaderMenu();
+  expect(item("sessions.select").props.disabled).toBe(false);
+  act(() => headerMenu().findByType(Modal).props.onDismiss());
+
+  // Moving the list to a tree page takes that away: the same catalogue, a page
+  // whose only rows are shortcuts. Read from the catalogue rather than from the
+  // rows on screen, as the list's own entry is.
+  act(() => tree.root.findByType(SessionList).props.onTabChange("chat"));
   openHeaderMenu();
   expect(item("sessions.select").props.disabled).toBe(true);
+  act(() => headerMenu().findByType(Modal).props.onDismiss());
+
+  // The tab is remembered for the life of the app, so put back the one this
+  // screen opens on rather than leave the rest of the file on another page.
+  act(() => tree.root.findByType(SessionList).props.onTabChange("recent"));
+
   mockRemote.sessions = [
     { sessionId: "s1", threadId: "t1", title: "First", streaming: false },
     { sessionId: "s2", threadId: "t2", title: "Second", streaming: false },

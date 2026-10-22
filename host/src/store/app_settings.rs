@@ -59,6 +59,25 @@ pub fn get_app_settings() -> Result<AppSettings, crate::Error> {
     Ok(future_app_settings::read(&conn)?)
 }
 
+/// Mirror the continuation switch into the document the Agent actually reads.
+///
+/// The desktop's settings store is an app-side mirror (its switch has always
+/// lived there); the executor is the Agent, whose `resumeInterruptedOnStart`
+/// decides whether a restart continues the conversations a run was cut off in.
+fn write_agent_resume_policy(enabled: bool) -> Result<(), crate::Error> {
+    let path = std::path::PathBuf::from(future_agent::models::settings_path());
+    let mut settings = future_agent::config::load_settings(&path).map_err(|error| {
+        crate::Error::Message(format!("read Agent settings {}: {error}", path.display()))
+    })?;
+    if settings.resume_interrupted_on_start == enabled {
+        return Ok(());
+    }
+    settings.resume_interrupted_on_start = enabled;
+    settings.save(&path).map_err(|error| {
+        crate::Error::Message(format!("write Agent settings {}: {error}", path.display()))
+    })
+}
+
 pub fn update_app_settings(mut input: UpdateAppSettingsInput) -> Result<AppSettings, crate::Error> {
     if input.approval_tier.as_deref() == Some("auto")
         && crate::future_platform::future_api_key().is_err()
@@ -73,6 +92,16 @@ pub fn update_app_settings(mut input: UpdateAppSettingsInput) -> Result<AppSetti
     let settings = future_app_settings::apply(&tx, &input, now)?;
     tx.commit()?;
     crate::agent_events::publish_invalidation("app_settings_changed");
+    // Continuing interrupted conversations is the Agent's job (it owns the
+    // journal the decision reads), so its switch lives in the Agent's own
+    // settings document. This UI switch therefore writes through: without it
+    // the toggle would keep changing a value nothing reads. The Agent resolves
+    // the key at startup, so a change applies from the next start.
+    if let Some(enabled) = input.auto_resume_interrupted {
+        if let Err(error) = write_agent_resume_policy(enabled) {
+            eprintln!("FutureOS: could not record the continuation policy for the Agent: {error}");
+        }
+    }
     // Notify paired clients only after commit: their next model read must see
     // the new visibility. Reconnect also rereads the catalogue if this is lost.
     if model_visibility_changed {
@@ -115,6 +144,7 @@ mod tests {
             title_language: None,
             community_edition: Some(true),
             skill_recommend: None,
+            auto_resume_interrupted: None,
         }
     }
 

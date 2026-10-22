@@ -115,6 +115,14 @@ export interface AgentThreadProps {
    * definition — which is worth saying only once another computer is in the list.
    */
   headerMachine?: ReactNode;
+  /**
+   * Which workspace this conversation works in, when it is in one.
+   *
+   * The shell's answer again: the workspace a conversation belongs to is one of
+   * the store's rows, which this view is handed conversations from and does not
+   * read itself.
+   */
+  headerWorkspace?: ReactNode;
   /** How much of the conversation's chrome to draw. See `AgentThreadChrome`. */
   chrome?: AgentThreadChrome;
   /**
@@ -184,6 +192,7 @@ export function AgentThread({
   futureBalance,
   headerAction,
   headerMachine,
+  headerWorkspace,
   chrome = "full",
   ownsCommands = true,
   onLeaveInput,
@@ -717,6 +726,7 @@ export function AgentThread({
               machine={headerMachine}
               thread={thread}
               usage={agentState?.usage}
+              workspace={headerWorkspace}
               onToggleLeftPanel={onToggleLeftPanel}
             />
           )

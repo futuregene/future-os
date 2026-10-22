@@ -34,7 +34,10 @@ fn run_from_args(args: &[String]) -> ExitCode {
     // before the CLI runtime starts.
     if let Some(group) = args.first().map(String::as_str) {
         match group {
-            "headless" => return run_headless(&args[1..]),
+            // `host` is the name; `headless` is a hidden alias, so service units
+            // and scripts written against the old one keep starting the same
+            // entry point. It appears in no help output or message.
+            "host" | "headless" => return run_host(&args[1..]),
             "agent" => return run_agent(&args[1..]),
             "tui" => return run_tui(&args[1..]),
             "channel" | "channels" => return run_channel(&args[1..]),
@@ -48,13 +51,13 @@ fn run_from_args(args: &[String]) -> ExitCode {
     // Invariant: a multi-thread runtime always builds (failure would mean
     // resource exhaustion fatal to the process anyway).
     let runtime = tokio::runtime::Runtime::new().expect("tokio runtime starts");
-    let code = runtime.block_on(future_cli::dispatch(args, &out));
+    let code = runtime.block_on(Box::pin(future_cli::dispatch(args, &out)));
     out.flush();
     ExitCode::from(code as u8)
 }
 
 /// Dispatch foreground hosting before any ordinary CLI runtime exists.
-fn run_headless(args: &[String]) -> ExitCode {
+fn run_host(args: &[String]) -> ExitCode {
     use future_cli::headless::{Launch, Options, HELP};
     let result = match Options::parse(args) {
         Ok(Launch::Help) => {

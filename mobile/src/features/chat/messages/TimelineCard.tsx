@@ -6,7 +6,7 @@ import { Pressable, Text, useWindowDimensions, View } from "react-native";
 import { friendlyRunError, friendlyRunErrorTitle } from "../../../components/errorMessage";
 import { MarkdownText } from "../../../components/MarkdownText";
 import { canRecoverMessage } from "@future-os/remote-client/recovery";
-import { useTheme } from "../../../theme/ThemeContext";
+import { useAppearance, useTheme } from "../../../theme/ThemeContext";
 import { Button } from "../../../components/Button";
 import { useStyles } from "./messageStyles";
 import type { TimelineCardProps } from "./types";
@@ -16,7 +16,7 @@ import { AttachmentChip } from "./AttachmentChip";
 import { collapsedPromptHeight, isLongPrompt, promptPreview } from "./promptCollapse";
 import { PromptReader } from "../components/PromptReader";
 import { StatusDivider } from "./MessageStatus";
-import { buildReplyBlocks, replyTailBlock, SegmentBlock, StepRunBlock } from "./ReplyBlocks";
+import { buildReplyBlocks, ProcessFold, ReplyBlockRow, replyTailBlock, splitFinalAnswer } from "./ReplyBlocks";
 
 function TimelineCardView({
   item,
@@ -32,6 +32,10 @@ function TimelineCardView({
 }: TimelineCardProps) {
   const styles = useStyles();
   const { colors, chat } = useTheme();
+  // This phone's own reading preference, not the desktop's: the same choice
+  // shapes every paired machine's conversation, because the transcript is drawn
+  // here from the slices the desktop sends.
+  const { replyDetail } = useAppearance();
   const { t, i18n } = useTranslation();
   const { copied, copy } = useCopyState();
   // The reader's own window: a collapsed prompt's cap is bounded by it (see
@@ -93,7 +97,22 @@ function TimelineCardView({
       // The reply's rendered slices, and the one a ↑/↓ press lands on: its
       // last output block (see `replyTailBlock`).
       const blocks = buildReplyBlocks(item.segments ?? [], item.streaming);
-      const tail = replyTailBlock(blocks);
+      // This phone's reading setting: a reply that has settled keeps only the
+      // answer it ends on, with the work that produced it folded into one row
+      // above it. Nothing folds while the reply streams — the reader is
+      // watching it happen — and a reply with no prose has no answer to
+      // isolate, so it stays whole.
+      const folded = replyDetail === "default" && !item.streaming && blocks.length > 0
+        ? splitFinalAnswer(blocks)
+        : null;
+      const visibleBlocks = folded ? folded.answer : blocks;
+      const hiddenWork = folded && folded.process.length > 0 ? folded.process : null;
+      const tail = replyTailBlock(visibleBlocks);
+      // The copy button follows what the row shows: with the work folded away it
+      // belongs to the answer, not to notes the reader cannot see.
+      const copyPayload = folded
+        ? folded.answer.flatMap(block => (block.kind === "segment" && block.segment.kind === "text" ? [block.segment.text] : [])).join("\n\n")
+        : copyableText;
       return (
         <View style={styles.assistantMessage}>
           {item.segments && item.segments.length > 0 ? (
@@ -107,19 +126,23 @@ function TimelineCardView({
               }}
               style={styles.segmentList}
             >
-              {blocks.map((block, index) => {
+              {hiddenWork
+                ? (
+                    <ProcessFold
+                      blocks={hiddenWork}
+                      onOpenFile={onOpenFile}
+                      onResolveToolTarget={onResolveToolTarget}
+                    />
+                  )
+                : null}
+              {visibleBlocks.map((block, index) => {
                 const key = block.kind === "steps" ? block.segments[0]!.id : block.segment.id;
-                const content = block.kind === "steps" ? (
-                  <StepRunBlock
-                    segments={block.segments}
-                    onResolveToolTarget={onResolveToolTarget}
-                  />
-                ) : (
-                  <SegmentBlock
-                    segment={block.segment}
-                    streaming={item.streaming && block.segment === item.segments?.at(-1)}
+                const content = (
+                  <ReplyBlockRow
+                    block={block}
                     onOpenFile={onOpenFile}
                     onResolveToolTarget={onResolveToolTarget}
+                    streaming={item.streaming && block.kind === "segment" && block.segment === item.segments?.at(-1)}
                   />
                 );
                 // The anchor block is wrapped so its own offset can be
@@ -190,13 +213,13 @@ function TimelineCardView({
             <RunIndicator startedAt={item.startedAt} />
           ) : (
             <View style={styles.messageFooter}>
-              {copyableText.trim() ? (
+              {copyPayload.trim() ? (
                 <Pressable
                   accessibilityLabel={t("chat.copyResponse")}
                   accessibilityRole="button"
                   hitSlop={8}
                   onPress={() => {
-                    Clipboard.setStringAsync(copyableText)
+                    Clipboard.setStringAsync(copyPayload)
                       .then(() => copy())
                       .catch(() => { });
                   }}

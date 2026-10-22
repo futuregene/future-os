@@ -30,6 +30,12 @@ mod tests {
     #[cfg(feature = "gui")]
     #[tokio::test]
     async fn the_gui_loop_runs_a_queued_request_it_is_woken_for() {
+        #[cfg(windows)]
+        if crate::test_process::reexec(
+            "tasks::tests::the_gui_loop_runs_a_queued_request_it_is_woken_for",
+        ) {
+            return;
+        }
         let _home = crate::agent_bridge::test_support::TestHome::new("tasks-loop-gui");
         let mock = crate::agent_bridge::test_support::mock_agent();
         let dir = TempDir::new().unwrap();
@@ -42,7 +48,10 @@ mod tests {
 
         let mut queued = task("queued");
         queued.prompt = "summarize yesterday".into();
-        queued.cwd = std::env::temp_dir().display().to_string();
+        // Review captures real before/after snapshots. Never snapshot all of
+        // TEMP, which includes concurrent fixtures and this run's own home.
+        let workspace = TempDir::new().unwrap();
+        queued.cwd = workspace.path().display().to_string();
         queued.pending_request_at = Some(crate::store::now_millis());
         queued.pending_origin = Some(RunOrigin::Cli);
         store.insert_task(&queued).unwrap();
@@ -73,7 +82,12 @@ mod tests {
                 break run;
             }
             if std::time::Instant::now() > deadline {
-                panic!("the woken loop never executed the queued request");
+                panic!(
+                    "the woken loop never executed the queued request; runs: {:?}; commands: {:?}; streams: {:?}",
+                    store.list_runs_for_task(&queued.id, 5).unwrap(),
+                    mock.requests(),
+                    mock.stream_requests(),
+                );
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         };

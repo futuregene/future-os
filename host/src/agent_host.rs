@@ -24,6 +24,11 @@ struct State {
     phase: Phase,
     owned: bool,
     finished: bool,
+    /// Why the last worker yielded instead of owning anything: another process
+    /// holds the instance lock. Kept beside `Stopped` (which is not a fault)
+    /// so `start` and the status page report the holder's own refusal instead
+    /// of a cancellation nobody asked for.
+    yield_reason: Option<String>,
     cancel: StartupCancellation,
     probe_cancel: Arc<tokio::sync::Notify>,
     handle: Option<AgentHandle>,
@@ -41,6 +46,7 @@ impl Default for AgentHost {
                 phase: Phase::Idle,
                 owned: false,
                 finished: true,
+                yield_reason: None,
                 cancel: StartupCancellation::default(),
                 probe_cancel: Arc::new(tokio::sync::Notify::new()),
                 handle: None,
@@ -82,6 +88,22 @@ impl AgentHost {
     }
     pub fn owns_agent(&self) -> bool {
         self.0.state.lock().unwrap().owned
+    }
+
+    /// Give up an Agent this host only *attached* to, so a later [`Self::start`]
+    /// probes and possibly launches again.
+    ///
+    /// Refused while this host owns the Agent: an owned service holds the
+    /// instance lock until a full stop, and pretending otherwise would let a
+    /// second process start one. Returns whether the host changed state.
+    pub fn detach_attached(&self) -> bool {
+        let mut state = self.0.state.lock().unwrap();
+        if state.owned || state.phase != Phase::Ready {
+            return false;
+        }
+        state.phase = Phase::Stopped;
+        state.yield_reason = None;
+        true
     }
     pub fn activity(&self) -> Result<Option<future_agent::service::AgentActivity>, crate::Error> {
         let state = self.0.state.lock().unwrap();
@@ -125,6 +147,8 @@ impl AgentHost {
                     state.phase = Phase::Starting;
                     state.finished = false;
                     state.owned = false;
+                    // The previous worker's yield belonged to its own attempt.
+                    state.yield_reason = None;
                     state.handle = None;
                     state.cancel = StartupCancellation::default();
                     state.probe_cancel = Arc::new(tokio::sync::Notify::new());
@@ -143,13 +167,26 @@ impl AgentHost {
                                 .unwrap_or_else(|_| Err("Embedded Agent worker panicked".into()));
                             let mut state = host.0.state.lock().unwrap();
                             if !matches!(state.phase, Phase::Failed(_)) {
+                                // A busy instance lock is a yield, not a fault: the
+                                // holder owns the Agent, so this process returns to
+                                // `Stopped` and may try again once that owner
+                                // releases it. Only a real failure is terminal. The
+                                // holder's refusal is kept, because `Stopped` alone
+                                // would otherwise read as "cancelled" to every caller.
+                                let yield_reason = match &result {
+                                    Err(crate::Error::AgentBusy(reason)) => Some(reason.clone()),
+                                    _ => None,
+                                };
+                                let busy = yield_reason.is_some();
                                 state.phase = match result {
                                     Ok(()) if !state.owned && state.phase == Phase::Ready => {
                                         Phase::Ready
                                     }
                                     Ok(()) => Phase::Stopped,
+                                    Err(_) if busy => Phase::Stopped,
                                     Err(error) => Phase::Failed(error.to_string()),
                                 };
+                                state.yield_reason = yield_reason;
                             }
                             state.finished = true;
                             crate::environment::report(&format!(
@@ -177,6 +214,13 @@ impl AgentHost {
                 Phase::Ready => return Ok(()),
                 Phase::Starting => {}
                 Phase::Failed(error) => return Err(error.clone().into()),
+                // A held instance lock ends the worker in `Stopped` with the
+                // holder's own refusal recorded: report that, so the caller can
+                // wait for the owner rather than believe its start was cancelled.
+                Phase::Stopped => match state.yield_reason.clone() {
+                    Some(reason) => return Err(crate::Error::AgentBusy(reason)),
+                    None => return Err("Agent startup was cancelled".into()),
+                },
                 _ => return Err("Agent startup was cancelled".into()),
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -338,13 +382,26 @@ impl AgentHost {
                     // serving begins. Keep polling both serving and drain;
                     // channel closure alone is not a cleanup failure.
                     if let Ok(identity) = ready {
+                        // Publish readiness *before* either report: `report`
+                        // writes to stderr and the host log, so a blocked log
+                        // handle must never sit between a serving Agent and the
+                        // Ready phase the launch is waiting on. Reordering these
+                        // back (log first, phase second) reintroduces exactly
+                        // that: the launch stays in `Starting` while the log
+                        // write hangs, and nothing downstream can tell why.
+                        let became_ready = {
+                            let mut state = self.0.state.lock().unwrap();
+                            let became_ready = state.phase == Phase::Starting;
+                            if became_ready {
+                                state.phase = Phase::Ready;
+                            }
+                            became_ready
+                        };
+                        self.0.changed.notify_all();
                         crate::environment::report(&format!("Agent identity version={} instance={}", identity.version, identity.agent_instance_id));
-                        let mut state = self.0.state.lock().unwrap();
-                        if state.phase == Phase::Starting {
-                            state.phase = Phase::Ready;
+                        if became_ready {
                             crate::environment::report("embedded Agent ready");
                         }
-                        self.0.changed.notify_all();
                     }
                 }
             }
@@ -368,6 +425,7 @@ impl AgentHost {
         let deadline = overall.min(Instant::now() + STOP_TIMEOUT);
         let mut state = self.0.state.lock().unwrap();
         if matches!(state.phase, Phase::Idle | Phase::Stopped) {
+            state.yield_reason = None;
             return Ok(());
         }
         if state.phase == Phase::Ready && !state.owned && state.finished {
@@ -396,9 +454,17 @@ impl AgentHost {
             Phase::Failed(error) => Err(error.clone().into()),
             _ => {
                 state.phase = Phase::Stopped;
+                state.yield_reason = None;
                 Ok(())
             }
         }
+    }
+
+    /// The last worker's yield reason, if the previous start stopped because
+    /// another process owns this data root's Agent. `None` for every other
+    /// terminal phase, so a caller never reads a stale refusal.
+    pub fn yield_reason(&self) -> Option<String> {
+        self.0.state.lock().unwrap().yield_reason.clone()
     }
 
     pub fn request_stop(&self) {

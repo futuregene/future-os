@@ -1,4 +1,4 @@
-//! App metadata and store lifecycle Tauri commands.
+//! App metadata, window chrome and store lifecycle Tauri commands.
 
 use serde::Serialize;
 
@@ -25,6 +25,30 @@ pub fn app_build_info() -> BuildInfo {
 #[tauri::command]
 pub fn initialize_app_store() -> Result<(), crate::AppError> {
     store::initialize_app_store()
+}
+
+/// Paint the Windows caption in the colors the webview just rendered.
+///
+/// The frame belongs to DWM, and the palette is a CSS decision, so the frontend
+/// hands over the computed `--color-surface` / `--color-ink` values after every
+/// theme or palette change; see [`crate::window_caption`]. Other platforms draw
+/// their own chrome and ignore the call, which keeps the invoke site
+/// platform-agnostic.
+#[tauri::command]
+#[cfg_attr(not(target_os = "windows"), allow(unused_variables))]
+pub fn set_window_caption_colors(
+    app: tauri::AppHandle,
+    caption: String,
+    text: String,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        crate::window_caption::apply(&app, &caption, &text)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

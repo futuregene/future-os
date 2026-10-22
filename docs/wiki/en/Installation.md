@@ -12,7 +12,7 @@ Choose the version and architecture that match your machine:
 |---|---|
 | macOS arm64 / Intel | `.dmg` disk image |
 | Windows x64 | Installer `.exe`, or portable `.zip` |
-| Linux x86_64 / aarch64 | `.deb` (`amd64` / `arm64`), desktop portable tarball, or headless CLI tarball |
+| Linux x86_64 / aarch64 | `.deb` (`amd64` / `arm64`), desktop portable tarball, or CLI-only tarball |
 
 Linux release names include version and architecture:
 `FutureOS_<version>_amd64.deb`, `FutureOS_<version>_arm64.deb`,
@@ -41,7 +41,7 @@ iex (irm https://dl.future-os.cn/install.ps1)
 
 On Debian/Ubuntu the Linux installer uses a matching `.deb`; other Linux systems
 use the portable desktop package. The scripts finish with `future init`. For a
-headless server, use the CLI-only tarball instead of installing desktop libraries.
+host machine, use the CLI-only tarball instead of installing desktop libraries.
 
 ## First launch and signing
 
@@ -72,17 +72,17 @@ redownload before overriding security controls.
 
 - **Debian/Ubuntu:** install the downloaded package with
   `sudo apt install ./<downloaded-file>.deb`, then launch FutureOS from the app menu
-  or run `future headless` for foreground phone access without a graphical UI.
+  or run `future host` for foreground phone access without a graphical UI.
 - **Portable desktop:** extract the downloaded tarball, keep `futureos` and `future` together, and run `./futureos` or
-  `./future headless`.
-- **Headless CLI:** extract the CLI-only tarball and run `./future config`, then
+  `./future host`.
+- **CLI on a server:** extract the CLI-only tarball and run `./future config`, then
   `./future tui` (starts its agent when needed), or start `./future agent` for CLI
   commands that require an agent. Add the executable directory to PATH as needed.
 
 The published GUI packages require a recent glibc-based distribution (glibc ≥ 2.39,
 roughly Ubuntu 24.04+) and WebKitGTK 4.1. Portable users may need
 `sudo apt install libwebkit2gtk-4.1-0` or `sudo dnf install webkit2gtk4.1`.
-Official Linux CI builds the CLI (including headless) with static musl, so
+Official Linux CI builds the CLI (including `future host`) with static musl, so
 neither requires those GUI libraries or any particular glibc version. Local
 source builds depend on their selected target.
 
@@ -95,7 +95,7 @@ namespace restrictions and fallback behavior.
 
 Sign in inside the app to use FutureOS-hosted models, or configure your own
 provider/key. See [[Quick Start|Quick-Start]]. The desktop defaults to
-**Unrestricted**; select Manual/Sandboxed if needed before running tasks.
+**Full access**; select Manual/Sandboxed if needed before running tasks.
 
 ## Data, updates and uninstalling
 

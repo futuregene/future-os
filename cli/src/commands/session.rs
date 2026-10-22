@@ -37,6 +37,7 @@ Usage:
   future session approve <id> <request-id> [opts]      Allow a pending approval
   future session reject <id> <request-id> [opts]       Deny a pending approval
   future session delete <id>                           Delete a session
+  future session prune --older-than <age> [--yes]      Delete sessions idle longer than <age>
 
 Session data is stored in ~/.future/agent/agent.db";
 
@@ -110,7 +111,7 @@ fn help(out: &Output) {
 }
 
 /// `truncate(s, n)` — cut to n chars (last char replaced with "…").
-fn truncate(s: &str, n: usize) -> String {
+pub(super) fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
     } else {
@@ -137,7 +138,7 @@ fn ago(iso: &str, now_ms: i64) -> String {
     relative_age(parse_timestamp_ms(iso), now_ms)
 }
 
-fn relative_age(updated_ms: i64, now_ms: i64) -> String {
+pub(super) fn relative_age(updated_ms: i64, now_ms: i64) -> String {
     let ms = now_ms - updated_ms;
     let mins = ms / 60_000;
     if mins < 1 {
@@ -173,7 +174,7 @@ fn parse_timestamp_ms(iso: &str) -> i64 {
 }
 
 /// `Date.now()`.
-fn now_ms() -> i64 {
+pub(super) fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -281,7 +282,7 @@ async fn list_sessions(json_flag: bool, parent: Option<&str>, out: &Output) -> R
 }
 
 /// `s.padEnd(n)`.
-fn pad_end(s: &str, n: usize) -> String {
+pub(super) fn pad_end(s: &str, n: usize) -> String {
     let count = s.chars().count();
     if count >= n {
         s.to_string()
@@ -1299,7 +1300,39 @@ async fn set_session_command(args: &[String], out: &Output) -> Result<(), String
     }
     if let Some(tier) = &parsed.sandbox {
         match client.set_sandbox_policy(tier, &target_id).await {
-            Ok(_) => applied.push(("sandboxTier", tier.clone())),
+            Ok(_) => {
+                applied.push(("sandboxTier", tier.clone()));
+                // `manual`/`sandbox`/`auto` only ask while the approval gate is
+                // armed: at the legacy `all` level the agent returns from
+                // `before_tool_call` before any approval rule is consulted, so
+                // reporting the mode alone would promise prompts that never
+                // come. The permission block above already ran, so a
+                // `--permission` value is the post-state.
+                if matches!(tier.as_str(), "manual" | "sandbox" | "auto") {
+                    let level = match &parsed.permission {
+                        Some(level) => Some(level.clone()),
+                        None => client
+                            .get_state(Some(&target_id))
+                            .await
+                            .ok()
+                            .and_then(|state| {
+                                state
+                                    .get("permissionLevel")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string)
+                            }),
+                    };
+                    // Only a level we actually know to be `all` earns the
+                    // warning: a failed `get_state` (or an older agent that
+                    // omits the field) leaves the level unknown, and the note
+                    // would then assert a fact this command never learned.
+                    if level.as_deref() == Some("all") {
+                        notes.push(format!(
+                            "approval mode `{tier}` cannot ask while the tool permission is `all` — add `--permission workspace`"
+                        ));
+                    }
+                }
+            }
             Err(err) => failures.push(("sandboxTier", missing_session_error(err, &target_id))),
         }
     }
@@ -1383,7 +1416,7 @@ fn option_label(key: &str) -> String {
         "systemPrompt" => "SystemPro",
         "appendSystemPrompt" => "AppendSys",
         "permissionLevel" => "Permission",
-        "sandboxTier" => "Sandbox",
+        "sandboxTier" => "Approval",
         "contextFiles" => "CtxFiles",
         "autoCompaction" => "AutoCompact",
         "autoRetry" => "AutoRetry",
@@ -1428,6 +1461,10 @@ pub async fn session(
 
     if subcommand == "reset" {
         return super::session_reset::run(args, out).await;
+    }
+
+    if subcommand == "prune" {
+        return super::session_prune::run(args, out).await;
     }
 
     if subcommand == "wait" {
@@ -1709,27 +1746,14 @@ mod tests {
         let env = crate::test_env::EnvGuard::set(&[(
             "FUTURE_AGENT_GRPC_ADDR",
             std::ffi::OsString::from(addr),
-        )]);
+        )])
+        .with_temp_home();
         // `session set --cwd` files the conversation in the desktop app's own
         // store (`~/.future/app/app.db`), so every one of these tests must run
         // against a throwaway home: without this they would read — and, on a
         // machine where the desktop app has imported the session, *write* — the
         // real app database.
-        isolate_home();
         (agent, env)
-    }
-
-    /// Point HOME at a fresh temporary directory for the rest of this test,
-    /// keeping the directory alive in a thread-local so the guard's drop leaves
-    /// nothing behind and no test deletes a directory another one is using.
-    fn isolate_home() {
-        use std::cell::RefCell;
-        thread_local! {
-            static HOMES: RefCell<Vec<tempfile::TempDir>> = const { RefCell::new(Vec::new()) };
-        }
-        let home = tempfile::tempdir().expect("tempdir");
-        std::env::set_var("HOME", home.path());
-        HOMES.with(|homes| homes.borrow_mut().push(home));
     }
 
     /// `--parent` in the create step is what makes a child a child: without it
@@ -2521,8 +2545,12 @@ mod tests {
         conn
     }
 
-    /// A thread bound to an Agent session, plus the tables the filing rule reads
-    /// — what the desktop app's import creates when it adopts a session.
+    /// A thread bound to an Agent session, plus the columns the filing rule and
+    /// the workspace ordering read — what the desktop app's import creates when
+    /// it adopts a session. The ordering ranks a workspace by
+    /// `COALESCE(last_message_at, updated_at, created_at)` of its newest
+    /// conversation, so a fixture that omits those columns is not a database the
+    /// app could have written.
     fn seed_desktop_thread(session_id: &str, thread_id: &str) {
         let conn = open_app_db();
         conn.execute_batch(
@@ -2531,6 +2559,8 @@ mod tests {
                  workspace_id TEXT NOT NULL,
                  agent_session_id TEXT,
                  status TEXT NOT NULL DEFAULT 'active',
+                 last_message_at INTEGER,
+                 created_at INTEGER NOT NULL DEFAULT 0,
                  updated_at INTEGER NOT NULL DEFAULT 0
              );",
         )
@@ -2788,6 +2818,63 @@ mod tests {
                 "{options:?} should mention {expected:?}, got {stderr:?}"
             );
         }
+    }
+
+    /// A protected approval mode only asks while the tool permission level is
+    /// `workspace`; at the legacy `all` the agent never consults the approval
+    /// rules. The CLI says so instead of reporting a mode that will not prompt.
+    #[tokio::test]
+    async fn set_warns_that_a_protected_mode_needs_the_workspace_level() {
+        let _guard = crate::test_env::lock_env().await;
+        let mut agent = crate::test_server::MockAgent::default();
+        agent
+            .responses
+            .insert("get_state".into(), r#"{"permissionLevel":"all"}"#.into());
+        let (_agent, _env) = mock_env(agent).await;
+
+        let (out, cap) = Output::memory();
+        session(
+            Some("set"),
+            &[
+                "sess-1".into(),
+                "--sandbox".into(),
+                "manual".into(),
+                "--json".into(),
+            ],
+            &out,
+        )
+        .await
+        .expect("set");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["updated"]["sandboxTier"], "manual");
+        let notes = parsed["notes"].as_array().expect("a note");
+        assert!(
+            notes.iter().any(|note| note
+                .as_str()
+                .is_some_and(|note| note.contains("--permission workspace"))),
+            "{notes:?}"
+        );
+
+        // The explicit level is the post-state: no note once it gates.
+        let (out, cap) = Output::memory();
+        session(
+            Some("set"),
+            &[
+                "sess-1".into(),
+                "--sandbox".into(),
+                "manual".into(),
+                "--permission".into(),
+                "workspace".into(),
+                "--json".into(),
+            ],
+            &out,
+        )
+        .await
+        .expect("set");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert!(parsed.get("notes").is_none(), "{parsed}");
     }
 
     #[tokio::test]
@@ -3533,7 +3620,7 @@ mod tests {
         let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
         assert_eq!(
             stdout,
-            "Updated session sess-1\n  Sandbox:      auto\n  CtxFiles:     on\n  AutoCompact:  off\n  AutoRetry:    on\n"
+            "Updated session sess-1\n  Approval:     auto\n  CtxFiles:     on\n  AutoCompact:  off\n  AutoRetry:    on\n"
         );
     }
 

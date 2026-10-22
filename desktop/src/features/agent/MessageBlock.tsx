@@ -1,12 +1,13 @@
 import type { AgentMessage } from "@future-os/thread-projection";
 import type { ActivityTargetResolver } from "./AgentActivityList";
-import type { ReplyBlock } from "./replyBlocks";
+import type { ReplyBlock, StepSegment } from "./replyBlocks";
 import { GitBranch, RotateCcw, StepForward } from "lucide-react";
-import { Fragment, memo } from "react";
+import { Fragment, memo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { CopyButton } from "../../components/ui/CopyButton";
 import { useCopyState } from "../../components/ui/useCopyState";
 import { cn } from "../../lib/cn";
+import { foldsSettledReply, useReplyDetail } from "../../lib/replyDisplay";
 import { STREAMED_BLOCK_CONTAINMENT } from "../markdown/LiveMarkdownContext";
 import { MarkdownContent, StreamingMarkdownContent } from "../markdown/MarkdownContent";
 import { AgentActivityLine, AgentActivityList } from "./AgentActivityList";
@@ -15,7 +16,8 @@ import { MessageMeta } from "./MessageMeta";
 import { AttachmentChip } from "./messages/AttachmentChip";
 import { MessageFrame } from "./messages/MessageFrame";
 import { CompactionDivider, StatusDivider } from "./messages/MessageStatus";
-import { buildReplyBlocks, replyTailBlock } from "./replyBlocks";
+import { buildReplyBlocks, replyTailBlock, splitFinalAnswer } from "./replyBlocks";
+import { ReplyProcess } from "./ReplyProcess";
 import { ReplySteps } from "./ReplySteps";
 import { ThinkingBlock } from "./ThinkingBlock";
 
@@ -70,6 +72,11 @@ function MessageBlockImpl({
 }: MessageBlockProps) {
   const { t } = useTranslation("agent");
   const { copiedKey, copy } = useCopyState();
+  // Reading preference: the `default` level keeps a settled reply to the answer
+  // it ends on, with the work that produced it folded into one row above it.
+  // Expansion is the reader's, per reply — each row owns its own.
+  const finalAnswerOnly = foldsSettledReply(useReplyDetail());
+  const [processExpanded, setProcessExpanded] = useState(false);
   const isUser = message.role === "user";
   // While the reply streams, the footer is pinned open and shows a live activity
   // indicator instead of the copy button; the copy button returns once it settles.
@@ -101,11 +108,34 @@ function MessageBlockImpl({
         return null;
       })()
     : null;
+  // The reply's rendered slices, and the one ↑/↓ lands on when the ladder stops
+  // at this turn's reply: its last slice that still has output. A reply opens
+  // with the work it ran, so the row's own top would put reasoning at the
+  // reading edge and the answer below it — the rung names this block instead,
+  // and the row marks it so a jump can measure it (`useQuestionNav`).
+  const blocks = segments ? buildReplyBlocks(segments, streaming) : null;
+  // Fold the work only once the reply settles: while it streams the reader is
+  // watching it happen, and every live block stays on screen. A reply with no
+  // prose of its own has no answer to isolate, so nothing folds.
+  const folded = blocks && finalAnswerOnly && !streaming ? splitFinalAnswer(blocks) : null;
+  const visibleBlocks = folded ? folded.answer : blocks;
+  const hiddenWork = folded && folded.process.length > 0 ? folded.process : null;
+  const hiddenSteps = hiddenWork ? replySteps(hiddenWork) : [];
+  const hiddenTools = hiddenSteps.reduce((total, segment) => segment.kind === "activity" ? total + (segment.item.count ?? 1) : total, 0);
+  const hiddenThoughts = hiddenSteps.filter(segment => segment.kind === "thinking").length;
+  const tailBlock = visibleBlocks ? replyTailBlock(visibleBlocks) : null;
+  // The reply's final slice, whatever kind it is — what "this reply is still
+  // being written" means for a reasoning block.
+  const lastSegmentId = segments ? (segments[segments.length - 1]?.id ?? null) : null;
   // Plain-text payload for the copy button: joined text slices when the reply is
-  // segmented, otherwise the raw content. Activity lines are excluded.
-  const copyableText = (segments
-    ? segments.flatMap(segment => (segment.kind === "text" ? [segment.text] : [])).join("\n\n")
-    : message.content ?? "").trim();
+  // segmented, otherwise the raw content. Activity lines are excluded. While the
+  // reading setting folds the work away, the button belongs to the answer it is
+  // shown beside, so it copies that answer and not prose that came before it.
+  const copyableText = (folded
+    ? proseText(folded.answer)
+    : segments
+      ? segments.flatMap(segment => (segment.kind === "text" ? [segment.text] : [])).join("\n\n")
+      : message.content ?? "").trim();
   // Built once and placed by role: the assistant's sits in the reply's own
   // footer, the user's goes to `MessageFrame`'s footer, outside their bubble.
   const copyControl = copyableText
@@ -127,17 +157,6 @@ function MessageBlockImpl({
       )
     : null;
 
-  // The reply's rendered slices, and the one ↑/↓ lands on when the ladder stops
-  // at this turn's reply: its last slice that still has output. A reply opens
-  // with the work it ran, so the row's own top would put reasoning at the
-  // reading edge and the answer below it — the rung names this block instead,
-  // and the row marks it so a jump can measure it (`useQuestionNav`).
-  const blocks = segments ? buildReplyBlocks(segments, streaming) : null;
-  const tailBlock = blocks ? replyTailBlock(blocks) : null;
-  // The reply's final slice, whatever kind it is — what "this reply is still
-  // being written" means for a reasoning block.
-  const lastSegmentId = segments ? (segments[segments.length - 1]?.id ?? null) : null;
-
   // A reloaded compaction marker is a message carrying only a compaction
   // segment: render just the divider (no author header / bubble), matching the
   // inline divider the live path shows mid-reply.
@@ -157,6 +176,31 @@ function MessageBlockImpl({
     );
   }
 
+  // One rendered slice of the reply; `tail` is the index of the block the ↑/↓
+  // ladder lands on, measured over whatever the row currently shows.
+  const renderBlocks = (list: readonly ReplyBlock[], tail: number | null) => list.map((block, index) => {
+    const key = blockKey(block);
+    const body = (
+      <ReplyBlockBody
+        block={block}
+        lastSegmentId={lastSegmentId}
+        liveSegmentId={liveSegmentId}
+        message={message}
+        resolveActivityTarget={resolveActivityTarget}
+        streaming={streaming}
+        workspaceId={workspaceId}
+        workspacePath={workspacePath}
+      />
+    );
+    // The block the ladder's reply-tail rung lands on is wrapped so
+    // its own top can be measured inside this row: the wrapper
+    // carries no style, so it reports where the block sits without
+    // moving it (`[data-reply-tail]`, read by `useQuestionNav`).
+    return index === tail
+      ? <div data-reply-tail="" key={key}>{body}</div>
+      : <Fragment key={key}>{body}</Fragment>;
+  });
+
   return (
     <MessageFrame
       author={t(message.authorKey)}
@@ -168,31 +212,22 @@ function MessageBlockImpl({
       onLeave={() => onLeave(message.id)}
       role={isUser ? "user" : "assistant"}
     >
-      {segments && blocks
+      {segments && visibleBlocks
         ? (
             <div className="space-y-3">
-              {blocks.map((block, index) => {
-                const key = blockKey(block);
-                const body = (
-                  <ReplyBlockBody
-                    block={block}
-                    lastSegmentId={lastSegmentId}
-                    liveSegmentId={liveSegmentId}
-                    message={message}
-                    resolveActivityTarget={resolveActivityTarget}
-                    streaming={streaming}
-                    workspaceId={workspaceId}
-                    workspacePath={workspacePath}
-                  />
-                );
-                // The block the ladder's reply-tail rung lands on is wrapped so
-                // its own top can be measured inside this row: the wrapper
-                // carries no style, so it reports where the block sits without
-                // moving it (`[data-reply-tail]`, read by `useQuestionNav`).
-                return index === tailBlock
-                  ? <div data-reply-tail="" key={key}>{body}</div>
-                  : <Fragment key={key}>{body}</Fragment>;
-              })}
+              {hiddenWork
+                ? (
+                    <ReplyProcess
+                      expanded={processExpanded}
+                      thoughts={hiddenThoughts}
+                      tools={hiddenTools}
+                      onToggle={() => setProcessExpanded(value => !value)}
+                    >
+                      {renderBlocks(hiddenWork, null)}
+                    </ReplyProcess>
+                  )
+                : null}
+              {renderBlocks(visibleBlocks, tailBlock)}
             </div>
           )
         : message.content
@@ -332,6 +367,22 @@ function MessageBlockImpl({
  */
 function blockKey(block: ReplyBlock): string {
   return block.kind === "steps" ? block.segments[0]!.id : block.segment.id;
+}
+
+/** The prose a set of rendered blocks carries, joined the way the copy button wants it. */
+function proseText(blocks: readonly ReplyBlock[]): string {
+  return blocks
+    .flatMap(block => (block.kind === "segment" && block.segment.kind === "text" ? [block.segment.text] : []))
+    .join("\n\n");
+}
+
+/** Every step (reasoning or a settled call) a set of rendered blocks holds. */
+function replySteps(blocks: readonly ReplyBlock[]): StepSegment[] {
+  return blocks.flatMap((block) => {
+    if (block.kind === "steps")
+      return block.segments;
+    return block.segment.kind === "activity" || block.segment.kind === "thinking" ? [block.segment] : [];
+  });
 }
 
 /**

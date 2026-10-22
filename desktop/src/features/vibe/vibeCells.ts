@@ -77,11 +77,16 @@ export function vibeCellsOf(
     if (filter.kind === "device" && filter.desktopId !== catalog.desktopId)
       continue;
     for (const session of catalog.sessions) {
+      // The pin, and nothing else. A host's row carries no *lifecycle* status: the
+      // `status` field on the wire is the last **run**'s (`mergeConversations` reads
+      // it into `runStatus`, and `remote_host::catalog` fills it from the run table),
+      // so reading it as "is this conversation live" dropped a pinned conversation as
+      // soon as it had ever run — which is nearly all of them, and it made the panel
+      // look like it only knew this machine's pins. The host's own thread lifecycle
+      // is not in the catalogue (deleted threads are already excluded at the source),
+      // so an archived conversation of a host's appears until it is unpinned; there is
+      // no field to tell it apart, and inventing one here is what caused the bug.
       if (session.pinned !== true)
-        continue;
-      // A host reports its own status; only an active one is a conversation worth
-      // watching, and the same rule the local half applies.
-      if (session.status !== undefined && session.status !== "active")
         continue;
       cells.push({
         createdAt: null,

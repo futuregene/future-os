@@ -539,6 +539,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_runnable_cli_on_path_is_discovered_and_probed() {
+        if crate::test_support::reexec_test() {
+            return;
+        }
         let _lock = path_lock();
         // No deadline: the reply is captured because the fixture ends, not
         // because a busy host managed to schedule it inside 3 s.
@@ -564,6 +567,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_missing_capability_is_reported_with_the_cli_identity() {
+        if crate::test_support::reexec_test() {
+            return;
+        }
         let _lock = path_lock();
         let _deadline = ProbeDeadlineGuard::set(None);
         let root = tempfile::tempdir().unwrap();
@@ -589,6 +595,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_cli_that_changes_during_discovery_is_rejected() {
+        if crate::test_support::reexec_test() {
+            return;
+        }
         let _lock = path_lock();
         let _deadline = ProbeDeadlineGuard::set(None);
         let root = tempfile::tempdir().unwrap();
@@ -616,6 +625,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn prepare_path_prepends_the_discovered_cli() {
+        if crate::test_support::reexec_test() {
+            return;
+        }
         let _lock = path_lock();
         let _deadline = ProbeDeadlineGuard::set(None);
         let root = tempfile::tempdir().unwrap();

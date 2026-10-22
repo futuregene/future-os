@@ -1,89 +1,250 @@
 name: CI
 
-permissions: read-all
-
-# Fast feedback on every PR, cache warming on every merge to main, and manual
-# dispatch: lint + typecheck + tests + a 3-platform Rust compile check. Full
-# cross-platform *packaging* stays in build.yml (tags / dispatch) — this
-# workflow exists so breakage (especially platform-conditional Rust that only
-# shows up on Windows/macOS) is caught BEFORE a release build is cut.
-#
-# The push-to-main trigger exists to WARM THE CACHES, not to gate anything. A
-# cache saved on the default branch is restorable from every pull request; one
-# saved by a PR is scoped to that PR's merge ref alone. When PRs saved their own
-# entries, ~2-4 PRs in flight each stored ~6-7 GB, overflowed the repository's
-# 10 GB quota and evicted one another (measured 2026-10-20: 14.97 GB stored, and
-# the Windows/macOS builds swinging between 3 min on a cache hit and 20-22 min
-# cold). So `save-if` below is `github.ref == refs/heads/main` and every other
-# ref is read-only: one writer per key, and a first PR run already starts warm.
-# The main run still verifies the merged tree on three platforms, but it is not
-# a gate — branch protection applies to PRs, and a red main run never blocks
-# anyone.
-#
-# Dispatches count as writers only when they target main. A dispatch on a
-# feature branch is a reader: those entries would be restorable by that branch
-# alone (measured 2026-10-20: a long-lived branch held 7.4 GB in seven entries
-# no PR could see, and evicted main's Windows build, desktop suite and remote
-# entries in the process). To re-warm after an eviction, dispatch on main.
 on:
   pull_request:
-  # Only the inputs that change cache keys/content; a docs-only or frontend-only
-  # merge must not start a full run.
+  merge_group:
   push:
     branches: [main]
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.cargo/**'
-      - 'rust-toolchain.toml'
-      - 'packages/**'
-      - 'agent/**'
-      - 'channels/**'
-      - 'tui/**'
-      - 'cli/**'
-      - 'orchestration/**'
-      - 'desktop/src-tauri/**'
-      - 'scripts/ci/**'
-      - '.github/workflows/ci.yml'
-  # Full PR-check suite by default; narrow scopes avoid rerunning unrelated
-  # suites while iterating on offline updates or Desktop Rust fixtures.
   workflow_dispatch:
     inputs:
-      scope:
-        description: Select full CI, Remote packages, Windows updates, Desktop Rust, headless CLI, or native lifecycle.
-        required: false
-        type: choice
-        default: all
-        options:
-          - all
-          - remote
-          - remote-compile-measurement
-          - headless-measurement
-          - windows-update
-          - desktop-rust
-          - headless-cli
-          - agent-lifecycle
-      measurement_candidate:
-        description: Full candidate SHA for optional Headless measurement; empty uses this workflow revision.
-        required: false
+      projects:
+        description: 'Optional comma-separated Cargo/npm project names or android,ios; empty runs full CI'
         type: string
+        required: false
         default: ''
+  workflow_call:
+    inputs:
+      full:
+        type: boolean
+        default: true
 
-# Re-pushing a branch cancels its stale run; release tags are unaffected
-# (this workflow never triggers on tags anyway).
+permissions:
+  contents: read
+  actions: read
+
+# PRs cancel stale runs. Main runs serialize so their cache-save steps finish.
 concurrency:
-  group: ci-${{ github.ref }}-${{ inputs.scope || 'all' }}
-  # Main runs are cache writers and must not cancel each other: a cancelled job
-  # does not reliably reach its cache-save post step, and merges land every few
-  # minutes, so cancelling would leave every entry half-written and PRs
-  # permanently cold. Serializing a handful of runs is free on a public
-  # repository. Everything else (a re-pushed PR, a repeated dispatch) is stale
-  # by definition and is cancelled.
+  group: ci-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'push' }}
 
 jobs:
-  macos-notarization:
-    name: macOS notarization recovery
+  affected:
+    name: Detect affected projects
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      rust: ${{ steps.plan.outputs.rust }}
+      rust_tests: ${{ steps.plan.outputs.rust_tests }}
+      typescript: ${{ steps.plan.outputs.typescript }}
+      android: ${{ steps.plan.outputs.android }}
+      ios: ${{ steps.plan.outputs.ios }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Setup pinned Rust for workspace metadata
+        run: node scripts/ci/setup-rust.mjs
+      - name: CI planner and gate regressions
+        run: node --test scripts/tests/ci-plan.test.mjs
+      - name: Collect changed files (including deletions and rename sources)
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BASE: ${{ github.event.before }}
+          MERGE_BASE: ${{ github.event.merge_group.base_sha }}
+        run: |
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          let files = [];
+          if (process.env.GITHUB_EVENT_NAME === 'pull_request') {
+            const base = execFileSync('git', ['merge-base', process.env.PR_BASE, process.env.PR_HEAD],
+              { encoding: 'utf8' }).trim();
+            files = execFileSync('git', ['diff', '--name-only', '--no-renames', '-z', base, process.env.PR_HEAD],
+              { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }).split('\0').filter(Boolean);
+          } else if (['push', 'merge_group'].includes(process.env.GITHUB_EVENT_NAME)) {
+            const base = process.env.MERGE_BASE || process.env.PUSH_BASE;
+            if (!base || /^0+$/.test(base)) throw new Error('Missing diff base');
+            files = execFileSync('git', ['diff', '--name-only', '--no-renames', '-z', base, 'HEAD'],
+              { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }).split('\0').filter(Boolean);
+          }
+          writeFileSync(join(process.env.RUNNER_TEMP, 'ci-files.json'), JSON.stringify(files));
+          JS
+      - name: Build execution plan
+        id: plan
+        env:
+          FORCE_ALL: ${{ github.event_name == 'workflow_dispatch' || inputs.full == true }}
+          MANUAL_PROJECTS: ${{ github.event_name == 'workflow_dispatch' && inputs.projects || '' }}
+        run: node scripts/ci/affected.mjs "$RUNNER_TEMP/ci-files.json"
+
+  rust-linux-test:
+    name: Rust Linux test
+    needs: affected
+    if: needs.affected.outputs.rust != '[]'
+    uses: ./.github/workflows/rust-ci.yml
+    with:
+      os: ubuntu-latest
+      mode: test
+      projects: ${{ needs.affected.outputs.rust_tests }}
+
+  rust-windows-test:
+    name: Rust Windows test
+    needs: affected
+    if: needs.affected.outputs.rust != '[]'
+    uses: ./.github/workflows/rust-ci.yml
+    with:
+      os: windows-latest
+      mode: test
+      projects: ${{ needs.affected.outputs.rust_tests }}
+
+  rust-macos-test:
+    name: Rust macOS test
+    needs: affected
+    if: needs.affected.outputs.rust != '[]'
+    uses: ./.github/workflows/rust-ci.yml
+    with:
+      os: macos-latest
+      mode: test
+      projects: ${{ needs.affected.outputs.rust_tests }}
+
+  rust-check:
+    name: Rust check
+    needs: affected
+    if: needs.affected.outputs.rust != '[]'
+    uses: ./.github/workflows/rust-ci.yml
+    with:
+      os: ubuntu-latest
+      mode: check
+      projects: ${{ needs.affected.outputs.rust }}
+
+  typescript-test:
+    name: TypeScript test
+    needs: affected
+    if: needs.affected.outputs.typescript != '[]'
+    uses: ./.github/workflows/typescript-ci.yml
+    with:
+      mode: test
+      projects: ${{ needs.affected.outputs.typescript }}
+
+  typescript-check:
+    name: TypeScript check
+    needs: affected
+    if: needs.affected.outputs.typescript != '[]'
+    uses: ./.github/workflows/typescript-ci.yml
+    with:
+      mode: check
+      projects: ${{ needs.affected.outputs.typescript }}
+
+  android-test:
+    name: Android test
+    needs: affected
+    if: needs.affected.outputs.android == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CI: '1'
+      CI_TIMING_JOB: 'Android test'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: platforms;android-36 build-tools;36.0.0
+      - run: npm ci
+      - name: Prebuild Android
+        working-directory: mobile
+        run: npx expo prebuild --platform android --no-install
+      - name: Build Debug app
+        working-directory: mobile/android
+        run: ./gradlew :app:assembleDebug --no-daemon
+      - name: Native JVM tests (including local modules)
+        working-directory: mobile/android
+        run: ./gradlew :app:testDebugUnitTest :future-share-intent:testDebugUnitTest :future-file-handler:testDebugUnitTest --no-daemon
+      - name: Share staging IO tests
+        run: python3 scripts/tests/test-mobile-share-io.py
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-test-reports
+          path: |
+            mobile/android/**/build/reports/tests/
+            mobile/modules/**/android/build/reports/tests/
+          if-no-files-found: ignore
+      - name: Collect job timings
+        continue-on-error: true
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/job-timings.mjs
+      - name: Upload CI timings
+        continue-on-error: true
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: timings-android
+          path: ${{ runner.temp }}/ci-timings/
+          retention-days: 3
+          if-no-files-found: warn
+
+  ios-test:
+    name: iOS test
+    needs: affected
+    if: needs.affected.outputs.ios == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      CI: '1'
+      CI_TIMING_JOB: 'iOS test'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Prebuild iOS and install pods
+        working-directory: mobile
+        run: npx expo prebuild --platform ios
+      - name: Build Simulator app
+        working-directory: mobile/ios
+        run: |
+          xcodebuild -workspace FutureOS.xcworkspace -scheme FutureOS \
+            -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "$RUNNER_TEMP/ios-build" CODE_SIGNING_ALLOWED=NO build
+      - name: Native ShareInbox tests
+        run: python3 scripts/tests/test-mobile-ios-share.py
+      - name: Collect job timings
+        continue-on-error: true
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/job-timings.mjs
+      - name: Upload CI timings
+        continue-on-error: true
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: timings-ios
+          path: ${{ runner.temp }}/ci-timings/
+          retention-days: 3
+          if-no-files-found: warn
+
+  ci-result:
+    name: CI result
+    needs: [affected, rust-linux-test, rust-windows-test, rust-macos-test, rust-check, typescript-test, typescript-check, android-test, ios-test]
+    if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -91,1003 +252,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
-      - name: Test submission recovery and publication policy
-        run: node --test scripts/tests/notarize-macos-dmg.test.mjs
-
-  # On PRs and merges to main, run only affected suites. Manual default runs
-  # cover everything; explicit scopes select Remote, offline updates, or Desktop
-  # Rust validation.
-  changes:
-    name: Detect affected checks
-    runs-on: ubuntu-latest
-    outputs:
-      remote: ${{ steps.remote.outputs.remote }}
-      remote_rust: ${{ steps.remote.outputs.remote_rust }}
-      remote_ts: ${{ steps.remote.outputs.remote_ts }}
-      remote_interop: ${{ steps.remote.outputs.remote_interop }}
-      rust_workspace: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_workspace == 'true' || steps.filter.outputs.ci == 'true' }}
-      # Per-crate triggers for the rust-tests groups, so a PR that touches only
-      # one crate runs only that crate's test group. Each inherits the shared
-      # build-graph inputs (root manifest, lock, toolchain, future-rpc) — those
-      # affect every workspace crate.
-      rust_host: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_host == 'true' || steps.filter.outputs.ci == 'true' }}
-      rust_agent: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_agent == 'true' || steps.filter.outputs.ci == 'true' }}
-      rust_tui_cli: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_tui_cli == 'true' || steps.filter.outputs.ci == 'true' || (github.event_name == 'workflow_dispatch' && (inputs.scope == 'headless-cli' || inputs.scope == 'agent-lifecycle')) }}
-      rust_channels_rpc_goal: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.rust_channels_rpc_goal == 'true' || steps.filter.outputs.ci == 'true' }}
-      # Proto/codegen freshness only needs re-checking when a proto source,
-      # its build script, the generated output, or a build-dep version changes.
-      proto: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.proto == 'true' || steps.filter.outputs.ci == 'true' }}
-      desktop_tauri: ${{ steps.remote.outputs.remote_desktop == 'true' || steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_tauri == 'true' || steps.filter.outputs.ci == 'true' || (github.event_name == 'workflow_dispatch' && (inputs.scope == 'desktop-rust' || inputs.scope == 'headless-cli' || inputs.scope == 'agent-lifecycle')) }}
-      agent_lifecycle: ${{ steps.remote.outputs.remote_desktop == 'true' || steps.force.outputs.all == 'true' || steps.filter.outputs.agent_lifecycle == 'true' || steps.filter.outputs.ci == 'true' || (github.event_name == 'workflow_dispatch' && inputs.scope == 'agent-lifecycle') }}
-      windows_update: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.windows_update == 'true' || steps.filter.outputs.ci == 'true' || (github.event_name == 'workflow_dispatch' && inputs.scope == 'windows-update') }}
-      desktop_frontend: ${{ steps.force.outputs.all == 'true' || steps.filter.outputs.desktop_frontend == 'true' || steps.filter.outputs.ci == 'true' }}
-      mobile: ${{ steps.remote.outputs.remote_mobile == 'true' || steps.force.outputs.all == 'true' || steps.filter.outputs.mobile == 'true' || steps.filter.outputs.ci == 'true' }}
-    steps:
-      # Needed before the changed-file filter: on a push to main
-      # dorny/paths-filter diffs the pushed tree against the previous main tip
-      # with git, so that commit must be in the clone. Pull requests go through
-      # the REST API and ignore the depth.
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          # One merge commit deep is enough: main gets squash merges.
-          fetch-depth: 2
-
-      - id: force
-        shell: bash
+      - name: Require success for every planned check
         env:
-          REQUESTED_SCOPE: ${{ inputs.scope }}
-        run: |
-          # A merge to main narrows to its own affected suites exactly like a PR:
-          # the entries it warms then stay valid for every later PR until an
-          # input changes, and a short filtered run keeps the single cache
-          # writer from queueing behind full-suite runs while merges keep
-          # landing.
-          if [[ "$GITHUB_EVENT_NAME" != "workflow_dispatch" || ( -n "$REQUESTED_SCOPE" && "$REQUESTED_SCOPE" != "all" ) ]]; then
-            echo "all=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "all=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - id: filter
-        if: github.event_name != 'workflow_dispatch'
-        uses: dorny/paths-filter@v4
-        with:
-          # v4.0.3+ supports 'some-with-excludes': a file is included only if it
-          # matches at least one non-negated pattern AND no `!`-negated pattern.
-          # The v3 default 'some' treats a `!` pattern as a match of "everything
-          # outside it", which made desktop_frontend/mobile match unrelated files
-          # like AGENTS.md and run those suites on nearly every PR.
-          predicate-quantifier: 'some-with-excludes'
-          list-files: json
-          filters: |
-            remote_paths:
-              - 'packages/remote-*/**'
-              - 'packages/thread-projection/**'
-              - 'tests/remote-interop/**'
-              - 'scripts/ci/remote-*'
-              - 'scripts/ci/setup-rust.mjs'
-              - 'scripts/tests/remote-ci.test.mjs'
-              - '.github/workflows/ci.yml'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - '.cargo/**'
-              - 'rust-toolchain.toml'
-              - 'package.json'
-              - 'package-lock.json'
-              - '.npmrc'
-            # Changing this workflow must revalidate every suite.
-            ci:
-              - '.github/workflows/ci.yml'
-              - 'scripts/ci/setup-rust.mjs'
-            # Aggregate: any workspace crate (or a shared build-graph file) —
-            # drives the workspace-level fmt/clippy and cross-platform build.
-            rust_workspace:
-              - 'host/**'
-              - 'packages/app-settings/**'
-              - 'packages/app-workspaces/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - '.cargo/**'
-              - 'rust-toolchain.toml'
-              - 'packages/rpc/**'
-              - 'agent/**'
-              - 'channels/**'
-              - 'tui/**'
-              - 'cli/**'
-              # The goal control plane is a workspace member — its changes must
-              # run the same fmt/clippy/test gates (previously missing here).
-              - 'orchestration/**'
-            # Per-crate triggers. Shared inputs (manifest/lock/toolchain/rpc)
-            # are repeated so a change to any of them runs every group.
-            rust_host:
-              - 'host/**'
-              - 'agent/**'
-              - 'packages/rpc/**'
-              - 'packages/remote-*/**'
-              - 'packages/app-settings/**'
-              - 'packages/app-workspaces/**'
-              - 'orchestration/tasks/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - '.cargo/**'
-              - 'rust-toolchain.toml'
-            rust_agent:
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - '.cargo/**'
-              - 'rust-toolchain.toml'
-              - 'packages/rpc/**'
-              - 'agent/**'
-            rust_tui_cli:
-              - 'host/**'
-              - 'packages/remote-*/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - '.cargo/**'
-              - 'rust-toolchain.toml'
-              - 'packages/rpc/**'
-              # The CLI reads and writes the desktop settings document, whose
-              # schema lives in packages/app-settings.
-              - 'packages/app-settings/**'
-              - 'packages/app-workspaces/**'
-              # The unified CLI embeds these crates, including Agent.
-              - 'agent/**'
-              - 'channels/**'
-              - 'orchestration/**'
-              - 'tui/**'
-              - 'cli/**'
-            rust_channels_rpc_goal:
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - '.cargo/**'
-              - 'rust-toolchain.toml'
-              - 'packages/rpc/**'
-              - 'channels/**'
-              - 'orchestration/**'
-            # Proto codegen freshness: only re-check when a proto source, its
-            # build script, the generated output, or a build-dep version could
-            # have drifted. Unrelated Rust changes skip the REGENERATE_PROTO
-            # cargo build.
-            proto:
-              - 'packages/rpc/**'
-              - 'channels/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-            desktop_tauri:
-              - 'host/**'
-              - 'scripts/build/build-desktop.mjs'
-              - 'scripts/ci/check-embedded-agent.py'
-              # The desktop backend path-depends on the shared settings schema.
-              - 'packages/app-settings/**'
-              - 'packages/app-workspaces/**'
-              - 'agent/**'
-              - 'orchestration/tasks/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'desktop/src-tauri/**'
-              # Installer-only inputs are covered by windows_update. Keep
-              # update-launcher.ps1 included: Rust embeds it with include_str!.
-              - '!desktop/src-tauri/windows/installer-hooks.nsh'
-              - '!desktop/src-tauri/windows/installer-preflight.ps1'
-              - '.cargo/**'
-              - 'rust-toolchain.toml'
-              # The desktop backend path-depends on future-rpc; changes there must
-              # revalidate the desktop backend too.
-              - 'packages/rpc/**'
-            # Keep the native lifecycle matrix narrow; frontend-only edits
-            # do not rebuild Rust test binaries on three operating systems.
-            agent_lifecycle:
-              - 'host/**'
-              - 'agent/**'
-              - 'packages/rpc/**'
-              - 'packages/app-settings/**'
-              - 'packages/app-workspaces/**'
-              - 'orchestration/tasks/**'
-              - 'desktop/src-tauri/**'
-              # These two scripts do not change the Agent runtime lifecycle.
-              - '!desktop/src-tauri/windows/installer-hooks.nsh'
-              - '!desktop/src-tauri/windows/installer-preflight.ps1'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - '.cargo/**'
-              - 'rust-toolchain.toml'
-              - 'scripts/ci/check-embedded-agent.py'
-            windows_update:
-              - '.github/workflows/build-windows-signed.yml'
-              - 'scripts/build/build-desktop-windows-*'
-              - 'desktop/src-tauri/windows/**'
-              - 'desktop/src-tauri/src/commands/update*.rs'
-              - 'scripts/tests/test-windows-installer-preflight.ps1'
-              - 'scripts/tests/windows-installer-*'
-              - 'scripts/tests/test-windows-update-launcher.ps1'
-              - 'scripts/tests/test-windows-sandbox-lifecycle.ps1'
-              - 'scripts/tests/test-windows-lifecycle-assertions.ps1'
-              - 'scripts/tests/test-install.ps1'
-              - 'scripts/release/install.ps1'
-            desktop_frontend:
-              - 'desktop/**'
-              - '!desktop/src-tauri/**'
-              - 'packages/markdown/**'
-              - 'packages/thread-projection/**'
-              # The root npm workspace manifest + lock define the shared install.
-              - 'package.json'
-              - 'package-lock.json'
-            mobile:
-              - 'mobile/**'
-              - '!mobile/android/**'
-              - '!mobile/ios/**'
-              - 'packages/markdown/**'
-              - 'packages/thread-projection/**'
-              - 'package.json'
-              - 'package-lock.json'
-
-      - name: Select Remote packages and consumers
-        id: remote
-        env:
-          CHANGED_FILES: ${{ steps.filter.outputs.remote_paths_files || '[]' }}
-          REQUESTED_SCOPE: ${{ inputs.scope }}
-        run: node scripts/ci/remote-affected.mjs
-
-  # Explicit one-off measurement only: no cache restore/save and no tests.
-  remote-compile-measurement:
-    name: Matched Windows Rust compilation
-    if: github.event_name == 'workflow_dispatch' && inputs.scope == 'remote-compile-measurement'
-    runs-on: windows-latest
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          path: candidate
-      - uses: actions/checkout@v7
-        with:
-          # Last integrated main, before extraction; same compiler/config.
-          ref: 7eb94d52db36b288a295ae33cb4f654ea1994044
-          path: baseline
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-      - name: Setup shared pinned Rust toolchain
-        run: node candidate/scripts/ci/setup-rust.mjs
-      - name: Compare empty-target compilation on one runner
-        run: python candidate/scripts/ci/remote-compile-measurement.py --baseline baseline --candidate candidate --output measurement
-      - name: Upload compilation evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: remote-windows-compilation-${{ github.sha }}
-          path: measurement/
-          if-no-files-found: error
-
-  # Optional evidence only. Raw binaries and real Store samples; no packaging,
-  # signing or product installation. Run after the user's manual-test handoff.
-  # A separate tools checkout can observe an already frozen full candidate SHA.
-  headless-measurement:
-    name: Matched Headless build and startup observation
-    if: github.event_name == 'workflow_dispatch' && inputs.scope == 'headless-measurement'
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          path: measurement-tools
-      - uses: actions/checkout@v7
-        with:
-          ref: 904eab2b1ebc8b7c963ddfb15dd9468c420e3f35
-          path: baseline
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.measurement_candidate || github.sha }}
-          path: candidate
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-      - name: Setup pinned Rust toolchain
-        run: node candidate/scripts/ci/setup-rust.mjs
-      - name: Install native build dependencies
-        run: |
-          bash candidate/scripts/ci/install-apt-packages.sh \
-            build-essential binutils mold pkg-config \
-            libayatana-appindicator3-dev libgtk-3-dev librsvg2-dev libwebkit2gtk-4.1-dev
-      - name: Observe matched empty-target builds and real persistence sample
-        run: |
-          python3 measurement-tools/scripts/ci/headless-measurement.py \
-            --baseline baseline --candidate candidate --output measurement
-      - name: Upload raw measurement evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: headless-measurement-${{ github.sha }}
-          path: measurement/
-          if-no-files-found: error
-          retention-days: 30
-
-  # One Remote runner batches package checks and real interoperability, sharing
-  # the Cargo target and npm install without spawning a runner for every package.
-  remote:
-    name: Remote packages + interoperability
-    needs: changes
-    if: needs.changes.outputs.remote == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      REMOTE_RUST: ${{ needs.changes.outputs.remote_rust }}
-      REMOTE_TS: ${{ needs.changes.outputs.remote_ts }}
-      REMOTE_INTEROP: ${{ needs.changes.outputs.remote_interop }}
-      CARGO_PROFILE_TEST_DEBUG: 1
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '24'
-          cache: npm
-          cache-dependency-path: package-lock.json
-      - name: Setup Rust
-        if: needs.changes.outputs.remote_rust != '[]' || needs.changes.outputs.remote_interop == 'true'
-        run: node scripts/ci/setup-rust.mjs
-      - name: Cache Rust
-        if: needs.changes.outputs.remote_rust != '[]' || needs.changes.outputs.remote_interop == 'true'
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: remote-packages
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: .
-          cache-on-failure: true
-          cache-all-crates: true
-      - name: Install compilation dependencies
-        if: needs.changes.outputs.remote_rust != '[]' || needs.changes.outputs.remote_interop == 'true'
-        run: bash scripts/ci/install-apt-packages.sh build-essential binutils mold pkg-config
-      - name: Install fixture broker
-        if: needs.changes.outputs.remote_interop == 'true'
-        run: bash scripts/ci/install-apt-packages.sh nats-server
-      - name: Install Node dependencies
-        if: needs.changes.outputs.remote_ts != '[]' || needs.changes.outputs.remote_interop == 'true'
-        run: npm ci
-      - name: Package checks and acceptance
-        run: node scripts/ci/remote-checks.mjs
-
-  # ─── Rust lint gate (Linux): fmt + clippy ─────────────────────────────────
-  # Lint every workspace crate (agent / channels / tui / cli / goal / future-rpc,
-  # via `--all` and `--workspace --all-targets`) plus the desktop Tauri backend.
-  # Tests run in the independent `rust-tests` job below so both gates can
-  # execute in parallel.
-  rust-quality:
-    name: Rust fmt + clippy (Linux)
-    needs: changes
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      # Always-present (no job-level `if`): a skipped required check is treated
-      # as unsatisfied, which would block docs-only PRs. Evaluate the gate here
-      # and gate every heavy step on it; an unaffected PR reports success via a
-      # no-op echo (the same pattern rust-tests uses).
-      - name: Is the Rust quality gate affected?
-        id: affected
-        env:
-          OUTPUTS: ${{ toJSON(needs.changes.outputs) }}
-        run: |
-          ws=$(echo "$OUTPUTS" | jq -r '.rust_workspace // "false"')
-          dt=$(echo "$OUTPUTS" | jq -r '.desktop_tauri // "false"')
-          if [ "$ws" = "true" ] || [ "$dt" = "true" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: No affected Rust quality checks
-        if: steps.affected.outputs.run != 'true'
-        run: echo "No Rust workspace or desktop Tauri changes; lint skipped."
-
-      # Read the project toolchain and isolate it from runner defaults.
-      - name: Setup Rust
-        if: steps.affected.outputs.run == 'true'
-        run: node scripts/ci/setup-rust.mjs
-
-      # Written by the merge-to-main run only; every other ref restores.
-      - name: Cache Rust
-        if: steps.affected.outputs.run == 'true'
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: rust-quality
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: .
-          cache-on-failure: true
-          cache-all-crates: true
-
-      # Run formatting before any package installation: rustfmt only needs the
-      # pinned toolchain, so a formatting failure returns immediately even when
-      # an Ubuntu mirror is unhealthy.
-      - name: rustfmt (workspace)
-        if: steps.affected.outputs.run == 'true' && needs.changes.outputs.rust_workspace == 'true'
-        run: cargo fmt --check --all
-
-      - name: rustfmt (desktop backend)
-        if: steps.affected.outputs.run == 'true' && needs.changes.outputs.desktop_tauri == 'true'
-        run: cargo fmt --check --manifest-path desktop/src-tauri/Cargo.toml
-
-      # mold + binutils because .cargo/config.toml pins -fuse-ld=mold and clippy
-      # still links build scripts, proc-macros and test binaries. WebKit/GTK for
-      # the Tauri -sys build scripts (desktop backend is part of this gate now).
-      # protobuf-compiler is needed only for the `proto codegen is fresh` step
-      # below — normal builds never run protoc (generation is gated on
-      # REGENERATE_PROTO).
-      # Base toolchain packages always; the WebKit/GTK/SSL stack ONLY when the
-      # desktop backend is affected (clippy links its -sys build scripts, which
-      # need pkg-config to find the libs). A goal-only PR skips ~40-60s of apt
-      # (the historical flake point: apt fetching from a slow Azure mirror),
-      # and protobuf-compiler is only needed for the proto-freshness step.
-      - name: Install Linux deps (base)
-        if: steps.affected.outputs.run == 'true'
-        run: |
-          bash scripts/ci/install-apt-packages.sh \
-            build-essential \
-            binutils \
-            mold \
-            pkg-config
-
-      # protobuf-compiler is needed only for the `proto codegen is fresh` step
-      # below — normal builds never run protoc (generation is gated on
-      # REGENERATE_PROTO). Install it in that step's own condition so proto-
-      # unrelated PRs skip it entirely.
-      - name: Install Linux deps (desktop GUI stack)
-        if: steps.affected.outputs.run == 'true' && needs.changes.outputs.desktop_tauri == 'true'
-        run: |
-          bash scripts/ci/install-apt-packages.sh \
-            libayatana-appindicator3-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev
-
-      # ── Workspace crates (agent / channels) ──
-      # --all because the root manifest is a virtual workspace (no [package]);
-      # --manifest-path would fail with "Failed to find targets".
-      - name: clippy (workspace)
-        if: steps.affected.outputs.run == 'true' && needs.changes.outputs.rust_workspace == 'true'
-        run: cargo clippy --workspace --exclude futureos --all-targets --manifest-path Cargo.toml -- -D warnings
-
-      # The generated wire code (future-rpc proto.rs, channels feishu_ws.rs) is
-      # checked in; guard against proto edits that skip `make generate-proto`.
-      # Output is deterministic for pinned prost/tonic-build, so a regenerate
-      # on the same source must be a no-op.
-      - name: Install protoc
-        if: steps.affected.outputs.run == 'true' && needs.changes.outputs.proto == 'true'
-        run: bash scripts/ci/install-apt-packages.sh protobuf-compiler
-
-      - name: proto codegen is fresh
-        if: steps.affected.outputs.run == 'true' && needs.changes.outputs.proto == 'true'
-        run: |
-          (cd packages/rpc && REGENERATE_PROTO=1 cargo build)
-          (cd channels && REGENERATE_PROTO=1 cargo build)
-          git diff --exit-code packages/rpc/src/generated/proto.rs channels/src/generated/
-
-      # ── desktop Tauri backend ──
-      - name: clippy (desktop backend)
-        if: steps.affected.outputs.run == 'true' && needs.changes.outputs.desktop_tauri == 'true'
-        run: |
-          cargo clippy -p future-cli -p futureos --all-targets -- -D warnings
-          cargo clippy -p future-host -p future-cli --all-targets -- -D warnings
-          python3 scripts/ci/host-boundaries.py
-
-  # ─── Rust test gates (Linux) ──────────────────────────────────────────────
-  # The workspace crates run as a matrix of independent groups, each paying
-  # only its own compile+run cost instead of everything serializing behind one
-  # big `cargo test --workspace`. The desktop backend suite is its own pair of
-  # jobs (`rust-tests-desktop` below): the GUI has a separate
-  # webkit/gtk dependency tree, and the two feature configurations used to run one
-  # after the other in a single job, which made it the longest leg of the suite.
-  #
-  # Groups are always-present (per-step `if`, never job-level): branch
-  # protection treats a *skipped* required check as unsatisfied, so e.g. a
-  # mobile-only PR must still report success for every group (no-op echo
-  # below). `rust-tests-gate` aggregates the groups into the single stable
-  # required context "Rust tests (Linux)", so splitting/renaming groups never
-  # requires touching the branch-protection ruleset.
-  #
-  # Workspace groups gate on their own per-crate trigger (rust_agent /
-  # rust_tui_cli / rust_channels_rpc_goal) instead of the aggregate
-  # rust_workspace, so a PR that touches only one crate runs only that crate's
-  # test group. The aggregate still drives the workspace-level fmt/clippy and
-  # cross-platform build. Workspace crates do not depend on desktop/src-tauri,
-  # so a desktop-only change cannot break them (the reverse is NOT true —
-  # future-rpc feeds the Tauri backend, and the path filter marks packages/rpc/**
-  # as desktop_tauri too, so RPC changes also run the desktop jobs).
-  #
-  # CARGO_PROFILE_TEST_DEBUG=1 keeps file:line in panic backtraces while
-  # dropping full debuginfo codegen — the dominant cost of building test
-  # binaries. The cli/tui
-  # golden-diff harnesses are NOT part of CI: they were the TS→Rust migration
-  # acceptance gate and now only run manually (make test-cli-diff /
-  # test-tui-diff) before a release.
-  rust-tests:
-    name: Rust tests (Linux) (${{ matrix.name }})
-    needs: changes
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: host
-            filter: rust_host
-            packages: -p future-host
-          - name: agent
-            filter: rust_agent
-            packages: -p future-agent
-          - name: tui, cli
-            filter: rust_tui_cli
-            packages: -p future-tui -p future-cli -p future-app-settings -p future-app-workspaces
-          - name: channels, rpc, goal
-            filter: rust_channels_rpc_goal
-            packages: -p future-channel -p future-rpc -p future-goal -p future-tasks
-    steps:
-      # Per-group affected check: reads the matching `changes` output by name
-      # so each group gates independently without a job-level `if` (which
-      # would skip the whole matrix and leave required checks "Expected").
-      - name: Is this test group affected?
-        id: affected
-        env:
-          FILTER: ${{ matrix.filter }}
-          OUTPUTS: ${{ toJSON(needs.changes.outputs) }}
-        run: |
-          run=$(echo "$OUTPUTS" | jq -r --arg k "$FILTER" '.[$k] // "false"')
-          echo "run=$run" >> "$GITHUB_OUTPUT"
-
-      - name: No affected Rust tests in this group
-        if: steps.affected.outputs.run != 'true'
-        run: echo "No affected Rust tests in this group; skipped."
-
-      - name: Checkout
-        if: steps.affected.outputs.run == 'true'
-        uses: actions/checkout@v7
-
-      - name: Setup Rust
-        if: steps.affected.outputs.run == 'true'
-        run: node scripts/ci/setup-rust.mjs
-
-      # Read-only, deliberately not warmed on main: the three groups store
-      # ~1.6 GB together, but their wall clock is test *execution*, not
-      # compilation (2-3 min of compiles inside a 5-7 min job, already hidden
-      # behind the ~10 min desktop suite). Spending a sixth of the 10 GB quota
-      # on that buys no critical-path time — see the header for the eviction
-      # this quota pressure caused. A run still restores whatever its own ref
-      # left behind; re-enable warming only with smaller entries.
-      - name: Cache Rust
-        if: steps.affected.outputs.run == 'true'
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: rust-tests-workspace-${{ matrix.filter }}
-          save-if: false
-          workspaces: .
-          cache-on-failure: true
-          cache-all-crates: true
-
-      # The root workspace has no WebKit/GTK or openssl-sys dependency, so its
-      # test groups install neither (the desktop jobs install that stack
-      # themselves).
-      - name: Install Linux deps
-        if: steps.affected.outputs.run == 'true'
-        run: |
-          bash scripts/ci/install-apt-packages.sh \
-            build-essential \
-            binutils \
-            mold \
-            pkg-config
-
-      - name: Install isolated Host broker dependency
-        if: steps.affected.outputs.run == 'true' && matrix.filter == 'rust_host'
-        run: bash scripts/ci/install-apt-packages.sh nats-server
-
-      - name: Host public library documentation
-        if: steps.affected.outputs.run == 'true' && matrix.filter == 'rust_host'
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc -p future-host --no-deps --locked
-
-      - name: cargo test (${{ matrix.name }})
-        if: steps.affected.outputs.run == 'true'
-        env:
-          CARGO_PROFILE_TEST_DEBUG: 1
-        run: |
-          if [ "${{ matrix.filter }}" = "rust_host" ]; then
-            python3 scripts/ci/host-tests.py --with-broker
-          elif [ "${{ matrix.filter }}" = "rust_tui_cli" ] && { [ "${{ inputs.scope }}" = "headless-cli" ] || [ "${{ inputs.scope }}" = "agent-lifecycle" ]; }; then
-            cargo test -p future-cli --test headless_cli --test remote_start_refusal
-          else
-            cargo test ${{ matrix.packages }}
-          fi
-
-  # Core host tests need neither npm nor Tauri; exercise their native file,
-  # database and process behavior on the other supported desktop platforms too.
-  rust-tests-host-native:
-    name: Shared host (${{ matrix.name }})
-    needs: changes
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: macOS
-            os: macos-latest
-          - name: Windows
-            os: windows-latest
-    steps:
-      - name: No affected host changes
-        if: needs.changes.outputs.rust_host != 'true'
-        run: echo "No affected shared host tests."
-      - name: Checkout
-        if: needs.changes.outputs.rust_host == 'true'
-        uses: actions/checkout@v7
-      - name: Setup Rust
-        if: needs.changes.outputs.rust_host == 'true'
-        run: node scripts/ci/setup-rust.mjs
-      - name: Cache Rust
-        if: needs.changes.outputs.rust_host == 'true'
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: rust-tests-host-native
-          save-if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
-          workspaces: .
-          cache-on-failure: true
-          cache-all-crates: true
-      - name: Host formatting
-        if: needs.changes.outputs.rust_host == 'true'
-        run: cargo fmt -p future-host --check
-      - name: Host all-target Clippy
-        if: needs.changes.outputs.rust_host == 'true'
-        run: cargo clippy -p future-host --all-targets -- -D warnings
-      - name: Host tests without Desktop or npm
-        if: needs.changes.outputs.rust_host == 'true'
-        env:
-          CARGO_PROFILE_TEST_DEBUG: 1
-        run: cargo test -p future-host
-
-  # Desktop owns GUI/IPC/entry integration. Host and CLI core/process suites
-  # run once in their package groups; there is no Desktop headless backend.
-  rust-tests-desktop:
-    name: Rust tests (Linux) (desktop ${{ matrix.flavor }})
-    needs: changes
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        flavor: [gui]
-    steps:
-      # Keep the required desktop-backend context present even when unaffected.
-      - name: Is this test group affected?
-        id: affected
-        env:
-          OUTPUTS: ${{ toJSON(needs.changes.outputs) }}
-        run: |
-          run=$(echo "$OUTPUTS" | jq -r '.desktop_tauri // "false"')
-          echo "run=$run" >> "$GITHUB_OUTPUT"
-
-      - name: No affected Rust tests in this group
-        if: steps.affected.outputs.run != 'true'
-        run: echo "No affected Rust tests in this group; skipped."
-
-      - name: Checkout
-        if: steps.affected.outputs.run == 'true'
-        uses: actions/checkout@v7
-
-      - name: Setup Rust
-        if: steps.affected.outputs.run == 'true'
-        run: node scripts/ci/setup-rust.mjs
-
-      # Preserve the GUI cache family after retiring the Desktop headless leg.
-      - name: Cache Rust
-        if: steps.affected.outputs.run == 'true'
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: rust-tests-desktop-${{ matrix.flavor }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: .
-          cache-on-failure: true
-          cache-all-crates: true
-
-      # The desktop backend's -sys build scripts need the WebKit/GTK stack.
-      - name: Install Linux deps
-        if: steps.affected.outputs.run == 'true'
-        run: |
-          bash scripts/ci/install-apt-packages.sh \
-            build-essential \
-            binutils \
-            mold \
-            pkg-config \
-            libayatana-appindicator3-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libwebkit2gtk-4.1-dev
-
-      - name: cargo test (desktop GUI and disabled-GUI boundary)
-        timeout-minutes: 30
-        if: steps.affected.outputs.run == 'true'
-        env:
-          CARGO_PROFILE_TEST_DEBUG: 1
-          REQUESTED_SCOPE: ${{ inputs.scope }}
-        run: |
-          if [ "$REQUESTED_SCOPE" = 'headless-cli' ] || [ "$REQUESTED_SCOPE" = 'agent-lifecycle' ]; then
-            echo "Headless process suites run in their CLI owner group."
-          else
-            cargo test -p futureos
-            # A Desktop build with GUI disabled must refuse hosting and name
-            # the unified CLI. This is a negative entry boundary, not a server.
-            cargo test -p futureos --no-default-features --test headless_cli
-          fi
-
-  # Keep the required context and require both Desktop and the package-owner
-  # groups (including Host and CLI/headless) to succeed after retiring the leg.
-  rust-tests-desktop-gate:
-    name: Rust tests (Linux) (desktop backend)
-    needs: [rust-tests-desktop, rust-tests]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: Desktop and package-owner suites passed?
-        run: |
-          if [ "${{ needs.rust-tests-desktop.result }}" != 'success' ] || [ "${{ needs.rust-tests.result }}" != 'success' ]; then
-            echo "Desktop: ${{ needs.rust-tests-desktop.result }}; package owners: ${{ needs.rust-tests.result }}"
-            exit 1
-          fi
-          echo "Desktop and package-owner suites passed."
-
-  # Aggregator keeping the required check name stable across group splits:
-  # fails iff any Rust test group failed. `if: always()` so a failed group
-  # still yields an explicit red X on this required check (a skipped required
-  # check would block the PR with a confusing "Expected" instead).
-  rust-tests-gate:
-    name: Rust tests (Linux)
-    # Keep the existing required-check name. New installer failures must also
-    # block this gate without requiring a branch-protection configuration edit.
-    # Remote failures (including TS-only regressions) must also fail this gate.
-    needs: [changes, rust-tests, rust-tests-host-native, rust-tests-desktop, windows-update, remote]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - name: All Rust and Remote test groups passed?
-        run: |
-          if [ "${{ needs.changes.result }}" != 'success' ]; then
-            echo "Affected selection failed."
-            exit 1
-          fi
-          if [ "${{ needs.changes.outputs.remote }}" = 'true' ]; then
-            if [ "${{ needs.remote.result }}" != 'success' ]; then
-              echo "Remote package/interoperability result: ${{ needs.remote.result }}"
-              exit 1
-            fi
-          elif [ "${{ needs.remote.result }}" != 'skipped' ] && [ "${{ needs.remote.result }}" != 'success' ]; then
-            echo "Unexpected Remote result: ${{ needs.remote.result }}"
-            exit 1
-          fi
-          if [ "${{ needs.rust-tests.result }}" != 'success' ] || [ "${{ needs.rust-tests-host-native.result }}" != 'success' ] || [ "${{ needs.rust-tests-desktop.result }}" != 'success' ] || [ "${{ needs.windows-update.result }}" != 'success' ]; then
-            echo "Rust test groups result: ${{ needs.rust-tests.result }}"
-            echo "Native host tests result: ${{ needs.rust-tests-host-native.result }}"
-            echo "Desktop: ${{ needs.rust-tests-desktop.result }}; package owners: ${{ needs.rust-tests.result }}"
-            echo "Windows update fixtures result: ${{ needs.windows-update.result }}"
-            exit 1
-          fi
-          echo "Rust test groups and Windows update fixtures passed."
-
-  rust-build:
-    name: Rust build (${{ matrix.name }})
-    needs: changes
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Linux
-            os: ubuntu-latest
-            python: python3
-          - name: Windows
-            os: windows-latest
-            python: python
-          - name: macOS
-            os: macos-latest
-            python: python3
-    steps:
-      # Keep the three matrix statuses present for branch protection. A
-      # job-level `if` would skip matrix expansion entirely, leaving the
-      # required per-platform checks as "Expected" on unrelated PRs.
-      - name: No Rust or desktop Tauri changes
-        if: needs.changes.outputs.rust_workspace != 'true' && needs.changes.outputs.desktop_tauri != 'true'
-        run: echo "No Rust workspace or desktop Tauri changes; build check skipped."
-
-      - name: Checkout
-        if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
-        uses: actions/checkout@v7
-
-      - name: Setup Rust
-        if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
-        run: node scripts/ci/setup-rust.mjs
-
-      - name: Cache Rust
-        if: needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true'
-        uses: Swatinem/rust-cache@v2
-        with:
-          # Written by the merge-to-main run only; every PR restores it.
-          # rust-cache appends OS/architecture to separate the native targets.
-          shared-key: rust-build
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          workspaces: .
-          cache-on-failure: true
-          cache-all-crates: true
-
-      # Base toolchain always (when Linux runs); the WebKit/GTK/SSL stack only
-      # when the desktop backend is actually affected - a workspace-only PR
-      # skips ~40-60s of apt (the historical flake point).
-      - name: Install Linux system dependencies (base)
-        if: (needs.changes.outputs.rust_workspace == 'true' || needs.changes.outputs.desktop_tauri == 'true') && runner.os == 'Linux'
-        run: |
-          bash scripts/ci/install-apt-packages.sh \
-            build-essential \
-            binutils \
-            mold \
-            pkg-config
-
-      - name: Install Linux system dependencies (desktop GUI stack)
-        if: needs.changes.outputs.desktop_tauri == 'true' && runner.os == 'Linux'
-        run: |
-          bash scripts/ci/install-apt-packages.sh \
-            libayatana-appindicator3-dev \
-            libgtk-3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev
-
-      - name: cargo check (workspace)
-        if: needs.changes.outputs.rust_workspace == 'true'
-        run: cargo check --workspace --exclude futureos --manifest-path Cargo.toml
-
-      # Keep native commands in separate steps: on Windows, PowerShell can
-      # otherwise overwrite a failed GUI check's exit code with a successful
-      # no-default-features check and report a green required build check.
-      - name: cargo check (desktop Tauri backend)
-        if: needs.changes.outputs.desktop_tauri == 'true'
-        run: cargo check -p future-cli -p futureos
-
-      - name: cargo check (independent Host and CLI)
-        if: needs.changes.outputs.desktop_tauri == 'true'
-        run: cargo check -p future-host -p future-cli --all-targets
-
-      - name: Fetch combined feature dependency metadata
-        if: needs.changes.outputs.desktop_tauri == 'true'
-        run: cargo fetch --locked
-
-      - name: Combined GUI and CLI dependency boundaries
-        if: needs.changes.outputs.desktop_tauri == 'true'
-        run: ${{ matrix.python }} scripts/ci/host-boundaries.py
-
-      # Real services in isolated processes: native endpoints, instance locks,
-      # CLI-origin work and bounded shutdown. Full Linux suites run separately.
-      - name: Embedded Agent native lifecycle
-        if: needs.changes.outputs.agent_lifecycle == 'true'
-        run: python scripts/ci/check-embedded-agent.py
-
-      - name: Upload native lifecycle evidence
-        if: always() && needs.changes.outputs.agent_lifecycle == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: embedded-agent-${{ runner.os }}
-          path: target/embedded-agent-ci/
-          if-no-files-found: error
-
-  windows-update:
-    name: Windows update fixtures
-    needs: changes
-    runs-on: windows-latest
-    timeout-minutes: 15
-    steps:
-      - name: No Windows update changes
-        if: needs.changes.outputs.windows_update != 'true'
-        run: echo "No Windows update changes; fixture check skipped."
-
-      - name: Checkout
-        if: needs.changes.outputs.windows_update == 'true'
-        uses: actions/checkout@v7
-
-      - name: Install NSIS
-        if: needs.changes.outputs.windows_update == 'true'
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "${env:ProgramFiles(x86)}/NSIS/makensis.exe")) {
-            choco install nsis --yes --no-progress
-            if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed.' }
-          }
-
-      # Offline throwaway executables exercise the actual hooks and observer;
-      # no signed release, user Agent, user data or production ACL is involved.
-      - name: Installer preflight and update recovery
-        if: needs.changes.outputs.windows_update == 'true'
-        shell: powershell
-        run: |
-          & ./scripts/tests/test-windows-installer-preflight.ps1
-
-      - name: Packaged lifecycle assertion regressions
-        if: needs.changes.outputs.windows_update == 'true'
-        shell: powershell
-        run: |
-          & ./scripts/tests/test-windows-lifecycle-assertions.ps1
-
-      - name: Install script failure guidance
-        if: needs.changes.outputs.windows_update == 'true'
-        shell: powershell
-        run: |
-          & ./scripts/tests/test-install.ps1
-
-  # ─── Desktop: typecheck + eslint + stylelint + vitest ─────────────────────────
-  # Frontend only. The Tauri *backend* Rust is covered by rust-build (compile,
-  # 3-platform) and rust-quality (lint + test, hard gate). Platform-agnostic.
-  desktop:
-    name: Desktop typecheck + lint + test
-    needs: changes
-    if: needs.changes.outputs.desktop_frontend == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Typecheck
-        working-directory: desktop
-        run: npx tsc --noEmit
-
-      - name: ESLint
-        working-directory: desktop
-        run: npm run lint
-
-      - name: Stylelint
-        working-directory: desktop
-        run: npm run stylelint
-
-      - name: vitest
-        working-directory: desktop
-        run: npm run test
-
-      - name: Shared shell result projection regressions
-        working-directory: desktop
-        run: npx vitest run --config ../packages/markdown/vitest.config.ts thread-projection/src/shellResult.test.ts
-
-  # ─── Mobile: typecheck + eslint + jest ───────────────────────────────────
-  mobile:
-    name: Mobile typecheck + lint + test
-    needs: changes
-    if: needs.changes.outputs.mobile == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-          cache: npm
-          cache-dependency-path: package-lock.json
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Typecheck
-        working-directory: mobile
-        run: npm run typecheck
-
-      - name: ESLint
-        working-directory: mobile
-        run: npm run lint
-
-      - name: jest
-        working-directory: mobile
-        run: npm test
+          CI_NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/ci/ci-result.mjs

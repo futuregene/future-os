@@ -287,7 +287,7 @@ pub(super) fn mark_run_completed_if_active(
             let run_id = run_id.to_string();
             // A title request may take tens of seconds. Never hold up run
             // finalization, the observer's event stream or the next user send.
-            Some(tokio::spawn(async move {
+            Some(crate::runtime::spawn(async move {
                 if let Err(error) = title_settled_thread_if_enabled(&run_id).await {
                     eprintln!("FutureOS title generation skipped or failed: {error}");
                 }
@@ -1204,6 +1204,43 @@ mod tests {
         assert_eq!(mock.requests_of("generate_session_title").len(), 3);
         assert_eq!(mock.requests_of("set_session_name").len(), 1);
         assert!(mock.requests_of("compact").is_empty());
+    }
+
+    #[tokio::test]
+    async fn cleanup_cancels_an_inflight_background_title() {
+        let home = TestHome::new("rc-title-cleanup");
+        let mock = mock_agent();
+        let workspace = seed_workspace(home.path(), "ws");
+        enable_title_generation("en");
+        let thread = seed_titleable_thread(&workspace.id, "title-cleanup");
+        let run = seed_run(&thread.id);
+        mock.push_state_for_session(
+            "title-cleanup",
+            Reply::TypedData(get_state_payload("title-cleanup", false)),
+        );
+        let (entered, observed) = tokio::sync::oneshot::channel();
+        let (answer, data) = tokio::sync::oneshot::channel();
+        mock.push("generate_session_title", Reply::Deferred { entered, data });
+        let task = mark_run_completed_if_active(Some(&run.id)).expect("background title");
+        tokio::time::timeout(std::time::Duration::from_secs(5), observed)
+            .await
+            .unwrap()
+            .unwrap();
+        crate::runtime::cancel_test_tasks();
+        tokio::time::timeout(std::time::Duration::from_secs(5), task)
+            .await
+            .expect("cleanup must terminate the title task before HOME changes")
+            .unwrap();
+        let _ = answer.send(serde_json::json!({"title":"Late title"}));
+        assert_eq!(
+            store::get_thread(&thread.id).unwrap().unwrap().title,
+            thread.title
+        );
+        assert!(mock.requests_of("set_session_name").is_empty());
+        assert_eq!(
+            store::get_run(&run.id).unwrap().unwrap().status,
+            "completed"
+        );
     }
 
     #[tokio::test]

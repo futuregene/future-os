@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { invokeCommand } from "../integrations/tauri/invoke";
+
+vi.mock("../integrations/tauri/invoke", () => ({
+  invokeCommand: vi.fn(() => Promise.resolve()),
+}));
+
 /**
  * Theme module under test.
  *
@@ -42,6 +48,10 @@ beforeEach(() => {
   localStorage.clear();
   document.documentElement.classList.remove("dark");
   document.documentElement.style.colorScheme = "";
+  document.documentElement.style.removeProperty("--color-surface");
+  document.documentElement.style.removeProperty("--color-ink");
+  delete document.documentElement.dataset.palette;
+  vi.mocked(invokeCommand).mockClear();
   vi.unstubAllGlobals();
   vi.resetModules();
 });
@@ -137,5 +147,102 @@ describe("theme", () => {
     unsubscribe();
     media.setMatches(false);
     expect(listener).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe("theme palette", () => {
+  it("starts on the app's own palette and puts it on the root before the first render", async () => {
+    installMatchMedia(false);
+    const theme = await import("./theme");
+
+    expect(theme.getThemePalette()).toBe("futureos");
+    // An attribute, not a class, so a picker preview can carry its own.
+    expect(document.documentElement.dataset.palette).toBe("futureos");
+  });
+
+  it("restores a stored palette", async () => {
+    installMatchMedia(false);
+    localStorage.setItem("future.palette", "gruvbox");
+    const theme = await import("./theme");
+
+    expect(theme.getThemePalette()).toBe("gruvbox");
+    expect(document.documentElement.dataset.palette).toBe("gruvbox");
+  });
+
+  it("switches and persists a palette without touching the light/dark choice", async () => {
+    installMatchMedia(false);
+    const theme = await import("./theme");
+    theme.setThemeMode("light");
+
+    theme.setThemePalette("catppuccin");
+
+    expect(theme.getThemePalette()).toBe("catppuccin");
+    expect(document.documentElement.dataset.palette).toBe("catppuccin");
+    expect(localStorage.getItem("future.palette")).toBe("catppuccin");
+    // The two axes are independent: a palette is not a rendition.
+    expect(theme.getThemeMode()).toBe("light");
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+    expect(localStorage.getItem("future.theme")).toBe("light");
+  });
+
+  it("keeps the chosen palette when the rendition flips", async () => {
+    const media = installMatchMedia(false);
+    const theme = await import("./theme");
+    theme.setThemePalette("rose-pine");
+    theme.setThemeMode("system");
+
+    media.setMatches(true);
+
+    expect(theme.getResolvedTheme()).toBe("dark");
+    expect(document.documentElement.dataset.palette).toBe("rose-pine");
+  });
+
+  it("ignores an unknown stored palette and an unknown id at runtime", async () => {
+    installMatchMedia(false);
+    localStorage.setItem("future.palette", "monokai");
+    const theme = await import("./theme");
+
+    expect(theme.getThemePalette()).toBe("futureos");
+  });
+
+  it("notifies subscribers when the palette changes", async () => {
+    installMatchMedia(false);
+    const theme = await import("./theme");
+    const listener = vi.fn();
+    const unsubscribe = theme.subscribeTheme(listener);
+
+    theme.setThemePalette("solarized");
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    theme.setThemePalette("nord");
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists a palette id that the stylesheet can match", async () => {
+    const theme = await import("./theme");
+    // The ids are CSS attribute values (`[data-palette="rose-pine"]`), so they
+    // must stay lowercase-dashed rather than following the TS casing.
+    for (const palette of theme.THEME_PALETTES) {
+      expect(palette).toBe(palette.toLowerCase());
+      expect(palette).not.toContain(" ");
+    }
+  });
+
+  it("hands the rendered surface and ink to the window frame after a palette change", async () => {
+    installMatchMedia(false);
+    vi.mocked(invokeCommand).mockClear();
+    document.documentElement.style.setProperty("--color-surface", "#282828");
+    document.documentElement.style.setProperty("--color-ink", "#ebdbb2");
+    const theme = await import("./theme");
+
+    theme.setThemePalette("gruvbox");
+
+    // The backend cannot map a palette id to a color; the computed tokens are
+    // the only place the winning palette is known.
+    expect(invokeCommand).toHaveBeenCalledWith("set_window_caption_colors", {
+      caption: "#282828",
+      text: "#ebdbb2",
+    });
   });
 });

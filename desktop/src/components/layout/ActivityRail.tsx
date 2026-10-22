@@ -29,6 +29,7 @@ import { peersDotState } from "../../features/remote-peer/peerStatus";
 import { SkillIntroBubble } from "../../features/skills/SkillIntroBubble";
 import { listInstalledSkills } from "../../integrations/skills/skillsClient";
 import { cn } from "../../lib/cn";
+import { formatMessageTimestamp } from "../../lib/date";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { isMacOS } from "../../lib/platform";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
@@ -44,8 +45,11 @@ import { DeviceSelector } from "./DeviceSelector";
 import { useCollapsedWorkspaces } from "./hooks/useCollapsedWorkspaces";
 import { usePendingApprovalCounts } from "./hooks/usePendingApprovalCounts";
 import { useRailSelection } from "./hooks/useRailSelection";
+import { useRailView } from "./hooks/useRailView";
 import { MergedRows } from "./MergedRows";
 import { RailDisclosure, RailHeaderButton } from "./RailChrome";
+import { RailViewSwitch } from "./RailViewSwitch";
+import { isActiveRun, RECENT_PAGE_SIZE, recentSplit } from "./recentOrder";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, buildTree, threadParentIds, visibleThreadRows, visibleTreeRows } from "./threadTree";
 
@@ -111,6 +115,15 @@ interface ActivityRailProps {
   onRenameRemoteWorkspace?: (target: RemoteWorkspaceTarget) => void;
   /** Re-read paired hosts and their catalogues (after a remote row action). */
   onRemoteConversationsChanged?: () => void;
+  /**
+   * Take a machine another paired device drives, from the device picker.
+   *
+   * The picker lists the machine and says it is held; this is the way back from
+   * that same list, so the user does not have to leave the conversation list for
+   * the Remote page to get its rows. The caller owns the request and re-reads
+   * the list afterwards.
+   */
+  onTakeControlRemote?: (desktopId: string) => Promise<void> | void;
   /**
    * Start a conversation in a workspace on another machine.
    *
@@ -183,6 +196,7 @@ export function ActivityRail({
   onRenameRemoteConversation,
   onRenameRemoteWorkspace,
   onRemoteConversationsChanged,
+  onTakeControlRemote,
   onNewChatOnRemote,
   onManageDesktops,
   activeRemoteKey = null,
@@ -194,7 +208,7 @@ export function ActivityRail({
   skillIntroDismissed,
   onDismissSkillIntro,
 }: ActivityRailProps) {
-  const { t } = useTranslation("layout");
+  const { i18n, t } = useTranslation("layout");
   const noMatchesText = t("activityRail.noMatches");
   // Pending approvals across all threads — badged on rail items so a background
   // conversation's approval is visible without opening it.
@@ -281,10 +295,23 @@ export function ActivityRail({
   const [chatSectionCollapsed, setChatSectionCollapsed] = useState(false);
   // Chat section header menu.
   const [chatSectionMenuOpen, setChatSectionMenuOpen] = useState(false);
+  // Which list the rail shows: the tree (its own shape, and the default) or the
+  // recent view. Persisted — it is how this window lists things, and a restart
+  // should bring back the list the reader left. The switch's own left/right
+  // order is persisted alongside it, since a reader who exchanged the two
+  // segments meant to keep them that way.
+  const {
+    moveView: moveRailView,
+    order: railViewOrder,
+    setView: setRailView,
+    view: railView,
+  } = useRailView();
   // Text search for the conversation list. Not persisted: the list is huge
   // and a leftover query after restart would feel like a stale filter.
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  // Closing takes the filter with it: a hidden field must not keep filtering a
+  // list the reader thinks is complete.
   const closeSearch = useCallback(() => {
     setSearchOpen(false);
     setSearchQuery("");
@@ -521,6 +548,88 @@ export function ActivityRail({
     [visibleThreads, threadMatchesQuery],
   );
 
+  /**
+   * How much of the recent view's "earlier" stretch is drawn.
+   *
+   * Held here rather than in the list because the keyboard walk steps the same
+   * order the list draws: two copies of "how far down the list goes" would be
+   * two answers to "which row is next". It starts over when the view is left and
+   * returned to, since coming back to "the recent ones" means the recent ones.
+   */
+  const [recentLimit, setRecentLimit] = useState(RECENT_PAGE_SIZE);
+
+  /**
+   * The recent view's rows: every conversation the device filter admits, in one
+   * list, with the two facts it is ordered and split by.
+   *
+   * `remoteRows` already holds this machine's threads and every listed host's
+   * sessions, under the same filter the tree draws with — so the two views cannot
+   * disagree about *which* conversations exist, only about how they are ranked.
+   * A run's state is read per row: this machine's threads from the rail's own
+   * per-thread run statuses (the same source the row's indicator uses), a host's
+   * from what it reports on its row.
+   */
+  const recent = useMemo(() => {
+    const rows = remoteRows.filter(rowMatchesQuery).map(row => ({
+      ...row,
+      active: row.desktopId === null
+        ? isActiveRun(
+            threadRunStatuses[row.id]?.status,
+            threadStreamingStatuses[row.id],
+          )
+        : isActiveRun(row.runStatus, row.streaming),
+      createdAt: row.createdAt ?? null,
+      lastActivityAt: row.lastMessageAt,
+    }));
+    return recentSplit(rows, recentLimit);
+  }, [recentLimit, remoteRows, rowMatchesQuery, threadRunStatuses, threadStreamingStatuses]);
+
+  /**
+   * The age each recent row shows, by row key.
+   *
+   * The activity stamp, not the start time: a row's age answers "how long since
+   * this last moved", which is what the reader is scanning the list for. The
+   * start time only decides *where* the running rows sit (see `recentOrder.ts`).
+   */
+  const recentAgeLabels = useMemo(() => {
+    const labels = new Map<string, string>();
+    const now = Date.now();
+    for (const row of recent.rows) {
+      if (row.lastMessageAt === null)
+        continue;
+      labels.set(row.key, formatMessageTimestamp(new Date(row.lastMessageAt).toISOString(), i18n.language, {
+        now,
+        justNowLabel: t("activityRail.recentJustNow"),
+      }));
+    }
+    return labels;
+  }, [i18n.language, recent.rows, t]);
+
+  /**
+   * The scopes a recent-view batch is assembled from.
+   *
+   * One scope for the whole view: it is one flat list, and the tree's scopes
+   * (the chat section, one workspace) do not exist here. Pinning is a marker on
+   * this view rather than a section, so a pinned conversation is an ordinary row
+   * and joins the batch — the opposite of the tree, where a pin lifts a row out
+   * of its group (see `useRailSelection`).
+   */
+  const recentThreadScopes = useMemo(
+    () => new Map(visibleThreads.map(thread => [thread.id, "recent"] as const)),
+    [visibleThreads],
+  );
+  const recentRemoteScopes = useMemo(
+    () => new Map(remoteRows.filter(row => row.desktopId !== null).map(row => [row.key, "recent"] as const)),
+    [remoteRows],
+  );
+  /** This machine's threads the recent view lists — the batch's local half. */
+  const recentThreads = filteredVisibleThreads;
+  /** The hosts' rows the recent view lists — the batch's remote half. */
+  const recentRemoteRows = useMemo(
+    () => recent.rows.filter(row => row.desktopId !== null),
+    [recent.rows],
+  );
+
   const {
     deleteSelected,
     deselectAll,
@@ -541,15 +650,30 @@ export function ActivityRail({
     onBatchDeleteThreads,
     onDeleteRemoteConversations,
     onSelectThread,
-    remoteScopes,
-    threadScopes,
-    visibleRemoteRows: mergedMode ? filteredRemoteRows : visibleRemoteRows,
-    visibleThreads: mergedMode ? filteredVisibleThreads : visibleThreads,
+    // The batch is assembled from what the current view draws, in that view's
+    // own scopes: one workspace or the chat section in the tree, and the whole
+    // flat list in the recent view — where a pin is a marker rather than a
+    // section, so a pinned row joins the batch instead of being lifted out of it.
+    pinnedAreShortcuts: railView !== "recent",
+    remoteScopes: railView === "recent" ? recentRemoteScopes : remoteScopes,
+    threadScopes: railView === "recent" ? recentThreadScopes : threadScopes,
+    visibleRemoteRows: railView === "recent"
+      ? recentRemoteRows
+      : mergedMode
+        ? filteredRemoteRows
+        : visibleRemoteRows,
+    visibleThreads: railView === "recent"
+      ? recentThreads
+      : mergedMode
+        ? filteredVisibleThreads
+        : visibleThreads,
   });
+
+  const showListTools = !selectionMode || Boolean(onChangeDeviceFilter && remotePeers.length > 0);
 
   /** Whether this thread should show a selection checkbox. */
   function threadSelectionMode(thread: StoredThread): boolean {
-    return selectionMode && isThreadInScope(thread) && (!searchOpen || threadMatchesQuery(thread));
+    return selectionMode && isThreadInScope(thread) && threadMatchesQuery(thread);
   }
 
   // Pinned threads are hoisted into a single global section (regardless of
@@ -602,10 +726,7 @@ export function ActivityRail({
     () => (workspaceSectionCollapsed ? [] : workspaceGroups),
     [workspaceSectionCollapsed, workspaceGroups],
   );
-  const visiblePinnedThreads = useMemo(
-    () => (searchOpen || queryActive ? filteredPinnedThreads : pinnedThreads),
-    [filteredPinnedThreads, pinnedThreads, queryActive, searchOpen],
-  );
+  const visiblePinnedThreads = filteredPinnedThreads;
   const visibleChatThreads = useMemo(
     () => (chatSectionCollapsed ? [] : filteredChatThreads),
     [chatSectionCollapsed, filteredChatThreads],
@@ -613,12 +734,26 @@ export function ActivityRail({
   const hasAnyVisibleRow = useMemo(() => {
     if (!queryActive)
       return true;
+    // The recent view draws every row of the filtered list, so it is the one
+    // place that can answer this without asking its sections: a row the tree
+    // folds away is still a row here.
+    if (railView === "recent")
+      return recent.rows.length > 0;
     if (mergedMode)
       return filteredRemoteRows.length > 0;
     return filteredPinnedThreads.length > 0
       || filteredChatThreads.length > 0
       || workspaceGroups.some(group => group.rows.length > 0);
-  }, [queryActive, mergedMode, filteredRemoteRows, filteredPinnedThreads, filteredChatThreads, workspaceGroups]);
+  }, [
+    queryActive,
+    mergedMode,
+    railView,
+    recent.rows.length,
+    filteredRemoteRows,
+    filteredPinnedThreads,
+    filteredChatThreads,
+    workspaceGroups,
+  ]);
 
   /**
    * Which row is "current". A local thread is current while a list is showing
@@ -644,10 +779,12 @@ export function ActivityRail({
     depth = 0,
     hasChildren = false,
     compact = false,
+    ageLabel?: string,
   ): React.ReactNode {
     return (
       <ThreadListItem
-        active={thread.id === activeThreadId && active === "chat"}
+        active={thread.id === activeThreadId && (active === "chat" || railView === "recent")}
+        ageLabel={ageLabel}
         archived={thread.status === "archived"}
         key={thread.id}
         compact={compact}
@@ -713,7 +850,7 @@ export function ActivityRail({
    * workspace began.
    */
   const walkBlocks = useMemo(() => {
-    type Section = "pinned" | "workspace" | "chat";
+    type Section = "pinned" | "workspace" | "chat" | "recent";
     interface WalkBlock {
       section: Section;
       rows: { key: string; open: () => void }[];
@@ -739,6 +876,17 @@ export function ActivityRail({
       rows,
       open: open ?? (() => rows[0]?.open()),
     });
+
+    if (railView === "recent") {
+      // One block per drawn row, in the order the view draws them: the recent
+      // list is flat, so every conversation is a stop of its own and the two
+      // moves (fine and coarse) agree about where it begins — as they do for a
+      // chat in the tree, which is also a single-row block.
+      return recent.rows.map(row => toBlock("recent", [{
+        key: row.key,
+        open: () => openRow(row),
+      }]));
+    }
 
     if (mergedMode) {
       // The merged list's own grouping decides its blocks — pinned, then the
@@ -792,6 +940,8 @@ export function ActivityRail({
     onSelectThread,
     onSelectWorkspace,
     openRow,
+    railView,
+    recent.rows,
     threadParents,
     visibleChatThreads,
     visiblePinnedThreads,
@@ -801,7 +951,13 @@ export function ActivityRail({
   /** The rows the fine move walks: the blocks the current section draws. */
   const walkableRows = useMemo(
     () => walkBlocks
-      .filter(block => block.section === "pinned" || (active === "workspace" ? block.section === "workspace" : block.section === "chat"))
+      .filter(block =>
+        // The recent view is not split into the rail's sections — it is one list
+        // whichever section the shell thinks is open — so every block it built
+        // is walkable.
+        block.section === "recent"
+        || block.section === "pinned"
+        || (active === "workspace" ? block.section === "workspace" : block.section === "chat"))
       .flatMap(block => block.rows),
     [active, walkBlocks],
   );
@@ -866,6 +1022,39 @@ export function ActivityRail({
   // Filtering the list is a jump to the field, not a search of its own: the
   // command palette (a separate, later entry) navigates, this narrows.
   useCommand("rail.search", () => setSearchOpen(true), listShowing);
+  // Which list is drawn, one key per answer. The switch on screen has two
+  // segments; a key that named one of them and meant "the other one when this is
+  // already on" is a key whose second press does what its label does not say.
+  useCommand("rail.view.recent", () => setRailView("recent"), listShowing);
+  useCommand("rail.view.workspace", () => setRailView("workspace"), listShowing);
+
+  /**
+   * The device filter as one ring, in the order the picker above the list draws
+   * it: all machines, this machine, then each paired machine.
+   *
+   * A cycle rather than a key that opens the picker: its menu is a pointer target
+   * (plain buttons, no roving focus), so opening it from the keyboard would get a
+   * reader somewhere they still have to click. "The next machine" is one press.
+   */
+  const stepDevice = useCallback(() => {
+    if (!onChangeDeviceFilter)
+      return;
+    const filterKey = (filter: DeviceFilter) => filter.kind === "all"
+      ? "all"
+      : `device::${filter.desktopId ?? "local"}`;
+    const ring: DeviceFilter[] = [
+      { kind: "all" },
+      { desktopId: null, kind: "device" },
+      ...remotePeers.map(peer => ({ desktopId: peer.desktopId, kind: "device" }) as const),
+    ];
+    const index = ring.findIndex(entry => filterKey(entry) === filterKey(deviceFilter));
+    // A filter naming a machine this build no longer knows (`-1`) starts the
+    // ring over instead of guessing where it would have been.
+    onChangeDeviceFilter(ring[(index + 1) % ring.length]!);
+  }, [deviceFilter, onChangeDeviceFilter, remotePeers]);
+  // With no other machine paired the picker is not drawn either, and the key
+  // stays unclaimed rather than consuming a press that changes nothing.
+  useCommand("rail.device.next", stepDevice, listShowing && Boolean(onChangeDeviceFilter) && remotePeers.length > 0);
 
   /**
    * One workspace's heading, built once and used by both list modes.
@@ -1055,35 +1244,64 @@ export function ActivityRail({
                       </div>
                     )
                   : null}
-                <div className="mb-2 flex shrink-0 items-center gap-1">
-                  {/* The search field takes the whole row while it is open: the
-                      two were sharing it half-and-half, which squeezed the
-                      device picker down to its glyph and the field down to a
-                      few characters. Search still filters within the selected
-                      device; closing it brings the picker back. */}
-                  {onChangeDeviceFilter && remotePeers.length > 0 && !searchOpen
-                    ? (
-                        <div className="min-w-0 flex-1">
-                          <DeviceSelector
-                            filter={deviceFilter}
-                            onChange={onChangeDeviceFilter}
-                            onManage={() => onManageDesktops?.()}
-                            peers={remotePeers}
-                          />
-                        </div>
-                      )
-                    : null}
-                  {selectionMode
-                    ? null
-                    : (
-                        <ConversationSearch
-                          onClose={closeSearch}
-                          onQueryChange={setSearchQuery}
-                          onToggleOpen={() => setSearchOpen(current => !current)}
-                          open={searchOpen}
-                          query={searchQuery}
-                        />
-                      )}
+                {/* Two rows, and each has one job — in this order.
+
+                    The first narrows the list: the machine whose rows these are,
+                    and the search. It sits *above* the switch, directly over the
+                    list it filters, which is where it has always been; putting it
+                    under the switch read as if the filter belonged to whichever
+                    list happened to be selected.
+
+                    The second answers "which list" — only the switch, nothing
+                    else. Neither row offers a create action or a batch: those act
+                    on something *inside* the list, so they live on the heading
+                    they act on (a workspace, the chats section), which is also the
+                    only place a reader can see what they mean. */}
+                {showListTools
+                  ? (
+                      <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-list-tools">
+                        {/* One machine standing behind the list is named by the
+                            picker, `compact` because it shares this row with the
+                            search. */}
+                        {onChangeDeviceFilter && remotePeers.length > 0
+                          ? (
+                              <DeviceSelector
+                                compact
+                                filter={deviceFilter}
+                                onChange={onChangeDeviceFilter}
+                                onManage={() => onManageDesktops?.()}
+                                onTakeControl={onTakeControlRemote}
+                                peers={remotePeers}
+                              />
+                            )
+                          : null}
+                        {/* A magnifier until it is clicked, then the field in
+                            its place: the rail is a narrow column and the list is
+                            the point, so a field that is always drawn would spend
+                            a row on a control most sessions never touch. */}
+                        {selectionMode
+                          ? null
+                          : (
+                              <ConversationSearch
+                                onClose={closeSearch}
+                                onQueryChange={setSearchQuery}
+                                onToggleOpen={() => setSearchOpen(current => !current)}
+                                open={searchOpen}
+                                query={searchQuery}
+                              />
+                            )}
+                      </div>
+                    )
+                  : null}
+                <div className="mb-2 flex shrink-0 items-center gap-1" data-testid="rail-view-band">
+                  <div className="min-w-0 flex-1">
+                    <RailViewSwitch
+                      onChange={setRailView}
+                      onMove={moveRailView}
+                      order={railViewOrder}
+                      view={railView}
+                    />
+                  </div>
                 </div>
                 <div className="flex min-h-0 flex-1 flex-col">
                   <div className="group relative -mx-2 flex min-h-0 flex-1">
@@ -1099,10 +1317,15 @@ export function ActivityRail({
                               <div className="px-2 py-1 text-xs text-ink-muted" data-testid="no-matches">{noMatchesText}</div>
                             )
                           : null}
-                        {mergedMode
+                        {/* One list component for both views and both list modes:
+                            the recent view holds a host's rows and this machine's
+                            together, which is exactly the merge, and the tree view
+                            is the merge grouped by workspace. */}
+                        {mergedMode || railView === "recent"
                           ? (
                               <MergedRows
                                 activeKey={activeConversationKey}
+                                ageLabels={railView === "recent" ? recentAgeLabels : undefined}
                                 chatSectionCollapsed={chatSectionCollapsed}
                                 collapsedWorkspaces={collapsedWorkspaces}
                                 filter={deviceFilter}
@@ -1135,14 +1358,18 @@ export function ActivityRail({
                                   return found ? renderWorkspaceHeader(found.workspace, found.threads) : null;
                                 }}
                                 renderLocalRow={renderLocalRow}
-                                rows={mergedRowTree.rows}
+                                recentMore={railView === "recent" ? recent.more : undefined}
+                                recentSections={railView === "recent" ? recent.sections : undefined}
+                                rows={railView === "recent" ? recent.rows : mergedRowTree.rows}
                                 selectionMode={selectionMode}
                                 threadById={threadById}
+                                view={railView === "recent" ? "recent" : "tree"}
                                 workspaceSectionCollapsed={workspaceSectionCollapsed}
+                                onShowMoreRecent={() => setRecentLimit(current => current + RECENT_PAGE_SIZE)}
                               />
                             )
                           : null}
-                        {mergedMode
+                        {railView === "recent" || mergedMode
                           ? null
                           : (
                               <>

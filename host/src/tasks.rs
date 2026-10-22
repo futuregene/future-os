@@ -1608,7 +1608,7 @@ mod tests {
     /// running, so a run queued from the CLI (`future task run --wait`) actually
     /// gets executed. Ignored by default like the smoke test above.
     ///
-    /// `future headless` is the real host, but it insists on a platform login
+    /// `future host` is the real host, but it insists on a platform login
     /// and starts the remote bridge; this is the same `tick`, without either. It
     /// reconciles runs left running by a host that exited mid-flight, as
     /// `run_loop` does.
@@ -1785,7 +1785,12 @@ mod tests {
 
         let mut queued = task("queued-headless");
         queued.prompt = "summarize yesterday".into();
-        queued.cwd = std::env::temp_dir().display().to_string();
+        // Review captures real before/after snapshots. Never snapshot all of
+        // TEMP, which includes concurrent fixtures and this run's own home.
+        // (Measured against the shared temp dir before this: 16.8-18.2s per
+        // run, and one failure in ten against the 20s deadline below.)
+        let workspace = TempDir::new().unwrap();
+        queued.cwd = workspace.path().display().to_string();
         queued.pending_request_at = Some(now_ms());
         queued.pending_origin = Some(RunOrigin::Cli);
         store.insert_task(&queued).unwrap();

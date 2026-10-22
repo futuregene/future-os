@@ -12,7 +12,7 @@ future.exe remains available for skills, maintenance and independent CLI use.
 · SmartScreen reputation warnings can occur even on signed builds. Verify the
   official source/publisher first; choose "More info" → "Run anyway" only for
   a trusted artifact. Do not bypass an unexpected signature/publisher mismatch.
-· For an incompatible backend or held instance lock, identify GUI/headless or
+· For an incompatible backend or held instance lock, identify GUI/host or
   independently managed Agents using the same data root. Exit or upgrade the
   owner, then reopen. Never delete the lock. Desktop does not start a second
   Agent when an external service is incompatible or its lock owner unavailable.
@@ -29,7 +29,7 @@ website and try again.
 · Exiting an embedded owner cancels every client's active, queued and approval
   work, including CLI/TUI conversations; GUI prompts when work exists. Attached
   external Agents survive; Desktop cancels only its own submitted runs.
-· The desktop defaults to Unrestricted; select approvals/write protection in
+· The desktop defaults to Full access; select approvals/write protection in
   Settings. Online features still send requests to their corresponding services.
 · The command-line tool future.exe is included in the same directory.
 

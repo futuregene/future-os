@@ -64,15 +64,15 @@ Debian/Ubuntu 使用匹配的 `.deb`；其他 Linux 使用 portable 桌面包。
 ### Linux
 
 - **Debian/Ubuntu：**使用 `sudo apt install ./<实际下载文件>.deb` 安装，然后从应用菜单启动；也可运行
-  `future headless`，在无图形界面的终端前台提供手机远程入口。
+  `future host`，在无图形界面的终端前台提供手机远程入口。
 - **桌面便携版：**解压实际下载的 tarball，保持 `futureos` 与 `future`
-  同目录，运行 `./futureos` 或 `./future headless`。
+  同目录，运行 `./futureos` 或 `./future host`。
 - **无界面 CLI：**解压 CLI-only 包，运行 `./future config`，再运行 `./future tui`（需要时自动
   启动 Agent）；也可手动运行 `./future agent` 供需要 Agent 的 CLI 命令使用。按需将目录加入 PATH。
 
 发布的 GUI 包需要较新的 glibc 发行版（glibc ≥ 2.39，约 Ubuntu 24.04+）和 WebKitGTK 4.1。
 portable 用户可能需要 `sudo apt install libwebkit2gtk-4.1-0` 或
-`sudo dnf install webkit2gtk4.1`。官方 Linux CI 使用静态 musl 构建包含 headless 的 CLI，它不需要这些 GUI 运行库，也没有 glibc 版本要求；
+`sudo dnf install webkit2gtk4.1`。官方 Linux CI 使用静态 musl 构建包含 `future host` 的 CLI，它不需要这些 GUI 运行库，也没有 glibc 版本要求；
 本地源码构建的依赖取决于所选 target。
 
 沙箱模式需要安装**系统 Bubblewrap ≥ 0.9.0**，重启应用后运行
@@ -82,7 +82,7 @@ portable 用户可能需要 `sudo apt install libwebkit2gtk-4.1-0` 或
 ## 配置与使用
 
 使用 FutureOS 托管模型可在应用内登录，也可以配置自己的 provider/key，见
-[[快速开始|Quick-Start]]。桌面默认**不受限**；执行任务前按需选择手动或沙箱模式。
+[[快速开始|Quick-Start]]。桌面默认**完全访问**；执行任务前按需选择手动或沙箱模式。
 
 ## 数据、更新与卸载
 

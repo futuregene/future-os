@@ -42,6 +42,7 @@ CREATE TABLE tasks (
   cwd              TEXT NOT NULL,             -- working directory; an unspecified chat directory uses the conversation workspace
   model_id         TEXT,                      -- provider/model; required in forms, optional in CLI (app default)
   thinking_level   TEXT,                      -- off|minimal|low|medium|high|xhigh; required in forms
+  timezone         TEXT,                      -- IANA zone the trigger times are read in; NULL = host's zone, else Asia/Shanghai
   session_policy   TEXT NOT NULL DEFAULT 'new',  -- new | existing
   session_retention TEXT NOT NULL DEFAULT 'keep', -- keep | delete (section 6.1; new sessions only)
   conversation_mode TEXT NOT NULL DEFAULT 'workspace',  -- workspace | chat (new forms default to chat)
@@ -112,9 +113,11 @@ A nullable `threads.task_id` badge is deferred until needed. It would require a 
 `next_due(trigger, after)` is a pure function with unit tests:
 
 - **Interval:** `anchor + k·every`, selecting the first future grid point. Scheduling follows the anchor rather than drifting or replaying missed intervals.
-- **Daily/weekly/monthly:** local calendar scheduling; a missed calendar slot is caught up once.
+- **Daily/weekly/monthly:** calendar scheduling on the task's own clock (see "Time zone" below); a missed calendar slot is caught up once.
 - **Short months:** a requested day beyond the month's length uses its final day. UI and CLI expose this rule.
 - **Once:** completion sets `enabled=0`.
+
+**Time zone.** `tasks.timezone` names the IANA zone (`Asia/Shanghai`, `Europe/Berlin`, `UTC`) the wall-clock times above are read in, so a schedule keeps its meaning when the host's own zone changes or the task is managed from another machine. Every writer stores a concrete name: the CLI flag `--timezone`, the desktop form and the phone editor all send one, and a client that sends nothing is resolved at write time to the host's own zone — **Asia/Shanghai when that cannot be read**, because an unreadable zone must not silently mean UTC. A row with no stored zone (written before the setting existed) resolves the same way each time the schedule is recomputed. The chosen zone is printed by `future task show`, included in the run envelope (`run settings: … | timezone=…`) and used to render `due=` and the CLI's date columns; the task detail panel shows it next to the working directory. An unknown name is refused with an error rather than replaced.
 
 ## 5. Execution: tick → claim → run
 
@@ -150,7 +153,7 @@ Each initial prompt contains the envelope, the task's instruction and its comple
 task: Weekly progress report | id: tsk_... | prompt-version: 3
 run: kind=main | due=2026-10-07T09:00:00+08:00
 trigger: {"mode":"weekly","days":["mon","fri"],"time":"10:00"}
-run settings: cwd=/Users/... | conversation=workspace | session=new (fresh conversation per run) | model=... | thinking=high
+run settings: cwd=/Users/... | timezone=Asia/Shanghai | conversation=workspace | session=new (fresh conversation per run) | model=... | thinking=high
 
 Instruction:
 <original task prompt>
@@ -281,7 +284,7 @@ The run ledger follows the task's actions. Desktop's Settings disclosure precede
 
 ## 12. Out of scope
 
-Removed: task dependencies (edges, joins, chained runs, the `--depends-on`/`--join-any` flags and both dependency editors) — a scheduled task is started by its own schedule or on demand. Out of scope: cron expressions, named timezones, orchestration between tasks, OS background services, shell/goal/skill action kinds, system notifications and per-task tool allowlists. Full permissions remain the only policy.
+Removed: task dependencies (edges, joins, chained runs, the `--depends-on`/`--join-any` flags and both dependency editors) — a scheduled task is started by its own schedule or on demand. Out of scope: cron expressions, orchestration between tasks, OS background services, shell/goal/skill action kinds, system notifications and per-task tool allowlists. Full permissions remain the only policy.
 
 ## 13. Core invariants
 

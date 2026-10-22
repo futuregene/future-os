@@ -156,7 +156,8 @@ pub mod test_support {
     use std::path::PathBuf;
     use std::sync::MutexGuard;
 
-    pub(crate) fn cleanup_host() {
+    /// Drain the shared Host state before an entry fixture changes HOME.
+    pub fn cleanup_host() {
         crate::shutdown::reset_for_test();
         crate::shutdown::clear_failure_for_test();
         crate::runtime::cancel_test_tasks();
@@ -165,6 +166,7 @@ pub mod test_support {
         crate::tasks::reset_for_test();
         crate::remote_peer::runtime::reset_after_shutdown_for_test();
         crate::remote::reset_after_shutdown_for_test();
+        crate::store::reset_run_event_writer_for_test();
         crate::store::close_pool();
     }
 
@@ -174,6 +176,7 @@ pub mod test_support {
         dir: PathBuf,
         _lock: MutexGuard<'static, ()>,
         cleanup: fn(),
+        timing: crate::test_support::timing::FixtureTiming,
     }
 
     impl HomeGuard {
@@ -184,14 +187,17 @@ pub mod test_support {
         /// Entry fixtures drain their remaining services and close database pools
         /// before replacing HOME. The guard owns the shared environment lock.
         pub fn with_cleanup(label: &str, cleanup: fn()) -> Self {
+            let mut timing = crate::test_support::timing::FixtureTiming::start("HomeGuard", label);
             crate::remote::enable_fixture_mode();
             let lock = crate::TEST_HOME_LOCK
                 .lock()
                 .unwrap_or_else(|poison| poison.into_inner());
+            timing.mark("lock_wait");
             // `HOME` and the SQLite pool are process-global. A task started by
             // an earlier test may outlive its caller runtime, so it must be
             // cancelled and observed before this fixture publishes a new path.
             cleanup();
+            timing.mark("pre_cleanup");
             let previous = std::env::var("HOME").ok();
             let previous_future_home = std::env::var_os("FUTURE_HOME");
             std::env::remove_var("FUTURE_HOME");
@@ -203,12 +209,14 @@ pub mod test_support {
             let _ = std::fs::remove_dir_all(&dir);
             std::fs::create_dir_all(&dir).unwrap();
             std::env::set_var("HOME", &dir);
+            timing.mark("setup");
             HomeGuard {
                 previous,
                 previous_future_home,
                 dir,
                 _lock: lock,
                 cleanup,
+                timing,
             }
         }
 
@@ -220,10 +228,12 @@ pub mod test_support {
         /// the temp dir. Split from [`Drop`] so the absent-`HOME` arm is
         /// directly observable without racing the global `TEST_HOME_LOCK`.
         fn restore(&mut self) {
+            self.timing.mark("body");
             // Keep the fixture path valid until every process-lifetime task
             // started under it has stopped. Restoring HOME first would let a
             // late task resolve another test's database instead.
             (self.cleanup)();
+            self.timing.mark("cleanup");
             match &self.previous {
                 Some(value) => std::env::set_var("HOME", value),
                 None => std::env::remove_var("HOME"),
@@ -235,6 +245,7 @@ pub mod test_support {
             // The entry cleanup above must release open resources before deletion;
             // Windows cannot unlink a database held by a connection pool.
             let _ = std::fs::remove_dir_all(&self.dir);
+            self.timing.finish();
         }
     }
 
@@ -262,6 +273,7 @@ pub mod test_support {
             dir: dir.clone(),
             _lock: lock,
             cleanup: cleanup_host,
+            timing: crate::test_support::timing::FixtureTiming::start("HomeGuard", "absent-home"),
         };
         guard.restore();
         assert!(
@@ -293,6 +305,7 @@ pub mod test_support {
             dir: dir.clone(),
             _lock: lock,
             cleanup: cleanup_host,
+            timing: crate::test_support::timing::FixtureTiming::start("HomeGuard", "future-home"),
         };
         // While the fixture is live the variable is removed, so the code under
         // test resolves the fixture's HOME-based root.

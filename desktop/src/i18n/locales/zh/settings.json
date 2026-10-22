@@ -3,12 +3,74 @@
     "title": "界面语言",
     "description": "选择应用的显示语言"
   },
-  "theme": {
-    "title": "主题",
+  "appearance": {
+    "title": "界面外观",
     "description": "浅色、深色，或跟随系统外观",
     "light": "浅色",
     "dark": "深色",
     "system": "跟随系统"
+  },
+  "theme": {
+    "title": "配色主题",
+    "description": "界面底色、文字与强调色的色系。每个主题都跟随上方的外观设置，因此各有浅色与深色两套取值。",
+    "palettes": {
+      "futureos": {
+        "name": "FutureOS",
+        "description": "默认主题：冷调中性灰，只用一个蓝色强调色。"
+      },
+      "ayu": {
+        "name": "Ayu",
+        "description": "近黑底上的暖琥珀色，另有一套柔和的浅色。"
+      },
+      "catppuccin": {
+        "name": "Catppuccin",
+        "description": "粉彩底色，配蓝色强调色。"
+      },
+      "dracula": {
+        "name": "Dracula",
+        "description": "炭灰底上的紫与粉，辨识度最高的深色主题。"
+      },
+      "everforest": {
+        "name": "Everforest",
+        "description": "森林绿配暖灰，刻意做得柔和低对比。"
+      },
+      "gruvbox": {
+        "name": "Gruvbox",
+        "description": "复古暖灰配青绿强调色。"
+      },
+      "kanagawa": {
+        "name": "Kanagawa",
+        "description": "水墨感的蓝与炭黑，取意于北斋的配色。"
+      },
+      "nightfox": {
+        "name": "Nightfox",
+        "description": "蓝灰的夜晚与暖纸色的白天。"
+      },
+      "nord": {
+        "name": "Nord",
+        "description": "来自 Nord 项目的极地蓝与灰。"
+      },
+      "one-dark": {
+        "name": "One Dark",
+        "description": "Atom 的中性灰，只用一个蓝色强调色。"
+      },
+      "rose-pine": {
+        "name": "Rosé Pine",
+        "description": "柔和的梅紫与玫瑰色，刻意做得低对比。"
+      },
+      "solarized": {
+        "name": "Solarized",
+        "description": "Ethan Schoonover 的暖纸色调，配蓝色强调色。"
+      },
+      "tokyo-night": {
+        "name": "Tokyo Night",
+        "description": "夜之城的蓝与紫，另有一套浅白的日间版。"
+      },
+      "vesper": {
+        "name": "Vesper",
+        "description": "近黑底配暖橙强调色，几乎没有多余装饰。"
+      }
+    }
   },
   "fontSize": {
     "title": "字体大小",
@@ -18,19 +80,28 @@
     "large": "大",
     "xlarge": "特大"
   },
+  "replyDetail": {
+    "title": "模型输出展示",
+    "default": "默认",
+    "detailed": "详细",
+    "description": {
+      "default": "回答完成后只保留最终回答，思考、工具调用和中间说明收起到一行，可随时展开；生成过程中仍完整显示。",
+      "detailed": "回答完成后保留完整过程：思考、工具调用和中间说明按发生顺序与正文一起显示。"
+    }
+  },
   "approvalTier": {
     "title": "审批模式",
     "manual": "手动审批",
     "sandbox": "沙箱保护",
     "sandboxChecking": "沙箱保护（检测中）",
     "sandboxUnavailable": "沙箱保护（不可用）",
-    "off": "完全放开",
+    "off": "完全访问",
     "description": {
       "manual": "文件访问遵循审批规则；只读白名单命令直接放行，其余命令需批准。不启用 OS 沙箱。",
       "sandbox": "命令在 macOS 沙箱中运行，必要时请求批准。",
       "sandboxWindows": "命令启用 Windows 写保护，必要时请求批准。",
       "sandboxLinux": "命令在 Linux 沙箱中运行，必要时请求批准。",
-      "off": "全部放开，不再询问，也不启用沙箱。",
+      "off": "跳过所有审批，也不启用沙箱——命令以本机完整权限执行。",
       "auto": "自动判断是否放行，保留沙箱保护。"
     },
     "fallbackNotice": "沙箱保护不可用（诊断码：{{code}}）。已切换为手动审批：获批或白名单命令在没有 OS 沙箱的情况下运行。",
@@ -305,5 +376,9 @@
     "followCopyName": "复制公众号名",
     "followCopied": "已复制",
     "followReadArticle": "阅读文章"
+  },
+  "autoResumeInterrupted": {
+    "title": "自动继续被中断的对话",
+    "description": "关闭 FutureOS 会中止正在运行的对话（智能体在应用内运行）。开启后，下次打开应用会自动接着跑这些被中断的对话；关闭则保持中断状态，需要你手动继续。"
   }
 }

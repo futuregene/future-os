@@ -790,20 +790,26 @@ async fn list_models(grpc_addr: &str, search: Option<&str>) -> Result<(), String
         };
         return Err(err);
     }
-    let result: serde_json::Value = serde_json::from_str(&resp.data).map_err(|e| e.to_string())?;
+    // Typed-first decode, like every sibling print-mode call site: command
+    // -response dual-write is retired, so a typed command answers with an
+    // empty `data` string and the payload only exists in the typed `payload`.
+    let result = future_rpc::decode::response_data(&resp);
 
     // Same wire shape the interactive client parses (`ModelInfo`): `label`
     // is the display name, and the agent sends no `maxTokens`, so the table
     // has no max-out column.
-    let mut models: Vec<ModelInfo> = result
+    //
+    // A response without a `models` array is a broken answer, not an empty
+    // catalogue: reporting "0 model(s)" would hide a payload the client cannot
+    // read, which is the failure this table exists to surface.
+    let rows = result
         .get("models")
         .and_then(serde_json::Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|m| serde_json::from_value(m.clone()).ok())
-                .collect()
-        })
-        .unwrap_or_default();
+        .ok_or_else(|| "Agent returned no model list".to_string())?;
+    let mut models: Vec<ModelInfo> = rows
+        .iter()
+        .filter_map(|m| serde_json::from_value(m.clone()).ok())
+        .collect();
 
     if let Some(search) = search {
         let search_lower = search.to_lowercase();
@@ -967,6 +973,8 @@ async fn run_interactive(args: &CliArgs) -> u8 {
         }
     }
     // (No is_running gate here: the main loop's own check handles it.)
+    #[cfg(test)]
+    fire_main_loop_gate();
 
     // Poll once alongside input/events, never during the startup handshake.
     // Dropping this future on exit cancels an in-flight check.
@@ -1024,6 +1032,44 @@ async fn run_interactive(args: &CliArgs) -> u8 {
     0
 }
 
+/// Test seam: the moment `run_interactive` leaves startup for the main loop.
+///
+/// The interactive fixtures have to tell "startup" from "the main loop": a
+/// resize or a ctrl+c that must land *after* startup cannot be scheduled from
+/// the mock's command sequence, because startup keeps issuing unary calls after
+/// its last handshake command (`list_models` follows the session handshake) and
+/// any grace sized on the handshake lands inside startup on a loaded host. That
+/// is how `interactive_resize_during_and_after_startup` failed — the ctrl+c was
+/// read by the startup interrupt arm and the exit code was 1, not 0.
+///
+/// One slot, like the stream manager's gates in `rpc::grpc_client`; it is safe
+/// because every test that runs the interactive loop holds `test_env::lock()`.
+#[cfg(test)]
+mod main_loop_gate {
+    use std::sync::{Arc, Mutex};
+
+    static SLOT: Mutex<Option<Arc<tokio::sync::Notify>>> = Mutex::new(None);
+
+    /// Arm the gate for the next `run_interactive`, returning the handle its
+    /// arrival is delivered on. Call before the run starts; a notification
+    /// that arrives before the waiter awaits is retained (one permit).
+    pub(super) fn arm() -> Arc<tokio::sync::Notify> {
+        let gate = Arc::new(tokio::sync::Notify::new());
+        *SLOT.lock().unwrap_or_else(|e| e.into_inner()) = Some(gate.clone());
+        gate
+    }
+
+    pub(super) fn fire() {
+        let gate = SLOT.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(gate) = gate {
+            gate.notify_one();
+        }
+    }
+}
+
+#[cfg(test)]
+use main_loop_gate::fire as fire_main_loop_gate;
+
 // ─── Main ───────────────────────────────────────────────────────────────────
 
 /// `main()` equivalent — mirrors index.ts's top-level flow and exit codes.
@@ -1061,16 +1107,19 @@ pub fn run(args: &[String]) -> ExitCode {
         .expect("failed to start tokio runtime");
 
     // Desktop-style ownership: attach to an existing Agent when possible;
-    // otherwise launch a sidecar and keep it alive for the TUI lifetime.
-    let _owned_agent = match runtime.block_on(crate::agent_supervisor::ensure_agent_running(
+    // otherwise run one in this process. A busy instance lock means another
+    // process is already starting the Agent, so this waits for it (bounded, and
+    // it says so) instead of refusing to run.
+    if let Err(error) = runtime.block_on(crate::agent_supervisor::ensure_agent_running(
         &args.grpc_addr,
     )) {
-        Ok(guard) => guard,
-        Err(error) => {
-            eprintln!("future-tui: {error}");
-            return ExitCode::from(1);
-        }
-    };
+        eprintln!("future-tui: {error}");
+        return ExitCode::from(1);
+    }
+    // Keep watching: the launch above happened once, and an Agent that dies
+    // later would otherwise leave this terminal reconnecting forever. The
+    // handle is explicit because this runs outside async context.
+    crate::agent_supervisor::spawn_agent_supervision(runtime.handle(), args.grpc_addr.clone());
 
     // Handle --list-models.
     if let Some(search) = &args.list_models {
@@ -1082,6 +1131,7 @@ pub fn run(args: &[String]) -> ExitCode {
             Some(search.clone())
         };
         let result = runtime.block_on(list_models(&addr, search.as_deref()));
+        crate::agent_supervisor::stop_owned_agent();
         return match result {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
@@ -1101,6 +1151,7 @@ pub fn run(args: &[String]) -> ExitCode {
         }
         let addr = args.grpc_addr.clone();
         let result = runtime.block_on(run_print_mode(&addr, &args));
+        crate::agent_supervisor::stop_owned_agent();
         return match result {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
@@ -1114,6 +1165,7 @@ pub fn run(args: &[String]) -> ExitCode {
 
     // Interactive mode (TUI).
     let code = runtime.block_on(run_interactive(&args));
+    crate::agent_supervisor::stop_owned_agent();
     ExitCode::from(code)
 }
 
@@ -1758,6 +1810,11 @@ mod tests {
         unary_status_message_types: HashSet<String>,
         /// Delay before answering unary calls (slow-agent scenarios).
         unary_delay_ms: u64,
+        /// Answer these command types the way the real dispatcher does now:
+        /// a typed `payload` and an EMPTY `data` string. Command-response
+        /// dual-write is retired, so a mock that only ever sets `data` reports
+        /// success for clients that read `data` and breaks on the real Agent.
+        typed_only_types: HashSet<String>,
     }
 
     #[tonic::async_trait]
@@ -1813,6 +1870,31 @@ mod tests {
             };
             let success = !self.fail_types.contains(&cmd.r#type)
                 && !self.fail_silent_types.contains(&cmd.r#type);
+            if success && self.typed_only_types.contains(&cmd.r#type) {
+                // The real Agent's shape: typed payload, no `data` at all. The
+                // encode must succeed — a shape drift here would otherwise let
+                // the mock fall back to `data` and quietly stop being faithful.
+                let value: serde_json::Value = serde_json::from_str(&data).unwrap();
+                let payload = future_rpc::encode::response_payload(&cmd.r#type, &value)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "mock cannot encode a typed payload for {}; the fixture no longer \
+                             mirrors the wire",
+                            cmd.r#type
+                        )
+                    });
+                return Ok(tonic::Response::new(RpcResponse {
+                    id: cmd.id,
+                    r#type: "response".into(),
+                    command: cmd.r#type.clone(),
+                    success: true,
+                    data: String::new(),
+                    error: String::new(),
+                    error_code: String::new(),
+                    error_data: String::new(),
+                    payload: Some(payload),
+                }));
+            }
             Ok(tonic::Response::new(RpcResponse {
                 id: cmd.id,
                 r#type: "response".into(),
@@ -2072,18 +2154,44 @@ mod tests {
 
     // ─── list_models ──────────────────────────────────────────────────
 
+    /// The wire shape the Agent actually sends for `list_models`: the
+    /// `ListModelsPayload` camelCase fields, which `ModelEntryPayload` requires
+    /// in full. A partial fixture only survives on the legacy `data` path,
+    /// because `ModelInfo` defaults every optional field.
     fn models_json() -> String {
         serde_json::json!({
             "models": [
                 {"provider": "openai", "id": "gpt-4o", "label": "GPT-4o",
                  "supportsImages": true, "thinkingLevel": "off",
-                 "contextWindow": 128000, "isDefault": false},
+                 "contextWindow": 128000, "isDefault": false,
+                 "reasoning": true, "description": null, "descriptionEn": null,
+                 "recommended": false},
                 {"provider": "anthropic", "id": "claude-sonnet-4", "label": "Claude Sonnet 4",
                  "supportsImages": false, "thinkingLevel": "high",
-                 "contextWindow": 200000, "isDefault": true}
-            ]
+                 "contextWindow": 200000, "isDefault": true,
+                 "reasoning": true, "description": null, "descriptionEn": null,
+                 "recommended": false}
+            ],
+            "defaultModel": "anthropic/claude-sonnet-4",
+            "isScoped": false
         })
         .to_string()
+    }
+
+    #[tokio::test]
+    async fn list_models_reads_the_typed_payload_the_agent_actually_sends() {
+        // Command-response dual-write is retired: the real dispatcher answers
+        // `list_models` with a typed `payload` and an empty `data` string. The
+        // plain fixture above sets `data`, so it stayed green while the real
+        // `future tui --list-models` failed to parse an empty payload.
+        let addr = spawn_mock(MockAgent {
+            models_data: models_json(),
+            typed_only_types: HashSet::from(["list_models".to_string()]),
+            ..Default::default()
+        })
+        .await;
+        list_models(&addr, None).await.unwrap();
+        list_models(&addr, Some("gpt")).await.unwrap();
     }
 
     #[tokio::test]
@@ -2813,7 +2921,9 @@ mod tests {
         _home: tempfile::TempDir,
         old_home: Option<std::ffi::OsString>,
         pty: PtyStdin,
-        unary_delay_ms: u64,
+        /// Armed before the run starts: fires when `run_interactive` enters the
+        /// main loop (see [`main_loop_gate`]).
+        main_loop: std::sync::Arc<tokio::sync::Notify>,
     }
 
     #[cfg(unix)]
@@ -2826,6 +2936,9 @@ mod tests {
             let home = tempfile::tempdir().unwrap();
             let old_home = std::env::var_os("HOME");
             std::env::set_var("HOME", home.path());
+            // Arm before the run: the notification must not be missed if
+            // startup finishes before a driver first awaits it.
+            let main_loop = main_loop_gate::arm();
             let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
             let addr = spawn_mock(MockAgent {
                 state_data: "{\"sessionId\":\"s1\"}".into(),
@@ -2843,7 +2956,7 @@ mod tests {
                 _home: home,
                 old_home,
                 pty,
-                unary_delay_ms,
+                main_loop,
             }
         }
 
@@ -2866,23 +2979,19 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
 
-        /// Wait until startup has fully completed: the last startup RPCs
-        /// are `new_session` followed by apply_tui_defaults' `get_state`
-        /// (the second one). Commands are recorded when the mock RECEIVES
-        /// them, so the grace must outlast the unary delay.
+        /// Wait until `run_interactive` has left startup and entered the main
+        /// loop.
+        ///
+        /// This used to be a command-sequence heuristic — `new_session`, two
+        /// `get_state`s, then a grace of `unary_delay_ms + 400` — which sized
+        /// the wait on the *handshake* while startup keeps issuing unary calls
+        /// after it (`list_models` follows), so at a 400 ms unary delay the
+        /// grace expired inside startup and a ctrl+c meant for the main loop
+        /// was consumed by the startup interrupt arm
+        /// (`interactive_resize_during_and_after_startup`: exit 1, not 0).
+        /// The product now signals the transition itself.
         async fn await_startup_complete(&self) {
-            for _ in 0..400 {
-                let done = {
-                    let seen = self.seen.lock().unwrap();
-                    let states = seen.iter().filter(|t| *t == "get_state").count();
-                    seen.iter().any(|t| t == "new_session") && states >= 2
-                };
-                if done {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(25)).await;
-            }
-            tokio::time::sleep(Duration::from_millis(self.unary_delay_ms + 400)).await;
+            self.main_loop.notified().await;
         }
 
         fn finish(self) {

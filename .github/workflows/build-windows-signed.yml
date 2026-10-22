@@ -89,12 +89,25 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          clean: ${{ runner.environment != 'self-hosted' }}
 
-      # One presence check for every toolchain; the install steps below are gated
-      # on these outputs so this long-lived machine skips the download. No
-      # actions/cache anywhere in this workflow either: the runner keeps its own
-      # target/ and node_modules, and round-tripping a multi-GB target dir through
-      # GitHub's cache would cost more than the compile it saves.
+      # Keep Cargo's local build cache while removing stale sources and package
+      # outputs. npm ci still reinstalls dependencies from the user's npm cache.
+      - name: Clean self-hosted sources and package outputs
+        if: runner.environment == 'self-hosted'
+        shell: pwsh
+        run: |
+          git reset --hard HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to reset tracked sources' }
+          git clean -ffdx -e /target/
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to clean untracked sources' }
+          @('target/release/bundle', 'target/package-smoke') | ForEach-Object {
+            if (Test-Path $_) { Remove-Item -Recurse -Force $_ }
+          }
+
+      # Reuse tools already on the runner. Rust setup also checks the version,
+      # components and targets declared in rust-toolchain.toml.
       - name: Detect toolchains
         id: detect
         shell: powershell
@@ -167,7 +180,7 @@ jobs:
       - name: Setup Python for package verification
         uses: actions/setup-python@v7
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Setup 7-Zip for package verification
         shell: pwsh

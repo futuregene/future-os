@@ -71,7 +71,18 @@ impl LocalEndpointReservation {
                 "local socket has no parent directory",
             )
         })?;
-        std::fs::create_dir_all(parent).map_err(|error| super::bind_dir_error(error, parent))?;
+        // The short fallback endpoint lives in a world-writable directory, so its
+        // directory is verified rather than created-and-chmodded: creating it with
+        // `create_dir_all` and then fixing the mode would rewrite a directory
+        // somebody else made, and on `/tmp` the chmod would be refused anyway.
+        // An endpoint inside a FutureOS home needs none of this — that directory
+        // is the instance's own, below.
+        if parent == super::endpoint_dir() {
+            super::ensure_endpoint_dir()?;
+        } else {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| super::bind_dir_error(error, parent))?;
+        }
         let metadata =
             std::fs::metadata(parent).map_err(|error| super::bind_dir_error(error, parent))?;
         if metadata.uid() != unsafe { libc::geteuid() } {

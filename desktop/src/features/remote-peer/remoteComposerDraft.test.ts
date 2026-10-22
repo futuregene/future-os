@@ -36,6 +36,19 @@ describe("remoteComposerDraft", () => {
     expect(loadRemoteComposerDraft("desktop_b", "sess_1")?.text).toBe("the other machine's");
   });
 
+  it("keeps the conversations a draft's `#` tokens point at", () => {
+    // The token alone is display text: without the map a reopened draft would
+    // send plain words where a link was meant.
+    saveRemoteComposerDraft("desktop_a", "sess_1", {
+      text: "see #Plan",
+      uploads: [],
+      references: { "#Plan": { sessionId: "sess_2", title: "Plan" } },
+    });
+
+    expect(loadRemoteComposerDraft("desktop_a", "sess_1")?.references)
+      .toEqual({ "#Plan": { sessionId: "sess_2", title: "Plan" } });
+  });
+
   it("discards a draft written by another version instead of guessing at it", () => {
     // The one field that makes a draft readable is its version: a shape this
     // build did not write is not one it may put back in the editor.

@@ -20,12 +20,14 @@ import { runCommand, useCommand } from "../../features/keyboard/commands";
 import { useShortcutDispatcher } from "../../features/keyboard/useDispatcher";
 import { CommandPalette } from "../../features/palette/CommandPalette";
 import { ShortcutCheatSheet } from "../../features/palette/ShortcutCheatSheet";
-import { peerStatus } from "../../features/remote-peer/peerStatus";
+import { DeviceChoiceDialog } from "../../features/remote-peer/DeviceChoiceDialog";
+import { peerDrivable, peerStatus } from "../../features/remote-peer/peerStatus";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
+import { RemoteDraftTargetChooser } from "../../features/remote-peer/RemoteDraftTargetChooser";
 import { RemoteFilesPanel } from "../../features/remote-peer/RemoteFilesPanel";
-import { compactRemoteConversation, deleteRemoteConversation, forkRemoteConversation, installRemoteSkill, pinRemoteConversation } from "../../features/remote-peer/remotePeerClient";
+import { compactRemoteConversation, deleteRemoteConversation, forkRemoteConversation, installRemoteSkill, pinRemoteConversation, takeoverRemotePeer } from "../../features/remote-peer/remotePeerClient";
 import { sendRemoteContinuation } from "../../features/remote-peer/remotePromptOutbox";
 import { RemoteRenameDialog } from "../../features/remote-peer/RemoteRenameDialog";
 import { remoteSkillRecoSource } from "../../features/remote-peer/remoteSkillRecoSource";
@@ -37,6 +39,7 @@ import { useRemoteConversationSettings } from "../../features/remote-peer/useRem
 import { useRemoteSkillCatalog } from "../../features/remote-peer/useRemoteSkillCatalog";
 import { useRemoteSkillRecommend } from "../../features/remote-peer/useRemoteSkillRecommend";
 import { useRemoteTimeline } from "../../features/remote-peer/useRemoteTimeline";
+import { useRemoteWorkspaceRows } from "../../features/remote-peer/useRemoteWorkspaces";
 import { WorkspaceDeviceDialog } from "../../features/remote-peer/WorkspaceDeviceDialog";
 import { startRemote, stopRemote } from "../../features/remote/remoteClient";
 import { RemoteHubView } from "../../features/remote/RemoteHubView";
@@ -47,6 +50,7 @@ import { terminalTarget } from "../../features/terminal/panelTarget";
 import { TerminalPanel } from "../../features/terminal/TerminalPanel";
 import { TerminalToggleButton } from "../../features/terminal/TerminalToggleButton";
 import { useTerminalPanel } from "../../features/terminal/useTerminalPanel";
+import { exitNativeFullscreen } from "../../features/vibe/fullscreen";
 import { VibeStage } from "../../features/vibe/VibeStage";
 import { defaultAgentModelId, modelOption, readLastUsedModel } from "../../integrations/agent/agentClient";
 import { installAgentEventListener, revalidateAgentState } from "../../integrations/agent/agentStateCache";
@@ -69,6 +73,10 @@ import { ActivityRail } from "./ActivityRail";
 import { AgentStatusGate } from "./AgentStatusGate";
 import { AppShellDialogs } from "./AppShellDialogs";
 import { ContextPanel } from "./ContextPanel";
+import {
+  defaultNewConversationTarget,
+  readNewConversationTarget,
+} from "./hooks/newConversationTarget";
 import { canShowLeftPanel, canShowRightPanel, MIN_LEFT_PANEL_WIDTH } from "./hooks/panelGeometry";
 import { useAgentConnection } from "./hooks/useAgentConnection";
 import { useAgentDoneBell } from "./hooks/useAgentDoneBell";
@@ -94,6 +102,7 @@ import { useWindowWidth } from "./hooks/useWindowWidth";
 import { useWorkspaceDialogs } from "./hooks/useWorkspaceDialogs";
 import { MachineBadge } from "./MachineBadge";
 import { OnboardingGate } from "./OnboardingGate";
+import { WorkspaceBadge } from "./WorkspaceBadge";
 import { WorkspaceDialogs } from "./WorkspaceDialogs";
 
 export type { AgentConnectionState } from "./hooks/useAgentConnection";
@@ -161,6 +170,10 @@ function ReadyAppShell({
   // The remote peer's own namespace: its strings describe another machine, and
   // folding them into `layout` would put them where no other remote string is.
   const { t: tRemotePeer } = useTranslation("remotePeer");
+  // The local new-conversation screen's words, for its remote twin: a draft on
+  // another machine is titled and described exactly as this machine's is, and
+  // its header reads "新对话" for the same reason.
+  const { t: tAgent } = useTranslation("agent");
   const [section, setSection] = useState<ActivitySection>("chat");
   const [centerMode, setCenterMode] = useState<"thread" | "new-chat">("thread");
   /**
@@ -172,6 +185,20 @@ function ReadyAppShell({
    * the panel is a view here instead of a window of its own.
    */
   const [vibeOpen, setVibeOpen] = useState(false);
+  /**
+   * Close the panel — and leave native fullscreen with it.
+   *
+   * Every way out of the panel goes through here (its own button and `Esc`, the
+   * `vibe.toggle` accelerator, and the three "open it in the shell" routes), because
+   * the panel is the only surface that offers fullscreen at all: its bar's icon, its
+   * menu row and `vibe.fullscreen` are registered with it, so a panel closed while
+   * fullscreen used to strand the reader in a window with no way back.
+   * `exitNativeFullscreen` holds the rest of the reasoning.
+   */
+  const closeVibe = useCallback(() => {
+    setVibeOpen(false);
+    void exitNativeFullscreen();
+  }, []);
   /**
    * Which machines the conversation list shows. Kept at the shell rather than
    * in the rail so the choice survives the rail remounting when the sidebar
@@ -198,6 +225,25 @@ function ReadyAppShell({
      */
     workspaceId: string | null;
   } | null>(null);
+  /**
+   * A draft on another machine, if that is what is on screen.
+   *
+   * An empty session id is the host's own signal for "this conversation does not
+   * exist yet", so it is also the answer to "may the reader still choose where
+   * it lives": a conversation that already exists has a workspace and cannot be
+   * moved, while a draft can be pointed at any of that host's workspaces (or at
+   * none) until its first prompt creates it.
+   */
+  const remoteDraft = activeRemote?.sessionId === "" ? activeRemote : null;
+  /**
+   * That host's workspaces, read while a draft is open.
+   *
+   * Read here rather than inside the chooser because two things need the names:
+   * the chooser's menu, and the draft's header badge — which otherwise has no
+   * catalogue row to read a workspace name from, since the conversation does not
+   * exist on the host yet.
+   */
+  const draftWorkspaces = useRemoteWorkspaceRows(remoteDraft?.desktopId ?? null);
   /** The remote conversation whose rename dialog is open, if any. */
   const [remoteRename, setRemoteRename] = useState<MergedConversation | null>(null);
   /** The remote *workspace* whose rename dialog is open, if any. */
@@ -226,6 +272,20 @@ function ReadyAppShell({
    * question the phone's new-conversation dialog opens on.
    */
   const [workspaceDeviceChoice, setWorkspaceDeviceChoice] = useState(false);
+  /**
+   * The machine step in front of a new conversation.
+   *
+   * A conversation lives on one machine and runs there, so "new conversation"
+   * cannot create anything until it knows which machine — and the rail's list
+   * can be showing one machine or all of them. The create controls used to
+   * assume this computer: with a host's conversations on screen, the button
+   * and ⌘N made a local conversation, which is a different disk, a different
+   * agent and a different place from the one the reader was looking at.
+   *
+   * The device picker above the list answers the question when it names one
+   * machine, and that case asks nothing (`handleNewConversationRequest`).
+   */
+  const [newChatDeviceChoice, setNewChatDeviceChoice] = useState(false);
   /** The host whose create-workspace form is open, if any. */
   const [remoteWorkspaceHost, setRemoteWorkspaceHost] = useState<RemotePeer | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -584,6 +644,25 @@ function ReadyAppShell({
       )
     : null;
 
+  /**
+   * Which workspace the open conversation works in, named the way the rail's
+   * heading names it.
+   *
+   * Read from the thread, not from `activeWorkspace`: that one falls back to the
+   * first workspace when the thread's own is gone, and a header naming somebody
+   * else's folder is worse than one that says nothing. The rail's own rule is
+   * the mode — a chat conversation is listed under the chat section however the
+   * agent's cwd has filed it, and a workspace conversation under its workspace —
+   * so a chat names nothing here either, and the two lists keep saying the same
+   * thing about the same conversation.
+   */
+  const activeThreadWorkspace = activeThread?.mode === "workspace"
+    ? workspaces.find(workspace => workspace.id === activeThread.workspaceId)
+    : undefined;
+  const localWorkspaceBadge = activeThreadWorkspace
+    ? <WorkspaceBadge name={activeThreadWorkspace.name} />
+    : null;
+
   // Bridge the backend's deferred shadow-review notification (C1) onto the
   // typed event bus so the Review panel refreshes when the changeset lands.
   useTauriEvent<string>("review-updated", (threadId) => {
@@ -698,11 +777,21 @@ function ReadyAppShell({
   }
 
   function handleOpenNewChat(workspaceId?: string) {
-    // Workspace "+" on a specific workspace → a chat inside it; otherwise a
-    // plain chat (Chat header "+" / top New Chat).
-    setSection(workspaceId ? "workspace" : "chat");
-    setNewChatWorkspaceId(workspaceId ?? null);
-    setNewConversationMode(workspaceId ? "workspace" : "chat");
+    // A workspace named by the caller (a workspace heading's "+") is an explicit
+    // target. Anything else is the plain "new conversation", which opens on the
+    // target the user created last: a workspace they keep working in should not
+    // have to be picked again on every visit (see `newConversationTarget.ts`).
+    const target = workspaceId
+      ? { mode: "workspace" as const, workspaceId }
+      : defaultNewConversationTarget(
+          readNewConversationTarget(),
+          id => userWorkspaces.some(workspace => workspace.id === id),
+        );
+    // The section follows the target so the rail highlights where the composer
+    // is pointing, the same way the workspace "+" flow does.
+    setSection(target.mode === "workspace" ? "workspace" : "chat");
+    setNewChatWorkspaceId(target.workspaceId);
+    setNewConversationMode(target.mode);
     setNewWorkspaceForm(null);
     setCenterMode("new-chat");
   }
@@ -712,6 +801,43 @@ function ReadyAppShell({
   function handleTrySkill(skillName: string) {
     saveComposerDraft("new", { text: `/${skillName} ` });
     handleOpenNewChat();
+  }
+
+  /**
+   * The rail's plain "new conversation": device first, then the conversation.
+   *
+   * Three answers, in the order they cost the reader:
+   *
+   * - **One machine on screen**: the picker above the list already names it, and
+   *   that is the answer — asking again would be a dialog whose only content is
+   *   what the button beside it says. This is the ordinary case and it creates
+   *   straight away, on that machine.
+   * - **One machine paired**: nothing to choose between, so nothing is asked.
+   * - **The merged list with machines to choose from**: the machine *is* the
+   *   question, so it is asked — in a dialog, because this is also what ⌘N does
+   *   and a shortcut has no button to hang a menu under.
+   *
+   * A conversation started inside a workspace skips all of this
+   * (`handleOpenNewChat(workspaceId)`): that workspace is a folder on this
+   * machine's disk, and there is no question left to ask.
+   */
+  function handleNewConversationRequest() {
+    if (deviceFilter.kind === "device") {
+      if (deviceFilter.desktopId === null) {
+        handleOpenNewChat();
+        return;
+      }
+      startRemoteConversation(deviceFilter.desktopId);
+      return;
+    }
+    // Only a machine that can take the work is something to choose between: a
+    // machine that is offline, restarting, or driven by another paired device
+    // would answer the tap and then refuse the first prompt.
+    if (!remotePeers.some(peerDrivable)) {
+      handleOpenNewChat();
+      return;
+    }
+    setNewChatDeviceChoice(true);
   }
 
   // Skills page 「教我使用技能」: create the coach conversation (same flow as
@@ -761,6 +887,10 @@ function ReadyAppShell({
   function handleRemoteWorkspaceCreated(desktopId: string, workspace: RemoteWorkspaceRow) {
     setRemoteWorkspaceHost(null);
     void refreshRemotePeers();
+    // The draft's chooser lists that host's workspaces, and the one just created
+    // is not in the list it read — a workspace picked from a menu that does not
+    // contain it would read as unnamed.
+    void draftWorkspaces.reload();
     startRemoteConversation(desktopId, workspace.id);
   }
 
@@ -1012,6 +1142,31 @@ function ReadyAppShell({
   const activeRemoteContext = activeRemote
     ? contextOfRemote(remoteCatalogs, activeRemote)
     : null;
+  /**
+   * The workspace a remote draft is in, named as the host names it.
+   *
+   * A draft has no catalogue row, so `activeRemoteContext` cannot supply this —
+   * the chooser's own read of that host's workspaces does, which is why the read
+   * lives here at the shell rather than inside the menu. `null` while the list
+   * has not arrived (or when the draft has no workspace), and the header then
+   * leaves the badge off rather than drawing an id.
+   */
+  const draftWorkspace = remoteDraft?.workspaceId
+    ? (draftWorkspaces.rows.find(row => row.id === remoteDraft.workspaceId) ?? null)
+    : null;
+  /**
+   * That host's conversations, for the remote composer's `#` menu.
+   *
+   * The same snapshot the list is drawn from, so a reference can point at any
+   * conversation the reader can see, including one this client never opened —
+   * and without a second request to the host while a draft is being typed.
+   */
+  const remoteConversations = useMemo(
+    () => (activeRemote
+      ? remoteCatalogs.find(catalog => catalog.desktopId === activeRemote.desktopId)?.sessions ?? []
+      : []),
+    [remoteCatalogs, activeRemote],
+  );
 
   /**
    * Ask a host to compact a conversation's context.
@@ -1145,8 +1300,16 @@ function ReadyAppShell({
   // Nothing on the onboarding gate: there is no conversation, no rail and no
   // settings page to reach yet.
   const shortcutsLive = !showGate;
-  useCommand("chat.new", () => handleOpenNewChat(), shortcutsLive);
-  useCommand("vibe.toggle", () => setVibeOpen(open => !open), shortcutsLive);
+  // ⌘N is the rail's "new conversation" button under a different name, so it
+  // asks the same question — a shortcut that made something on a machine other
+  // than the one on screen was wrong for the same reason the button was.
+  useCommand("chat.new", () => handleNewConversationRequest(), shortcutsLive);
+  useCommand("vibe.toggle", () => {
+    if (vibeOpen)
+      closeVibe();
+    else
+      setVibeOpen(true);
+  }, shortcutsLive);
   useCommand("panel.left", handleToggleLeftPanel, shortcutsLive);
   useCommand("panel.right", () => setRightExpanded(value => !value), shortcutsLive && !hideRightPanel);
   useCommand("settings.open", () => {
@@ -1255,6 +1418,14 @@ function ReadyAppShell({
     onRenameRemoteWorkspace: setRemoteWorkspaceRename,
     onNewChatOnRemote: (desktopId: string, workspaceId: string | null) => startRemoteConversation(desktopId, workspaceId),
     onRemoteConversationsChanged: () => void refreshRemotePeers(),
+    // The device picker's own takeover: the same `takeover` command the Remote
+    // page sends, then a re-read so the machine's rows appear in the merged list
+    // the picker sits above (the host's `control` push would get there a poll
+    // later at the latest, but the list is right there under the button).
+    onTakeControlRemote: async (desktopId: string) => {
+      await takeoverRemotePeer(desktopId);
+      await refreshRemotePeers();
+    },
     onManageDesktops: () => handleSectionChange("remote"),
     activeRemoteKey: activeRemote
       ? `${activeRemote.desktopId}::${activeRemote.sessionId}`
@@ -1267,7 +1438,16 @@ function ReadyAppShell({
     workspaces,
     onChange: handleSectionChange,
     onOpenModels: handleOpenModels,
-    onNewChat: handleOpenNewChat,
+    // The rail's create controls: a plain new conversation asks which machine
+    // first (`handleNewConversationRequest`); one started inside a workspace
+    // names its machine already — that folder is on this disk.
+    onNewChat: (workspaceId?: string) => {
+      if (workspaceId) {
+        handleOpenNewChat(workspaceId);
+        return;
+      }
+      handleNewConversationRequest();
+    },
     onNewWorkspace: handleOpenNewWorkspace,
     onBatchDeleteThreads: openBatchDelete,
     onDeleteRemoteConversations: handleDeleteRemoteConversations,
@@ -1365,18 +1545,18 @@ function ReadyAppShell({
         ? (
             <VibeStage
               catalogs={remoteCatalogs}
-              onClose={() => setVibeOpen(false)}
+              onClose={closeVibe}
               onOpenInShell={(thread) => {
                 handleSelectThread(thread);
-                setVibeOpen(false);
+                closeVibe();
               }}
               onOpenRemoteInShell={(desktopId, sessionId) => {
                 openRemoteSession(desktopId, sessionId);
-                setVibeOpen(false);
+                closeVibe();
               }}
               onNewConversation={() => {
                 pinNextCreatedRef.current = true;
-                setVibeOpen(false);
+                closeVibe();
                 handleOpenNewChat();
               }}
               onPinLocal={(threadId, pinned) => void pinLocalThread(threadId, pinned)}
@@ -1504,39 +1684,63 @@ function ReadyAppShell({
                                     approvalPending={remoteApprovals.pending}
                                     desktopId={activeRemote.desktopId}
                                     composer={(
-                                      <RemoteComposer
-                                        key={`remote-composer:${activeRemote.desktopId}:${activeRemote.sessionId}`}
-                                        canCompact={remoteTimeline.canCompact}
-                                        // The conversation frame places the composer: the
-                                        // band over the transcript's foot, at the same
-                                        // width the local composer is given.
-                                        className="pointer-events-auto mx-auto w-full max-w-3xl"
-                                        desktopId={activeRemote.desktopId}
-                                        // The host-owned model and thinking level live in
-                                        // the composer's control row, beside the send
-                                        // button they apply to — the same place this
-                                        // app's own model and thinking controls are.
-                                        controls={<RemoteConversationSettings settings={remoteSettings} />}
-                                        freshModelId={remoteSettings.model}
-                                        freshThinkingLevel={remoteSettings.thinkingLevel}
-                                        onCompact={() => void compactRemoteConversationOn(activeRemote.desktopId, activeRemote.sessionId)}
-                                        onCreated={(createdSessionId) => {
-                                          // Adopt the conversation the host just made, so
-                                          // the next prompt goes to it by name instead
-                                          // of creating a second one.
-                                          setActiveRemote({ desktopId: activeRemote.desktopId, sessionId: createdSessionId, workspaceId: null });
-                                          void refreshRemotePeers();
-                                        }}
-                                        onSent={() => {
-                                          void remoteTimeline.refresh();
-                                          void refreshRemotePeers();
-                                        }}
-                                        peer={activeRemotePeer}
-                                        sessionId={activeRemote.sessionId}
-                                        skillRecommendation={remoteSkillRecommendation}
-                                        streaming={remoteTimeline.streaming}
-                                        workspaceId={activeRemote.workspaceId}
-                                      />
+                                      // The composer and, for a draft, the row that
+                                      // decides where the conversation will live. One
+                                      // card, as on this app's own new-conversation
+                                      // screen: the footer belongs to the box it sits
+                                      // under, so the two are wrapped together and the
+                                      // box's bottom corners are handed to the footer.
+                                      <div className="pointer-events-auto mx-auto w-full max-w-3xl">
+                                        <RemoteComposer
+                                          key={`remote-composer:${activeRemote.desktopId}:${activeRemote.sessionId}`}
+                                          canCompact={remoteTimeline.canCompact}
+                                          // The conversation frame places the composer: the
+                                          // band over the transcript's foot, at the same
+                                          // width the local composer is given.
+                                          className={remoteDraft ? "w-full rounded-b-none" : "w-full"}
+                                          conversations={remoteConversations}
+                                          desktopId={activeRemote.desktopId}
+                                          // The host-owned model and thinking level live in
+                                          // the composer's control row, beside the send
+                                          // button they apply to — the same place this
+                                          // app's own model and thinking controls are.
+                                          controls={<RemoteConversationSettings settings={remoteSettings} />}
+                                          freshModelId={remoteSettings.model}
+                                          freshThinkingLevel={remoteSettings.thinkingLevel}
+                                          onCompact={() => void compactRemoteConversationOn(activeRemote.desktopId, activeRemote.sessionId)}
+                                          onCreated={(createdSessionId) => {
+                                            // Adopt the conversation the host just made, so
+                                            // the next prompt goes to it by name instead
+                                            // of creating a second one.
+                                            setActiveRemote({ desktopId: activeRemote.desktopId, sessionId: createdSessionId, workspaceId: null });
+                                            void refreshRemotePeers();
+                                          }}
+                                          onSent={() => {
+                                            void remoteTimeline.refresh();
+                                            void refreshRemotePeers();
+                                          }}
+                                          peer={activeRemotePeer}
+                                          sessionId={activeRemote.sessionId}
+                                          skillRecommendation={remoteSkillRecommendation}
+                                          streaming={remoteTimeline.streaming}
+                                          workspaceId={activeRemote.workspaceId}
+                                        />
+                                        {remoteDraft
+                                          ? (
+                                              <RemoteDraftTargetChooser
+                                                error={draftWorkspaces.error}
+                                                loading={draftWorkspaces.loading}
+                                                onOpenWorkspace={activeRemotePeer
+                                                  ? () => setRemoteWorkspaceHost(activeRemotePeer)
+                                                  : undefined}
+                                                onSelect={workspaceId => setActiveRemote(current =>
+                                                  current ? { ...current, workspaceId } : current)}
+                                                rows={draftWorkspaces.rows}
+                                                workspaceId={remoteDraft.workspaceId}
+                                              />
+                                            )
+                                          : null}
+                                      </div>
                                     )}
                                     leftPanelExpanded={showLeftPanel}
                                     liveReplies={remoteTimeline.liveReplies}
@@ -1563,8 +1767,13 @@ function ReadyAppShell({
                                     persistedEntryIds={remoteTimeline.persistedEntryIds}
                                     sessionId={activeRemote.sessionId}
                                     streaming={remoteTimeline.streaming}
-                                    title={activeRemoteContext?.title ?? activeRemote.sessionId}
-                                    workspaceName={activeRemoteContext?.workspaceName ?? null}
+                                    title={remoteDraft
+                                      // A draft is named as this machine's own new
+                                      // conversation is, rather than by the empty
+                                      // session id that is about to exist.
+                                      ? tAgent("newConversation.headerTitle")
+                                      : (activeRemoteContext?.title ?? activeRemote.sessionId)}
+                                    workspaceName={activeRemoteContext?.workspaceName ?? draftWorkspace?.name ?? null}
                                   />
                                 )
                               : storeError
@@ -1606,6 +1815,7 @@ function ReadyAppShell({
                                       futureBalance={futureBalance}
                                       headerAction={terminalHeaderAction}
                                       headerMachine={localMachineBadge}
+                                      headerWorkspace={localWorkspaceBadge}
                                       onPromptConsumed={consumePendingPrompt}
                                       onForked={(forkedThreadId: string) => {
                                         void refreshStore(forkedThreadId);
@@ -1711,6 +1921,33 @@ function ReadyAppShell({
                 setRemoteWorkspaceHost(peer);
               }}
               peers={remotePeers}
+            />
+          )
+        : null}
+      {newChatDeviceChoice
+        ? (
+            <DeviceChoiceDialog
+              description={tRemotePeer("chooseChatDeviceHint")}
+              onClose={() => setNewChatDeviceChoice(false)}
+              onPickLocal={() => {
+                setNewChatDeviceChoice(false);
+                handleOpenNewChat();
+                // The dialog had the caret, and this is the screen the question
+                // is about to be typed on: give it back. A composer that mounts
+                // in this same commit focuses itself; the event is for the one
+                // already on screen (⌘N pressed again on the new-chat screen),
+                // which no remount would have reached.
+                emitFutureEvent("focus-composer", undefined);
+              }}
+              onPickPeer={(peer) => {
+                setNewChatDeviceChoice(false);
+                startRemoteConversation(peer.desktopId);
+                // Same reason as above, on the machine that was picked: the
+                // draft this opens may already be the one on screen.
+                emitFutureEvent("focus-composer", undefined);
+              }}
+              peers={remotePeers}
+              title={tRemotePeer("chooseChatDevice")}
             />
           )
         : null}

@@ -44,6 +44,27 @@ export function buildReplyBlocks(segments: MessageSegment[], streaming = false):
 }
 
 /**
+ * Split a settled reply into the work that led to its answer and the answer
+ * itself — the whole reply minus everything before its last piece of prose.
+ *
+ * "The final answer" is the reply's last non-empty prose block: an agent that
+ * works through a task writes notes between its calls, and the block after the
+ * last call is what it is actually telling the reader. Everything after that
+ * prose stays with the answer, so a trailing pause (reasoning, a divider) never
+ * changes which block the reply opens on. A reply with no prose at all — one
+ * that is still only work, or one whose answer the compaction replaced — has
+ * no answer to isolate, so nothing is folded.
+ */
+export function splitFinalAnswer(blocks: readonly ReplyBlock[]): { process: ReplyBlock[]; answer: ReplyBlock[] } {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index]!;
+    if (block.kind === "segment" && block.segment.kind === "text" && block.segment.text.trim().length > 0)
+      return { process: blocks.slice(0, index), answer: blocks.slice(index) };
+  }
+  return { process: [], answer: [...blocks] };
+}
+
+/**
  * Whether a rendered block still carries output a landing can stand on: prose,
  * or a tool call — the same two slice kinds the question ladder counts as a
  * reply's output. A folded run counts when any of its slices is a call; folded

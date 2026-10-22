@@ -44,6 +44,7 @@ function task(overrides: Partial<TaskView> = {}): TaskView {
     cwd: "/tmp",
     modelId: null,
     thinkingLevel: null,
+    timezone: "Asia/Shanghai",
     sessionPolicy: "new",
     sessionRetention: "keep",
     conversationMode: "workspace",

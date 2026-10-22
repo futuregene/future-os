@@ -82,7 +82,7 @@ pub use runs::{
     ToolOutputRecord,
 };
 #[cfg(any(test, feature = "test-support"))]
-pub use runs::{append_run_event, flush_run_event_log_for_test};
+pub use runs::{append_run_event, flush_run_event_log_for_test, reset_run_event_writer_for_test};
 pub use skill_reco::{record_skill_reco, skill_reco_today, SkillRecoToday};
 pub use thread_sources::{record_thread_source, thread_source};
 pub use threads::{
@@ -119,10 +119,20 @@ pub fn app_data_path() -> Result<AppDataPath, crate::Error> {
 /// tree, and the Desktop runs it off the launch path — see
 /// [`reconcile_after_startup`].
 pub fn initialize_app_store() -> Result<(), crate::Error> {
+    #[cfg(any(test, feature = "test-support"))]
+    let mut timing =
+        crate::test_support::timing::FixtureTiming::start("StoreInit", "initialize_app_store");
     ensure_app_dirs()?;
     let conn = connect()?;
+    #[cfg(any(test, feature = "test-support"))]
+    timing.mark("open_store");
     migrations::initialize(&conn)?;
     drop(conn);
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        timing.mark("store_setup");
+        timing.finish();
+    }
     Ok(())
 }
 

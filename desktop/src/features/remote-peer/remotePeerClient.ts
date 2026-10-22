@@ -265,52 +265,73 @@ interface RawCatalog {
  * assume a total shape. In particular a session without a `sessionId` is
  * dropped rather than becoming a row that cannot be opened.
  */
+/**
+ * A host's session rows, normalised to the shape the merge expects.
+ *
+ * One parser for both paths that read a host's list — the poll
+ * (`fetchRemoteSessions`) and the push (`useRemotePeers`) — because it is
+ * field-by-field: a host field this function does not name never reaches the
+ * list, and two copies of the field list meant a field could reach one path and
+ * not the other. That is not hypothetical: the workspace's name, its pin and the
+ * fork's parent each had to be added twice.
+ *
+ * A row without a `sessionId` is dropped rather than becoming a conversation
+ * that cannot be opened; every other missing field keeps the meaning the host's
+ * contract gives it (`undefined`/`null` = "this host does not know"), never a
+ * default that would read as data.
+ */
+export function normalizeRemoteSessionRows(raw: unknown): RemoteSessionRow[] {
+  if (!Array.isArray(raw))
+    return [];
+  return raw.flatMap((entry): RemoteSessionRow[] => {
+    if (typeof entry !== "object" || entry === null)
+      return [];
+    const row = entry as Record<string, unknown>;
+    const sessionId = row.sessionId;
+    if (typeof sessionId !== "string" || !sessionId)
+      return [];
+    return [{
+      sessionId,
+      ...(typeof row.threadId === "string" && row.threadId ? { threadId: row.threadId } : {}),
+      title: typeof row.title === "string" && row.title ? row.title : sessionId,
+      mode: row.mode === "workspace" ? "workspace" : "chat",
+      ...(typeof row.workspaceId === "string" ? { workspaceId: row.workspaceId } : {}),
+      // The workspace's *name*, for the merged list's group heading. Carried
+      // explicitly like every other field: this parser is field-by-field, so an
+      // optional field the host sends reaches the UI only if it is named here
+      // (the heading showed the fallback text until this line existed).
+      ...(typeof row.workspaceName === "string" && row.workspaceName
+        ? { workspaceName: row.workspaceName }
+        : {}),
+      // Whether that workspace is pinned on the host. Carried like every other
+      // field — this parser is field-by-field, so a host field the parser does
+      // not name never reaches the merged list, and the group would never lead.
+      ...(typeof row.workspacePinned === "boolean" ? { workspacePinned: row.workspacePinned } : {}),
+      // When that workspace itself was last touched on that machine: the key
+      // the host orders its own workspace list by, and therefore the group's
+      // place here. Named here for the same reason as the two above.
+      ...(typeof row.workspaceOrderedAt === "number" ? { workspaceOrderedAt: row.workspaceOrderedAt } : {}),
+      // The conversation this one was forked from, on that host. Without it a
+      // remote fork is drawn as a root — no indent and no fold toggle — while
+      // the same fork on this machine has both.
+      ...(typeof row.parentSessionId === "string" && row.parentSessionId
+        ? { parentSessionId: row.parentSessionId }
+        : {}),
+      pinned: row.pinned === true,
+      streaming: row.streaming === true,
+      ...(typeof row.status === "string" ? { status: row.status } : {}),
+      lastMessageAt: typeof row.lastMessageAt === "number" ? row.lastMessageAt : null,
+      // When the conversation started: the recent view's key for the rows that
+      // are still running (see `RemoteSessionRow.createdAt`). Named here for the
+      // same reason as the workspace fields above.
+      ...(typeof row.createdAt === "number" ? { createdAt: row.createdAt } : {}),
+    }];
+  });
+}
+
 export async function fetchRemoteSessions(desktopId: string): Promise<RemoteCatalog> {
   const raw = await invokeCommand<RawCatalog>("remote_peer_sessions", { desktopId });
-  const sessions = Array.isArray(raw?.sessions) ? raw.sessions : [];
-  return {
-    desktopId,
-    sessions: sessions.flatMap((entry): RemoteSessionRow[] => {
-      if (typeof entry !== "object" || entry === null)
-        return [];
-      const row = entry as Record<string, unknown>;
-      const sessionId = row.sessionId;
-      if (typeof sessionId !== "string" || !sessionId)
-        return [];
-      return [{
-        sessionId,
-        ...(typeof row.threadId === "string" && row.threadId ? { threadId: row.threadId } : {}),
-        title: typeof row.title === "string" && row.title ? row.title : sessionId,
-        mode: row.mode === "workspace" ? "workspace" : "chat",
-        ...(typeof row.workspaceId === "string" ? { workspaceId: row.workspaceId } : {}),
-        // The workspace's *name*, for the merged list's group heading. Carried
-        // explicitly like every other field: this parser is field-by-field, so an
-        // optional field the host sends reaches the UI only if it is named here
-        // (the heading showed the fallback text until this line existed).
-        ...(typeof row.workspaceName === "string" && row.workspaceName
-          ? { workspaceName: row.workspaceName }
-          : {}),
-        // Whether that workspace is pinned on the host. Carried like every other
-        // field — this parser is field-by-field, so a host field the parser does
-        // not name never reaches the merged list, and the group would never lead.
-        ...(typeof row.workspacePinned === "boolean" ? { workspacePinned: row.workspacePinned } : {}),
-        // When that workspace itself was last touched on that machine: the key
-        // the host orders its own workspace list by, and therefore the group's
-        // place here. Named here for the same reason as the two above.
-        ...(typeof row.workspaceOrderedAt === "number" ? { workspaceOrderedAt: row.workspaceOrderedAt } : {}),
-        // The conversation this one was forked from, on that host. Without it a
-        // remote fork is drawn as a root — no indent and no fold toggle — while
-        // the same fork on this machine has both.
-        ...(typeof row.parentSessionId === "string" && row.parentSessionId
-          ? { parentSessionId: row.parentSessionId }
-          : {}),
-        pinned: row.pinned === true,
-        streaming: row.streaming === true,
-        ...(typeof row.status === "string" ? { status: row.status } : {}),
-        lastMessageAt: typeof row.lastMessageAt === "number" ? row.lastMessageAt : null,
-      }];
-    }),
-  };
+  return { desktopId, sessions: normalizeRemoteSessionRows(raw?.sessions) };
 }
 
 /**

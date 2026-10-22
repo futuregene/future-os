@@ -3,6 +3,8 @@ import type { Root } from "react-dom/client";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
+import { WorkspaceBadge } from "../../components/layout/WorkspaceBadge";
+import { installShortcuts } from "../../test/installShortcuts";
 import { ThreadHeader } from "./ThreadHeader";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -226,4 +228,90 @@ it("draws the shell's machine badge after the title, and nothing when it is abse
   // After the title, not before it: the badge qualifies the conversation rather
   // than labelling the header.
   expect(title.compareDocumentPosition(badge) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+/**
+ * The header names the workspace the conversation is in, when the shell has one
+ * to name.
+ *
+ * The same shell-owned slot the machine badge sits in, and drawn after it, so a
+ * reader goes conversation → machine → folder in both headers (this computer's
+ * and a paired host's, which draws the same pair).
+ */
+it("draws the shell's workspace badge after the machine, and nothing when it is absent", async () => {
+  const bare = render(
+    <ThreadHeader
+      leftPanelExpanded
+      onToggleLeftPanel={() => {}}
+      thread={thread}
+      usage={usage}
+    />,
+  );
+  expect(bare.querySelector("[data-testid=thread-workspace]")).toBeNull();
+
+  const withBoth = render(
+    <ThreadHeader
+      leftPanelExpanded
+      machine={<span data-testid="thread-machine">🖥 本机</span>}
+      onToggleLeftPanel={() => {}}
+      thread={thread}
+      usage={usage}
+      workspace={<WorkspaceBadge name="future-os" />}
+    />,
+  );
+  const machine = withBoth.querySelector("[data-testid=thread-machine]")!;
+  const workspace = withBoth.querySelector("[data-testid=thread-workspace]")!;
+  // The badge the shell hands in is the one a remote conversation draws too, so
+  // it names the workspace and carries it as the tooltip here as well.
+  expect(workspace.textContent).toBe("future-os");
+  expect(workspace.getAttribute("title")).toBe("future-os");
+  // Machine first, workspace second: the workspace is the narrower fact, and the
+  // two headers must agree on the order or the same conversation reads
+  // differently on the machine it is on and on the one watching it.
+  expect(machine.compareDocumentPosition(workspace) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+it("opens the same account book from the keyboard", async () => {
+  revalidateUsage.mockClear();
+  const uninstall = installShortcuts();
+  try {
+    render(
+      <ThreadHeader
+        leftPanelExpanded
+        onToggleLeftPanel={() => {}}
+        thread={thread}
+        usage={usage}
+      />,
+    );
+    act(() => window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, altKey: true, code: "KeyU", ctrlKey: true, key: "u" })));
+    // The key is the button's own path, not a second one: it re-reads the session
+    // and then shows the same dialog.
+    expect(revalidateUsage).toHaveBeenCalledWith("t1");
+    await act(async () => {});
+    expect(document.body.textContent).toContain("Token usage and amount");
+  }
+  finally {
+    uninstall();
+  }
+});
+
+it("leaves the usage key unclaimed on a conversation with no agent session", () => {
+  const uninstall = installShortcuts();
+  try {
+    render(
+      <ThreadHeader
+        leftPanelExpanded
+        onToggleLeftPanel={() => {}}
+        thread={{ ...thread, agentSessionId: null } as typeof thread}
+      />,
+    );
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, altKey: true, code: "KeyU", ctrlKey: true, key: "u" });
+    act(() => window.dispatchEvent(event));
+    // Nothing to account for: the press stays free and no empty dialog appears.
+    expect(event.defaultPrevented).toBe(false);
+    expect(document.body.textContent).not.toContain("Token usage and amount");
+  }
+  finally {
+    uninstall();
+  }
 });

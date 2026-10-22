@@ -23,6 +23,7 @@
  [38;5;245mCWD: /mock[39m
  [38;5;245mThinking: off[39m
  [38;5;245mPermission: all[39m
+ [38;5;245mApproval mode: (not set)[39m
  [38;5;245mQueries: 42[39m
  [38;5;245mAuto compaction: off[39m
  [38;5;245mStreaming: no[39m
@@ -32,5 +33,4 @@
  [38;5;245m  user/assistant: 42/40[39m
  [38;5;245m  tool calls/results: 57/57[39m
  [38;5;245m  tokens in/out: 812000/12000[39m
- [38;5;245m  tokens cache read/write: 780000/12000
-[2m[39mj/k scroll · space/b page · g/G top/bottom · / search · y copy · q close      0%
+[2mj/k scroll · space/b page · g/G top/bottom · / search · y copy · q close      0%

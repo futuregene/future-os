@@ -2,20 +2,131 @@
 
 > ([English](COLOR.md)) GUI 的颜色全部走
 > [`desktop/src/styles/globals.css`](../../../desktop/src/styles/globals.css)
-> 里定义的**语义 token**(`@theme` 是浅色，`:root.dark` 覆盖同名变量),不直接用
-> Tailwind 原生具名色(`blue-300` / `green-50` …)。新写或改组件选色时,从下面的语义
-> token 里挑——按「这个色表达什么」选,而不是「我想要个蓝色」。
+> 里定义的**语义 token**(`@theme` 是默认浅色，`:root.dark` 覆盖同名变量，每个配色
+> 主题再加一段**生成**的 `[data-palette="…"]` 做同样的事),不直接用 Tailwind 原生具名色
+> (`blue-300` / `green-50` …)。新写或改组件选色时,从下面的语义 token 里挑——按
+> 「这个色表达什么」选,而不是「我想要个蓝色」。
 
-## 浅色与深色
+## 外观与配色主题（两个独立维度）
 
-应用同时提供两套配色。每个 token 在两套里都存在,所以组件只写一次
-`bg-surface` / `text-ink-soft`,不需要按主题分支。切换方式是 `<html>` 上的
-`.dark` 类,由 `lib/theme.ts` 负责;选项(浅色 / 深色 / 跟随系统)在
-设置 → 通用,持久化在 `localStorage`。因为值是 CSS 变量,dark mode 不需要
-`dark:` 变体——同一个工具类(`bg-surface` → `var(--color-surface)`)底下的
-调色板整体翻转。
+界面观感由**两个相互独立的选择**决定，都在设置 → 通用，都在首屏绘制前写入
+`localStorage`：
 
-下面每张表都是 `浅色 / 深色`。只有一个值的 token 表示两套主题相同。
+| 维度 | 取值 | 落到哪里 | 决定 |
+| --- | --- | --- | --- |
+| **外观** | 浅色 / 深色 / 跟随系统 | `<html>` 上的 `.dark` | 画哪一套明暗 |
+| **配色主题** | 14 套——FutureOS（默认）、Ayu、Catppuccin、Dracula、Everforest、Gruvbox、Kanagawa、Nightfox、Nord、One Dark、Rosé Pine、Solarized、Tokyo Night、Vesper | `<html>` 上的 `data-palette` | 色相 |
+
+分开的原因是它们回答两个不同的问题：「多亮」和「什么气质」。每个配色主题**都自带
+深浅两套**，所以选定的主题仍然跟随系统——Rosé Pine 在浅色窗口是 Dawn，在深色窗口是
+Moon。若把 6 个浅色 + 6 个深色并成一份列表，系统外观一翻转，用户就得重挑一次。
+
+值都是 CSS 变量，所以组件只写一次 `bg-surface` / `text-ink-soft`，不按任一维度
+分支：`bg-surface` 解析成 `var(--color-surface)`，当前生效的主题已经把那个变量设好
+了。也正因如此，两个维度都不需要 `dark:` 变体或按主题的变体。
+
+下面的表格列的是**默认主题**（FutureOS）的 `浅色 / 深色`。只有一个值的 token 表示
+两套明暗相同。
+
+## 配色主题
+
+每个主题都是**数据**：`src/theme/palettes.json` 里一个对象存着它的两套 token
+值、终端配色和 Shiki 主题。需要认识主题的地方都读它——
+
+- `desktop/scripts/gen-theme-palettes.mjs` 把 `styles/globals.css` 里的
+  `[data-palette="…"]` 规则**生成**出来（在 `/* <theme-palettes> */` 标记之间）：
+  改 JSON，然后 `node desktop/scripts/gen-theme-palettes.mjs`。
+- `src/theme/palettes.ts` 是带类型的读取入口（id 列表、终端配色、Shiki 主题），
+  供用不了 CSS 变量的地方使用：内嵌终端与代码高亮。
+- `lib/theme.ts` 只负责*选择*（哪个 id、如何持久化），并把 `<html>` 上的
+  `data-palette` 属性设好。
+
+除此之外没有任何地方重复一份颜色；样式表与 JSON 不一致时
+`styles/globals.test.ts` 会失败并给出重新生成的命令，所以"忘了跑生成"会被拦住
+而不是发布出去。这正是 opencode 内置主题的做法（一主题一个数据对象，语义角色各带
+浅色/深色两值）：有十几个配色之后，把颜色手写在三处，迟早会互相漂移。
+
+每条生成的规则仍有两种选择器形式：
+
+```css
+[data-palette="nord"] { … }                      /* 浅色那一套 */
+.dark [data-palette="nord"],
+:root.dark[data-palette="nord"] { … }            /* 深色那一套 */
+```
+
+- `[data-palette="nord"]` 既匹配根元素，也匹配任何带该属性的元素——设置里的选择器
+  就是靠这一条给每个主题画一张预览卡（见
+  `features/settings/ThemePalettePicker.tsx`），而应用本身仍停在生效的主题上。
+- 深色那段两个选择器都要：根元素同时带 `.dark` 和 `data-palette`，预览卡只在
+  `.dark` 祖先下带 `data-palette`。两者都不能输给 `:root.dark`——前者特异性不低，
+  后者靠所有主题块都排在 `:root.dark` **之后**。`styles/globals.test.ts` 钉住了这个
+  顺序、每个主题的 token 集合，以及 `futureos` 那段是否仍等于 `@theme` /
+  `:root.dark`。
+
+刻意**不**按主题改的：
+
+- `search-*`——搜索命中在任何主题里都是亮底配深字，共用的值保持不变。
+- `--shadow-*`——阴影深度属于明暗，不属于色相。
+
+### 内置主题
+
+`futureos`（默认）之后按字母序：`ayu`、`catppuccin`、`dracula`、`everforest`、
+`gruvbox`、`kanagawa`、`nightfox`、`nord`、`one-dark`、`rose-pine`、
+`solarized`、`tokyo-night`、`vesper`。
+
+每个都取自上游项目自己的配色（Nord 的 Polar Night / Snow Storm / Frost、
+Solarized 的 base03 / base3、Gruvbox 的 bg0 / bg1、Rosé Pine 的 Dawn / Moon、
+Catppuccin 的 Latte / Mocha、Tokyo Night 的 Night / Day、Dracula / Alucard、
+One Dark / One Light、Everforest Medium、Kanagawa 的 Wave / Lotus、
+Nightfox / Dayfox、Ayu 的 Mirage / Light、Vesper）。上游刻意做得低对比的
+（Everforest 和 Kanagawa 最明显），只把文字色阶推到下面的下限之上——色相保留，
+可读性不妥协。
+
+**代码高亮**用上游项目自己出的编辑器主题，所以代码块属于它周围的那扇窗，而不是给
+GitHub Dark 染个色。只出了一套明暗的项目，另一套取最接近的编辑器主题：
+
+| 主题 | 浅色 | 深色 |
+| --- | --- | --- |
+| `futureos` | `github-light` | `github-dark` |
+| `ayu` | `ayu-light` | `ayu-dark` |
+| `catppuccin` | `catppuccin-latte` | `catppuccin-mocha` |
+| `dracula` | `rose-pine-dawn`（最接近） | `dracula` |
+| `everforest` | `everforest-light` | `everforest-dark` |
+| `gruvbox` | `gruvbox-light-medium` | `gruvbox-dark-medium` |
+| `kanagawa` | `kanagawa-lotus` | `kanagawa-wave` |
+| `nightfox` | `one-light`（最接近） | `nord`（最接近） |
+| `nord` | `nord` | `nord` |
+| `one-dark` | `one-light` | `one-dark-pro` |
+| `rose-pine` | `rose-pine-dawn` | `rose-pine-moon` |
+| `solarized` | `solarized-light` | `solarized-dark` |
+| `tokyo-night` | `one-light`（最接近） | `tokyo-night` |
+| `vesper` | `one-light`（最接近） | `vesper` |
+
+### 新增一个主题
+
+1. 在 `src/theme/palettes.json` 加一个对象（token 名就是 `@theme` 里的
+   `--color-*`，去掉 `search-*`；两套明暗；一份终端配色；一对 Shiki 主题）。
+2. 把 id 加进 `lib/theme.ts` 的 `THEME_PALETTES`（顺序：默认在最前，其余按字母
+   序），并在 `i18n/locales/{en,zh}/settings.json` 的 `theme.palettes` 下加名称与
+   一句描述。
+3. `node desktop/scripts/gen-theme-palettes.mjs`。
+
+之后 `src/theme/palettes.test.ts` 会检查手写配色最容易错的地方：两套 token 是否
+齐全、对比度下限、ANSI 色在终端底色上是否可读，以及 Shiki id 是否真实存在。
+
+### 对比度下限
+
+加主题时逐项核对，终端配色另由 `features/terminal/theme.test.ts` 钉住：
+
+| 组合 | 下限 |
+| --- | --- |
+| `ink` 对 `canvas` / `surface` | 7:1 |
+| `ink-soft` 对 `surface` | 4.5:1 |
+| `ink-muted` 对 `surface` | 3:1（弱化文字刻意压低） |
+| `accent`、`success`、`danger`、`warning`、`info` 对 `surface` | 4.5:1 |
+| 白字对 `accent-fill` / `danger-fill` | 4.5:1 |
+| `ink` 对 `surface-subtle` / `code-surface` | 6:1 |
+| `search-ink` 对 `search-match` | 4.5:1 |
 
 ## 原则
 
@@ -129,17 +240,21 @@
 > (`bg-overlay` + backdrop blur)——**不要**在别处另写遮罩色;要调整深浅统一改
 > token,改模糊改 `Overlay`。
 
-### 非 CSS 调色板
+### 非 CSS 的调色板
 
-有两处用不了 CSS 变量，需要在 JS 里按主题取值：
+有两处用不了 CSS 变量、必须在 JS 里解析主题，因此每处都要有「每个主题 × 明暗」的
+条目——这也是新主题唯一可能被悄悄漏掉的地方：
 
-- **终端**（`features/terminal/theme.ts`）：`TERMINAL_THEME`(浅)与
-  `TERMINAL_DARK_THEME`(深),由 `terminalTheme(resolvedTheme)` 选择。
-  `theme.test.ts` 为两套里的每个 ANSI 色钉了最低 WCAG 对比度。
-- **代码高亮**（`features/markdown/useCodeHighlighter.ts`）：Shiki
-  `github-light` / `github-dark`,由 `useResolvedTheme()` 选择。
+- **终端**（`features/terminal/theme.ts`）：就是在 `palettes.json` 里与 token 并列
+  的那份 xterm 配色，通过 `paletteTerminal(id, 明暗)` 读；`terminalTheme(palette,
+  theme)` 选它，构造 xterm 时改用 `currentTerminalTheme()`（那里读不到 hook 的值）。
+  `theme.test.ts` 会遍历**每个**主题。
+- **代码高亮**（`features/markdown/useCodeHighlighter.ts`）：同一个对象里存的 Shiki
+  浅/深一对，通过 `paletteShiki(id, 明暗)` 读，启动时一并载入。上面「内置主题」里的
+  对照表列出了每个主题复用的是哪套编辑器主题。
 
-给其中一处加颜色时，两套都要加。
+两处都由 `src/theme/palettes.test.ts` 覆盖（ANSI 色在终端自身底色上的对比度、以及
+每个 Shiki id 是否真实存在），所以新增主题时不会漏。
 
 ## 选色速查
 
@@ -163,7 +278,13 @@
 
 ## 来源
 
-token 值定义在
-[`desktop/src/styles/globals.css`](../../../desktop/src/styles/globals.css):
-`@theme` 是浅色调色板,`:root.dark` 是深色覆盖,`:root` / `:root.dark` 里的
-`--shadow-*` 是阴影。**改色统一改那里**,不在组件里散写原生色。
+token 值分两处，取决于它是哪一类颜色：
+
+- **默认配色与阴影**——[`desktop/src/styles/globals.css`](../../../desktop/src/styles/globals.css)：
+  `@theme` 是浅色版，`:root.dark` 是深色版，`:root` / `:root.dark` 里的
+  `--shadow-*` 是阴影。
+- **其余所有配色主题**——[`desktop/src/theme/palettes.json`](../../../desktop/src/theme/palettes.json)，
+  由 `desktop/scripts/gen-theme-palettes.mjs` 渲染进样式表。生成出来的那段**不要手改**，
+  改 JSON 后重新生成。
+
+不在组件里散写原生色。

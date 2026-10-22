@@ -296,5 +296,22 @@ pub(super) async fn initialize(
         }
     };
     cancellation.check()?;
+    // Restart recovery: a run whose journal has a start and no terminal was cut
+    // off by the previous process. Continue it here — the instance lock makes
+    // this the one trigger, so two clients cannot both continue the same task.
+    // Off unless `agent/settings.json` enables it: a continuation sends a prompt
+    // the user did not type and spends their credits.
+    //
+    // Not under `cfg(test)`: a unit test that does not redirect HOME would read
+    // the developer's real settings, and once that switch is on, `cargo test`
+    // would send prompts into their real sessions. The pass itself is exercised
+    // by tests that call it directly.
+    #[cfg(not(test))]
+    if crate::rpc::resume::enabled() {
+        let resume_state = state.clone();
+        tokio::spawn(async move {
+            crate::rpc::resume::resume_interrupted_sessions(resume_state).await;
+        });
+    }
     Ok((state, listener))
 }

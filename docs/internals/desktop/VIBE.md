@@ -41,6 +41,13 @@ carries `pinned` per session, and the panel reads it — there is no local list 
 "remote conversations I want here". A cell therefore appears when that host says so
 and disappears when it stops saying so, on the same next read as everything else.
 
+**A host's row carries no lifecycle status.** The `status` a catalogue row has is the
+last **run**'s (`mergeConversations` files it under `runStatus`), so membership filters
+on the pin alone: reading it as "is this conversation live" drops a pinned conversation
+as soon as it has ever run, which is nearly all of them. The cost is that an archived
+conversation of a host's stays in the panel until it is unpinned — telling it apart
+needs a catalogue field that does not exist.
+
 **What a host's cell can say is what that host reports**, and the panel does not
 invent the rest: its catalogue has a title, a workspace, `streaming` and a pin. It has
 no creation time (so the cell is undated — see §2), no run failure and no unread
@@ -132,6 +139,14 @@ which is why two cells become 1×2 rather than two slivers while five stay 3×2
   "start a new conversation…", which leaves for the new-conversation screen and **pins what
   is created there**. Either way, adding is pinning (§1). A full page has no free square, so
   the menu's add row is the way in.
+* **A cell's square is stated, never inferred.** Every child of the grid — a cell and the
+  add tile alike — gets an explicit `gridRow` *and* `gridColumn` from `gridAreaOf` (§13). A
+  child with only a column keeps an automatic row, so CSS places it with the auto-placement
+  cursor: the tile, drawn first, took row one, every cell moved down one row, and the last
+  ones fell into an *implicit* row while the declared rows collapsed — measured as
+  `rows: 346px 346px 70px` with the third cell 70px tall, and reported as "the top row has
+  no height". The template decides size; the index decides the square; nothing is left to
+  the auto-placement algorithm.
 * **Hover is never the only way to reach a control.** Every action a cell offers
   is reachable by the keys, because a remote has no pointer.
 
@@ -313,18 +328,24 @@ The line is read from the agent's cached state for that thread (what the session
 *actually* running), falling back to the shell's selection only until that state has
 been read once.
 
-### 5.7 The bar, and the two things it has to get right
+### 5.7 The bar, and the three things it has to get right
 
 The panel is `fixed inset-0`: it is the only surface in the app whose content starts at
 x = 0, and the window is a macOS **overlay title bar**
 (`titleBarStyle: "Overlay"`, `trafficLightPosition: { x: 14, y: 26 }`), so the traffic
-lights are drawn *over* the page at roughly x 14–72. Two consequences, both of which were
-wrong once and are now pinned by tests:
+lights are drawn *over* the page at roughly x 14–72. Three consequences, each of which was
+wrong once and is now pinned by tests:
 
 * **The bar's content starts past the lights.** 80px (`pl-20`) — the same reserve the
   activity rail uses — on macOS outside fullscreen, and the ordinary 12px everywhere else
   (other platforms, and fullscreen, where the system hides the lights). `barChrome.ts`
   holds the rule; the numbers come from the config, not from taste.
+* **The bar is as tall as every other top bar.** `h-12`, the height the rail's header, the
+  thread header, the context panel and the new-conversation header all share — and the line
+  the lights sit on. It shipped as `h-9`, which centred its text at 18px against their 24px;
+  a 6px lift is exactly what "the text after the dots is not aligned" looks like. The height
+  is a constant (`BAR_HEIGHT`) and `barChrome.test.ts` reads the other headers' source to
+  check they still agree, so the two cannot drift apart again.
 * **The bar is the drag handle.** While the panel is open nothing else visible is
   draggable, so the bar starts a window drag on a press (`startWindowDrag`, which skips
   buttons — the three controls in it keep working).
@@ -336,6 +357,17 @@ the code's `.catch(() => {})` swallowed it, and the button did nothing at all. S
 toggle lives in one function (`fullscreen.ts`), a refusal **reaches the reader** as an
 error toast and the console, and `fullscreenCapability.test.ts` asserts the grant next to
 the code that needs it.
+
+And the panel **owns** the fullscreen it offers. The bar's icon, the menu's row and
+`vibe.fullscreen` are all registered by the panel, so a panel closed while fullscreen used
+to leave the reader in a window with no way back — Windows draws no title bar in
+fullscreen (there is not even a restore button), and `Esc` closes the panel on the grid
+layer rather than leaving fullscreen, which is exactly the route the bug report took. So
+every path out of the panel (`onClose`, `vibe.toggle`, and the three "open it in the
+shell" routes) calls `exitNativeFullscreen` after `setVibeOpen(false)`. Deliberately not
+the panel's unmount cleanup: React StrictMode mounts, unmounts and remounts in
+development, and a reader who was already fullscreen (the macOS green button) would be
+dropped out of it every time they opened the panel.
 
 ## 6. Reading layer: blocks, and zoom at one or two columns
 
@@ -542,6 +574,7 @@ Automatable — and where each one lives:
 | Order: created-time default; a user order wins; a new pin lands by its `createdAt`; an unpin moves nobody; the ring follows the conversation, not the index | `order.test.ts`, `VibeStage.test.tsx` |
 | Membership: pinned and live only; a pinned workspace adds nothing; the remove key unpins the focused cell | `VibeStage.test.tsx` |
 | The grid table (1×1 … 4×3), the narrow-window stack, the explicit column override, no wrap at an edge | `layout.test.ts` |
+| Every grid child — cell or add tile — states both axes, no two children share a square, and none asks for a row the template does not have | `layout.test.ts`, `VibeStage.test.tsx`, and the harness measuring 4 × 628×379 with rows `379 379` |
 | The hint line lists exactly the commands with a handler **and** a binding | `hints.test.ts` |
 | Membership across machines: a host's `pinned` only, a status-less host still counts, a filtered machine shows only its own | `vibeCells.test.ts` |
 | The panel's machine filter: the menu row walks all → this machine → each host, and the choice is remembered | `VibeStage.test.tsx` |
@@ -557,9 +590,11 @@ Automatable — and where each one lives:
 | The add tile appears only in a free square, is reachable by the ring and its printed number, and its rows are the recent unpinned conversations in activity order | `emptySlot.test.ts`, `VibeStage.test.tsx` |
 | Twelve cells per page, `⌥←`/`⌥→` turn it, the bar names the page, and the keys are unclaimed with one page | `emptySlot.test.ts`, `VibeStage.test.tsx` |
 | The bar reserves the macOS traffic-light box on macOS outside fullscreen, and uses the ordinary inset otherwise | `barChrome.test.ts`, plus the harness reporting `padding-left: 80px` and the label at x = 80 |
+| The bar is the height of the app's other headers (24px text line), so it shares the lights' line | `barChrome.test.ts` (reads those headers' source), `VibeStage.test.tsx`, harness: bar 48px, label centre 24px |
 | The bar is the window's drag surface, and its three buttons still click | `VibeStage.test.tsx` |
 | `core:window:allow-set-fullscreen` is granted to the main window, and no `deny-` entry undercuts it | `fullscreenCapability.test.ts` |
 | A refused fullscreen reaches the reader as an error toast, not silence | `VibeStage.test.tsx` |
+| Closing the panel from a fullscreen window leaves fullscreen, so no reader is stranded without the toggle | `AppShell.test.tsx`, `fullscreen.test.ts` |
 | The queue: one per conversation (a second is refused), visible on the cell, handed back into the box when the run ends, kept across a failure, and cancelled into the box rather than discarded | `vibeQueue.test.ts`, `VibeStage.test.tsx` |
 | The composer's half: a send during a run hands the text over and clears the box, a refusal leaves the text in place, and an idle send is still a send | `Composer.inputLayer.test.tsx` |
 | A remote's buttons survive a rebinding and a cleared binding | `shortcuts.test.ts`, `catalog.test.ts`, `keybinding.test.ts` |
@@ -599,21 +634,31 @@ records who measured it, when, on which machine and which model.
 | Data | P0 | Later |
 | --- | --- | --- |
 | Membership | none — it is the pin | — |
-| Order, per-conversation column preference, column override | `localStorage` (`future.vibe.order`, `future.vibe.prefs`) | `app.db` tables + a versioned migration (`CLAUDE.md` §7) |
+| Order, per-conversation column preference, column override | `localStorage` (`future.vibe.order`, `future.vibe.prefs`) | stays there — see below |
 | Keys | the existing shortcut store (`KEYBINDINGS.md` §Storage) | same |
 
 The panel's view preferences follow the same rule as the theme, font size and
 panel widths: per machine, read on the render path, in `localStorage`.
 
-**Why the order is not in `app.db` yet, stated precisely** so the next person does not
-start in the wrong crate: the desktop's database and its migration chain live in
-`host/src/store/` (the desktop's `src-tauri/src/store.rs` is a re-export of
-`future_host::store`), and the settings document's schema lives in
-`packages/app-settings/` — both **outside `desktop/`**. Moving the order there is a
-schema change with a versioned migration, a fresh-install fixture and a bilingual
-`ER.md` update; it is a task of its own, not a line in this one. Until then the
-`localStorage` keys are the only ones the panel reads, and `vibePreferences.ts` is the
-only file that touches them.
+**Why the order stays out of `app.db` — evaluated, and decided against.** The question was
+whether the panel's order, its per-conversation column choice and its column override should
+move from `localStorage` into the application database. They should not:
+
+* **There is no second client to sync with.** The panel exists only on the desktop; the phone
+  has no equivalent surface, and cross-device sync of a grid layout is not a requirement. A
+  database table would buy durability the webview's storage already has, and nothing else.
+* **It would leave this feature's boundary for no gain.** The desktop's database and its
+  migration chain live in `host/src/store/` (the desktop's `src-tauri/src/store.rs` is a
+  re-export of `future_host::store`), and the settings document's schema lives in
+  `packages/app-settings/` — both **outside `desktop/`**. A move is a schema change with a
+  versioned migration, a fresh-install fixture and a bilingual `ER.md` update.
+* **These are view preferences, not data.** Per machine, read on the render path — the same
+  rule the theme, the font size and the panel widths already follow. `vibePreferences.ts` is
+  the only file that touches the keys, so a future move would change two functions, not a
+  call graph.
+
+Recorded as **closed**, not deferred: the entry that used to sit in the P2 table is gone, and
+this paragraph is where a reader who wonders why should land.
 
 ## 13. Where the code goes
 
@@ -661,8 +706,9 @@ What P0 landed, and what it deliberately left:
 | --- | --- |
 | **P0 — done** | the panel and its grid; scale-respecting cell rendering for local conversations; membership = pin; order = `createdAt` + drag/keyboard reordering; the three layers and the single-editor invariant; the input layer with dictation, the target bar and the three state meanings; `⌘⇧V`, arrows, `⏎`, `Esc`, `1`–`9`; explicit "still running" refusal |
 | **P1 — done** | the menu (`Menu`, one column, `←`/`→` adjust a value in place) · the attention queue (§9.5) · the machine filter, a host's conversations as cells, the add dialog and removal across machines · the input layer's controls moved into the menu with the values left read-only on screen (§5.6) · the send queue (§5.4) |
-| **P2 — in progress** | **done:** `h`/`j`/`k`/`l` beside the arrows · the reading layer's second column with its three per-conversation states (§6) · scrolling a cell from the keyboard · the key checklist and read-only readout ([`VIBE-REMOTE-KEYS.md`](VIBE-REMOTE-KEYS.md), matrix still empty) · **remaining:** the block cursor of §6, order in `app.db`, and the measurement pass itself |
-| **P2 — later** | order in `app.db`; layout presets; a "learn this button" diagnostics page (the read-only readout is the first half); optional text size on the volume buttons |
+| **P2 — in progress** | **done:** `h`/`j`/`k`/`l` beside the arrows · the reading layer's second column with its three per-conversation states (§6) · scrolling a cell from the keyboard · the key checklist and read-only readout ([`VIBE-REMOTE-KEYS.md`](VIBE-REMOTE-KEYS.md), matrix still empty) · **remaining:** the block cursor of §6, and the measurement pass itself |
+| **P2 — later** | layout presets; a "learn this button" diagnostics page (the read-only readout is the first half); optional text size on the volume buttons |
+| **Not doing** | the order in `app.db` — evaluated and closed, see §12 |
 
 ## 15. Open questions
 

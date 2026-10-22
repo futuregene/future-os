@@ -36,10 +36,10 @@ import { bindingLabel, useShortcutOverrides } from "../keyboard/shortcuts";
 import { RemoteFilesPanel } from "../remote-peer/RemoteFilesPanel";
 import { AddToVibeDialog } from "./AddToVibeDialog";
 import { attentionOf, nextAttention } from "./attention";
-import { barStart, reserveTrafficLights as shouldReserveTrafficLights } from "./barChrome";
+import { BAR_HEIGHT, barStart, reserveTrafficLights as shouldReserveTrafficLights } from "./barChrome";
 import { ADD_SLOT_KEY, clampPage, hasAddSlot, PAGE_SIZE, pageCount, pageSlice, recentChoices } from "./emptySlot";
 import { toggleNativeFullscreen } from "./fullscreen";
-import { cellPosition, gridOf, moveInGrid } from "./layout";
+import { gridAreaOf, gridOf, moveInGrid } from "./layout";
 import { moveInOrder, resolveOrder } from "./order";
 import { cyclePreference, nextStickyDefault, PANEL_WIDTH, preferenceLabelKey, readPanelPreference, showReadingPanel, toggleHidden, togglePinned } from "./readingPanel";
 import { scrollToLiveEnd, scrollTranscript, transcriptOf } from "./scrollCell";
@@ -995,8 +995,9 @@ export function VibeStage({
                 )}
                 data-vibe-add-slot=""
                 // Placed after the last cell: the grid fills left to right, so the tile
-                // lands in the next free square of the current page.
-                style={{ gridColumn: cellPosition(visible.length, layout).column + 1 }}
+                // lands in the next free square of the current page. Both axes are stated
+                // (`gridAreaOf`) — a column alone leaves the row to auto-placement.
+                style={gridAreaOf(visible.length, layout)}
                 onMouseDown={() => setFocusKey(ADD_SLOT_KEY)}
                 onClick={() => setAddMenuOpen(true)}
                 type="button"
@@ -1026,7 +1027,7 @@ export function VibeStage({
                     setFocus(cell);
                     setLayer("read");
                   }}
-              style={{ gridColumn: cellPosition(index, layout).column + 1 }}
+              style={gridAreaOf(index, layout)}
             >
               <header
                 className={cn(
@@ -1135,12 +1136,15 @@ export function VibeStage({
       data-vibe-layer={layer}
     >
       {/* The bar starts at x=0 and is the only surface in the app that does, so it makes
-          the same traffic-light reservation the rail makes: on macOS, outside fullscreen,
-          its content starts past the lights (80px) instead of under them. It is also the
-          only place left to drag the window from while the panel covers everything. */}
+          the same two reservations the rail's header makes: on macOS, outside fullscreen,
+          its content starts past the lights (80px) instead of under them — and it is the
+          same height, so the text lands on the line every other top bar and the lights
+          already share. It is also the only place left to drag the window from while the
+          panel covers everything. */}
       <header
         className={cn(
-          "flex h-9 shrink-0 select-none items-center gap-3 border-b border-line-soft/60 pr-3",
+          "flex shrink-0 select-none items-center gap-3 border-b border-line-soft/60 pr-3",
+          BAR_HEIGHT,
           barStart(shouldReserveTrafficLights(isMac, isFullscreen)),
         )}
         data-vibe-drag="bar"

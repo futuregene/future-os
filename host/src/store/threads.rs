@@ -438,12 +438,20 @@ pub(super) fn mark_thread_message_activity_in(
 
 /// Advance the shared desktop/mobile catalog on assistant output as well as
 /// user prompts. Opening, renaming and replay receipt time are not activity.
-pub fn record_thread_message_activity(thread_id: &str, timestamp: i64) -> Result<(), crate::Error> {
+///
+/// Returns whether the row's stamp actually moved: a deleted thread, or an
+/// event older than what is already recorded, writes nothing, and a caller
+/// that announces the change must not claim one that did not happen.
+pub fn record_thread_message_activity(
+    thread_id: &str,
+    timestamp: i64,
+) -> Result<bool, crate::Error> {
     let conn = connect()?;
-    if mark_thread_message_activity_in(&conn, thread_id, timestamp)? {
+    let advanced = mark_thread_message_activity_in(&conn, thread_id, timestamp)?;
+    if advanced {
         mark_catalog_dirty();
     }
-    Ok(())
+    Ok(advanced)
 }
 
 /// Move a thread to a different workspace (e.g. when cwd changes).
@@ -1254,10 +1262,19 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(ids(), ["t1", "t2"]);
-        record_thread_message_activity("t2", 500).unwrap();
+        assert!(
+            record_thread_message_activity("t2", 500).unwrap(),
+            "a newer stamp is a write, and the caller must be able to say so"
+        );
         assert_eq!(ids(), ["t2", "t1"], "assistant reply beats a newer prompt");
-        record_thread_message_activity("t2", 50).unwrap();
-        record_thread_message_activity("t2", 500).unwrap();
+        assert!(
+            !record_thread_message_activity("t2", 50).unwrap(),
+            "an older event writes nothing"
+        );
+        assert!(
+            !record_thread_message_activity("t2", 500).unwrap(),
+            "a repeated stamp writes nothing"
+        );
         assert_eq!(
             get_thread("t2").unwrap().unwrap().last_message_at,
             Some(500)
@@ -1275,10 +1292,17 @@ mod tests {
         })
         .unwrap();
         assert_eq!(ids(), ["t1", "t2"], "pins still win over activity");
-        record_thread_message_activity("t3", 900).unwrap();
+        assert!(
+            !record_thread_message_activity("t3", 900).unwrap(),
+            "a deleted conversation keeps its last stamp"
+        );
         assert_eq!(
             get_thread("t3").unwrap().unwrap().last_message_at,
             Some(400)
+        );
+        assert!(
+            !record_thread_message_activity("missing", 1_000).unwrap(),
+            "a thread this store does not hold has no stamp to advance"
         );
         assert_eq!(get_thread("t2").unwrap().unwrap().updated_at, 1);
     }

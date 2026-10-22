@@ -3,6 +3,7 @@ import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../..
 import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAsync, renderHook } from "../../../test/renderHook";
+import { readNewConversationTarget, writeNewConversationTarget } from "./newConversationTarget";
 import { useApprovals } from "./useApprovals";
 import { useNewConversation } from "./useNewConversation";
 import { useWorkspaceDialogs } from "./useWorkspaceDialogs";
@@ -85,6 +86,9 @@ function captureToasts() {
 }
 
 beforeEach(() => {
+  // The remembered new-conversation target is webview state and would otherwise
+  // be whatever the previous test created a conversation in.
+  localStorage.clear();
   mocks.createThread.mockReset().mockResolvedValue(thread("new-1"));
   mocks.decideApprovalRequest.mockReset().mockResolvedValue(undefined);
   mocks.deleteWorkspace.mockReset().mockResolvedValue(undefined);
@@ -369,6 +373,53 @@ describe("useNewConversation", () => {
       workspacePath: "/tmp/alpha",
     }));
     expect(setSection).toHaveBeenCalledWith("workspace");
+  });
+
+  it("remembers the workspace a conversation was created in as the next default", async () => {
+    mocks.createThread.mockResolvedValue(thread("ws-thread", { mode: "workspace" }));
+    const { harness } = mount();
+    await act(async () => {
+      await harness.current.startNewConversation({
+        content: "hello",
+        mode: "workspace",
+        modelId: "m1",
+        thinkingLevel: "off",
+        workspace: { id: "ws-1", label: "Alpha", path: "/tmp/alpha" },
+      });
+    });
+    expect(readNewConversationTarget()).toEqual({ mode: "workspace", workspaceId: "ws-1" });
+  });
+
+  it("lets a plain chat replace the remembered workspace", async () => {
+    writeNewConversationTarget({ mode: "workspace", workspaceId: "ws-1" });
+    const { harness } = mount();
+    await act(async () => {
+      await harness.current.startNewConversation({
+        content: "hello",
+        mode: "chat",
+        modelId: "m1",
+        thinkingLevel: "off",
+      });
+    });
+    // A plain chat is a target the user picked too; without this the remembered
+    // workspace could never be left again.
+    expect(readNewConversationTarget()).toEqual({ mode: "chat", workspaceId: null });
+  });
+
+  it("keeps the previous target when the conversation could not be created", async () => {
+    writeNewConversationTarget({ mode: "workspace", workspaceId: "ws-1" });
+    mocks.createThread.mockRejectedValue(new Error("db offline"));
+    const { harness } = mount();
+    await act(async () => {
+      await harness.current.startNewConversation({
+        content: "hello",
+        mode: "workspace",
+        modelId: "m1",
+        thinkingLevel: "off",
+        workspace: { id: "ws-2", label: "Beta", path: "/tmp/beta" },
+      }).catch(() => {});
+    });
+    expect(readNewConversationTarget()).toEqual({ mode: "workspace", workspaceId: "ws-1" });
   });
 
   it("truncates an over-long title by characters, not code units", async () => {

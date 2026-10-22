@@ -78,7 +78,10 @@ export function recentChoices(
       choice: { key: `local:${thread.id}`, machine: null, title: thread.title } as RecentChoice,
     }));
   const remote = catalogs.flatMap(catalog => catalog.sessions
-    .filter(session => session.pinned !== true && (session.status === undefined || session.status === "active"))
+    // A host's `status` is its last run's, not the thread's lifecycle (see
+    // `vibeCells.ts`), so it says nothing about whether the conversation can be
+    // added. Filtering on it hid every host conversation that had ever run.
+    .filter(session => session.pinned !== true)
     .map(session => ({
       at: session.lastMessageAt ?? 0,
       choice: {

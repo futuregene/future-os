@@ -131,6 +131,14 @@ export const useStyles = createThemedStyles(theme => StyleSheet.create({
     marginTop: 2,
     paddingLeft: spacing.md + spacing.sm,
   },
+  // The folded work under a "show process" row mixes prose with step rows, so
+  // it is spaced like the reply's own block list rather than like a step run —
+  // indented one step, the same as the rows inside a folded run.
+  processChildren: {
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+    paddingLeft: spacing.md + spacing.sm,
+  },
   inlineToolChild: {
     flexShrink: 1,
     color: theme.colors.inkSoft,

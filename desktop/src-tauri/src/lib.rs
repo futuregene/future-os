@@ -24,6 +24,8 @@ mod git_review;
 mod host_environment;
 mod instance;
 pub mod launch;
+#[cfg(all(test, windows, feature = "gui"))]
+mod test_process;
 
 /// Sandbox children enter the existing Agent helper before constructing GUI
 /// or headless state. The helper never starts a service or takes its lock.
@@ -56,6 +58,8 @@ mod store;
 mod tasks;
 #[cfg(feature = "gui")]
 mod terminal;
+#[cfg(all(feature = "gui", target_os = "windows"))]
+mod window_caption;
 #[cfg(all(feature = "gui", target_os = "windows"))]
 mod windows_power;
 
@@ -116,6 +120,10 @@ mod gui {
             Event::ReviewUpdated(thread_id) => emit_review_updated(thread_id),
             Event::RemoteActivity(thread_id) => emit_remote_activity(thread_id),
             Event::ThreadsUpdated => emit_threads_updated(),
+            Event::ThreadActivity {
+                thread_id,
+                last_message_at,
+            } => emit_thread_activity(thread_id, last_message_at),
             Event::ThreadRuntimeUpdated {
                 thread_id,
                 run_id,
@@ -236,8 +244,10 @@ mod gui {
         let area_x = area_x / scale;
         let area_y = area_y / scale;
 
-        let width = (area_w * 0.94).clamp(1024.0, area_w);
-        let height = (area_h * 0.94).clamp(720.0, area_h);
+        // A small display can be below the preferred minimum; the work area
+        // remains the upper bound, and clamp must never receive min > max.
+        let width = (area_w * 0.94).clamp(1024.0_f64.min(area_w), area_w);
+        let height = (area_h * 0.94).clamp(720.0_f64.min(area_h), area_h);
         let x = area_x + (area_w - width) / 2.0;
         let y = area_y + (area_h - height) * 0.35;
         (width, height, x, y)
@@ -378,72 +388,6 @@ mod gui {
         include_bytes!("../icons/icon.ico")
     }
 
-    /// Paint the Windows title bar in the app's own colors.
-    ///
-    /// Windows draws the frame itself, so a decorated window gets DWM's caption
-    /// color — the system light/dark gray, tinted by the wallpaper when
-    /// transparency is on — which reads as a differently colored band sitting
-    /// above the webview's white canvas. macOS never shows this seam because
-    /// `titleBarStyle: "Overlay"` hands the top strip to the app. Windows 11
-    /// (21H2+, build 22000) lets an app pin the caption and title-text colors, so
-    /// pin them to the palette in `tailwind.config.js` (`surface` for the caption,
-    /// `ink` for the text). Windows 10 only has the dark-mode attribute: clearing
-    /// it keeps the caption light there too, instead of following a dark system
-    /// theme. Attributes an older build doesn't support are rejected and leave the
-    /// default, so this is safe everywhere.
-    #[cfg(target_os = "windows")]
-    fn match_windows_caption_color<R: tauri::Runtime>(app: &tauri::App<R>) {
-        use tauri::Manager;
-        use windows::Win32::Foundation::HWND;
-        use windows::Win32::Graphics::Dwm::{
-            DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
-        };
-
-        let Some(window) = app.get_webview_window("main") else {
-            return;
-        };
-        let Ok(hwnd) = window.hwnd() else {
-            return;
-        };
-        let hwnd = HWND(hwnd.0 as _);
-
-        // COLORREF is 0x00BBGGRR: `surface` #ffffff, `ink` #172033.
-        const CAPTION: u32 = 0x00FF_FFFF;
-        const TEXT: u32 = 0x0033_2017;
-        const LIGHT: i32 = 0;
-
-        unsafe {
-            let _ = DwmSetWindowAttribute(
-                hwnd,
-                DWMWA_USE_IMMERSIVE_DARK_MODE,
-                std::ptr::from_ref(&LIGHT).cast(),
-                size_of::<i32>() as u32,
-            );
-            for (attribute, color) in [(DWMWA_CAPTION_COLOR, CAPTION), (DWMWA_TEXT_COLOR, TEXT)] {
-                let _ = DwmSetWindowAttribute(
-                    hwnd,
-                    attribute,
-                    std::ptr::from_ref(&color).cast(),
-                    size_of::<u32>() as u32,
-                );
-            }
-        }
-    }
-
-    /// The caption colors are only observable on a live window; what a mock app can
-    /// assert is the no-op arm, mirroring [`size_main_window_to_screen`]'s tests.
-    #[cfg(all(test, target_os = "windows"))]
-    mod windows_caption_tests {
-        use super::match_windows_caption_color;
-
-        #[test]
-        fn returns_without_a_main_window() {
-            let app = tauri::test::mock_app();
-            match_windows_caption_color(&app);
-        }
-    }
-
     /// Give the Dock a real icon when the process is not a bundled `.app`.
     ///
     /// macOS takes the Dock icon from the bundle's `Info.plist`, so a `.app` launch
@@ -571,6 +515,52 @@ mod gui {
     fn emit_threads_updated_on<R: tauri::Runtime>(handle: &tauri::AppHandle<R>) {
         use tauri::Emitter;
         let _ = handle.emit("threads-updated", ());
+    }
+
+    /// One conversation's recency stamp, as the store wrote it.
+    ///
+    /// The sidebar patches that row's `lastMessageAt`; it must not re-list the
+    /// store, because activity arrives about once a second per running reply
+    /// and re-listing would rebuild the list (and re-read SQLite) under the
+    /// reader's hands.
+    #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(crate) struct ThreadActivityUpdate {
+        pub thread_id: String,
+        pub last_message_at: i64,
+    }
+
+    /// Notify the frontend that one conversation's activity stamp advanced.
+    pub(crate) fn emit_thread_activity(thread_id: &str, last_message_at: i64) {
+        emit_thread_activity_via(APP_HANDLE.get(), thread_id, last_message_at);
+    }
+
+    /// Route an activity push through an optional handle (see
+    /// [`emit_review_updated_via`]).
+    fn emit_thread_activity_via<R: tauri::Runtime>(
+        handle: Option<&tauri::AppHandle<R>>,
+        thread_id: &str,
+        last_message_at: i64,
+    ) {
+        if let Some(handle) = handle {
+            emit_thread_activity_on(handle, thread_id, last_message_at);
+        }
+    }
+
+    /// Emit the "thread-activity-updated" row patch on a caller-supplied handle.
+    fn emit_thread_activity_on<R: tauri::Runtime>(
+        handle: &tauri::AppHandle<R>,
+        thread_id: &str,
+        last_message_at: i64,
+    ) {
+        use tauri::Emitter;
+        let _ = handle.emit(
+            "thread-activity-updated",
+            ThreadActivityUpdate {
+                thread_id: thread_id.to_string(),
+                last_message_at,
+            },
+        );
     }
 
     #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
@@ -997,9 +987,12 @@ mod gui {
                 set_windows_taskbar_icon(app);
                 // Windows: the frame is DWM's, so color its caption like the app's
                 // own surface — otherwise the title bar is a visibly different band
-                // at the top of the window (see the function for the palette).
+                // at the top of the window. The webview re-sends the rendered
+                // palette after every theme/palette change (`lib/theme.ts`); until
+                // then, follow the OS appearance (the saved theme lives in
+                // localStorage, which the backend cannot read).
                 #[cfg(target_os = "windows")]
-                match_windows_caption_color(app);
+                window_caption::apply_os_default(app);
                 // The window is created hidden (`"visible": false` in tauri.conf.json)
                 // so the taskbar never flashes Tauri's default (blurry, upscaled) icon
                 // before the crisp one above is in place. Tauri creates configured
@@ -1012,6 +1005,7 @@ mod gui {
             })
             .invoke_handler(tauri::generate_handler![
                 app_build_info,
+                set_window_caption_colors,
                 get_agent_status,
                 check_app_update,
                 app_maintenance_status,
@@ -1372,6 +1366,10 @@ mod gui {
             // shape once before approvals so an Agent run that survived
             // the GUI restart is reanimated instead of staying hidden.
             agent_bridge::reconcile_interrupted_runs().await;
+            // Continuing interrupted conversations is the Agent's job now: it
+            // owns the journal the decision reads, and the instance lock makes
+            // it the single trigger. A second pass here would race it and send
+            // the same conversation two continuation prompts.
             agent_bridge::reconcile_pending_approvals().await;
         });
         // Shadow-review maintenance (consistency check + crash recovery) runs
@@ -1426,10 +1424,11 @@ mod gui {
             apply_main_window_geometry, coalesce_runtime_updates, emit_approvals_updated_on,
             emit_approvals_updated_via, emit_remote_activity_on, emit_remote_activity_via,
             emit_review_updated_on, emit_review_updated_via, emit_runtime_updates_on,
-            emit_threads_updated, emit_threads_updated_on, emit_threads_updated_via,
-            main_window_geometry, runtime_update_drain_loop, sample_thread_streaming,
-            sample_thread_streaming_with, size_main_window_to_screen,
-            thread_streaming_monitor_loop, ThreadRuntimeUpdate, ThreadRuntimeUpdateBatch,
+            emit_thread_activity_on, emit_thread_activity_via, emit_threads_updated,
+            emit_threads_updated_on, emit_threads_updated_via, main_window_geometry,
+            runtime_update_drain_loop, sample_thread_streaming, sample_thread_streaming_with,
+            size_main_window_to_screen, thread_streaming_monitor_loop, ThreadActivityUpdate,
+            ThreadRuntimeUpdate, ThreadRuntimeUpdateBatch,
         };
 
         fn update(run_id: &str, revision: i64, status: &str, reset: bool) -> ThreadRuntimeUpdate {
@@ -1500,6 +1499,18 @@ mod gui {
         }
 
         #[test]
+        fn activity_update_serializes_the_row_patch_the_sidebar_applies() {
+            let value = serde_json::to_value(ThreadActivityUpdate {
+                thread_id: "thread-1".to_string(),
+                last_message_at: 1_700_000_000_000,
+            })
+            .expect("serialize activity update");
+
+            assert_eq!(value["threadId"], "thread-1");
+            assert_eq!(value["lastMessageAt"], 1_700_000_000_000_i64);
+        }
+
+        #[test]
         fn main_window_geometry_scales_clamps_and_centers() {
             // 2x scale → logical work area is 2000x1000 at (50, 25).
             let (width, height, x, y) = main_window_geometry(2.0, 4000.0, 2000.0, 100.0, 50.0);
@@ -1515,6 +1526,14 @@ mod gui {
             let (width, height, _, _) = main_window_geometry(1.0, 1050.0, 730.0, 0.0, 0.0);
             assert_eq!(width, 1024.0);
             assert_eq!(height, 720.0);
+        }
+
+        #[test]
+        fn main_window_geometry_fits_a_work_area_below_the_preferred_minimum() {
+            // A scaled or virtual display can have only 674 logical pixels of
+            // usable height. Fit both dimensions rather than panicking at startup.
+            let geometry = main_window_geometry(2.0, 1600.0, 1348.0, 100.0, 50.0);
+            assert_eq!(geometry, (800.0, 674.0, 50.0, 25.0));
         }
 
         #[test]
@@ -1543,6 +1562,7 @@ mod gui {
             let handle = app.handle();
             emit_review_updated_on(handle, "thread-1");
             emit_remote_activity_on(handle, "thread-1");
+            emit_thread_activity_on(handle, "thread-1", 1_700_000_000_000);
             emit_approvals_updated_on(handle, "thread-1", "approval-1");
             emit_runtime_updates_on(
                 handle,
@@ -1620,11 +1640,13 @@ mod gui {
             let handle = app.handle();
             emit_review_updated_via(Some(handle), "thread-1");
             emit_remote_activity_via(Some(handle), "thread-1");
+            emit_thread_activity_via(Some(handle), "thread-1", 1_700_000_000_000);
             emit_approvals_updated_via(Some(handle), "thread-1", "approval-1");
             emit_threads_updated_via(Some(handle));
             // None arm: process-global APP_HANDLE unset in tests.
             emit_review_updated_via::<tauri::test::MockRuntime>(None, "thread-1");
             emit_remote_activity_via::<tauri::test::MockRuntime>(None, "thread-1");
+            emit_thread_activity_via::<tauri::test::MockRuntime>(None, "thread-1", 1);
             emit_approvals_updated_via::<tauri::test::MockRuntime>(None, "thread-1", "approval-1");
             emit_threads_updated_via::<tauri::test::MockRuntime>(None);
             emit_threads_updated_on(handle);

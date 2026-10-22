@@ -44,7 +44,7 @@ future relay init --dir /opt/future-relay \
 | `operator.jwt` | nats-server 信任的 operator JWT |
 | `account.jwt` | account JWT，由 resolver 预加载 |
 | `nats.conf` | 可直接使用的 nats-server 配置：operator 模式、内存 resolver、无 JetStream；给了证书就带 TLS |
-| `relay.json` | 中继自身配置 |
+| `relay.json` | 中继自身配置；需要 `serve` 自己终结 TLS 时，里面会带 `tlsCert`/`tlsKey` |
 | `rooms.json` | 首次配对时创建，room 注册表 |
 
 `--tls-cert` 与 `--tls-key` 必须同时给出。不给则生成明文监听配置：HTTP、`ws://`
@@ -55,16 +55,23 @@ future relay init --dir /opt/future-relay \
 凭据响应都宣称了 TLS，桌面端要求 TLS、手机要求 `wss://`，配对必然失败。有证书却
 宣告明文同样被拒绝。如果中继前面另有一层做 TLS 终止（反向代理、负载均衡、service
 mesh），监听本来就应该是明文而对外地址不是：加 `--allow-plaintext-upstream` 跳过
-这条校验。**只有确认前面真的有一层 TLS 终止时才这么用**，否则凭据和元数据是裸奔的。
+这条校验。这个参数也会让证书不写进 `relay.json`，于是 `future relay serve` 不会在
+代理后面再起一层 TLS（见下面「由谁来终结 API 的 TLS」）。**只有确认前面真的有一层
+TLS 终止时才这么用**，否则凭据和元数据是裸奔的。
 
 两个监听端口取自 `--nats-url` / `--nats-ws-url`，因此中继发给客户端的地址就是它
 实际监听的地址。
+
+给了证书时，`future relay serve` 自己为 API 终结 TLS（见下文「由谁来终结 API 的
+TLS」），所以 `relay.example.com` 前面不需要再做 TLS 终止。上面的例子监听在
+`127.0.0.1:8099`，仍然需要一个能把公开域名导到这个端口的环节——端口转发、NAT
+规则或负载均衡——但那一跳只需要搬运字节。
 
 生成的 `nats.conf` 默认**不开** nats-server 的 HTTP 监控端点：中继自己从不读它，
 而它的固定端口会让同一台机器上的第二个中继起不来。需要那些统计时，把文件里那行
 `http:` 解除注释即可。
 
-`--listen` 默认 `127.0.0.1:8099`，`--public-url` 默认是对应的回环 origin——这是
+`--listen` 默认 `127.0.0.1:8099`，`--public-url` 默认 `http://127.0.0.1:8099`——这是
 「桌面端在同一台机器上」的默认值。局域网里的手机要连得上，就得让中继监听一个可达
 地址：`--listen 0.0.0.0:8099 --public-url http://<本机局域网地址>:8099`，因为
 `--public-url` 的地址会被原样写进每张邀请码。
@@ -94,6 +101,18 @@ API 24 起对普通应用忽略用户安装的 CA，自签或私有 CA 要么装
 `wss://`，官方平台更是始终要求 `https://` + `wss://`。要做公网部署就用公共 CA，
 那条路径完全不受影响。
 
+一份证书会写进每个监听器。`--tls-cert/--tls-key` 在生成的 `nats.conf` 里出现
+**两次**：一次给客户端端口，一次在 `websocket` 块内部——nats-server 不允许
+websocket 流量继承顶层的 `tls`，而声明了 `wss://` 却没有 websocket TLS 配置会
+直接拒绝启动。手工改这个文件时两块都要留；写成空的 `tls {}`（没有证书路径）虽然
+能启动，但每次握手都会被拒，日志是 `tls: no certificates configured`。
+
+私有 CA 会同时覆盖 TLS 部署的两段链路。`--relay-ca` / `FUTURE_RELAY_CA` 给出的
+根证书既追加到 NATS 连接，也追加到注册房间、领取邀请所用的 HTTP 客户端，所以由
+同一个私有 CA 签发的 API 不需要把证书装进操作系统就能用。它是在信任集里**追加**，
+而不是放宽校验：链不到它的证书照样被拒。如果这台机器上还有别的工具需要该根证书，
+macOS 上仍建议把它装进钥匙串。
+
 ## 2. 启动
 
 ```bash
@@ -112,24 +131,42 @@ future relay serve --config /opt/future-relay/relay.json
 | `DELETE /v1/rooms/{pair}` | 桌面端 NKey 签名 | 删除 room |
 | `POST /client/v1/remote/pair/claim` | 一次性 join token | 手机成为该 room 的一个设备 |
 | `POST /client/v1/remote/auth/token` | bridge 用签名 / client 用 refresh 凭据 | 轮换短期 NATS JWT |
+| `POST /client/v1/remote/pair/revoke` | 设备自己的 refresh 凭据 | 设备把自己从 room 里摘掉（手机上解除配对） |
 
 `/client/v1/...` 这些路径**故意**与官方平台一致，JSON 形状也一致，因此手机和
 桌面端的 client 角色不需要任何特判：换成自建中继只改变请求**发往哪里**，不改变
 请求**说什么**。
 
+### 由谁来终结 API 的 TLS
+
+API 就是 `future relay serve` 自己提供的，所以证书决定了它怎么监听：
+
+| `--public-url` | `relay.json` 里有无证书 | `serve` 的行为 |
+| --- | --- | --- |
+| `https://…` | 有 | 用该证书直接提供 **HTTPS** |
+| `https://…` | 无 | 明文监听，假定前面有 TLS 终结器（启动时会提示） |
+| `http://…` | 有无均可 | 明文监听；证书只用于 NATS 监听器 |
+
+`init` 会把 `--tls-cert/--tls-key` 写进 `relay.json`（`tlsCert`、`tlsKey`），所以最常见的
+情况——一个公开地址、一份证书——根本不需要额外挂反向代理。真正把中继放在反向
+代理后面时，加 `--allow-plaintext-upstream`：此时证书不会写进 `relay.json`，因为
+做 TLS 的是前面那一跳，后面再套一层 TLS 会让每个请求都失败。
+
+证书与私钥不匹配时，`serve` 启动就报错，而不是等到第一次配对。
+
 ## 3. 让桌面端连上它
 
 ```bash
 futureos --relay https://relay.example.com           # GUI
-future headless --relay https://relay.example.com  # 无 GUI 服务器
+future host --relay https://relay.example.com  # 无 GUI 服务器
 ```
 
-地址只对**本次启动**生效，不写任何文件。所以下次不带这个参数启动就回到官方平台——一次调试用的自建中继不会悄悄变成这台机器的长期选择。`--relay ""` 等同于不写这个参数。私有 CA 用 `--relay-ca /path/to/ca.pem`（或环境变量 `FUTURE_RELAY_CA`）追加。
+地址只对**本次启动**生效，不写任何文件。所以下次不带这个参数启动就回到官方平台——一次调试用的自建中继不会悄悄变成这台机器的长期选择。`--relay ""` 等同于不写这个参数。私有 CA 用 `--relay-ca /path/to/ca.pem`（或环境变量 `FUTURE_RELAY_CA`）追加，它同时作用于 NATS 连接和上面那些 relay HTTP 请求（注册房间、领取邀请），所以 `https://` 的 API 也认这个私有 CA，不需要先装进系统钥匙串。
 容器或测试里也可以用环境变量 `FUTURE_RELAY_URL` 直接指定（优先级高于参数，空值表示官方中继）。
 
 自建模式下：
 
-* 远程控制不需要 FutureOS 登录，`future headless` 直接跳过登录门槛；
+* 远程控制不需要 FutureOS 登录，`future host` 直接跳过登录门槛；
 * 桌面端自己生成 pair id、Noise 身份、邀请 PSK 和 join token；
 * 邀请是 `futureos://remote/pair?v=3`。其 payload 仍保持官方 v2 的形状（所以
   claim 路径不变），并额外带 `relay`——即 claim 端点所属的 origin；
@@ -191,7 +228,7 @@ NATS 连接、心跳和凭据轮换。
   空间，broker 强制执行——`SUB >`、跨配对订阅、抢 queue group 都会被拒；
 * 以 bridge 身份从 client 连接发布，或读 client 的回复 inbox；
 * 用一个 join token 配第二台设备。它按设备一次性（同一设备可以重试丢失的响应），
-  五分钟后过期，中继只保存它的 SHA-256。
+  默认五分钟后过期（`invitationTtlSeconds`），中继只保存它的 SHA-256。
 
 把这些机器暴露到公网前，你还需要对以下残留风险做决定：
 
@@ -208,9 +245,9 @@ NATS 连接、心跳和凭据轮换。
 * **不启用 JetStream。** 远程控制只用 NATS Core，存储只会让密文和元数据在本不该
   留存的机器上堆积。
 * **room 文件不是密钥库。** `rooms.json` 里只有 pair id、公开 NKey、设备名、时间
-  戳和每设备两个 SHA-256。拿到副本也连不上：每张凭据都绑定到某个公钥，而对应
-  私钥从不离开端点。删掉文件会一次性让所有配对失效，这本身是一种「重来」，也是
-  「文件损坏报错、而不是当空表启动」的原因。
+  戳、room 的邀请哈希，以及每台设备一条 refresh 凭据哈希。拿到副本也连不上：每张
+  凭据都绑定到某个公钥，而对应私钥从不离开端点。删掉文件会一次性让所有配对失效，
+  这本身是一种「重来」，也是「文件损坏报错、而不是当空表启动」的原因。
 * **重启无代价。** 桌面端在下次凭据轮换时用自己的配对 NKey 重新注册同一个 room，
   已配对的手机自动重连。配对存在于两端的凭据里，不在中继里。
 * **凭据短期有效。** 默认 JWT 有效期五分钟，续签是签名请求；中继侧没有长期
@@ -247,3 +284,21 @@ RELAY_E2E_RELAY_URL=http://127.0.0.1:8099 \
 该测试跑的是真实链路：`remote::start()` 经中继生成 v3 邀请，client 角色认领并用
 `Noise XXpsk0` 建立加密通道，presence 和 `list_sessions` 走加密通道，中继的 room
 名册与实际一致，解绑后 room 被删除。
+
+要跑 TLS 版本，给 `init` 一份证书和 `https://` 的公开地址，再让测试用签发它的 CA
+指向那个 origin：
+
+```bash
+future relay init --dir /tmp/relay-tls \
+  --public-url https://127.0.0.1:8099 \
+  --nats-url tls://127.0.0.1:14222 --nats-ws-url wss://127.0.0.1:19090 \
+  --tls-cert cert.pem --tls-key key.pem
+nats-server -c /tmp/relay-tls/nats.conf
+future relay serve --config /tmp/relay-tls/relay.json
+
+RELAY_E2E_RELAY_URL=https://127.0.0.1:8099 FUTURE_RELAY_CA=ca.pem \
+  cargo test -p future-host --lib remote::relay_e2e -- --ignored --nocapture
+```
+
+全程没有外部 TLS 终结器：`serve` 拿出来的就是 `relay.json` 里那份证书，而
+`FUTURE_RELAY_CA` 让测试自己的 HTTP 与 NATS 客户端信任它。

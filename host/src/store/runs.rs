@@ -490,20 +490,26 @@ static RUN_EVENT_BUFFER: std::sync::LazyLock<
 // holding one open BufWriter per run, coalescing bursts into one flush.
 #[cfg(any(test, feature = "test-support"))]
 enum WriterMsg {
-    Event(RunEventRecord),
+    Event {
+        record: RunEventRecord,
+        path: PathBuf,
+    },
     /// Flush and close the run's writer, then ack. Sent before the run's log
     /// is read from disk (settle) or deleted: the ack guarantees the file is
     /// complete and closed before the caller proceeds (Windows also refuses
     /// to delete an open file).
     Close {
-        run_id: String,
+        path: PathBuf,
+        ack: std::sync::mpsc::Sender<()>,
+    },
+    CloseAll {
         ack: std::sync::mpsc::Sender<()>,
     },
 }
 
 #[cfg(any(test, feature = "test-support"))]
-static DISK_WRITER: std::sync::LazyLock<std::sync::mpsc::Sender<WriterMsg>> =
-    std::sync::LazyLock::new(spawn_disk_writer);
+static DISK_WRITER: std::sync::OnceLock<std::sync::mpsc::Sender<WriterMsg>> =
+    std::sync::OnceLock::new();
 
 #[cfg(any(test, feature = "test-support"))]
 fn spawn_disk_writer() -> std::sync::mpsc::Sender<WriterMsg> {
@@ -511,12 +517,18 @@ fn spawn_disk_writer() -> std::sync::mpsc::Sender<WriterMsg> {
     std::thread::Builder::new()
         .name("run-event-writer".to_string())
         .spawn(move || {
-            let mut writers: HashMap<String, std::io::BufWriter<std::fs::File>> = HashMap::new();
+            let mut writers: HashMap<PathBuf, std::io::BufWriter<std::fs::File>> = HashMap::new();
             while let Ok(msg) = rx.recv() {
                 match msg {
-                    WriterMsg::Event(record) => write_event(&mut writers, &record),
-                    WriterMsg::Close { run_id, ack } => {
-                        if let Some(mut writer) = writers.remove(&run_id) {
+                    WriterMsg::Event { record, path } => write_event(&mut writers, path, &record),
+                    WriterMsg::Close { path, ack } => {
+                        if let Some(mut writer) = writers.remove(&path) {
+                            let _ = writer.flush();
+                        }
+                        let _ = ack.send(());
+                    }
+                    WriterMsg::CloseAll { ack } => {
+                        for (_, mut writer) in writers.drain() {
                             let _ = writer.flush();
                         }
                         let _ = ack.send(());
@@ -530,19 +542,17 @@ fn spawn_disk_writer() -> std::sync::mpsc::Sender<WriterMsg> {
 
 #[cfg(any(test, feature = "test-support"))]
 fn write_event(
-    writers: &mut HashMap<String, std::io::BufWriter<std::fs::File>>,
+    writers: &mut HashMap<PathBuf, std::io::BufWriter<std::fs::File>>,
+    path: PathBuf,
     record: &RunEventRecord,
 ) {
-    let writer = match writers.entry(record.run_id.clone()) {
+    let writer = match writers.entry(path) {
         std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
         std::collections::hash_map::Entry::Vacant(entry) => {
-            let Some(path) = run_events_path(&record.run_id) else {
-                return;
-            };
             let Ok(file) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(path)
+                .open(entry.key())
             else {
                 return;
             };
@@ -559,14 +569,11 @@ fn write_event(
 /// following delete doesn't hit an open handle.
 #[cfg(any(test, feature = "test-support"))]
 fn close_disk_writer(run_id: &str) {
+    let (Some(writer), Some(path)) = (DISK_WRITER.get(), run_events_path(run_id)) else {
+        return;
+    };
     let (ack_tx, ack_rx) = std::sync::mpsc::channel();
-    if DISK_WRITER
-        .send(WriterMsg::Close {
-            run_id: run_id.to_string(),
-            ack: ack_tx,
-        })
-        .is_ok()
-    {
+    if writer.send(WriterMsg::Close { path, ack: ack_tx }).is_ok() {
         let _ = ack_rx.recv_timeout(std::time::Duration::from_secs(2));
     }
 }
@@ -576,6 +583,22 @@ fn close_disk_writer(run_id: &str) {
 #[cfg(any(test, feature = "test-support"))]
 pub fn flush_run_event_log_for_test(run_id: &str) {
     close_disk_writer(run_id);
+}
+
+/// Drain queued fixture logs and release their native file handles before
+/// changing HOME. All event producers must already have stopped.
+#[cfg(any(test, feature = "test-support"))]
+pub fn reset_run_event_writer_for_test() {
+    if let Some(writer) = DISK_WRITER.get() {
+        let (ack, completed) = std::sync::mpsc::channel();
+        writer
+            .send(WriterMsg::CloseAll { ack })
+            .expect("fixture log writer is live");
+        completed
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("fixture log handles close before HOME changes");
+    }
+    RUN_EVENT_BUFFER.lock().unwrap_or_else(unpoison).clear();
 }
 
 /// Directory holding per-run event logs: `~/.future/app/run_events/`.
@@ -606,7 +629,14 @@ fn run_events_path(run_id: &str) -> Option<PathBuf> {
 /// synchronous write, whose errors were also dropped).
 #[cfg(any(test, feature = "test-support"))]
 fn persist_event_to_disk(record: RunEventRecord) {
-    let _ = DISK_WRITER.send(WriterMsg::Event(record));
+    // Resolve the path at enqueue time: a delayed writer must never derive
+    // another fixture's HOME, or reuse a same-id writer from a different home.
+    let Some(path) = run_events_path(&record.run_id) else {
+        return;
+    };
+    let _ = DISK_WRITER
+        .get_or_init(spawn_disk_writer)
+        .send(WriterMsg::Event { record, path });
 }
 
 /// Read a run's events from the persisted log (one JSON object per line).
@@ -692,6 +722,8 @@ pub fn clear_run_event_buffer(_run_id: &str) {
 /// Delete a run's persisted event log (called when the run/thread is deleted).
 /// The writer is closed first — Windows refuses to delete an open file.
 pub fn delete_run_events_file(run_id: &str) {
+    #[cfg(any(test, feature = "test-support"))]
+    close_disk_writer(run_id);
     if let Some(path) = run_events_path(run_id) {
         let _ = std::fs::remove_file(path);
     }
@@ -701,6 +733,8 @@ pub fn delete_run_events_file(run_id: &str) {
 
 /// Remove the whole run-events directory (called by `clear_all_data`).
 pub fn clear_all_run_events_files() {
+    #[cfg(any(test, feature = "test-support"))]
+    reset_run_event_writer_for_test();
     if let Ok(dir) = app_dir() {
         let _ = std::fs::remove_dir_all(dir.join("run_events"));
     }
@@ -1503,8 +1537,30 @@ mod tests {
         }
     }
 
+    /// Serialize the tests that share [`TOOL_PROJECTION_CACHE`].
+    ///
+    /// The cache is process-global and capacity-bounded (64). Two sibling tests
+    /// deliberately fill it past that bound
+    /// (`bulk_sweep_cannot_evict_a_run_with_an_open_tool_call` and the snapshot
+    /// test), which evicts *other* tests' entries — including one that is
+    /// mid-sequence. That is a real failure, reproduced locally: a run whose
+    /// entry is evicted between two advances restarts from `last_sequence = -1`,
+    /// so the next advance returns one tool instead of two and
+    /// `tool_projection_advances_incrementally_without_duplicates` fails on
+    /// `third.len() == 2`.
+    ///
+    /// Serializing the users of one process-global fixture is what makes these
+    /// tests measure the projection logic instead of their neighbours.
+    fn hold_projection_cache() -> std::sync::MutexGuard<'static, ()> {
+        static CACHE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        CACHE_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
     #[test]
     fn tool_projection_advances_incrementally_without_duplicates() {
+        let _cache = hold_projection_cache();
         let run_id = format!("test_tools_{}", std::process::id());
 
         let first = advance_tool_projection(
@@ -1555,6 +1611,7 @@ mod tests {
 
     #[test]
     fn tool_projection_accepts_object_args_and_enriches_streaming_start() {
+        let _cache = hold_projection_cache();
         let run_id = format!("test_object_args_{}", std::process::id());
         let tools = advance_tool_projection(
             &run_id,
@@ -1589,6 +1646,7 @@ mod tests {
 
     #[test]
     fn tool_projection_empty_advance_on_uncached_run_returns_nothing() {
+        let _cache = hold_projection_cache();
         // A read-only advance for a run with no cached projection must not
         // create an entry — it returns the empty list.
         let uncached = format!("test_uncached_{}", std::process::id());
@@ -1597,6 +1655,7 @@ mod tests {
 
     #[test]
     fn tool_projection_accumulates_streaming_arg_deltas() {
+        let _cache = hold_projection_cache();
         let run_id = format!("test_arg_deltas_{}", std::process::id());
         let tools = advance_tool_projection(
             &run_id,
@@ -1644,6 +1703,7 @@ mod tests {
 
     #[test]
     fn tool_projection_keeps_partial_input_until_execution_start() {
+        let _cache = hold_projection_cache();
         let run_id = format!("test_partial_args_{}", std::process::id());
         let tools = advance_tool_projection(
             &run_id,
@@ -1674,6 +1734,7 @@ mod tests {
 
     #[test]
     fn tool_projection_snapshot_delta_replaces_and_idless_delta_targets_newest_running() {
+        let _cache = hold_projection_cache();
         let run_id = format!("test_delta_attrs_{}", std::process::id());
         let tools = advance_tool_projection(
             &run_id,
@@ -1713,6 +1774,7 @@ mod tests {
 
     #[test]
     fn tool_projection_ignores_delta_without_a_running_call() {
+        let _cache = hold_projection_cache();
         let run_id = format!("test_orphan_delta_{}", std::process::id());
         let tools = advance_tool_projection(
             &run_id,
@@ -1738,6 +1800,7 @@ mod tests {
 
     #[test]
     fn bulk_sweep_cannot_evict_a_run_with_an_open_tool_call() {
+        let _cache = hold_projection_cache();
         // Regression (review round 2): list_runs is created_at DESC, so the
         // context panel's bulk poll advances the NEWEST (active) run first
         // and then 64+ history runs. Plain recency then leaves the active run
@@ -1848,6 +1911,7 @@ mod tests {
 
     #[test]
     fn get_tool_call_input_reads_the_tool_projection() {
+        let _cache = hold_projection_cache();
         let run_id = format!("test_tool_input_{}", std::process::id());
         advance_tool_projection(
             &run_id,
@@ -2051,8 +2115,32 @@ mod tests {
         );
     }
 
+    /// Serialize tests that append to [`RUN_EVENT_BUFFER`] and then read it
+    /// back.
+    ///
+    /// The buffer and the disk-writer fixture are **process-global**, and the
+    /// HOME fixture clears both whenever it swaps HOME
+    /// (`auth_store::test_support::cleanup_host` →
+    /// `reset_run_event_writer_for_test`). A read that lands between those two
+    /// points sees neither the buffered events nor, because the writer was
+    /// closed and the directory may be gone, the persisted ones — which is how
+    /// `tool_call_input_legacy_fallback_paths` failed intermittently on CI
+    /// (`left: None, right: Some("{\"path\":\"/x\"}")`) while passing on a
+    /// retry of the same commit.
+    ///
+    /// The HOME fixture already holds `TEST_HOME_LOCK` for its whole lifetime,
+    /// so taking the same lock here is what puts these tests on the same side of
+    /// that boundary. It does not order them among themselves: their run ids are
+    /// per-test, so they do not interfere.
+    fn hold_run_event_fixtures() -> std::sync::MutexGuard<'static, ()> {
+        crate::TEST_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
     #[test]
     fn append_run_event_dedups_replayed_sequences() {
+        let _fixtures = hold_run_event_fixtures();
         let run_id = format!("test_dedup_{}", std::process::id());
         let input = |sequence: i64| AppendRunEventInput {
             run_id: run_id.clone(),
@@ -2297,6 +2385,38 @@ mod tests {
     }
 
     #[test]
+    fn queued_logs_with_the_same_run_id_keep_their_own_paths() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.jsonl");
+        let second = directory.path().join("second.jsonl");
+        let writer = spawn_disk_writer();
+        for (path, sequence) in [(&first, 1), (&second, 2)] {
+            writer
+                .send(WriterMsg::Event {
+                    record: raw_tool_event("same-run", "text_chunk", None, sequence),
+                    path: path.clone(),
+                })
+                .unwrap();
+        }
+        let (ack, completed) = std::sync::mpsc::channel();
+        writer.send(WriterMsg::CloseAll { ack }).unwrap();
+        completed
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        for (path, sequence) in [(&first, 1), (&second, 2)] {
+            let bytes = std::fs::read_to_string(path).unwrap();
+            let record: RunEventRecord = serde_json::from_str(bytes.trim()).unwrap();
+            assert_eq!(record.sequence, sequence);
+            assert_eq!(
+                bytes.lines().count(),
+                1,
+                "same run ids in different homes must not merge"
+            );
+            std::fs::remove_file(path).expect("CloseAll releases native file handles");
+        }
+    }
+
+    #[test]
     fn legacy_disk_log_roundtrip_and_clear() {
         let _home = HomeGuard::new("runs_disk");
         let run_id = format!("disk_{}", std::process::id());
@@ -2344,6 +2464,7 @@ mod tests {
 
     #[test]
     fn append_dedup_tolerates_gaps_and_empty_buffer_entries() {
+        let _fixtures = hold_run_event_fixtures();
         // A sparse buffer: a replay-window sequence that isn't present is
         // appended, not mistaken for a duplicate.
         let run_id = format!("test_gap_{}", std::process::id());
@@ -2363,6 +2484,7 @@ mod tests {
 
     #[test]
     fn tool_call_input_legacy_fallback_paths() {
+        let _fixtures = hold_run_event_fixtures();
         let run_id = format!("test_legacy_input_{}", std::process::id());
 
         // No projection state at all → straight to the legacy log.

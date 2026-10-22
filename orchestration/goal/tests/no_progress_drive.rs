@@ -23,6 +23,36 @@ fn mock_env(state: MockState) -> (tokio::runtime::Runtime, common::mock_agent::S
     (rt, shared)
 }
 
+/// Set a process-global environment variable for the duration of a test.
+///
+/// The goal CLI reads its knobs from the environment and runs in-process, so
+/// these variables are shared by every test in this binary. Removing the
+/// variable at the end of the happy path is not enough: a panicking assertion
+/// skips that line and the next test inherits the value — a 5 s no-progress
+/// window left behind, for instance, would make every later drive test ledger a
+/// no-progress turn.
+struct EnvVar {
+    key: &'static str,
+    previous: Option<std::ffi::OsString>,
+}
+
+impl EnvVar {
+    fn set(key: &'static str, value: &str) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVar {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
 // ── pure evaluation ────────────────────────────────────────────────────────
 
 #[test]
@@ -132,16 +162,28 @@ fn run_turn_folds_tool_starts_into_tracker() {
 #[test]
 fn normal_completion_inside_window_no_event() {
     let cr = cli_root();
-    // completed_events starts a `shell` (write-class) right before end →
-    // idle ≈ 0 even with a 1s window.
+    // `completed_events` starts a `shell` (write-class) right before the turn
+    // ends, so idle ≈ 0 and nothing should be ledgered even with a small
+    // window. The window itself is only an environment hook
+    // (`FUTURE_GOAL_NO_PROGRESS_SECS`) — it is not what this test is about.
+    //
+    // It used to be 1 s, which measured the machine rather than the code: the
+    // gap between the mock's last write and the turn-end evaluation is a few
+    // scheduler hops, and on a loaded Windows runner that occasionally exceeded
+    // one second, so the turn was ledgered as no-progress and the test failed
+    // (`normal_completion_inside_window_no_event`, run 39626462202). Five
+    // seconds is still far below any real "idle" and well above the jitter.
+    const NO_PROGRESS_WINDOW_SECS: &str = "5";
     let (_rt, _shared) = mock_env(MockState {
         events: common::mock_agent::completed_events("mock-run-1"),
         ..Default::default()
     });
-    std::env::set_var("FUTURE_GOAL_NO_PROGRESS_SECS", "1");
+    // Restored by the guard even if an assertion below panics: the variable is
+    // process-global, and a 5 s window left behind would make every later test
+    // in this binary see no-progress everywhere.
+    let _window = EnvVar::set("FUTURE_GOAL_NO_PROGRESS_SECS", NO_PROGRESS_WINDOW_SECS);
     let goal = init_goal(&cr, "normal completion");
     cli_ok(&["run", "--goal", &goal, "--anonymous", "--max-turns", "3"]);
-    std::env::remove_var("FUTURE_GOAL_NO_PROGRESS_SECS");
     let store = open_store(&cr);
     let g = store.replay(&goal).unwrap().unwrap();
     assert!(g.turn_no_progress.is_empty(), "{:?}", g.turn_no_progress);

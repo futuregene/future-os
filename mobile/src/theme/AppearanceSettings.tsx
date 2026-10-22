@@ -2,24 +2,27 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 import { FONT_SIZE_PREFERENCE_ORDER, FONT_SIZE_SCALE, layout, radius, spacing } from "./tokens";
-import { getAppearance, setAppearance, type Appearance, type ThemeMode } from "./preferences";
+import { getAppearance, REPLY_DETAIL_LEVELS, setAppearance, type Appearance, type ThemeMode } from "./preferences";
 import { createThemedStyles, useAppearance, useTheme } from "./ThemeContext";
 
 /** The three schemes, in the order the reader meets them. */
 const THEME_MODES: readonly ThemeMode[] = ["system", "light", "dark"];
 
 /**
- * This phone's appearance: the scheme and the text size.
+ * This phone's appearance: the scheme, the text size, and how a settled reply
+ * is read.
  *
- * Both are local to the phone — no desktop is read or written — and both are
- * stored before they are applied, so a choice that cannot be saved leaves the
- * screen on the value the store actually holds.
+ * All three are local to the phone — no desktop is read or written — and all
+ * three are stored before they are applied, so a choice that cannot be saved
+ * leaves the screen on the value the store actually holds. "Local to the phone"
+ * is why the reply setting covers every paired desktop at once: the transcript
+ * is drawn here, and the desktop sends the same ordered slices either way.
  */
 export function AppearanceSettings() {
   const styles = useStyles();
   const theme = useTheme();
   const { t } = useTranslation();
-  const { themeMode, fontSize } = useAppearance();
+  const { themeMode, fontSize, replyDetail } = useAppearance();
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
 
@@ -79,6 +82,23 @@ export function AppearanceSettings() {
         ))}
       </View>
       {failed ? <Text accessibilityRole="alert" style={styles.error}>{t("appearance.saveFailed")}</Text> : null}
+      <Text accessibilityRole="header" style={styles.label}>{t("appearance.reply")}</Text>
+      <View accessibilityRole="radiogroup" style={styles.options}>
+        {REPLY_DETAIL_LEVELS.map(value => (
+          <Pressable
+            accessibilityLabel={t(`appearance.replyDetail.${value}`)}
+            accessibilityRole="radio"
+            accessibilityState={{ checked: replyDetail === value, disabled: saving }}
+            disabled={saving}
+            key={value}
+            onPress={() => void select({ replyDetail: value })}
+            style={({ pressed }) => [styles.option, replyDetail === value && styles.selected, (pressed || saving) && styles.dimmed]}
+          >
+            <Text style={styles.optionText}>{t(`appearance.replyDetail.${value}`)}</Text>
+          </Pressable>
+        ))}
+      </View>
+      <Text style={styles.description}>{t(`appearance.replyDetailHint.${replyDetail}`)}</Text>
     </View>
   );
 }
@@ -102,5 +122,6 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   selected: { borderColor: theme.colors.accent, backgroundColor: theme.colors.accentSoft },
   dimmed: { opacity: 0.6 },
   optionText: { color: theme.colors.ink },
+  description: { color: theme.colors.inkMuted, fontSize: theme.font(13), lineHeight: theme.font(18) },
   error: { color: theme.colors.danger, fontSize: theme.font(13) },
 }));

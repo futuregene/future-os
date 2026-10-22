@@ -31,6 +31,8 @@ uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = { version = "0.10", features = ["case-insensitive"] }
+iana-time-zone = "0.1"
 base64 = "0.22"
 async-trait = "0.1"
 tokio-tungstenite = { version = "0.24", features = ["__rustls-tls"] }

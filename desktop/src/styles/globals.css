@@ -220,6 +220,8 @@
   }
 }
 
+/* In-thread search hits, painted with the CSS Custom Highlight API
+   (`ThreadSearch.tsx` creates the registries these name). */
 ::highlight(thread-search-match) {
   color: var(--color-search-ink);
   background: var(--color-search-match);
@@ -230,6 +232,11 @@
   background: var(--color-search-current);
 }
 
+/* ── Base rendition ─────────────────────────────────────────────────────────
+   Everything that is *not* a color: the font stack and its rendering, the
+   reader's text size, and the light shadows. `:root.dark` above outranks this
+   block by specificity, so the dark values win regardless of source order, and
+   the palette blocks below only reassign colors. */
 :root {
   color-scheme: light;
   color: var(--color-ink);
@@ -241,6 +248,10 @@
     system-ui, sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+  /* Without these, macOS paints subpixel-antialiased glyphs: every label reads
+     markedly heavier than the design intends (`text-sm font-medium` most of
+     all), which is how the rail's rows drifted after the type scale was
+     restyled. */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 
@@ -248,7 +259,8 @@
      1.15 / 1.35). Every type token is its design-time size times the scale, so
      `text-*` grows while spacing and widths — which read `--spacing` and px
      values — stay fixed. The paired `--text-*--line-height` values are
-     unitless ratios, so they follow their font size automatically. */
+     unitless ratios (or `normal`), so they follow their font size
+     automatically. `@theme` declares the design-time sizes these override. */
   --app-font-scale: 1;
   --text-3xs: calc(0.625rem * var(--app-font-scale));
   --text-2xs: calc(0.6875rem * var(--app-font-scale));
@@ -262,13 +274,1280 @@
   --text-3xl: calc(1.875rem * var(--app-font-scale));
   --text-4xl: calc(2.25rem * var(--app-font-scale));
 
-  /* Light shadows (the dark overrides live in the `.dark` block above). */
+  /* Light shadows (the dark overrides live in `:root.dark` above). */
   --shadow-panel:
     0 1px 2px rgba(23, 32, 51, 0.06), 0 12px 28px rgba(23, 32, 51, 0.07);
   --shadow-dialog: 0 24px 60px rgba(15, 23, 42, 0.18);
   --shadow-sidebar-divider: inset -8px 0 16px -16px rgba(23, 32, 51, 0.15);
   --shadow-sidebar-floating: 6px 0 16px rgba(23, 32, 51, 0.05);
 }
+
+/* ── Theme palettes ─────────────────────────────────────────────────────────
+   Appearance has two independent axes:
+
+   - **Appearance** (`light` / `dark` / `system`, `lib/theme.ts`) picks which
+     rendition is painted. It is the `.dark` class on <html>.
+   - **Palette** (`data-palette` on <html>, `lib/theme.ts` THEME_PALETTES) picks
+     the hues. Every palette ships *both* renditions, so "Rose Pine" in a light
+     window is Dawn and in a dark one Moon — which is what lets "follow the
+     system" coexist with a chosen look.
+
+   A palette only reassigns the same `--color-*` variables `@theme` and
+   `:root.dark` declare, so no component has to know palettes exist. Two
+   selector forms per palette:
+
+     [data-palette="x"]             the light rendition. Matches the root *and* a
+                                    preview element nested inside it — the
+                                    Settings picker paints one card per palette
+                                    this way, so a card shows its own hues.
+     .dark [data-palette="x"],      the dark rendition. `.dark [data-palette]`
+     :root.dark[data-palette="x"]   has the same specificity as `:root.dark`,
+                                    so all palette blocks stay *after* it.
+
+   `search-*` tokens are deliberately absent here: a search hit is a bright mark
+   with dark text in every palette, so each one inherits the shared values.
+   `--shadow-*` is shared too (per rendition, not per palette).
+
+   Everything below the marker is GENERATED from `src/theme/palettes.json` by
+   `node scripts/gen-theme-palettes.mjs` — edit the JSON, not this file.
+   `styles/globals.test.ts` fails when they disagree, when a palette stops
+   defining a token, or when the futureos mirror drifts from `@theme` /
+   `:root.dark`. Values, contrast floors and the picker rules are documented in
+   `docs/internals/desktop/COLOR.md`. */
+
+/* <theme-palettes> */
+/* ── FUTUREOS — FutureOS's own palette ────────────────────────────────────
+   Generated from `src/theme/palettes.json`; edit there and re-run
+   `node scripts/gen-theme-palettes.mjs`. */
+[data-palette="futureos"] {
+  --color-canvas: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-surface-panel: #f8faff;
+  --color-surface-subtle: #f1f4f8;
+  --color-code-surface: #f6f8fa;
+  --color-line: #d9dee7;
+  --color-line-soft: #e8edf4;
+  --color-ink: #172033;
+  --color-ink-soft: #5d687a;
+  --color-ink-muted: #8a94a6;
+  --color-ink-strong: #0f172a;
+  --color-accent: #2563eb;
+  --color-accent-soft: #e8f0ff;
+  --color-accent-fill: #2563eb;
+  --color-accent-fill-hover: #1d4ed8;
+  --color-accent-fill-disabled: #bfdbfe;
+  --color-accent-pulse: rgba(37, 99, 235, 0.28);
+  --color-focus: #93c5fd;
+  --color-success: #15803d;
+  --color-success-soft: #f0fdf4;
+  --color-success-line: #bbf7d0;
+  --color-danger: #dc2626;
+  --color-danger-soft: #fef2f2;
+  --color-danger-line: #fecaca;
+  --color-danger-fill: #dc2626;
+  --color-warning: #b45309;
+  --color-warning-soft: #fffbeb;
+  --color-warning-line: #fde68a;
+  --color-info: #1d4ed8;
+  --color-info-soft: #eff6ff;
+  --color-info-line: #bfdbfe;
+  --color-generating: #f59e0b;
+  --color-scrollbar: #c8ced9;
+  --color-scrollbar-hover: #aeb7c6;
+  --color-diff-add: #e6ffec;
+  --color-diff-add-line: #aadfb8;
+  --color-diff-remove: #ffebe9;
+  --color-diff-remove-line: #ffc9c9;
+  --color-overlay: rgba(0, 0, 0, 0.6);
+}
+
+.dark [data-palette="futureos"],
+:root.dark[data-palette="futureos"] {
+  --color-canvas: #0d1116;
+  --color-surface: #161b22;
+  --color-surface-panel: #11161d;
+  --color-surface-subtle: #1d232c;
+  --color-code-surface: #0f141a;
+  --color-line: #2b333d;
+  --color-line-soft: #222a34;
+  --color-ink: #e6ebf2;
+  --color-ink-soft: #a3adbb;
+  --color-ink-muted: #78828f;
+  --color-ink-strong: #f4f7fb;
+  --color-accent: #60a5fa;
+  --color-accent-soft: #16243c;
+  --color-accent-fill: #2563eb;
+  --color-accent-fill-hover: #1d4ed8;
+  --color-accent-fill-disabled: #1e3a5f;
+  --color-accent-pulse: rgba(96, 165, 250, 0.3);
+  --color-focus: #3b82f6;
+  --color-success: #4ade80;
+  --color-success-soft: #10251a;
+  --color-success-line: #1e4a33;
+  --color-danger: #f87171;
+  --color-danger-soft: #2a1517;
+  --color-danger-line: #5b2528;
+  --color-danger-fill: #b91c1c;
+  --color-warning: #fbbf24;
+  --color-warning-soft: #2a2110;
+  --color-warning-line: #5a4419;
+  --color-info: #60a5fa;
+  --color-info-soft: #14233b;
+  --color-info-line: #2a4270;
+  --color-generating: #fbbf24;
+  --color-scrollbar: #38414d;
+  --color-scrollbar-hover: #4a5563;
+  --color-diff-add: #12261a;
+  --color-diff-add-line: #2f6b45;
+  --color-diff-remove: #2b1519;
+  --color-diff-remove-line: #7a3438;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+}
+
+/* ── AYU — Ayu, by Dmitri Voronianski · https://github.com/ayu-theme ──────
+   Generated from `src/theme/palettes.json`; edit there and re-run
+   `node scripts/gen-theme-palettes.mjs`. */
+[data-palette="ayu"] {
+  --color-canvas: #f2f1ec;
+  --color-surface: #fcfcfa;
+  --color-surface-panel: #f8f8f5;
+  --color-surface-subtle: #eae9e3;
+  --color-code-surface: #f6f6f3;
+  --color-line: #e0e1e1;
+  --color-line-soft: #ededed;
+  --color-ink: #474c57;
+  --color-ink-soft: #666c78;
+  --color-ink-muted: #8b909b;
+  --color-ink-strong: #33383f;
+  --color-accent: #b95911;
+  --color-accent-soft: #f6f2ef;
+  --color-accent-fill: #bc5b11;
+  --color-accent-fill-hover: #b2560f;
+  --color-accent-fill-disabled: #ebdcd6;
+  --color-accent-pulse: rgba(185, 89, 17, 0.28);
+  --color-focus: #e1c8c0;
+  --color-danger-fill: #d3403f;
+  --color-generating: #a87400;
+  --color-scrollbar: #d3d4d6;
+  --color-scrollbar-hover: #b7b9be;
+  --color-overlay: rgba(51, 56, 63, 0.55);
+  --color-success: #548100;
+  --color-success-soft: #f3f5f0;
+  --color-success-line: #dce2d6;
+  --color-danger: #d13f3e;
+  --color-danger-soft: #f9f2f0;
+  --color-danger-line: #f1d9d8;
+  --color-warning: #9c6b00;
+  --color-warning-soft: #f6f4f0;
+  --color-warning-line: #e7ded6;
+  --color-info: #1273a3;
+  --color-info-soft: #f2f4f4;
+  --color-info-line: #d8dee4;
+  --color-diff-add: #f2f4ef;
+  --color-diff-add-line: #d2daca;
+  --color-diff-remove: #f8f1ef;
+  --color-diff-remove-line: #eecfcd;
+}
+
+.dark [data-palette="ayu"],
+:root.dark[data-palette="ayu"] {
+  --color-canvas: #1f2430;
+  --color-surface: #242936;
+  --color-surface-panel: #1a1f29;
+  --color-surface-subtle: #2d3444;
+  --color-code-surface: #1a1f29;
+  --color-line: #505664;
+  --color-line-soft: #414754;
+  --color-ink: #cbccc6;
+  --color-ink-soft: #a9adb5;
+  --color-ink-muted: #7f8899;
+  --color-ink-strong: #e8e8e3;
+  --color-accent: #ffcc66;
+  --color-accent-soft: #60503d;
+  --color-accent-fill: #907236;
+  --color-accent-fill-hover: #886b32;
+  --color-accent-fill-disabled: #574936;
+  --color-accent-pulse: rgba(255, 204, 102, 0.3);
+  --color-focus: #a28249;
+  --color-danger-fill: #af6055;
+  --color-generating: #ffd580;
+  --color-scrollbar: #5b6271;
+  --color-scrollbar-hover: #6d7585;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+  --color-success: #bae67e;
+  --color-success-soft: #455541;
+  --color-success-line: #6f8a54;
+  --color-danger: #f28779;
+  --color-danger-soft: #573a40;
+  --color-danger-line: #905451;
+  --color-warning: #ffd580;
+  --color-warning-soft: #5c5041;
+  --color-warning-line: #988055;
+  --color-info: #73d0ff;
+  --color-info-soft: #324e63;
+  --color-info-line: #477d9b;
+  --color-diff-add: #485942;
+  --color-diff-add-line: #7b985a;
+  --color-diff-remove: #5b3b41;
+  --color-diff-remove-line: #9f5b57;
+}
+
+/* ── CATPPUCCIN — Catppuccin · https://catppuccin.com ─────────────────────
+   Generated from `src/theme/palettes.json`; edit there and re-run
+   `node scripts/gen-theme-palettes.mjs`. */
+[data-palette="catppuccin"] {
+  --color-canvas: #e8ebf1;
+  --color-surface: #ffffff;
+  --color-surface-panel: #f6f8fb;
+  --color-surface-subtle: #eff1f5;
+  --color-code-surface: #f2f4f8;
+  --color-line: #ccd0da;
+  --color-line-soft: #e0e3ea;
+  --color-ink: #474962;
+  --color-ink-soft: #6c6f85;
+  --color-ink-muted: #898ca4;
+  --color-ink-strong: #303242;
+  --color-accent: #3b5bdb;
+  --color-accent-soft: #e7ecfd;
+  --color-accent-fill: #3b5bdb;
+  --color-accent-fill-hover: #2f49b3;
+  --color-accent-fill-disabled: #c3cffa;
+  --color-accent-pulse: rgba(59, 91, 219, 0.26);
+  --color-focus: #7287fd;
+  --color-success: #2f7d1f;
+  --color-success-soft: #e9f5e4;
+  --color-success-line: #c3dcb9;
+  --color-danger: #c10f33;
+  --color-danger-soft: #fbe8ec;
+  --color-danger-line: #eec3cc;
+  --color-danger-fill: #c10f33;
+  --color-warning: #9c6300;
+  --color-warning-soft: #fdf0da;
+  --color-warning-line: #eed9ae;
+  --color-info: #3b5bdb;
+  --color-info-soft: #e8edfd;
+  --color-info-line: #c3cffa;
+  --color-generating: #b8720a;
+  --color-scrollbar: #ccd0da;
+  --color-scrollbar-hover: #b4bac8;
+  --color-diff-add: #e9f4e4;
+  --color-diff-add-line: #bfd9b3;
+  --color-diff-remove: #fbe8eb;
+  --color-diff-remove-line: #eec3cb;
+  --color-overlay: rgba(76, 79, 105, 0.5);
+}
+
+.dark [data-palette="catppuccin"],
+:root.dark[data-palette="catppuccin"] {
+  --color-canvas: #11111b;
+  --color-surface: #1e1e2e;
+  --color-surface-panel: #181825;
+  --color-surface-subtle: #313244;
+  --color-code-surface: #181825;
+  --color-line: #45475a;
+  --color-line-soft: #313244;
+  --color-ink: #cdd6f4;
+  --color-ink-soft: #a6adc8;
+  --color-ink-muted: #7f849c;
+  --color-ink-strong: #e6e9f8;
+  --color-accent: #89b4fa;
+  --color-accent-soft: #232b45;
+  --color-accent-fill: #3b5bdb;
+  --color-accent-fill-hover: #4a6ee0;
+  --color-accent-fill-disabled: #2a3a63;
+  --color-accent-pulse: rgba(137, 180, 250, 0.3);
+  --color-focus: #89b4fa;
+  --color-success: #a6e3a1;
+  --color-success-soft: #1f2d28;
+  --color-success-line: #374e3d;
+  --color-danger: #f38ba8;
+  --color-danger-soft: #32212c;
+  --color-danger-line: #5c3444;
+  --color-danger-fill: #c10f33;
+  --color-warning: #f9e2af;
+  --color-warning-soft: #322e22;
+  --color-warning-line: #544c33;
+  --color-info: #89b4fa;
+  --color-info-soft: #212a40;
+  --color-info-line: #35486b;
+  --color-generating: #f9e2af;
+  --color-scrollbar: #45475a;
+  --color-scrollbar-hover: #585b70;
+  --color-diff-add: #1c2c24;
+  --color-diff-add-line: #3a6248;
+  --color-diff-remove: #301f26;
+  --color-diff-remove-line: #75414e;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+}
+
+/* ── DRACULA — Dracula, by Zeno Rocha · https://draculatheme.com ──────────
+   Generated from `src/theme/palettes.json`; edit there and re-run
+   `node scripts/gen-theme-palettes.mjs`. */
+[data-palette="dracula"] {
+  --color-canvas: #f4f0e8;
+  --color-surface: #fffdf5;
+  --color-surface-panel: #f9f5ee;
+  --color-surface-subtle: #ece6db;
+  --color-code-surface: #f8f4ec;
+  --color-line: #dfddd5;
+  --color-line-soft: #eeece4;
+  --color-ink: #2b2b2b;
+  --color-ink-soft: #50504c;
+  --color-ink-muted: #75736c;
+  --color-ink-strong: #141414;
+  --color-accent: #644ac9;
+  --color-accent-soft: #f5f2f1;
+  --color-accent-fill: #644ac9;
+  --color-accent-fill-hover: #5e45be;
+  --color-accent-fill-disabled: #dfdbe9;
+  --color-accent-pulse: rgba(100, 74, 201, 0.28);
+  --color-focus: #cdc7e3;
+  --color-danger-fill: #cb3a2a;
+  --color-generating: #846e15;
+  --color-scrollbar: #d0cec7;
+  --color-scrollbar-hover: #aeaca6;
+  --color-overlay: rgba(20, 20, 20, 0.55);
+  --color-success: #14710a;
+  --color-success-soft: #f5f4eb;
+  --color-success-line: #dadfd1;
+  --color-danger: #cb3a2a;
+  --color-danger-soft: #fbf3eb;
+  --color-danger-line: #f1dad2;
+  --color-warning: #846e15;
+  --color-warning-soft: #f7f4eb;
+  --color-warning-line: #e3dfd2;
+  --color-info: #036a96;
+  --color-info-soft: #f5f4ee;
+  --color-info-line: #dadede;
+  --color-diff-add: #f4f4ea;
+  --color-diff-add-line: #cfd6c6;
+  --color-diff-remove: #faf2ea;
+  --color-diff-remove-line: #edcfc8;
+}
+
+.dark [data-palette="dracula"],
+:root.dark[data-palette="dracula"] {
+  --color-canvas: #21222c;
+  --color-surface: #282a36;
+  --color-surface-panel: #1c1d26;
+  --color-surface-subtle: #343746;
+  --color-code-surface: #1c1d26;
+  --color-line: #585b6c;
+  --color-line-soft: #474a59;
+  --color-ink: #f8f8f2;
+  --color-ink-soft: #c9cad6;
+  --color-ink-muted: #8b8fa8;
+  --color-ink-strong: #ffffff;
+  --color-accent: #bd93f9;
+  --color-accent-soft: #4b3f64;
+  --color-accent-fill: #8668b2;
+  --color-accent-fill-hover: #7e62a8;
+  --color-accent-fill-disabled: #53446f;
+  --color-accent-pulse: rgba(189, 147, 249, 0.3);
+  --color-focus: #785e9f;
+  --color-danger-fill: #d14444;
+  --color-generating: #f1fa8c;
+  --color-scrollbar: #64677b;
+  --color-scrollbar-hover: #787b91;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+  --color-success: #50fa7b;
+  --color-success-soft: #2d5c40;
+  --color-success-line: #389652;
+  --color-danger: #ff5555;
+  --color-danger-soft: #5d303a;
+  --color-danger-line: #983b41;
+  --color-warning: #f1fa8c;
+  --color-warning-soft: #585c44;
+  --color-warning-line: #90965b;
+  --color-info: #8be9fd;
+  --color-info-soft: #3a5762;
+  --color-info-line: #568c99;
+  --color-diff-add: #2e6041;
+  --color-diff-add-line: #3ba558;
+  --color-diff-remove: #61303a;
+  --color-diff-remove-line: #a83e44;
+}
+
+/* ── EVERFOREST — Everforest, by sainnhe · https://github.com/sainnhe/everforest ───
+   Generated from `src/theme/palettes.json`; edit there and re-run
+   `node scripts/gen-theme-palettes.mjs`. */
+[data-palette="everforest"] {
+  --color-canvas: #f3efdf;
+  --color-surface: #fdf6e3;
+  --color-surface-panel: #f8f3e6;
+  --color-surface-subtle: #ebe5d4;
+  --color-code-surface: #f6f1e3;
+  --color-line: #e0dccc;
+  --color-line-soft: #ede8d6;
+  --color-ink: #414c51;
+  --color-ink-soft: #65726b;
+  --color-ink-muted: #869288;
+  --color-ink-strong: #465157;
+  --color-accent: #677900;
+  --color-accent-soft: #f3edd9;
+  --color-accent-fill: #6b7e00;
+  --color-accent-fill-hover: #657700;
+  --color-accent-fill-disabled: #dedbc2;
+  --color-accent-pulse: rgba(103, 121, 0, 0.28);
+  --color-focus: #cccaae;
+  --color-danger-fill: #d34336;
+  --color-generating: #b8830a;
+  --color-scrollbar: #d2d1c1;
+  --color-scrollbar-hover: #b5b8aa;
+  --color-overlay: rgba(70, 81, 87, 0.55);
+  --color-success: #677900;
+  --color-success-soft: #f5efda;
+  --color-success-line: #e0dec2;
+  --color-danger: #cb4034;
+  --color-danger-soft: #fbedda;
+  --color-danger-line: #f5d5c4;
+  --color-warning: #946906;
+  --color-warning-soft: #f8eeda;
+  --color-warning-line: #ebdcc2;
+  --color-info: #3a7a89;
+  --color-info-soft: #f3eedd;
+  --color-info-line: #dadbce;
+  --color-diff-add: #f4eed9;
+  --color-diff-add-line: #d7d6b7;
+  --color-diff-remove: #faecd9;
+  --color-diff-remove-line: #f3cbba;
+}
+
+.dark [data-palette="everforest"],
+:root.dark[data-palette="everforest"] {
+  --color-canvas: #2b3339;
+  --color-surface: #323c41;
+  --color-surface-panel: #272f34;
+  --color-surface-subtle: #3a464c;
+  --color-code-surface: #272f34;
+  --color-line: #586260;
+  --color-line-soft: #4a5454;
+  --color-ink: #e2dbcb;
+  --color-ink-soft: #b9ad93;
+  --color-ink-muted: #859289;
+  --color-ink-strong: #e8ddc5;
+  --color-accent: #a7c080;
+  --color-accent-soft: #49564a;
+  --color-accent-fill: #6b7c51;
+  --color-accent-fill-hover: #65754c;
+  --color-accent-fill-disabled: #495646;
+  --color-accent-pulse: rgba(167, 192, 128, 0.3);
+  --color-focus: #6c7d5a;
+  --color-danger-fill: #b05f61;
+  --color-generating: #dbbc7f;
+  --color-scrollbar: #626d69;
+  --color-scrollbar-hover: #748079;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+  --color-success: #a7c080;
+  --color-success-soft: #475449;
+  --color-success-line: #68795a;
+  --color-danger: #e88a8c;
+  --color-danger-soft: #594549;
+  --color-danger-line: #8b575a;
+  --color-warning: #dbbc7f;
+  --color-warning-soft: #565349;
+  --color-warning-line: #857659;
+  --color-info: #7fbbb3;
+  --color-info-soft: #3e5354;
+  --color-info-line: #537673;
+  --color-diff-add: #49564a;
+  --color-diff-add-line: #71835f;
+  --color-diff-remove: #5c464a;
+  --color-diff-remove-line: #995c5f;
+}
+
+/* ── GRUVBOX — Gruvbox, by Pavel Pertsev · https://github.com/morhetz/gruvbox ───
+   Generated from `src/theme/palettes.json`; edit there and re-run
+   `node scripts/gen-theme-palettes.mjs`. */
+[data-palette="gruvbox"] {
+  --color-canvas: #f2e5bc;
+  --color-surface: #fbf1c7;
+  --color-surface-panel: #fdf8e0;
+  --color-surface-subtle: #ebdbb2;
+  --color-code-surface: #f6ecc6;
+  --color-line: #d5c4a1;
+  --color-line-soft: #e5d5b0;
+  --color-ink: #3c3836;
+  --color-ink-soft: #665c54;
+  --color-ink-muted: #7e7364;
+  --color-ink-strong: #282828;
+  --color-accent: #076678;
+  --color-accent-soft: #dde4d8;
+  --color-accent-fill: #076678;
+  --color-accent-fill-hover: #054d5b;
+  --color-accent-fill-disabled: #a9c2c2;
+  --color-accent-pulse: rgba(7, 102, 120, 0.26);
+  --color-focus: #427b58;
+  --color-success: #4f6a12;
+  --color-success-soft: #ecf0d6;
+  --color-success-line: #cfd8ac;
+  --color-danger: #9d0006;
+  --color-danger-soft: #f8e3dc;
+  --color-danger-line: #e6bcb0;
+  --color-danger-fill: #9d0006;
+  --color-warning: #945e05;
+  --color-warning-soft: #f9eed2;
+  --color-warning-line: #e5d3a2;
+  --color-info: #076678;
+  --color-info-soft: #e2e9e0;
+  --color-info-line: #bfd2cd;
+  --color-generating: #b57614;
+  --color-scrollbar: #d5c4a1;
+  --color-scrollbar-hover: #bdae91;
+  --color-diff-add: #e7ecd0;
+  --color-diff-add-line: #c2cf97;
+  --color-diff-remove: #f8e1da;
+  --color-diff-remove-line: #e6b9ad;
+  --color-overlay: rgba(40, 40, 40, 0.55);
+}
+
+.dark [data-palette="gruvbox"],
+:root.dark[data-palette="gruvbox"] {
+  --color-canvas: #1d2021;
+  --color-surface: #282828;
+  --color-surface-panel: #232323;
+  --color-surface-subtle: #32302f;
+  --color-code-surface: #1b1b1b;
+  --color-line: #504945;
+  --color-line-soft: #3c3836;
+  --color-ink: #ebdbb2;
+  --color-ink-soft: #d5c4a1;
+  --color-ink-muted: #a89984;
+  --color-ink-strong: #fbf1c7;
+  --color-accent: #83a598;
+  --color-accent-soft: #333f3a;
+  --color-accent-fill: #3a7276;
+  --color-accent-fill-hover: #47807f;
+  --color-accent-fill-disabled: #3f5a56;
+  --color-accent-pulse: rgba(131, 165, 152, 0.3);
+  --color-focus: #458588;
+  --color-success: #b8bb26;
+  --color-success-soft: #33381f;
+  --color-success-line: #565c2c;
+  --color-danger: #fb7564;
+  --color-danger-soft: #3d2a25;
+  --color-danger-line: #6b3b32;
+  --color-danger-fill: #9d0006;
+  --color-warning: #fabd2f;
+  --color-warning-soft: #3d3620;
+  --color-warning-line: #63552f;
+  --color-info: #83a598;
+  --color-info-soft: #2c3a37;
+  --color-info-line: #41564f;
+  --color-generating: #fabd2f;
+  --color-scrollbar: #504945;
+  --color-scrollbar-hover: #665c54;
+  --color-diff-add: #2b3520;
+  --color-diff-add-line: #4d6b33;
+  --color-diff-remove: #3a2220;
+  --color-diff-remove-line: #7a3b32;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+}
+
+/* ── KANAGAWA — Kanagawa, by rebelot · https://github.com/rebelot/kanagawa.nvim ───
+   Generated from `src/theme/palettes.json`; edit there and re-run
+   `node scripts/gen-theme-palettes.mjs`. */
+[data-palette="kanagawa"] {
+  --color-canvas: #f2ecbc;
+  --color-surface: #fbf5d9;
+  --color-surface-panel: #f6f0c9;
+  --color-surface-subtle: #e8e1b1;
+  --color-code-surface: #f7f1cd;
+  --color-line: #dfdac6;
+  --color-line-soft: #ece6cf;
+  --color-ink: #454553;
+  --color-ink-soft: #6a6a77;
+  --color-ink-muted: #8a8a94;
+  --color-ink-strong: #3a3a48;
+  --color-accent: #4d699b;
+  --color-accent-soft: #f1ecd4;
+  --color-accent-fill: #4d699b;
+  --color-accent-fill-hover: #486392;
+  --color-accent-fill-disabled: #dad7c9;
+  --color-accent-pulse: rgba(77, 105, 155, 0.28);
+  --color-focus: #c6c6c0;
+  --color-danger-fill: #c84053;
+  --color-generating: #77713f;
+  --color-scrollbar: #d2cebe;
+  --color-scrollbar-hover: #b6b3ad;
+  --color-overlay: rgba(58, 58, 72, 0.55);
+  --color-success: #607743;
+  --color-success-soft: #f3eed1;
+  --color-success-line: #dddcbd;
+  --color-danger: #c63f52;
+  --color-danger-soft: #f7ecd1;
+  --color-danger-line: #edd3bd;
+  --color-warning: #77713f;
+  --color-warning-soft: #f3edd1;
+  --color-warning-line: #ded8bc;
+  --color-info: #4d699b;
+  --color-info-soft: #f2edd4;
+  --color-info-line: #dad7c9;
+  --color-diff-add: #f2edd0;
+  --color-diff-add-line: #d4d4b4;
+  --color-diff-remove: #f7ebd0;
+  --color-diff-remove-line: #e9c9b5;
+}
+
+.dark [data-palette="kanagawa"],
+:root.dark[data-palette="kanagawa"] {
+  --color-canvas: #1f1f28;
+  --color-surface: #2a2a37;
+  --color-surface-panel: #16161d;
+  --color-surface-subtle: #363646;
+  --color-code-surface: #16161d;
+  --color-line: #585653;
+  --color-line-soft: #484749;
+  --color-ink: #dcd7ba;
+  --color-ink-soft: #c8c093;
+  --color-ink-muted: #8b8779;
+  --color-ink-strong: #f2ecd8;
+  --color-accent: #7e9cd8;
+  --color-accent-soft: #3a425a;
+  --color-accent-fill: #5e76a4;
+  --color-accent-fill-hover: #586f9b;
+  --color-accent-fill-disabled: #3f4b68;
+  --color-accent-pulse: rgba(126, 156, 216, 0.3);
+  --color-focus: #51638a;
+  --color-danger-fill: #be5561;
+  --color-generating: #e6c384;
+  --color-scrollbar: #65625c;
+  --color-scrollbar-hover: #78756a;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+  --color-success: #98bb6c;
+  --color-success-soft: #3f493e;
+  --color-success-line: #5d714c;
+  --color-danger: #e56e7b;
+  --color-danger-soft: #553340;
+  --color-danger-line: #894450;
+  --color-warning: #e6c384;
+  --color-warning-soft: #564b43;
+  --color-warning-line: #8a7657;
+  --color-info: #7fb4ca;
+  --color-info-soft: #384754;
+  --color-info-line: #506d7d;
+  --color-diff-add: #414b3f;
+  --color-diff-add-line: #667c50;
+  --color-diff-remove: #583441;
+  --color-diff-remove-line: #974956;
+}
+
+/* ── NIGHTFOX — Nightfox, by EdenEast · https://github.com/EdenEast/nightfox.nvim ───
+   Generated from `src/theme/palettes.json`; edit there and re-run
+   `node scripts/gen-theme-palettes.mjs`. */
+[data-palette="nightfox"] {
+  --color-canvas: #eae4dc;
+  --color-surface: #f6f2ee;
+  --color-surface-panel: #f2ede8;
+  --color-surface-subtle: #e2dbd2;
+  --color-code-surface: #f4efe9;
+  --color-line: #dad5d7;
+  --color-line-soft: #e7e3e1;
+  --color-ink: #3d2b5a;
+  --color-ink-soft: #5b5172;
+  --color-ink-muted: #847c96;
+  --color-ink-strong: #2a1d40;
+  --color-accent: #2848a9;
+  --color-accent-soft: #ebe8e8;
+  --color-accent-fill: #2848a9;
+  --color-accent-fill-hover: #2544a0;
+  --color-accent-fill-disabled: #d3d1dc;
+  --color-accent-pulse: rgba(40, 72, 169, 0.28);
+  --color-focus: #bebed3;
+  --color-danger-fill: #a5222f;
+  --color-generating: #ac5402;
+  --color-scrollbar: #cdc8cd;
+  --color-scrollbar-hover: #b1abb6;
+  --color-overlay: rgba(42, 29, 64, 0.55);
+  --color-success: #396847;
+  --color-success-soft: #eceae5;
+  --color-success-line: #d4d5ce;
+  --color-danger: #a5222f;
+  --color-danger-soft: #f0e8e5;
+  --color-danger-line: #e2cfcc;
+  --color-warning: #ac5402;
+  --color-warning-soft: #f1e9e4;
+  --color-warning-line: #e3d3cb;
+  --color-info: #2848a9;
+  --color-info-soft: #ece9e9;
+  --color-info-line: #d3d1dc;
+  --color-diff-add: #ebe9e4;
+  --color-diff-add-line: #c9ccc4;
+  --color-diff-remove: #efe7e4;
+  --color-diff-remove-line: #dcc5c2;
+}
+
+.dark [data-palette="nightfox"],
+:root.dark[data-palette="nightfox"] {
+  --color-canvas: #192330;
+  --color-surface: #212e3f;
+  --color-surface-panel: #131a24;
+  --color-surface-subtle: #29394f;
+  --color-code-surface: #131a24;
+  --color-line: #4e5a67;
+  --color-line-soft: #3f4a58;
+  --color-ink: #cdcecf;
+  --color-ink-soft: #aeafb0;
+  --color-ink-muted: #7d8b98;
+  --color-ink-strong: #e6e7e8;
+  --color-accent: #719cd6;
+  --color-accent-soft: #31445e;
+  --color-accent-fill: #5678a6;
+  --color-accent-fill-hover: #51719d;
+  --color-accent-fill-disabled: #374e6c;
+  --color-accent-pulse: rgba(113, 156, 214, 0.3);
+  --color-focus: #48648a;
+  --color-danger-fill: #c54d6b;
+  --color-generating: #dbc074;
+  --color-scrollbar: #596572;
+  --color-scrollbar-hover: #6b7885;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+  --color-success: #81b29a;
+  --color-success-soft: #33484d;
+  --color-success-line: #4e6d66;
+  --color-danger: #d17b8c;
+  --color-danger-soft: #493245;
+  --color-danger-line: #773a50;
+  --color-warning: #dbc074;
+  --color-warning-soft: #4f4c46;
+  --color-warning-line: #827553;
+  --color-info: #719cd6;
+  --color-info-soft: #2f425b;
+  --color-info-line: #456186;
+  --color-diff-add: #354a4e;
+  --color-diff-add-line: #56776d;
+  --color-diff-remove: #4c3245;
+  --color-diff-remove-line: #843d54;
+}
+
+/* ── NORD — Nord, by Arctic Ice Studio · https://www.nordtheme.com ────────
+   Generated from `src/theme/palettes.json`; edit there and re-run
+   `node scripts/gen-theme-palettes.mjs`. */
+[data-palette="nord"] {
+  --color-canvas: #eceff4;
+  --color-surface: #ffffff;
+  --color-surface-panel: #f7f9fc;
+  --color-surface-subtle: #e5e9f0;
+  --color-code-surface: #f2f5f9;
+  --color-line: #cdd6e2;
+  --color-line-soft: #e1e7f0;
+  --color-ink: #2e3440;
+  --color-ink-soft: #4c566a;
+  --color-ink-muted: #6f7c93;
+  --color-ink-strong: #212734;
+  --color-accent: #46708f;
+  --color-accent-soft: #e2ecf4;
+  --color-accent-fill: #4c6f92;
+  --color-accent-fill-hover: #3d5c7b;
+  --color-accent-fill-disabled: #c2d0de;
+  --color-accent-pulse: rgba(70, 112, 143, 0.26);
+  --color-focus: #88c0d0;
+  --color-success: #4a7340;
+  --color-success-soft: #eef5ea;
+  --color-success-line: #c6dcc0;
+  --color-danger: #a63d48;
+  --color-danger-soft: #fbeff0;
+  --color-danger-line: #ecc9cd;
+  --color-danger-fill: #a63d48;
+  --color-warning: #8a6215;
+  --color-warning-soft: #fdf6e6;
+  --color-warning-line: #ecdcb4;
+  --color-info: #3f6c8c;
+  --color-info-soft: #eaf2f8;
+  --color-info-line: #c8dcea;
+  --color-generating: #b07d24;
+  --color-scrollbar: #c8d2e0;
+  --color-scrollbar-hover: #adbacd;
+  --color-diff-add: #e9f4e6;
+  --color-diff-add-line: #b6d5ac;
+  --color-diff-remove: #fcecee;
+  --color-diff-remove-line: #ecc3c8;
+  --color-overlay: rgba(23, 30, 42, 0.55);
+}
+
+.dark [data-palette="nord"],
+:root.dark[data-palette="nord"] {
+  --color-canvas: #2e3440;
+  --color-surface: #3b4252;
+  --color-surface-panel: #333947;
+  --color-surface-subtle: #434c5e;
+  --color-code-surface: #2b303b;
+  --color-line: #4c566a;
+  --color-line-soft: #3f4859;
+  --color-ink: #eceff4;
+  --color-ink-soft: #d8dee9;
+  --color-ink-muted: #9aa6bb;
+  --color-ink-strong: #ffffff;
+  --color-accent: #88c0d0;
+  --color-accent-soft: #394b57;
+  --color-accent-fill: #4a6b92;
+  --color-accent-fill-hover: #40597c;
+  --color-accent-fill-disabled: #465a72;
+  --color-accent-pulse: rgba(136, 192, 208, 0.3);
+  --color-focus: #5e81ac;
+  --color-success: #a3be8c;
+  --color-success-soft: #37452f;
+  --color-success-line: #4e6446;
+  --color-danger: #e8a291;
+  --color-danger-soft: #432f30;
+  --color-danger-line: #6d4742;
+  --color-danger-fill: #a63d48;
+  --color-warning: #ebcb8b;
+  --color-warning-soft: #3f3a2a;
+  --color-warning-line: #625a3c;
+  --color-info: #a3c0dd;
+  --color-info-soft: #33404f;
+  --color-info-line: #4b5d72;
+  --color-generating: #ebcb8b;
+  --color-scrollbar: #4c566a;
+  --color-scrollbar-hover: #5e6a80;
+  --color-diff-add: #2c3a2f;
+  --color-diff-add-line: #4c7350;
+  --color-diff-remove: #3a2b2f;
+  --color-diff-remove-line: #7a4a52;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+}
+
+/* ── ONE-DARK — One Dark, by the Atom project · https://github.com/atom/one-dark-syntax ───
+   Generated from `src/theme/palettes.json`; edit there and re-run
+   `node scripts/gen-theme-palettes.mjs`. */
+[data-palette="one-dark"] {
+  --color-canvas: #f0f0f1;
+  --color-surface: #fafafa;
+  --color-surface-panel: #f6f6f7;
+  --color-surface-subtle: #eaeaeb;
+  --color-code-surface: #f2f2f3;
+  --color-line: #dddedf;
+  --color-line-soft: #eaebeb;
+  --color-ink: #383a42;
+  --color-ink-soft: #585c65;
+  --color-ink-muted: #83878f;
+  --color-ink-strong: #1f2126;
+  --color-accent: #3a6fd8;
+  --color-accent-soft: #eff1f7;
+  --color-accent-fill: #3a6fd8;
+  --color-accent-fill-hover: #3669cc;
+  --color-accent-fill-disabled: #d7dcf0;
+  --color-accent-pulse: rgba(58, 111, 216, 0.28);
+  --color-focus: #c3cbec;
+  --color-danger-fill: #c4342a;
+  --color-generating: #95650a;
+  --color-scrollbar: #d0d1d3;
+  --color-scrollbar-hover: #b2b4b8;
+  --color-overlay: rgba(31, 33, 38, 0.55);
+  --color-success: #3b823a;
+  --color-success-soft: #f0f3f0;
+  --color-success-line: #d8e0d8;
+  --color-danger: #c4342a;
+  --color-danger-soft: #f6f0f0;
+  --color-danger-line: #ecd7d7;
+  --color-warning: #95650a;
+  --color-warning-soft: #f3f1f0;
+  --color-warning-line: #e2dbd6;
+  --color-info: #3a6fd8;
+  --color-info-soft: #f0f2f7;
+  --color-info-line: #d7dcf0;
+  --color-diff-add: #eff2ef;
+  --color-diff-add-line: #cdd8cd;
+  --color-diff-remove: #f5efef;
+  --color-diff-remove-line: #e7cccc;
+}
+
+.dark [data-palette="one-dark"],
+:root.dark[data-palette="one-dark"] {
+  --color-canvas: #21252b;
+  --color-surface: #282c34;
+  --color-surface-panel: #1b1e24;
+  --color-surface-subtle: #2f343d;
+  --color-code-surface: #1b1e24;
+  --color-line: #4c515a;
+  --color-line-soft: #3f434c;
+  --color-ink: #bec3cd;
+  --color-ink-soft: #9aa1ad;
+  --color-ink-muted: #767c88;
+  --color-ink-strong: #d7dae0;
+  --color-accent: #61afef;
+  --color-accent-soft: #314860;
+  --color-accent-fill: #427ba9;
+  --color-accent-fill-hover: #3e74a0;
+  --color-accent-fill-disabled: #314e6a;
+  --color-accent-pulse: rgba(97, 175, 239, 0.3);
+  --color-focus: #407099;
+  --color-danger-fill: #b9585f;
+  --color-generating: #e5c07b;
+  --color-scrollbar: #565b65;
+  --color-scrollbar-hover: #666c76;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+  --color-success: #98c379;
+  --color-success-soft: #3e4c3e;
+  --color-success-line: #5d7651;
+  --color-danger: #e1727a;
+  --color-danger-soft: #53363d;
+  --color-danger-line: #86474f;
+  --color-warning: #e5c07b;
+  --color-warning-soft: #554b3f;
+  --color-warning-line: #897452;
+  --color-info: #61afef;
+  --color-info-soft: #30465d;
+  --color-info-line: #406b91;
+  --color-diff-add: #404f3f;
+  --color-diff-add-line: #668256;
+  --color-diff-remove: #56373e;
+  --color-diff-remove-line: #944c54;
+}
+
+/* ── ROSE-PINE — Rose Pine · https://rosepinetheme.com ────────────────────
+   Generated from `src/theme/palettes.json`; edit there and re-run
+   `node scripts/gen-theme-palettes.mjs`. */
+[data-palette="rose-pine"] {
+  --color-canvas: #faf4ed;
+  --color-surface: #fffaf3;
+  --color-surface-panel: #fdf7f0;
+  --color-surface-subtle: #f2e9e1;
+  --color-code-surface: #f4ece5;
+  --color-line: #e4dcd8;
+  --color-line-soft: #efe6e0;
+  --color-ink: #4f4a6e;
+  --color-ink-soft: #6e6a86;
+  --color-ink-muted: #87829b;
+  --color-ink-strong: #403c5c;
+  --color-accent: #7c6595;
+  --color-accent-soft: #efe8f2;
+  --color-accent-fill: #7c6595;
+  --color-accent-fill-hover: #66527d;
+  --color-accent-fill-disabled: #d2c6dd;
+  --color-accent-pulse: rgba(124, 101, 149, 0.26);
+  --color-focus: #907aa9;
+  --color-success: #286983;
+  --color-success-soft: #e6eef0;
+  --color-success-line: #bdd3da;
+  --color-danger: #a4475e;
+  --color-danger-soft: #fbe9ec;
+  --color-danger-line: #eec4cc;
+  --color-danger-fill: #a4475e;
+  --color-warning: #9a5f10;
+  --color-warning-soft: #fdf0dd;
+  --color-warning-line: #eed7b0;
+  --color-info: #3f7180;
+  --color-info-soft: #e8f0f1;
+  --color-info-line: #c1d8dc;
+  --color-generating: #b87a13;
+  --color-scrollbar: #ddd2cb;
+  --color-scrollbar-hover: #c8bbb4;
+  --color-diff-add: #e9efdf;
+  --color-diff-add-line: #c3d3b1;
+  --color-diff-remove: #fbe8e8;
+  --color-diff-remove-line: #eec3c5;
+  --color-overlay: rgba(87, 82, 121, 0.5);
+}
+
+.dark [data-palette="rose-pine"],
+:root.dark[data-palette="rose-pine"] {
+  --color-canvas: #191724;
+  --color-surface: #232136;
+  --color-surface-panel: #1e1c2c;
+  --color-surface-subtle: #2a273f;
+  --color-code-surface: #171523;
+  --color-line: #393552;
+  --color-line-soft: #2c2942;
+  --color-ink: #e0def4;
+  --color-ink-soft: #b0acc8;
+  --color-ink-muted: #8f8aa8;
+  --color-ink-strong: #f6f4ff;
+  --color-accent: #c4a7e7;
+  --color-accent-soft: #302a45;
+  --color-accent-fill: #7c6595;
+  --color-accent-fill-hover: #907aa9;
+  --color-accent-fill-disabled: #4b4262;
+  --color-accent-pulse: rgba(196, 167, 231, 0.3);
+  --color-focus: #907aa9;
+  --color-success: #9ccfd8;
+  --color-success-soft: #212f38;
+  --color-success-line: #35505a;
+  --color-danger: #eb6f92;
+  --color-danger-soft: #3a2330;
+  --color-danger-line: #63364a;
+  --color-danger-fill: #a4475e;
+  --color-warning: #f6c177;
+  --color-warning-soft: #39301f;
+  --color-warning-line: #5d4c30;
+  --color-info: #6cb2cc;
+  --color-info-soft: #1d303b;
+  --color-info-line: #2f5061;
+  --color-generating: #f6c177;
+  --color-scrollbar: #393552;
+  --color-scrollbar-hover: #4a4566;
+  --color-diff-add: #1f3327;
+  --color-diff-add-line: #3c6849;
+  --color-diff-remove: #39222c;
+  --color-diff-remove-line: #75404a;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+}
+
+/* ── SOLARIZED — Solarized, by Ethan Schoonover · https://ethanschoonover.com/solarized ───
+   Generated from `src/theme/palettes.json`; edit there and re-run
+   `node scripts/gen-theme-palettes.mjs`. */
+[data-palette="solarized"] {
+  --color-canvas: #f4ecd8;
+  --color-surface: #fdf6e3;
+  --color-surface-panel: #fffaf0;
+  --color-surface-subtle: #eee8d5;
+  --color-code-surface: #f6efdc;
+  --color-line: #ded6bf;
+  --color-line-soft: #e9e2cd;
+  --color-ink: #073642;
+  --color-ink-soft: #586e75;
+  --color-ink-muted: #6d7f80;
+  --color-ink-strong: #002b36;
+  --color-accent: #1e6fa8;
+  --color-accent-soft: #e4eef3;
+  --color-accent-fill: #1e6fa8;
+  --color-accent-fill-hover: #155a8a;
+  --color-accent-fill-disabled: #b8d2e2;
+  --color-accent-pulse: rgba(30, 111, 168, 0.26);
+  --color-focus: #268bd2;
+  --color-success: #5f6f00;
+  --color-success-soft: #f1f2dd;
+  --color-success-line: #d5d8ac;
+  --color-danger: #b52a27;
+  --color-danger-soft: #fbeae4;
+  --color-danger-line: #eec6bd;
+  --color-danger-fill: #b52a27;
+  --color-warning: #8b6a00;
+  --color-warning-soft: #fbf2da;
+  --color-warning-line: #e9d9a6;
+  --color-info: #1e6fa8;
+  --color-info-soft: #e6eff4;
+  --color-info-line: #bfd5e2;
+  --color-generating: #a97d00;
+  --color-scrollbar: #d5cdb6;
+  --color-scrollbar-hover: #bcb49d;
+  --color-diff-add: #eaf0d9;
+  --color-diff-add-line: #c2cf95;
+  --color-diff-remove: #fbe8e2;
+  --color-diff-remove-line: #eec0b6;
+  --color-overlay: rgba(0, 43, 54, 0.55);
+}
+
+.dark [data-palette="solarized"],
+:root.dark[data-palette="solarized"] {
+  --color-canvas: #002b36;
+  --color-surface: #073642;
+  --color-surface-panel: #04252e;
+  --color-surface-subtle: #0d4452;
+  --color-code-surface: #012129;
+  --color-line: #12505f;
+  --color-line-soft: #0a3d49;
+  --color-ink: #eee8d5;
+  --color-ink-soft: #b7c4bf;
+  --color-ink-muted: #8ba09c;
+  --color-ink-strong: #fdf6e3;
+  --color-accent: #5fb3e8;
+  --color-accent-soft: #0d4054;
+  --color-accent-fill: #1e6fa8;
+  --color-accent-fill-hover: #268bd2;
+  --color-accent-fill-disabled: #1b4b69;
+  --color-accent-pulse: rgba(95, 179, 232, 0.3);
+  --color-focus: #268bd2;
+  --color-success: #b5bb63;
+  --color-success-soft: #1e3a2c;
+  --color-success-line: #33563f;
+  --color-danger: #f08a7f;
+  --color-danger-soft: #40242a;
+  --color-danger-line: #6b3a3a;
+  --color-danger-fill: #b52a27;
+  --color-warning: #e2c261;
+  --color-warning-soft: #3a3520;
+  --color-warning-line: #5c532f;
+  --color-info: #6cb6e8;
+  --color-info-soft: #0e3c4f;
+  --color-info-line: #1d5a70;
+  --color-generating: #e2c261;
+  --color-scrollbar: #12505f;
+  --color-scrollbar-hover: #1c6577;
+  --color-diff-add: #0b3b2c;
+  --color-diff-add-line: #2f6b4d;
+  --color-diff-remove: #3a1f24;
+  --color-diff-remove-line: #743a3a;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+}
+
+/* ── TOKYO-NIGHT — Tokyo Night, by enkia · https://github.com/folke/tokyonight.nvim ───
+   Generated from `src/theme/palettes.json`; edit there and re-run
+   `node scripts/gen-theme-palettes.mjs`. */
+[data-palette="tokyo-night"] {
+  --color-canvas: #e6e7ed;
+  --color-surface: #ffffff;
+  --color-surface-panel: #eef0f5;
+  --color-surface-subtle: #dfe2ea;
+  --color-code-surface: #f2f3f7;
+  --color-line: #dfe0e4;
+  --color-line-soft: #eeeef0;
+  --color-ink: #343b58;
+  --color-ink-soft: #525a75;
+  --color-ink-muted: #767d96;
+  --color-ink-strong: #1c2138;
+  --color-accent: #2a75da;
+  --color-accent-soft: #f4f6fc;
+  --color-accent-fill: #2a75da;
+  --color-accent-fill-hover: #276ece;
+  --color-accent-fill-disabled: #dbe1f5;
+  --color-accent-pulse: rgba(42, 117, 218, 0.28);
+  --color-focus: #c5d0ef;
+  --color-danger-fill: #e2265c;
+  --color-generating: #8c6c3e;
+  --color-scrollbar: #d0d2d8;
+  --color-scrollbar-hover: #afb2be;
+  --color-overlay: rgba(28, 33, 56, 0.55);
+  --color-success: #587539;
+  --color-success-soft: #f6f7f5;
+  --color-success-line: #dee1dc;
+  --color-danger: #e2265c;
+  --color-danger-soft: #fef5f6;
+  --color-danger-line: #fcdbdf;
+  --color-warning: #8c6c3e;
+  --color-warning-soft: #f7f6f5;
+  --color-warning-line: #e4e0dc;
+  --color-info: #2a75da;
+  --color-info-soft: #f5f7fd;
+  --color-info-line: #dbe2f9;
+  --color-diff-add: #f5f6f4;
+  --color-diff-add-line: #d4d8d1;
+  --color-diff-remove: #fef4f5;
+  --color-diff-remove-line: #fbd0d6;
+}
+
+.dark [data-palette="tokyo-night"],
+:root.dark[data-palette="tokyo-night"] {
+  --color-canvas: #1a1b26;
+  --color-surface: #1f2335;
+  --color-surface-panel: #16161e;
+  --color-surface-subtle: #292e42;
+  --color-code-surface: #16161e;
+  --color-line: #4f546f;
+  --color-line-soft: #3f445b;
+  --color-ink: #c0caf5;
+  --color-ink-soft: #a9b1d6;
+  --color-ink-muted: #7f87ad;
+  --color-ink-strong: #d5ddff;
+  --color-accent: #7aa2f7;
+  --color-accent-soft: #324063;
+  --color-accent-fill: #5775b4;
+  --color-accent-fill-hover: #526eaa;
+  --color-accent-fill-disabled: #374870;
+  --color-accent-pulse: rgba(122, 162, 247, 0.3);
+  --color-focus: #4d669d;
+  --color-danger-fill: #ba576a;
+  --color-generating: #e0af68;
+  --color-scrollbar: #5a617e;
+  --color-scrollbar-hover: #6d7496;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+  --color-success: #9ece6a;
+  --color-success-soft: #3b4b3c;
+  --color-success-line: #5e7b4a;
+  --color-danger: #f7768e;
+  --color-danger-soft: #573243;
+  --color-danger-line: #92495c;
+  --color-warning: #e0af68;
+  --color-warning-soft: #50423c;
+  --color-warning-line: #856949;
+  --color-info: #7aa2f7;
+  --color-info-soft: #303e60;
+  --color-info-line: #4a6196;
+  --color-diff-add: #3d4e3d;
+  --color-diff-add-line: #68884e;
+  --color-diff-remove: #5b3345;
+  --color-diff-remove-line: #a25063;
+}
+
+/* ── VESPER — Vesper, by Rauno Freiberg · https://github.com/raunofreiberg/vesper ───
+   Generated from `src/theme/palettes.json`; edit there and re-run
+   `node scripts/gen-theme-palettes.mjs`. */
+[data-palette="vesper"] {
+  --color-canvas: #f4f1ea;
+  --color-surface: #fffdf8;
+  --color-surface-panel: #f8f5ee;
+  --color-surface-subtle: #ece8df;
+  --color-code-surface: #f7f4ed;
+  --color-line: #e2dfda;
+  --color-line-soft: #efede8;
+  --color-ink: #3a342c;
+  --color-ink-soft: #5c554a;
+  --color-ink-muted: #8a8378;
+  --color-ink-strong: #241f19;
+  --color-accent: #b3571a;
+  --color-accent-soft: #f9f3ed;
+  --color-accent-fill: #b3571a;
+  --color-accent-fill-hover: #a95218;
+  --color-accent-fill-disabled: #ecdcd4;
+  --color-accent-pulse: rgba(179, 87, 26, 0.28);
+  --color-focus: #e1c9bf;
+  --color-danger-fill: #b3372f;
+  --color-generating: #8a6100;
+  --color-scrollbar: #d5d2cc;
+  --color-scrollbar-hover: #b8b3ac;
+  --color-overlay: rgba(36, 31, 25, 0.55);
+  --color-success: #4f6b2a;
+  --color-success-soft: #f5f4ee;
+  --color-success-line: #ddded5;
+  --color-danger: #b3372f;
+  --color-danger-soft: #f9f3ee;
+  --color-danger-line: #ecdad5;
+  --color-warning: #8a6100;
+  --color-warning-soft: #f7f4ee;
+  --color-warning-line: #e4ddd4;
+  --color-info: #2f6ba3;
+  --color-info-soft: #f5f4f2;
+  --color-info-line: #dbdee3;
+  --color-diff-add: #f4f3ed;
+  --color-diff-add-line: #d3d5ca;
+  --color-diff-remove: #f9f2ed;
+  --color-diff-remove-line: #e6cfca;
+}
+
+.dark [data-palette="vesper"],
+:root.dark[data-palette="vesper"] {
+  --color-canvas: #101010;
+  --color-surface: #161616;
+  --color-surface-panel: #0b0b0b;
+  --color-surface-subtle: #1f1f1f;
+  --color-code-surface: #0b0b0b;
+  --color-line: #4e4e4e;
+  --color-line-soft: #3d3d3d;
+  --color-ink: #d7d7d7;
+  --color-ink-soft: #b6b6b6;
+  --color-ink-muted: #828282;
+  --color-ink-strong: #f2f2f2;
+  --color-accent: #ffc799;
+  --color-accent-soft: #5c4838;
+  --color-accent-fill: #906f54;
+  --color-accent-fill-hover: #88694f;
+  --color-accent-fill-disabled: #544132;
+  --color-accent-pulse: rgba(255, 199, 153, 0.3);
+  --color-focus: #a07c5f;
+  --color-danger-fill: #b65a5a;
+  --color-generating: #ffc799;
+  --color-scrollbar: #5b5b5b;
+  --color-scrollbar-hover: #6f6f6f;
+  --color-overlay: rgba(0, 0, 0, 0.7);
+  --color-success: #a8d582;
+  --color-success-soft: #3a492e;
+  --color-success-line: #627d4c;
+  --color-danger: #ff8080;
+  --color-danger-soft: #582d2d;
+  --color-danger-line: #964b4b;
+  --color-warning: #ffc799;
+  --color-warning-soft: #584535;
+  --color-warning-line: #96755a;
+  --color-info: #8fc8e0;
+  --color-info-soft: #32454d;
+  --color-info-line: #547584;
+  --color-diff-add: #3d4d30;
+  --color-diff-add-line: #6d8b55;
+  --color-diff-remove: #5c2f2f;
+  --color-diff-remove-line: #a75353;
+}
+/* </theme-palettes> */
 
 /* `leading-<number>` is derived from `--spacing`, which must stay fixed (it
    also drives padding, gaps and widths). These are the only numeric leading

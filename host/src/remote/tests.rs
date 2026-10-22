@@ -143,18 +143,21 @@ mod runtime_tests {
         SUPERVISOR.restore_active(Some(pair_id));
     }
 
-    /// Wait until WEB_PORT is bindable again (stop() aborts the web task
-    /// asynchronously — the socket lingers briefly).
-    async fn wait_for_web_port_free() {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            if let Ok(listener) = std::net::TcpListener::bind(("0.0.0.0", WEB_PORT)) {
-                drop(listener);
-                return;
-            }
-            assert!(std::time::Instant::now() < deadline, "web port never freed");
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
+    /// The TCP port a ready bridge advertises.
+    ///
+    /// A test build lets the OS pick it, so this is read back from the status
+    /// rather than assumed: the number is what a phone would use, and a test
+    /// that connects to some other port is testing a listener that is not there.
+    fn advertised_web_port(status: &RemoteStatus) -> u16 {
+        let url = status
+            .web_url
+            .as_deref()
+            .expect("a ready bridge advertises its web client");
+        let port = url
+            .strip_prefix("http://localhost:")
+            .unwrap_or_else(|| panic!("the web client URL must name a local port, got {url}"));
+        port.parse()
+            .unwrap_or_else(|error| panic!("{url} does not end in a port: {error}"))
     }
 
     #[test]
@@ -924,7 +927,6 @@ mod runtime_tests {
             RemotePhase::Ready
         );
         stop();
-        wait_for_web_port_free().await;
     }
 
     /// The platform hands out the SAME `pair_id` again when a desktop that is
@@ -967,7 +969,6 @@ mod runtime_tests {
         let _channel = super::test_support::secure_pair(&mobile, &shown, &second.pair_id).await;
 
         stop();
-        wait_for_web_port_free().await;
     }
 
     /// Control for the test above: when the rebuild gets a NEW pair_id the
@@ -994,7 +995,6 @@ mod runtime_tests {
         let _channel = super::test_support::secure_pair(&mobile, &shown, &second.pair_id).await;
 
         stop();
-        wait_for_web_port_free().await;
     }
 
     /// `re_pair` runs the Remote page's two buttons in the order that works: the
@@ -1029,7 +1029,6 @@ mod runtime_tests {
         let _channel = super::test_support::secure_pair(&mobile, &code, &status.pair_id).await;
 
         stop();
-        wait_for_web_port_free().await;
     }
 
     /// A desktop the platform already knows gets the same `pair_id` back for a new
@@ -1086,7 +1085,6 @@ mod runtime_tests {
         let _channel = super::test_support::secure_pair(&mobile, &code, &status.pair_id).await;
 
         stop();
-        wait_for_web_port_free().await;
     }
 
     /// The compensation loop runs once per tick and outlives the unpair that
@@ -1119,7 +1117,6 @@ mod runtime_tests {
         );
 
         stop();
-        wait_for_web_port_free().await;
     }
 
     #[tokio::test]
@@ -1134,7 +1131,13 @@ mod runtime_tests {
         let started = start(RemoteStartInput {}).await.expect("start");
         assert!(matches!(started.phase, RemotePhase::Ready));
         assert!(started.pairing_code.is_some());
-        assert_eq!(started.web_url.as_deref(), Some("http://localhost:8022"));
+        let web_port = advertised_web_port(&started);
+        // The number the listener took, which a test build lets the OS pick: two
+        // bridges in one test binary must not be able to collide on it.
+        assert_ne!(
+            web_port, WEB_PORT,
+            "a fixture bridge must not take the production port"
+        );
         assert_eq!(started.reason, None);
 
         let mut tap = nats.tap();
@@ -1242,7 +1245,7 @@ mod runtime_tests {
         .await;
 
         // The web client serves over HTTP.
-        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", WEB_PORT))
+        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", web_port))
             .await
             .expect("web server accepts");
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1284,15 +1287,20 @@ mod runtime_tests {
         .await
         .expect("authenticated offline notice");
         assert!(SUPERVISOR.state.lock().unwrap().is_none());
-        wait_for_web_port_free().await;
     }
 
     #[tokio::test]
     async fn start_retries_web_bind_before_reporting_failure() {
         let _home = HomeGuard::new("remote-web-bind");
-        wait_for_web_port_free().await;
-        let blocker =
-            std::net::TcpListener::bind(("0.0.0.0", WEB_PORT)).expect("occupy the web port");
+        // Take a port the OS hands out and then tell the bridge to use it: the
+        // collision has to be a real one, but it must not be the fixed
+        // production port, which another test in this binary may be using.
+        let blocker = std::net::TcpListener::bind(("0.0.0.0", 0)).expect("take a port");
+        let blocked_port = blocker
+            .local_addr()
+            .expect("the blocker has an address")
+            .port();
+        let _pin = pin_web_port(blocked_port);
         let platform = MockPlatform::start().await;
         let nats = FakeNats::start().await;
         sign_in(platform.url());
@@ -1316,7 +1324,6 @@ mod runtime_tests {
     async fn start_with_existing_credentials_refreshes_instead_of_pairing() {
         let _home = HomeGuard::new("remote-start-refresh");
         init_store();
-        wait_for_web_port_free().await;
         let platform = MockPlatform::start().await;
         let nats = FakeNats::start().await;
         sign_in(platform.url());
@@ -1335,7 +1342,6 @@ mod runtime_tests {
     async fn start_replaces_revoked_and_legacy_credentials() {
         let _home = HomeGuard::new("remote-start-revoked");
         init_store();
-        wait_for_web_port_free().await;
         let platform = MockPlatform::start().await;
         let nats = FakeNats::start().await;
         sign_in(platform.url());
@@ -1348,7 +1354,6 @@ mod runtime_tests {
         let started = start(RemoteStartInput {}).await.expect("start");
         assert!(started.pairing_code.is_some());
         stop();
-        wait_for_web_port_free().await;
 
         // Legacy (pre-handshake) creds are dropped and re-paired.
         let mut legacy = test_creds("pair_legacy", nats.url(), 3600);
@@ -2726,7 +2731,6 @@ mod runtime_tests {
     async fn start_replaces_an_existing_generation() {
         let _home = HomeGuard::new("remote-start-replace");
         init_store();
-        wait_for_web_port_free().await;
         let platform = MockPlatform::start().await;
         let nats = FakeNats::start().await;
         sign_in(platform.url());
@@ -2744,7 +2748,6 @@ mod runtime_tests {
         assert!(matches!(second.phase, RemotePhase::Ready));
 
         stop();
-        wait_for_web_port_free().await;
     }
 
     #[tokio::test]
@@ -3492,6 +3495,7 @@ mod multi_device_tests {
 /// is paired, because there the invitation *is* what was asked for — so the
 /// difference has to live in the start, not in the caller's good intentions.
 mod switch_tests {
+    use super::runtime_tests::test_creds;
     use super::*;
     use crate::remote::test_support::{init_store, sign_in, HomeGuard, MockPlatform};
 
@@ -3528,6 +3532,57 @@ mod switch_tests {
             pairing::load_slots().is_empty(),
             "nothing may be written to the pairing book"
         );
+    }
+
+    /// "Empty" is not one state, and the arm above is only half the story: a book
+    /// the *user* emptied reads "on, serving nothing", while a book the platform
+    /// emptied by refusing the credential is a fault the operator has to handle.
+    /// The switch mints no invitation, so that start has nothing left to serve —
+    /// and it must say *why* instead of reporting the unpaired machine's answer,
+    /// which is what made `future host` wait forever after a revocation. This is
+    /// also the phase a revocation noticed mid-run produces, so both readings of
+    /// one event agree.
+    #[tokio::test]
+    async fn the_switch_reports_a_revoked_device_instead_of_an_empty_machine() {
+        let _home = HomeGuard::new("remote-switch-revoked");
+        init_store();
+        let platform = MockPlatform::start().await;
+        sign_in(platform.url());
+        pairing::save_creds(&test_creds(
+            "pair_switched_revoked",
+            "nats://127.0.0.1:9",
+            3600,
+        ))
+        .unwrap();
+        platform.respond_refresh_revoked();
+
+        let status = super::supervisor::enable()
+            .await
+            .expect("a refused credential is a status, not a local fault");
+
+        assert_eq!(status.phase, RemotePhase::Revoked, "{status:?}");
+        assert_eq!(status.reason, Some(RemoteFailureReason::CredentialRevoked));
+        assert!(
+            status.pairing_code.is_none(),
+            "the switch minted an invitation nobody asked for: {status:?}"
+        );
+        assert!(
+            !platform
+                .requests()
+                .iter()
+                .any(|(_, path, _)| path.ends_with("/remote/pair/code")),
+            "the switch must not replace a revoked device on its own: {:?}",
+            platform.requests()
+        );
+        assert!(
+            pairing::load_slots().is_empty(),
+            "the unusable credential must be dropped rather than retried forever"
+        );
+
+        // The supervisor is process-global: a leaked `revoked` would be reported
+        // by whichever test reads `status()` next, whatever it set up.
+        stop();
+        *SUPERVISOR.last_error_code.lock().unwrap() = None;
     }
 
     /// The same machine, asked for an invitation on purpose: the CLI and the

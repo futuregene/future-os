@@ -5,9 +5,9 @@
 > Design date: 2026-10-20. Source baseline: `904eab2b`, including Remote extraction merged through PR #1235.
 > Status: implementation merged through PR #1259 and final ordinary CI completed successfully; dev unsigned payloads all passed, while platform signing, real install/update and final same-candidate acceptance remain incomplete; performance comparison was cancelled by the user.
 
-Extract the application host without a GUI from the Desktop crate and start it in the foreground with `future headless`. Introduce `future-host`, a Rust library without GUI dependencies, for the application backend shared by Desktop GUI and headless. Desktop and CLI own their entry points and interaction. Preserve current functionality, data, pairing, approval, sandbox and shutdown behavior.
+Extract the application host without a GUI from the Desktop crate and start it in the foreground with `future host`. Introduce `future-host`, a Rust library without GUI dependencies, for the application backend shared by Desktop GUI and headless. Desktop and CLI own their entry points and interaction. Preserve current functionality, data, pairing, approval, sandbox and shutdown behavior.
 
-The existing contract is documented in the [Headless guide](../guide/desktop-headless.md), [Desktop Agent guide](../guide/desktop-agent.md) and [Remote extraction plan](remote-package-development.md). The source entry is now `future headless`; availability in an installed release depends on that version and its artifact acceptance record.
+The existing contract is documented in the [Headless guide](../guide/desktop-host.md), [Desktop Agent guide](../guide/desktop-agent.md) and [Remote extraction plan](remote-package-development.md). The source entry is now `future host`; availability in an installed release depends on that version and its artifact acceptance record.
 
 ## Current acceptance conclusion (2026-10-20)
 
@@ -20,7 +20,7 @@ Implementation merged through [PR #1259](https://github.com/futuregene/future-os
 | 0 Baseline | Source/dependency and 2193-case ownership baseline recorded; performance comparison cancelled by the user |
 | 1 Shared library | Ordinary GUI-free library and independent/combined boundaries implemented; three-platform Host CI passed |
 | 2 Shared backend | Store, Agent, application operations, Remote, scheduling/observers and shutdown migrated; owner suites passed |
-| 3 Unified entry | `future headless` implemented, old product entry removed; three-platform entry/real-process checks passed |
+| 3 Unified entry | `future host` implemented, old product entry removed; three-platform entry/real-process checks passed |
 | 4 Test migration | Original declaration ownership closed, final owner suites passed; platform conditions and original ignores retained |
 | 5 Build/release | Cargo/make/sidecar/release wiring and installer regression complete; dev unsigned payloads all passed; platform signing and real install/update/uninstall pending |
 | 6 Final acceptance | Implementation/ordinary automation passed and PR merged; user reports old exploratory manual round complete; final same-candidate manual and remaining release acceptance remain |
@@ -32,10 +32,10 @@ Use the [release acceptance checklist](../testing/headless-release-acceptance.md
 The final entry points are:
 
 ```bash
-future headless
-future headless --relay http://192.168.1.10:8099
-future headless --relay https://relay.example.com --relay-ca relay-ca.pem
-future headless --help
+future host
+future host --relay http://192.168.1.10:8099
+future host --relay https://relay.example.com --relay-ca relay-ca.pem
+future host --help
 
 future remote devices
 future remote devices add
@@ -43,7 +43,7 @@ future remote devices remove <id>
 future remote devices use <id>
 ```
 
-`future headless` remains in the foreground, guides login and pairing when needed, reuses valid credentials, serves mobile and existing remote requests, and exits on Ctrl+C. `future agent` continues to start the Agent service alone. `future headless` hosts the complete application backend and starts an embedded Agent or connects to a compatible external Agent under the existing ownership rules.
+`future host` remains in the foreground, guides login and pairing when needed, reuses valid credentials, serves mobile and existing remote requests, and exits on Ctrl+C. `future agent` continues to start the Agent service alone. `future host` hosts the complete application backend and starts an embedded Agent or connects to a compatible external Agent under the existing ownership rules.
 
 Final distributions provide headless through `future`, without requiring a separate `futureos-headless` executable. Desktop GUI remains `futureos`. Daemonization, system-service installation, background flags, new Remote protocols and new CLI/TUI controller product features are outside this migration.
 
@@ -127,10 +127,10 @@ Both upgraded GUI and headless must read the same old data. Use dedicated test-u
 | 2 Shared backend | Move Store/config, Agent hosting, business bridge, Remote host, scheduling and shutdown incrementally; reconnect GUI | GUI shares one implementation; existing protocol, data, approval and sandbox paths remain |
 | 3 Unified command | Add `headless` to `future`; migrate terminal interaction, signals, maintenance and device-control wiring | `future` alone hosts the full backend; arguments, new/stored pairings and shutdown at every stage remain compatible |
 | 4 Test migration | Move core tests to their libraries; retain CLI/GUI entry and real product integration; add versioned compatibility scenarios | Migration inventory closes; GUI-free tests are independent and shared core suites are not repeated per entry |
-| 5 Build and release | Update CI, make, sidecar, install/uninstall, upgrade, static builds and distribution instructions | Supported release packages/source installs run `future headless` without hidden dependence on the old binary |
+| 5 Build and release | Update CI, make, sidecar, install/uninstall, upgrade, static builds and distribution instructions | Supported release packages/source installs run `future host` without hidden dependence on the old binary |
 | 6 Acceptance and cleanup | Same-candidate CI, artifact smoke and manual confirmation (performance comparison cancelled); remove old entry/adapters | Required automation passes, manual results are confirmed, duplicate implementation is removed and docs match artifacts |
 
-Commit traceable batches in an isolated branch and update the phase table. A temporary old launcher may forward to shared implementation to keep intermediate builds working. The final `future headless` must not launch an external `futureos-headless`, and no complete backend copy remains.
+Commit traceable batches in an isolated branch and update the phase table. A temporary old launcher may forward to shared implementation to keep intermediate builds working. The final `future host` must not launch an external `futureos-headless`, and no complete backend copy remains.
 
 ## 5 Test ownership and acceptance boundaries
 
@@ -149,7 +149,8 @@ Independent testing includes units and necessary library integration. GUI-free d
 | Arguments and terminal cases in `headless/mod.rs` | CLI headless module/process tests | Rejected flags, side-effect-free help, TTY, login/pairing display and exit codes |
 | `headless/agent.rs`, `agent_host`, shutdown coordinator and shared scheduling | `future-host` units/integration | Agent ownership, startup/readiness failure, stop order, total deadline and cleanup |
 | Store, business bridge, config/identity and Remote business host | `future-host` or existing shared packages | Original database/file/approval assertions, beyond verifying interface calls |
-| [headless_cli.rs](../../desktop/src-tauri/tests/headless_cli.rs) | Real CLI `future headless` process tests; retain GUI-specific portions in Desktop | Built `future`, first-run non-TTY refusal, existing config, signals, exclusion and external-Agent survival |
+| [headless_cli.rs](../../cli/tests/headless_cli.rs) | CLI real `future host` process tests | Built `future`, first-run non-TTY refusal, existing config, signals, exclusion and external-Agent survival |
+| [desktop_entry.rs](../../desktop/src-tauri/tests/desktop_entry.rs) | Desktop entry wiring; GUI-disabled compatibility in Misc | Help, retired arguments, CLI hint and absence of startup state |
 | [remote_start_refusal.rs](../../cli/tests/remote_start_refusal.rs) | CLI headless product process tests; shared fault policy in host/Remote libraries | Real active host, platform refusal, single-device revocation, recovery budgets and persisted results |
 | Remote packages and [standalone interoperability](../../tests/remote-interop/Cargo.toml) | Retain their existing owners | Protocol, crypto, role state machines and real endpoint interoperability remain outside the host |
 | Tauri commands, windows/menus, IPC and GUI lifecycle | Desktop | Real shared-backend wiring, window exit and GUI plugin behavior |
@@ -174,7 +175,7 @@ After automation passes, freeze a full candidate commit and use matching GUI, CL
 
 | Manual scenario | Expected behavior |
 |---|---|
-| Fresh `future headless`, login and pair as needed | Complete terminal flow and working mobile; restart reuses valid credentials |
+| Fresh `future host`, login and pair as needed | Complete terminal flow and working mobile; restart reuses valid credentials |
 | Upgrade old pairing/data, start GUI/headless sequentially | Existing sessions, workspaces, models, tasks, approvals and files remain without re-pairing |
 | Self-hosted relay and `future remote devices add` from another terminal | Existing auth/trust rules, usable new invitation and intact established devices |
 | Remote prompts, streaming tools, approval/sandbox, files and tasks | Same results as the old host, without device/session mixing |
@@ -197,7 +198,7 @@ Preserve combined CLI/GUI Cargo builds and shared feature resolution/artifacts. 
 | Distribution path | Adjustment |
 |---|---|
 | CLI-only platform archives | One `future` provides full headless; update help, capability discovery, version and smoke tests |
-| Linux musl/server | Build static `future` and execute `future headless`; retain architectures, no dynamic GUI dependency and old-Linux baseline |
+| Linux musl/server | Build static `future` and execute `future host`; retain architectures, no dynamic GUI dependency and old-Linux baseline |
 | Linux GUI deb/portable | Keep GUI plus matching CLI; remove checks/copies/manifests requiring `futureos-headless` |
 | macOS app and signed packages | Preserve matching CLI sidecar version, signing/notarization, architecture and discovery; standalone CLI runs headless |
 | Windows installer/portable | Support `future.exe headless`; retain CLI signing, CRT/sandbox helper and upgrade paths; verify console/signals separately |
@@ -205,7 +206,7 @@ Preserve combined CLI/GUI Cargo builds and shared feature resolution/artifacts. 
 
 Inspect [CI](../../.github/workflows/ci.yml), [generic builds](../../.github/workflows/build.yml), [Linux builds](../../.github/workflows/build-linux.yaml), [macOS signing](../../.github/workflows/build-macos-signed.yml), [Windows signing](../../.github/workflows/build-windows-signed.yml), release/installer workflows, [Makefile](../../Makefile) and packaging scripts. Do not assume only Linux needs changes.
 
-Adapt [check-headless-linux.sh](../../scripts/ci/check-headless-linux.sh) to the actual released `future`: verify static ELF linkage, then execute `future headless --help` and first-run non-interactive refusal in an offline container with old Linux and no GUI stack. Retain both linkage inspection and runtime smoke. When GNU GUI builds consume a prebuilt musl CLI, do not rebuild an unused CLI or mix machine code across targets.
+Adapt [check-headless-linux.sh](../../scripts/ci/check-headless-linux.sh) to the actual released `future`: verify static ELF linkage, then execute `future host --help` and first-run non-interactive refusal in an offline container with old Linux and no GUI stack. Retain both linkage inspection and runtime smoke. When GNU GUI builds consume a prebuilt musl CLI, do not rebuild an unused CLI or mix machine code across targets.
 
 Adding the host must not make `future version --json`, help or early Linux sandbox-helper dispatch initialize databases, logs, Agent or locks. Matching sidecar capability/version checks and atomic replacement rules remain.
 
@@ -221,7 +222,7 @@ Implementation updates CLI help; Headless, Agent, build/install and directory gu
 
 - [ ] `future-host` is a new GUI-free ordinary Rust library with independent compile, lint and tests.
 - [ ] Desktop and CLI share the business backend; CLI/host depend on neither `futureos` nor GUI frameworks; Remote libraries remain independent.
-- [ ] `future headless` alone provides current functionality, help/version have no side effects and runtimes are not nested.
+- [ ] `future host` alone provides current functionality, help/version have no side effects and runtimes are not nested.
 - [ ] Old data, pairing, identity, locks and local control remain compatible; same-directory exclusion is retained.
 - [ ] Login, relay, tasks/models/skills, real approval/sandbox/files, recovery and shutdown ownership are preserved.
 - [ ] Original tests have traceable destinations; independent host tests and CLI/GUI entry/product integration boundaries are implemented.
@@ -248,7 +249,7 @@ Phase 0 source capture is recorded; test ownership remains open. Phases 1–6 ar
 
 Created ordinary `future-host` in `host/`, without bin/FFI targets or GUI features. Existing shared error categories, boundary conversions and string serialization now live in `host/src/error.rs`; strict configuration reads, per-path locks, atomic writes and permissions live in `host/src/config_io.rs`. Original Desktop modules temporarily forward to the library. Thirteen original test declarations moved with implementation instead of being copied into Desktop. Fixture-only lenient/snapshot/restore helpers are available through `test-support` to existing application integration; their unit tests belong to the new library.
 
-CLI and Desktop depend on the library, but `future headless` is not wired yet. `scripts/ci/host-boundaries.py` checks actual combined Cargo feature resolution with Desktop GUI enabled, rejecting Desktop/GUI dependencies in host/CLI, a host dependency back on CLI and host product-binary/FFI artifacts. Native macOS validation passes; CI must validate other targets separately.
+CLI and Desktop depend on the library, but `future host` is not wired yet. `scripts/ci/host-boundaries.py` checks actual combined Cargo feature resolution with Desktop GUI enabled, rejecting Desktop/GUI dependencies in host/CLI, a host dependency back on CLI and host product-binary/FFI artifacts. Native macOS validation passes; CI must validate other targets separately.
 
 The [static check record](../testing/headless-host-phase1-2026-10-20.json) covers default/test-support Host, CLI+GUI and original headless Clippy `--all-targets`, fmt and dependency boundaries. Test targets were compiled, with zero executions. Phase 1 lifecycle/event interfaces, most phase 2 backend work, phase 3 command wiring and subsequent test/release acceptance remain incomplete. Transitional facades will be removed at migration cleanup.
 
@@ -354,7 +355,7 @@ Twenty-two original declarations move with real RPC, database import, FIFO block
 
 Windows Desktop compilation passed in CI `39361847974`, resolving the missing trait. The new dependency step decoded Cargo's UTF-8 JSON with the default Windows codec and raised `UnicodeDecodeError`; native lifecycle and artifact steps were consequently not run. The script now explicitly decodes rustc/Cargo output as UTF-8, retaining every GUI dependency assertion. Real local metadata reproduces the cp1252 error; the fixed script passes actual dependency traversal and assertions with the default encoding forced to cp1252. See [encoding evidence](../testing/headless-host-boundary-encoding-2026-10-20.json). Native Windows verification remains in CI as directed by the user.
 
-Following the requested local-before-CI validation, standalone `cargo test -p future-host` on host source `caa99a78` passes 500 tests, zero failed or ignored, in 10.31 seconds. One pre-existing ignored `record_macro` documentation example remains unchanged. No Desktop or npm environment is required. The 500 tests include 498 original migrated declarations and two new event-outlet cases, mapped individually from actual output; `migrated-local-pass` means native local macOS execution only. Thirteen real legacy entry tests also pass (7.51 seconds); thirteen Remote process tests also pass (184.80 seconds), for 26 passed, zero failed or ignored across the two real entry files. See [local execution](../testing/headless-host-local-2026-10-20.json). This does not accept the final `future headless` CLI entry, other platforms or performance.
+Following the requested local-before-CI validation, standalone `cargo test -p future-host` on host source `caa99a78` passes 500 tests, zero failed or ignored, in 10.31 seconds. One pre-existing ignored `record_macro` documentation example remains unchanged. No Desktop or npm environment is required. The 500 tests include 498 original migrated declarations and two new event-outlet cases, mapped individually from actual output; `migrated-local-pass` means native local macOS execution only. Thirteen real legacy entry tests also pass (7.51 seconds); thirteen Remote process tests also pass (184.80 seconds), for 26 passed, zero failed or ignored across the two real entry files. See [local execution](../testing/headless-host-local-2026-10-20.json). This does not accept the final `future host` CLI entry, other platforms or performance.
 
 ### 2026-10-20 Model, skills and provider services
 
@@ -452,7 +453,7 @@ Before pushing, origin/main a9011bab is merged as bebaa39e. Upstream changes onl
 
 17 original tests move (13 task, four workspace), with each original body compared unchanged. The two direct real-SQLite round trips are reviewed as shared business rather than entry integration; both malformed-body IPC tests stay in Desktop. Full local Host: 1047 passed, two original ignores; GUI: one passed in each group; Remote host: 162 passed, one original ignore. Combined Clippy `--all-targets`, legacy headless Clippy, fmt, strict Rustdoc and combined dependency boundaries pass. [Evidence](../testing/headless-host-application-services-2026-10-20.json) records environment and digests. Running CI [39374836837](https://github.com/futuregene/future-os/actions/runs/39374836837) is fixed at `70f3d786` and predates this batch. Remote implementation, full lifecycle and CLI entry remain open.
 
-Workspace deletion then gains a presentation-binding guard: terminal ownership is read only for entries with presentation resources, preserving the original headless path without that GUI read. All 20 workspace-related tests and combined Clippy pass again. The two actual legacy-entry process groups at `c32ddf29` each pass 13 cases (4.73s / 68.99s); these do not prove the pending `future headless` entry or subsequent source changes.
+Workspace deletion then gains a presentation-binding guard: terminal ownership is read only for entries with presentation resources, preserving the original headless path without that GUI read. All 20 workspace-related tests and combined Clippy pass again. The two actual legacy-entry process groups at `c32ddf29` each pass 13 cases (4.73s / 68.99s); these do not prove the pending `future host` entry or subsequent source changes.
 
 ### 2026-10-20 macOS retry-budget clock repair
 

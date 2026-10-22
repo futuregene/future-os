@@ -4,7 +4,7 @@ All Rust programs share the root Cargo workspace, lockfile, `target/` directory,
 and release profile (Thin LTO). Desktop builds compile the CLI and GUI in one
 Cargo invocation, then stage the CLI and package the outputs. `make build-cli`
 remains independent and does not compile GUI dependencies. On Linux, official
-releases build the static musl CLI including headless; the GNU GUI
+releases build the static musl CLI including `future host`; the GNU GUI
 uses that prebuilt CLI via `FUTURE_DESKTOP_CLI`.
 
 How to build and install FutureOS on macOS, Linux, and Windows — the agent
@@ -47,7 +47,7 @@ metadata uses its numeric bundle version. Windows outputs
 `FutureOS_<version>_windows_x64-portable[-unsigned].zip`; `-Sign` removes
 `-unsigned`. The installer and portable scripts copy final packages to the
 repository root by default (`-OutDir` overrides it). `make package-desktop`
-uses these platform scripts; on Linux it builds headless before bundling.
+uses these platform scripts; on Linux it builds the host CLI before bundling.
 
 ### Distribution filenames
 
@@ -98,10 +98,10 @@ brew install protobuf                                             # optional —
 Build:
 
 ```bash
-make install        # GUI + unified `future` CLI (including headless) + skills (agent/tui/channel/goal are embedded) → /opt/homebrew/bin
+make install        # GUI + unified `future` CLI (including `future host`) + skills (agent/tui/channel/goal are embedded) → /opt/homebrew/bin
 make install-cli    # unified `future` CLI only
 make install-desktop    # desktop app + matching CLI
-make install-desktop-headless   # GUI-free CLI, including `future headless`
+make install-desktop-headless   # GUI-free CLI, including `future host`
 make install-skills # built-in skills + the /future-goal skill
 make package-desktop    # named DMG in the repository root; raw bundles in target/release/bundle/
 scripts/build/build-desktop-macos.sh  # local DMG; auto-signs when a Developer ID certificate is available
@@ -126,12 +126,12 @@ curl -fsSL https://dl.future-os.cn/install.sh | bash
 The script auto-detects the platform, installs the matching package from the
 release manifest, verifies its SHA-256, then runs `future init`:
 
-- **Debian/Ubuntu** — `FutureOS_<version>_amd64.deb` or `FutureOS_<version>_arm64.deb`, installed with `apt` (resolves dependencies). It installs graphical `futureos` and the unified `future` CLI (including headless).
-- **Other Linux** — `FutureOS_<version>_linux_<arch>-portable.tar.gz` (`futureos` + unified `future` (including headless)), extracted to `/usr/local/bin` (or `~/.local/bin` when not writable). Architectures: `x86_64`, `aarch64`.
-- **Headless hosts** — download `FutureOS_<version>_linux_<arch>-cli.tar.gz` from the official release channel, extract it, then run `./future config` and `./future tui` (or `./future agent` for CLI clients). No GUI libraries are needed for the official static musl CLI.
+- **Debian/Ubuntu** — `FutureOS_<version>_amd64.deb` or `FutureOS_<version>_arm64.deb`, installed with `apt` (resolves dependencies). It installs graphical `futureos` and the unified `future` CLI (including `future host`).
+- **Other Linux** — `FutureOS_<version>_linux_<arch>-portable.tar.gz` (`futureos` + unified `future` (including `future host`)), extracted to `/usr/local/bin` (or `~/.local/bin` when not writable). Architectures: `x86_64`, `aarch64`.
+- **Host machines** — download `FutureOS_<version>_linux_<arch>-cli.tar.gz` from the official release channel, extract it, then run `./future config` and `./future tui` (or `./future agent` for CLI clients). No GUI libraries are needed for the official static musl CLI.
 
 The published GUI needs glibc ≥ 2.39 (roughly Ubuntu 24.04+) and WebKitGTK 4.1.
-The `future` CLI, including headless, is fully static
+The `future` CLI, including `future host`, is fully static
 musl binaries with no glibc requirement, so they also run on older enterprise/HPC
 systems (CentOS 7 / Rocky 8 era). Local developer builds use the selected host
 target and need not be static.
@@ -162,10 +162,10 @@ Build and install:
 ```bash
 scripts/build/build-desktop-linux.sh --out-dir ./dist   # → ./dist/FutureOS_<version>_amd64.deb + FutureOS_<version>_linux_<arch>-portable.tar.gz
 scripts/dev/start-desktop-linux.sh                    # local Linux Desktop + agent development session
-make install        # or install straight from source: GUI + unified `future` CLI (including headless) + skills → /usr/local/bin (sudo)
+make install        # or install straight from source: GUI + unified `future` CLI (including `future host`) + skills → /usr/local/bin (sudo)
 make install-cli    # unified `future` CLI only
 make install-desktop    # desktop app + matching CLI
-make install-desktop-headless   # GUI-free CLI, including `future headless`
+make install-desktop-headless   # GUI-free CLI, including `future host`
 make install-skills # built-in skills + the /future-goal skill
 make package-desktop    # named .deb and portable archive in the repository root
 ```
@@ -225,7 +225,7 @@ Copy-Item target\release\future.exe $bin
 Copy-Item target\release\futureos.exe "$bin\futureos.exe"
 ```
 
-**Headless desktop** — equivalent to `make install-desktop-headless`. The GUI-free CLI including the shared backend, installed in `%USERPROFILE%\.future\bin`:
+**Host mode / CLI-only** — equivalent to `make install-desktop-headless`. The GUI-free CLI including the shared backend, installed in `%USERPROFILE%\.future\bin`:
 
 ```powershell
 cargo build --release -p future-cli --bin future

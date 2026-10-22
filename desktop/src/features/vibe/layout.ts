@@ -89,6 +89,29 @@ export function cellPosition(index: number, layout: GridLayout): { column: numbe
 }
 
 /**
+ * Where a child sits, as CSS grid lines — **both axes, and that is the point**.
+ *
+ * A child given only `gridColumn` still has an automatic row, so CSS places it with the
+ * auto-placement cursor rather than in the square this function names: the add tile, drawn
+ * before the cells, lands in the first row and pushes every cell after it into the next
+ * row, past the template's last row into an *implicit* one. The explicit
+ * `repeat(rows, minmax(0, 1fr))` then has nothing to give height to (`0px 0px`), the
+ * implicit row takes the space, and the panel draws cells two pixels tall while one cell
+ * sits in a row nobody asked for. Measured on a real render: three cells read as
+ * `rows: 346px 346px 70px` with cell 3 in the 70px implicit row.
+ *
+ * So placement is stated, never inferred: every child answers with a definite square, and
+ * the grid's template is the only thing deciding size.
+ */
+export function gridAreaOf(
+  index: number,
+  layout: GridLayout,
+): { gridColumn: number; gridRow: number } {
+  const { column, row } = cellPosition(index, layout);
+  return { gridColumn: column + 1, gridRow: row + 1 };
+}
+
+/**
  * The cell a direction key moves to, or the same index when there is nowhere to
  * go.
  *

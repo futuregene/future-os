@@ -35,7 +35,7 @@ Use the **model selector** inside the input box, or manage which models appear i
 
 ### The agent stopped and is asking me something
 
-The selected approval mode/rules require a decision. Choose **Allow once**, **Deny**, or a saved project rule when offered; there is no timeout. The default Unrestricted mode does not ask, and even protected modes do not prompt for every call. See [[Sandbox]] and [[Using FutureOS|Using-FutureOS]].
+The selected approval mode/rules require a decision. Choose **Allow once**, **Deny**, or a saved project rule when offered; there is no timeout. The default Full access mode does not ask, and even protected modes do not prompt for every call. See [[Sandbox]] and [[Using FutureOS|Using-FutureOS]].
 
 ### Where are my conversations and settings stored?
 
@@ -62,7 +62,7 @@ Install trusted system Bubblewrap ≥ 0.9.0, fully restart FutureOS, then run `f
 
 ### Linux GUI won't start on an older server
 
-The published GUI needs glibc ≥ 2.39 and WebKitGTK 4.1. The `future` CLI (including headless) uses static musl and run on such hosts; a CLI-only tarball is also available, see [[Installation]].
+The published GUI needs glibc ≥ 2.39 and WebKitGTK 4.1. The `future` CLI (including `future host`) uses static musl and run on such hosts; a CLI-only tarball is also available, see [[Installation]].
 
 ---
 

@@ -2,6 +2,7 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
+import { emitFutureEvent } from "../../lib/futureEvents";
 import { RemoteComposer } from "./RemoteComposer";
 import { clearRemoteComposerDraft } from "./remoteComposerDraft";
 import { getRemoteOutbox, resetRemoteOutbox } from "./remotePromptOutbox";
@@ -59,6 +60,8 @@ vi.mock("../../integrations/storage/threadStore", () => ({
 }));
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+// jsdom has no layout, so a menu cannot scroll its highlighted row into view.
+Element.prototype.scrollIntoView = vi.fn();
 
 const peer = {
   agentAvailable: true,
@@ -75,8 +78,26 @@ const peer = {
   pairId: "pair_1",
 };
 
+/**
+ * That host's conversations, as its catalogue carries them: the `#` menu's
+ * source. A chat and a workspace conversation, so the row's workspace label is
+ * exercised too.
+ */
+const conversations = [
+  { sessionId: "sess_2", title: "Fix the flaky test", mode: "chat" as const, lastMessageAt: 300 },
+  {
+    sessionId: "sess_3",
+    title: "Release notes",
+    mode: "workspace" as const,
+    workspaceId: "ws_1",
+    workspaceName: "future-os",
+    lastMessageAt: 200,
+  },
+];
+
 async function mount(props: {
   canCompact?: boolean;
+  conversations?: typeof conversations;
   desktopId?: string;
   onCompact?: () => void;
   onCreated?: (sessionId: string) => void;
@@ -95,6 +116,7 @@ async function mount(props: {
   // streaming tests need one) must not silently drop the other props.
   const resolved = {
     canCompact: props.canCompact ?? false,
+    conversations: props.conversations ?? [],
     desktopId: props.desktopId ?? "desktop_a",
     onCompact: props.onCompact,
     onCreated,
@@ -781,6 +803,191 @@ it("sends normally when the host would not accept the command", async () => {
   await view.unmount();
 });
 
+// ── the `#` conversation references ─────────────────────────────────────────
+
+/** The rows of whichever menu is open, in the order the keyboard walks them. */
+function menuRows(view: Awaited<ReturnType<typeof mount>>): HTMLElement[] {
+  return [...view.container.querySelectorAll<HTMLElement>("[role='option']")];
+}
+
+/**
+ * `#` offers the conversations on *that* host, and a pick becomes a link.
+ *
+ * The composer is a textarea, so it cannot hold the local editor's pill: the
+ * draft shows the phone's compact token and the send expands it into the link
+ * the agent resolves. What is asserted is both halves — the token the reader
+ * sees, and the message the host receives.
+ */
+it("offers that host's conversations after `#` and sends the reference as a link", async () => {
+  const view = await mount({ conversations });
+
+  await act(async () => view.type("see #"));
+  expect(menuRows(view).map(node => node.textContent)).toEqual([
+    "Fix the flaky test",
+    `Release notes${conversations[1]!.workspaceName}`,
+  ]);
+
+  await act(async () => menuRows(view)[0]!.click());
+  // The compact token stays in the draft; the menu answered and closed.
+  expect(view.input.value).toBe("see #Fix the flaky test ");
+  expect(menuRows(view)).toHaveLength(0);
+
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+  });
+  await settle();
+
+  expect(prompt).toHaveBeenCalledWith(
+    "desktop_a",
+    "sess_1",
+    "see [Fix the flaky test](futureos://session/sess_2)",
+    [],
+    null,
+    { modelId: null, thinkingLevel: null },
+    expect.any(String),
+  );
+  await view.unmount();
+});
+
+/** `#` filters on what is typed, and choosing the second row picks that one. */
+it("filters the menu and chooses the highlighted conversation with Enter", async () => {
+  const view = await mount({ conversations });
+
+  await act(async () => view.type("see #release"));
+  expect(menuRows(view)).toHaveLength(1);
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+  });
+
+  expect(view.input.value).toBe("see #Release notes ");
+  await view.unmount();
+});
+
+/** The arrows move the highlight through the conversations. */
+it("walks the conversation menu with the arrow keys", async () => {
+  const view = await mount({ conversations });
+  await act(async () => view.type("#"));
+
+  const selected = () => menuRows(view).map(node => node.getAttribute("aria-selected"));
+  expect(selected()).toEqual(["true", "false"]);
+
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }));
+  });
+  expect(selected()).toEqual(["false", "true"]);
+
+  // Wraps at the end, so the last row's next is the first.
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowDown" }));
+  });
+  expect(selected()).toEqual(["true", "false"]);
+  await view.unmount();
+});
+
+/** A `#` that is not the start of a word is text, never a menu. */
+it("leaves a `#` inside a word or a heading alone", async () => {
+  const view = await mount({ conversations });
+
+  await act(async () => view.type("issue#12"));
+  expect(menuRows(view)).toHaveLength(0);
+
+  await act(async () => view.type("## Plan"));
+  expect(menuRows(view)).toHaveLength(0);
+  await view.unmount();
+});
+
+/** Escape closes the menu without taking away what was typed. */
+it("closes the conversation menu on Escape and keeps the word", async () => {
+  const view = await mount({ conversations });
+
+  await act(async () => view.type("see #fix"));
+  expect(menuRows(view)).toHaveLength(1);
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Escape" }));
+  });
+
+  expect(menuRows(view)).toHaveLength(0);
+  // The word may be text the user wants — closing is not deleting.
+  expect(view.input.value).toBe("see #fix");
+  await view.unmount();
+});
+
+/** With nowhere to point, `#` opens nothing rather than an empty panel. */
+it("opens no menu when there is no other conversation", async () => {
+  const view = await mount({ conversations: [] });
+
+  await act(async () => view.type("#"));
+
+  expect(menuRows(view)).toHaveLength(0);
+  await view.unmount();
+});
+
+/** The conversation being composed in is not a conversation to point at. */
+it("does not offer the conversation it belongs to", async () => {
+  const view = await mount({ conversations, sessionId: "sess_2" });
+
+  await act(async () => view.type("#"));
+
+  expect(menuRows(view).map(node => node.textContent)).toEqual([
+    `Release notes${conversations[1]!.workspaceName}`,
+  ]);
+  await view.unmount();
+});
+
+/**
+ * `/` reaches the reference on a host with nothing else to offer.
+ *
+ * The phone has this row for a different reason (it has no `#` key to speak of);
+ * here it is what keeps `/` from opening an empty menu on a host with no
+ * commands and no skills installed — the row removes the slash word and types
+ * the `#`, which is the same hand-off.
+ */
+it("offers the conversation reference from the `/` menu and hands over to `#`", async () => {
+  const view = await mount({ canCompact: false, conversations, peer: { ...peer, features: [] } });
+
+  await act(async () => view.type("/"));
+  const rows = [...view.container.querySelectorAll("button")]
+    .filter(node => node.getAttribute("role") === "option");
+  expect(rows.map(node => node.textContent).join(" ")).toContain("Reference a conversation");
+
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+  });
+  await settle();
+
+  // The slash word is gone, the `#` it named is typed, and the conversation
+  // menu opened in its place.
+  expect(view.input.value).toBe("#");
+  expect(menuRows(view)).toHaveLength(2);
+  await view.unmount();
+});
+
+/** A reference survives a visit: the token and the id it stands for both do. */
+it("restores a draft's reference and still expands it", async () => {
+  const first = await mount({ conversations });
+  await act(async () => first.type("see #"));
+  await act(async () => menuRows(first)[0]!.click());
+  await first.unmount();
+
+  const second = await mount({ conversations });
+  expect(second.input.value).toBe("see #Fix the flaky test ");
+  await act(async () => {
+    second.input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+  });
+  await settle();
+
+  expect(prompt).toHaveBeenCalledWith(
+    "desktop_a",
+    "sess_1",
+    "see [Fix the flaky test](futureos://session/sess_2)",
+    [],
+    null,
+    { modelId: null, thinkingLevel: null },
+    expect.any(String),
+  );
+  await second.unmount();
+});
+
 // ── the `/` menu's skills ───────────────────────────────────────────────────
 
 const hostSkill = {
@@ -872,23 +1079,27 @@ it("keeps the menu working when the host will not list its skills", async () => 
 });
 
 /**
- * The placeholder says what `/` offers, as this app's own two do.
+ * The placeholder says what `/` offers, as this app's own two do — and that `#`
+ * reaches another conversation.
  *
  * The local composer distinguishes a conversation ("@ to add files, / for tools
  * and skills") from a new one ("/ to use skills"), and a remote conversation is
  * the same distinction: with something to compact the menu holds a command and
- * the skills, and a draft holds only the skills. What it must never do is name
+ * the skills, and a draft holds only the skills. Both also carry the `#`
+ * hand-off, which is the one extra way of pointing at something this side has
+ * (the local screen says so in the same words). What it must never do is name
  * the machine — this app's own composers describe the task, and the machine a
  * conversation is on is the rail's business.
  */
-it("describes the task, naming the `/` menu and not the machine", async () => {
+it("describes the task, naming the `/` and `#` menus and not the machine", async () => {
   const conversation = await mount({ canCompact: true });
-  expect(conversation.input.placeholder).toBe("Describe the task, / for tools and skills");
+  expect(conversation.input.placeholder)
+    .toBe("Describe the task, / for tools and skills, # to reference a conversation");
   expect(conversation.input.placeholder).not.toContain("Studio iMac");
   await conversation.unmount();
 
   const draft = await mount({ canCompact: false });
-  expect(draft.input.placeholder).toBe("Describe the task, / to use skills");
+  expect(draft.input.placeholder).toBe("Describe the task, / to use skills, # to reference a conversation");
   await draft.unmount();
 });
 
@@ -957,6 +1168,22 @@ it("takes the caret on mount, for a conversation and for a draft", async () => {
   const draft = await mount({ sessionId: "" });
   expect(document.activeElement).toBe(draft.input);
   await draft.unmount();
+});
+
+/**
+ * The caret also comes back on request, which is what the device dialog asks for
+ * when it closes. A draft the dialog re-opens is already on screen — same
+ * desktop, same session — so nothing remounts and the mount-time autofocus above
+ * would never run again.
+ */
+it("takes the caret back when the shell asks for it", async () => {
+  const view = await mount({ sessionId: "" });
+  view.input.blur();
+  expect(document.activeElement).not.toBe(view.input);
+
+  await act(async () => emitFutureEvent("focus-composer", undefined));
+  expect(document.activeElement).toBe(view.input);
+  await view.unmount();
 });
 
 /**
@@ -1039,20 +1266,19 @@ it("does not run the outbox recovery against a host that is not connected", asyn
 });
 
 /**
- * And a recovery whose dynamic import lands after the composer is gone is
- * abandoned.
+ * And a recovery already in flight when the composer is gone is abandoned.
  *
- * The module is imported lazily (`import("./remotePromptOutbox")`), so the
- * continuation can run after an unmount. The window is one microtask wide, so
- * this test drives the render and the unmount *without* a flush in between: the
- * usual `mount()` helper awaits a flush, by which time the import has already
- * landed and the abandoned branch cannot be reached at all.
+ * `recoverRemoteOutbox` is awaited, so it settles after an unmount whenever the
+ * conversation closes while the host is answering. The window is one microtask
+ * wide, so this test drives the render and the unmount *without* a flush in
+ * between: the usual `mount()` helper awaits a flush, by which time the recovery
+ * has already landed and the abandoned branch cannot be reached at all.
  */
-it("abandons a recovery whose module import lands after unmount", async () => {
+it("abandons a recovery that settles after unmount", async () => {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
-  // Sync `act`: effects run (and initiate the import), no microtasks are drained.
+  // Sync `act`: effects run (and start the recovery), no microtasks are drained.
   act(() => {
     root.render(
       <RemoteComposer
@@ -1069,11 +1295,11 @@ it("abandons a recovery whose module import lands after unmount", async () => {
   act(() => root.unmount());
   container.remove();
 
-  // The import lands here, with the composer gone.
+  // The recovery settles here, with the composer gone.
   await settle();
 
   // Nothing was queued or reported: the abandoned continuation returned before
-  // touching state (a state update after unmount is the React warning this
-  // branch exists to avoid).
+  // touching state, and the outbox is exactly as the recovery found it (a state
+  // update after unmount is the branch these guards exist to avoid).
   expect(getRemoteOutbox("desktop_a", "sess_1").prompt).toBeNull();
 });

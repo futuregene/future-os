@@ -1,8 +1,10 @@
 import type { ReactNode } from "react";
 import type { SkillCandidate } from "../../integrations/skills/skillsClient";
+import type { RemoteSessionRow } from "./mergeConversations";
 import type { RemoteCommand, RemoteSkillChoice, RemoteSlashItem } from "./remoteCommands";
 import type { RemotePeer, RemoteSkillInfo, RemoteUpload } from "./remotePeerClient";
 import type { PendingPrompt } from "./remotePromptOutbox";
+import type { RemoteReferenceMap, RemoteReferenceOption } from "./remoteSessionReference";
 import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUp, Loader2, Paperclip, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -11,13 +13,23 @@ import { readNativeClipboardFilePaths, savePastedFile, savePastedImage } from ".
 import { cn } from "../../lib/cn";
 import { EMPTY_EDITOR_ATTR } from "../../lib/editableTarget";
 import { errorMessage } from "../../lib/errors";
+import { onFutureEvent } from "../../lib/futureEvents";
 import { imageExtensionFromMime, splitFileName } from "../agent/attachments";
 import { SkillRecommendCard } from "../agent/SkillRecommendCard";
 import { RemoteApprovalMenu } from "./RemoteApprovalMenu";
 import { buildRemoteSlashMenu, insertRemoteSkill, remoteSlashItems, slashQuery, withoutSlashWord } from "./remoteCommands";
 import { clearRemoteComposerDraft, loadRemoteComposerDraft, saveRemoteComposerDraft } from "./remoteComposerDraft";
 import { abortRemoteRun, listRemoteInstalledSkills, uploadRemoteFile } from "./remotePeerClient";
-import { getRemoteOutbox, isRecoverableSendError, sendRemotePrompt } from "./remotePromptOutbox";
+import { getRemoteOutbox, isRecoverableSendError, recoverRemoteOutbox, sendRemotePrompt } from "./remotePromptOutbox";
+import { RemoteSessionMenu } from "./RemoteSessionMenu";
+import {
+  completeRemoteReference,
+  expandRemoteReferences,
+  filterRemoteReferenceOptions,
+  pruneRemoteReferences,
+  remoteReferenceOptions,
+  sessionReferenceQuery,
+} from "./remoteSessionReference";
 import { RemoteSlashMenu } from "./RemoteSlashMenu";
 
 /** How many files one paste may stage. The rest are reported, not silently dropped. */
@@ -42,29 +54,43 @@ function growToContent(node: HTMLTextAreaElement): void {
 }
 
 /**
- * The commands this composer offers after `/`, built from what the host accepts.
+ * The commands this composer offers after `/`, built from what is available.
  *
- * One command today, and it is here rather than in a module of its own because
- * this is its only consumer: a command whose host operation is unavailable is
- * left out rather than shown disabled, because a slash menu is a list of things
- * you can ask for.
+ * A command whose operation is unavailable is left out rather than shown
+ * disabled, because a slash menu is a list of things you can ask for: compact
+ * is asked of the host and only when it would accept it, while "reference a
+ * conversation" is the phone's hand-off to the `#` menu and needs only another
+ * conversation to point at. On a host with no commands and no skills installed
+ * that row is the whole menu — without it `/` would open nothing at all.
  */
 function useRemoteCommands({
   canCompact,
+  canReference,
   onCompact,
 }: {
   canCompact: boolean;
+  canReference: boolean;
   onCompact: () => void;
 }): RemoteCommand[] {
   const { t } = useTranslation("remotePeer");
-  return canCompact
-    ? [{
-        description: t("compactHint"),
-        id: "compact",
-        label: t("compact"),
-        run: onCompact,
-      }]
-    : [];
+  return [
+    ...(canReference
+      ? [{
+          description: t("referenceConversationDescription"),
+          id: "reference",
+          insert: "#",
+          label: t("referenceConversation"),
+        }]
+      : []),
+    ...(canCompact
+      ? [{
+          description: t("compactHint"),
+          id: "compact",
+          label: t("compact"),
+          run: onCompact,
+        }]
+      : []),
+  ];
 }
 
 /**
@@ -145,11 +171,14 @@ export interface RemoteSkillRecommendation {
  * The composer for a remote conversation.
  *
  * Deliberately plainer than the local one: no `@` file mentions (a file is
- * attached with the paperclip, and the host receives it by id) and no `#`
- * conversation references. What the two share is what a reader compares:
- * the same shell, the same control row, the same `/` menu — the host's commands
- * and its installed skills, which is what makes the placeholder read like this
- * app's own.
+ * attached with the paperclip, and the host receives it by id). A `#`
+ * conversation reference is offered, but as the phone writes it rather than as
+ * the local editor's pill: a textarea cannot hold a chip, so the draft shows a
+ * `#title` token and the send expands it into the link the agent resolves (see
+ * `remoteSessionReference`). What the three share is what a reader compares:
+ * the same shell, the same control row, the same `/` menu — the host's commands,
+ * its installed skills, and the reference hand-off the phone also has — which is
+ * what makes the placeholder read like this app's own.
  *
  * It does carry the two controls that a conversation cannot be used without:
  * sending (with an empty `sessionId` for a conversation that does not exist yet)
@@ -159,6 +188,7 @@ export function RemoteComposer({
   canCompact = false,
   className,
   controls,
+  conversations = [],
   desktopId,
   freshModelId = null,
   freshThinkingLevel = null,
@@ -192,6 +222,12 @@ export function RemoteComposer({
    * flight (a host answering one prompt at a time refuses one then).
    */
   canCompact?: boolean;
+  /**
+   * That host's conversations, for the `#` menu: its own catalogue, read by the
+   * caller from the same snapshot that fills the list, so the two agree about
+   * what exists there without a second request.
+   */
+  conversations?: RemoteSessionRow[];
   desktopId: string;
   /** Ask the host to compact this conversation's context (the `/` menu's job). */
   onCompact?: () => void;
@@ -246,6 +282,32 @@ export function RemoteComposer({
    * user that something is waiting to be sent.
    */
   const [pendingPrompt, setPendingPrompt] = useState<PendingPrompt | null>(null);
+  /**
+   * The conversations this draft points at, keyed by the token standing in for
+   * each one (`remoteSessionReference`). The draft shows `#title`; this is the
+   * id that makes it a reference, and it is kept with the draft for that reason.
+   */
+  const [references, setReferences] = useState<RemoteReferenceMap>({});
+  /**
+   * Where the caret is, or null while text is selected.
+   *
+   * A textarea reports no "word being typed", so the `#` trigger is read from
+   * the caret against the text: a `#` earlier in the draft says nothing about
+   * what is at the caret, and a drag-selection must not open a menu over it.
+   * Updated by the field's own selection events, never synthesized.
+   */
+  const [caret, setCaret] = useState<number | null>(0);
+  /** Escape closed the `#` menu; the next keystroke may open it again. */
+  const [referenceDismissed, setReferenceDismissed] = useState(false);
+  /**
+   * A caret to place after the *next* render.
+   *
+   * Inserting a token is a state change, and the browser puts the caret at the
+   * end of the value it renders — which is the wrong end whenever something
+   * followed the word in the draft. This carries the intended position across
+   * the render instead of reading a stale `selectionStart`.
+   */
+  const pendingCaretRef = useRef<number | null>(null);
 
   // Load the draft for this host+conversation on mount / when the conversation
   // changes, and persist edits as they happen. The key includes desktopId so
@@ -254,13 +316,14 @@ export function RemoteComposer({
     const draft = loadRemoteComposerDraft(desktopId, sessionId);
     setText(draft?.text ?? "");
     setUploads(draft?.uploads ?? []);
+    setReferences(draft?.references ?? {});
     const outbox = getRemoteOutbox(desktopId, sessionId);
     setPendingPrompt(outbox.prompt);
   }, [desktopId, sessionId]);
 
   useEffect(() => {
-    saveRemoteComposerDraft(desktopId, sessionId, { text, uploads });
-  }, [desktopId, sessionId, text, uploads]);
+    saveRemoteComposerDraft(desktopId, sessionId, { text, uploads, references });
+  }, [desktopId, sessionId, text, uploads, references]);
 
   /**
    * Autofocus so the user can type immediately, which is the rule this app's own
@@ -280,19 +343,35 @@ export function RemoteComposer({
       textareaRef.current?.focus();
   }, [desktopId, sessionId, streaming]);
 
+  /**
+   * The caret comes back on request, the way this app's own composer answers the
+   * same event.
+   *
+   * The device dialog holds the caret while it asks which machine the question
+   * belongs to, so closing it has to hand the caret back — and that flow can
+   * land on a draft *already on screen* (`⌘N` pressed again): same desktop, same
+   * session, so nothing remounts and the mount-time autofocus above never runs
+   * again. Without this, Enter in the dialog would leave the field unfocused and
+   * swallow the question typed next.
+   */
+  useEffect(() => onFutureEvent("focus-composer", () => {
+    if (!streaming)
+      textareaRef.current?.focus();
+  }), [streaming]);
+
   // When the link comes back, try to flush any queued prompt/continuation.
   useEffect(() => {
     if (!peer?.connected)
       return;
+    // From the module, not a lazy `import()` of it: the composer and the host
+    // shell both import the outbox statically, so a dynamic import cannot move
+    // it into another chunk and only earns an INEFFECTIVE_DYNAMIC_IMPORT warning.
+    // The flag still guards the awaited recovery, which can settle after unmount.
     let active = true;
-    import("./remotePromptOutbox").then(({ recoverRemoteOutbox, getRemoteOutbox }): void => {
+    void recoverRemoteOutbox(desktopId, sessionId).then(() => {
       if (!active)
         return;
-      void recoverRemoteOutbox(desktopId, sessionId).then(() => {
-        const outbox = getRemoteOutbox(desktopId, sessionId);
-        if (active)
-          setPendingPrompt(outbox.prompt);
-      });
+      setPendingPrompt(getRemoteOutbox(desktopId, sessionId).prompt);
     });
     return () => {
       active = false;
@@ -413,8 +492,11 @@ export function RemoteComposer({
       // The outbox generates a stable command id, persists the prompt, and
       // clears it once the host accepts. If the prompt is queued because the
       // link is down, the outbox leaves it for recovery.
+      // The references are expanded here, on the one path that puts text on the
+      // wire, and not in the draft: what the reader typed is a token, and what
+      // the agent resolves is the link it stands for.
       const ack = await sendRemotePrompt(desktopId, sessionId, {
-        text: message,
+        text: expandRemoteReferences(message, references),
         attachments: uploadsForSend,
         workspaceId,
         freshModelId,
@@ -425,6 +507,7 @@ export function RemoteComposer({
       // staged.
       setText("");
       setUploads([]);
+      setReferences({});
       clearRemoteComposerDraft(desktopId, sessionId);
       setPendingPrompt(null);
       if (!sessionId)
@@ -531,8 +614,16 @@ export function RemoteComposer({
   // the types should carry rather than a guard that can never fire.
   const recommendationCard = skillRecommendation?.card ?? null;
 
+  // The conversations a `#` reference can point at: that host's catalogue,
+  // less the one being composed in.
+  const referenceOptions = useMemo(
+    () => remoteReferenceOptions(conversations, sessionId),
+    [conversations, sessionId],
+  );
+
   const commands = useRemoteCommands({
     canCompact: canCompact && !busy && !evaluating,
+    canReference: referenceOptions.length > 0,
     onCompact: () => onCompact?.(),
   });
   const query = slashQuery(text);
@@ -551,12 +642,47 @@ export function RemoteComposer({
   const slashItems = remoteSlashItems(slashGroups);
   const [activeItem, setActiveItem] = useState(0);
 
-  // A draft that arrived from somewhere other than a keystroke — the skill card's
-  // insert, a cleared field — has to be measured too, or the box keeps the height
-  // of the text it no longer holds.
+  /**
+   * The `#` reference being typed at the caret, or null.
+   *
+   * `/` wins when both could apply at one caret — the order the phone's
+   * composer keeps, and the local one's — so a draft is never offered two menus
+   * for one keystroke. An Escape that closed the menu keeps it closed for the
+   * word it was opened by; the next edit may open it again.
+   */
+  const referenceQuery = query === null && !referenceDismissed
+    ? sessionReferenceQuery(text, caret)
+    : null;
+  const referenceSearch = referenceQuery === null ? "" : referenceQuery.query;
+  const referenceItems = referenceQuery === null
+    ? []
+    : filterRemoteReferenceOptions(referenceOptions, referenceQuery.query);
+  // The menu exists only where it can offer something: a `#` with no other
+  // conversation to point at opens nothing rather than an empty panel.
+  const referenceMenuOpen = referenceQuery !== null && referenceOptions.length > 0;
+  const [activeReference, setActiveReference] = useState(0);
+  // A new query means a new (shorter) list, so the highlight goes back to the row
+  // the reader is about to see at the top.
   useEffect(() => {
-    if (textareaRef.current)
-      growToContent(textareaRef.current);
+    setActiveReference(0);
+  }, [referenceSearch]);
+
+  // A draft that arrived from somewhere other than a keystroke — the skill card's
+  // insert, a cleared field, a chosen reference — has to be measured too, or the
+  // box keeps the height of the text it no longer holds. An insert also has a
+  // caret to place, which the browser would otherwise put at the end of the
+  // value instead of where the word it replaced was.
+  useEffect(() => {
+    const node = textareaRef.current;
+    if (!node)
+      return;
+    growToContent(node);
+    const pending = pendingCaretRef.current;
+    if (pending === null)
+      return;
+    pendingCaretRef.current = null;
+    node.setSelectionRange(pending, pending);
+    setCaret(pending);
   }, [text]);
 
   /**
@@ -564,16 +690,54 @@ export function RemoteComposer({
    *
    * A command runs and takes its word out of the draft; a skill leaves its own
    * name behind for the host to resolve when the prompt arrives, which is the
-   * only thing `/name` means to the host.
+   * only thing `/name` means to the host. A command that hands over instead of
+   * running (the reference row) leaves the token it names — the `#` — where the
+   * slash word was, so the conversation menu opens in its place.
    */
   function chooseSlashItem(item: RemoteSlashItem) {
     setActiveItem(0);
     if (item.kind === "command") {
-      setText(withoutSlashWord(text));
-      item.command.run();
+      const withoutWord = withoutSlashWord(text);
+      if (item.command.insert) {
+        // A token is a word: it needs the space the slash word sat after, or
+        // `hello#` would be typed where `hello #` was meant.
+        const placed = withoutWord && !/\s$/.test(withoutWord)
+          ? `${withoutWord} ${item.command.insert}`
+          : `${withoutWord}${item.command.insert}`;
+        setText(placed);
+        pendingCaretRef.current = placed.length;
+        setReferenceDismissed(false);
+        textareaRef.current?.focus();
+        return;
+      }
+      setText(withoutWord);
+      item.command.run?.();
       return;
     }
     setText(insertRemoteSkill(text, item.skill.name));
+  }
+
+  /**
+   * Take the picked conversation: leave its compact token where the `#` word
+   * was, and remember the id the send expands it to.
+   *
+   * The menu has answered its question, so it stays closed for the token just
+   * written (the caret sits after it, where nothing is being queried).
+   */
+  function chooseReference(option: RemoteReferenceOption) {
+    if (!referenceQuery)
+      return;
+    const next = completeRemoteReference(text, referenceQuery, option, references);
+    setText(next.text);
+    // Pruned first: the token being replaced is gone from the new text, and a
+    // dropped reference's entry must not outlive it.
+    setReferences(current => ({
+      ...pruneRemoteReferences(current, next.text),
+      [next.token]: { sessionId: option.sessionId, title: option.title },
+    }));
+    pendingCaretRef.current = next.caret;
+    setReferenceDismissed(true);
+    textareaRef.current?.focus();
   }
 
   /**
@@ -582,12 +746,18 @@ export function RemoteComposer({
    * One function for both paths that can produce it — the field's own handler and
    * the form's submit — because they disagreed: the form knew about the slash
    * menu and the field did not, so Enter while the menu was open sent the draft
-   * (including the word that opened it) instead of running the command.
+   * (including the word that opened it) instead of running the command. The `#`
+   * menu is here for the same reason.
    */
   function submit() {
     const highlighted = slashItems[activeItem];
     if (highlighted) {
       chooseSlashItem(highlighted);
+      return;
+    }
+    const reference = referenceMenuOpen ? referenceItems[activeReference] : undefined;
+    if (reference) {
+      chooseReference(reference);
       return;
     }
     void send();
@@ -614,6 +784,19 @@ export function RemoteComposer({
               activeIndex={activeItem}
               groups={slashGroups}
               onChoose={chooseSlashItem}
+            />
+          )
+        : null}
+      {/* The `#` menu takes the same place, and the two cannot be open at once:
+          a draft at one caret is asking one question. */}
+      {referenceMenuOpen
+        ? (
+            <RemoteSessionMenu
+              activeIndex={activeReference}
+              emptyLabel={t("noSessionMatches")}
+              items={referenceItems}
+              onChoose={chooseReference}
+              title={t("sessionMenuTitle")}
             />
           )
         : null}
@@ -701,8 +884,26 @@ export function RemoteComposer({
         // nothing visible to explain it.
         className="block max-h-[40vh] min-h-14 w-full resize-none overflow-y-auto whitespace-pre-wrap wrap-break-word bg-transparent px-2 py-1 text-sm leading-5 text-ink outline-none placeholder:text-ink-muted"
         onChange={(event) => {
-          setText(event.target.value);
+          const value = event.target.value;
+          setText(value);
+          // A reference whose token the user edited away is no longer a
+          // reference. Pruned here, on the edit that removed it, and not in an
+          // effect on `text`: an effect also runs for text the composer put
+          // there itself, and the first render after a draft is restored would
+          // then prune the map against the empty text it replaced.
+          setReferences(current => pruneRemoteReferences(current, value));
+          // The caret the edit left: derived from the browser rather than
+          // assumed at the end, so the `#` trigger follows a mid-draft edit.
+          setCaret(event.target.selectionStart);
+          setReferenceDismissed(false);
           growToContent(event.currentTarget);
+        }}
+        // Caret moves that are not edits — clicks, arrows — come through here.
+        // A drag-selection reports a range, and a `#` under a selected range is
+        // text being replaced, not a query.
+        onSelect={(event) => {
+          const node = event.currentTarget;
+          setCaret(node.selectionStart === node.selectionEnd ? node.selectionStart : null);
         }}
         onPaste={event => void pasteFiles(event)}
         onKeyDown={(event) => {
@@ -722,6 +923,30 @@ export function RemoteComposer({
             if (event.key === "Escape") {
               event.preventDefault();
               setText(withoutSlashWord(text));
+              return;
+            }
+          }
+          // The conversation menu owns them in the same way: a `#` word is the
+          // name of a conversation, and Enter on it chooses rather than sends.
+          if (referenceMenuOpen) {
+            if (referenceItems.length > 0) {
+              if (event.key === "ArrowDown") {
+                event.preventDefault();
+                setActiveReference(index => (index + 1) % referenceItems.length);
+                return;
+              }
+              if (event.key === "ArrowUp") {
+                event.preventDefault();
+                setActiveReference(index => (index - 1 + referenceItems.length) % referenceItems.length);
+                return;
+              }
+            }
+            if (event.key === "Escape") {
+              // Escape closes the menu without taking the word away: what was
+              // typed may be text the user wants (a markdown heading), and the
+              // next keystroke offers the menu again.
+              event.preventDefault();
+              setReferenceDismissed(true);
               return;
             }
           }

@@ -1,7 +1,8 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 // @vitest-environment jsdom
-import { describe, expect, it, vi } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
+import { loadKatex } from "../lazyKatex";
 import { MathBlock } from "./MathBlock";
 import { MathInline } from "./MathInline";
 
@@ -32,6 +33,12 @@ function mount(node: React.ReactElement) {
 }
 
 describe("math fallback on KaTeX failure", () => {
+  // The engine arrives as a chunk of its own (`../lazyKatex`); these tests are
+  // about what a formula renders *with* it, so wait for the mocked module.
+  beforeAll(async () => {
+    await loadKatex();
+  });
+
   it("mathBlock falls back to escaped raw code when KaTeX throws", () => {
     const { container, cleanup } = mount(createElement(MathBlock, { code: "<b>bold & amp</b>" }));
     expect(container.querySelector(".text-danger")).toBeTruthy();

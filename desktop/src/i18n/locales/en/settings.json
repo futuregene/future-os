@@ -3,12 +3,74 @@
     "title": "Language",
     "description": "Choose the display language of the app"
   },
-  "theme": {
-    "title": "Theme",
+  "appearance": {
+    "title": "Appearance",
     "description": "Light, dark, or follow the system appearance",
     "light": "Light",
     "dark": "Dark",
     "system": "System"
+  },
+  "theme": {
+    "title": "Color theme",
+    "description": "Hues for surfaces, text and accents. Every theme follows the appearance above, so it has a light and a dark rendition.",
+    "palettes": {
+      "futureos": {
+        "name": "FutureOS",
+        "description": "The default: cool neutral greys with a single blue accent."
+      },
+      "ayu": {
+        "name": "Ayu",
+        "description": "Warm amber on near-black, with a soft light variant."
+      },
+      "catppuccin": {
+        "name": "Catppuccin",
+        "description": "Pastel surfaces with a blue accent."
+      },
+      "dracula": {
+        "name": "Dracula",
+        "description": "Purple and pink on charcoal — the most recognizable dark theme."
+      },
+      "everforest": {
+        "name": "Everforest",
+        "description": "Forest greens and warm greys, deliberately low contrast."
+      },
+      "gruvbox": {
+        "name": "Gruvbox",
+        "description": "Retro warm greys with a teal accent."
+      },
+      "kanagawa": {
+        "name": "Kanagawa",
+        "description": "Ink-wash blues and charcoal, after Hokusai's palette."
+      },
+      "nightfox": {
+        "name": "Nightfox",
+        "description": "Blue-grey nights and warm parchment days."
+      },
+      "nord": {
+        "name": "Nord",
+        "description": "Arctic blues and greys from the Nord project."
+      },
+      "one-dark": {
+        "name": "One Dark",
+        "description": "Atom's neutral greys with a single blue accent."
+      },
+      "rose-pine": {
+        "name": "Rosé Pine",
+        "description": "Soft plum and rose, muted and low-contrast by design."
+      },
+      "solarized": {
+        "name": "Solarized",
+        "description": "Ethan Schoonover's warm paper tones with a blue accent."
+      },
+      "tokyo-night": {
+        "name": "Tokyo Night",
+        "description": "Night-city blues and violets, with a pale day variant."
+      },
+      "vesper": {
+        "name": "Vesper",
+        "description": "Near-black with a warm orange accent — almost no chrome."
+      }
+    }
   },
   "fontSize": {
     "title": "Font size",
@@ -18,19 +80,28 @@
     "large": "Large",
     "xlarge": "Extra large"
   },
+  "replyDetail": {
+    "title": "Model output",
+    "default": "Default",
+    "detailed": "Detailed",
+    "description": {
+      "default": "A finished reply shows its final answer, with the reasoning, tool calls and notes that produced it folded into one row you can open. Work is still shown while it streams.",
+      "detailed": "A finished reply keeps everything: its reasoning, tool calls and notes stay in place, interleaved with the answer in the order they happened."
+    }
+  },
   "approvalTier": {
     "title": "Approval mode",
     "manual": "Manual",
     "sandbox": "Sandboxed",
     "sandboxChecking": "Sandboxed (checking)",
     "sandboxUnavailable": "Sandboxed (unavailable)",
-    "off": "Unrestricted",
+    "off": "Full access",
     "description": {
       "manual": "File access follows approval rules; allowlisted read-only commands run automatically, other commands ask. No OS sandbox.",
       "sandbox": "Commands run in the macOS sandbox and ask for approval when needed.",
       "sandboxWindows": "Commands run with Windows write protection and ask for approval when needed.",
       "sandboxLinux": "Commands run in the Linux sandbox and ask for approval when needed.",
-      "off": "No prompts, no sandbox — everything runs.",
+      "off": "No prompts, no sandbox — every command runs with full access to this machine.",
       "auto": "Automatically reviews actions with sandbox protection."
     },
     "fallbackNotice": "Sandbox protection is unavailable (diagnostic: {{code}}). Switched to Manual mode: approved or allowlisted commands run without an OS sandbox.",
@@ -308,5 +379,9 @@
     "followCopyName": "Copy account name",
     "followCopied": "Copied",
     "followReadArticle": "Read an article"
+  },
+  "autoResumeInterrupted": {
+    "title": "Continue interrupted conversations",
+    "description": "Closing FutureOS stops the conversations that were running (the agent runs inside the app). When on, the next launch continues them by itself; when off, they stay interrupted until you continue them."
   }
 }

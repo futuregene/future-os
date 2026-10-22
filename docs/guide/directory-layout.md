@@ -46,12 +46,13 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 ├── remote_pairings.json       # remote bridge credential book: one slot per paired device
 ├── remote_pairing.json        # legacy single-device bridge identity (read as a one-slot book, then left in place)
 ├── remote_pending_revokes.json # desktop revoke compensation (pair IDs + platform, no tokens)
+├── remote_peers.json          # client-role credential book: one entry per remote desktop this machine drives
 ├── relay.json               # inert legacy file: the relay is chosen per launch (--relay)
 ├── approval_rule.json         # user-level path approval rules
 ├── windows-capabilities.json  # Windows sandbox ACL cleanup metadata
 ├── run/
 │   ├── agent.sock             # Unix IPC endpoint (not used by Windows)
-│   └── remote-control/        # transient device requests (`future remote devices add|remove|use`)
+│   └── remote-control/        # transient device requests (`future remote devices add|remove|use`, `future remote peers connect|disconnect|takeover|remove`)
 └── bin/                       # CLI / agent links: `future`, `future-agent` (see below)
 ```
 
@@ -218,8 +219,10 @@ Owned by the Tauri desktop app (see `desktop/`):
   process exits, so a launch with no flag always means the Future platform. A
   file left by an older build is inert and safe to delete; each pairing records
   the relay that issued it in `remote_pairings.json` (`controlUrl`), so official
-  and self-hosted pairings coexist. See
-  [self-hosted-relay.md](self-hosted-relay.md).
+  and self-hosted pairings coexist. This is the *client's* leftover file: a
+  `relay.json` inside a `future relay init --dir` directory is a different file
+  — the relay server's own settings, still written and read by
+  `future relay serve`. See [self-hosted-relay.md](self-hosted-relay.md).
 - `relay-root-certs.pem` — PEM snapshot of the platform trust anchors, used
   only as the trust store for the remote bridge's TLS connection to the relay.
   Rewritten on every connect, and safe to delete: the next connect rebuilds it.
@@ -239,7 +242,7 @@ Nothing here is data: it is how a running process and a terminal find each other
 
 - `agent.sock` — the agent's Unix IPC endpoint (Windows uses a named pipe; and
   with `--grpc-addr`, TCP). See the endpoint section above.
-- `remote-control/` — the request/reply files `future remote devices add|remove|use`
+- `remote-control/` — the request/reply files `future remote devices add|remove|use`, `future remote peers connect|disconnect|takeover|remove`
   uses to ask the running Desktop to pair a device, stop serving one, or hand the
   machine to one. A
   request names a reply path
@@ -247,7 +250,7 @@ Nothing here is data: it is how a running process and a terminal find each other
   directory holds no secrets beyond invitations that are about to be printed, and
   it is never part of a backup: a restored request would name a file whose reader
   is long gone. Requests older than two minutes are deleted by the Desktop rather
-  than answered. See [desktop-headless.md](desktop-headless.md) §3.1.
+  than answered. See [desktop-host.md](desktop-host.md) §3.1.
 
 ## `~/.future/workspaces/chat/` — chat workspaces
 

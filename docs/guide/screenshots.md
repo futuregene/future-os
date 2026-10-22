@@ -385,11 +385,16 @@ Three platform-level knobs are worth knowing:
   in this state" worth writing: `if (document.body.innerText.includes('正在生成')) throw new Error('…');`.
   The driver's own probes (`ready`, optional element reads) stay non-fatal.
 
-`desktop/shot/main.tsx` accepts `?lang=en` and `?settings=key:value,...` to pin
-the UI language and seed app settings before boot; `?remoteSlowRead=1` holds a
-host's answers back, which is the only way a capture can show the state a reader
-is in *while* one is in flight; `mobile/shot/mock/shareIntent.ts`
-reads `?share=1` so the share-intake sheet appears only in the share scenarios.
+`desktop/shot/prefs.ts` (loaded before `main.tsx`) pins the preferences that are
+read at import time: `?lang=en`, `?theme=dark|light|system` and
+`?palette=<palette id>` (see `lib/theme.ts` `THEME_PALETTES`). It also *defaults*
+them (zh / light / FutureOS), so a scenario that switches the color theme cannot
+leak it into the next capture in the same run, and a dark-mode machine still
+captures the screen most users see. `?settings=key:value,...` seeds app settings
+before boot; `?remoteSlowRead=1` holds a host's answers back, which is the only
+way a capture can show the state a reader is in *while* one is in flight;
+`mobile/shot/mock/shareIntent.ts` reads `?share=1` so the share-intake sheet
+appears only in the share scenarios.
 
 ### Pointer indicator and callouts
 
