@@ -37,7 +37,11 @@ UNIT_NAMES = {"Chars": "chars", "Utf16": "UTF-16 units", "Bytes": "bytes"}
 
 def read_definition(provider: pathlib.Path) -> dict | None:
     """The capability flags, limit, unit and maturity a provider declares."""
-    text = provider.read_text()
+    # Encoding is stated rather than inherited: a Windows locale defaults to a
+    # legacy code page, so the same file that reads as UTF-8 in CI would fail to
+    # decode here — and a provider comment with one non-ASCII character is enough
+    # to trip it.
+    text = provider.read_text(encoding="utf-8")
     block = re.search(r"capabilities: Capabilities \{(.*?)\}", text, re.S)
     if block is None:
         return None
@@ -72,7 +76,7 @@ def check_every_provider_has_a_row(rows: set[str]) -> int:
     DingTalk) is deliberately not in this table.
     """
     problems = 0
-    for module in sorted(set(REGISTERED.findall(REGISTRY.read_text()))):
+    for module in sorted(set(REGISTERED.findall(REGISTRY.read_text(encoding="utf-8")))):
         if module not in rows:
             problems += 1
             print(f"MISSING {module}: registered but has no row in the matrix")
@@ -83,7 +87,7 @@ def main() -> int:
     problems = 0
     checked = 0
     documented: set[str] = set()
-    for line in MATRIX.read_text().splitlines():
+    for line in MATRIX.read_text(encoding="utf-8").splitlines():
         match = ROW.match(line)
         if match is None or match.group(1).strip() == "Channel":
             continue
