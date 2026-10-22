@@ -25,6 +25,10 @@ pub trait StateHost: Send + Sync {
     fn catalog_dirty(&self) -> bool;
     fn agent_available(&self) -> bool;
     fn monitor_agent(&self) -> BoxFuture<'_, ()>;
+    /// The desktop-side `takeover` moved control: the windowed desktop raises
+    /// its main window so the person at the machine sees the takeover; a
+    /// headless host no-ops.
+    fn on_control_claimed(&self) {}
 }
 
 /// A sessions snapshot plus structural/content signatures used to choose

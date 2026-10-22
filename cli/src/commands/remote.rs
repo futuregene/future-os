@@ -503,6 +503,12 @@ pub(super) fn desktop_running() -> bool {
             let _ = fs2::FileExt::unlock(&file);
             false
         }
+        // Every failure means "cannot prove it is free", including one that is not
+        // contention at all — a share that refuses `flock` outright (`ENOLCK`, or
+        // `ENOTSUP` on some FUSE mounts). "Probably running" is the direction that
+        // stays harmless: a request nobody answers times out and says so, while the
+        // opposite answer would skip the request channel entirely on a machine whose
+        // Desktop is right there.
         Err(_) => true,
     }
 }
@@ -1377,7 +1383,22 @@ async fn add(args: &[String], out: &Output) -> Result<(), String> {
     // slot the user meant for something else. Refusing is also the only honest
     // answer: the terminal that loses would otherwise wait out its budget for a
     // code nobody is looking at.
-    let _one_at_a_time = exclusive_add_slot()?;
+    //
+    // `None` is a file system that will not lock at all (a share without working
+    // `flock`): there is nothing to serialise with there, and refusing would make
+    // `add` impossible on that machine rather than merely unserialised. Said out
+    // loud, because the duplicate-minting risk this lock exists for is real.
+    let _one_at_a_time = match exclusive_add_slot()? {
+        Some(slot) => Some(slot),
+        None => {
+            out.log_err(
+                "note: this file system would not give `add` its one-at-a-time lock, so a second \
+                 `add` running at the same moment would not be noticed. Carrying on — the \
+                 Desktop still performs one request once.",
+            );
+            None
+        }
+    };
     let reply = request_invitation().await?;
     if let Some(error) = reply.get("error").and_then(Value::as_str) {
         return Err(format!("The Desktop did not issue an invitation: {error}"));
@@ -1510,7 +1531,12 @@ fn local_wall_clock(unix: i64) -> Option<String> {
 ///
 /// An advisory file lock, so a process that dies releases it: a stale lock would
 /// otherwise refuse every later `add` until someone deleted a file by hand.
-fn exclusive_add_slot() -> Result<std::fs::File, String> {
+///
+/// `Ok(None)` is "this file system will not lock": that is not another `add`, and
+/// reporting it as one would refuse a command that would otherwise work — the
+/// Desktop's claim rename is what actually guarantees one execution. The caller
+/// says so out loud rather than pretending the lock was taken.
+fn exclusive_add_slot() -> Result<Option<std::fs::File>, String> {
     let directory = control_directory()?;
     let path = directory.join(ADD_LOCK_FILE);
     let file = std::fs::OpenOptions::new()
@@ -1521,13 +1547,26 @@ fn exclusive_add_slot() -> Result<std::fs::File, String> {
         .open(&path)
         .map_err(|error| format!("Cannot open {}: {error}", path.display()))?;
     match fs2::FileExt::try_lock_exclusive(&file) {
-        Ok(()) => Ok(file),
-        Err(_) => Err(
+        Ok(()) => Ok(Some(file)),
+        Err(error) if lock_is_contended(&error) => Err(
             "Another `future remote devices add` is already waiting for an invitation. Finish \
              that one — it prints the code — or let it time out, then run this again."
                 .to_string(),
         ),
+        Err(_) => Ok(None),
     }
+}
+
+/// Whether a failed `try_lock_exclusive` means somebody else holds the lock.
+///
+/// `fs2` reports every failure the same way, and only one of them is contention.
+/// The others are the file system declining to lock at all — `ENOLCK` on a network
+/// share without a lock manager, `ENOTSUP` on some FUSE mounts — and telling the
+/// user "another `add` is already waiting" for those sends them looking for a
+/// process that does not exist. `host/src/instance.rs` draws the same line for the
+/// Desktop's own instance lock.
+fn lock_is_contended(error: &std::io::Error) -> bool {
+    error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
 }
 
 /// `~/.future/run/remote-control`, created if needed.
@@ -1540,14 +1579,19 @@ fn control_directory() -> Result<PathBuf, String> {
 
 /// What a timed-out request means, told apart by whether anything picked it up.
 ///
-/// The two silences are different faults with different fixes, and a single
-/// "did not answer" sends the user to the wrong one. A request still sitting in
-/// the directory was never claimed: no process is watching it, which in practice
+/// The silences are different faults with different fixes, and a single "did not
+/// answer" sends the user to the wrong one. A request still sitting in the
+/// directory was never claimed: no process is watching it, which in practice
 /// means the Desktop running for this data directory predates device requests —
 /// it was started before the update and keeps serving from its old code until it
-/// is restarted. A request that disappeared was claimed by a Desktop that then
-/// failed or was killed mid-request. `unchanged` says what the silence left
-/// behind, which is not the same sentence for an addition and a removal.
+/// is restarted. A request that disappeared was either claimed by a Desktop that
+/// then failed or was killed mid-request, or deleted as stale without being
+/// served at all: this CLI cannot tell those two apart, because both leave
+/// nothing behind, and a Desktop that predates the asker's own timestamp in the
+/// name will read a share's clock instead — the measured case, an NFS home whose
+/// server ran minutes slow, deleted every fresh request on sight. `unchanged`
+/// says what the silence left behind, which is not the same sentence for an
+/// addition and a removal.
 fn timeout_message(
     timeout: Duration,
     request_still_there: &dyn Fn() -> bool,
@@ -1563,8 +1607,12 @@ fn timeout_message(
         )
     } else {
         format!(
-            "A Desktop took the request but did not answer within {}s. It may have failed or been \
-             stopped while pairing; check its own output, then try again.",
+            "A Desktop took the request but did not answer within {}s: it may have failed or been \
+             stopped while pairing, or it discarded the request as stale instead of serving it — \
+             a Desktop that predates this CLI trusts the modification time the file system gives \
+             the request, and that is minutes wrong when the transient `run/` directory lives on \
+             a share whose clock disagrees with this machine's (a network home, for instance). \
+             Check the Desktop's own output, then try again; {unchanged}.",
             timeout.as_secs()
         )
     }
@@ -3929,7 +3977,9 @@ mod tests {
         let _desktop = RunningDesktop::claim(&home);
         // Hold the same lock the first `add` takes — exactly the state a second
         // terminal finds while the first is waiting.
-        let first = exclusive_add_slot().expect("the first add takes the slot");
+        let first = exclusive_add_slot()
+            .expect("the first add takes the slot")
+            .expect("this file system locks");
 
         let (code, stdout, stderr) = run(&["remote", "devices", "add"]).await;
         assert_eq!(code, 1);
@@ -3958,7 +4008,53 @@ mod tests {
         // The slot is released with the process that held it, so the next add
         // proceeds instead of being refused forever.
         drop(first);
-        assert!(exclusive_add_slot().is_ok());
+        assert!(
+            exclusive_add_slot().is_ok_and(|slot| slot.is_some()),
+            "the released slot is taken again"
+        );
+    }
+
+    /// Only contention is another `add`. The other ways `flock` can fail are the
+    /// file system refusing to lock at all — `ENOLCK` on a share without a lock
+    /// manager, `ENOTSUP` on some FUSE mounts — and those must not be reported as a
+    /// terminal that is already waiting, which would be a dead end for `add` on
+    /// that machine.
+    #[test]
+    fn only_a_held_lock_is_reported_as_another_add() {
+        let contended = fs2::lock_contended_error();
+        assert!(lock_is_contended(&contended), "{contended}");
+        for code in [libc::ENOLCK, libc::EOPNOTSUPP, libc::EACCES] {
+            let error = std::io::Error::from_raw_os_error(code);
+            assert!(!lock_is_contended(&error), "{error}");
+        }
+    }
+
+    /// The same distinction from the outside, on a file `flock` refuses: a FIFO is
+    /// openable for read+write while the lock on it fails with `ENOTSUP` (probed;
+    /// `/dev/null` *accepts* the lock, so it cannot be used). Gated to macOS for the
+    /// same reason as the Desktop's own instance-lock test: the errno is a property
+    /// of the platform, not of this code.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn a_file_system_that_will_not_lock_does_not_refuse_the_add() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        let directory = home.future().join("run").join(CONTROL_DIRECTORY);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(ADD_LOCK_FILE);
+        let fifo = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: mkfifo only reads the path built above; a failure is asserted.
+        let created = unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) };
+        // Hoisted: `assert_eq!` formats its arguments only when it fails.
+        let mkfifo_error = format!(
+            "mkfifo {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        );
+        assert_eq!(created, 0, "{mkfifo_error}");
+
+        let slot = exclusive_add_slot().expect("not another add, and not an error");
+        assert!(slot.is_none(), "the lock cannot be held here");
     }
 
     /// A Desktop that exits while the request is pending is reported as that, not
@@ -4038,6 +4134,16 @@ mod tests {
             "{claimed}"
         );
         assert!(!claimed.contains("older build"), "{claimed}");
+        // A vanished request has a second cause this side cannot rule out: a
+        // Desktop that discards it as stale (a share's clock, not the asker's).
+        // Naming only "it failed or was stopped" is the advice that sent the NFS
+        // bug's user looking for a Desktop that had never seen the request.
+        assert!(
+            claimed.contains("discarded the request as stale"),
+            "{claimed}"
+        );
+        assert!(claimed.contains("clock disagrees"), "{claimed}");
+        assert!(claimed.contains("nothing was paired"), "{claimed}");
     }
 
     #[tokio::test]

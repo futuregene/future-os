@@ -162,8 +162,9 @@ mod tests {
         assert!(!settings.skill_guide_dismissed);
         assert!(!settings.skill_intro_dismissed);
         assert!(!settings.community_edition);
-        // PRD v1.6 §3: recommendation is on unless the user opts out.
-        assert!(settings.skill_recommend);
+        // PRD v1.6 §3 / integration-plan rule 1: recommendation is off unless
+        // the user opts in.
+        assert!(!settings.skill_recommend);
     }
 
     #[test]
