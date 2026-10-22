@@ -75,6 +75,14 @@ packaging) is in the **[Build & Install](docs/guide/build-and-install.md)** guid
 
 The installers finish by running `future init`.
 
+Both scripts check the downloaded artifact against the release manifest's
+SHA-256 before installing it, including when `FUTUREOS_VERSION` pins a release
+(that release's own `latest.json` is read). An artifact whose checksum cannot be
+established — no manifest, no `sha256` for the platform, or a host without
+`shasum`/`sha256sum` — is refused instead of installed unverified. Only
+`FUTUREOS_SKIP_VERIFY=1` (`$env:FUTUREOS_SKIP_VERIFY = '1'` on Windows) turns
+that check off, and it means installing whatever the mirror served you.
+
 ### Configure a model
 
 The agent needs at least one model provider before it can answer. The interactive setup supports both FutureOS and custom providers:

@@ -119,8 +119,10 @@ curl -fsSL https://dl.future-os.cn/install.sh | bash
 所选 host target，不一定是静态链接。
 
 用 `FUTUREOS_VERSION` 锁定特定版本（如 `FUTUREOS_VERSION=1.2.0`），或用 `FUTUREOS_BASE` 指向镜像。
-当前指定版本路径会跳过 manifest SHA-256 校验并打印警告，请自行对照可信发布校验和验证
-指定产物；latest 路径会校验发布清单中的 SHA-256。
+指定版本时会读取该版本自己的清单（`releases/<version>/latest.json`），与 latest 路径一样校验
+产物的 SHA-256。校验是强制的：该版本没有对应平台的清单条目，或主机既没有 `shasum` 也没有
+`sha256sum` 时，安装器直接退出，不会安装未经校验的二进制。`FUTUREOS_SKIP_VERIFY=1` 仅在本次运行
+跳过校验；只有在你已经确认产物来源时才这样用，因为脚本会把镜像给出的任何东西装进系统。
 
 ### 从源码构建（开发者）
 
