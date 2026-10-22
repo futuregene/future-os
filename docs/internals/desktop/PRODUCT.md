@@ -651,6 +651,20 @@ keep the store's recency order below them, and the header shows a pin marker.
 The flag is stored on the workspace (`workspaces.pinned`), so the phone's
 workspace tab and the desktop rail order the same groups the same way.
 
+**Rows inside a section are ordered by creation time, newest first**, and that
+includes the pinned section: a workspace's conversations, the chats section and
+the merged list with a paired computer use the conversation's start time, while
+the last reply is only drawn as the row's age. The reason is the same one the
+recent view's active stretch has — a running turn rewrites its activity stamp
+about once a second, so ranking by it swaps rows under the reader's thumb for as
+long as anything streams, and an old conversation you just replied to would jump
+to the top. A start time never moves, so a row takes its place when it is made.
+A pin does not change that rule: pinned rows are ranked by their start time too
+and keep their place whether or not they stream. The *group* still holds its own
+place by the workspace's last-opened time (above) and never moves with its
+conversations; a session on a host too old to send a start time falls back to
+recency.
+
 Conversations display as a tree of at most three levels following the Agent's
 parent-child session relations (excluding the Workspace title level), collapsed
 by default; clicking the title

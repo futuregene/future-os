@@ -93,6 +93,20 @@ fi
 # The shared portable Readme.txt describes both variants; do not promise static linkage here.
 echo "==> Preparing unified CLI/Desktop build"
 
+# `--set-bundle` rewrites the tracked desktop/src-tauri/tauri.conf.json, which is
+# deliberately pinned at 0.0.0 (the real version is injected via FUTURE_VERSION).
+# Snapshot it before the rewrite and put it back on exit, including on failure:
+# otherwise every local package leaves a modified tracked file behind, and a
+# dirty tree blocks the merges other sessions run in this checkout.
+TAURI_CONF="$ROOT/desktop/src-tauri/tauri.conf.json"
+TAURI_CONF_SNAPSHOT="$(mktemp)"
+cp "$TAURI_CONF" "$TAURI_CONF_SNAPSHOT"
+restore_tauri_conf() {
+  cp -f "$TAURI_CONF_SNAPSHOT" "$TAURI_CONF"
+  rm -f "$TAURI_CONF_SNAPSHOT"
+}
+trap restore_tauri_conf EXIT
+
 echo "==> Setting Tauri bundle version"
 node scripts/version.mjs --set-bundle
 

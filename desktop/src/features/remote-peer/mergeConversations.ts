@@ -8,11 +8,13 @@
  * 1. **Every row knows its source.** A row that cannot name its host would be
  *    routed to the wrong machine on click, so the source is part of the row
  *    identity, not a presentation detail.
- * 2. **The order must be one order.** Local threads already rank by
- *    `pinned, COALESCE(last_message_at, updated_at, created_at)` on the host;
- *    remote sessions carry `lastMessageAt` from that same coalesce. Ranking
- *    them together with a different rule would make the merged list disagree
- *    with the per-machine lists the user can also see.
+ * 2. **The order must be one order.** Every list here ranks by the
+ *    conversation's *start* (`pinned` first), newest first: this machine's own
+ *    list applies the same rule (`sortThreads` in the rail), and a merged list
+ *    that ranked by something else would disagree with the list each machine
+ *    shows on its own. Recency is deliberately not the key — a run rewrites
+ *    `lastMessageAt` about once a second, so a list ranked by it swaps rows
+ *    under the reader's thumb for as long as a run streams.
  * 3. **A heading ranks by its own place, not its rows'.** A workspace group is
  *    ordered by the workspace's own key (when *it* was last touched), which is
  *    what the local list already does — ordering groups by their conversations
@@ -127,10 +129,11 @@ export interface MergedConversation {
   /**
    * When the conversation was started (unix millis), or `null` when unknown.
    *
-   * This machine's threads always have it; a host's sessions carry it only if
-   * the host is new enough. The recent view orders the running rows by it — a
-   * run's `lastMessageAt` moves about once a second and re-ranked its row under
-   * the reader's thumb — and an absent value falls back to recency there.
+   * What every row here is ranked by, and what keeps a streaming row in place:
+   * a run rewrites `lastMessageAt` about once a second, so ranking by that
+   * re-shuffled the list under the reader's thumb. This machine's threads always
+   * have it; a host's sessions carry it only if the host is new enough, and an
+   * absent value falls back to recency (`compareConversations`).
    */
   createdAt?: number | null;
   /**
@@ -221,8 +224,10 @@ export function rowKey(desktopId: string | null, id: string): string {
 }
 
 /**
- * The local thread's timestamp, using the host's own coalesce so a thread that
- * has never been messaged still sorts by when it was last touched.
+ * The local thread's last-activity stamp (unix millis), using the host's own
+ * coalesce so a thread that has never been messaged still reports when it was
+ * last touched. It is the row's age, not its place: the list is ranked by
+ * `createdAt`.
  */
 export function localTimestamp(thread: LocalThreadLike): number {
   return thread.lastMessageAt ?? thread.updatedAt ?? thread.createdAt;
@@ -350,18 +355,30 @@ export function mergeConversations(
 }
 
 /**
- * Pinned first, then most recent. Ties break on the machine and then on the row
- * key so the order is stable across polls: a list that reshuffles equal
- * timestamps flickers, and a flickering list is how a user misses the message
- * they were reading. Two machines can hold the same session id with the same
- * timestamp, which is why the machine is compared before the key: this machine
- * first, then a host by its desktop id.
+ * Pinned first, then the newest *start*, first. Ties break on the machine and
+ * then on the row key so the order is stable across polls: a list that
+ * reshuffles equal timestamps flickers, and a flickering list is how a user
+ * misses the message they were reading. Two machines can hold the same session
+ * id with the same timestamp, which is why the machine is compared before the
+ * key: this machine first, then a host by its desktop id.
+ *
+ * **The start, not the last reply.** Ranking by `lastMessageAt` put a row that
+ * was streaming above everything else and kept swapping rows while a few runs
+ * took turns producing output — the list moved about once a second, under the
+ * reader's thumb, for as long as any run was going. A creation time does not
+ * move, so a row (pinned or not) keeps the place it was given when it was made.
+ *
+ * A host older than the `createdAt` field has no start to rank by and falls
+ * back to its `lastMessageAt` — the key this list used for every row before.
+ * That row can still step up while its run streams; the alternative (an unknown
+ * start sorted as "just now") would float it above conversations that do have
+ * one, which is worse than a row that moves.
  */
 export function compareConversations(a: MergedConversation, b: MergedConversation): number {
   if (a.pinned !== b.pinned)
     return a.pinned ? -1 : 1;
-  const at = a.lastMessageAt ?? Number.NEGATIVE_INFINITY;
-  const bt = b.lastMessageAt ?? Number.NEGATIVE_INFINITY;
+  const at = a.createdAt ?? a.lastMessageAt ?? Number.NEGATIVE_INFINITY;
+  const bt = b.createdAt ?? b.lastMessageAt ?? Number.NEGATIVE_INFINITY;
   if (at !== bt)
     return bt - at;
   return compareSource(a.desktopId, b.desktopId) || compareText(a.key, b.key);
@@ -434,7 +451,9 @@ export interface MergedGroup {
  * the list of this machine alone, which orders its workspaces by when *they* were
  * last touched (`COALESCE(last_opened_at, updated_at)`, the same coalesce the
  * host reports per row). So the key is the workspace's, from whichever machine
- * owns it, and the rows' recency only orders the conversations inside a group.
+ * owns it, and the rows' start times only order the conversations inside a
+ * group — the same key the rows are ranked by everywhere else
+ * (`compareConversations`).
  *
  * **A fork is a conversation's, not a section's.** The rows are ranked by their
  * **roots** — the conversation a row's tree hangs under, `rowRoots` — so a fork

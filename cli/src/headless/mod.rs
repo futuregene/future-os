@@ -1,7 +1,6 @@
 //! Foreground CLI application entry backed by the shared GUI-free Host library.
 mod agent;
 
-use std::io::{IsTerminal, Write};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -10,9 +9,9 @@ use future_host::{future_login, remote, Error as AppError};
 pub const HELP: &str = "Usage: future host [--relay URL [--relay-ca PEM]] [--help]
 
 Run this machine as a FutureOS host in this terminal; Ctrl+C stops it.
-It serves the paired remote desktops (a phone, or another computer), guides
-platform login and device pairing when needed, and reuses an existing pairing.
-With --relay, no Future account is needed at all.
+It serves this machine's Agent, local runs and tasks; signing in to FutureOS
+additionally serves the paired remote desktops (a phone, or another computer)
+and reuses an existing pairing. With --relay, no Future account is needed at all.
 
   --relay URL Print an invitation that points at a self-hosted relay
               (future-relay) instead of the Future platform. The address is
@@ -21,15 +20,20 @@ With --relay, no Future account is needed at all.
               by a public CA.
   --help      Show this help without starting Host or Agent.
 
-Login uses your phone/computer browser; phone pairing uses the FutureOS app.
-Signing in needs an interactive terminal (it prints a link and a user code);
-pairing does not — `future remote devices add` prints the invitation itself.
-No background service is installed.
+No Future account is required to run this entry: a signed-out machine serves
+everything local with its own providers, and its remote desktop stays closed
+until an account signs in. Sign in from another terminal with `future auth
+login` (it prints the authorization link and user code) — this entry picks the
+account up and starts serving the remote desktop without a restart. A different
+login, or a logout, while it is running closes remote access and asks for a
+restart. With --relay there is no account at all.
 
-Without --relay this entry needs a Future OS account: if this machine is signed
-out it runs the login flow before serving (or fails, when the terminal is not
-interactive — `future auth login` does the same thing on its own). With --relay
-there is no account at all.
+Signed out, everything that needs the platform is refused together, while nothing
+local is: `future remote devices add` cannot mint an invitation (the platform
+issues those, so it asks you to run `future auth login` first), and the remote
+desktop switch can be turned on without effect. Sessions, runs, tasks and your
+own model providers keep working throughout — a refusal there is not a broken
+host.
 
 Pair a device with `future remote devices add` — from another terminal, while
 this entry is running: the invitation's link and QR code are printed in the
@@ -229,44 +233,72 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     eprintln!("FutureOS host - foreground mode. Press Ctrl+C to stop.");
     // Fail on corrupt credentials rather than silently replacing the account.
     future_host::auth_store::read()?;
-    // A self-hosted relay is the whole answer to "which account": it has none,
-    // so there is no sign-in to run and no terminal to require. Without one the
-    // platform mints this machine's credential, and that flow is the only part of
-    // this entry that needs a terminal — it prints an authorization link and code,
-    // which a redirected log must never receive. Pairing does not: no invitation is
-    // printed here at all.
+    // The Future account is what the *remote desktop* runs on; it is not a
+    // prerequisite for this entry point. A machine signed out — one that only
+    // has its own providers configured, or that will be signed in from another
+    // terminal in a moment — serves local runs, tasks and the Agent normally and
+    // keeps the remote desktop closed until an account appears. Signing in is
+    // `future auth login`'s job; this run adopts it without a restart (see
+    // [`account_action`]).
+    //
+    // A self-hosted relay is the other answer to "which account": it has none.
     let relay = future_host::remote::relay::endpoint();
-    if needs_login(relay.as_deref(), future_login::future_api_key().is_ok()) {
-        require_terminal()?;
-    }
     future_host::store::initialize_app_store()?;
     // Leftover convergence walks the data tree and no command depends on it, so
     // it must not sit between the operator and the Agent starting.
     std::thread::spawn(future_host::store::reconcile_after_startup);
     ensure_agent_running(agent).await?;
     install_channel_runtime();
-    let account_key = if let Some(url) = relay.as_deref() {
+    // A key the platform already refused is not offered again. It is the one
+    // credential this run knows to be dead, so adopting it would only repeat a
+    // rejection; a *different* key is a new login. Filled in below and never
+    // afterwards: a rejection that arrives as a remote phase while an account is
+    // pinned still stops the run, exactly as it always did.
+    let mut refused: Option<String> = None;
+    let mut account = if let Some(url) = relay.as_deref() {
         eprintln!(
             "Self-hosted relay ({url}). No Future account is used for phone pairing; \
              existing pairings keep using the relay that issued them."
         );
         None
     } else {
-        ensure_login().await?;
-        let key = future_login::future_api_key()?;
-        let platform = future_host::future_platform::current_platform_url();
-        eprintln!("Platform login authorized ({platform}).");
-        // Fresh servers have no WebView to trigger the usual initial model sync.
-        // Through the scheduler so the automatic loop shares this run's clock, the
-        // same way the window's `sync_future_models` command does.
-        if let Err(error) = future_host::scheduler::refresh_future_models_now().await {
-            eprintln!(
-                "Model catalog refresh failed; existing configured models remain available: {error}"
-            );
+        // Exactly the check this entry made before it served a signed-in machine:
+        // a key the platform still accepts is reused silently, a key it refuses is
+        // named as such, and a transport failure is not a logout. Only the step
+        // that used to follow a refusal — this entry's own device-code login — is
+        // gone: signing in is `future auth login`'s job now, and this run waits for
+        // it (see [`account_action`]) instead of replacing itself with a login
+        // prompt.
+        match future_login::future_api_key() {
+            Ok(key) => match future_login::fetch_profile().await {
+                Ok(_) => {
+                    let account = Account::pin(key);
+                    eprintln!("Platform account signed in ({}).", account.platform);
+                    refresh_catalogue().await;
+                    Some(account)
+                }
+                Err(AppError::Remote {
+                    status: 401 | 403, ..
+                }) => {
+                    eprintln!("Platform authorization is no longer valid. Please sign in again.");
+                    refused = Some(key);
+                    None
+                }
+                // Unchanged: a network failure while verifying is not a logout and
+                // is not silently downgraded to "signed out" either.
+                Err(error) => return Err(error),
+            },
+            Err(_) => {
+                eprintln!(
+                    "Not signed in to FutureOS: serving local runs, tasks and the Agent. The \
+                     remote desktop stays closed until an account signs in — run `future auth \
+                     login` from another terminal and this entry starts serving it without a \
+                     restart."
+                );
+                None
+            }
         }
-        Some(key)
     };
-    let platform = future_host::future_platform::current_platform_url();
     // The window's fixed-interval maintenance (app updates and the balance
     // event need a WebView; see `scheduler::start_headless`).
     future_host::scheduler::start_headless();
@@ -295,24 +327,27 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     // whose remote desktop was turned off (in the window, or with `future remote
     // disable`) must not come back serving just because a server restarted. A
     // fresh install defaults to on, so the ordinary launch is unchanged.
-    let switch_on = future_host::store::get_app_settings()
-        .map(|settings| settings.auto_connect_remote)
-        .unwrap_or(true);
+    let switch_on = remote_switch_on();
     // `enable`, not `start`: a start mints an invitation when nothing is paired,
     // and printing that code is a decision the operator makes explicitly by
     // running `future remote devices add` — not something a host prints the
     // moment it is launched. This entry therefore serves the devices already in
     // the pairing book and grows the book only on request.
-    let mut status = if switch_on {
-        eprintln!("Preparing the remote connection...");
-        remote::enable().await?
-    } else {
+    let mut status = if !switch_on {
         eprintln!(
             "The remote desktop switch is off, so this entry serves nothing yet. It stays up as \
              the machine's control endpoint: turn the switch on with `future remote enable` \
              (no restart needed), or in the window's Remote page."
         );
         remote::status()
+    } else if account.is_none() && relay.is_none() {
+        // Signed out and no relay: nothing to serve the remote desktop with, and
+        // that is not a fault. The loop below turns it on the moment an account
+        // signs in.
+        remote::status()
+    } else {
+        eprintln!("Preparing the remote connection...");
+        remote::enable().await?
     };
     // `future remote devices add` asks this process for an invitation: only a
     // process that can serve the new pairing may mint one, and a server has no
@@ -324,6 +359,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
     let mut was_paired = false;
     let mut said_idle = false;
     let mut said_unpaired = false;
+    let mut said_signed_out = false;
     loop {
         agent.check_running()?;
         // The Agent may live in another process (an external `future agent`, or a
@@ -333,15 +369,44 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
         // waiting for the process that holds the lock) is what keeps this entry
         // serving instead of answering every RPC with a transport error.
         agent.supervise().await?;
-        // Logout/account/environment changes never leave an old account's
-        // remote ingress open until its JWT eventually expires. There is no
-        // account to watch in relay mode: the pairing's own credential and the
-        // room registration are the whole authorization.
-        if let Some(account_key) = account_key.as_deref() {
-            if future_login::future_api_key().ok().as_deref() != Some(account_key)
-                || future_host::future_platform::current_platform_url() != platform
-            {
-                return Err("Platform login changed or was removed. Remote access is closing; restart to authorize again.".into());
+        // The account this run serves is pinned (`Account`). Relay mode has none
+        // to watch; a *different* key closes remote access instead of leaving the
+        // old account's ingress open until its JWT expires; and a login that
+        // appears while this run was local-only is adopted right here — that is
+        // what makes `future auth login` under a running `future host` take
+        // effect without a restart.
+        if relay.is_none() {
+            let stored = future_login::future_api_key().ok();
+            let platform = future_host::future_platform::current_platform_url();
+            match account_action(
+                account.as_ref(),
+                stored.as_deref(),
+                &platform,
+                refused.as_deref(),
+            ) {
+                AccountAction::Keep => {}
+                AccountAction::Close => return Err(
+                    "Platform login changed or was removed. Remote access is closing; restart to \
+                     authorize again."
+                        .into(),
+                ),
+                AccountAction::Adopt => {
+                    let key = stored.expect("adoption needs a stored key");
+                    let adopted = Account::pin(key);
+                    eprintln!(
+                        "Platform account signed in ({}): starting the remote desktop for it.",
+                        adopted.platform
+                    );
+                    account = Some(adopted);
+                    previous_state.clear();
+                    said_signed_out = false;
+                    status = if remote_switch_on() {
+                        remote::enable().await?
+                    } else {
+                        remote::status()
+                    };
+                    refresh_catalogue().await;
+                }
             }
         }
         let state = format!(
@@ -357,19 +422,45 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
             eprintln!("Remote: {state}");
             previous_state = state;
         }
-        if matches!(
-            status.phase,
-            remote::RemotePhase::Failed | remote::RemotePhase::Revoked
-        ) {
-            return Err(format!("Remote connection stopped ({:?}). Check platform login/network, then restart; use `future remote devices` to pair or drop a device.", status.reason).into());
+        // What this run has to serve the remote desktop with: an account, or a
+        // relay that supplies its own. Nothing else can authorize a device.
+        let serving = relay.is_some() || account.is_some();
+        // The three terminal-looking phases are not one state, and collapsing
+        // them would hide the difference the operator has to act on:
+        //
+        // * `Failed(AccountAuthorization)` **without** an account is this run's
+        //   ordinary signed-out state (the remote desktop was switched on by
+        //   `future remote enable` while nothing could serve it). It is not a
+        //   fault: say it once and keep serving locally until a login appears.
+        // * The very same phase **with** an account pinned means the platform
+        //   refused this machine's credential. That is a fault, and a signed-in
+        //   run stops on it exactly as it always has.
+        // * `Revoked` and every other `Failed` need a person either way, and they
+        //   stop the run with the reason named — unchanged.
+        match phase_action(serving, status.phase, status.reason) {
+            PhaseAction::Keep => {}
+            PhaseAction::NeedsAccount => {
+                if !said_signed_out {
+                    said_signed_out = true;
+                    eprintln!(
+                        "The remote desktop needs a FutureOS account: sign in with `future auth \
+                         login` (from another terminal) and this entry starts serving it without a \
+                         restart. Everything local keeps working meanwhile."
+                    );
+                }
+            }
+            PhaseAction::Stop => {
+                return Err(format!("Remote connection stopped ({:?}). Check platform login/network, then restart; use `future remote devices` to pair or drop a device.", status.reason).into());
+            }
+        }
+        if serving {
+            said_signed_out = false;
         }
         // A stop is only a fault while the switch says on. Turning the switch off
         // is the user's decision: a server told to stop serving stays up and keeps
         // answering control requests — that is what lets `future remote enable`
         // turn it back on without a restart — instead of exiting as if it broke.
-        let switch_on = future_host::store::get_app_settings()
-            .map(|settings| settings.auto_connect_remote)
-            .unwrap_or(true);
+        let switch_on = remote_switch_on();
         let idle = matches!(status.phase, remote::RemotePhase::Stopped) && !switch_on;
         if idle {
             was_paired = false;
@@ -383,7 +474,7 @@ async fn session(agent: &mut agent::Agent) -> Result<(), AppError> {
         } else {
             said_idle = false;
         }
-        if matches!(status.phase, remote::RemotePhase::Stopped) && switch_on {
+        if matches!(status.phase, remote::RemotePhase::Stopped) && switch_on && serving {
             return Err(format!("Remote connection stopped ({:?}). Check platform login/network, then restart; use `future remote devices` to pair or drop a device.", status.reason).into());
         }
         let paired = future_host::remote::pairing::load_creds_checked()?.is_some();
@@ -455,32 +546,124 @@ async fn starting_with_notice<T>(
     }
 }
 
-/// Whether this launch has to sign in before it can serve.
+/// The Future account a run serves: the key the platform issued and the platform
+/// it was issued for, pinned when the run adopted it.
 ///
-/// A self-hosted relay is the whole answer to "which account": it has none, so
-/// there is no sign-in to run. Otherwise the Future platform mints this machine's
-/// credential, and that is the only prerequisite decided here — signing in is also
-/// what needs a terminal, because the flow prints an authorization link and code.
-/// A pairing is not one: this entry serves whichever devices are already paired and
-/// prints nothing of its own, so an unpaired machine comes up normally and is
-/// paired from another terminal with `future remote devices add`.
-fn needs_login(relay: Option<&str>, signed_in: bool) -> bool {
-    relay.is_none() && !signed_in
+/// Pinned rather than re-read for its own value: a *different* key on disk is a
+/// different account, and this run closes its remote access instead of silently
+/// serving it (the old account's ingress must not stay open until its JWT
+/// expires). A run that has not adopted one has no account — the ordinary
+/// local-only state on a machine whose providers are its own.
+struct Account {
+    key: String,
+    platform: String,
 }
 
-fn require_terminal() -> Result<(), AppError> {
-    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
-        Ok(())
-    } else {
-        Err(
-            "Platform login requires an interactive terminal. Sign in first with `future auth \
-             login` (or run `future host` in a terminal as the same user); authorization \
-             links are not written to redirected logs. Pairing afterwards needs no terminal: \
-             `future remote devices add` prints the invitation where it is asked for. A \
-             self-hosted relay needs no account at all: `future host --relay <url>`."
-                .into(),
-        )
+impl Account {
+    fn pin(key: String) -> Self {
+        Self {
+            key,
+            platform: future_host::future_platform::current_platform_url(),
+        }
     }
+}
+
+/// What the supervision loop must do with the account on this iteration.
+#[derive(Debug, PartialEq, Eq)]
+enum AccountAction {
+    /// Nothing changed: keep serving what is pinned.
+    Keep,
+    /// No account is pinned and a usable one is stored: adopt it and serve it.
+    Adopt,
+    /// A pinned account changed or disappeared: close remote access.
+    Close,
+}
+
+/// Decide from the pinned account, the key stored on disk and the platform this
+/// process resolves which of the three transitions applies.
+///
+/// `rejected` is the key the platform already refused: it is *stored* but not
+/// offered again, so a refused credential cannot turn into a per-second retry
+/// loop. Any other key is a new login and is adopted.
+fn account_action(
+    pinned: Option<&Account>,
+    stored_key: Option<&str>,
+    platform: &str,
+    rejected: Option<&str>,
+) -> AccountAction {
+    let available = stored_key.filter(|key| Some(*key) != rejected);
+    match (pinned, available) {
+        (Some(pinned), Some(key)) if pinned.key == key && pinned.platform == platform => {
+            AccountAction::Keep
+        }
+        (Some(_), _) => AccountAction::Close,
+        (None, Some(_)) => AccountAction::Adopt,
+        (None, None) => AccountAction::Keep,
+    }
+}
+
+/// Fetch the platform's model catalogue for the account this run just adopted.
+///
+/// Best-effort: the Agent's own provider list stays valid without it, and a
+/// server whose platform is unreachable must not stop over a catalogue refresh.
+async fn refresh_catalogue() {
+    if let Err(error) = future_host::scheduler::refresh_future_models_now().await {
+        eprintln!(
+            "Model catalog refresh failed; existing configured models remain available: {error}"
+        );
+    }
+}
+
+/// What one supervision iteration must do about the remote phase it just read.
+#[derive(Debug, PartialEq, Eq)]
+enum PhaseAction {
+    /// Not terminal for this run: serving, connecting, reconnecting, idle.
+    Keep,
+    /// Signed out and the remote desktop has nothing to serve it with. Say so
+    /// once and keep running locally; a login can still arrive.
+    NeedsAccount,
+    /// Stop the run, naming the phase's reason.
+    Stop,
+}
+
+/// Decide what a remote phase means for this run.
+///
+/// `serving` is whether this run has anything to authorize a device with — a
+/// pinned Future account, or a relay that supplies its own. It is the *only*
+/// thing that changes the answer, and it must: `Failed(AccountAuthorization)`
+/// on a signed-out run is "nothing to serve with yet", while the same phase on a
+/// signed-in run is the platform refusing this machine's credential. `Revoked`
+/// and every other `Failed` stop the run either way.
+fn phase_action(
+    serving: bool,
+    phase: remote::RemotePhase,
+    reason: Option<remote::RemoteFailureReason>,
+) -> PhaseAction {
+    use remote::{RemoteFailureReason, RemotePhase};
+    match phase {
+        RemotePhase::Failed
+            if !serving && reason == Some(RemoteFailureReason::AccountAuthorization) =>
+        {
+            PhaseAction::NeedsAccount
+        }
+        RemotePhase::Failed | RemotePhase::Revoked => PhaseAction::Stop,
+        // `Stopped` is not terminal here: the switch can turn it back on from
+        // another terminal, and the loop reports the idle state itself.
+        RemotePhase::Stopped
+        | RemotePhase::Enabled
+        | RemotePhase::Connecting
+        | RemotePhase::Ready
+        | RemotePhase::Reconnecting
+        | RemotePhase::Refreshing => PhaseAction::Keep,
+    }
+}
+
+/// The remote desktop switch, as the user last set it. Defaults to on: a fresh
+/// install serves the paired devices, and only an explicit `disable` opts out.
+fn remote_switch_on() -> bool {
+    future_host::store::get_app_settings()
+        .map(|settings| settings.auto_connect_remote)
+        .unwrap_or(true)
 }
 
 /// Install the platform's built-in skills the way the window's post-login
@@ -534,166 +717,6 @@ async fn bootstrap_builtin_skills() {
     // must give the Agent the same signal or a run started from the phone would
     // not be offered them until the next restart.
     future_host::agent_bridge::refresh_skills().await;
-}
-
-async fn ensure_login() -> Result<(), AppError> {
-    if future_login::future_api_key().is_ok() {
-        match future_login::fetch_profile().await {
-            Ok(_) => return Ok(()),
-            Err(AppError::Remote {
-                status: 401 | 403, ..
-            }) => {
-                eprintln!("Platform authorization is no longer valid. Please sign in again.");
-            }
-            // Network failure is not logout and must never overwrite a key.
-            Err(error) => return Err(error),
-        }
-    }
-    require_terminal()?;
-    let login = future_login::start().await?;
-    print_invitation(
-        "PLATFORM LOGIN - scan with your phone camera/browser and authorize this server",
-        &login.verification_uri_complete,
-    )?;
-    println!(
-        "If requested by the web page, enter user code: {}",
-        login.user_code
-    );
-    println!(
-        "Authorization expires in {} seconds. Waiting for approval...",
-        login.expires_in
-    );
-    std::io::stdout().flush()?;
-    wait_for_login(
-        Duration::from_secs(login.interval),
-        Duration::from_secs(login.expires_in),
-        || future_login::poll(&login.device_code),
-    )
-    .await
-}
-
-async fn wait_for_login<F, Fut>(
-    interval: Duration,
-    expires: Duration,
-    mut poll: F,
-) -> Result<(), AppError>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<future_login::FutureLoginPoll, AppError>>,
-{
-    let last_poll_was_transient = std::cell::Cell::new(false);
-    tokio::time::timeout(expires, async {
-        let mut normal_interval = interval;
-        let mut next_interval = interval;
-        let mut transient_interval = Duration::from_secs(2);
-        let max_transient_interval = Duration::from_secs(15);
-        let mut malformed_responses = 0;
-        loop {
-            tokio::time::sleep(next_interval).await;
-            let response = poll().await?;
-            match response.status.as_str() {
-                "authorized" => return Ok(()),
-                "pending" => {
-                    last_poll_was_transient.set(false);
-                    next_interval = normal_interval;
-                    transient_interval = Duration::from_secs(2);
-                    malformed_responses = 0;
-                }
-                "slow_down" => {
-                    last_poll_was_transient.set(false);
-                    normal_interval = normal_interval.saturating_add(Duration::from_secs(5));
-                    next_interval = normal_interval;
-                    transient_interval = Duration::from_secs(2);
-                    malformed_responses = 0;
-                }
-                "retry" => {
-                    last_poll_was_transient.set(true);
-                    let server_interval = response
-                        .retry_after_seconds
-                        .map(Duration::from_secs)
-                        .unwrap_or_default();
-                    next_interval = transient_interval.max(server_interval).min(expires);
-                    transient_interval = transient_interval
-                        .saturating_mul(2)
-                        .min(max_transient_interval);
-                }
-                "malformed" => {
-                    last_poll_was_transient.set(true);
-                    malformed_responses += 1;
-                    if malformed_responses >= 3 {
-                        return Err(
-                            "Platform authorization server returned invalid responses. Restart to try again."
-                                .into(),
-                        );
-                    }
-                    next_interval = transient_interval;
-                    transient_interval = transient_interval
-                        .saturating_mul(2)
-                        .min(max_transient_interval);
-                }
-                "denied" => return Err("Platform authorization was denied.".into()),
-                "expired" => {
-                    return Err("Platform authorization expired. Restart to try again.".into())
-                }
-                _ => return Err("Platform authorization failed. Restart to try again.".into()),
-            }
-        }
-    })
-    .await
-    .map_err(|_| {
-        if last_poll_was_transient.get() {
-            AppError::from(
-                "Platform authorization server is temporarily unavailable. Restart to try again.",
-            )
-        } else {
-            AppError::from("Platform authorization expired. Restart to try again.")
-        }
-    })?
-}
-
-/// Print one authorization code: the label, the complete link, and the same
-/// link as a QR code when the terminal is wide enough to hold it.
-///
-/// This is the platform login QR. Device pairing prints nothing here: an
-/// invitation is minted and rendered by `future remote devices add`, in the
-/// terminal that asked for it.
-fn print_invitation(label: &str, link: &str) -> Result<(), AppError> {
-    let output = invitation_text(label, link, true, terminal_columns());
-    let mut stdout = std::io::stdout().lock();
-    stdout.write_all(output.as_bytes())?;
-    stdout.flush()?;
-    Ok(())
-}
-
-/// Width of the terminal doing the printing, when it can be measured.
-pub(crate) fn terminal_columns() -> Option<usize> {
-    terminal_size::terminal_size().map(|(width, _)| usize::from(width.0))
-}
-
-/// The block a terminal entry point prints: label, link, and optionally the same
-/// link as a QR code.
-///
-/// A narrow terminal keeps the link and says why the QR is missing, which is why
-/// no flag is needed to suppress the code — a redirected or narrow terminal
-/// already gets the link.
-pub(crate) fn invitation_text(label: &str, link: &str, qr: bool, columns: Option<usize>) -> String {
-    let mut output = format!("\n{label}\n{link}\n");
-    if qr {
-        match qrcode::QrCode::new(link.as_bytes()) {
-            Ok(code) if columns.is_none_or(|width| code.width() + 8 <= width) => {
-                use qrcode::render::unicode::Dense1x2;
-                let image = code.render::<Dense1x2>().build();
-                // Explicit black-on-white contrast on both light and dark
-                // terminal themes. Reset every line to avoid tinting logs.
-                for line in image.lines() {
-                    output.push_str(&format!("\x1b[30;47m{line}\x1b[0m\n"));
-                }
-            }
-            Ok(_) => output.push_str("Terminal too narrow for this QR code; widen it and restart, or use the link above.\n"),
-            Err(_) => output.push_str("Cannot render a QR code; use the link above.\n"),
-        }
-    }
-    output
 }
 
 fn prepare_terminal() {
@@ -846,19 +869,6 @@ mod tests {
         Options::parse(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
     }
 
-    /// Signing in is the only prerequisite decided before anything starts: an
-    /// unpaired machine comes up and waits for `future remote devices add`, so a
-    /// pairing is not part of the gate.
-    #[test]
-    fn login_is_required_unless_a_relay_supplies_the_account() {
-        assert!(needs_login(None, false), "signed out");
-        assert!(!needs_login(None, true), "signed in, paired or not");
-        // A self-hosted relay has no account to sign into, whatever else is true.
-        for signed_in in [true, false] {
-            assert!(!needs_login(Some("https://relay.example"), signed_in));
-        }
-    }
-
     #[test]
     fn standalone_launch_takes_only_the_relay_flags() {
         assert_eq!(parse(&[]).unwrap(), Launch::Headless(Options::default()));
@@ -989,142 +999,6 @@ mod tests {
         let hinted = with_log_hint("failed".into());
         assert!(hinted.starts_with("failed\n"), "{hinted}");
         assert!(hinted.contains(&log.display().to_string()), "{hinted}");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn login_wait_honors_pending_slow_down_and_authorization() {
-        let started = tokio::time::Instant::now();
-        let mut replies = ["pending", "slow_down", "authorized"].into_iter();
-        wait_for_login(Duration::from_secs(2), Duration::from_secs(60), || {
-            let status = replies.next().unwrap().to_string();
-            async move {
-                Ok(future_login::FutureLoginPoll {
-                    status,
-                    message: None,
-                    retry_after_seconds: None,
-                })
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(started.elapsed(), Duration::from_secs(11));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn login_wait_retries_transient_failures_with_backoff() {
-        let started = tokio::time::Instant::now();
-        let mut replies = ["retry", "retry", "pending", "authorized"].into_iter();
-        wait_for_login(Duration::from_secs(1), Duration::from_secs(60), || {
-            let status = replies.next().unwrap().to_string();
-            async move {
-                Ok(future_login::FutureLoginPoll {
-                    status,
-                    message: None,
-                    retry_after_seconds: None,
-                })
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(started.elapsed(), Duration::from_secs(8));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn login_denial_expiry_and_http_failure_do_not_authorize() {
-        for status in ["denied", "expired", "error"] {
-            assert!(
-                wait_for_login(Duration::from_secs(1), Duration::from_secs(5), || async {
-                    Ok(future_login::FutureLoginPoll {
-                        status: status.into(),
-                        message: None,
-                        retry_after_seconds: None,
-                    })
-                })
-                .await
-                .is_err()
-            );
-        }
-        let expired = wait_for_login(Duration::from_secs(1), Duration::from_secs(3), || async {
-            Ok(future_login::FutureLoginPoll {
-                status: "pending".into(),
-                message: None,
-                retry_after_seconds: None,
-            })
-        })
-        .await
-        .unwrap_err();
-        assert!(expired.to_string().contains("expired"));
-        let unavailable =
-            wait_for_login(Duration::from_secs(1), Duration::from_secs(3), || async {
-                Ok(future_login::FutureLoginPoll {
-                    status: "retry".into(),
-                    message: None,
-                    retry_after_seconds: None,
-                })
-            })
-            .await
-            .unwrap_err();
-        assert!(unavailable.to_string().contains("temporarily unavailable"));
-        assert!(
-            wait_for_login(Duration::from_secs(1), Duration::from_secs(3), || async {
-                Err("network failed".into())
-            })
-            .await
-            .unwrap_err()
-            .to_string()
-            .contains("network")
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn interrupt_cancels_an_already_waiting_authorization_request() {
-        use std::sync::{
-            atomic::{AtomicBool, Ordering},
-            Arc,
-        };
-        struct Dropped(Arc<AtomicBool>);
-        impl Drop for Dropped {
-            fn drop(&mut self) {
-                self.0.store(true, Ordering::SeqCst);
-            }
-        }
-        let dropped = Arc::new(AtomicBool::new(false));
-        let poll_dropped = dropped.clone();
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let mut tx = Some(tx);
-        let (result, _cause) = until_shutdown(
-            async {
-                rx.await.unwrap();
-                StopCause::Interrupt
-            },
-            wait_for_login(Duration::from_secs(1), Duration::from_secs(600), || {
-                let guard = Dropped(poll_dropped.clone());
-                let tx = tx.take().unwrap();
-                async move {
-                    let _guard = guard;
-                    tx.send(()).unwrap();
-                    std::future::pending().await
-                }
-            }),
-        )
-        .await;
-        result.unwrap();
-        assert!(dropped.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn qr_and_link_share_the_same_invitation_with_narrow_terminal_fallback() {
-        let link = "https://example.com/device?user_code=ABCD";
-        let with_qr = invitation_text("PLATFORM LOGIN", link, true, Some(160));
-        assert!(with_qr.contains(link));
-        assert!(with_qr.contains('\u{2588}'));
-        assert!(with_qr.contains("\x1b[30;47m"));
-        let link_only = invitation_text("PLATFORM LOGIN", link, false, Some(160));
-        assert!(!link_only.contains('\u{2588}'));
-        assert!(link_only.contains(link));
-        let narrow = invitation_text("PLATFORM LOGIN", link, true, Some(10));
-        assert!(narrow.contains("too narrow"));
-        assert!(!narrow.contains('\u{2588}'));
     }
 
     /// A `future` CLI fixture: answers `version --json` with a compatible
@@ -1322,185 +1196,178 @@ mod tests {
         });
     }
 
-    /// A key the platform still accepts short-circuits the whole login flow:
-    /// `ensure_login` must return without ever asking for a terminal, so a
-    /// server that is already authorized starts unattended.
-    #[test]
-    fn an_accepted_platform_key_needs_no_terminal() {
-        let _home = future_host::auth_store::test_support::HomeGuard::new("headless-login-ok");
-        let (url, server) = mock_http_server(200, r#"{"email":"operator@example.com"}"#);
-        future_host::auth_store::set_future_login("sekret", &format!("{url}/api")).unwrap();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime
-            .block_on(ensure_login())
-            .expect("an accepted key must not require an interactive terminal");
-        server.join().expect("profile HTTP fixture must complete");
+    fn pinned(key: &str, platform: &str) -> Account {
+        Account {
+            key: key.to_string(),
+            platform: platform.to_string(),
+        }
     }
 
-    /// A platform that rejects the stored key is named as such, and the entry
-    /// point then stops at the terminal requirement it cannot satisfy headless.
+    /// Signed out is a stable state, not a transition: a host that has no
+    /// account keeps serving locally and must not re-decide every second.
     #[test]
-    fn a_rejected_platform_key_is_reported_as_expired_authorization() {
-        let _home = future_host::auth_store::test_support::HomeGuard::new("headless-login-401");
-        let (url, server) = mock_http_server(401, r#"{"message":"expired"}"#);
-        future_host::auth_store::set_future_login("sekret", &format!("{url}/api")).unwrap();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let error = runtime
-            .block_on(ensure_login())
-            .expect_err("a redirected login must fail");
-        assert!(
-            error.to_string().contains("interactive terminal"),
-            "a rejected key falls through to the terminal requirement: {error}"
+    fn a_signed_out_run_keeps_its_local_only_state() {
+        assert_eq!(
+            account_action(None, None, "https://future-os.cn", None),
+            AccountAction::Keep
         );
-        server.join().expect("profile HTTP fixture must complete");
     }
 
-    /// A network failure while checking the profile is not a logout: the key
-    /// must survive, and the error must reach the operator.
+    /// The login that appears under a running `future host` is adopted — this is
+    /// the whole point of serving signed out: `future auth login` in another
+    /// terminal takes effect without a restart.
     #[test]
-    fn a_network_failure_while_checking_the_platform_login_is_not_a_logout() {
-        let _home = future_host::auth_store::test_support::HomeGuard::new("headless-login-net");
-        future_host::auth_store::set_future_login("sekret", "http://127.0.0.1:1/api").unwrap();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let error = runtime
-            .block_on(ensure_login())
-            .expect_err("an unreachable platform must be an error");
-        assert!(
-            error
-                .to_string()
-                .contains("Failed to fetch account profile"),
-            "{error}"
+    fn a_login_that_appears_is_adopted() {
+        assert_eq!(
+            account_action(None, Some("fresh"), "https://future-os.cn", None),
+            AccountAction::Adopt
+        );
+    }
+
+    /// A pinned account is never silently replaced, and a logout closes remote
+    /// access: the old account's ingress must not outlive its credential.
+    #[test]
+    fn a_changed_or_removed_login_closes_remote_access() {
+        let account = pinned("first", "https://future-os.cn");
+        assert_eq!(
+            account_action(Some(&account), Some("first"), "https://future-os.cn", None),
+            AccountAction::Keep
         );
         assert_eq!(
-            future_host::auth_store::read()
-                .unwrap()
-                .get("future")
-                .and_then(|future| future.get("key"))
-                .and_then(|key| key.as_str()),
-            Some("sekret"),
-            "a network failure must never discard the stored key"
+            account_action(Some(&account), Some("second"), "https://future-os.cn", None),
+            AccountAction::Close
+        );
+        assert_eq!(
+            account_action(Some(&account), None, "https://future-os.cn", None),
+            AccountAction::Close
+        );
+        // The same key against another platform is a different account.
+        assert_eq!(
+            account_action(
+                Some(&account),
+                Some("first"),
+                "https://test.future-os.cn",
+                None
+            ),
+            AccountAction::Close
         );
     }
 
-    /// Minimal single-response HTTP server for the profile check.
-    fn mock_http_server(status: u16, body: &'static str) -> (String, std::thread::JoinHandle<()>) {
-        use std::io::{Read, Write};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.set_nonblocking(true).unwrap();
-        let url = format!("http://{}", listener.local_addr().unwrap());
-        let handle = std::thread::spawn(move || {
-            // Bounded accept: a request that never arrives must not leave this
-            // thread (and the test's `join`) blocked for the whole run.
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            while std::time::Instant::now() < deadline {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        // Winsock can inherit the nonblocking listener mode.
-                        // Read the complete request before closing the socket:
-                        // unread input can otherwise reset a valid response.
-                        stream.set_nonblocking(false).unwrap();
-                        stream
-                            .set_read_timeout(Some(Duration::from_secs(10)))
-                            .unwrap();
-                        stream
-                            .set_write_timeout(Some(Duration::from_secs(10)))
-                            .unwrap();
-                        let mut request = Vec::new();
-                        while !request.ends_with(b"\r\n\r\n") {
-                            let mut byte = [0_u8; 1];
-                            stream
-                                .read_exact(&mut byte)
-                                .expect("profile request header");
-                            request.push(byte[0]);
-                            assert!(
-                                request.len() <= 64 * 1024,
-                                "profile request header too large"
-                            );
-                        }
-                        assert!(request.starts_with(b"GET /client/v1/account/profile HTTP/1.1\r\n"));
-                        let response = format!(
-                            "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                            body.len()
-                        );
-                        stream.write_all(response.as_bytes()).unwrap();
-                        stream.flush().unwrap();
-                        return;
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Err(error) => panic!("profile HTTP accept failed: {error}"),
-                }
-            }
-            panic!("profile HTTP fixture received no request within its deadline");
-        });
-        (url, handle)
-    }
-
-    /// Persistent malformed replies stop the wait instead of looping until the
-    /// authorization code expires, and the message says why.
-    #[tokio::test(start_paused = true)]
-    async fn login_wait_gives_up_after_persistent_malformed_replies() {
-        let error = wait_for_login(Duration::from_secs(1), Duration::from_secs(600), || async {
-            Ok(future_login::FutureLoginPoll {
-                status: "malformed".into(),
-                message: None,
-                retry_after_seconds: None,
-            })
-        })
-        .await
-        .unwrap_err();
-        assert!(error.to_string().contains("invalid responses"), "{error}");
-    }
-
-    /// A malformed reply is backed off like any transient failure — the next
-    /// poll has to wait the doubled interval, not hammer the server.
-    #[tokio::test(start_paused = true)]
-    async fn login_wait_backs_off_after_a_malformed_reply() {
-        let started = tokio::time::Instant::now();
-        let mut replies = ["malformed", "authorized"].into_iter();
-        wait_for_login(Duration::from_secs(1), Duration::from_secs(600), || {
-            let status = replies.next().unwrap().to_string();
-            async move {
-                Ok(future_login::FutureLoginPoll {
-                    status,
-                    message: None,
-                    retry_after_seconds: None,
-                })
-            }
-        })
-        .await
-        .unwrap();
-        // 1s (first interval) + 2s (the transient interval a malformed reply sets).
-        assert_eq!(started.elapsed(), Duration::from_secs(3));
-    }
-
-    /// An invitation that cannot be encoded gets the link-only fallback instead
-    /// of an error: the operator still has to be able to authorize.
+    /// The signed-out state that has an account to say nothing about is still
+    /// *serving*: every non-terminal phase must leave the run alone, or a local
+    /// host would exit on its own once a second.
     #[test]
-    fn an_unencodable_invitation_falls_back_to_the_link() {
-        let link = "x".repeat(8_000);
-        let text = invitation_text("PLATFORM LOGIN", &link, true, Some(80));
-        assert!(text.contains("Cannot render a QR code"), "{text}");
-        assert!(text.contains(&link), "the link must still be printable");
+    fn ordinary_phases_never_stop_a_run() {
+        use remote::RemotePhase;
+        for serving in [true, false] {
+            for phase in [
+                RemotePhase::Stopped,
+                RemotePhase::Enabled,
+                RemotePhase::Connecting,
+                RemotePhase::Ready,
+                RemotePhase::Reconnecting,
+                RemotePhase::Refreshing,
+            ] {
+                assert_eq!(
+                    phase_action(serving, phase, None),
+                    PhaseAction::Keep,
+                    "{phase:?} with serving={serving} must not stop the run"
+                );
+            }
+        }
     }
 
-    /// The writer is the one place this entry point prints authorization
-    /// material, and it writes that material itself (the harness captures fd 1,
-    /// so this asserts the call succeeds and the renderer's own rules are tested
-    /// separately through `invitation_text`).
+    /// The one phase whose meaning depends on whether this run has anything to
+    /// serve with. Signed out it is "nothing to serve with yet" and the run keeps
+    /// working locally; signed in it is the platform refusing this machine's
+    /// credential, which stops the run exactly as it always has.
     #[test]
-    fn print_invitation_writes_the_link_and_the_qr() {
-        print_invitation("PLATFORM LOGIN", "https://example.com/device?code=ABCD")
-            .expect("writing to the test's captured stdout must succeed");
+    fn account_authorization_is_fatal_only_when_an_account_is_serving() {
+        use remote::{RemoteFailureReason, RemotePhase};
+        assert_eq!(
+            phase_action(
+                false,
+                RemotePhase::Failed,
+                Some(RemoteFailureReason::AccountAuthorization)
+            ),
+            PhaseAction::NeedsAccount
+        );
+        assert_eq!(
+            phase_action(
+                true,
+                RemotePhase::Failed,
+                Some(RemoteFailureReason::AccountAuthorization)
+            ),
+            PhaseAction::Stop
+        );
+    }
+
+    /// `Revoked` and the remaining failures need a person either way: neither the
+    /// signed-out tolerance nor a relay may swallow them, so they are not folded
+    /// into "not signed in".
+    #[test]
+    fn revocation_and_other_failures_still_stop_the_run() {
+        use remote::{RemoteFailureReason, RemotePhase};
+        for serving in [true, false] {
+            assert_eq!(
+                phase_action(
+                    serving,
+                    RemotePhase::Revoked,
+                    Some(RemoteFailureReason::CredentialRevoked)
+                ),
+                PhaseAction::Stop
+            );
+            for reason in [
+                RemoteFailureReason::Network,
+                RemoteFailureReason::RemoteServer,
+                RemoteFailureReason::CredentialExpired,
+                RemoteFailureReason::ServiceAuthorization,
+                RemoteFailureReason::Protocol,
+                RemoteFailureReason::GenerationUnhealthy,
+                RemoteFailureReason::Local,
+                RemoteFailureReason::SystemSleep,
+            ] {
+                assert_eq!(
+                    phase_action(serving, RemotePhase::Failed, Some(reason)),
+                    PhaseAction::Stop,
+                    "{reason:?} with serving={serving} must still stop the run"
+                );
+            }
+        }
+    }
+
+    /// A `Failed` without an account-authorization reason is not the signed-out
+    /// state, whatever `serving` says: only that exact pair is tolerated.
+    #[test]
+    fn a_failure_without_an_account_reason_is_not_tolerated() {
+        use remote::{RemoteFailureReason, RemotePhase};
+        assert_eq!(
+            phase_action(false, RemotePhase::Failed, None),
+            PhaseAction::Stop
+        );
+        assert_eq!(
+            phase_action(false, RemotePhase::Failed, Some(RemoteFailureReason::Local)),
+            PhaseAction::Stop
+        );
+    }
+
+    /// A key the platform refused is stored but not offered again, so a dead
+    /// credential cannot become a per-second retry loop; a *different* key is a
+    /// new login and is adopted.
+    #[test]
+    fn a_rejected_key_is_not_adopted_again_but_a_new_one_is() {
+        assert_eq!(
+            account_action(
+                None,
+                Some("refused"),
+                "https://future-os.cn",
+                Some("refused")
+            ),
+            AccountAction::Keep
+        );
+        assert_eq!(
+            account_action(None, Some("fresh"), "https://future-os.cn", Some("refused")),
+            AccountAction::Adopt
+        );
     }
 }

@@ -1,4 +1,5 @@
 import type { RemotePeer } from "./remotePeerClient";
+import { remotePeerErrorKind } from "./remotePeerError";
 
 /**
  * How one paired host stands, in the same words the phone uses for the same
@@ -85,6 +86,19 @@ export function peerHeld(peer: RemotePeer): boolean {
 }
 
 /**
+ * Whether the platform says this pairing no longer exists.
+ *
+ * A host can be unpaired on the *other* computer, and this machine keeps its half
+ * of the pairing until the user removes it — so the row stays, and its next
+ * connect is refused with a credential that is gone. That is not "offline" and
+ * not a transient failure: retrying cannot help, and the only way forward is to
+ * remove the pairing here and add the computer again.
+ */
+export function peerRevoked(peer: RemotePeer): boolean {
+  return !peer.connected && remotePeerErrorKind(peer.error ?? "") === "revoked";
+}
+
+/**
  * The word for one machine, which is not always its status.
  *
  * A machine that answers while another paired device drives it is `connected` on
@@ -94,6 +108,8 @@ export function peerHeld(peer: RemotePeer): boolean {
  * gets its own word.
  */
 export function peerLabelKey(peer: RemotePeer): string {
+  if (peerRevoked(peer))
+    return "statusPairingRevoked";
   return peerHeld(peer) ? "statusTakenOver" : peerStatusKey(peerStatus(peer));
 }
 
@@ -101,6 +117,8 @@ export function peerLabelKey(peer: RemotePeer): string {
 export function peerLabelTone(
   peer: RemotePeer,
 ): "neutral" | "accent" | "warning" | "danger" {
+  if (peerRevoked(peer))
+    return "danger";
   return peerHeld(peer) ? "warning" : peerStatusTone(peerStatus(peer));
 }
 
