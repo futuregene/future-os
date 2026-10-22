@@ -109,7 +109,7 @@
   "settingSkillRecommend": "技能推荐",
   "settingSkillRecommendHint": "输入时允许那台电脑推荐技能。",
   "settingAutoConnect": "启动后继续提供远程连接",
-  "settingAutoConnectHint": "那台电脑启动后，是否自动继续提供远程桌面；关闭后需在那台电脑上手动打开开关。",
+  "settingAutoConnectHint": "那台电脑下次启动后是否继续提供远程连接——它的「远程桌面」开关也是在那时变化，不是现在。关闭后需在那台电脑上手动打开开关。",
   "settingsHostContent": "那台电脑上的",
   "settingsHostContentHint": "这里只做只读汇总；请在那台电脑上管理。",
   "countModels": "个模型",
