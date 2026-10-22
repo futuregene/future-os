@@ -21,6 +21,33 @@ use std::process::Command;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     emit_build_info();
+    reserve_platform_stack()?;
+    Ok(())
+}
+
+/// Reserve the stack the other platforms reserve, on Windows.
+///
+/// A Windows process takes its main-thread stack size from its PE header, and
+/// the linker default — 1 MB, measured on this crate's own `future.exe` — is an
+/// eighth of what Linux and macOS give the same code. Growth is on demand, so a
+/// large frame only fails once it runs past the reserve: a command whose future
+/// is big enough then kills the process with `STATUS_STACK_OVERFLOW`
+/// (0xc00000fd), no message and no exit path. `future session list` did exactly
+/// that on one unmerged build of this CLI, while every neighbouring command
+/// worked — the shape of a stack that is barely big enough.
+///
+/// The desktop reserves 8 MB for the same reason (`desktop/src-tauri/build.rs`,
+/// where a Tauri command dispatch needs several copies of one future). The
+/// reserve is address space, not memory: commit stays at 64 KB and the stack
+/// grows into the reserve on demand, as it does on the other platforms.
+///
+/// `cli/tests/windows_stack.rs` asserts the value on the built binary, so losing
+/// this argument fails a test rather than a user's command.
+fn reserve_platform_stack() -> Result<(), Box<dyn std::error::Error>> {
+    if !std::env::var("TARGET")?.contains("windows") {
+        return Ok(());
+    }
+    println!("cargo:rustc-link-arg=/STACK:8388608,65536");
     Ok(())
 }
 
