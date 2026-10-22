@@ -1617,18 +1617,26 @@ export function ActivityRail({
   );
 }
 
+/**
+ * This machine's list order: active before archived, pinned before the rest,
+ * then newest started.
+ *
+ * The last key is the conversation's *creation* time, not its last reply. A
+ * streaming run rewrites the activity stamp about once a second, so ranking by
+ * that swapped rows under the reader's thumb for as long as a run was going —
+ * a row would climb above its neighbours and back again. A creation time does
+ * not move, so a row — pinned or not — keeps the place it was given when the
+ * conversation was made. `sort` is stable, so the store's order breaks a tie
+ * (two conversations created in the same millisecond).
+ */
 function sortThreads(items: StoredThread[]) {
   return [...items].sort((a, b) => {
     if (a.status !== b.status)
       return a.status === "active" ? -1 : 1;
     if (a.pinned !== b.pinned)
       return a.pinned ? -1 : 1;
-    return threadSortTime(b) - threadSortTime(a);
+    return b.createdAt - a.createdAt;
   });
-}
-
-function threadSortTime(thread: StoredThread) {
-  return thread.lastMessageAt ?? thread.updatedAt ?? thread.createdAt;
 }
 
 /**

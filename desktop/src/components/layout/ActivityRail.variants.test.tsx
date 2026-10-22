@@ -417,9 +417,23 @@ describe("activity rail thread ordering", () => {
     view.unmount();
   });
 
-  it("sorts unpinned threads of one section by recency", () => {
-    const older = thread("older", { updatedAt: 10 });
-    const newer = thread("newer", { updatedAt: 20 });
+  it("orders pinned threads among themselves by when they started, newest first", () => {
+    // A pin is a place, not a tie-breaker, and its section is ranked like every
+    // other: the newest conversation started leads. Nothing here reads a run's
+    // activity, so a pinned conversation streaming does not move either.
+    const older = thread("pinned-old", { createdAt: 10, pinned: true });
+    const newer = thread("pinned-new", { createdAt: 20, pinned: true });
+    const view = mount(<ActivityRail {...props({ threads: [older, newer] })} />);
+    const titles = [...view.container.querySelectorAll("button[title]")]
+      .map(button => button.getAttribute("title"))
+      .filter(title => title === "pinned-old" || title === "pinned-new");
+    expect(titles).toEqual(["pinned-new", "pinned-old"]);
+    view.unmount();
+  });
+
+  it("sorts unpinned threads of one section by when they were started", () => {
+    const older = thread("older", { createdAt: 10, updatedAt: 900 });
+    const newer = thread("newer", { createdAt: 20, updatedAt: 20 });
     const view = mount(<ActivityRail {...props({ threads: [older, newer] })} />);
     const titles = [...view.container.querySelectorAll("button[title]")]
       .map(button => button.getAttribute("title"))
@@ -428,16 +442,22 @@ describe("activity rail thread ordering", () => {
     view.unmount();
   });
 
-  it("uses the last-message time over the row's update time", () => {
-    // A thread touched by an approval write but whose last message is older must
-    // sort by the message, not by the write.
-    const justWritten = thread("just-written", { lastMessageAt: 5, updatedAt: 900 });
-    const recentlyMessaged = thread("recently-messaged", { lastMessageAt: 500, updatedAt: 600 });
-    const view = mount(<ActivityRail {...props({ threads: [justWritten, recentlyMessaged] })} />);
+  /**
+   * A row's place is decided when it was made, never by what it is doing now.
+   *
+   * Ranking by the activity stamp put the streaming conversation at the top of
+   * its section and shuffled its neighbours about once a second for as long as
+   * the run produced output — the list moved under the reader's thumb. The
+   * start time is the key, so a run streaming now cannot reorder anything.
+   */
+  it("keeps a streaming thread in place while its messages land", () => {
+    const streaming = thread("streaming", { createdAt: 100, lastMessageAt: 10_000, updatedAt: 10_000 });
+    const idle = thread("idle", { createdAt: 200, lastMessageAt: 50, updatedAt: 50 });
+    const view = mount(<ActivityRail {...props({ threads: [streaming, idle] })} />);
     const titles = [...view.container.querySelectorAll("button[title]")]
       .map(button => button.getAttribute("title"))
-      .filter(title => title === "just-written" || title === "recently-messaged");
-    expect(titles).toEqual(["recently-messaged", "just-written"]);
+      .filter(title => title === "streaming" || title === "idle");
+    expect(titles).toEqual(["idle", "streaming"]);
     view.unmount();
   });
 
