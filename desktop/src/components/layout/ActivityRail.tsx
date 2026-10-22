@@ -417,6 +417,40 @@ export function ActivityRail({
    */
   const threadParents = useMemo(() => threadParentIds(visibleThreads), [visibleThreads]);
 
+  /**
+   * The conversation on screen is never folded away.
+   *
+   * A fork lands *under* the turn it came from, and the tree starts folded, so
+   * creating one left its row hidden: the center showed the new conversation
+   * while the list did not, and the reader had to guess which `+` had swallowed
+   * it. Selecting a row that is hidden is not specific to forks — the palette,
+   * a link or a restored window can do the same — so the rule is stated once,
+   * for whatever is active: open the ancestors of the active row.
+   *
+   * Only ancestors are opened. Folding a row the reader collapsed by hand is
+   * their decision, and this effect does not run again until the selection
+   * moves.
+   */
+  useEffect(() => {
+    if (!activeThreadId)
+      return;
+    const ancestors: string[] = [];
+    let parent = threadParents.get(activeThreadId);
+    while (parent && !ancestors.includes(parent)) {
+      ancestors.push(parent);
+      parent = threadParents.get(parent);
+    }
+    if (ancestors.length === 0)
+      return;
+    setExpandedThreads((current) => {
+      if (ancestors.every(id => current.has(id)))
+        return current;
+      const next = new Set(current);
+      for (const id of ancestors) next.add(id);
+      return next;
+    });
+  }, [activeThreadId, threadParents]);
+
   const remoteRows = useMemo(
     () => mergeConversations(
       visibleThreads.map(thread => ({

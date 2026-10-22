@@ -106,6 +106,9 @@ describe("raw transport detail is classified into a customer category", () => {
     ["remote_state_subscription_ended", "NW001", "networkUnavailable"],
     ["connection refused", "NW001", "networkUnavailable"],
     ["connection reset by peer", "NW001", "networkUnavailable"],
+    // The platform's sentence, not its code: this is what the serialized error
+    // carries when the desktop was unpaired on the other computer.
+    ["Remote credential is invalid or revoked.", "PA001", "pairingExpired"],
     ["invalid_remote_credential", "PA001", "pairingExpired"],
     ["credentials_revoked", "PA001", "pairingExpired"],
     ["invalid_jwt", "PA001", "pairingExpired"],
