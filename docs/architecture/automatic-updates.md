@@ -73,12 +73,15 @@ Results and native diagnostics remain under the operation directory or
 ## Acceptance
 
 Local validation is compilation, type checking, linting and formatting only.
-Unit and native fixtures execute in CI:
+Regular CI runs these unit tests:
 
 - Agent admission revision races and reversible terminal admission.
 - Interrupted preparation, invalid state regressions and version-bound startup confirmation.
 - Prepared helper cancellation and explicit commit, without a real installation.
 - macOS atomic exchange/reversal and failure preserving the original directory.
+Native installation fixtures run through the explicitly dispatched Misc
+`windows-update` and `linux-update` suites:
+
 - Windows NSIS preflight/observer, full backup recovery and incomplete restoration.
 - Linux authorized native executor with disposable DEBs: EOF cancellation,
   conflicting Agent lock, success awaiting validation, and failed configuration.

@@ -62,21 +62,6 @@ jobs:
       - name: Install isolated Host broker
         if: runner.os == 'Linux' && inputs.mode == 'test' && contains(matrix.packages, 'future-host')
         run: bash scripts/ci/install-apt-packages.sh nats-server
-      - name: Prepare isolated update signing identity
-        if: runner.os == 'Linux' && matrix.desktop && inputs.mode == 'test'
-        shell: bash
-        run: |
-          bash scripts/ci/install-apt-packages.sh minisign
-          minisign -G -W -p "$RUNNER_TEMP/update-fixture.pub" -s "$RUNNER_TEMP/update-fixture.key"
-          python3 - <<'PYKEY'
-          import base64, json, os
-          from pathlib import Path
-          temporary = Path(os.environ['RUNNER_TEMP'])
-          public = base64.b64encode((temporary / 'update-fixture.pub').read_bytes()).decode()
-          with open(os.environ['GITHUB_ENV'], 'a') as env:
-              env.write('TAURI_CONFIG=' + json.dumps({'plugins': {'updater': {'pubkey': public}}}) + '\n')
-              env.write('FUTURE_UPDATE_FIXTURE_KEY=' + str(temporary / 'update-fixture.key') + '\n')
-          PYKEY
       - name: Build
         if: inputs.mode == 'test'
         run: node scripts/ci/rust-checks.mjs build
@@ -85,21 +70,6 @@ jobs:
         env:
           FUTURE_HOST_FIXTURE_TIMINGS: ${{ format('{0}/ci-timings/host-fixture-timings.jsonl', runner.temp) }}
         run: node scripts/ci/rust-checks.mjs test
-      - name: Linux prepared DEB executor and recovery fixtures
-        if: runner.os == 'Linux' && matrix.desktop && inputs.mode == 'test'
-        run: python3 scripts/tests/test-linux-update-transactions.py target/debug/futureos
-      - name: Install Windows updater fixture dependencies
-        if: runner.os == 'Windows' && matrix.desktop && inputs.mode == 'test'
-        shell: pwsh
-        run: |
-          if (-not (Test-Path "${env:ProgramFiles(x86)}/NSIS/makensis.exe")) {
-            choco install nsis --yes --no-progress
-            if ($LASTEXITCODE -ne 0) { throw 'NSIS installation failed.' }
-          }
-      - name: Windows upgrade transaction and recovery fixtures
-        if: runner.os == 'Windows' && matrix.desktop && inputs.mode == 'test'
-        shell: powershell
-        run: ./scripts/tests/test-windows-installer-preflight.ps1
       - name: clippy
         if: inputs.mode == 'check'
         run: node scripts/ci/rust-checks.mjs clippy
