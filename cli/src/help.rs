@@ -521,35 +521,43 @@ pub const REMOTE_LIST_HELP: &str = r#"future remote devices list — every devic
 Usage:
   future remote devices [list] [--json]
 
-Prints a row per entry in the pairing file: its pair id, what that entry is, and
-where it was minted (the Future platform, or a self-hosted relay's URL). The
-`pair_` prefix and the letter case of an id are decoration; remove and use accept
-either.
+Prints a row per entry in the pairing file: its pair id, who the stored pointer
+puts in control, what the entry actually is, and where it was minted (the Future
+platform, or a self-hosted relay's URL). The `pair_` prefix and the letter case
+of an id are decoration; remove and use accept either.
 
-The STATE column is what the pairing file alone can prove:
+The CONTROL column is the stored pointer, exactly as before. The STATE column is
+what the pairing file alone can prove, and it is annotation only — it neither
+removes a row nor changes who is in control:
 
-  in control  paired, and the device allowed to command this machine
-  standby     paired, and may take over
-  unclaimed   an invitation no phone has scanned yet — nothing is paired behind
-              it until one does, and it stops working at the deadline in the row
-  expired     an invitation no phone ever claimed, past its deadline: it can
-              neither be claimed nor connect, and only occupies a slot
-  legacy      a credential from before the v2 handshake, which cannot connect on
-              this version — unpair it and pair the device again
+  paired              a peer key is pinned, so the device can connect
+  unclaimed           an invitation no phone has scanned yet: nothing is paired
+                      behind it until one does, and it stops being usable at the
+                      deadline in the row
+  unclaimed, expired  an invitation no phone ever claimed, past its deadline: it
+                      can be neither claimed nor connected. Nothing will ever
+                      happen behind it — `remove` is what clears it
+  legacy              a credential from before the v2 handshake, which cannot
+                      connect on this version — unpair it and pair the device
+                      again
+
+The headline gives the total and one count per state, so a row that cannot serve
+is never folded into a number that implies it can.
 
 The `expiresAt` in a pairing is the *invitation's* deadline, not the pairing's: a
 device that claimed its invitation keeps working after that instant, because only
-the claim path checks it. Rows that cannot serve never read `in control`, even
-when the persisted pointer still names one of them.
+the claim path checks it. That is why a `paired` row can carry a deadline in the
+past.
 
 With one device there is no arbitration: it is in control. With several, the
 device that last claimed the machine is; the others stay paired in standby and
 cannot command it.
 
 --json prints one object: desktopRunning, active (the stored controlling pair id,
-or null), and devices[] with pairId, desktopId, state (paired|unclaimed|expired|
-legacy), control (active|standby, or null when the row cannot serve),
-invitationExpiresAt, endpoint and relayUrl. Credentials are never part of it.
+or null), and devices[] with pairId, desktopId, control (active|standby, unchanged
+in meaning), state (paired|unclaimed|unclaimed_expired|legacy),
+invitationExpiresAt, endpoint and relayUrl. Credentials are never part of it. A
+reader written before `state` existed sees exactly the document it saw before.
 
 Live connection state — who is connected at this moment, and the name a device
 gave itself — is known only to a running Desktop: it is not in the pairing book.

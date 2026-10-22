@@ -758,6 +758,18 @@ async fn check_providers() -> CheckResult {
 // ── 5. Sessions ────────────────────────────────────────────────────────────
 
 async fn check_sessions() -> CheckResult {
+    // Ask the storage owner first: it, not the legacy JSONL directory, answers
+    // "how many sessions does this machine have". The directory only ever held
+    // the pre-database transcripts, so its absence says nothing about sessions
+    // — rendering it as "no sessions created yet" made this one section print
+    // two different answers on the same screen.
+    let client = RunClient::new(&grpc_addr());
+    let health = client.storage_health().await;
+    let known_count = health
+        .as_ref()
+        .ok()
+        .and_then(|data| data["sessions"].as_u64());
+
     let mut lines: Vec<String> = Vec::new();
     let sessions_dir = sessions_dir_path();
 
@@ -778,17 +790,27 @@ async fn check_sessions() -> CheckResult {
             Err(_) => lines.push(format!("Cannot read {}", sessions_dir.display())),
         }
     } else {
-        // The directory only ever held the pre-database JSONL transcripts.
-        // Saying "no sessions created yet" here contradicted the line the
-        // storage owner prints right below it (135 sessions in the database on
-        // a machine that has never had a JSONL file).
-        lines.push("No legacy session files — sessions are stored in the database".to_string());
+        // Say what is missing and what the database says instead. Three cases,
+        // because "the database was not asked" is not "the database is empty".
+        let dir = sessions_dir.display();
+        lines.push(match known_count {
+            Some(count) if count > 0 => format!(
+                "No legacy session directory ({dir} is absent); the database holds {count} \
+                 session(s)"
+            ),
+            Some(_) => format!(
+                "No session directory ({dir} is absent) and no sessions in the database yet"
+            ),
+            None => format!(
+                "No legacy session directory ({dir} is absent); whether the database holds \
+                 sessions was not verified"
+            ),
+        });
     }
 
-    // Ask the storage owner. Legacy JSONL file counts do not prove that a
-    // current database is readable, and transport failures are not healthy.
-    let client = RunClient::new(&grpc_addr());
-    let status = match client.storage_health().await {
+    // Legacy JSONL file counts do not prove that a current database is readable,
+    // and transport failures are not healthy.
+    let status = match health {
         Ok(data) => {
             lines.push(format!(
                 "{} session(s), database={}, schema={}",
@@ -1066,11 +1088,69 @@ mod tests {
         assert!(stdout.contains("Agent settings"));
         assert!(stdout.contains("(defaults apply)"));
         assert!(stdout.contains("No providers configured"));
-        assert!(stdout.contains("No legacy session files — sessions are stored in the database"));
+        // Neither the database nor a JSONL directory: the section may say the
+        // directory is absent, but it must not answer "how many sessions" with
+        // "none" from that absence alone.
+        assert!(
+            stdout.contains("whether the database holds sessions was not verified"),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("no sessions created")
+                && !stdout.contains("no sessions in the database"),
+            "{stdout}"
+        );
         assert!(stdout.contains("No skills installed."));
         assert!(stdout.contains("(directory not found)"));
         // Warns exist → no "All checks passed."
         assert!(!stdout.contains("All checks passed."));
+    }
+
+    /// The Sessions section used to answer "are there sessions?" twice: once
+    /// from the absence of the legacy JSONL directory ("no sessions created
+    /// yet") and once from the storage owner (135). Whichever line the reader
+    /// believed, one of them was wrong. The count now comes from the database
+    /// alone, and a missing directory is reported as a missing directory.
+    #[tokio::test]
+    async fn session_count_comes_from_the_database_not_the_directory() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert(
+            "get_storage_health".into(),
+            serde_json::json!({
+                "databaseId":"mock-db","restoreGeneration":"mock-restore",
+                "schemaVersion":future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
+                "sessions":135,"deletedSessions":0,"failedImports":0,
+                "unrecoverableQueuedInputs":0,"pendingQueuedInputs":0,
+                "pendingHistoryIndexes":0,"catalogueConflicts":0,
+            })
+            .to_string(),
+        );
+        let addr = crate::test_server::spawn_mock(agent).await;
+        let _env = EnvGuard::set(&[
+            ("HOME", dir.path().as_os_str().to_owned()),
+            ("PATH", dir.path().join("empty-bin").into_os_string()),
+            ("FUTURE_AGENT_GRPC_ADDR", OsString::from(addr)),
+        ]);
+        // No `sessions/` directory exists under this HOME: the only thing that
+        // knows the session count is the database.
+        assert!(!sessions_dir_path().exists());
+
+        let (code, stdout, stderr) = run_doctor().await;
+        assert_eq!(code, 0, "{stderr}");
+        // One answer for "how many sessions": the storage owner's.
+        assert!(stdout.contains("135 session(s), database="), "{stdout}");
+        // And the absent directory is explained against that count, not instead
+        // of it.
+        assert!(
+            stdout.contains("the database holds 135 session(s)"),
+            "{stdout}"
+        );
+        // The two ways of claiming "no sessions" that the absence must never
+        // produce on a machine that has them.
+        assert!(!stdout.contains("no sessions created"), "{stdout}");
+        assert!(!stdout.contains("no sessions in the database"), "{stdout}");
     }
 
     /// The other half of the lookup contract (the test above): with a lookup

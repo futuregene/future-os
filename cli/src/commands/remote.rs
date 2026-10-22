@@ -192,9 +192,11 @@ enum SlotState {
     /// An invitation nobody has claimed yet, still inside its window.
     Unclaimed { expires_at: i64 },
     /// An invitation nobody claimed whose window has passed. It can neither be
-    /// claimed (the invitation expired) nor connect (no peer key); nothing will
-    /// ever happen here, so it is only holding a slot.
-    Expired { expires_at: i64 },
+    /// claimed (the invitation is expired) nor connect (no peer key), so nothing
+    /// will ever happen here — it only holds a slot. Both facts belong in the
+    /// label: `expired` alone reads as a pairing that died, which is the opposite
+    /// of an invitation that was never taken up.
+    UnclaimedExpired { expires_at: i64 },
     /// No secure identity at all: a credential from before the v2 handshake. The
     /// runtime does not even build a transport for it.
     Legacy,
@@ -205,23 +207,23 @@ impl SlotState {
         matches!(self, Self::Paired)
     }
 
-    /// The word the `STATE` column shows.
+    /// The words the `STATE` column shows.
     fn label(self) -> &'static str {
         match self {
             Self::Paired => "paired",
             Self::Unclaimed { .. } => "unclaimed",
-            Self::Expired { .. } => "expired",
+            Self::UnclaimedExpired { .. } => "unclaimed, expired",
             Self::Legacy => "legacy",
         }
     }
 
-    /// The stable name `--json` carries, so a reader can switch on it without
-    /// parsing prose.
+    /// The same fact for a machine reader: one token, so a consumer can switch on
+    /// it without parsing the human column's punctuation.
     fn wire(self) -> &'static str {
         match self {
             Self::Paired => "paired",
             Self::Unclaimed { .. } => "unclaimed",
-            Self::Expired { .. } => "expired",
+            Self::UnclaimedExpired { .. } => "unclaimed_expired",
             Self::Legacy => "legacy",
         }
     }
@@ -295,7 +297,7 @@ impl Device {
             return SlotState::Paired;
         }
         if now >= secure.expires_at {
-            SlotState::Expired {
+            SlotState::UnclaimedExpired {
                 expires_at: secure.expires_at,
             }
         } else {
@@ -315,7 +317,7 @@ impl Device {
                     .unwrap_or_else(|| format!("Unix time {expires_at}"));
                 Some(format!("invitation expires {when}"))
             }
-            SlotState::Expired { expires_at } => {
+            SlotState::UnclaimedExpired { expires_at } => {
                 let when = local_wall_clock(expires_at)
                     .unwrap_or_else(|| format!("Unix time {expires_at}"));
                 Some(format!("invitation expired {when} local time"))
@@ -763,59 +765,56 @@ fn list(args: &[String], out: &Output) -> Result<(), String> {
         .iter()
         .map(|device| device.state(now))
         .collect();
+    // Buckets, not one number: "2 devices" told a reader nothing about which of
+    // them can still connect. Every non-empty bucket is named with its count, so
+    // the total is the sum of what is shown instead of a figure to guess at.
     let paired = states.iter().filter(|state| state.is_paired()).count();
-    let silent = book.devices.len() - paired;
-    let any_expired = states
+    let unclaimed = states
         .iter()
-        .any(|state| matches!(state, SlotState::Expired { .. }));
-    let any_unclaimed = states
+        .filter(|state| matches!(state, SlotState::Unclaimed { .. }))
+        .count();
+    let unclaimed_expired = states
         .iter()
-        .any(|state| matches!(state, SlotState::Unclaimed { .. }));
-    let any_legacy = states.contains(&SlotState::Legacy);
-    // The count is of devices that can connect. A row nobody ever claimed is in
-    // the file, but saying it is "paired to this machine" is what made an expired
-    // invitation indistinguishable from a live pairing.
-    let headline = if paired == 0 {
-        "No device is paired to this machine".to_string()
-    } else {
-        format!(
-            "{paired} {} {} paired to this machine",
-            if paired == 1 { "device" } else { "devices" },
-            if paired == 1 { "is" } else { "are" }
-        )
-    };
+        .filter(|state| matches!(state, SlotState::UnclaimedExpired { .. }))
+        .count();
+    let legacy = states
+        .iter()
+        .filter(|state| **state == SlotState::Legacy)
+        .count();
+    let mut buckets: Vec<String> = Vec::new();
+    if paired > 0 {
+        buckets.push(format!("{paired} paired"));
+    }
+    if unclaimed > 0 {
+        buckets.push(format!("{unclaimed} unclaimed"));
+    }
+    if unclaimed_expired > 0 {
+        buckets.push(format!("{unclaimed_expired} unclaimed, expired"));
+    }
+    if legacy > 0 {
+        buckets.push(format!("{legacy} legacy"));
+    }
     out.log(&format!(
-        "{headline}{}:",
-        if silent == 0 {
-            String::new()
+        "{} {} in the pairing book: {}:",
+        book.devices.len(),
+        if book.devices.len() == 1 {
+            "entry"
         } else {
-            format!(
-                ", and {silent} {} cannot serve",
-                if silent == 1 { "pairing" } else { "pairings" }
-            )
-        }
+            "entries"
+        },
+        buckets.join(" / ")
     ));
     out.log("");
     out.log(&format!(
-        "  {:>2}  {:<id_width$}  {:<10}  {}",
-        "#", "DEVICE", "STATE", "ENDPOINT"
+        "  {:>2}  {:<id_width$}  {:<10}  {:<18}  {}",
+        "#", "DEVICE", "CONTROL", "STATE", "ENDPOINT"
     ));
-    // Control follows the persisted pointer, but only a pairing that can connect
-    // can hold it: a pointer naming a row that cannot serve describes a device
-    // that is gone, not one that commands this machine.
-    let controlling = book
-        .devices
-        .iter()
-        .enumerate()
-        .find(|(index, device)| {
-            states[*index].is_paired() && controller.as_deref() == Some(device.pair_id.as_str())
-        })
-        .map(|(index, _)| index);
+    // CONTROL is exactly what it always was — who the stored pointer names — and
+    // is not recomputed from the state: this change adds a column, it does not
+    // redefine an existing one.
     for (index, device) in book.devices.iter().enumerate() {
         let state = states[index];
-        let cell = if !state.is_paired() {
-            state.label()
-        } else if Some(index) == controlling {
+        let control = if controller.as_deref() == Some(device.pair_id.as_str()) {
             "in control"
         } else {
             "standby"
@@ -825,48 +824,38 @@ fn list(args: &[String], out: &Output) -> Result<(), String> {
             .map(|detail| format!("  ({detail})"))
             .unwrap_or_default();
         out.log(&format!(
-            "  {:>2}  {:<id_width$}  {:<10}  {}{}",
+            "  {:>2}  {:<id_width$}  {:<10}  {:<18}  {}{}",
             index + 1,
             ids[index],
-            cell,
+            control,
+            state.label(),
             device.endpoint_label(),
             detail
         ));
     }
     out.log("");
-    if controlling.is_some() {
-        out.log(
-            "The device in control is the one allowed to command this machine; the others stay",
-        );
-        out.log("paired in standby.");
-    } else if paired > 0 {
-        out.log("No paired device is in control: the one that last claimed this machine cannot be");
-        out.log("reached, and nothing may command it until one takes over —");
-        out.log("`future remote devices use <#>`.");
-    }
-    if any_expired {
+    out.log("The device in control is the one allowed to command this machine; the others stay");
+    out.log("paired in standby.");
+    if unclaimed_expired > 0 {
         out.log("");
         out.log(
-            "An `expired` row is an invitation no phone ever claimed. Its window has passed, so it",
+            "`unclaimed, expired` is an invitation no phone ever claimed whose window has passed:",
         );
         out.log(
-            "can neither be claimed nor connect; nothing will ever happen behind it. It only holds",
+            "it can neither be claimed nor connect, so nothing will ever happen behind it. It is",
         );
-        out.log(
-            "a slot — remove it with `future remote devices remove <#>`. (The Desktop also clears",
-        );
-        out.log("such rows itself the next time it pairs a device.)");
+        out.log("only listed, never removed here — `future remote devices remove <#>` clears it.");
     }
-    if any_unclaimed {
+    if unclaimed > 0 {
         out.log("");
         out.log(
-            "An `unclaimed` row is an invitation no device has taken yet: nothing is paired behind",
+            "`unclaimed` is an invitation no device has taken yet: nothing is paired behind it",
         );
-        out.log("it until one scans it, and it stops being usable at the deadline in the row.");
+        out.log("until one scans it, and it stops being usable at the deadline in the row.");
     }
-    if any_legacy {
+    if legacy > 0 {
         out.log("");
-        out.log("A `legacy` row carries no secure identity, so it cannot connect on this version.");
+        out.log("`legacy` carries no secure identity, so it cannot connect on this version.");
         out.log("Unpair it with `future remote devices remove <#>` and pair the device again.");
     }
     out.log("");
@@ -887,12 +876,11 @@ fn list(args: &[String], out: &Output) -> Result<(), String> {
 /// The machine-readable document `--json` prints, and the same shape a mutation
 /// prints for the state it leaves behind.
 ///
-/// `state` is the slot as the runtime sees it (`paired`, `unclaimed`, `expired`,
-/// `legacy`); `control` is `null` for every state but `paired`, because a row that
-/// cannot connect cannot be the device allowed to command this machine, however
-/// the persisted `active` pointer reads. `invitationExpiresAt` is that
-/// invitation's deadline — for a `paired` row it is history, not an expiry of the
-/// pairing.
+/// `control` keeps exactly the meaning it always had (who the stored pointer
+/// names), and `state` is added beside it. Only annotation was added here: a
+/// consumer that predates `state` can ignore it and read what it read before.
+/// `invitationExpiresAt` is that invitation's deadline — for a paired row it is
+/// history, not an expiry of the pairing.
 fn document(book: &Book, running: bool) -> Value {
     let controller = book.controller().map(|device| device.pair_id.clone());
     let now = now_seconds();
@@ -907,14 +895,12 @@ fn document(book: &Book, running: bool) -> Value {
                 json!({
                     "pairId": device.pair_id,
                     "desktopId": device.desktop_id,
-                    "state": state.wire(),
-                    "control": if !state.is_paired() {
-                        Value::Null
-                    } else if controller.as_deref() == Some(device.pair_id.as_str()) {
-                        json!("active")
+                    "control": if controller.as_deref() == Some(device.pair_id.as_str()) {
+                        "active"
                     } else {
-                        json!("standby")
+                        "standby"
                     },
+                    "state": state.wire(),
                     "invitationExpiresAt": device.secure.as_ref().map(|secure| secure.expires_at),
                     "endpoint": if device.is_relay() { "relay" } else { "platform" },
                     "relayUrl": device.control_url,
@@ -2261,23 +2247,14 @@ fn stdin_is_terminal() -> bool {
 /// never had. Telling a reader that an expired invitation "loses remote access"
 /// would be the same fiction the listing just stopped telling.
 fn confirmed(device: &Device, remaining: usize) -> Result<bool, String> {
-    let stays = format!(
-        "{remaining} {} stay paired.",
-        if remaining == 1 { "device" } else { "devices" }
-    );
-    let state = device.state(now_seconds());
     ask(&format!(
-        "{} {}? {}",
-        if state.is_paired() {
-            "Unpair"
-        } else {
-            "Remove"
-        },
+        "Unpair {}? It loses remote access to this machine; {} {} paired.",
         display_pair_id(&device.pair_id),
-        if state.is_paired() {
-            format!("It loses remote access to this machine; {stays}")
+        remaining,
+        if remaining == 1 {
+            "device stays"
         } else {
-            format!("Nothing is paired behind it, so no device loses access; {stays}")
+            "devices stay"
         }
     ))
 }
@@ -2873,7 +2850,7 @@ mod tests {
         let (code, stdout, stderr) = run(&["remote", "devices"]).await;
         assert_eq!(code, 0, "{stderr}");
         assert!(
-            stdout.contains("2 devices are paired to this machine:"),
+            stdout.contains("2 entries in the pairing book: 2 paired:"),
             "{stdout}"
         );
         assert!(stdout.contains("AAAA"), "{stdout}");
@@ -2962,28 +2939,25 @@ mod tests {
 
         let (code, stdout, stderr) = run(&["remote", "devices"]).await;
         assert_eq!(code, 0, "{stderr}");
+        // Both counts, in one line: the total and every bucket that is non-empty.
         assert!(
-            stdout.contains("1 device is paired to this machine, and 2 pairings cannot serve:"),
+            stdout.contains(
+                "3 entries in the pairing book: 1 paired / 1 unclaimed / 1 unclaimed, expired:"
+            ),
             "{stdout}"
         );
-        // The claimed device is the only row that could hold control; the
-        // `active` pointer names the dead one, so no row is in control and the
-        // listing says so instead of crediting a device that cannot connect.
+        // Only annotation was added: CONTROL still reports the stored pointer
+        // (which names the dead row), and STATE states what that row is.
         assert!(
             stdout
                 .lines()
-                .any(|line| line.contains("LIVE") && line.contains("standby")),
+                .any(|line| line.contains("DEAD") && line.contains("in control")),
             "{stdout}"
         );
         assert!(
-            !stdout.lines().any(|line| (line.contains("LIVE")
-                || line.contains("PEND")
-                || line.contains("DEAD"))
-                && line.contains("in control")),
-            "no row may claim control here: {stdout}"
-        );
-        assert!(
-            stdout.contains("No paired device is in control"),
+            stdout
+                .lines()
+                .any(|line| line.contains("LIVE") && line.contains("paired")),
             "{stdout}"
         );
         assert!(
@@ -2995,7 +2969,7 @@ mod tests {
         assert!(
             stdout
                 .lines()
-                .any(|line| line.contains("DEAD") && line.contains("expired")),
+                .any(|line| line.contains("DEAD") && line.contains("unclaimed, expired")),
             "{stdout}"
         );
         // A claimed row is never described with the invitation's deadline, and the
@@ -3010,17 +2984,14 @@ mod tests {
         let (_, json_stdout, _) = run(&["remote", "devices", "--json"]).await;
         let value: Value = serde_json::from_str(&json_stdout).unwrap();
         assert_eq!(value["devices"][0]["state"], "paired");
-        // The pointer still names pair_DEAD; `control` is null because that row
-        // cannot serve, and LIVE is standby until something takes over.
-        assert_eq!(value["active"], "pair_DEAD");
         assert_eq!(value["devices"][0]["control"], "standby");
         assert_eq!(value["devices"][1]["state"], "unclaimed");
-        assert!(value["devices"][1]["control"].is_null(), "{value}");
-        assert_eq!(value["devices"][2]["state"], "expired");
-        assert!(
-            value["devices"][2]["control"].is_null(),
-            "the row the active pointer names cannot be reported as controlling: {value}"
-        );
+        assert_eq!(value["devices"][1]["control"], "standby");
+        // The pointer still names pair_DEAD and `control` still says so; the
+        // added `state` is what contradicts it, visibly and without hiding it.
+        assert_eq!(value["active"], "pair_DEAD");
+        assert_eq!(value["devices"][2]["state"], "unclaimed_expired");
+        assert_eq!(value["devices"][2]["control"], "active");
         assert_eq!(value["devices"][2]["invitationExpiresAt"], 1792637925);
     }
 
@@ -3054,7 +3025,7 @@ mod tests {
         };
         assert_eq!(
             unclaimed.state(now_seconds()),
-            SlotState::Expired { expires_at: 1 }
+            SlotState::UnclaimedExpired { expires_at: 1 }
         );
         // One second before the deadline it is still claimable.
         assert_eq!(unclaimed.state(0), SlotState::Unclaimed { expires_at: 1 });
@@ -3140,10 +3111,10 @@ mod tests {
     }
 
     /// A pre-multi-device file is read as a book with one slot, and that slot is
-    /// the `active` pointer — but a credential from before the v2 handshake
-    /// carries no `secure` block, so the runtime builds no transport for it and
-    /// the row cannot serve. The listing says exactly that instead of calling it
-    /// the device in control.
+    /// the `active` pointer — kept as the pointer, because this change only
+    /// annotates. But a credential from before the v2 handshake carries no
+    /// `secure` block, so the runtime builds no transport for it: the added
+    /// `state` says `legacy` beside the unchanged `control`.
     #[tokio::test]
     async fn a_legacy_single_pairing_reads_as_one_slot_that_cannot_serve() {
         let _guard = crate::test_env::lock_env().await;
@@ -3159,9 +3130,18 @@ mod tests {
         assert_eq!(value["devices"][0]["pairId"], "pair_OLD");
         assert_eq!(value["active"], "pair_OLD");
         assert_eq!(value["devices"][0]["state"], "legacy");
+        // `control` is not recomputed from the state: it still reports the stored
+        // pointer, exactly as a reader of the old document expects.
+        assert_eq!(value["devices"][0]["control"], "active");
+        // And the human listing carries the warning the pointer does not.
+        let (_, human, _) = run(&["remote", "devices"]).await;
         assert!(
-            value["devices"][0]["control"].is_null(),
-            "a slot with no secure identity cannot command the machine: {value}"
+            human.contains("1 entry in the pairing book: 1 legacy:"),
+            "{human}"
+        );
+        assert!(
+            human.contains("`legacy` carries no secure identity"),
+            "{human}"
         );
     }
 
