@@ -62,6 +62,14 @@ pub async fn handle_command(
 ) {
     super::handle_command(client, msg, state).await;
 }
+/// The destructive half of a phone-initiated unpair, after its acknowledgement.
+///
+/// Exposed so a test can call it under a *known* epoch instead of racing the
+/// detached task the command spawns: the guard it carries is only observable if
+/// the epoch it sees is decided before it starts.
+pub async fn finish_phone_unpair(state: HandshakeState, pair_id: String) {
+    super::finish_phone_unpair(state, pair_id).await;
+}
 pub async fn handle_command_singleflight(
     client: &async_nats::Client,
     msg: async_nats::Message,
