@@ -93,17 +93,13 @@ pub struct Settings {
     pub default_model: String,
     /// Continue, on startup, the conversations a run was interrupted in.
     ///
-    /// Off by default: continuing sends a prompt the user did not type, which
-    /// spends their credits while nobody is watching. A machine that restarts
-    /// on its own (a server, a supervised process) must not start paying for
-    /// work because it came back up.
-    /// Continue, on startup, the conversations a run was interrupted in.
-    ///
     /// On by default, matching the consent the desktop already recorded
     /// (`autoResumeInterrupted`, also on by default): moving the continuation
     /// here must not silently drop a behaviour users already rely on. The
     /// desktop's settings switch writes this key, so the one control still
-    /// governs the one executor.
+    /// governs the one executor. Turning it off is the opt-out for a machine
+    /// that restarts unattended: a continuation sends a prompt the user did not
+    /// type and spends their credits while nobody is watching.
     #[serde(default = "default_true_bool", skip_serializing_if = "is_true")]
     pub resume_interrupted_on_start: bool,
 }

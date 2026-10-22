@@ -459,7 +459,10 @@ TUI 把客户端侧设置持久化到 `~/.future/tui/settings.json`：
 其中 `defaultModel`、`defaultThinkingLevel` 与 `defaultPermissionLevel` 会在 TUI
 启动时应用到 agent。日志：`PI_DEBUG_REDRAW=1` 时把调试重绘日志写入
 `~/.future/tui/debug.log`；`PI_TUI_WRITE_LOG=1` 时原始屏幕写入记录到
-`~/.future/tui/write.log`。
+`~/.future/tui/write.log`。占用备用屏幕期间，TUI 还会把 stderr 指向
+`~/.future/tui/stderr.log`：`future tui` 可能在自己的进程内托管 Agent，该进程
+打印的任何内容都不能写进 TUI 自己的屏幕（raw mode 下换行不回列，差分渲染也看不到
+不是它写的输出）。退出时会恢复真实 stderr，因此崩溃报告与退出信息仍能送到终端。
 
 上文的按键是默认值。`/keymap` 会打开覆盖全部已注册动作的编辑器：在高亮行上按一个键
 即可重新绑定，与默认值的差异会写入 `~/.future/tui/keybindings.json`（与
