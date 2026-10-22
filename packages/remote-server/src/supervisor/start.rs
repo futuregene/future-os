@@ -656,6 +656,15 @@ impl Supervisor {
         if !self.executor.options().automatic_recovery {
             return;
         }
+        // A generation that stopped *because the host is stopping* is not a fault:
+        // teardown cancels the command/event tasks and closes the client, so the
+        // health watcher sees exactly what a crash looks like. Building a
+        // replacement then spends the shutdown budget on a bridge that is about to
+        // be dropped again, and records an `[RT001]` episode (and a
+        // `reconnect_required` code) for a stop nobody suffered.
+        if self.executor.is_stopping() {
+            return;
+        }
 
         let attempt = self.record_runtime_failure(unix_millis());
         eprintln!(
