@@ -135,7 +135,7 @@
     },
     "needsLogin": {
       "title": "尚未配置模型",
-      "detail": "后台服务已连接，但还没有可用模型。你可以登录 FutureOS 账号，或直接配置自己的模型服务（如 OpenAI、DeepSeek 等）。",
+      "detail": "后台服务已连接。请在设置中配置模型提供商，即可开始使用。",
       "action": "配置提供商"
     },
     "noModels": {

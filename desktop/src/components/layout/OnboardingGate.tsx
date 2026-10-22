@@ -28,6 +28,8 @@ const INIT_STEPS = ["initAgent", "initModels", "initSkills"] as const;
 const MIN_INIT_DURATION_MS = 500;
 
 export interface OnboardingGateProps {
+  /** Community setup leads with manual provider configuration, without offers. */
+  communityEdition?: boolean;
   onEnableBYOK: () => void;
   onInitComplete: () => void;
   onCancelLogin: () => void;
@@ -48,6 +50,10 @@ export interface OnboardingGateProps {
  * Onboarding gate shown on first launch when no provider is configured yet. It
  * guides the user toward two paths:
  *
+ * Community setup leads with BYOK; explicitly requested account login remains
+ * available for features such as remote access, without signup offers.
+ *
+ * In the standard edition:
  * 1. Sign in / sign up to FutureOS (primary, prominent button).
  * 2. Bring their own API key (secondary, subdued button) — opens Settings →
  *    Providers to add a custom provider.
@@ -63,7 +69,7 @@ export interface OnboardingGateProps {
  * The language switcher lives in the top-right corner and is always visible.
  * Dev/test builds additionally show an environment switcher next to it.
  */
-export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, hasAnyProvider, modelsReady, initPending, autoLogin }: OnboardingGateProps) {
+export function OnboardingGate({ communityEdition = false, onEnableBYOK, onInitComplete, onCancelLogin, hasAnyProvider, modelsReady, initPending, autoLogin }: OnboardingGateProps) {
   const { t, i18n } = useTranslation("layout");
   const { phase, message, begin, cancel } = useFutureLoginFlow(() => {});
   const busy = phase === "starting" || phase === "waiting" || phase === "authorized";
@@ -330,7 +336,7 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
           {selecting ? t("gate.chooseModelTitle") : t("gate.title")}
         </h1>
         <p className="mx-auto max-w-md text-sm text-ink-muted">
-          {selecting ? t("gate.chooseModelHint") : t("gate.subtitle")}
+          {selecting ? t("gate.chooseModelHint") : communityEdition ? autoLogin ? t("settings:futureLogin.waiting") : t("gate.communitySubtitle") : t("gate.subtitle")}
         </p>
       </div>
 
@@ -393,44 +399,55 @@ export function OnboardingGate({ onEnableBYOK, onInitComplete, onCancelLogin, ha
                 </p>
               </div>
             )
-          : (
-              <div className="flex h-[150px] flex-col items-center justify-center gap-3">
-                <Button
-                  className="min-w-40"
-                  disabled={busy}
-                  leftIcon={busy ? <Loader2 className="size-4 animate-spin" /> : undefined}
-                  onClick={() => void begin()}
-                  variant="primary"
-                >
-                  {busy ? t("gate.loggingIn") : failed ? t("gate.retry") : t("gate.login")}
-                </Button>
-                {/* Hint + divider are always rendered so the layout height stays
-                  identical between the idle and busy states (no vertical jitter
-                  when the BYOK button swaps to Cancel). `invisible` reserves the
-                  space without painting it while a login is in flight. */}
-                <p className={busy ? "invisible text-xs text-ink-muted" : "text-xs text-ink-muted"}>{t("gate.freeTrialHint")}</p>
-                <div className={busy ? "invisible my-3 h-px w-48 bg-line" : "my-3 h-px w-48 bg-line"} />
-                {busy
-                  ? (
-                      <Button
-                        onClick={handleCancel}
-                        size="sm"
-                        variant="secondary"
-                      >
-                        {t("gate.cancel")}
-                      </Button>
-                    )
-                  : (
-                      <Button
-                        onClick={handleBYOK}
-                        size="sm"
-                        variant="secondary"
-                      >
-                        {t("gate.byok")}
-                      </Button>
-                    )}
-              </div>
-            )}
+          : communityEdition && !autoLogin
+            ? (
+                <div className="flex h-[150px] flex-col items-center justify-center gap-3">
+                  <Button className="min-w-40" onClick={handleBYOK} variant="primary">
+                    {t("gate.byok")}
+                  </Button>
+                </div>
+              )
+            : (
+                <div className="flex h-[150px] flex-col items-center justify-center gap-3">
+                  <Button
+                    className="min-w-40"
+                    disabled={busy}
+                    leftIcon={busy ? <Loader2 className="size-4 animate-spin" /> : undefined}
+                    onClick={() => void begin()}
+                    variant="primary"
+                  >
+                    {busy ? t("gate.loggingIn") : failed ? t("gate.retry") : t("gate.login")}
+                  </Button>
+                  {!communityEdition
+                    ? (
+                        <>
+                          {/* Reserve the offer's space during login to avoid layout jitter. */}
+                          <p className={busy ? "invisible text-xs text-ink-muted" : "text-xs text-ink-muted"}>{t("gate.freeTrialHint")}</p>
+                          <div className={busy ? "invisible my-3 h-px w-48 bg-line" : "my-3 h-px w-48 bg-line"} />
+                        </>
+                      )
+                    : null}
+                  {busy
+                    ? (
+                        <Button
+                          onClick={handleCancel}
+                          size="sm"
+                          variant="secondary"
+                        >
+                          {t("gate.cancel")}
+                        </Button>
+                      )
+                    : (
+                        <Button
+                          onClick={handleBYOK}
+                          size="sm"
+                          variant="secondary"
+                        >
+                          {t("gate.byok")}
+                        </Button>
+                      )}
+                </div>
+              )}
     </div>
   );
 }

@@ -153,7 +153,7 @@ describe("updatePage version and check", () => {
       button(container, "Check for updates")!.click();
     });
 
-    expect(container.textContent).toContain("Update check failed: offline");
+    expect(container.textContent).toContain("Couldn’t check for updates. Check your connection and try again.");
     // The stale "available" banner is gone: a failed check must not claim one.
     expect(container.textContent).not.toContain("New version");
   });
@@ -166,7 +166,7 @@ describe("updatePage version and check", () => {
       button(container, "Check for updates")!.click();
     });
 
-    expect(container.textContent).toContain("Update check failed: socket reset");
+    expect(container.textContent).toContain("Couldn’t check for updates. Check your connection and try again.");
   });
 
   it("clears a previous error when a new check starts", async () => {
@@ -175,7 +175,8 @@ describe("updatePage version and check", () => {
     await act(async () => {
       button(container, "Check for updates")!.click();
     });
-    expect(container.textContent).toContain("offline");
+    expect(container.textContent).toContain("Couldn’t check for updates");
+    expect(container.textContent).not.toContain("offline");
 
     mocks.invokeCommand.mockResolvedValueOnce(UP_TO_DATE);
     await act(async () => {
@@ -201,7 +202,7 @@ describe("updatePage in-app install", () => {
     });
 
     expect(mocks.listen).toHaveBeenCalledTimes(1);
-    expect(mocks.invokeCommand).toHaveBeenCalledWith("install_app_update");
+    expect(mocks.invokeCommand).toHaveBeenCalledWith("install_app_update", { language: "en" });
     // The subscription is torn down once the install command settles.
     expect(unlisteners[0]).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("Update installed. Restart to finish.");
@@ -279,7 +280,7 @@ describe("updatePage in-app install", () => {
       button(container, "Download and install")!.click();
     });
 
-    expect(container.textContent).toContain("Update failed: signature mismatch");
+    expect(container.textContent).toContain("The update couldn’t be completed. Please try again later, or download the installer.");
     expect(button(container, "Download and install")!.disabled).toBe(false);
     expect(unlisteners[0]).toHaveBeenCalledTimes(1);
   });
@@ -295,7 +296,7 @@ describe("updatePage in-app install", () => {
       button(container, "Download and install")!.click();
     });
 
-    expect(container.textContent).toContain("Update failed: permission denied");
+    expect(container.textContent).toContain("The update couldn’t be completed. Please try again later, or download the installer.");
   });
 
   it("detaches the progress subscription when the page unmounts mid-download", async () => {
@@ -340,7 +341,7 @@ describe("updatePage in-app install", () => {
 
     expect(container.textContent).toContain("You're on the latest version");
     expect(button(container, "Download and install")).toBeUndefined();
-    expect(mocks.invokeCommand).not.toHaveBeenCalledWith("install_app_update");
+    expect(mocks.invokeCommand).not.toHaveBeenCalledWith("install_app_update", { language: "en" });
   });
 });
 
@@ -361,7 +362,7 @@ describe("updatePage restart", () => {
       button(container, "Restart FutureOS")!.click();
     });
     expect(mocks.invokeCommand).toHaveBeenLastCalledWith("restart_after_app_update");
-    expect(container.textContent).toContain("Update failed: restart blocked");
+    expect(container.textContent).toContain("Couldn’t restart automatically. Close and reopen FutureOS.");
   });
 
   it("stringifies a non-Error restart failure and clears it on a retry", async () => {
@@ -371,13 +372,13 @@ describe("updatePage restart", () => {
     await act(async () => {
       button(container, "Restart FutureOS")!.click();
     });
-    expect(container.textContent).toContain("Update failed: no window");
+    expect(container.textContent).toContain("Couldn’t restart automatically. Close and reopen FutureOS.");
 
     mocks.invokeCommand.mockResolvedValueOnce(undefined);
     await act(async () => {
       button(container, "Restart FutureOS")!.click();
     });
-    expect(container.textContent).not.toContain("Update failed");
+    expect(container.textContent).not.toContain("Couldn’t restart automatically");
   });
 });
 
@@ -385,7 +386,7 @@ describe("updatePage manual download", () => {
   it("labels a manual-only platform and opens the download link", async () => {
     const container = await renderPage(MANUAL);
 
-    expect(container.textContent).toContain("This build can only be updated manually");
+    expect(container.textContent).toContain("Download the latest version to update FutureOS.");
     expect(button(container, "Download and install")).toBeUndefined();
 
     await act(async () => {
@@ -397,7 +398,7 @@ describe("updatePage manual download", () => {
   it("labels a platform without an asset and offers no link", async () => {
     const container = await renderPage(NO_ASSET);
 
-    expect(container.textContent).toContain("Automatic updates are not available for this platform");
+    expect(container.textContent).toContain("An installer isn’t available for this device yet.");
     expect(container.querySelector("a")).toBeNull();
   });
 
@@ -408,7 +409,7 @@ describe("updatePage manual download", () => {
     await act(async () => {
       container.querySelector("a")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
-    expect(container.textContent).toContain("Could not open download link: no handler");
+    expect(container.textContent).toContain("The download page couldn’t be opened. Check your connection and try again.");
 
     await act(async () => {
       container.querySelector("a")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
@@ -424,7 +425,7 @@ describe("updatePage manual download", () => {
       container.querySelector("a")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
 
-    expect(container.textContent).toContain("Could not open download link: denied by policy");
+    expect(container.textContent).toContain("The download page couldn’t be opened. Check your connection and try again.");
   });
 
   it("clears a download error when a new check starts", async () => {
@@ -433,13 +434,14 @@ describe("updatePage manual download", () => {
     await act(async () => {
       container.querySelector("a")!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     });
-    expect(container.textContent).toContain("no handler");
+    expect(container.textContent).toContain("The download page couldn’t be opened");
+    expect(container.textContent).not.toContain("no handler");
 
     await act(async () => {
       mocks.invokeCommand.mockResolvedValueOnce(MANUAL);
       button(container, "Check for updates")!.click();
     });
-    expect(container.textContent).not.toContain("Could not open download link");
+    expect(container.textContent).not.toContain("The download page couldn’t be opened");
   });
 });
 
@@ -452,10 +454,10 @@ describe("updatePage subscription failure", () => {
       button(container, "Download and install")!.click();
     });
 
-    expect(container.textContent).toContain("Update failed: event bus unavailable");
+    expect(container.textContent).toContain("The update couldn’t be completed. Please try again later, or download the installer.");
     expect(button(container, "Download and install")!.disabled).toBe(false);
     // The install command must not run without a progress subscription.
-    expect(mocks.invokeCommand).not.toHaveBeenCalledWith("install_app_update");
+    expect(mocks.invokeCommand).not.toHaveBeenCalledWith("install_app_update", { language: "en" });
   });
 
   it("detaches an immediately-resolved subscription when the page unmounted first", async () => {
@@ -479,7 +481,7 @@ describe("updatePage subscription failure", () => {
     });
 
     expect(unlisten).toHaveBeenCalledTimes(1);
-    expect(mocks.invokeCommand).not.toHaveBeenCalledWith("install_app_update");
+    expect(mocks.invokeCommand).not.toHaveBeenCalledWith("install_app_update", { language: "en" });
   });
 });
 
@@ -496,13 +498,13 @@ describe("durable update recovery", () => {
     } });
     const container = await renderPage(UPDATE);
     await act(async () => button(container, "Download and install")!.click());
-    expect(container.textContent).toContain("result unconfirmed");
+    expect(container.textContent).toContain("Installing update…");
     expect(container.textContent).not.toContain("Update installed. Restart to finish.");
     expect(button(container, "Restart FutureOS")).toBeUndefined();
-    expect(button(container, "Download and install")!.disabled).toBe(true);
+    expect(button(container, "Download and install")).toBeUndefined();
   });
 
-  it("surfaces CLI mismatch and durable repair diagnostics without offering restart", async () => {
+  it("keeps diagnostics private and explains how to repair without offering restart", async () => {
     mocks.maintenance.mockResolvedValue({ cli: { error: "CLI /old/future version mismatch" }, update: {
       operationId: "update-failed",
       stage: "finished",
@@ -512,10 +514,45 @@ describe("durable update recovery", () => {
       repairAcknowledged: false,
     } });
     const container = await renderPage(UPDATE);
-    expect(container.textContent).toContain("CLI /old/future version mismatch");
-    expect(container.textContent).toContain("Original files are incomplete");
+    expect(container.textContent).not.toContain("CLI /old/future version mismatch");
+    expect(container.textContent).not.toContain("update-failed");
+    expect(container.textContent).toContain("Download the installer, reinstall FutureOS, then open it again.");
+    expect(container.textContent).not.toContain("Original files are incomplete");
     expect(button(container, "Download and install")!.disabled).toBe(true);
     expect(button(container, "Restart FutureOS")).toBeUndefined();
-    expect(button(container, "Confirm completed manual repair")).toBeTruthy();
+    expect(button(container, "I’ve reinstalled FutureOS")).toBeTruthy();
   });
+});
+
+it("returns quietly when the user defers installation", async () => {
+  mocks.maintenance.mockResolvedValueOnce({ cli: {}, update: null });
+  mocks.maintenance.mockResolvedValue({ cli: {}, update: {
+    operationId: "cancelled-private-id",
+    stage: "finished",
+    outcome: "cancelled",
+    diagnostic: null,
+    restartSafe: false,
+    repairAcknowledged: false,
+  } });
+  const container = await renderPage(UPDATE);
+  await act(async () => button(container, "Download and install")!.click());
+  expect(container.querySelector("[role='alert']")).toBeNull();
+  expect(button(container, "Download and install")!.disabled).toBe(false);
+  expect(button(container, "Restart FutureOS")).toBeUndefined();
+  expect(container.textContent).not.toContain("cancelled-private-id");
+});
+
+it("offers the pending restart even without cached update discovery", async () => {
+  mocks.maintenance.mockResolvedValue({ cli: {}, update: {
+    operationId: "pending-private-id",
+    stage: "awaiting-validation",
+    outcome: "pending-validation",
+    diagnostic: "worker-native-detail",
+    restartSafe: true,
+    repairAcknowledged: false,
+  } });
+  const container = await renderPage();
+  expect(button(container, "Restart FutureOS")).toBeTruthy();
+  expect(container.textContent).not.toContain("pending-private-id");
+  expect(container.textContent).not.toContain("worker-native-detail");
 });

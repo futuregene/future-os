@@ -408,6 +408,32 @@ describe("useAppSettings", () => {
     harness.unmount();
   });
 
+  it("waits for persisted settings before allowing startup defaults to drive promotion visibility", async () => {
+    server = { ...server, communityEdition: true };
+    let finishRead!: (value: ServerSettings) => void;
+    let finishWrite!: (value: ServerSettings) => void;
+    mocks.getAppSettings.mockImplementation(() => new Promise<ServerSettings>((resolve) => {
+      finishRead = resolve;
+    }));
+    mocks.updateAppSettings.mockImplementation(() => new Promise<ServerSettings>((resolve) => {
+      finishWrite = resolve;
+    }));
+    const harness = renderHook(() => useAppSettings());
+    try {
+      await flushAsync();
+      expect(harness.current.appSettingsReady).toBe(false);
+      await act(async () => finishRead({ ...server }));
+      // The language write owns the authoritative snapshot after its optimistic edit.
+      expect(harness.current.appSettingsReady).toBe(false);
+      await act(async () => finishWrite({ ...server }));
+      expect(harness.current.appSettingsReady).toBe(true);
+      expect(harness.current.appSettings.communityEdition).toBe(true);
+    }
+    finally {
+      harness.unmount();
+    }
+  });
+
   it("applies an edit optimistically and adopts the server snapshot", async () => {
     const harness = renderHook(() => useAppSettings());
     await flushAsync();

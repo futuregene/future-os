@@ -23,7 +23,7 @@ function ExternalLink({ label, url }: { label: string; url: string }) {
   );
 }
 
-export function AboutPage() {
+export function AboutPage({ communityEdition }: { communityEdition: boolean }) {
   const { t } = useTranslation("settings");
   const build = useBuildInfo();
   const isTestBuild = Boolean(build.data && !build.data.isRelease);
@@ -54,7 +54,7 @@ export function AboutPage() {
         </SettingsList>
       </SettingsSection>
 
-      <WechatFollowCard />
+      {!communityEdition ? <WechatFollowCard /> : null}
 
       <SettingsSection title={t("about.openSource")}>
         <p className="text-sm leading-6 text-ink-soft">

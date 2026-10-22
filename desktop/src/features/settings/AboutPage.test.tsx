@@ -38,7 +38,7 @@ function mount() {
   document.body.append(container);
   const root = createRoot(container);
   roots.push({ container, root });
-  act(() => root.render(<AboutPage />));
+  act(() => root.render(<AboutPage communityEdition={false} />));
   return container;
 }
 

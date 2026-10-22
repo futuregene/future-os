@@ -102,6 +102,7 @@ base64 = "0.22"
 # and React Native's current JS decompression cost exceeded the transfer saving.
 # Enable at desktop process start with FUTURE_REMOTE_JSON_GZIP=1.
 flate2 = "1"
+tar = "0.4"
 # Decode + downscale image attachments into thumbnails on the Rust side (avoids
 # shipping the full-size image base64 over the IPC bridge to a webview canvas).
 image = { version = "0.25", default-features = false, features = [
@@ -121,6 +122,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # errors (see `remote::trust`). Same version async-nats already links.
 rustls-native-certs = "0.8"
 sha2 = "0.10"
+minisign-verify = "0.2"
 tempfile = "3"
 chrono = "0.4"
 rand = "0.8"
@@ -157,6 +159,8 @@ windows = { version = "0.61", features = [
     "Win32_Graphics_Gdi",
     "Win32_Graphics_Dwm",
     "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
 ] }
 
 # macOS sends these workspace notifications before sleep/power-off, giving the

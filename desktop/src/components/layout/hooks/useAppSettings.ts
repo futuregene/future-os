@@ -14,6 +14,8 @@ import { useTauriEvent } from "../../../lib/useTauriEvent";
 
 export interface UseAppSettingsResult {
   appSettings: AppSettings;
+  /** False until a full persisted snapshot has replaced startup defaults. */
+  appSettingsReady: boolean;
   changeSettings: (patch: Partial<AppSettings>) => Promise<void>;
 }
 
@@ -30,6 +32,11 @@ export function useAppSettings(futureSessionStatus = "checking"): UseAppSettings
     DEFAULT_APP_SETTINGS,
   );
   const [appSettings, setAppSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
+  const [appSettingsReady, setAppSettingsReady] = useState(false);
+  const adoptSettings = useCallback((settings: AppSettings) => {
+    setAppSettings(settings);
+    setAppSettingsReady(true);
+  }, []);
   // Once the user has edited a setting, the initial async load's snapshot is
   // stale — applying it would clobber the optimistic value (the backend already
   // holds the new one). Stop mirroring the load after the first change.
@@ -43,10 +50,10 @@ export function useAppSettings(futureSessionStatus = "checking"): UseAppSettings
   const sandboxAvailability = useSandboxAvailability();
 
   useEffect(() => {
-    if (dirtyRef.current)
+    if (dirtyRef.current || loadedAppSettings === DEFAULT_APP_SETTINGS)
       return;
-    setAppSettings(loadedAppSettings);
-  }, [loadedAppSettings]);
+    adoptSettings(loadedAppSettings);
+  }, [adoptSettings, loadedAppSettings]);
 
   const changeSettings = useCallback(async (patch: Partial<AppSettings>) => {
     if (patch.approvalTier === "auto" && !automaticApprovalAvailable(futureSessionStatus))
@@ -62,7 +69,7 @@ export function useAppSettings(futureSessionStatus = "checking"): UseAppSettings
         // this older request's full snapshot. The newer queued write will
         // reconcile once it completes.
         if (generation === mutationGenerationRef.current)
-          setAppSettings(next);
+          adoptSettings(next);
       }
       catch (error) {
         emitFutureEvent("toast", {
@@ -73,7 +80,7 @@ export function useAppSettings(futureSessionStatus = "checking"): UseAppSettings
         // queued, its eventual full response will provide the authoritative state.
         if (generation === mutationGenerationRef.current) {
           try {
-            setAppSettings(await getAppSettings());
+            adoptSettings(await getAppSettings());
           }
           catch {
             // The reload can fail for the same backend outage. Keep the current
@@ -84,7 +91,7 @@ export function useAppSettings(futureSessionStatus = "checking"): UseAppSettings
     });
     writeQueueRef.current = write;
     await write;
-  }, [futureSessionStatus]);
+  }, [adoptSettings, futureSessionStatus]);
 
   const reloadSettings = useCallback(() => {
     dirtyRef.current = true;
@@ -95,14 +102,14 @@ export function useAppSettings(futureSessionStatus = "checking"): UseAppSettings
       try {
         const next = await getAppSettings();
         if (generation === mutationGenerationRef.current)
-          setAppSettings(next);
+          adoptSettings(next);
       }
       catch {
         // Keep the current view; focus/reconnect or the next edit retries.
       }
     });
     writeQueueRef.current = read;
-  }, []);
+  }, [adoptSettings]);
   useTauriEvent("app_settings_changed", reloadSettings);
   useEffect(() => {
     window.addEventListener("focus", reloadSettings);
@@ -164,6 +171,7 @@ export function useAppSettings(futureSessionStatus = "checking"): UseAppSettings
   ]);
 
   return {
+    appSettingsReady,
     appSettings: { ...appSettings, approvalTier: effectiveApprovalTier(appSettings.approvalTier, futureSessionStatus) },
     changeSettings,
   };

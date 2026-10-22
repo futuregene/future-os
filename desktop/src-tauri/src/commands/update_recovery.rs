@@ -1,4 +1,4 @@
-//! Restart a failed non-Windows update only if the original program is intact.
+//! Restart a failed macOS update only if the original program is intact.
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
@@ -33,6 +33,7 @@ impl ProgramFingerprint {
         }
         Ok(())
     }
+    #[cfg(target_os = "macos")]
     pub(super) fn capture() -> std::io::Result<Self> {
         Self::capture_under(std::env::current_exe()?, crate::cli_tool::resolve().ok())
     }

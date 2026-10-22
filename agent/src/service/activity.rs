@@ -31,6 +31,15 @@ impl AgentActivity {
 pub struct ActivityUnavailable;
 
 impl AgentHandle {
+    /// Reserve an idle service for an already prepared update. Admission and
+    /// the activity revision are checked under the registration mutex, so a
+    /// CLI command arriving after the idle snapshot cannot be silently stopped.
+    pub fn close_idle_admission(&self) -> Result<bool, ActivityUnavailable> {
+        let revision = self.state.service_work.revision();
+        let activity = self.activity_snapshot()?;
+        Ok(activity.is_idle() && self.state.service_work.close_if_revision(revision))
+    }
+
     pub fn activity_snapshot(&self) -> Result<AgentActivity, ActivityUnavailable> {
         if self
             .shutdown

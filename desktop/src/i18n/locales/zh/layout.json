@@ -145,7 +145,8 @@
     "envTest": "测试环境",
     "chooseModelTitle": "选择你的AI大模型",
     "chooseModelHint": "你可以在对话过程中随时切换",
-    "start": "开始"
+    "start": "开始",
+    "communitySubtitle": "配置自己的模型服务，即可开始使用。"
   },
   "agentStatus": {
     "wait": "请稍候",

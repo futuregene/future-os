@@ -59,6 +59,7 @@ if (settingsPatch) {
 // other.
 const list = (value: string | null): string[] => (value ?? "").split(",").filter(Boolean);
 seedHarnessState({
+  update: params.get("update"),
   pinned: list(params.get("pinned")),
   streaming: list(params.get("streaming")),
   unread: list(params.get("unread")),

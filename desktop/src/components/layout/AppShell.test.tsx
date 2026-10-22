@@ -316,7 +316,7 @@ vi.mock("./hooks/panelGeometry", () => ({
 vi.mock("./hooks/useAgentStatus", () => ({ useAgentStatus: () => mocks.hooks.useAgentStatus?.() }));
 vi.mock("./hooks/useAgentDoneBell", () => ({ useAgentDoneBell: vi.fn() }));
 vi.mock("./hooks/useAppSettings", () => ({
-  useAppSettings: () => ({ appSettings: (mocks.store.appSettings as Record<string, unknown>) ?? {}, changeSettings: mocks.changeSettings }),
+  useAppSettings: () => ({ appSettingsReady: true, appSettings: (mocks.store.appSettings as Record<string, unknown>) ?? {}, changeSettings: mocks.changeSettings }),
 }));
 vi.mock("./hooks/useAppStartup", () => ({ useAppStartup: () => (mocks.store.startup as Record<string, unknown>) ?? { phase: "ready", auth: { status: "authenticated" }, providers: { builtin: [], custom: [] } } }));
 vi.mock("./hooks/useAutoUpgradeSkills", () => ({ useAutoUpgradeSkills: vi.fn() }));
