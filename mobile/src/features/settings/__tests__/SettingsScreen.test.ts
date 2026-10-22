@@ -874,8 +874,14 @@ test("limited protection keeps the usual approval choices and only adds the upgr
   mockRemote.capabilities.add("auto_approval_v1");
   await openPreferences();
   expect(texts()).toContain("approvalTier.upgrade");
-  expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.sandbox" })).toHaveLength(1);
-  expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.auto" })).toHaveLength(1);
+  // React Native forwards these props through multiple wrapper nodes. Select
+  // the actual radio control, then verify that limited protection stays usable.
+  expect(radio("approvalTier.sandbox").props.disabled).toBe(false);
+  expect(radio("approvalTier.auto").props.disabled).toBe(false);
+  await act(async () => radio("approvalTier.sandbox").props.onPress());
+  expect(mockRemote.setApprovalTier).toHaveBeenLastCalledWith("sandbox");
+  await act(async () => radio("approvalTier.auto").props.onPress());
+  expect(mockRemote.setApprovalTier).toHaveBeenLastCalledWith("auto");
   mockRemote.sandboxAvailable = false;
   await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
   expect(texts()).not.toContain("approvalTier.upgrade");
