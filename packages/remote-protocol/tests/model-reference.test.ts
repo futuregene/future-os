@@ -1,5 +1,13 @@
 import { describe, test, expect } from "vitest";
-import { modelProviderFromReference, modelReference, modelThinkingLevels, THINKING_LEVELS } from "../src/types";
+import { modelProviderFromReference, modelReference, modelThinkingLevels, THINKING_LEVELS, type RemoteModel } from "../src/types";
+
+/**
+ * A catalogue row as the mobile pickers receive it. `modelThinkingLevels` reads
+ * only `thinkingLevels`, so its parameter is that subset — but every real call
+ * site hands it a whole model, and typing the fixture as one keeps these cases
+ * written against the shape the app actually passes.
+ */
+const catalogueModel = (thinkingLevels?: string[] | null): RemoteModel => ({ id: "m", thinkingLevels });
 
 describe("model reference helpers", () => {
   test("modelReference scopes an id with its provider", () => {
@@ -30,18 +38,18 @@ describe("model reference helpers", () => {
 
 describe("modelThinkingLevels", () => {
   test("a model that declares nothing offers every level", () => {
-    expect(modelThinkingLevels({ id: "m" })).toEqual(THINKING_LEVELS);
+    expect(modelThinkingLevels(catalogueModel())).toEqual(THINKING_LEVELS);
     expect(modelThinkingLevels(undefined)).toEqual(THINKING_LEVELS);
     // An older host sends no list at all — not an empty one — and that is the
     // same answer, which is what keeps pre-upgrade hosts unchanged.
-    expect(modelThinkingLevels({ id: "m", thinkingLevels: null })).toEqual(THINKING_LEVELS);
+    expect(modelThinkingLevels(catalogueModel(null))).toEqual(THINKING_LEVELS);
   });
 
   test("a declared list is intersected with the canonical vocabulary in canonical order", () => {
-    expect(modelThinkingLevels({ id: "m", thinkingLevels: ["high", "off", "low"] })).toEqual(["off", "low", "high"]);
+    expect(modelThinkingLevels(catalogueModel(["high", "off", "low"]))).toEqual(["off", "low", "high"]);
     // The agent normally normalizes this already; a hand-written list must not
     // smuggle in a level no label or budget arm knows.
-    expect(modelThinkingLevels({ id: "m", thinkingLevels: ["low", "mid", "high"] })).toEqual(["low", "high"]);
-    expect(modelThinkingLevels({ id: "m", thinkingLevels: ["off"] })).toEqual(["off"]);
+    expect(modelThinkingLevels(catalogueModel(["low", "mid", "high"]))).toEqual(["low", "high"]);
+    expect(modelThinkingLevels(catalogueModel(["off"]))).toEqual(["off"]);
   });
 });
