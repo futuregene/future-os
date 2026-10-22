@@ -87,7 +87,9 @@ Native installation fixtures run through the explicitly dispatched Misc
   conflicting Agent lock, success awaiting validation, and failed configuration.
   The script refuses non-CI execution, signs fixtures with an ephemeral CI identity embedded in the test build, and purges only its fixture package.
 
-Signed macOS updater artifact validation is a publication requirement. These
+Formal macOS releases require signed-artifact verification to pass. Build Test
+(including signed nightly rehearsals) keeps `strict_verification: false`, reports
+verification failures and retains diagnostics without blocking test publication. These
 fixtures do not substitute for real signed old-to-new acceptance on Windows and
 macOS, authorization-agent coverage on Linux, or database migration compatibility
 validation. No such real-install acceptance is claimed by a static check.

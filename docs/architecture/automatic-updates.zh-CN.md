@@ -50,4 +50,4 @@ Windows 备份位于 `<FUTURE_HOME>/app/updates/<操作编号>/program-backup`�
 - Windows NSIS 安装前检查、观察者、完整备份恢复与恢复不完整。
 - Linux 已授权的原生执行器和一次性 DEB：EOF 取消、Agent 锁冲突、安装成功等待确认、配置失败。脚本拒绝在 CI 之外执行，使用嵌入测试构建的临时 CI 身份签署夹具，结束时只清理夹具包。
 
-签名 macOS 自动更新产物验证是发布门禁。这些夹具不替代 Windows / macOS 真实签名旧版本到新版本的升级验收、Linux 图形授权代理覆盖和数据库迁移兼容性验收。静态检查不代表这些真实安装路径已通过。
+正式 macOS 发布要求签名产物验证通过。Build Test（包括签名 nightly 演练）保持 `strict_verification: false`，验证失败时报告并保留诊断，不阻断测试产物发布。这些夹具不替代 Windows / macOS 真实签名旧版本到新版本的升级验收、Linux 图形授权代理覆盖和数据库迁移兼容性验收。静态检查不代表这些真实安装路径已通过。
