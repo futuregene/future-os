@@ -166,6 +166,7 @@
   "toolRan": "{{name}} 已执行",
   "approvalSection": "审批模式",
   "approvalHint": "那台电脑上的审批模式。本机自己的审批模式在「设置」里，两者互不影响。",
+  "approvalTierUpgrade": "请升级那台电脑上的系统 Bubblewrap 并重启 FutureOS，以启用完整沙箱保护。",
   "approvalTier": "审批模式",
   "approvalTierLabel.manual": "手动审批",
   "approvalTierLabel.sandbox": "沙箱保护",

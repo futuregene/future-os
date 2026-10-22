@@ -304,6 +304,9 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
                   <Text style={settingsStyles.label}>{t(`approvalTier.${tier}`)}</Text>
                 </Pressable>)}
             </View>
+            {remote.sandboxAvailable && remote.sandboxCode === "available_write_only"
+              ? <Text style={settingsStyles.description}>{t("approvalTier.upgrade")}</Text>
+              : null}
           </SettingsSection>
         </ScrollView>;
       default:

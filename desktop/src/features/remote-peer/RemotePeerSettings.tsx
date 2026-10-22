@@ -1,6 +1,6 @@
 import type { ApprovalTier } from "../../integrations/storage/appSettings";
-import type { RemotePeer } from "./remotePeerClient";
-import { useCallback, useEffect, useState } from "react";
+import type { RemoteApprovalSettings, RemotePeer } from "./remotePeerClient";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
@@ -8,6 +8,7 @@ import { TextInput } from "../../components/ui/TextInput";
 import { SettingsLinkRow, SettingsList, SettingsPage, SettingsRow, SettingsSection, Switch } from "../settings/SettingsPrimitives";
 import { PeerIconPicker } from "./PeerIconPicker";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
+import { useHostCatalogueInvalidation } from "./remoteHostCatalog";
 import { RemoteModelsPanel } from "./RemoteModelsPanel";
 import { getRemoteApprovalSettings, requestRemotePeer, setRemoteApprovalTier } from "./remotePeerClient";
 import { RemoteProvidersPanel } from "./RemoteProvidersPanel";
@@ -55,7 +56,7 @@ export function RemotePeerSettings({
   const { t } = useTranslation("remotePeer");
   const [name, setName] = useState(peer.name ?? "");
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
-  const [approval, setApproval] = useState<{ approvalTier: string; sandboxAvailable: boolean } | null>(null);
+  const [approval, setApproval] = useState<RemoteApprovalSettings | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** Which page of these settings is open. See `SettingsSectionPage`. */
@@ -68,33 +69,60 @@ export function RemotePeerSettings({
   const supportsAutoApproval = peer.features.includes("auto_approval_v1");
   const providersSupported = peer.features.includes("provider_management_v1");
 
-  const load = useCallback(async () => {
-    setError(null);
-    try {
-      // The models are *not* read here any more: their page does that, from
-      // `list_models` (which carries each model's provider, so the page can group
-      // and name them) rather than the bare id list this used to count.
-      const values = await Promise.all([
-        requestRemotePeer<Record<string, unknown>>(peer.desktopId, { type: "get_desktop_settings" }, "list"),
-        supportsApprovalTier
-          ? getRemoteApprovalSettings(peer.desktopId)
-          : Promise.resolve(null),
-      ]);
-      setSettings(values[0]);
-      setApproval(values[1]);
+  const [revision, setRevision] = useState(0);
+  const generationRef = useRef(0);
+  const scopeRef = useRef<string | null>(null);
+  useHostCatalogueInvalidation(peer.desktopId, (domain) => {
+    if (domain === "settings") {
+      generationRef.current += 1;
+      setRevision(value => value + 1);
     }
-    catch (err) {
-      // One machine's settings page can fail as a whole (the host went away);
-      // that is a page-level error, not a per-row one.
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [peer.desktopId, supportsApprovalTier]);
+  });
 
   useEffect(() => {
+    const current = ++generationRef.current;
+    const scope = JSON.stringify([peer.desktopId, peer.bridgeInstanceId, peer.connected]);
+    if (scopeRef.current !== scope) {
+      scopeRef.current = scope;
+      setSettings(null);
+      setApproval(null);
+    }
+    setBusy(true);
+    setError(null);
+    async function load() {
+      try {
+        // The models are *not* read here any more: their page does that, from
+        // `list_models` (which carries each model's provider, so the page can group
+        // and name them) rather than the bare id list this used to count.
+        const values = await Promise.all([
+          requestRemotePeer<Record<string, unknown>>(peer.desktopId, { type: "get_desktop_settings" }, "list"),
+          supportsApprovalTier
+            ? getRemoteApprovalSettings(peer.desktopId)
+            : Promise.resolve(null),
+        ]);
+        if (current !== generationRef.current)
+          return;
+        setSettings(values[0]);
+        setApproval(values[1]);
+        setBusy(false);
+      }
+      catch (err) {
+        // One machine's settings page can fail as a whole (the host went away);
+        // that is a page-level error, not a per-row one.
+        if (current === generationRef.current) {
+          setError(err instanceof Error ? err.message : String(err));
+          setBusy(false);
+        }
+      }
+    }
     void load();
-  }, [load]);
+    return () => {
+      generationRef.current += 1;
+    };
+  }, [peer.desktopId, peer.bridgeInstanceId, peer.connected, supportsApprovalTier, revision]);
 
   async function update(patch: Record<string, unknown>) {
+    const current = ++generationRef.current;
     setBusy(true);
     setError(null);
     try {
@@ -103,33 +131,42 @@ export function RemotePeerSettings({
         { type: "update_desktop_settings", settings: patch },
         "list",
       );
+      if (current !== generationRef.current)
+        return;
       setSettings(next);
       onChanged();
     }
     catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (current === generationRef.current)
+        setError(err instanceof Error ? err.message : String(err));
     }
     finally {
-      setBusy(false);
+      if (current === generationRef.current)
+        setBusy(false);
     }
   }
 
   async function setApprovalTier(tier: ApprovalTier) {
+    const current = ++generationRef.current;
     setBusy(true);
     setError(null);
     try {
       // The host answers with the tier it settled on, not the one asked for:
       // `sandbox` on a host whose sandbox is missing comes back as `manual`.
       const settled = await setRemoteApprovalTier(peer.desktopId, tier);
+      if (current !== generationRef.current)
+        return;
       setApproval(current => current
         ? { ...current, approvalTier: settled }
         : { approvalTier: settled, sandboxAvailable: false });
     }
     catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (current === generationRef.current)
+        setError(err instanceof Error ? err.message : String(err));
     }
     finally {
-      setBusy(false);
+      if (current === generationRef.current)
+        setBusy(false);
     }
   }
 
@@ -300,6 +337,9 @@ export function RemotePeerSettings({
                     <option value="off">{t("approvalTierLabel.off")}</option>
                   </Select>
                 </SettingsRow>
+                {approval.sandboxAvailable && approval.sandboxCode === "available_write_only"
+                  ? <SettingsRow title={t("approvalTierLabel.sandbox")} description={t("approvalTierUpgrade")} />
+                  : null}
               </SettingsList>
             </SettingsSection>
           )

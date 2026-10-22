@@ -206,6 +206,7 @@
       "auto": "Automatic review"
     },
     "approvalTierDesc": {
+      "sandboxLinuxWriteOnly": "Upgrade system Bubblewrap and restart FutureOS to enable full sandbox protection.",
       "manual": "Asks before each action",
       "sandbox": "Runs sandboxed and asks when needed",
       "sandboxWindows": "Restricts out-of-scope writes and asks when needed",

@@ -1097,9 +1097,15 @@ export async function uninstallRemoteSkill(
  * host without a sandbox cannot offer `sandbox` or `auto`, and offering them
  * would only let the user pick something the host would refuse.
  */
+export interface RemoteApprovalSettings {
+  approvalTier: string;
+  sandboxAvailable: boolean;
+  sandboxCode?: string;
+}
+
 export async function getRemoteApprovalSettings(
   desktopId: string,
-): Promise<{ approvalTier: string; sandboxAvailable: boolean }> {
+): Promise<RemoteApprovalSettings> {
   const raw = await requestRemotePeer<Record<string, unknown>>(
     desktopId,
     { type: "get_settings" },
@@ -1108,6 +1114,7 @@ export async function getRemoteApprovalSettings(
   return {
     approvalTier: typeof raw?.approvalTier === "string" ? raw.approvalTier : "manual",
     sandboxAvailable: raw?.sandboxAvailable === true,
+    ...(typeof raw?.sandboxCode === "string" ? { sandboxCode: raw.sandboxCode } : {}),
   };
 }
 
