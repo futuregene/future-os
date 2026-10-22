@@ -497,18 +497,25 @@ impl Drop for FakePlatform {
 /// and a saved v2 pairing. Written by hand rather than through the app, which is
 /// what keeps these runs offline; the NKey seed is generated here because the
 /// credential refresh signs with it.
+///
+/// The pairing goes down **before** the login, and each file arrives by `rename`.
+/// A host that is already running reads both files from its own loop, so the
+/// order is a fact the test moves through, not an implementation detail:
+///
+/// * login first leaves a window in which this host has an account and no device.
+///   The entry point reports that as `Enabled` ("nothing paired yet"), and the
+///   next poll — the device is now on disk, no bridge was started, no attempt
+///   failed — is `Stopped` while a serving run is up, which it answers by stopping.
+///   That is the honest reading of "serving something with nothing running", and
+///   the test failed exactly there on a loaded CI runner (the two writes are
+///   milliseconds apart on a laptop, so the window rarely opened).
+/// * a plain `write` can be read half-written, and a pairing book that fails to
+///   parse reads as an empty book. The product's own writers are atomic
+///   (`write_json_atomic`), so the fixture must not be the one thing that is not.
 #[cfg(unix)]
 fn signed_in_home(home: &Path, platform: &str) {
     let directory = home.join(".future");
     std::fs::create_dir_all(directory.join("agent")).unwrap();
-    std::fs::write(
-        directory.join("agent/auth.json"),
-        serde_json::json!({
-            "future": { "key": "test-only", "base_url": format!("{platform}/api") },
-        })
-        .to_string(),
-    )
-    .unwrap();
     let seed = nkeys::KeyPair::new_user()
         .seed()
         .expect("user seed")
@@ -517,9 +524,9 @@ fn signed_in_home(home: &Path, platform: &str) {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
-    std::fs::write(
-        directory.join("remote_pairing.json"),
-        serde_json::json!({
+    write_state_file(
+        &directory.join("remote_pairing.json"),
+        &serde_json::json!({
             "handshakeVersion": 2,
             // Only its presence is read before the credential refresh, which the
             // platform answers; the crypto material is never used in these arms.
@@ -536,10 +543,24 @@ fn signed_in_home(home: &Path, platform: &str) {
             "natsUrl": "nats://127.0.0.1:1",
             "natsWsUrl": "ws://127.0.0.1:1",
             "jwtExpiresAt": now + 3600,
-        })
-        .to_string(),
-    )
-    .unwrap();
+        }),
+    );
+    write_state_file(
+        &directory.join("agent/auth.json"),
+        &serde_json::json!({
+            "future": { "key": "test-only", "base_url": format!("{platform}/api") },
+        }),
+    );
+}
+
+/// Write one fixture file the way the product writes its own state: into a
+/// sibling temp file, then `rename` it over the destination, so a reader running
+/// in another thread or process sees either the old file or the whole new one.
+#[cfg(unix)]
+fn write_state_file(path: &Path, value: &serde_json::Value) {
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, value.to_string()).unwrap();
+    std::fs::rename(&temporary, path).unwrap();
 }
 
 /// The foreground server: no external Agent endpoint is configured, so startup
