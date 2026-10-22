@@ -73,7 +73,7 @@
     "thinkingPlaceholder": "Choose a thinking level",
     "timezone": "Time zone",
     "timezoneSystem": "This machine's zone",
-    "timezoneHint": "The clock the schedule times above are read on. Leave it on this machine's zone to follow the computer running the task; if that cannot be read, Asia/Shanghai is used.",
+    "timezoneHint": "The clock the trigger times are read on. Leave it on this machine's zone to follow the computer running the task; if that cannot be read, Asia/Shanghai is used.",
     "session": "Conversation",
     "sessionNew": "New conversation each run",
     "sessionExisting": "Reuse one conversation",
