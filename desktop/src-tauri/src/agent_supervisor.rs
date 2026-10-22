@@ -711,7 +711,10 @@ mod block_fixtures {
             crate::agent_host::host().start("auto".into()).unwrap();
             assert!(crate::agent_host::host().owns_agent());
             let status = block_on(agent_status());
-            assert_eq!(status.phase, "ready");
+            // The status carries the reason when it is not ready; without it a
+            // red run says only "unavailable" and the reader has to guess which
+            // of the transport, handshake or data-root checks refused it.
+            assert_eq!(status.phase, "ready", "{status:?}");
             assert_eq!(
                 status.agent_version.as_deref(),
                 Some(crate::build_info::VERSION)
