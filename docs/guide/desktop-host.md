@@ -193,16 +193,19 @@ future remote devices use <id|#>       # choose the one in control
 - `list` reads and `use` writes `~/.future/remote_pairings.json` (an older
   single-pairing file is read as one slot), so both work with no running Desktop
   and, on a self-hosted relay, no account.
-- The list reports what each entry in that file actually is, not just the ones in
-  control: `paired` (`in control` or `standby`), `unclaimed` (an invitation no
-  phone has scanned yet), `expired` (an invitation nobody ever claimed, past its
-  deadline — it can neither be claimed nor connect, so it only occupies a slot and
-  `remove` clears it), and `legacy` (a credential from before the v2 handshake,
-  which cannot connect on this version). The `expiresAt` in a pairing is the
-  invitation's deadline, not the pairing's: a device that claimed its invitation
-  keeps working after that instant, because only the claim path checks it. A row
-  that cannot serve never reads `in control`, even when the stored pointer still
-  names it.
+- The list adds a `STATE` column beside the existing `CONTROL` one, and its
+  headline gives the total plus one count per state (`2 entries in the pairing
+  book: 1 paired / 1 unclaimed, expired`) so a row that cannot serve is never
+  folded into a number that implies it can. The states are annotation only — no
+  row is removed, and `control` keeps its meaning (the stored pointer): `paired`,
+  `unclaimed` (an invitation no phone has scanned yet), `unclaimed, expired` (an
+  invitation nobody ever claimed, past its deadline — it can neither be claimed nor
+  connect, so nothing happens behind it until `remove` clears it), and `legacy` (a
+  credential from before the v2 handshake, which cannot connect on this version).
+  The `expiresAt` in a pairing is the invitation's deadline, not the pairing's: a
+  device that claimed its invitation keeps working after that instant, because only
+  the claim path checks it — which is why a `paired` row can carry a deadline in
+  the past.
 - `add` and `remove` (and the immediate half of `use`) are the exceptions, because
   the running process is what actually serves a device. An invitation is only
   usable while the bridge for that pairing is connected, and a removal only takes
