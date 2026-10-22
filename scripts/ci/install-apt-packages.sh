@@ -101,10 +101,60 @@ switch_to_public_archive() {
   return 0
 }
 
-# The archive URIs apt would actually fetch for these packages. Asked of apt
-# rather than of the source files, so the answer reflects every layer of
-# indirection - this is the assertion that shows whether a switch moved the
-# endpoint at all.
+# The mirror list a `mirror+file:` source defers to, as configured.
+configured_mirror_lists() {
+  grep -hoE 'mirror\+file:[^[:space:]]+' \
+    "$apt_etc_dir/sources.list" "$apt_etc_dir"/sources.list.d/* 2>/dev/null |
+    sed -E 's/^mirror\+file://' | sort -u || true
+}
+
+# Entries apt can use, for the log line that says how much failover is left.
+mirror_list_entries() {
+  awk 'NF && $1 !~ /^#/ { count++ } END { print count + 0 }' "$1"
+}
+
+# The mirror apt will actually use: lowest priority number wins and the rest
+# are failover. Entries without a priority keep their file order.
+mirror_list_pick() {
+  awk -F'\t' '
+    {
+      url = $1
+      sub(/[[:space:]]+$/, "", url)
+      if (url == "" || url ~ /^#/) { next }
+      prio = 1000000
+      if ($2 ~ /priority:/) { p = $2; sub(/.*priority:[[:space:]]*/, "", p); prio = p + 0 }
+      if (pick == "" || prio < best) { best = prio; pick = url }
+    }
+    END { print pick }' "$1"
+}
+
+# `--print-uris` does not resolve the mirror list: for a source that defers to
+# one it prints `mirror+file:/etc/apt/apt-mirrors.txt/pool/...`, so the endpoint
+# has to be substituted here or the log names no archive. This is also the only
+# honest before/after check of a switch, since that pseudo-URI looks identical
+# on both sides of one.
+resolve_mirror_uris() {
+  local list base line uri rest
+  list=$(configured_mirror_lists | sed -n '1p')
+  base=""
+  if [[ -n $list && -f $list ]]; then base=$(mirror_list_pick "$list"); fi
+  while IFS= read -r line; do
+    uri=$(example_uri "$line")
+    case $uri in
+      mirror+file:*)
+        if [[ -n $base ]]; then
+          rest=${uri#mirror+file:}
+          rest=${rest#"$list"}
+          uri="${base%/}${rest}"
+        fi
+        ;;
+    esac
+    printf "'%s' %s\n" "$uri" "${line#* }"
+  done
+}
+
+# The archive URIs apt would fetch, asked of apt rather than of the source
+# files, so every layer of indirection is accounted for.
 planned_uris() {
   as_root apt-get "${apt_opts[@]}" --print-uris --yes --no-install-recommends \
     install "$@" 2>/dev/null | grep -E "^'" || true
@@ -148,7 +198,8 @@ example_uri() {
 # still fetching. Printed on failure so the log names the packages involved
 # instead of leaving the reader to guess from a truncated "Get:" line.
 pending_packages() {
-  planned_uris "$@" | awk -v quote="'" 'substr($0, 1, 1) == quote { printf "%s ", $2 }'
+  planned_uris "$@" | resolve_mirror_uris |
+    awk -v quote="'" 'substr($0, 1, 1) == quote { printf "%s ", $2 }'
 }
 
 as_mb() { awk -v bytes="$1" 'BEGIN { printf "%.1f", bytes / 1048576 }'; }
@@ -174,13 +225,17 @@ update_index() {
 # (-o Acquire::http::Timeout already bounds a transfer that stops moving),
 # while a stuck unpack is a dpkg problem and retrying it elsewhere is pointless.
 install_packages() {
-  local plan hosts sample bytes budget
-  plan=$(planned_uris "$@")
+  local plan hosts sample bytes budget list
+  plan=$(planned_uris "$@" | resolve_mirror_uris)
   hosts=$(printf '%s\n' "$plan" | hosts_of_uris)
   sample=$(example_uri "$plan")
   bytes=$(printf '%s\n' "$plan" | bytes_of_uris)
   budget=$(download_budget_for "$bytes")
   last_hosts=${hosts:-no archive host}
+  list=$(configured_mirror_lists | sed -n '1p')
+  if [[ -n $list && -f $list ]]; then
+    echo "APT mirror list ${list}: $(mirror_list_entries "$list") entries, using $(mirror_list_pick "$list")" >&2
+  fi
   echo "APT download: $(as_mb "$bytes") MB from ${last_hosts} (budget ${budget}s)" >&2
   if [[ -n $sample ]]; then
     echo "APT sample URI: ${sample}" >&2
@@ -215,6 +270,25 @@ Suites: noble noble-updates
 Components: main universe
 EOF
 
+  # apt leaves the indirection unresolved in --print-uris, so the reporting
+  # path has to substitute the mirror itself. Asserted on both sides of the
+  # switch: the plan line is identical, only the resolved endpoint may change.
+  plan="'mirror+file:${root}/apt-mirrors.txt/pool/main/f/foo/foo_1.0_amd64.deb' foo_1.0_amd64.deb 1048576 SHA256:abc"
+  expect_resolved() {
+    local want=$1 got
+    got=$(printf '%s\n' "$plan" | resolve_mirror_uris)
+    case $got in
+      "'${want}"*) ;;
+      *) echo "self-test: resolved '${got}', expected '${want}...'" >&2; status=1 ;;
+    esac
+  }
+
+  if (( $(mirror_list_entries "$root/apt-mirrors.txt") != 3 )); then
+    echo "self-test: did not count the three mirror-list entries" >&2
+    status=1
+  fi
+  expect_resolved 'http://azure.archive.ubuntu.com/ubuntu/pool/main/f/foo/foo_1.0_amd64.deb'
+
   if ! switch_to_public_archive 2>/dev/null; then
     echo "self-test: the mirror list was not rewritten" >&2
     status=1
@@ -223,10 +297,11 @@ EOF
     echo "self-test: the Azure hostname survived in the mirror list" >&2
     status=1
   fi
-  if ! grep -q '^http://archive\.ubuntu\.com/ubuntu/	priority:1$' "$root/apt-mirrors.txt"; then
+  if ! grep -q '^http://archive\.ubuntu\.com/ubuntu/.*priority:1' "$root/apt-mirrors.txt"; then
     echo "self-test: the first mirror is not the public archive at its priority" >&2
     status=1
   fi
+  expect_resolved 'http://archive.ubuntu.com/ubuntu/pool/main/f/foo/foo_1.0_amd64.deb'
   # Second call has nothing left to move and must say so rather than claim a switch.
   if switch_to_public_archive > /dev/null 2>&1; then
     echo "self-test: an already-public mirror list reported a rewrite" >&2
