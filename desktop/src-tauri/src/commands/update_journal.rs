@@ -48,6 +48,7 @@ fn read_latest() -> Result<Option<Record>, AppError> {
         None | Some(
             "installed"
                 | "pending-validation"
+                | "cancelled"
                 | "failed"
                 | "interrupted"
                 | "not-installed"

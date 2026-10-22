@@ -36,6 +36,18 @@ process cannot confirm the new version. An executor holds the existing Agent
 instance lease during Unix replacement; another host starting in the gap makes
 the update fail before program files change. Windows NSIS retains its lease.
 
+## User experience
+
+The settings page shows versions, download progress and the next useful action.
+Journal identifiers, executable paths, internal stages and raw diagnostics stay
+in maintenance records and logs. The stopped update screen follows the same rule.
+Failures distinguish retrying, restarting a safely restored version and
+reinstalling through an installer; a failed update check still leaves the official
+website available for recovery. Native confirmations use the selected UI language
+and the same translation dictionary. Deferring an installation records a normal
+`cancelled` outcome without an error banner. Recovery uses one screen, without a
+second native error dialog.
+
 ## Platform adapters
 
 | Platform | Preparation | Commit and failure semantics |

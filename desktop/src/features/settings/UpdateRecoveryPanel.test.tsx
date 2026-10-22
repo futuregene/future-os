@@ -22,14 +22,18 @@ it.each(["installed", "pending-validation", "failed-restored", "not-installed", 
   const root = createRoot(container);
   try {
     await act(async () => root.render(<UpdateRecoveryPanel />));
-    const button = container.querySelector("button");
+    const button = [...container.querySelectorAll("button")].find(item => item.textContent === "Restart FutureOS");
     if (["installed", "pending-validation", "failed-restored", "not-installed"].includes(outcome ?? "")) {
       expect(button?.textContent).toBe("Restart FutureOS");
       await act(async () => button!.click());
       expect(mocks.invoke).toHaveBeenCalledWith("restart_after_app_update");
     }
     else {
-      expect(button).toBeNull();
+      expect(button).toBeUndefined();
+      expect(container.textContent).not.toContain("Original files changed");
+      expect(container.textContent).not.toContain("update-fixture");
+      if (outcome === "repair-required")
+        expect(container.textContent).toContain("Download the installer, reinstall FutureOS, then open it again.");
       expect(mocks.invoke).not.toHaveBeenCalled();
     }
   }
@@ -59,7 +63,8 @@ it("surfaces a failed restart instead of leaving the button silently inert", asy
 
     await act(async () => button.click());
 
-    expect(container.querySelector("[role='alert']")?.textContent).toContain("supervisor unavailable");
+    expect(container.querySelector("[role='alert']")?.textContent).toContain("Couldn’t restart automatically. Close and reopen FutureOS.");
+    expect(container.textContent).not.toContain("supervisor unavailable");
     // The button comes back: a failed restart is retryable.
     expect(container.querySelector("button")!.disabled).toBe(false);
   }

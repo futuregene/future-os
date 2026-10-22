@@ -13,6 +13,13 @@ export function AgentStatusGate({ status, showWait = false }: AgentStatusGatePro
   if (status.phase === "stopping") {
     const failed = status.shutdown?.state === "failed";
     const complete = status.shutdown?.state === "stopped";
+    if (status.shutdown?.reason === "update") {
+      return (
+        <div className="flex h-full items-center justify-center bg-canvas px-6 text-center text-ink">
+          <div className="max-w-lg"><UpdateRecoveryPanel shutdownFailed={failed} /></div>
+        </div>
+      );
+    }
     return (
       <div className="flex h-full items-center justify-center bg-canvas px-6 text-center text-ink">
         <div aria-live="polite" className="flex max-w-lg flex-col items-center gap-3" role="status">
@@ -21,7 +28,6 @@ export function AgentStatusGate({ status, showWait = false }: AgentStatusGatePro
           {status.shutdown ? <p className="text-sm text-ink-muted">{t(`agentStatus.shutdownStages.${status.shutdown.stage}`)}</p> : null}
           {failed && status.error ? <p role="alert" className="text-sm text-ink-muted">{status.error}</p> : null}
           {failed ? <p className="text-sm text-ink-muted">{t("agentStatus.cleanupFailedHint")}</p> : null}
-          {status.shutdown?.reason === "update" ? <UpdateRecoveryPanel /> : null}
         </div>
       </div>
     );

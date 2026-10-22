@@ -11,6 +11,7 @@ import { useBuildInfo } from "../../integrations/tauri/useBuildInfo";
 import { useMaintenanceStatus } from "../../integrations/tauri/useMaintenanceStatus";
 import { errorMessage } from "../../lib/errors";
 import { SettingsSection } from "./SettingsPrimitives";
+import { UPDATE_DOWNLOAD_PAGE, updatePresentation } from "./updatePresentation";
 
 interface DownloadProgress {
   downloaded: number;
@@ -23,7 +24,7 @@ interface DownloadProgress {
  * the result is displayed immediately without a redundant network round-trip.
  */
 export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | null }) {
-  const { t } = useTranslation("settings");
+  const { t, i18n } = useTranslation("settings");
   const build = useBuildInfo();
   const [status, setStatus] = useState<UpdateStatus | null>(cachedStatus ?? null);
   const [checking, setChecking] = useState(false);
@@ -36,13 +37,13 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
   const { maintenance, setMaintenance, maintenanceError, setMaintenanceError } = useMaintenanceStatus();
   const [downloadError, setDownloadError] = useState<string | null>(null);
 
+  const [actionError, setActionError] = useState<"update.restartFailed" | "update.repairFailed" | null>(null);
   const recovery = maintenance?.update;
-  const awaitingRestart = installed || recovery?.outcome === "pending-validation";
+  const presentation = updatePresentation(recovery ?? null);
+  const awaitingRestart = installed || presentation.ready;
   const updateStage = recovery?.stage ?? "downloading";
   const preparing = ["verified", "preparing", "prepared"].includes(updateStage);
   const installing = ["cleanup", "awaiting-exit", "installing"].includes(updateStage);
-  const needsRecovery = Boolean(installError && recovery?.outcome && ["failed-restored", "repair-required", "cleanup-failed"].includes(recovery.outcome));
-  const needsManualRepair = Boolean(recovery && !recovery.repairAcknowledged && (recovery.outcome === "repair-required" || (recovery.outcome === "interrupted" && ["installing", "awaiting-exit"].includes(recovery.stage))));
 
   // Tear down the streamed-progress listener if the page unmounts mid-download
   // (the download command itself still settles in the background).
@@ -63,6 +64,7 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
     setInstalled(false);
     setInstallError(null);
     setDownloadError(null);
+    setActionError(null);
     try {
       setStatus(await invokeCommand<UpdateStatus>("check_app_update"));
     }
@@ -81,6 +83,8 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
     setDownloading(true);
     setProgress(0);
     setInstallError(null);
+    setActionError(null);
+    setDownloadError(null);
     try {
       // Subscribe before installing; subscription failures must also release
       // the downloading state rather than becoming unhandled rejections.
@@ -94,7 +98,7 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
         return;
       }
       unlistenRef.current = unlisten;
-      await invokeCommand("install_app_update");
+      await invokeCommand("install_app_update", { language: i18n.resolvedLanguage ?? i18n.language });
       if (mountedRef.current) {
         setProgress(100);
         const result = await invokeCommand<MaintenanceStatus>("app_maintenance_status");
@@ -127,34 +131,35 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
   }
 
   async function handleRestart() {
-    setInstallError(null);
+    setActionError(null);
     try {
       await invokeCommand("restart_after_app_update");
     }
-    catch (error) {
-      setInstallError(errorMessage(error));
+    catch {
+      setActionError("update.restartFailed");
     }
   }
 
   async function handleRepairAcknowledgement() {
     if (!recovery)
       return;
+    setActionError(null);
     try {
-      await invokeCommand("acknowledge_update_repair", { operationId: recovery.operationId });
+      const acknowledged = await invokeCommand<boolean>("acknowledge_update_repair", { operationId: recovery.operationId, language: i18n.resolvedLanguage ?? i18n.language });
+      if (acknowledged === false)
+        return;
       setMaintenance(await invokeCommand<MaintenanceStatus>("app_maintenance_status"));
       setInstallError(null);
     }
-    catch (error) {
-      setInstallError(errorMessage(error));
+    catch {
+      setActionError("update.repairFailed");
     }
   }
 
   async function handleManualDownload() {
-    if (!status?.downloadUrl)
-      return;
     setDownloadError(null);
     try {
-      await openExternalUrl(status.downloadUrl);
+      await openExternalUrl(status?.downloadUrl ?? UPDATE_DOWNLOAD_PAGE);
     }
     catch (error) {
       setDownloadError(errorMessage(error));
@@ -174,7 +179,7 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
               </div>
             </div>
             <Button
-              disabled={checking || downloading}
+              disabled={checking || downloading || presentation.working || awaitingRestart}
               leftIcon={<RefreshCw className={checking ? "size-3.5 animate-spin" : "size-3.5"} />}
               onClick={() => void handleCheck()}
               size="sm"
@@ -184,26 +189,36 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
             </Button>
           </div>
 
-          {maintenanceError ? <p role="alert" className="text-xs text-danger">{`${t("update.maintenanceUnavailable")}: ${maintenanceError}`}</p> : null}
-          {maintenance?.cli.error ? <p role="alert" className="text-xs text-danger">{maintenance.cli.error}</p> : null}
-          {maintenance?.cli.tool
-            ? <p className="break-all text-xs text-ink-muted">{t("update.cliTool", maintenance.cli.tool)}</p>
+          {maintenanceError ? <p role="alert" className="text-xs text-danger">{t("update.maintenanceUnavailable")}</p> : null}
+          {!downloading && presentation.problem
+            ? <p role="alert" className="text-xs text-danger">{t(presentation.problem)}</p>
             : null}
-          {maintenance?.update
+          {!downloading && installError && !presentation.problem
+            ? <p role="alert" className="text-xs text-danger">{t("update.installFailed")}</p>
+            : null}
+          {actionError ? <p role="alert" className="text-xs text-danger">{t(actionError)}</p> : null}
+          {presentation.repair && !downloading
+            ? <Button onClick={() => void handleRepairAcknowledgement()} size="sm" variant="secondary">{t("update.confirmRepair")}</Button>
+            : null}
+          {!downloading && (installError || presentation.repair || actionError || maintenanceError || recovery?.outcome === "cleanup-failed")
+            ? <Button onClick={() => void handleManualDownload()} size="sm" variant="secondary">{t("update.manualFallback")}</Button>
+            : null}
+          {checkError ? <p role="alert" className="text-xs text-danger">{t("update.checkFailed")}</p> : null}
+          {downloadError ? <p role="alert" className="text-xs text-danger">{t("update.downloadFailed")}</p> : null}
+
+          {awaitingRestart
             ? (
-                <div role="status" className="space-y-1 border-t border-line-soft pt-3 text-xs text-ink-muted">
-                  <p>{t("update.operation", { id: maintenance.update.operationId, stage: t(`update.stages.${maintenance.update.stage}`, { defaultValue: maintenance.update.stage }), outcome: maintenance.update.outcome ? t(`update.outcomes.${maintenance.update.outcome}`, { defaultValue: maintenance.update.outcome }) : t("update.unconfirmed") })}</p>
-                  {maintenance.update.diagnostic ? <p className="text-danger">{maintenance.update.diagnostic}</p> : null}
-                  {!maintenance.update.outcome ? <p>{t("update.awaitingResult")}</p> : null}
-                  {needsManualRepair && !downloading
-                    ? <Button onClick={() => void handleRepairAcknowledgement()} size="sm" variant="secondary">{t("update.confirmRepair")}</Button>
-                    : null}
+                <div className="flex flex-wrap items-center gap-2 border-t border-line-soft pt-3">
+                  <span className="text-xs text-success">{t("update.installed")}</span>
+                  <Button leftIcon={<RotateCcw className="size-3.5" />} onClick={() => void handleRestart()} size="sm" variant="primary">
+                    {t("update.restart")}
+                  </Button>
                 </div>
               )
             : null}
-          {checkError ? <p className="text-xs text-danger">{`${t("update.checkFailed")}: ${checkError}`}</p> : null}
+          {presentation.working && !status ? <p role="status" className="text-xs text-ink-muted">{t("update.awaitingResult")}</p> : null}
 
-          {status && !checking
+          {status && !checking && !awaitingRestart
             ? (
                 <div className="space-y-2 border-t border-line-soft pt-3">
                   {status.hasUpdate
@@ -216,49 +231,30 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
                           {status.canInstallInApp
                             ? (
                                 <div className="space-y-2">
-                                  {awaitingRestart
+                                  {downloading || presentation.working
                                     ? (
-                                        <div className="flex flex-wrap items-center gap-2">
-                                          <span className="text-xs text-success">{t("update.installed")}</span>
-                                          <Button
-                                            leftIcon={<RotateCcw className="size-3.5" />}
-                                            onClick={() => void handleRestart()}
-                                            size="sm"
-                                            variant="primary"
-                                          >
-                                            {t("update.restart")}
-                                          </Button>
+                                        <div className="space-y-1.5">
+                                          <div className="h-1.5 w-full overflow-hidden rounded-full bg-line-soft">
+                                            <div
+                                              className="h-full rounded-full bg-accent transition-[width]"
+                                              style={{ width: `${progress}%` }}
+                                            />
+                                          </div>
+                                          <div className="text-xs text-ink-muted">{preparing ? t("update.preparing") : installing ? t("update.installing") : downloading ? `${t("update.downloading")} ${progress}%` : t("update.awaitingResult")}</div>
                                         </div>
                                       )
-                                    : downloading
-                                      ? (
-                                          <div className="space-y-1.5">
-                                            <div className="h-1.5 w-full overflow-hidden rounded-full bg-line-soft">
-                                              <div
-                                                className="h-full rounded-full bg-accent transition-[width]"
-                                                style={{ width: `${progress}%` }}
-                                              />
-                                            </div>
-                                            <div className="text-xs text-ink-muted">{preparing ? t("update.preparing") : installing ? t("update.installing") : `${t("update.downloading")} ${progress}%`}</div>
-                                          </div>
-                                        )
-                                      : (
-                                          <Button
-                                            leftIcon={<Download className="size-3.5" />}
-                                            disabled={needsRecovery || Boolean(maintenanceError) || needsManualRepair}
-                                            onClick={() => void handleInstall()}
-                                            size="sm"
-                                            variant="primary"
-                                          >
-                                            {t("update.install")}
-                                          </Button>
-                                        )}
-                                  {installError ? <p className="text-xs text-danger">{`${t("update.installFailed")}: ${installError}`}</p> : null}
-                                  {installError && status.downloadUrl
-                                    ? <Button onClick={() => void handleManualDownload()} size="sm" variant="secondary">{t("update.manualFallback")}</Button>
-                                    : null}
-                                  {downloadError ? <p role="alert" className="text-xs text-danger">{`${t("update.downloadFailed")}: ${downloadError}`}</p> : null}
-                                  {needsRecovery && maintenance?.update?.restartSafe
+                                    : (
+                                        <Button
+                                          leftIcon={<Download className="size-3.5" />}
+                                          disabled={presentation.working || presentation.repair || recovery?.outcome === "cleanup-failed" || Boolean(maintenanceError)}
+                                          onClick={() => void handleInstall()}
+                                          size="sm"
+                                          variant="primary"
+                                        >
+                                          {t("update.install")}
+                                        </Button>
+                                      )}
+                                  {!awaitingRestart && presentation.canRestart && installError
                                     ? <Button onClick={() => void handleRestart()} size="sm" variant="primary">{t("update.restart")}</Button>
                                     : null}
                                 </div>
@@ -284,7 +280,6 @@ export function UpdatePage({ cachedStatus }: { cachedStatus?: UpdateStatus | nul
                                         )
                                       : null}
                                   </div>
-                                  {downloadError ? <p className="text-xs text-danger">{`${t("update.downloadFailed")}: ${downloadError}`}</p> : null}
                                 </div>
                               )}
                         </>

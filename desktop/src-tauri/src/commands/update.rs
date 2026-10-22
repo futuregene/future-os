@@ -1035,6 +1035,7 @@ mod tests {
             false,
             NIGHTLY_MANIFEST_URL,
             "0.0.2-abcdef+local",
+            None,
         )
         .await
         .unwrap_err();
@@ -1049,7 +1050,9 @@ mod tests {
         // injectable `_impl`) — the channel/platform guard short-circuits before
         // any updater work, so a mock app without the updater plugin suffices.
         let app = tauri::test::mock_app();
-        let error = install_app_update(app.handle().clone()).await.unwrap_err();
+        let error = install_app_update(app.handle().clone(), None)
+            .await
+            .unwrap_err();
         assert!(error
             .to_string()
             .contains("not available for this build or platform"));
@@ -1066,6 +1069,7 @@ mod tests {
             true,
             &manifest_url,
             "1.0.0",
+            None,
         )
         .await
         .unwrap_err();
@@ -1084,6 +1088,7 @@ mod tests {
             true,
             "not a url",
             "1.0.0",
+            None,
         )
         .await
         .unwrap_err();
@@ -1114,6 +1119,7 @@ mod tests {
             true,
             &manifest_url,
             "1.0.0",
+            None,
         )
         .await
         .unwrap_err();
@@ -1230,29 +1236,6 @@ mod tests {
         assert!(value.get("update").is_some());
     }
 
-    /// The install body's own guard: a build that may not install in place is
-    /// refused before it builds an updater, whatever the caller passed.
-    #[tokio::test]
-    async fn the_install_body_refuses_a_build_that_cannot_install_in_app() {
-        let _home = crate::auth_store::test_support::HomeGuard::new("update-inner-guard");
-        let app = tauri::test::mock_app();
-        let operation = journal::Operation::begin("0.0.2-abcdef+local").expect("journal record");
-        let error = install_app_update_inner(
-            app.handle().clone(),
-            BuildChannel::Local,
-            false,
-            "http://127.0.0.1:1/",
-            "0.0.2-abcdef+local",
-            InstallGuard,
-            operation,
-        )
-        .await
-        .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("not available for this build or platform"));
-    }
-
     /// A record that does not permit restart is refused before the relaunch
     /// (the injected closure panics, so reaching it would fail this test) and
     /// before the shutdown barrier is touched.
@@ -1329,6 +1312,21 @@ mod tests {
     }
 }
 
+/// Share the UI dictionary so native update dialogs never expose diagnostics or
+/// switch language halfway through the installation flow.
+fn update_dialog_text(language: Option<&str>, key: &str) -> String {
+    let dictionary = if language.is_some_and(|value| value.starts_with("zh")) {
+        include_str!("../../../src/i18n/locales/zh/settings.json")
+    } else {
+        include_str!("../../../src/i18n/locales/en/settings.json")
+    };
+    serde_json::from_str::<serde_json::Value>(dictionary)
+        .expect("bundled settings translations must be valid JSON")["update"][key]
+        .as_str()
+        .expect("native update dialogs must have a translation")
+        .to_owned()
+}
+
 /// Download, verify and install the platform updater package.
 ///
 /// Tauri verifies the mandatory minisign signature before installation. The
@@ -1337,6 +1335,7 @@ mod tests {
 #[tauri::command]
 pub async fn install_app_update<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
+    language: Option<String>,
 ) -> Result<(), AppError> {
     let channel = build_info::channel();
     install_app_update_impl(
@@ -1345,6 +1344,7 @@ pub async fn install_app_update<R: tauri::Runtime>(
         automatic_install_supported(channel),
         manifest_url(channel),
         build_info::VERSION,
+        language.as_deref(),
     )
     .await
 }
@@ -1355,6 +1355,7 @@ async fn install_app_update_impl<R: tauri::Runtime>(
     can_install: bool,
     endpoint_url: &str,
     current_version: &str,
+    language: Option<&str>,
 ) -> Result<(), AppError> {
     if !can_install {
         return Err("Automatic installation is not available for this build or platform.".into());
@@ -1378,7 +1379,7 @@ async fn install_app_update_impl<R: tauri::Runtime>(
     let result = install_app_update_inner(
         app,
         channel,
-        can_install,
+        language,
         endpoint_url,
         current_version,
         install_guard,
@@ -1409,7 +1410,8 @@ pub async fn app_maintenance_status() -> Result<serde_json::Value, AppError> {
 pub async fn acknowledge_update_repair(
     app: tauri::AppHandle,
     operation_id: String,
-) -> Result<(), AppError> {
+    language: Option<String>,
+) -> Result<bool, AppError> {
     INSTALL_ACTIVE
         .compare_exchange(
             false,
@@ -1421,30 +1423,35 @@ pub async fn acknowledge_update_repair(
     let guard = InstallGuard;
     tokio::task::spawn_blocking(move || {
         let _guard = guard;
-        let confirmed = app.dialog().message("Only continue after manually reinstalling or repairing FutureOS and confirming the installation is complete. This records your repair confirmation; it does not verify or restart program files.")
-            .title("Confirm manual installation repair")
+        let text = |key| update_dialog_text(language.as_deref(), key);
+        let confirmed = app
+            .dialog()
+            .message(text("repairConfirmation"))
+            .title(text("repairTitle"))
             .kind(MessageDialogKind::Warning)
-            .buttons(MessageDialogButtons::OkCancelCustom("I repaired the installation".into(), "Cancel".into())).blocking_show();
-        if !confirmed { return Err("Repair acknowledgement cancelled".into()); }
-        journal::acknowledge_repair(&operation_id)
-    }).await.map_err(|error| AppError::from(error.to_string()))?
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                text("repairConfirm"),
+                text("repairCancel"),
+            ))
+            .blocking_show();
+        if !confirmed {
+            return Ok(false);
+        }
+        journal::acknowledge_repair(&operation_id).map(|()| true)
+    })
+    .await
+    .map_err(|error| AppError::from(error.to_string()))?
 }
 
 async fn install_app_update_inner<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     channel: BuildChannel,
-    can_install: bool,
+    language: Option<&str>,
     endpoint_url: &str,
     current_version: &str,
     install_guard: InstallGuard,
     operation: journal::Operation,
 ) -> Result<(), AppError> {
-    if !can_install {
-        return Err(AppError::Message(
-            "Automatic installation is not available for this build or platform.".to_string(),
-        ));
-    }
-
     let endpoint = endpoint_url
         .parse()
         .map_err(|error| updater_error("Invalid update endpoint", error))?;
@@ -1504,33 +1511,46 @@ async fn install_app_update_inner<R: tauri::Runtime>(
     // Check the same live activity as quit, including other clients of an
     // embedded Agent. Retained idle conversations are not active work.
     let confirmation_app = app.clone();
+    let text = |key| update_dialog_text(language, key);
+    let confirmation = (
+        text("installTitle"),
+        text("installConfirmation"),
+        text("installConfirm"),
+        text("installDefer"),
+    );
     let (confirmed, stop_work_authorized) = tokio::task::spawn_blocking(move || {
-        let running_terminals = crate::terminal::server::manager()
-            .map_or(0, |manager| manager.running_count());
-        if crate::agent_host::host().owns_agent() && !update_needs_confirmation(
-            crate::agent_supervisor::active_work_count(),
-            running_terminals,
-        ) {
+        let running_terminals =
+            crate::terminal::server::manager().map_or(0, |manager| manager.running_count());
+        if crate::agent_host::host().owns_agent()
+            && !update_needs_confirmation(
+                crate::agent_supervisor::active_work_count(),
+                running_terminals,
+            )
+        {
             return (true, false);
         }
-        let scope = if crate::agent_host::host().owns_agent() {
-            "Installing stops all Agent work, including CLI conversations, shells and queued tasks."
-        } else {
-            "Installing stops this Desktop's work. An external Agent using the same data will block Windows installation; stop it yourself before continuing."
-        };
-        let confirmed = confirmation_app.dialog().message(scope).title("Install FutureOS update?")
+        let confirmed = confirmation_app
+            .dialog()
+            .message(confirmation.1)
+            .title(confirmation.0)
             .kind(MessageDialogKind::Warning)
-            .buttons(MessageDialogButtons::OkCancelCustom("Install and stop work".into(), "Keep running".into()))
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                confirmation.2,
+                confirmation.3,
+            ))
             .blocking_show();
         (confirmed, true)
-    }).await.map_err(|error| updater_error("Update confirmation failed", error))?;
+    })
+    .await
+    .map_err(|error| updater_error("Update confirmation failed", error))?;
     if !confirmed {
-        return Err(AppError::Message("Update installation cancelled.".into()));
+        operation.finish("cancelled", None, false)?;
+        return Ok(());
     }
     // Download verifies the signature before freezing work. An exit hook
     // cannot veto NSIS, so return cleanup failures before calling install.
     let worker_operation = operation.clone();
-    let (installed, restart_safe) = tokio::task::spawn_blocking(move || {
+    let (installed, _) = tokio::task::spawn_blocking(move || {
         let operation = worker_operation;
         // Keep the update mutex through the native worker even if the invoke
         // future is dropped while shutdown or installation is underway.
@@ -1628,53 +1648,10 @@ async fn install_app_update_inner<R: tauri::Runtime>(
     .await
     .map_err(|error| updater_error("Update cleanup/install worker failed", error))?;
     if let Err(error) = installed {
-        if !error
-            .to_string()
-            .starts_with("Update installation failed after cleanup:")
-        {
-            return Err(error);
-        }
-        crate::host_environment::report(&format!(
-            "Update installation failed after cleanup: {error}"
-        ));
-        // Never reopen frozen producers in the old process. The restart
-        // command performs the same successful cleanup, then re-execs.
-        let message = if restart_safe {
-            error.to_string()
-        } else {
-            format!("Update recovery requires repair: {error}. Original program files changed or are missing; reinstall FutureOS before restarting.")
-        };
-        let recovery_app = app.clone();
-        let recovery_message = message.clone();
-        let restart = tokio::task::spawn_blocking(move || {
-            recovery_app
-                .dialog()
-                .message(recovery_message)
-                .title("Update failed")
-                .kind(MessageDialogKind::Error)
-                .buttons(if restart_safe {
-                    MessageDialogButtons::OkCancelCustom(
-                        "Restart FutureOS".into(),
-                        "Stay closed".into(),
-                    )
-                } else {
-                    MessageDialogButtons::OkCustom("Keep stopped".into())
-                })
-                .blocking_show()
-        })
-        .await
-        .map_err(|error| updater_error("Update recovery dialog failed", error))?;
-        if restart && restart_safe {
-            tokio::task::spawn_blocking(move || {
-                restart_after_app_update_with(app, |app| {
-                    crate::agent_supervisor::authorize_exit();
-                    app.restart()
-                })
-            })
-            .await
-            .map_err(|error| updater_error("Update recovery restart failed", error))??;
-        }
-        return Err(AppError::Message(message));
+        // The journal and update screen own recovery. A second native failure
+        // dialog would expose raw diagnostics and hide the available actions.
+        crate::host_environment::report(&format!("Update installation failed: {error}"));
+        return Err(error);
     }
     #[cfg(target_os = "windows")]
     {
