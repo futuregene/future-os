@@ -94,6 +94,15 @@ It remains alive when the last worker dies and does not require another paid run
 or an LLM polling session to discover the failure. `scheduler tick` and post-run
 sweeps remain supplemental reconciliation triggers.
 
+The lock is a duplicate guard, not the delivery itself, and the two failures it
+can report are kept apart. A held lock means another watcher owns the loop. A file
+system that will not grant a lock at all — `ENOLCK` on a network share without a
+lock manager, `ENOTSUP` on some FUSE mounts — is *not* read as "somebody is
+already watching": the watcher runs without the guard, says so once, and still
+delivers, because a goal with no watcher sends no reports at all. A lock file that
+cannot even be opened is a real fault and is reported as one: the derived watcher
+is not started, and the caller sees why instead of a silently absent supervisor.
+
 The watcher exits when the goal is deleted/cancelled or terminal with no pending
 notification. It is not an OS boot service: after host restart, launch the same
 CLI under a service manager or re-register/resume the goal. No local process can
