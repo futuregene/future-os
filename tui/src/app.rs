@@ -19745,6 +19745,51 @@ mod tests {
         assert!(!top_overlay_is::<ApprovalOverlay>(&app));
     }
 
+    /// A manual-approval run: tool call → "Allowed: …" transcript row → final
+    /// text. The answer must be the transcript's last line, after the call and
+    /// the approval row — not appended to the run's opening assistant message
+    /// above them (that rendered the answer before the activity that produced
+    /// it, measured on a `[manual]` session 2026-10-22).
+    #[tokio::test]
+    async fn the_final_answer_follows_the_approval_rows_it_came_after() {
+        let (mut app, _rx) = make_app(100, 30);
+        app.handle_agent_event(&make_event("agent_start", "{}"));
+        app.handle_agent_event(&make_event(
+            "tool_start",
+            r#"{"tool_id":"t1","tool_name":"shell","tool_args":"{\"command\":\"sinfo\"}"}"#,
+        ));
+        app.handle_agent_event(&make_event("tool_end", r#"{"tool_id":"t1","text":"ok"}"#));
+        app.add_system_message("Allowed: Approve shell command".into());
+        app.handle_agent_event(&make_event_with_run(
+            "text_chunk",
+            r#"{"text":"the final answer"}"#,
+            "run-1",
+        ));
+        app.handle_agent_event(&make_event_with_run(
+            "agent_end",
+            r#"{"state":"completed","text":"the final answer"}"#,
+            "run-1",
+        ));
+
+        let transcript = app.chat.plain_messages();
+        assert_eq!(
+            transcript.last().map(|(role, _)| *role),
+            Some(ChatRole::Assistant),
+            "the answer is the transcript's last message: {transcript:?}"
+        );
+        assert_eq!(transcript.last().unwrap().1.trim(), "the final answer");
+        let approval_row = transcript
+            .iter()
+            .position(|(role, content)| {
+                *role == ChatRole::System && content.contains("Allowed: Approve shell command")
+            })
+            .expect("the approval row is in the transcript");
+        assert!(
+            approval_row + 1 < transcript.len(),
+            "the answer has to come after the approval row: {transcript:?}"
+        );
+    }
+
     /// A reconnect rebuilds the queue from `get_state`'s `pendingApprovals`:
     /// what the agent still holds comes back, what resolved while we were
     /// away is dropped, and duplicates are not re-queued.
