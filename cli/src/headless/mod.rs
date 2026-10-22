@@ -894,19 +894,30 @@ mod tests {
         assert_eq!(parse(&["-h"]).unwrap(), Launch::Help);
     }
 
+    /// How a supervisor takes the host away without the operator asking:
+    /// `systemctl stop` / a scheduler (SIGTERM) where there are unix signals, the
+    /// console-close event where there are not. Which one exists differs by
+    /// platform, and each must reach the cleanup as the cause and as its own
+    /// reason — naming the signal is the whole point of it.
+    #[cfg(unix)]
+    const SUPERVISOR_STOP: (StopCause, &str) = (StopCause::Terminate, "headless_sigterm");
+    #[cfg(windows)]
+    const SUPERVISOR_STOP: (StopCause, &str) = (StopCause::Close, "headless_console_close");
+
     #[tokio::test]
     async fn interrupt_drops_pending_startup_before_it_can_complete() {
         let completed = std::sync::atomic::AtomicBool::new(false);
-        let (result, cause) = until_shutdown(async { StopCause::Terminate }, async {
+        let (stop, reason) = SUPERVISOR_STOP;
+        let (result, cause) = until_shutdown(async { stop }, async {
             completed.store(true, std::sync::atomic::Ordering::Relaxed);
             Ok(())
         })
         .await;
         result.unwrap();
         // The signal is what the cleanup records as the stop reason, so a
-        // cleanup deadline names SIGTERM instead of a generic exit.
-        assert_eq!(cause, StopCause::Terminate);
-        assert_eq!(cause.reason(), "headless_sigterm");
+        // cleanup deadline names the signal instead of a generic exit.
+        assert_eq!(cause, stop);
+        assert_eq!(cause.reason(), reason);
         assert!(!completed.load(std::sync::atomic::Ordering::Relaxed));
     }
 
