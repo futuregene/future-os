@@ -252,7 +252,7 @@ export function RemotePeerSettings({
           </SettingsRow>
           <SettingsRow description={t("settingSkillRecommendHint")} title={t("settingSkillRecommend")}>
             <Switch
-              checked={setting("skillRecommend", true)}
+              checked={setting("skillRecommend", false)}
               disabled={!available || busy}
               label={t("settingSkillRecommend")}
               onChange={value => void update({ skillRecommend: value })}

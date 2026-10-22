@@ -109,7 +109,7 @@
   "settingSkillRecommend": "Skill suggestions",
   "settingSkillRecommendHint": "Let that desktop suggest a skill while you type.",
   "settingAutoConnect": "Keep the remote desktop on after a restart",
-  "settingAutoConnectHint": "Whether that computer serves its paired devices again when it starts; off means the switch has to be turned on there.",
+  "settingAutoConnectHint": "Whether that computer serves its paired devices again at its next launch — its own Remote switch changes then, not now. Off means the switch is off when it restarts and has to be turned on there.",
   "settingsHostContent": "On that desktop",
   "settingsHostContentHint": "Read-only summary here; manage them on the desktop itself.",
   "countModels": "on that desktop",

@@ -294,7 +294,7 @@ export function ChatScreen() {
     remote.desktopOnline,
   );
   const skillRecommendation = useSkillRecommendation(
-    desktopSettings.data?.skillRecommend ?? true,
+    desktopSettings.data?.skillRecommend ?? false,
     remote.desktopOnline,
     i18n.language,
   );

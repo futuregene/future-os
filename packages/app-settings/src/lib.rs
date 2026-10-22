@@ -53,7 +53,8 @@ pub struct AppSettings {
     /// built-in provider and account/billing details stay out of the footer.
     pub community_edition: bool,
     /// Recommend at most one uninstalled skill when the user sends a message
-    /// (PRD v1.6 §3). **On by default**; the user can turn it off in Settings.
+    /// (PRD v1.6 §3). **Off by default**, per the integration plan's rule 1; the
+    /// user opts in from Settings.
     pub skill_recommend: bool,
     /// Continue, on the next launch, the conversations a run was interrupted in
     /// when the app was closed. On by default: the embedded Agent dies with the
@@ -432,7 +433,7 @@ pub fn defaults() -> AppSettings {
         auto_title_first_turn: true,
         title_language: "en".to_string(),
         community_edition: false,
-        skill_recommend: true,
+        skill_recommend: false,
         auto_resume_interrupted: true,
     }
 }
@@ -491,7 +492,7 @@ pub fn read(conn: &Connection) -> Result<AppSettings, Error> {
         .unwrap_or(false);
     let skill_recommend = read_value(conn, KEY_SKILL_RECOMMEND)?
         .map(|value| value == "true")
-        .unwrap_or(true); // On by default (PRD v1.6 §3); the Settings toggle opts out.
+        .unwrap_or(false); // Off by default (PRD v1.6 §3, integration plan rule 1); the Settings toggle opts in.
     let auto_resume_interrupted = read_value(conn, KEY_AUTO_RESUME_INTERRUPTED)?
         .map(|value| value == "true")
         .unwrap_or(true); // On by default: closing the app should not end the work.
@@ -909,7 +910,8 @@ mod tests {
         // The remote desktop is on unless the user turned its switch off: the
         // switch is the only writer, and it is the state after a restart.
         assert!(settings.auto_connect_remote);
-        assert!(settings.skill_recommend);
+        // Skill recommendations are the one automation the user opts into.
+        assert!(!settings.skill_recommend);
         assert_eq!(
             conn.query_row("SELECT COUNT(*) FROM app_settings", [], |row| row
                 .get::<_, i64>(0))

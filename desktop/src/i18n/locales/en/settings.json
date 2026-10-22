@@ -134,7 +134,7 @@
   },
   "skillRecommend": {
     "title": "Skill recommendations",
-    "description": "When you send a message, suggest at most one skill you don't have installed yet. On by default."
+    "description": "When you send a message, suggest at most one skill you don't have installed yet. Off by default."
   },
   "autoTitleFirstTurn": {
     "title": "Generate a title after the first answer",
