@@ -70,9 +70,11 @@ try {
         if ((Test-Path (Join-Path $appDir 'recovered.ready')) -ne $recoveryExpected) { throw "Unsafe/missing recovery for $case" }
         if (-not (Test-Path -LiteralPath $log)) { throw 'Missing installer diagnostics' }
         $result = [IO.File]::ReadAllText($record) | ConvertFrom-Json
-        $outcome = $(if ($case -eq 'success') { 'pending-validation' } elseif ($case -in @('rollback-recovered', 'rollback-incomplete')) { 'repair-required' } elseif ($case -eq 'parent-timeout') { 'not-installed' } else { 'failed-restored' })
+        # A verified backup restoration permits restart; only an incomplete
+        # restoration needs repair. Keep both durable outcome and safety checks.
+        $outcome = $(if ($case -eq 'success') { 'pending-validation' } elseif ($case -eq 'rollback-incomplete') { 'repair-required' } elseif ($case -eq 'parent-timeout') { 'not-installed' } else { 'failed-restored' })
         if ($result.outcome -ne $outcome) { throw "Wrong durable outcome for ${case}: $($result.outcome)" }
-        $restartExpected = $case -notin @('rollback-recovered', 'rollback-incomplete', 'parent-timeout')
+        $restartExpected = $case -notin @('rollback-incomplete', 'parent-timeout')
         if ($result.restartSafe -ne $restartExpected) { throw "Wrong recovery safety for $case" }
         if ($case -eq 'parent-timeout') {
             if ($parent.HasExited) { throw 'Observer terminated a parent that did not exit' }
