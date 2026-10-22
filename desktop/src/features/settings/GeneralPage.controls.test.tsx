@@ -335,7 +335,7 @@ describe("generalPage approval tier picker", () => {
 
   it.each([
     ["path_rejected", "No trusted system Bubblewrap was found"],
-    ["version_too_old", "Bubblewrap is older than version 0.9.0"],
+    ["version_too_old", "This Bubblewrap package cannot provide the required protection"],
     ["user_namespace_disabled", "Unprivileged user namespaces are disabled"],
     ["probe_transport_error", "could not contact the Agent"],
   ] as const)("maps the %s diagnostic to its remediation copy", (code, expected) => {
