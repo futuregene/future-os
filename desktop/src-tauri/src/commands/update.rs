@@ -1275,9 +1275,11 @@ mod tests {
             .contains("Update maintenance is in progress"));
     }
 
-    /// Unix rechecks saved fingerprints on restart. Windows' independent
-    /// observer verifies rollback before publishing restartSafe in the journal;
-    /// it does not create the Unix original-files.json. Test both trust states.
+    /// macOS rechecks its saved bundle fingerprint on restart. Windows verifies
+    /// restoration in its observer; Linux only publishes failed-restored when
+    /// the executor confirms no package installation occurred. Both executors
+    /// publish restartSafe without the macOS original-files.json. Unknown or
+    /// unverified results must still refuse restart on every platform.
     #[test]
     fn a_failed_restored_record_requires_platform_recovery_verification() {
         for verified in [false, true] {
@@ -1301,7 +1303,7 @@ mod tests {
                 relaunched.set(true);
                 Ok(())
             });
-            let allowed = cfg!(windows) && verified;
+            let allowed = cfg!(any(target_os = "windows", target_os = "linux")) && verified;
             assert_eq!(result.is_ok(), allowed, "verified={verified}: {result:?}");
             assert_eq!(
                 relaunched.get(),
