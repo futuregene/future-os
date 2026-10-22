@@ -166,6 +166,7 @@
   "toolRan": "{{name}} ran",
   "approvalSection": "Approval mode",
   "approvalHint": "The approval mode on that computer. This machine has its own, in Settings; changing one does not change the other.",
+  "approvalTierUpgrade": "Upgrade system Bubblewrap on that computer and restart FutureOS to enable full sandbox protection.",
   "approvalTier": "Approval mode",
   "approvalTierLabel.manual": "Manual",
   "approvalTierLabel.sandbox": "Sandboxed",

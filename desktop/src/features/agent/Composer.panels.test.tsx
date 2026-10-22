@@ -34,7 +34,8 @@ const h = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("../../integrations/agent/useSandboxAvailability", () => ({
+vi.mock("../../integrations/agent/useSandboxAvailability", async importOriginal => ({
+  ...await importOriginal<typeof import("../../integrations/agent/useSandboxAvailability")>(),
   useSandboxAvailability: () => ({ available: true, definitive: true, resolved: true }),
 }));
 vi.mock("@tauri-apps/api/webview", () => ({

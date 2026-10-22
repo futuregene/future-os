@@ -17,12 +17,13 @@
 | L-D3 | The sandbox development branch integrates directly into the product with no hidden switch; availability and release criteria are separate |
 | L-D5 | Existing glob matches at launch are hard-protected; new matches within a command are end-detection only |
 | L-D6 | on-request failures return to model; precise per-command read/write execution_grants |
-| L-D7 / D10 | Secure PATH, version/args, real-run three-layer probe; minimum bwrap **0.9.0** |
+| L-D7 / D10 | Secure PATH, version/args, real-run probes; write/read capability levels, no fixed version floor |
 | L-D8 / D9 | Native Linux only; WSL not supported / not specifically detected; no scanning extra compatibility install dirs; no argv0 compatibility branch |
 | 2026-09-04 addition | Missing Ask/Deny (including approval_rule), complex reopen, and missing writable allows are not must-fix items this cycle; see §4 |
 
-0.9.0 is the product compatibility floor, not a promise of all upstream
-security fixes. Only the bwrap file being root-owned is required; parent
+Compatibility follows runtime capabilities, not a version number or an assumption
+that security fixes are present. Use maintained distro packages with security fixes.
+Only the bwrap file being root-owned is required; parent
 directory permissions and mode bits are not recursively audited — a phased
 trade-off the maintainers explicitly accepted. If an attacker can already
 modify system programs as root, this sandbox is no longer their security
@@ -31,8 +32,7 @@ left for later and must not be described as verified.
 
 ## 2. Installation, availability, and troubleshooting
 
-Install through the distro's trusted channel; installs below 0.9.0 must still
-be upgraded:
+Install through the distro's trusted channel; upgrade when capabilities are insufficient:
 
 ```bash
 # Ubuntu / Debian
@@ -55,15 +55,20 @@ The probe CLI does not start a resident Agent and is not blocked by the
 singleton lock; the unified `future agent` and standalone `future-agent` share
 one implementation, and doctor consumes the same result. The JSON contains
 `available/backend/code`, and on success the system path/version/capabilities;
-no full sensitive path sets are printed.
+no full sensitive path sets are printed. Remote `get_settings` also carries optional
+`sandboxCode`; desktop remote selectors and phone Settings show the same upgrade
+hint for `available_write_only`. Older hosts without this field keep their
+existing UI. Remote automatic-review selection requires both a usable sandbox
+and the host's `auto_approval_v1` capability.
 
 | code | Cause / handling |
 |---|---|
-| `available` | full probe passed |
+| `available` | write and read protection probes passed |
+| `available_write_only` | basic write protection passed, read protection unavailable; modes stay selectable with only an upgrade/restart hint |
 | `binary_missing` | system bwrap not found; install and ensure a trusted absolute system directory is on PATH |
 | `path_rejected` | relative/project-directory candidate or not root-owned; use the distro system package |
 | `binary_invalid` | not an executable regular file or unsafe identity read; repair the system package |
-| `version_unreadable` / `version_too_old` | version unparseable or below 0.9.0; upgrade |
+| `version_unreadable` / `version_too_old` | version unparseable; the latter code is retained for older clients, no longer emitted by version comparison |
 | `required_feature_missing` | missing required args such as `--args`; upgrade the complete system package |
 | `user_namespace_disabled` | host/container/security policy forbids userns; administrator evaluates support configuration |
 | `proc_mount_restricted` | cannot establish a fresh `/proc`; check host policy |
@@ -77,9 +82,12 @@ permanently cached. Empty/relative PATH and workspace/cwd candidates are
 ignored; after canonicalization the same absolute path is pinned for
 version/help/runtime execution.
 
-The runtime probe runs a read-only root, user/PID/IPC namespaces, cap-drop,
-minimal dev/proc, and a mode-0700 `/tmp` tmpfs, verifying temporary writes and
-the read-only root. **It is not a full rehearsal of the real
+The baseline runtime probe runs a read-only root, user/PID/IPC namespaces,
+cap-drop, minimal dev/proc and a writable `/tmp` bind. It checks the root mount
+is read-only, temporary writes work, and effective/permitted capabilities are zero.
+When `--perms` and `--tmpfs` exist, a separate mode-000 directory-mask probe
+checks read protection. Failure or timeout in that optional stage disables only
+read protection. **It is not a full rehearsal of the real
 workspace/HOME production plan**; probe success does not guarantee every rule
 combination, resource state, or cwd can launch.
 
@@ -118,6 +126,15 @@ rather than argv0 dispatch.
 | `linux/report.rs`, `linux/violation.rs` | private report authentication, English detection descriptions, non-authoritative output cleanup, rejection heuristics |
 
 ### 3.1 Mount and process boundaries
+
+Limited support keeps mode names, model prompts, native file-tool rules and
+automatic approval behavior unchanged; Settings and the selector only suggest
+upgrading. The shell plan preserves the write portion and first-match priority
+of each rule, omits read-only rules and opaque masks, and converts Both Ask/Deny
+to read-only binds. `capabilities.writeProtection/readProtection` describe the
+result; execution rejects receipts that cannot support a plan. Limited mode
+does not promise shell read protection.
+
 
 Production uses `--new-session --die-with-parent --unshare-user --unshare-pid
 --unshare-ipc --cap-drop ALL`; first `--ro-bind / /`, then open the
@@ -306,7 +323,7 @@ output. Codex comparison in COMMON §6.
 | SR-03 | old "namespace-only creation" assumption withdrawn; current omission, legacy wire mount rejected |
 | SR-04 / SR-05 | original stdout-marker trust replaced by the private report; re-scan failure detection-only with exit kept, avoiding a second execution after side effects |
 | SR-06 / SR-07 | dual FD transport for helper JSON and bwrap OPTIONS; later added the 9000-argument and RLIMIT budgets |
-| SR-08 / SR-09 / SR-10 | 0.9.0, capget/no_new_privs, no seccomp; UI stable layout/disabled items/reason-remedy-code/restart |
+| SR-08 / SR-09 / SR-10 | capability levels, capget/no_new_privs, no seccomp; UI stable layout/disabled items/reason-remedy-code/restart |
 
 When bwrap/inner has no completion and was not signal-terminated, the helper
 returns infrastructure 125 with stderr merged and captured. **A user command
@@ -407,7 +424,7 @@ as a normal-availability PASS:
 
 | ID | Native host | Arch / expectation |
 |---|---|---|
-| RH-01 | Ubuntu22.04 | x86_64; if official package <0.9.0 verify version_too_old, normal operation needs a trusted upgrade |
+| RH-01 | Ubuntu22.04 | x86_64; verify write-only support and upgrade hint with old official packages; full protection with capable packages |
 | RH-02 / RH-03 / RH-04 | Ubuntu24.04 / Debian stable / supported Fedora | x86_64, record exact versions |
 | RH-05 | Ubuntu24.04 | aarch64 |
 | RH-06 | Debian stable or Fedora | aarch64, covering one more distro |
@@ -487,7 +504,7 @@ accepted scope gaps are recorded per §4 — no fabricated "intercepted" PASS.
 | P3 / accepted | path-chain hardening beyond root-owner (OR-07); missing Deny, complex reopen, missing allow stay as-is — no unauthorized scope expansion this cycle |
 
 OR-02 (mount argv's ARG_MAX) is closed by the dual-FD transport with resource
-limits kept; OR-05 minimum version is closed; OR-04 seccomp moved to follow-up.
+limits kept; OR-05 now uses capability probes instead of a version floor; OR-04 seccomp moved to follow-up.
 No "starts in every environment" promise holds: when the command cannot be
 safely prepared, fail explicitly, continue the conversation / request approval
 explicitly — never silently reduce protection.

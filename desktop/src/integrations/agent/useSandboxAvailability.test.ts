@@ -3,6 +3,7 @@ import { act } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushAsync, renderHook } from "../../test/renderHook";
 import {
+  isWriteOnlySandbox,
   probeSandboxWithRetry,
   shouldPersistSandboxFallback,
 } from "./useSandboxAvailability";
@@ -256,5 +257,23 @@ describe("useSandboxAvailability (mutable platform)", () => {
       backend: "windows_restricted",
     });
     h.unmount();
+  });
+});
+
+describe("linux sandbox capability levels", () => {
+  it("keeps write-only protection selectable without persisting a manual fallback", () => {
+    const limited = {
+      available: true,
+      definitive: true,
+      resolved: true,
+      backend: "linux_bubblewrap",
+      code: "available_write_only",
+      capabilities: { writeProtection: true, readProtection: false },
+    };
+    expect(isWriteOnlySandbox(limited)).toBe(true);
+    expect(shouldPersistSandboxFallback(limited, "sandbox")).toBe(false);
+    expect(isWriteOnlySandbox({ ...limited, code: "available", capabilities: { readProtection: true } })).toBe(false);
+    expect(isWriteOnlySandbox({ ...limited, available: false })).toBe(false);
+    expect(isWriteOnlySandbox({ ...limited, backend: "windows_restricted" })).toBe(false);
   });
 });

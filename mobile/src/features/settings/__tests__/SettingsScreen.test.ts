@@ -54,6 +54,7 @@ const mockRemote = {
   skillsRevision: 0,
   approvalTier: "manual",
   sandboxAvailable: true,
+  sandboxCode: undefined as string | undefined,
   getDesktopSettings: jest.fn(async () => ({ ...stored })),
   updateDesktopSettings: jest.fn(async (patch: Partial<DesktopSettings>) => { stored = { ...stored, ...patch }; return stored; }),
   setApprovalTier: jest.fn(async () => {}),
@@ -115,6 +116,8 @@ beforeEach(async () => {
   mockRemote.desktops = pairedDesktops();
   mockRemote.credentials = { pairId: "pair", expectedDesktopId: "desktop" };
   mockRemote.desktopOnline = true;
+  mockRemote.sandboxAvailable = true;
+  mockRemote.sandboxCode = undefined;
   mockRemote.presence = null;
   mockRemote.takeControl = jest.fn(async () => {});
   mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "tasks_v1"]);
@@ -907,4 +910,22 @@ test("automatic review is offered only by capable desktops with a working sandbo
   mockRemote.sandboxAvailable = false;
   await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
   expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.auto" })).toHaveLength(0);
+});
+
+test("limited protection keeps the usual approval choices and only adds the upgrade hint", async () => {
+  mockRemote.sandboxCode = "available_write_only";
+  mockRemote.capabilities.add("auto_approval_v1");
+  await openPreferences();
+  expect(texts()).toContain("approvalTier.upgrade");
+  // React Native forwards these props through multiple wrapper nodes. Select
+  // the actual radio control, then verify that limited protection stays usable.
+  expect(radio("approvalTier.sandbox").props.disabled).toBe(false);
+  expect(radio("approvalTier.auto").props.disabled).toBe(false);
+  await act(async () => radio("approvalTier.sandbox").props.onPress());
+  expect(mockRemote.setApprovalTier).toHaveBeenLastCalledWith("sandbox");
+  await act(async () => radio("approvalTier.auto").props.onPress());
+  expect(mockRemote.setApprovalTier).toHaveBeenLastCalledWith("auto");
+  mockRemote.sandboxAvailable = false;
+  await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
+  expect(texts()).not.toContain("approvalTier.upgrade");
 });

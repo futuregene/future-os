@@ -143,8 +143,8 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
         }
         "get_settings" => match crate::store::get_app_settings() {
             Ok(settings) => {
-                let sandbox_available = match product_sandbox_available().await {
-                    Ok(available) => available,
+                let (sandbox_available, sandbox_code) = match product_sandbox_status().await {
+                    Ok(status) => status,
                     Err(error) => {
                         reply(sink, false, Value::Null, Some(&error.to_string())).await;
                         return;
@@ -156,6 +156,7 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     json!({
                         "approvalTier": settings.approval_tier,
                         "sandboxAvailable": sandbox_available,
+                        "sandboxCode": sandbox_code,
                     }),
                     None,
                 )
@@ -298,19 +299,25 @@ async fn reply_settings(
 }
 
 async fn product_sandbox_available() -> Result<bool, crate::Error> {
+    product_sandbox_status()
+        .await
+        .map(|(available, _)| available)
+}
+
+async fn product_sandbox_status() -> Result<(bool, Option<String>), crate::Error> {
     #[cfg(target_os = "macos")]
     {
-        Ok(true)
+        Ok((true, None))
     }
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     {
         crate::agent_bridge::probe_sandbox()
             .await
-            .map(|result| result.available)
+            .map(|result| (result.available, Some(result.code)))
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
-        Ok(false)
+        Ok((false, None))
     }
 }
 
@@ -321,6 +328,35 @@ mod tests {
     #![allow(clippy::await_holding_lock)]
     use super::{parse_candidates, parse_settings_patch};
     use serde_json::json;
+
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    #[tokio::test]
+    async fn approval_settings_preserve_the_limited_sandbox_diagnostic() {
+        use crate::remote::test_support::{
+            ensure_mock_agent, init_store, mock_agent_lock, HomeGuard, RecordingSink,
+        };
+        let _lock = mock_agent_lock();
+        let _home = HomeGuard::new("business-settings-sandbox-code");
+        init_store();
+        let agent = ensure_mock_agent();
+        agent.clear_scripts();
+        agent.script("probe_sandbox", true,
+            json!({"available": true, "code": "available_write_only", "backend": "linux_bubblewrap"}), "");
+        let sink = RecordingSink::default();
+        super::execute(
+            &future_remote_protocol::IncomingCmd {
+                cmd_type: "get_settings".into(),
+                ..Default::default()
+            },
+            &sink,
+        )
+        .await;
+        let (success, data, error) = sink.last();
+        assert!(success, "{error:?}");
+        assert_eq!(data["sandboxAvailable"], true);
+        assert_eq!(data["sandboxCode"], "available_write_only");
+        agent.clear_scripts();
+    }
 
     /// The phone's candidate set is a guess at the catalogue, so a malformed
     /// entry is skipped rather than failing the whole recommendation: the

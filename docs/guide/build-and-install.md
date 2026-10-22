@@ -178,9 +178,10 @@ determine Bubblewrap availability and sandbox boundaries. See the
 
 ### Optional OS sandbox
 
-Install trusted system Bubblewrap ≥ 0.9.0 (`sudo apt install bubblewrap`, or
+Install trusted system Bubblewrap with runtime-probed capabilities (`sudo apt install bubblewrap`, or
 `sudo dnf install bubblewrap` on Fedora), then fully restart FutureOS. Older
-repository packages may require a trusted upgrade. It is not bundled with the app.
+repository packages may offer write protection only; the selector suggests upgrading
+for full protection. Basic write protection is required. It is not bundled with the app.
 Check `future agent --probe-sandbox` and `future doctor`; user namespaces and fresh
 `/proc` mounts must be permitted by host policy. See the [sandbox guide](../wiki/en/Sandbox.md)
 for fallback and snapshot/credential/network limitations. Availability is not

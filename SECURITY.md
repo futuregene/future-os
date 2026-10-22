@@ -82,8 +82,9 @@ for the three sandbox tiers. See the [sandbox guide](docs/wiki/en/Sandbox.md).
 - **Network is open.** These backends do not provide domain/network filtering.
   Linux currently has no seccomp filter. Neither shell allowlisting nor a sandbox
   proves a command safe, prevents all exfiltration, or undoes side effects.
-- **Linux snapshot limits.** Requires trusted system Bubblewrap ≥ 0.9.0 and usable
-  user namespaces. Existing protected paths are mounted with restrictions;
+- **Linux snapshot limits.** Requires trusted system Bubblewrap with runtime-probed capabilities and usable
+  user namespaces. Limited-capability packages enforce shell write protection only;
+  read protection requires a separate successful probe. Existing protected paths are mounted with supported restrictions;
   missing protected paths and new glob matches during a command are only checked
   afterward, not dynamically blocked or rolled back. Complex overlapping rules
   can fail preparation. Implementation availability is not certification of all

@@ -18,22 +18,14 @@ pub const REQUIRED_BWRAP_OPTIONS: &[&str] = &[
     "--cap-drop",
     "--ro-bind",
     "--bind",
-    "--tmpfs",
-    "--perms",
     "--chdir",
     "--dev",
     "--proc",
 ];
 
-/// Oldest bubblewrap release supported by the Linux sandbox contract.
-///
-/// This is the product compatibility floor, not a claim that every upstream
-/// security fix is present; tracked upgrade risks belong in the Linux sandbox
-/// implementation review document.
-///
-/// We still probe every option and execute a baseline sandbox: distributions
-/// can backport or disable features independently of the upstream version.
-pub const MINIMUM_BWRAP_VERSION: (u64, u64, u64) = (0, 9, 0);
+// Compatibility is established by required options and runtime probes, not a
+// version floor: distribution packages may backport individual features.
+pub const READ_PROTECTION_OPTIONS: &[&str] = &["--perms", "--tmpfs"];
 
 pub const BASELINE_BWRAP_ARGS: &[&str] = &[
     "--new-session",
@@ -49,10 +41,6 @@ pub const BASELINE_BWRAP_ARGS: &[&str] = &[
     "--bind",
     "/tmp",
     "/tmp",
-    "--perms",
-    "0700",
-    "--tmpfs",
-    "/tmp",
     "--chdir",
     "/",
     "--dev",
@@ -62,7 +50,44 @@ pub const BASELINE_BWRAP_ARGS: &[&str] = &[
     "--",
     "/bin/sh",
     "-c",
-    "touch /tmp/future-bwrap-probe && ! touch /etc/future-bwrap-probe",
+    concat!(
+        "d=$(mktemp -d /tmp/future-bwrap-probe.XXXXXXXX) || exit 1; ",
+        "trap 'rm -rf \"$d\"' EXIT; touch \"$d/write\" || exit 1; ",
+        "found=0; while read -r id parent device root point options rest; do ",
+        "if [ \"$point\" = / ]; then case ,$options, in *,ro,*) found=1;; esac; fi; ",
+        "done < /proc/self/mountinfo; [ \"$found\" = 1 ] || exit 1; ",
+        "while read -r key value rest; do case $key in CapEff:|CapPrm:) ",
+        "[ \"$value\" = 0000000000000000 ] || exit 1;; esac; done < /proc/self/status",
+    ),
+];
+
+/// Check the mode-000 directory mask used by production read protection.
+/// Failure only disables read protection; the write baseline remains required.
+const READ_PROTECTION_BWRAP_ARGS: &[&str] = &[
+    "--new-session",
+    "--die-with-parent",
+    "--unshare-user",
+    "--unshare-pid",
+    "--unshare-ipc",
+    "--cap-drop",
+    "ALL",
+    "--ro-bind",
+    "/",
+    "/",
+    "--dev",
+    "/dev",
+    "--proc",
+    "/proc",
+    "--perms",
+    "000",
+    "--tmpfs",
+    "/tmp",
+    "--chdir",
+    "/",
+    "--",
+    "/bin/sh",
+    "-c",
+    "test ! -r /tmp && test ! -x /tmp && test ! -w /tmp",
 ];
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -72,6 +97,7 @@ const CACHE_TTL: Duration = Duration::from_secs(300);
 #[serde(rename_all = "snake_case")]
 pub enum LinuxSandboxProbeCode {
     Available,
+    AvailableWriteOnly,
     PlatformNotLinux,
     BinaryMissing,
     PathRejected,
@@ -120,6 +146,8 @@ impl BwrapIdentity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LinuxSandboxCapabilities {
+    pub write_protection: bool,
+    pub read_protection: bool,
     pub user_namespace: bool,
     pub pid_namespace: bool,
     pub ipc_namespace: bool,
@@ -132,8 +160,10 @@ pub struct LinuxSandboxCapabilities {
 }
 
 impl LinuxSandboxCapabilities {
-    fn baseline() -> Self {
+    pub(crate) fn baseline(read_protection: bool) -> Self {
         Self {
+            write_protection: true,
+            read_protection,
             user_namespace: true,
             pid_namespace: true,
             ipc_namespace: true,
@@ -345,13 +375,6 @@ pub fn probe_with_host(
             "bwrap --version failed",
         );
     }
-    if !bwrap_version_is_supported(&version) {
-        return LinuxSandboxProbe::unavailable(
-            LinuxSandboxProbeCode::VersionTooOld,
-            format!("bubblewrap {version} is older than the required 0.9.0"),
-        );
-    }
-
     let help = host.run(&binary, &["--help"], PROBE_TIMEOUT);
     if help.timed_out {
         return LinuxSandboxProbe::unavailable(
@@ -363,7 +386,7 @@ pub fn probe_with_host(
     if !help.success
         || REQUIRED_BWRAP_OPTIONS
             .iter()
-            .any(|option| !help_text.contains(option))
+            .any(|option| !help_text.split_whitespace().any(|word| word == *option))
     {
         return LinuxSandboxProbe::unavailable(
             LinuxSandboxProbeCode::RequiredFeatureMissing,
@@ -393,6 +416,14 @@ pub fn probe_with_host(
         return LinuxSandboxProbe::unavailable(code, "bubblewrap baseline probe failed");
     }
 
+    let read_protection = READ_PROTECTION_OPTIONS
+        .iter()
+        .all(|option| help_text.split_whitespace().any(|word| word == *option))
+        && {
+            let result = host.run(&binary, READ_PROTECTION_BWRAP_ARGS, PROBE_TIMEOUT);
+            result.success && !result.timed_out
+        };
+
     let expires_at = host
         .now()
         .checked_add(CACHE_TTL)
@@ -400,11 +431,15 @@ pub fn probe_with_host(
         .map(|duration| duration.as_millis());
     LinuxSandboxProbe {
         available: true,
-        code: LinuxSandboxProbeCode::Available,
+        code: if read_protection {
+            LinuxSandboxProbeCode::Available
+        } else {
+            LinuxSandboxProbeCode::AvailableWriteOnly
+        },
         path: Some(binary),
         version: Some(version),
         identity: Some(identity),
-        capabilities: Some(LinuxSandboxCapabilities::baseline()),
+        capabilities: Some(LinuxSandboxCapabilities::baseline(read_protection)),
         expires_at_unix_ms: expires_at,
         diagnostic: None,
     }
@@ -505,20 +540,6 @@ fn parse_bwrap_version(output: &str) -> Option<String> {
             None
         }
     })
-}
-
-fn bwrap_version_is_supported(version: &str) -> bool {
-    let mut parts = version.split('.');
-    let major = parts.next().and_then(|part| part.parse::<u64>().ok());
-    let minor = parts.next().and_then(|part| part.parse::<u64>().ok());
-    let patch = parts
-        .next()
-        .map(|part| part.parse::<u64>().ok())
-        .unwrap_or(Some(0));
-    match (major, minor, patch) {
-        (Some(major), Some(minor), Some(patch)) => (major, minor, patch) >= MINIMUM_BWRAP_VERSION,
-        _ => false,
-    }
 }
 
 #[cfg(target_os = "linux")]
@@ -651,7 +672,16 @@ mod tests {
     fn success_outputs() -> VecDeque<ProbeCommandOutput> {
         VecDeque::from([
             output(true, "bubblewrap 0.11.1", ""),
-            output(true, &REQUIRED_BWRAP_OPTIONS.join(" "), ""),
+            output(
+                true,
+                &format!(
+                    "{} {}",
+                    REQUIRED_BWRAP_OPTIONS.join(" "),
+                    READ_PROTECTION_OPTIONS.join(" ")
+                ),
+                "",
+            ),
+            output(true, "", ""),
             output(true, "", ""),
         ])
     }
@@ -710,10 +740,6 @@ mod tests {
         let path = Some(std::env::join_paths([system]).unwrap());
 
         for (outputs, expected) in [
-            (
-                VecDeque::from([output(true, "bwrap 0.8.0", "")]),
-                LinuxSandboxProbeCode::VersionTooOld,
-            ),
             (
                 VecDeque::from([output(true, "not-a-version", "")]),
                 LinuxSandboxProbeCode::VersionUnreadable,
@@ -803,7 +829,7 @@ mod tests {
         );
         assert_eq!(
             host.outputs.lock().unwrap().len(),
-            3,
+            4,
             "negative cache must not run subprocesses"
         );
         host.now += Duration::from_secs(6);
@@ -868,29 +894,68 @@ mod tests {
     }
 
     #[test]
-    fn minimum_version_comparison_accepts_0_9_0_and_newer() {
-        assert!(!bwrap_version_is_supported("0.8.99"));
-        assert!(bwrap_version_is_supported("0.9.0"));
-        assert!(bwrap_version_is_supported("0.9.1"));
-        assert!(bwrap_version_is_supported("1.0"));
-    }
-
-    /// A version string that is not `major.minor[.patch]` numerics must never
-    /// be treated as a version: the parser rejects a non-numeric part in the
-    /// middle (`1.x.2`) and the comparator rejects anything it cannot parse
-    /// (`x.y`, a trailing dot). Both are fail-closed.
-    #[test]
     fn unparseable_version_shapes_are_rejected() {
         assert_eq!(parse_bwrap_version("bwrap 1.x.2"), None);
         assert_eq!(parse_bwrap_version("not-a-version"), None);
-        assert_eq!(parse_bwrap_version("bwrap"), None);
-        assert!(!bwrap_version_is_supported("x.y"));
-        assert!(!bwrap_version_is_supported("0.8"));
-        assert!(!bwrap_version_is_supported(""));
         assert_eq!(
-            parse_bwrap_version("bubblewrap 0.11.1"),
-            Some("0.11.1".into())
+            parse_bwrap_version("bubblewrap 0.4.1"),
+            Some("0.4.1".into())
         );
+    }
+
+    #[test]
+    fn capabilities_override_version_and_read_probe_failures_do_not_disable_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let system = root.path().join("system");
+        executable(&system);
+        let path = Some(std::env::join_paths([system]).unwrap());
+        for (read_options, read_success, read_timeout) in [
+            (false, false, false),
+            (true, false, false),
+            (true, false, true),
+            (true, true, false),
+        ] {
+            let mut outputs = VecDeque::from([
+                output(true, "bubblewrap 0.4.1", ""),
+                output(
+                    true,
+                    &format!(
+                        "{} {}",
+                        REQUIRED_BWRAP_OPTIONS.join(" "),
+                        if read_options { "--perms --tmpfs" } else { "" }
+                    ),
+                    "",
+                ),
+                output(true, "", ""),
+            ]);
+            if read_options {
+                outputs.push_back(ProbeCommandOutput {
+                    timed_out: read_timeout,
+                    ..output(read_success, "", "")
+                });
+            }
+            let host = FakeHost {
+                now: UNIX_EPOCH,
+                outputs: Mutex::new(outputs),
+                root_owned: true,
+            };
+            let probe = probe_with_host(&host, path.clone(), &workspace, &workspace);
+            assert!(probe.available);
+            assert_eq!(
+                probe.code,
+                if read_success {
+                    LinuxSandboxProbeCode::Available
+                } else {
+                    LinuxSandboxProbeCode::AvailableWriteOnly
+                }
+            );
+            let capabilities = probe.capabilities.unwrap();
+            assert!(capabilities.write_protection);
+            assert_eq!(capabilities.read_protection, read_success);
+            assert!(host.outputs.lock().unwrap().is_empty());
+        }
     }
 
     /// Every probe stage has its own failure report: a `--version` that prints
