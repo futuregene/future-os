@@ -10,6 +10,7 @@
 - [[设置|Settings]]
 - [[审批与沙箱|Sandbox]]
 - [[技能|Skills]]
+- [[定时任务|Scheduled-Tasks]]
 
 **命令行(进阶)**
 - [[命令行工具(future)|CLI]]
@@ -19,6 +20,9 @@
 - [[飞书集成|Feishu]]
 - [[钉钉集成|DingTalk]]
 - 其他通道：[通道 provider](../../guide/channels-providers.zh-CN.md)
+
+**参考**
+- [[模型目录|Models]]
 
 **帮助**
 - [[常见问题|FAQ]]

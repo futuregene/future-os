@@ -2,7 +2,7 @@
 
 Open Settings from the bottom-left of the window: when the left panel is collapsed it is the **gear icon** at the bottom, and when it is expanded it sits in the account menu (click your avatar and email). There's also a **Models** shortcut in the left panel that jumps straight to the Models page.
 
-The settings you'll use day-to-day are **General**, **Providers**, and **Models**. There are also **Phone Control**, **Account**, **Check for updates**, **About**, and **Reset** pages; test builds add an **Environment** switch. The dialog groups them as Desktop, Server and Debug.
+The settings you'll use day-to-day are **General**, **Providers**, and **Models**. There are also **Keyboard shortcuts**, **Account**, **Check for updates**, **About**, and **Reset** pages; test builds add an **Environment** switch. The dialog groups them as Desktop, Server and Debug.
 
 ---
 
@@ -11,14 +11,17 @@ The settings you'll use day-to-day are **General**, **Providers**, and **Models*
 Desktop-level options for the app:
 
 - **Language** — choose the app's display language.
+- **Appearance** — light, dark, or follow the system appearance. **Color theme** picks the palette (FutureOS, Ayu, Catppuccin, Dracula, Everforest and others), each with its own light and dark rendition; **Font size** scales text without changing the layout.
 - **Approval mode** — how much the agent asks before acting:
   - **Manual** — file access follows Allow/Ask/Deny path rules; shell commands ask except for the read-only allowlist.
   - **Sandboxed** — uses macOS Seatbelt, Linux system Bubblewrap, or Windows restricted-token write protection when available; file access still follows path rules. Guarantees differ by platform.
+  - **Automatic review** — the sandbox, plus a model reviewer that decides the requests Sandboxed would have asked you about. It needs the OS sandbox and a signed-in FutureOS account, and the two failures differ: without a usable sandbox, requests use manual review and the setting is kept; signing out or losing credentials downgrades the saved setting to **Sandboxed**, and signing in again does not restore it.
   - **Full access** (default) — no prompts and no sandbox; everything runs.
 - **Auto-upgrade skills** — silently upgrade installed skills to their latest version each time the app opens.
 - **Skill recommendations** (off by default) — when enabled, suggest at most one skill you don't have installed yet when you send a message.
 - **Generate a title after the first answer** (on by default) — title a new conversation from its first successful answer; later answers don't retrigger it.
 - **Completion bell** — play a sound and attract the window's attention when the agent finishes.
+- **Continue interrupted conversations** (on by default) — the agent runs inside the app, so closing FutureOS stops runs in progress; with this on, the next launch continues them by itself.
 - **Model output** — how much of a settled reply the transcript shows:
   - **Default** (the shipped level) — the reply settles to its final answer, with its reasoning, tool calls and intermediate notes folded into a single **Show process** row above it. The work is still shown while the answer streams, and the row opens it again.
   - **Detailed** — the whole reply stays in place, work and answer interleaved in the order it happened.
@@ -40,7 +43,7 @@ A provider is where your models come from.
 **Future** is the built-in provider (your FutureOS account). To use it:
 
 1. Click **Sign in** — this opens the welcome/sign-in screen.
-2. Authorize in the browser page that opens. Current builds open it automatically and no longer show a separate verification code.
+2. Authorize in the browser page that opens. The app opens it automatically.
 3. Once connected, you can **Sign out** at any time.
 
 Other built-in providers (such as DeepSeek, OpenAI, Anthropic, Google, and more) are listed too — click **Configure** to set or update the API key for any of them. Use **More providers** to reveal the full list.

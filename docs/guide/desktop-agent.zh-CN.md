@@ -66,12 +66,12 @@ macOS/Linux 使用 `scripts/dev/start-desktop-macos.sh` 或 `scripts/dev/start-d
 
 脚本检查两个默认 target，或显式设置的 `CARGO_TARGET_DIR`；只有发现失败探测中包含明确的 `sccache: error:` 诊断，才把这一个元数据文件改名为同目录的 `.sccache-failure-<id>.bak`，保存原始错误，让 Cargo 重新生成元数据。恢复路径和诊断记录在 `.logs/rust-cache-preflight.log`。
 
-该处理不会关闭 sccache、清空编译缓存、停止共享服务或修改全局配置；正常元数据、无关编译错误和自定义 wrapper 保持原样。如果当前仍有权限或服务故障，需要修复实际运行环境，脚本不会通过无缓存编译掩盖问题。从 agent 的受限沙箱调用 Cargo 时，应为构建提供访问所配置缓存目录及本地缓存服务所需的权限。历史上的首次权限失败可能已无法复现，但 Cargo 仍可能持续重放保存的失败结果。
+该处理不会关闭 sccache、清空编译缓存、停止共享服务或修改全局配置；正常元数据、无关编译错误和自定义 wrapper 保持原样。如果当前仍有权限或服务故障，需要修复实际运行环境，脚本不会通过无缓存编译掩盖问题。从 agent 的受限沙箱调用 Cargo 时，应为构建提供访问所配置缓存目录及本地缓存服务所需的权限。
 
 应用内退出用于协调清理。开发脚本的 Ctrl+C 中断开发工具链；Unix 清理仅作用于本次启动的进程组，超时可能强杀。它不保证等同应用内正常退出，不扫描、终止外部 Agent，也不改写数据库或锁。真实主机程序直接处理 Ctrl+C，参见[主机模式指南](desktop-host.zh-CN.md)。
 
-## 本次改动说明与验收范围
+## 验收范围
 
-本次将 Desktop 默认 Agent 从独立子进程切换到完整进程内服务，保留外部连接、独立 CLI/TUI、工具能力及存储格式。退出中断范围包含其他客户端，这是升级前应告知用户的行为变化。
+Desktop 默认在自身进程内托管完整 Agent；外部连接、独立 CLI/TUI 使用、工具能力与存储格式都仍然可用，退出内置宿主会中断该宿主的其他客户端。
 
 三平台原生生命周期 CI、Windows 离线更新 fixture、macOS ad-hoc 包和 Linux/Windows daily 未签名包已有通过记录。正式签名/公证、真实安装升级/回滚、完整 GUI 工具交互、原生 Linux Bubblewrap 及性能对比仍需验收；代码收尾不等于发布批准。证据与剩余清单见[开发计划](../architecture/embedded-agent-development.zh-CN.md)。

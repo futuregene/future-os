@@ -5,8 +5,9 @@ module or app subtree was measured, which lines remained uncovered, which
 waivers were registered and why, and which acceptance gate was run. They are
 agent work records, not user-facing product documentation — and they are the
 only `docs/` subtree deliberately exempted from the bilingual pairing rule
-(`PAIR_EXEMPT` in `scripts/docs/check-docs.py`), which is why they are
-English-only.
+(`PAIR_EXEMPT` in `scripts/docs/check-docs.py`): a Chinese pair is optional
+here, and most records have none, though this index and the release-acceptance
+records do.
 
 ## What is here
 
@@ -20,6 +21,12 @@ English-only.
 | [platform-coverage.md](platform-coverage.md) | the authoritative platform for each unmeasured line |
 | [dimension-matrix.md](dimension-matrix.md) | index of the boundary / error-path / concurrency / property / platform-cfg / serialization evidence quoted from the module records |
 | [waiver-ledger.md](waiver-ledger.md) | the waiver registry and the category policy |
+| `flaky-*.md` | one record per suite: the investigations that traced an intermittent failure to its cause, the mechanism, and what closed it |
+| `headless-*.md`, `headless-*.json` | headless release acceptance: the manual acceptance scripts, the unsigned-download results, and the raw CI run payloads (`headless-ci-*.json`, `headless-baseline-*.json`) those two pages cite |
+| [real-network.md](real-network.md) | the suite that exercises a real NATS server and real network paths, and what it needs to run |
+| [remote-client-fixtures.md](remote-client-fixtures.md), [remote-interop.md](remote-interop.md) | the remote-stack fixtures and the cross-implementation interoperability run |
+| [remote-package-manual-acceptance.md](remote-package-manual-acceptance.md) | the manual acceptance record for the extracted remote packages (has a Chinese pair) |
+| [agent-database-fixtures.md](agent-database-fixtures.md) | the released-schema SQL fixtures and the upgrade tests that replay them |
 
 Section §1 (`## 1.`) of each record states the run identity (machine, revision,
 suite state) and the exact measurement command. To re-run a gate, copy that

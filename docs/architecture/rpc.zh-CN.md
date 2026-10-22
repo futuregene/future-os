@@ -4,10 +4,10 @@
 > 后端）之间的线上契约。
 
 本 crate 是 `proto/future.proto` 生成 proto 代码（tonic server 与 client 模块）以及
-typed-RPC payload 契约的**唯一持有者**：共享 payload 结构体加上编解码层。原先分散在
-`agent/`、`channels/` 与 `desktop/src-tauri/` 的各 crate 生成副本已退役收敛到本
-crate。所有消费方都是 Rust；此前的姊妹 npm 包 `future-rpc/ts`（`@future-os/rpc`）
-在 TUI/CLI 移植到 Rust 时已移除。
+typed-RPC payload 契约的**唯一持有者**：共享 payload 结构体加上编解码层。所有消费方
+都是 Rust：`future-agent`、`future-channel`、`future-cli`、`future-tui`、
+`future-goal` 与桌面端 Tauri 后端（path dependency）。任何其他目录都不再持有
+`future.proto` 副本。
 
 ## Typed 响应与双写事件
 
@@ -36,6 +36,15 @@ Agent 只在 RPC 边界把 typed run 事件投影到 `StreamEvent`。线上信�
 - `payloads.rs` / `payloads_ext.rs` / `event_payloads.rs` — encode 与 decode 共享的
   serde payload 载体（构造上即一致）。
 - `events.rs` — `AgentEvent` 枚举 + `parse_agent_event`（channel 桥接视角）。
+- `instance_lock.rs` / `supervision.rs` / `home.rs` — 所有前端在启动任何东西之前共享
+  的规则：实例锁冲突文案与元数据、`future agent`/`future host`/`future tui` 共用的
+  探测-判定-重启预算策略（见 [agent-supervision.zh-CN.md](agent-supervision.zh-CN.md)）、
+  以及 FutureOS home 的解析。
+- `history.rs` / `session_deletion.rs` / `session_errors.rs` / `title.rs` — 历史分页、
+  批量删除、双方都依赖的 session-not-found 错误码，以及会话回退使用的纯标题。
+- `message.rs` / `shell_result.rs` / `command_policy.rs` / `cli_capabilities.rs`
+  / `connection.rs` — 共享消息与 shell 结果形状、按命令的策略、CLI 能力发现，以及
+  `select_agent` 的“先外部”选择逻辑。
 
 ## Proto 代码生成
 
@@ -58,7 +67,7 @@ REGENERATE_PROTO=1 cargo build -p future-rpc   # 或：make generate-proto
 - JSON 形态区分 null/absent 与默认值的 proto3 字段声明为 `optional`，使 typed 路径
   保留 JSON 语义。
 - `transport.rs` 持有共享的每用户 IPC 发现与显式 TCP 备选（显式地址是权威的，绝不回退
-  到本地 IPC）；其依赖包括 async/网络与平台 IPC 支持（见 Cargo.toml）。所有消费方（`future-agent`、`future-channel`、
+  到本地 IPC）；其依赖包括 async/网络与平台 IPC 支持（见 Cargo.toml）。所有消费方（`future-agent`、`future-channel`、`future-cli`、`future-tui`、
   经 path dependency 的桌面端 Tauri 后端）依赖它——绝不反向。桌面端后端在自己的
   cargo workspace 里：其 `tonic`/`prost` 版本要与根 `workspace.dependencies` 钉住
   的版本对齐。

@@ -4,7 +4,8 @@
 子树如何测量、还剩哪些未覆盖行、登记了哪些 waiver 及理由、跑了哪条验收
 gate。这些是 agent 的工作记录，不是面向用户的产品文档——它们也是 `docs/`
 下唯一被刻意豁免双语配对要求的子树（`scripts/docs/check-docs.py` 中的
-`PAIR_EXEMPT`），因此只有英文。
+`PAIR_EXEMPT`）：这里的中文配对是可选项，多数记录没有中文版，但本索引与
+发布验收类记录有。
 
 ## 目录内容
 
@@ -18,6 +19,12 @@ gate。这些是 agent 的工作记录，不是面向用户的产品文档——
 | [platform-coverage.md](platform-coverage.md) | 每条未测量行以哪个平台为准 |
 | [dimension-matrix.md](dimension-matrix.md) | 从各模块记录中摘引的 boundary / error-path / concurrency / property / platform-cfg / serialization 证据索引 |
 | [waiver-ledger.md](waiver-ledger.md) | waiver 注册表与类别政策 |
+| `flaky-*.md` | 每个测试套件一篇：把偶发失败追到根因的调查、机制，以及它最终如何被关掉 |
+| `headless-*.md`、`headless-*.json` | headless 发布验收：手工验收脚本、未签名下载结果，以及这两篇页面所引用的原始 CI run 载荷（`headless-ci-*.json`、`headless-baseline-*.json`） |
+| [real-network.md](real-network.md) | 跑真实 NATS 服务与真实网络路径的那套测试，以及运行它需要什么 |
+| [remote-client-fixtures.md](remote-client-fixtures.md)、[remote-interop.md](remote-interop.md) | remote 技术栈的 fixture 与跨实现互操作运行记录 |
+| [remote-package-manual-acceptance.md](remote-package-manual-acceptance.md) | 抽出的 remote 包的手工验收记录（有中文对照） |
+| [agent-database-fixtures.md](agent-database-fixtures.md) | 已发布 schema 的 SQL fixture 与重放它们升级测试 |
 
 每篇记录的第 §1 节（`## 1.`）给出运行身份（机器、修订、套件状态）与精确的
 测量命令。要重跑某条 gate，请从对应模块的 §1 复制命令——不要凭记忆重建：

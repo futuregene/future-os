@@ -12,6 +12,7 @@ access to your files. Availability is checked on the machine running the agent.
 | **Full access** (`off`, desktop default) | No approval rules or OS sandbox. Commands run with your user privileges. |
 | **Manual** (`manual`) | Path rules decide Allow/Ask/Deny; ordinary reads and workspace/temp writes can run without asking. Sensitive paths and external writes may ask or be denied. Shell commands ask except for the read-only allowlist. |
 | **Sandboxed** (`sandbox`) | File tools follow the same path rules. Shell commands run in the available OS backend, usually without a pre-execution prompt. |
+| **Automatic review** (`auto`) | The same sandbox and path rules as Sandboxed, but a model reviewer decides the requests that would otherwise ask you: it approves or rejects them and returns its reason to the agent. It needs both the OS sandbox and a signed-in FutureOS account, and the two failures fall back differently. **OS sandbox unavailable** → requests use manual review and the `auto` setting is kept, so it comes back when the sandbox does. **Signed out or credentials invalid** → the saved setting is persistently downgraded to `sandbox` (still sandboxed, with the human approval flow); signing in again does not restore `auto`, and a temporary account verification failure keeps the preference. |
 
 Fresh agent sessions use legacy permission level `all`. TUI, CLI and channel
 clients do not independently enable the desktop sandbox policy for fresh sessions;

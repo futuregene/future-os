@@ -274,7 +274,7 @@ future init                                  # 安装技能并在 macOS/Linux �
 ## 验证
 
 ```bash
-make test        # 全部 7 个套件：agent、channels、CLI、TUI、GUI、GUI Rust、mobile
+make test        # 全部 8 个套件：agent、channels、CLI、app-settings、TUI、GUI、GUI Rust、mobile
 make lint        # 全量 lint：agent、channels、TUI、CLI、GUI（含 stylelint）、mobile
 ```
 
@@ -285,8 +285,8 @@ make lint        # 全量 lint：agent、channels、TUI、CLI、GUI（含 stylel
 ```bash
 make build          # 构建 GUI + 统一 CLI（不安装到系统；agent/tui/channel/goal 内嵌于 future，GUI 自带 sidecar）
 make lint           # 全量 lint：agent、channels、TUI、CLI、GUI（含 stylelint）、mobile
-make fmt            # cargo fmt --all（workspace）+ desktop/src-tauri + mobile 格式化
-make test           # 全部 7 个套件：agent、channels、CLI、TUI、GUI、GUI Rust、mobile
+make fmt            # cargo fmt --all（整个 Rust workspace，含 desktop/src-tauri）
+make test           # 全部 8 个套件：agent、channels、CLI、app-settings、TUI、GUI、GUI Rust、mobile
 make clean          # 清理构建产物（已安装二进制请用 make uninstall 删除）
 ```
 
@@ -299,7 +299,7 @@ make setup
 make run-desktop
 ```
 
-`make setup` 安装 JavaScript workspace、初始化内置技能并创建仅供编译的 CLI 占位文件；运行时会拒绝空占位文件。`make run-desktop` 通过平台开发脚本构建/暂存真正的 CLI 并启动 Desktop，由应用内置完整 Agent，无需单独运行 `future agent`。若本地 IPC 或显式 `FUTURE_AGENT_GRPC_ADDR` 地址存在兼容 Agent，则连接它而不接管其退出。设置 `FUTURE_DESKTOP_AGENT_MODE=external` 可仅连接外部服务，请在另一个终端用相同 FutureOS home 启动匹配的 Agent。脚本不改写旧运行记录，也不会根据旧 PID 文件结束进程。`BUILD_CLI=0` 跳过 CLI 构建，`DESKTOP_DEV_PORT` 选择 Vite 端口，`RUN_CHECKS=1` 只执行静态检查，`DRY_RUN=1` 只打印配置。独立 Agent 日志保持在 `agent/logs/agent.log`，内置 Agent/宿主日志使用 `app/logs/desktop.log`。socket 规则见[目录布局](directory-layout.zh-CN.md)。
+`make setup` 安装 JavaScript workspace、初始化内置技能。`make run-desktop` 通过平台开发脚本构建/暂存真正的 CLI 并启动 Desktop（没有 CLI 产物时脚本写入仅供编译的占位文件，运行时会拒绝空占位文件），由应用内置完整 Agent，无需单独运行 `future agent`。若本地 IPC 或显式 `FUTURE_AGENT_GRPC_ADDR` 地址存在兼容 Agent，则连接它而不接管其退出。设置 `FUTURE_DESKTOP_AGENT_MODE=external` 可仅连接外部服务，请在另一个终端用相同 FutureOS home 启动匹配的 Agent。脚本不改写旧运行记录，也不会根据旧 PID 文件结束进程。`BUILD_CLI=0` 跳过 CLI 构建，`DESKTOP_DEV_PORT` 选择 Vite 端口，`RUN_CHECKS=1` 只执行静态检查，`DRY_RUN=1` 只打印配置。独立 Agent 日志保持在 `agent/logs/agent.log`，内置 Agent/宿主日志使用 `app/logs/desktop.log`。socket 规则见[目录布局](directory-layout.zh-CN.md)。
 Android 与 iOS 还需要各自的 SDK 和模拟器或真机，详见[移动端指南](../internals/mobile/README.md)。
 
 ### Proto

@@ -163,6 +163,9 @@ PowerShell 已安装也会以 `os error 2`（系统找不到指定的文件）�
 | macOS | 未运行 | 未运行（`ps -o sess` 路径） | 未运行 |
 | Windows | 未运行 | 未运行（`taskkill /T`） | 未运行 |
 
+`GUI 端到端` 一列指打包后的 GUI 应用被端到端跑通，并不等于键盘与输入法已被覆盖——
+那部分实测见下一段。
+
 上表之外不再声称任何能力。Windows 上的 Job Object 与 macOS 上的
 `proc_listchildpids` 会严格优于当前的尽力而为路径。
 
