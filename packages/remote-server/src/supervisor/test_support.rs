@@ -15,6 +15,10 @@ pub(super) struct MemoryHost {
     /// again instead of retrying what it already minted shows up here.
     pub invites: std::sync::atomic::AtomicU64,
     pub active: Mutex<Option<String>>,
+    /// Pair ids whose invitation was queued for deletion, in order. An
+    /// invitation nobody claimed has no credential, so this is the only record
+    /// that "cancelling" reached the platform at all.
+    pub revoked_invitations: Mutex<Vec<String>>,
     pub catalog_reads: Mutex<Vec<String>>,
     pub catalog_pause: Mutex<
         Option<(
@@ -81,6 +85,13 @@ impl PairingHost for MemoryHost {
         Box::pin(async { Ok(creds) })
     }
     fn queue_revoke(&self, _: &PairingCreds) -> Result<(), crate::Error> {
+        Ok(())
+    }
+    fn queue_revoke_invitation(&self, pair_id: &str) -> Result<(), crate::Error> {
+        self.revoked_invitations
+            .lock()
+            .unwrap()
+            .push(pair_id.to_string());
         Ok(())
     }
     fn retry_revokes(&self) -> BoxFuture<'_, Result<(), crate::Error>> {

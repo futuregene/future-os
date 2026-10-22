@@ -370,7 +370,7 @@ it("offers to take a machine back, and names who has it", async () => {
   expect(view.text()).toContain("Taken over");
   expect(view.text()).not.toContain("Connected");
   expect(view.container.querySelector("[data-testid='peer-held']")?.textContent)
-    .toBe("Hui's phone is in control · click Take over to switch");
+    .toBe("Another device (Hui's phone) is in control");
 
   await act(async () => view.rowButton("Take over")!.click());
   await view.settle();
@@ -388,7 +388,7 @@ it("says another device has it when the holder declared no name", async () => {
   const view = await mount();
 
   expect(view.container.querySelector("[data-testid='peer-held']")?.textContent)
-    .toBe("Another device is in control · click Take over to switch");
+    .toBe("Another device is in control");
   expect(view.rowButton("Take over")).toBeDefined();
   await view.unmount();
 });
@@ -423,7 +423,7 @@ it("draws a takeover that happened elsewhere without the page being reopened", a
 
   expect(view.text()).toContain("Taken over");
   expect(view.container.querySelector("[data-testid='peer-held']")?.textContent)
-    .toBe("Hui's phone is in control · click Take over to switch");
+    .toBe("Another device (Hui's phone) is in control");
   expect(view.rowButton("Take over")).toBeTruthy();
   await view.unmount();
 });

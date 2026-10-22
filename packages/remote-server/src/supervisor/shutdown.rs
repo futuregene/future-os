@@ -73,9 +73,17 @@ fn offline_notice(state: &RemoteState) -> Option<(async_nats::Client, String, Ve
 impl Supervisor {
     pub async fn unpair(self: &Arc<Self>) -> Result<RemoteStatus, crate::Error> {
         let notices = self.mobile_unpair_notices();
+        // Invitations the platform holds for this desktop include the ones no
+        // device ever claimed: they are not in the book, so `load_slots` cannot
+        // name them, and their rows would outlive "remove all" until they expire
+        // — each one still holding a slot of the per-desktop cap.
+        let unclaimed = self.unclaimed_invitations();
         let result = self.stop_with(|| {
             for creds in self.host.load_slots() {
                 self.host.queue_revoke(&creds)?;
+            }
+            for pair_id in &unclaimed {
+                self.host.queue_revoke_invitation(pair_id)?;
             }
             self.host.clear()
         });
@@ -100,9 +108,18 @@ impl Supervisor {
             .load_slots()
             .into_iter()
             .find(|slot| slot.pair_id == pair_id);
+        // A pair id this process is serving but the book does not list is an
+        // invitation nobody has claimed yet: that is what "cancelling" the
+        // add-device window removes. There is no credential to revoke with, but
+        // the platform row the invitation minted is real and keeps a slot of the
+        // per-desktop cap, so it is queued for deletion by id — this is the
+        // difference between "cancel" and "a code that never expires".
+        let unclaimed = creds.is_none() && self.state.lock().unwrap().contains_key(pair_id);
         let result = (|| -> Result<(), crate::Error> {
-            if let Some(creds) = &creds {
-                self.host.queue_revoke(creds)?;
+            match &creds {
+                Some(creds) => self.host.queue_revoke(creds)?,
+                None if unclaimed => self.host.queue_revoke_invitation(pair_id)?,
+                None => {}
             }
             self.host.remove_slot(pair_id)?;
             Ok(())
@@ -358,6 +375,27 @@ impl Supervisor {
         *self.active.lock().unwrap() = None;
         *self.web_owner.lock().unwrap() = None;
         self.empty()
+    }
+
+    /// The pair ids this process serves that the book does not list.
+    ///
+    /// That is an unclaimed invitation (the runtime is the only place its code
+    /// can be shown from) or a removal still being torn down. Both have a
+    /// platform row behind them that no book entry can name.
+    fn unclaimed_invitations(self: &Arc<Self>) -> Vec<String> {
+        let book: Vec<String> = self
+            .host
+            .load_slots()
+            .into_iter()
+            .map(|slot| slot.pair_id)
+            .collect();
+        self.state
+            .lock()
+            .unwrap()
+            .keys()
+            .filter(|pair_id| !book.contains(pair_id))
+            .cloned()
+            .collect()
     }
 
     pub fn stop_slot(self: &Arc<Self>, pair_id: &str) {

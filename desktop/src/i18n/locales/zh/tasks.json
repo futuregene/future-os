@@ -73,6 +73,8 @@
     "thinkingPlaceholder": "请选择思考等级",
     "timezone": "时区",
     "timezoneSystem": "本机时区",
+    "timezoneSearch": "搜索时区（城市、区域或 +8）",
+    "timezoneNoMatches": "没有匹配“{{query}}”的时区",
     "timezoneHint": "触发时间按这个时区读取。选“本机时区”表示跟随运行该任务的电脑；读取不到时使用 Asia/Shanghai。",
     "session": "会话",
     "sessionNew": "每次新建会话",
