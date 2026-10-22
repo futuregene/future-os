@@ -43,6 +43,13 @@ On Debian/Ubuntu the Linux installer uses a matching `.deb`; other Linux systems
 use the portable desktop package. The scripts finish with `future init`. For a
 host machine, use the CLI-only tarball instead of installing desktop libraries.
 
+Both installers verify the artifact's SHA-256 against the release manifest before
+installing it, including for a version pinned with `FUTUREOS_VERSION` (that
+version's own manifest is fetched). If no checksum can be established — no
+manifest entry for the platform, or no `shasum`/`sha256sum` on the host — the
+install stops instead of proceeding unverified. `FUTUREOS_SKIP_VERIFY=1` disables
+the check for one run, which means installing whatever the mirror served.
+
 ## First launch and signing
 
 Official release workflows sign macOS/Windows installers and notarize macOS

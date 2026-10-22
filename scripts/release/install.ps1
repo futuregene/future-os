@@ -8,23 +8,53 @@
 # Env overrides:
 #   FUTUREOS_VERSION  pin a specific release (e.g. v0.1.2); default = latest
 #   FUTUREOS_BASE     release mirror base URL; default https://dl.future-os.cn/releases
+#   FUTUREOS_SKIP_VERIFY=1  install without SHA-256 verification (not recommended)
 $ErrorActionPreference = 'Stop'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# An unverified download leaves only TLS to the mirror, so the installer refuses
+# one unless FUTUREOS_SKIP_VERIFY is set explicitly (mirrors install.sh).
+$SkipVerify = [bool]($env:FUTUREOS_SKIP_VERIFY -and $env:FUTUREOS_SKIP_VERIFY -notin @('0', 'false', 'no'))
+
+function Assert-VerifiedOrExplicit {
+    param($Reason)
+    if ($SkipVerify) {
+        Write-Warning "$Reason - installing WITHOUT SHA-256 verification (FUTUREOS_SKIP_VERIFY is set)"
+        return
+    }
+    throw "$Reason, so this download cannot be verified. Install the latest release instead, or set FUTUREOS_SKIP_VERIFY=1 to accept the risk."
+}
 
 $Base = if ($env:FUTUREOS_BASE) { $env:FUTUREOS_BASE } else { 'https://dl.future-os.cn/releases' }
 $Version = $env:FUTUREOS_VERSION -replace '^[vV]', ''
 
 if ($Version) {
+    # Releases publish releases/<version>/latest.json beside the artifacts, so a
+    # pinned install reads that manifest instead of trusting a URL we construct.
     # Signed release installers use the canonical name without a signing suffix.
-    $Url = "$Base/$Version/FutureOS_${Version}_x64-setup.exe"
-    $Sha = $null
-    Write-Warning 'FUTUREOS_VERSION is pinned - skipping SHA-256 verification (no manifest lookup)'
+    $manifest = $null
+    try { $manifest = Invoke-RestMethod "$Base/$Version/latest.json" } catch { $manifest = $null }
+    $asset = $manifest.assets.'windows-x86_64'
+    if ($asset -and $asset.url -and $asset.sha256) {
+        $Url = $asset.url
+        $Sha = $asset.sha256
+    } else {
+        Assert-VerifiedOrExplicit "$Base/$Version/latest.json publishes no windows-x86_64 SHA-256"
+        $Url = "$Base/$Version/FutureOS_${Version}_x64-setup.exe"
+        $Sha = $null
+    }
 } else {
     $latest = Invoke-RestMethod "$Base/latest.json"
     $Version = $latest.version
     $asset = $latest.assets.'windows-x86_64'
-    $Url = $asset.url
-    $Sha = $asset.sha256
+    if ($asset -and $asset.url -and $asset.sha256) {
+        $Url = $asset.url
+        $Sha = $asset.sha256
+    } else {
+        Assert-VerifiedOrExplicit "$Base/latest.json publishes no windows-x86_64 SHA-256"
+        $Url = "$Base/$Version/FutureOS_${Version}_x64-setup.exe"
+        $Sha = $null
+    }
 }
 
 Write-Host "==> Installing FutureOS $Version (windows-x86_64)" -ForegroundColor Green
@@ -32,11 +62,17 @@ $exe = Join-Path $env:TEMP "FutureOS_${Version}_setup.exe"
 Invoke-WebRequest -Uri $Url -OutFile $exe
 
 if ($Sha) {
-    $got = (Get-FileHash -Path $exe -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($got -ne $Sha) {
-        throw "Checksum mismatch for $Url (got $got, expected $Sha)"
+    # Get-FileHash ships with PowerShell 4.0+; a missing hasher fails closed like
+    # a missing shasum/sha256sum does in install.sh.
+    if (-not (Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
+        Assert-VerifiedOrExplicit 'Get-FileHash (PowerShell 4.0+) is not available to verify the download'
+    } else {
+        $got = (Get-FileHash -Path $exe -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($got -ne $Sha) {
+            throw "Checksum mismatch for $Url (got $got, expected $Sha)"
+        }
+        Write-Host "==> Checksum verified" -ForegroundColor Green
     }
-    Write-Host "==> Checksum verified" -ForegroundColor Green
 }
 
 Write-Host "==> Running installer (silent)..." -ForegroundColor Green

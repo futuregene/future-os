@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { timedCommand } from '../ci/timed-command.mjs';
 import { affected, catalog, manualPlan, rustTestGroups } from '../ci/affected.mjs';
 import { checkResult } from '../ci/ci-result.mjs';
@@ -216,6 +218,19 @@ test('Host tests always expand to exactly remote/core while checks stay crate sc
     assert.deepEqual(rustTestGroups(result.rust).filter(group => !group.hostSuite),
       result.rust.filter(group => group.name !== 'host'));
   }
+});
+
+test('the apt installer moves the runner mirror list, not only its sources', {
+  // The installer is a Linux CI helper; the Windows runners never call it.
+  skip: process.platform === 'win32' ? 'bash installer runs on Linux runners' : false,
+}, () => {
+  // GitHub's Ubuntu images name no hostname in their apt sources: the sources
+  // defer to /etc/apt/apt-mirrors.txt, so a rewrite that only edits the sources
+  // silently leaves the endpoint in place. The self-test pins that down.
+  const script = fileURLToPath(new URL('../ci/install-apt-packages.sh', import.meta.url));
+  const output = execFileSync('bash', [script, '--self-test'],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  assert.match(output, /self-test: ok/);
 });
 
 test('timing capture retains command failures and does not invent durations from test output', async () => {
