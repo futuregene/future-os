@@ -43,11 +43,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///
 /// `cli/tests/windows_stack.rs` asserts the value on the built binary, so losing
 /// this argument fails a test rather than a user's command.
+///
+/// `-bins` rather than a bare `rustc-link-arg`, which would apply to every
+/// target of this package: the shipped artifact is the `future` binary, and the
+/// test binaries have no reason to inherit an 8 MB reserve. Keeping the scope
+/// narrow is also what makes the argument assertable — the test checks the
+/// binary reserves 8 MB *and* that its own test binary still reports the 1 MB
+/// default, so widening the scope by accident fails a test instead of passing
+/// silently.
 fn reserve_platform_stack() -> Result<(), Box<dyn std::error::Error>> {
     if !std::env::var("TARGET")?.contains("windows") {
         return Ok(());
     }
-    println!("cargo:rustc-link-arg=/STACK:8388608,65536");
+    println!("cargo:rustc-link-arg-bins=/STACK:8388608,65536");
     Ok(())
 }
 

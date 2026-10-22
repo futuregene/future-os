@@ -1037,24 +1037,42 @@ async fn config_wizard_saves_through_a_running_agent() {
 /// device-code flow makes, with fixed answers, and a record of the paths it was
 /// asked for (so a login that never consulted the platform cannot pass).
 ///
-/// The fixture answers requests; it does not police the client. A connection that
-/// carries no request is closed and ignored, and anything malformed gets a `400`
-/// and a line in [`MockPlatform::faults`] instead of a panic. That is not
-/// leniency for its own sake: an `assert!` here runs on the listener thread, so a
-/// panic kills the thread and drops the listener, and the request the test is
-/// actually about then fails with `Network error` — a red run that blames the
-/// login for something the fixture did to itself (see the note on
-/// [`MockPlatform::faults`]).
+/// The fixture answers requests; it does not police the client. A connection
+/// that carries no request, or that ends before the request it started is
+/// complete, is closed and ignored; a request that arrived in full but cannot be
+/// served gets a `400`/`413` and a line in [`MockPlatform::faults`] instead of a
+/// panic. That is not leniency for its own sake: an `assert!` here runs on the
+/// listener thread, so a panic kills the thread and drops the listener, and the
+/// request the test is actually about then fails with `Network error` -- a red
+/// run that blames the login for something the fixture did to itself (see the
+/// notes on [`MockPlatform::faults`] and [`MockPlatform::abandoned`]).
 struct MockPlatform {
     base_url: String,
     paths: Arc<Mutex<Vec<String>>>,
-    /// Requests this fixture could not serve. Empty for a healthy run; a test
-    /// that cares asserts on it. Every entry names what arrived, because the
-    /// alternative — panicking on the thread that owns the listener — turned an
-    /// empty connection into a red login test with no mention of the connection.
+    /// Requests this fixture received in full and could not serve. Empty for a
+    /// healthy run; a test that cares asserts on it. Only a *complete* request
+    /// lands here -- a `Content-Length` that is not a number, or a body larger
+    /// than this fixture serves -- because every entry names what arrived and
+    /// the alternative, panicking on the thread that owns the listener, turned
+    /// an empty connection into a red login test with no mention of it.
     faults: Arc<Mutex<Vec<String>>>,
+    /// Connections that ended before their request did: a client that connected
+    /// and went away, with or without a prefix of the request already in flight.
+    /// Not faults -- nothing complete was asked, so there is nothing to answer
+    /// -- but recorded, so that a test can see them and a fixture that started
+    /// dropping real requests does not fail silently.
+    abandoned: Arc<Mutex<Vec<String>>>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Append to one of the fixture's record lists. Lock poisoning is not worth a
+/// panic on the listener thread: it would fail the test through the request it
+/// was serving instead of through this line.
+fn record(into: &Arc<Mutex<Vec<String>>>, what: impl Into<String>) {
+    if let Ok(mut entries) = into.lock() {
+        entries.push(what.into());
+    }
 }
 
 impl MockPlatform {
@@ -1068,10 +1086,12 @@ impl MockPlatform {
             .expect("non-blocking listener");
         let paths = Arc::new(Mutex::new(Vec::new()));
         let faults = Arc::new(Mutex::new(Vec::new()));
+        let abandoned = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let paths = Arc::clone(&paths);
             let faults = Arc::clone(&faults);
+            let abandoned = Arc::clone(&abandoned);
             let stop = Arc::clone(&stop);
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
@@ -1102,17 +1122,18 @@ impl MockPlatform {
                             // Connected, then gone without a byte. Seen on a loaded
                             // Windows runner roughly every other full-suite run, and
                             // followed by the same client's real request on a new
-                            // connection — a connect the client abandoned and retried.
+                            // connection: a connect the client abandoned and retried.
                             // Nothing was asked of this fixture, so there is nothing to
-                            // answer and nothing to report.
+                            // answer and nothing to report as a fault.
+                            record(&abandoned, "closed before sending a request");
                             continue;
                         }
                         Ok(_) => {}
                         Err(error) => {
-                            faults
-                                .lock()
-                                .expect("faults")
-                                .push(format!("request line unreadable: {error}"));
+                            // The same abandonment seen from the other side: the peer
+                            // reset the connection, or it went away between the accept
+                            // and the read. Nothing complete arrived.
+                            record(&abandoned, format!("request line unreadable: {error}"));
                             continue;
                         }
                     }
@@ -1129,10 +1150,10 @@ impl MockPlatform {
                             Ok(0) => break,
                             Ok(_) => {}
                             Err(error) => {
-                                faults
-                                    .lock()
-                                    .expect("faults")
-                                    .push(format!("{path}: request headers unreadable: {error}"));
+                                record(
+                                    &abandoned,
+                                    format!("{path}: request headers unreadable: {error}"),
+                                );
                                 break;
                             }
                         }
@@ -1152,10 +1173,11 @@ impl MockPlatform {
                         }
                     }
                     if !headers_complete {
-                        faults
-                            .lock()
-                            .expect("faults")
-                            .push(format!("{path}: request headers ended early"));
+                        // A prefix of a request and then end-of-stream: the client
+                        // went away mid-write. A partial request is never something
+                        // this fixture can answer, and calling it a fault is what
+                        // turned an abandoned connect into a red login test.
+                        record(&abandoned, format!("{path}: request headers ended early"));
                         continue;
                     }
                     if content_length > 4096 {
@@ -1169,9 +1191,12 @@ impl MockPlatform {
                     }
                     let mut body = vec![0; content_length];
                     if let Err(error) = request.read_exact(&mut body) {
-                        faults.lock().expect("faults").push(format!(
-                            "{path}: request body incomplete ({content_length} bytes expected): {error}"
-                        ));
+                        record(
+                            &abandoned,
+                            format!(
+                                "{path}: request body incomplete ({content_length} bytes expected): {error}"
+                            ),
+                        );
                         continue;
                     }
                     drop(request);
@@ -1199,6 +1224,7 @@ impl MockPlatform {
             base_url: format!("http://127.0.0.1:{}", addr.port()),
             paths,
             faults,
+            abandoned,
             stop,
             thread: Some(thread),
         }
@@ -1208,9 +1234,17 @@ impl MockPlatform {
         self.paths.lock().expect("paths").clone()
     }
 
-    /// Requests this fixture could not serve: a healthy run reports none.
+    /// Requests this fixture received in full and could not serve: a healthy
+    /// run reports none.
     fn faults(&self) -> Vec<String> {
         self.faults.lock().expect("faults").clone()
+    }
+
+    /// Connections that ended before their request did. A test may assert on
+    /// them to prove a scenario reproduced, but their presence alone is not a
+    /// failure: under load the client abandons connects on its own.
+    fn abandoned(&self) -> Vec<String> {
+        self.abandoned.lock().expect("abandoned").clone()
     }
 
     fn stop(self) {
@@ -1310,6 +1344,72 @@ fn a_connection_that_sends_nothing_does_not_poison_the_mock_platform() {
         platform.faults(),
         Vec::<String>::new(),
         "an empty connection is not a fault: it asked for nothing"
+    );
+    platform.stop();
+}
+
+/// A connection abandoned *mid-request* -- the request line, or the headers, only
+/// half written -- is the same event as an empty one: the client went away, and
+/// this fixture has nothing complete to answer. Reporting it as a fault failed
+/// `auth_login_saves_through_a_running_agent`, whose assertion is about the
+/// credential and not about a connection the CLI abandoned under load.
+///
+/// This is the half-written half of the regression above: the empty connection
+/// was fixed first, and a connect that got a few bytes out before the close still
+/// landed in `faults`. Both are now recorded as abandoned, and the real requests
+/// that follow must still be served.
+#[test]
+fn a_request_abandoned_half_written_does_not_poison_the_mock_platform() {
+    use std::io::Write;
+
+    let home = tempfile::tempdir().expect("tempdir");
+    let platform = MockPlatform::start();
+    let address = platform.base_url.trim_start_matches("http://").to_string();
+
+    // The request line only, then the close: read back as a path with no
+    // headers, which was reported as `request headers ended early`.
+    {
+        let mut socket = std::net::TcpStream::connect(&address).expect("connect");
+        socket
+            .write_all(b"GET /client/v1/oauth/de")
+            .expect("partial request line");
+    }
+    // A request line and one header, then the close.
+    {
+        let mut socket = std::net::TcpStream::connect(&address).expect("connect");
+        socket
+            .write_all(b"POST /client/v1/oauth/device/code HTTP/1.1\r\nHost: x\r\n")
+            .expect("partial headers");
+    }
+
+    // Wait for the fixture to see both closings rather than for a duration: the
+    // abandonments are the precondition of the assertion below, not a race to
+    // observe.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while platform.abandoned().len() < 2 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(
+        platform.abandoned().len(),
+        2,
+        "the fixture recorded both abandoned connections: {:?}",
+        platform.abandoned()
+    );
+
+    let (code, stdout, stderr) = login_against(&platform.base_url, home.path(), None);
+    assert_eq!(code, Some(0), "stdout: {stdout}\nstderr: {stderr}");
+    assert_eq!(
+        platform.requested_paths(),
+        vec![
+            "/client/v1/oauth/device/code".to_string(),
+            "/client/v1/oauth/device/token".to_string()
+        ],
+        "the login after the abandoned requests is still served"
+    );
+    assert_eq!(
+        platform.faults(),
+        Vec::<String>::new(),
+        "a request cut off mid-flight asked for nothing and is not a fault"
     );
     platform.stop();
 }
