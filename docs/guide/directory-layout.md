@@ -33,6 +33,7 @@ Windows layout is identical with `%USERPROFILE%\.future\` as the root.
 │   ├── skill_reco.json        # skill-recommendation budget for the current local day
 │   ├── debug.log              # TUI runtime log
 │   ├── write.log              # raw screen-write log (PI_TUI_WRITE_LOG=1 only)
+│   ├── stderr.log             # stderr of the in-process Agent while the TUI owns the screen
 │   └── crash.log              # panic backtrace appended on crash
 ├── app/                       # the desktop GUI (FutureOS app)
 │   ├── app.db                 # SQLite database (threads, runs, approvals, …)
