@@ -25,19 +25,24 @@
 //!
 //! The files are a request/reply pair in `~/.future/run/remote-control/`:
 //!
-//! * `*.request.json` — `{"op": "add-device", "reply": "<absolute path>"}`,
-//!   `{"op": "remove-device", "pairId": "<device>", "reply": "<absolute path>"}`,
-//!   `{"op": "takeover", "pairId": "<device>", "reply": "<absolute path>"}`, or one
-//!   of the client role's: `{"op": "peer-state", "reply": "..."}`,
+//! * `{millis:013}-{pid}.request.json` — `{"op": "add-device", "reply":
+//!   "<absolute path>"}`, `{"op": "remove-device", "pairId": "<device>",
+//!   "reply": "<absolute path>"}`, `{"op": "takeover", "pairId": "<device>",
+//!   "reply": "<absolute path>"}`, or one of the client role's:
+//!   `{"op": "peer-state", "reply": "..."}`,
 //!   `{"op": "peer-connect|peer-disconnect|peer-takeover|peer-remove",
-//!   "desktopId": "<remote>", "reply": "..."}`;
+//!   "desktopId": "<remote>", "reply": "..."}`. The name carries the asker's own
+//!   clock, and it is what this side judges the request's age by — the file
+//!   system's modification time is only a fallback, because `run/` may live on a
+//!   share whose clock is minutes off (see [`age`]);
 //! * the reply goes to the path the *asker* named, which it created for itself as
 //!   a temporary file — so two terminals asking at once cannot read each other's
 //!   invitation, and a process that exits takes its answer path with it.
 //!
 //! A request is claimed by renaming it: exactly one Desktop can act on it, and a
-//! request nobody could still be waiting for (older than `ABANDONED_AFTER`) is
-//! deleted instead of being answered into a file whose reader is gone.
+//! request nobody could still be waiting for (older than `ABANDONED_AFTER` even
+//! by the asker's own clock) is deleted instead of being answered into a file
+//! whose reader is gone.
 //!
 //! # Trust boundary
 //!
@@ -76,7 +81,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Where requests wait (`~/.future/run/remote-control`).
 const DIRECTORY: &str = "remote-control";
@@ -599,12 +604,70 @@ fn requests(directory: &Path) -> Vec<PathBuf> {
     paths
 }
 
+/// A request nobody can still be waiting for (see [`age`]).
 fn abandoned(path: &Path) -> bool {
-    std::fs::metadata(path)
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|modified| SystemTime::now().duration_since(modified).ok())
-        .is_some_and(|age| age > ABANDONED_AFTER)
+    age(path).is_some_and(|age| age > ABANDONED_AFTER)
+}
+
+/// How long ago the asker wrote this request.
+///
+/// The name is what decides: the terminal writes `{millis:013}-{pid}.request.json`
+/// from its *own* clock, in the same millisecond it creates the file. The file's
+/// modification time is the **file system's** stamp, and `run/` is transient
+/// state that may well sit on a share whose server clock is off. Measured: an NFS
+/// home whose server ran 749s slow stamped every brand-new request twelve minutes
+/// into the past, so this Desktop threw each one away milliseconds after it
+/// appeared and the terminal waited out its whole minute for an answer that could
+/// never come — then blamed the Desktop for taking the request and never
+/// answering. The same clock is just as wrong when it runs ahead, which would
+/// keep dead requests alive instead; the asker's own clock is right in both
+/// directions.
+///
+/// So the modification time is consulted only when the name carries no timestamp
+/// of its own — an older terminal, a hand-written request, a fixture. A reading
+/// in the future (a clock running behind this process's) becomes zero, "written
+/// just now", rather than nothing at all.
+fn age(path: &Path) -> Option<Duration> {
+    age_by_name(path).or_else(|| age_by_mtime(path))
+}
+
+/// The asker's own clock, read from `{millis:013}-{pid}.request.json`.
+///
+/// The shape is checked rather than guessed: exactly the thirteen digits the
+/// terminal formats, then a numeric pid. Anything else — a request written by an
+/// older terminal, or by hand (`0001.request.json`) — has no timestamp in its
+/// name and falls back to [`age_by_mtime`] instead of being read as 1970 and
+/// discarded on sight.
+fn age_by_name(path: &Path) -> Option<Duration> {
+    let name = path.file_name()?.to_str()?;
+    let written = UNIX_EPOCH.checked_add(Duration::from_millis(started_millis(name)?))?;
+    Some(age_since(written))
+}
+
+/// The age the file system reports, which is only as trustworthy as its clock.
+fn age_by_mtime(path: &Path) -> Option<Duration> {
+    let modified = std::fs::metadata(path).ok()?.modified().ok()?;
+    Some(age_since(modified))
+}
+
+/// How long ago `instant` was; an instant in the future is "just now".
+fn age_since(instant: SystemTime) -> Duration {
+    SystemTime::now()
+        .duration_since(instant)
+        .unwrap_or_default()
+}
+
+/// The millisecond timestamp a terminal put in a request's name, if it is one.
+fn started_millis(name: &str) -> Option<u64> {
+    let stem = name.strip_suffix(REQUEST_SUFFIX)?;
+    let (millis, pid) = stem.split_once('-')?;
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    // Thirteen digits is how the terminal formats millis (`{started:013}`), so a
+    // hand-written name that merely starts with a number is not mistaken for one.
+    if millis.len() != 13 || !digits(millis) || !digits(pid) {
+        return None;
+    }
+    millis.parse().ok()
 }
 
 /// Take ownership of a request by renaming it.
@@ -1025,6 +1088,26 @@ mod tests {
             std::fs::write(&path, serde_json::to_string(request).unwrap()).unwrap();
             path
         }
+    }
+
+    /// A request named the way a terminal names it (`{millis:013}-{pid}`), so the
+    /// asker's own clock is in the file name.
+    fn terminal_name(started: SystemTime) -> String {
+        format!(
+            "{:013}-{}{REQUEST_SUFFIX}",
+            started.duration_since(UNIX_EPOCH).unwrap().as_millis(),
+            std::process::id()
+        )
+    }
+
+    /// The file system's stamp, which a network share sets from its own clock.
+    fn backdate(path: &Path, when: SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
     }
 
     fn status(phase: RemotePhase, link: Option<&str>) -> RemoteStatus {
@@ -1540,17 +1623,114 @@ mod tests {
             },
         );
         let old = SystemTime::now() - ABANDONED_AFTER - Duration::from_secs(60);
-        std::fs::File::options()
-            .write(true)
-            .open(&path)
-            .unwrap()
-            .set_modified(old)
-            .unwrap();
+        backdate(&path, old);
 
         serve_one(&path).await;
 
         assert!(!path.exists(), "the stale request must be removed");
         assert!(!reply_path.exists(), "and must not be answered");
+    }
+
+    /// The measured failure this rule exists to prevent: `run/` on an NFS home
+    /// whose server clock ran 749s slow, so a brand-new request arrived looking
+    /// twelve minutes old and was deleted before the terminal had polled once.
+    /// The asker's own clock is in the name, and that is what has to decide.
+    #[tokio::test]
+    async fn a_request_is_served_even_when_the_file_system_stamps_it_in_the_past() {
+        let root = Root::new();
+        let reply_path = root.dir.path().join("answer.json");
+        let path = root.write_request(
+            &terminal_name(SystemTime::now()),
+            &Request {
+                op: OP_ADD_DEVICE.into(),
+                reply: reply_path.display().to_string(),
+                desktop_id: None,
+                pair_id: None,
+            },
+        );
+        // The share's clock, not this process's: twelve minutes behind.
+        backdate(&path, SystemTime::now() - Duration::from_secs(749));
+
+        assert!(
+            !abandoned(&path),
+            "the name says it was written just now, so nobody has given up on it"
+        );
+        serve_one(&path).await;
+
+        let reply = read_reply(&reply_path).expect("the asker must be answered, not ignored");
+        assert!(reply.error.is_some(), "{reply:?}");
+        assert!(!path.exists(), "and the request is consumed");
+    }
+
+    /// The other side of the same rule: a request can also look *fresh* to a share
+    /// whose clock is ahead. Its own timestamp is what says the reader is gone, so
+    /// no invitation is written into a file nobody polls.
+    #[tokio::test]
+    async fn a_request_older_than_its_budget_by_its_own_clock_is_discarded() {
+        let root = Root::new();
+        let reply_path = root.dir.path().join("answer.json");
+        let started = SystemTime::now() - ABANDONED_AFTER - Duration::from_secs(60);
+        let path = root.write_request(
+            &terminal_name(started),
+            &Request {
+                op: OP_ADD_DEVICE.into(),
+                reply: reply_path.display().to_string(),
+                desktop_id: None,
+                pair_id: None,
+            },
+        );
+
+        assert!(
+            abandoned(&path),
+            "the asker gave up a minute ago, whenever the share stamped the file"
+        );
+        serve_one(&path).await;
+        assert!(!path.exists(), "the stale request must be removed");
+        assert!(!reply_path.exists(), "and must not be answered");
+    }
+
+    /// A name with no timestamp of its own — an older terminal, a hand-written
+    /// request, the fixtures in `cli/tests` — is judged by the file system alone
+    /// rather than read as 1970 and deleted on sight.
+    #[test]
+    fn a_name_without_a_timestamp_falls_back_to_the_file_system() {
+        let root = Root::new();
+        let request = Request {
+            op: OP_ADD_DEVICE.into(),
+            reply: "/tmp/unused".into(),
+            desktop_id: None,
+            pair_id: None,
+        };
+        let fresh = root.write_request("0001.request.json", &request);
+        let stale = root.write_request("0002.request.json", &request);
+        backdate(
+            &stale,
+            SystemTime::now() - ABANDONED_AFTER - Duration::from_secs(60),
+        );
+
+        assert!(!abandoned(&fresh), "a fresh file is not a stale request");
+        assert!(abandoned(&stale), "an old file still is");
+    }
+
+    /// Only the terminal's own shape counts as a timestamp. Thirteen digits then a
+    /// pid: a short leading number is a name, not a millisecond clock.
+    #[test]
+    fn only_the_terminals_naming_carries_a_timestamp() {
+        assert_eq!(
+            started_millis("1758012345678-4242.request.json"),
+            Some(1_758_012_345_678)
+        );
+        for name in [
+            "0001.request.json",                // a fixture, not a timestamp
+            "175801234567.request.json",        // twelve digits
+            "17580123456789-4242.request.json", // fourteen digits
+            "1758012345678.request.json",       // no pid
+            "1758012345678-notapid.request.json",
+            "1758012345678-4242.request.json.9.claim", // a claim is not a request
+            "1758012345678-4242.json",
+        ] {
+            assert_eq!(started_millis(name), None, "{name}");
+        }
     }
 
     #[test]

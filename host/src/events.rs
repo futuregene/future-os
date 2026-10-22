@@ -29,6 +29,10 @@ pub enum Event<'a> {
         thread_id: &'a str,
         approval_request_id: &'a str,
     },
+    /// The desktop-side `takeover` moved control to another device. The
+    /// windowed desktop activates its main window on receipt; a headless host
+    /// has no presentation and ignores it.
+    ControlClaimed,
     Notification {
         name: &'a str,
         payload: serde_json::Value,
@@ -53,6 +57,14 @@ pub fn publish(event: Event<'_>) {
     publish_to(SINK.get().copied(), event);
 }
 
+/// Emit only when a presentation sink is attached. The headless host never
+/// installs one, so this is a compile-time no-op there.
+pub fn publish_to_gui(event: Event<'_>) {
+    if SINK.get().is_some() {
+        publish(event);
+    }
+}
+
 fn publish_to(sink: Option<Sink>, event: Event<'_>) {
     if let Some(sink) = sink {
         sink(event);
@@ -67,6 +79,12 @@ pub fn emit_remote_activity(thread_id: &str) {
 }
 pub fn emit_threads_updated() {
     publish(Event::ThreadsUpdated);
+}
+
+/// The desktop-side `takeover` moved control; the windowed desktop presents
+/// its main window. Headless runs no-op (no presentation sink).
+pub fn emit_control_claimed() {
+    publish_to_gui(Event::ControlClaimed);
 }
 pub fn emit_thread_activity(thread_id: &str, last_message_at: i64) {
     publish(Event::ThreadActivity {
@@ -106,6 +124,7 @@ mod tests {
         publish_to(None, Event::ReviewUpdated("thread"));
         publish_to(None, Event::RemoteActivity("thread"));
         publish_to(None, Event::ThreadsUpdated);
+        publish_to(None, Event::ControlClaimed);
         publish_to(
             None,
             Event::ThreadActivity {
@@ -136,6 +155,12 @@ mod tests {
                 payload: serde_json::json!({}),
             },
         );
+    }
+
+    #[test]
+    fn gui_only_events_are_dropped_without_a_sink() {
+        // Headless host: no sink, ControlClaimed must not panic or be forwarded.
+        publish_to_gui(Event::ControlClaimed);
     }
 
     #[test]

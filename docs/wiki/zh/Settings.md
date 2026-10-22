@@ -16,7 +16,7 @@
   - **Sandboxed(沙箱)** —— 可用时使用 macOS Seatbelt、Linux 系统 Bubblewrap 或 Windows 受限令牌写保护；文件访问仍遵循路径规则，各平台保护范围不同。
   - **Full access（完全访问，默认）** —— 不询问、不沙箱，一切照跑。
 - **Auto-upgrade skills(技能自动升级)** —— 每次应用打开时,静默把已安装技能升级到最新版本。
-- **Skill recommendations（技能推荐）**（默认开启）—— 发送消息时，最多推荐一个你尚未安装的技能。
+- **Skill recommendations（技能推荐）**（默认关闭）—— 开启后，发送消息时最多推荐一个你尚未安装的技能。
 - **Generate a title after the first answer（首轮回答后生成标题）**（默认开启）—— 新会话首次成功回答后自动命名；之后的回答不会再次触发。
 - **Completion bell（完成提示音）** —— agent 跑完时播放提示音并提醒窗口。
 - **Model output（模型输出展示）** —— 回答完成后显示多少内容：

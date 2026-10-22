@@ -122,6 +122,11 @@ mod gui {
             Event::ReviewUpdated(thread_id) => emit_review_updated(thread_id),
             Event::RemoteActivity(thread_id) => emit_remote_activity(thread_id),
             Event::ThreadsUpdated => emit_threads_updated(),
+            Event::ControlClaimed => {
+                if let Some(app) = APP_HANDLE.get() {
+                    activate_main_window(app);
+                }
+            }
             Event::ThreadActivity {
                 thread_id,
                 last_message_at,

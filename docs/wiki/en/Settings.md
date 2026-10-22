@@ -16,7 +16,7 @@ Desktop-level options for the app:
   - **Sandboxed** — uses macOS Seatbelt, Linux system Bubblewrap, or Windows restricted-token write protection when available; file access still follows path rules. Guarantees differ by platform.
   - **Full access** (default) — no prompts and no sandbox; everything runs.
 - **Auto-upgrade skills** — silently upgrade installed skills to their latest version each time the app opens.
-- **Skill recommendations** (on by default) — when you send a message, suggest at most one skill you don't have installed yet.
+- **Skill recommendations** (off by default) — when enabled, suggest at most one skill you don't have installed yet when you send a message.
 - **Generate a title after the first answer** (on by default) — title a new conversation from its first successful answer; later answers don't retrigger it.
 - **Completion bell** — play a sound and attract the window's attention when the agent finishes.
 - **Model output** — how much of a settled reply the transcript shows:

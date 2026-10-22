@@ -137,6 +137,12 @@ impl StateHost for DesktopHost {
     fn monitor_agent(&self) -> BoxFuture<'_, ()> {
         Box::pin(availability::monitor())
     }
+    fn on_control_claimed(&self) {
+        // The windowed desktop activates its main window so the person who
+        // took control sees the machine they now own. Headless hosts have no
+        // presentation sink and this is a no-op there.
+        crate::emit_control_claimed();
+    }
 }
 impl FileHost for DesktopHost {
     fn upload_chunk(&self, id: &str, index: u64, bytes: &[u8]) -> Result<Value, String> {
