@@ -137,10 +137,14 @@ systems (CentOS 7 / Rocky 8 era). Local developer builds use the selected host
 target and need not be static.
 
 Pin a specific release with `FUTUREOS_VERSION` (e.g. `FUTUREOS_VERSION=1.2.0`),
-or point at a mirror with `FUTUREOS_BASE`. The current pinned-version path skips
-manifest SHA-256 verification and prints a warning; verify a pinned artifact
-against trusted release checksums yourself. The latest-release path verifies
-the manifest checksum.
+or point at a mirror with `FUTUREOS_BASE`. A pinned install reads that release's
+own manifest (`releases/<version>/latest.json`) and verifies the artifact's
+SHA-256 exactly like the latest-release path. Verification is mandatory: when
+the pinned version publishes no manifest entry for the platform, or the host has
+neither `shasum` nor `sha256sum`, the installer stops instead of installing an
+unverified binary. `FUTUREOS_SKIP_VERIFY=1` skips the check for that run; use it
+only when you already know the artifact is the one you want, because the script
+then installs whatever the mirror served.
 
 ### Building from source (developers)
 

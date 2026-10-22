@@ -39,6 +39,11 @@ iex (irm https://dl.future-os.cn/install.ps1)
 Debian/Ubuntu 使用匹配的 `.deb`；其他 Linux 使用 portable 桌面包。脚本最后执行
 `future init`。无桌面服务器请改用 CLI-only 压缩包，不必安装桌面运行库。
 
+两个安装脚本都会先用发布清单校验产物的 SHA-256 再安装，用 `FUTUREOS_VERSION` 锁定版本时也一样
+（会去取该版本自己的清单）。如果拿不到校验值——该平台没有清单条目，或主机没有
+`shasum`/`sha256sum`——安装会停下，而不是在没有校验的情况下继续。`FUTUREOS_SKIP_VERIFY=1`
+仅对本次运行关闭校验，含义是装下镜像给出的任何东西。
+
 ## 首次启动与签名
 
 官方 release 工作流对 macOS/Windows 安装包签名，并对 macOS 产物进行公证。
