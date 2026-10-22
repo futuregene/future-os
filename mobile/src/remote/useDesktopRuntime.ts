@@ -49,6 +49,14 @@ export interface DesktopRuntimeOptions {
   foreground: boolean;
   /** The user's own name for the machine, when they have given it one. */
   label?: string;
+  /**
+   * The desktop ended this pairing (see `DesktopConnectionOptions.onUnpaired`).
+   * The provider removes the pairing; nothing in this runtime can survive it,
+   * because being paired is what mounts it.
+   */
+  onUnpaired?(): void;
+  /** See `DesktopConnectionOptions.verifyPairing`. */
+  verifyPairing?(credentials: RemoteCredentials): Promise<unknown>;
 }
 
 export interface DesktopRuntime {
@@ -86,6 +94,8 @@ export function useDesktopRuntime({
   active,
   foreground,
   label,
+  onUnpaired,
+  verifyPairing,
 }: DesktopRuntimeOptions): DesktopRuntime {
   const [selectedSessionId, setSelectedSessionId] = useState("");
   const [draft, setDraft] = useState(false);
@@ -242,6 +252,8 @@ export function useDesktopRuntime({
     refreshWorkspaces,
     noteCatalogRevisions,
     controlChanged,
+    onUnpaired,
+    verifyPairing,
     closeConversation,
     resetConversation,
     resetCatalog,

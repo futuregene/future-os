@@ -114,7 +114,7 @@ function resolveTheme(mode: ThemeMode): ResolvedTheme {
   return mode;
 }
 
-function applyResolvedTheme(theme: ResolvedTheme): void {
+function applyResolvedTheme(theme: ResolvedTheme, mode: ThemeMode): void {
   if (typeof document !== "undefined") {
     const root = document.documentElement;
     root.classList.toggle("dark", theme === "dark");
@@ -123,8 +123,15 @@ function applyResolvedTheme(theme: ResolvedTheme): void {
   }
   // Match the native window chrome (Windows title bar, macOS window backdrop).
   // Best-effort: outside a Tauri webview (browser preview, tests) it throws.
+  //
+  // "Follow the system" must **clear** the pin rather than set it to the
+  // resolved value. A pinned native theme is what the webview reports back
+  // through `prefers-color-scheme`, so pinning it made "follow the system"
+  // resolve to whatever was chosen last: on a light desktop, picking Dark and
+  // then System stayed dark, because the system now looked dark to us — our own
+  // pin. `null` hands the answer back to the OS.
   try {
-    void getCurrentWindow().setTheme(theme).catch(() => {});
+    void getCurrentWindow().setTheme(mode === "system" ? null : theme).catch(() => {});
   }
   catch {
     // Not running inside Tauri.
@@ -199,9 +206,38 @@ function handleSystemChange(): void {
   if (next === resolved)
     return;
   resolved = next;
-  applyResolvedTheme(resolved);
+  applyResolvedTheme(resolved, mode);
   syncWindowCaptionColors();
   emitChange();
+}
+
+/** Pending re-read of the OS preference after the native pin was cleared. */
+let systemRecheck: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Read the OS preference again once the webview has dropped the native pin.
+ *
+ * `setTheme(null)` changes what `prefers-color-scheme` answers, but not within
+ * the same tick: for a moment the media query still returns the theme that was
+ * pinned. Resolving once more after the webview has caught up — and again a
+ * little later, because the native side applies it asynchronously — is what
+ * makes "follow the system" land on the OS's own answer instead of on the
+ * theme the user just left.
+ */
+function recheckSystemTheme(attempt = 0): void {
+  if (mode !== "system")
+    return;
+  const next = resolveTheme("system");
+  if (next !== resolved) {
+    resolved = next;
+    applyResolvedTheme(resolved, mode);
+    syncWindowCaptionColors();
+    emitChange();
+    return;
+  }
+  if (attempt >= 3)
+    return;
+  systemRecheck = setTimeout(recheckSystemTheme, 120, attempt + 1);
 }
 
 /**
@@ -237,6 +273,10 @@ export function getThemePalette(): ThemePalette {
 
 export function setThemeMode(next: ThemeMode): void {
   ensureSystemListener();
+  if (systemRecheck) {
+    clearTimeout(systemRecheck);
+    systemRecheck = null;
+  }
   mode = next;
   try {
     localStorage.setItem(STORAGE_KEY, next);
@@ -245,10 +285,14 @@ export function setThemeMode(next: ThemeMode): void {
     // Persistence is best-effort; the change still applies for this session.
   }
   const nextResolved = resolveTheme(next);
-  if (nextResolved !== resolved) {
-    resolved = nextResolved;
-    applyResolvedTheme(resolved);
-    syncWindowCaptionColors();
+  resolved = nextResolved;
+  // Applied even when the colour does not change: the native pin is part of
+  // what this call sets (or clears), and leaving a stale pin behind is exactly
+  // what made "follow the system" keep the previous explicit choice.
+  applyResolvedTheme(resolved, mode);
+  syncWindowCaptionColors();
+  if (next === "system") {
+    systemRecheck = setTimeout(recheckSystemTheme, 0);
   }
   emitChange();
 }
@@ -290,6 +334,6 @@ export function useThemePalette(): ThemePalette {
 
 // Apply before the first React paint.
 ensureSystemListener();
-applyResolvedTheme(resolved);
+applyResolvedTheme(resolved, mode);
 applyPalette(palette);
 syncWindowCaptionColors();

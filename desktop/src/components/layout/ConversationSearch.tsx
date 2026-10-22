@@ -13,6 +13,11 @@ import { cn } from "../../lib/cn";
  *
  * Escape closes and clears the query, because a closed field must not leave a
  * filter behind that the reader cannot see.
+ *
+ * There is **one** `×`, and what it does follows the state of the field: with a
+ * query it clears it, with an empty field it closes the search. Two `×` sat side
+ * by side before — "clear" appearing only once there was text — and in a rail
+ * this narrow that read as one broken control rather than as two different ones.
  */
 export function ConversationSearch({
   className,
@@ -67,10 +72,17 @@ export function ConversationSearch({
     );
   }
 
+  // A query means "clear"; an empty field means "close". One control, two
+  // answers, and the label says which one this press will be.
+  const clearing = query.length > 0;
+
   return (
     <div
       className={cn(
-        "flex h-8 flex-1 items-center gap-1 rounded-md border border-line-soft bg-surface px-2",
+        // `min-w-0`: the field shares the row with the device picker, and a flex
+        // item's default `min-width: auto` let the input push the row wider than
+        // the rail (the magnifier then sat outside it).
+        "flex h-8 min-w-0 flex-1 items-center gap-1 rounded-md border border-line-soft bg-surface px-2",
         className,
       )}
     >
@@ -87,22 +99,11 @@ export function ConversationSearch({
         type="text"
         value={query}
       />
-      {query.length > 0 && (
-        <button
-          aria-label={t("activityRail.clearSearch")}
-          className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted hover:bg-surface-subtle hover:text-ink-soft"
-          onClick={() => onQueryChange("")}
-          title={t("activityRail.clearSearch")}
-          type="button"
-        >
-          <X className="size-3" />
-        </button>
-      )}
       <button
-        aria-label={t("activityRail.closeSearch")}
+        aria-label={clearing ? t("activityRail.clearSearch") : t("activityRail.closeSearch")}
         className="inline-flex size-5 shrink-0 items-center justify-center rounded text-ink-muted hover:bg-surface-subtle hover:text-ink-soft"
-        onClick={onClose}
-        title={t("activityRail.closeSearch")}
+        onClick={clearing ? () => onQueryChange("") : onClose}
+        title={clearing ? t("activityRail.clearSearch") : t("activityRail.closeSearch")}
         type="button"
       >
         <X className="size-3.5" />

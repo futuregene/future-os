@@ -1063,6 +1063,28 @@ impl Observed {
             .unwrap_or(Value::Null)
     }
 
+    /// The build the answering Desktop is running, when it says.
+    ///
+    /// `None` for a Desktop that predates the field, which is a different fact
+    /// from "no commit recorded" — the prose says nothing rather than inventing a
+    /// version, and the JSON carries `null`.
+    fn build_line(&self) -> Option<String> {
+        let build = self.reported.as_ref()?.get("build")?;
+        let commit = build.get("gitCommitShort").and_then(Value::as_str)?;
+        let target = build.get("buildTarget").and_then(Value::as_str);
+        let dirty = build
+            .get("gitDirty")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        Some(format!(
+            "Desktop build: {commit}{}{}",
+            if dirty { " (working tree dirty)" } else { "" },
+            target
+                .map(|target| format!("  built for {target}"))
+                .unwrap_or_default(),
+        ))
+    }
+
     /// Every paired device, with what the running Desktop adds when it answered.
     ///
     /// The book is authoritative for *which* devices exist and where each was
@@ -1173,6 +1195,12 @@ impl Observed {
             "devices": devices,
             "warningCode": self.reported_value("warningCode"),
             "invitationExpiresAt": self.reported_value("invitationExpiresAt"),
+            // Who answered, by build: the commit this Desktop was *compiled*
+            // from, or null when the Desktop predates the field. `future
+            // version` cannot stand in for it — that reports the file the reader
+            // invoked, which is exactly the wrong answer when a replaced binary
+            // sits beside a process still running the old one.
+            "build": self.reported_value("build"),
         })
     }
 
@@ -1197,6 +1225,12 @@ impl Observed {
                     None => "unknown",
                 }
             ));
+            // Only when the answering Desktop is new enough to say. It is the one
+            // line that tells a reader whether the process they are talking to is
+            // the build they just installed.
+            if let Some(build) = self.build_line() {
+                lines.push(build);
+            }
         }
         lines.push(String::new());
         lines.extend(self.device_lines());
@@ -5219,6 +5253,13 @@ mod tests {
             "active": "pair_BBBB",
             "warningCode": null,
             "invitationExpiresAt": null,
+            "build": {
+                "gitCommit": "0123456789abcdef0123456789abcdef01234567",
+                "gitCommitShort": "0123456",
+                "gitDirty": false,
+                "buildTarget": "x86_64-unknown-linux-musl",
+                "buildProfile": "release",
+            },
             "devices": [
                 {
                     "pairId": "pair_AAAA",
@@ -5296,6 +5337,72 @@ mod tests {
             posed[0].get("pairId").is_none(),
             "a status names no device: {}",
             posed[0]
+        );
+    }
+
+    /// What a Desktop built before the `build` field answers: the same document,
+    /// without it.
+    fn status_without_build() -> Value {
+        let mut status = serving_status();
+        status.as_object_mut().unwrap().remove("build");
+        status
+    }
+
+    /// The document and the prose both name the build that **answered**, so a
+    /// reader can tell a stale process from a stale file.
+    ///
+    /// The failure it is for: a host whose binary had been replaced while the
+    /// process kept serving the old code. `future version` would report the new
+    /// commit — the file — and send the reader looking in the wrong place.
+    #[tokio::test]
+    async fn status_names_the_building_desktop_by_the_commit_it_was_compiled_from() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+        answer_requests(&home, json!({ "status": serving_status() }));
+
+        let (code, stdout, _) = run(&["remote", "status", "--json"]).await;
+        assert_eq!(code, 0);
+        let value: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(value["build"]["gitCommitShort"], "0123456");
+        assert_eq!(value["build"]["gitDirty"], false);
+        assert_eq!(value["build"]["buildTarget"], "x86_64-unknown-linux-musl");
+
+        // The answer helper answers one request, so the prose read poses its own.
+        answer_requests(&home, json!({ "status": serving_status() }));
+        let (code, stdout, _) = run(&["remote", "status"]).await;
+        assert_eq!(code, 0);
+        assert!(
+            stdout.contains("Desktop build: 0123456  built for x86_64-unknown-linux-musl"),
+            "the prose names the build too: {stdout}"
+        );
+    }
+
+    /// A Desktop that predates the field answers `null`, and nothing else about
+    /// the read changes.
+    #[tokio::test]
+    async fn status_from_an_older_desktop_reports_no_build() {
+        let _guard = crate::test_env::lock_env().await;
+        let home = Home::new();
+        home.write(BOOK_FILE, &two_device_book("https://relay.example.com"));
+        let _desktop = RunningDesktop::claim(&home);
+        answer_requests(&home, json!({ "status": status_without_build() }));
+
+        let (code, stdout, _) = run(&["remote", "status", "--json"]).await;
+        assert_eq!(code, 0);
+        let value: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(value["build"], Value::Null, "{value}");
+        // Every field it did answer is read as before.
+        assert_eq!(value["state"], "serving");
+        assert_eq!(value["devicesTotal"], 2);
+
+        answer_requests(&home, json!({ "status": status_without_build() }));
+        let (code, stdout, _) = run(&["remote", "status"]).await;
+        assert_eq!(code, 0);
+        assert!(
+            !stdout.contains("Desktop build:"),
+            "an older Desktop is not given an invented build line: {stdout}"
         );
     }
 

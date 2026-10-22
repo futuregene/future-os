@@ -9,7 +9,9 @@ import type { RemoteTaskDetail, RemoteTaskRow, RemoteTaskRun } from "../../remot
 import { layout, radius, spacing } from "../../theme/tokens";
 import { createThemedStyles } from "../../theme/ThemeContext";
 import { ResourceStatus, SettingsField, SettingsSection, useSettingsStyles } from "./SettingsPrimitives";
+import { TimeField } from "./TimeField";
 import type { SettingsPageBack } from "./pageBack";
+import { clearTaskDraft, loadTaskDraft, saveTaskDraft, taskDraftKey } from "./taskDraftStorage";
 import { useDesktopResource } from "./useDesktopResource";
 
 /** Local draft of the trigger, mirroring the desktop form. */
@@ -142,6 +144,53 @@ function newDraft(): Draft {
     // A new task starts enabled, like the desktop's form does.
     enabled: true,
     trigger: { ...defaultTrigger },
+  };
+}
+
+/**
+ * A stored draft, with every field held to the shape this form writes.
+ *
+ * The stored value is read from disk, where it may have come from an older
+ * build, a truncated write or another writer entirely; a field of the wrong
+ * type falls back to the blank draft's own default instead of reaching an input
+ * as `[object Object]`. Unknown keys are dropped rather than carried along.
+ */
+function restoredDraft(raw: unknown, base: Draft): Draft | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  const text = (candidate: unknown, fallback: string) =>
+    typeof candidate === "string" ? candidate : fallback;
+  const oneOf = <T extends string>(candidate: unknown, allowed: readonly T[], fallback: T): T =>
+    typeof candidate === "string" && (allowed as readonly string[]).includes(candidate)
+      ? candidate as T
+      : fallback;
+  const rawTrigger = value.trigger && typeof value.trigger === "object" && !Array.isArray(value.trigger)
+    ? value.trigger as Record<string, unknown>
+    : {};
+  return {
+    name: text(value.name, base.name),
+    prompt: text(value.prompt, base.prompt),
+    cwd: text(value.cwd, base.cwd),
+    modelId: text(value.modelId, base.modelId),
+    thinkingLevel: text(value.thinkingLevel, base.thinkingLevel),
+    timezone: text(value.timezone, base.timezone),
+    sessionPolicy: oneOf(value.sessionPolicy, ["new", "existing"] as const, base.sessionPolicy),
+    sessionRetention: oneOf(value.sessionRetention, ["keep", "delete"] as const, base.sessionRetention),
+    conversationMode: oneOf(value.conversationMode, ["chat", "workspace"] as const, base.conversationMode),
+    enabled: typeof value.enabled === "boolean" ? value.enabled : base.enabled,
+    trigger: {
+      mode: oneOf(
+        rawTrigger.mode,
+        ["manual", "once", "interval", "daily", "weekly", "monthly", "yearly"] as const,
+        base.trigger.mode,
+      ),
+      date: text(rawTrigger.date, base.trigger.date),
+      time: text(rawTrigger.time, base.trigger.time),
+      everyMinutes: text(rawTrigger.everyMinutes, base.trigger.everyMinutes),
+      days: text(rawTrigger.days, base.trigger.days),
+      day: text(rawTrigger.day, base.trigger.day),
+      month: text(rawTrigger.month, base.trigger.month),
+    },
   };
 }
 
@@ -300,7 +349,9 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
   const styles = useStyles();
   const { t, i18n } = useTranslation();
   const remote = useRemoteControls();
-  const tasks = useDesktopResource(remote.listTasks, 0, desktopOnline);
+  // `desktopOnline` disables controls; reading needs the machine to be its own
+  // controller too (see `RemoteControls.desktopReadable`).
+  const tasks = useDesktopResource(remote.listTasks, 0, desktopOnline && remote.desktopReadable);
   const [openId, setOpenId] = useState<string | null>(null);
   /** Creating opens the same editor with no task behind it. */
   const [creating, setCreating] = useState(false);
@@ -321,6 +372,29 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
   // `writing` guard).
   const writing = useRef(false);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+
+  /**
+   * The form's draft slot on this machine.
+   *
+   * A task id is only meaningful on the desktop that owns it, so the pair is
+   * the identity. `unknown` is the brief window before the connection reports
+   * which machine it is — the draft still saves, and a later mount on the same
+   * machine simply uses the real key.
+   */
+  const draftKeyFor = useCallback(
+    (taskId: string | null) => taskDraftKey(remote.credentials?.expectedDesktopId ?? "unknown", taskId),
+    [remote.credentials],
+  );
+  /**
+   * Drop a draft the user has left behind.
+   *
+   * A form that is saved, cancelled, deleted or backed out of has no unfinished
+   * work any more; keeping its draft would hand the next open a page of edits
+   * the task itself no longer has.
+   */
+  const discardDraft = useCallback((taskId: string | null) => {
+    void clearTaskDraft(draftKeyFor(taskId));
+  }, [draftKeyFor]);
 
   const loadDetail = useCallback(async (taskId: string) => {
     const [nextDetail, nextRuns] = await Promise.all([
@@ -356,15 +430,17 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
   const goBackOneLevel = useCallback(() => {
     // The form sits above the task: back from it is the task, not the list.
     if (settingsOpen) {
+      discardDraft(openId);
       setSettingsOpen(false);
       return true;
     }
     if (creating || openId) {
+      discardDraft(creating ? null : openId);
       close();
       return true;
     }
     return false;
-  }, [close, creating, openId, settingsOpen]);
+  }, [close, creating, discardDraft, openId, settingsOpen]);
   useEffect(() => {
     if (!onBackLevel) return;
     onBackLevel({ goBack: goBackOneLevel });
@@ -418,6 +494,7 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
   const remove = (task: RemoteTaskDetail) => {
     void mutate(async () => {
       await remote.deleteTask(task.id);
+      discardDraft(task.id);
       close();
     });
   };
@@ -430,9 +507,13 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
         failed={failed}
         kind="create"
         settings={settings}
-        onCancel={close}
+        onCancel={() => {
+          discardDraft(null);
+          close();
+        }}
         onCreate={draft => void mutate(async () => {
           await remote.createTask(draftPayload(draft));
+          discardDraft(null);
           close();
         })}
       />
@@ -543,15 +624,77 @@ function TaskForm({
   const styles = useStyles();
   const { t } = useTranslation();
   const remote = useRemoteControls();
-  const models = useDesktopResource(remote.listSettingsModels, 0, desktopOnline);
+  const models = useDesktopResource(remote.listSettingsModels, 0, desktopOnline && remote.desktopReadable);
   // Provider id → display name (same source the Models page groups by), so a
   // model chip can say which vendor it runs on.
-  const providers = useDesktopResource(remote.listProviders, 0, desktopOnline);
+  const providers = useDesktopResource(remote.listProviders, 0, desktopOnline && remote.desktopReadable);
   const providerNames = useMemo(() => new Map(
     [...providers.data?.builtin ?? [], ...providers.data?.custom ?? []].map(provider => [provider.id, provider.name]),
   ), [providers.data]);
   const [draft, setDraft] = useState<Draft>(() => detail ? draftFrom(detail) : newDraft());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  /**
+   * Where this form's unfinished work is kept between mounts.
+   *
+   * The form is long and the phone leaves the app at a moment's notice; a draft
+   * that lives only in state came back empty after the process was killed. It
+   * is read once when the form opens and written as it changes, so the next
+   * open — after a cold start, or after coming back from another app — finds
+   * what was being typed.
+   */
+  const draftKey = taskDraftKey(
+    remote.credentials?.expectedDesktopId ?? "unknown",
+    kind === "edit" ? detail!.id : null,
+  );
+  /**
+   * The slot whose stored draft has been read (or found absent).
+   *
+   * A key rather than a flag: a pairing whose desktop id only arrives after the
+   * first render changes `draftKey` without remounting the form, and a bare
+   * "loaded" flag would let the write effect replace the new slot's draft before
+   * anything had read it.
+   */
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const draftReady = loadedKey === draftKey;
+  const edited = useRef(false);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    let active = true;
+    void loadTaskDraft(draftKey).then(stored => {
+      if (!active) return;
+      // An edit draft written against a prompt that has since changed is not
+      // this task's work any more: the desktop's new prompt wins, and the stale
+      // slot is dropped rather than offered back.
+      const currentVersion = kind === "edit" ? detail?.promptVersion ?? null : null;
+      const usable = stored && (kind === "create" || stored.promptVersion === currentVersion);
+      if (stored && !usable) void clearTaskDraft(draftKey);
+      if (usable && !edited.current) {
+        const restored = restoredDraft(stored.draft, draft);
+        if (restored) setDraft(restored);
+      }
+      setLoadedKey(draftKey);
+    });
+    return () => { active = false; };
+    // `draft` is read as the fallback shape only; re-running on it would reload
+    // the stored draft over every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey, detail?.promptVersion, kind]);
+  useEffect(() => {
+    // Until the stored draft has been read, writing would replace the very
+    // draft this mount is about to restore with the blank one. And a form the
+    // user has only looked at is not a draft at all: storing the task's own
+    // values would later be "restored" over a task somebody has since edited
+    // elsewhere (the prompt version check catches a prompt change, not a
+    // schedule change).
+    if (!draftReady || !edited.current) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      void saveTaskDraft(draftKey, draft, kind === "edit" ? detail?.promptVersion ?? null : null);
+    }, 250);
+    return () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    };
+  }, [draft, draftKey, draftReady, detail?.promptVersion, kind]);
   // Which of the editor's two pages is on screen: an existing task opens on
   // what it did, with the form one level down behind the Settings button.
   const taskPage = kind === "edit" && !settingsOpen;
@@ -587,9 +730,16 @@ function TaskForm({
     enabledModels.find(model => modelKey(model) === draft.modelId),
   );
   const thinkingLevel = draft.thinkingLevel ? (resolvedLevel ?? draft.thinkingLevel) : "";
-  const patch = (values: Partial<Draft>) => setDraft(current => ({ ...current, ...values }));
-  const patchTrigger = (values: Partial<DraftTrigger>) =>
+  const patch = (values: Partial<Draft>) => {
+    // A keystroke makes the on-screen form the user's own: a stored draft that
+    // arrives after it must not overwrite what is being typed.
+    edited.current = true;
+    setDraft(current => ({ ...current, ...values }));
+  };
+  const patchTrigger = (values: Partial<DraftTrigger>) => {
+    edited.current = true;
     setDraft(current => ({ ...current, trigger: { ...current.trigger, ...values } }));
+  };
   const problem = draftProblem(draft);
   const trigger = draft.trigger;
 
@@ -606,7 +756,12 @@ function TaskForm({
       await remote.updateTask(detail!.id, draftPayload({ ...draft, thinkingLevel }));
     });
     // A save that did not land keeps the form open: the draft is its own retry.
-    if (saved) onCloseSettings?.();
+    // A save that landed has the task on the desktop, so the stored draft has
+    // nothing left to recover.
+    if (saved) {
+      void clearTaskDraft(draftKey);
+      onCloseSettings?.();
+    }
   };
 
   return (
@@ -646,7 +801,7 @@ function TaskForm({
                 {/* The way into the form. Leaving it is the same level back as
                     everywhere else (the header arrow, the system back
                     gesture), so it needs no button of its own. */}
-                <Button compact label={t("tasks.settings")} variant="secondary" disabled={busy} onPress={() => onOpenSettings?.()} />
+                <Button compact label={t("tasks.edit")} variant="secondary" disabled={busy} onPress={() => onOpenSettings?.()} />
               </View>
               {/* The confirmation is a sentence, so it gets its own line under the row. */}
               {confirmDelete
@@ -701,7 +856,7 @@ function TaskForm({
             <>
             {/* The heading says which page this is: a new task, or the form
                 that changes an existing one (whose name is its first field). */}
-            <SettingsSection title={kind === "create" ? t("tasks.newTitle") : t("tasks.settings")}>
+            <SettingsSection title={kind === "create" ? t("tasks.newTitle") : t("tasks.editTitle")}>
               {/* A new task is cancelled from here; an existing one leaves the
                   form with the level back (header arrow / system gesture), or
                   by saving. */}
@@ -935,7 +1090,16 @@ function TaskForm({
               {trigger.mode !== "manual" && trigger.mode !== "interval"
                 ? (
                     <SettingsField label={t("tasks.form.time")}>
-                      <TextInput accessibilityLabel={t("tasks.form.time")} style={settingsStyles.input} value={trigger.time} onChangeText={time => patchTrigger({ time })} />
+                      {/* A picker, like the desktop's native time input: the typed
+                          field needed the keyboard, which covered the bottom of
+                          this form, and a schedule is a choice from 24 hours
+                          rather than something to spell out. */}
+                      <TimeField
+                        disabled={busy}
+                        label={t("tasks.form.time")}
+                        onChange={time => patchTrigger({ time })}
+                        value={trigger.time}
+                      />
                     </SettingsField>
                   )
                 : null}

@@ -417,6 +417,40 @@ export function ActivityRail({
    */
   const threadParents = useMemo(() => threadParentIds(visibleThreads), [visibleThreads]);
 
+  /**
+   * The conversation on screen is never folded away.
+   *
+   * A fork lands *under* the turn it came from, and the tree starts folded, so
+   * creating one left its row hidden: the center showed the new conversation
+   * while the list did not, and the reader had to guess which `+` had swallowed
+   * it. Selecting a row that is hidden is not specific to forks — the palette,
+   * a link or a restored window can do the same — so the rule is stated once,
+   * for whatever is active: open the ancestors of the active row.
+   *
+   * Only ancestors are opened. Folding a row the reader collapsed by hand is
+   * their decision, and this effect does not run again until the selection
+   * moves.
+   */
+  useEffect(() => {
+    if (!activeThreadId)
+      return;
+    const ancestors: string[] = [];
+    let parent = threadParents.get(activeThreadId);
+    while (parent && !ancestors.includes(parent)) {
+      ancestors.push(parent);
+      parent = threadParents.get(parent);
+    }
+    if (ancestors.length === 0)
+      return;
+    setExpandedThreads((current) => {
+      if (ancestors.every(id => current.has(id)))
+        return current;
+      const next = new Set(current);
+      for (const id of ancestors) next.add(id);
+      return next;
+    });
+  }, [activeThreadId, threadParents]);
+
   const remoteRows = useMemo(
     () => mergeConversations(
       visibleThreads.map(thread => ({
@@ -1617,18 +1651,26 @@ export function ActivityRail({
   );
 }
 
+/**
+ * This machine's list order: active before archived, pinned before the rest,
+ * then newest started.
+ *
+ * The last key is the conversation's *creation* time, not its last reply. A
+ * streaming run rewrites the activity stamp about once a second, so ranking by
+ * that swapped rows under the reader's thumb for as long as a run was going —
+ * a row would climb above its neighbours and back again. A creation time does
+ * not move, so a row — pinned or not — keeps the place it was given when the
+ * conversation was made. `sort` is stable, so the store's order breaks a tie
+ * (two conversations created in the same millisecond).
+ */
 function sortThreads(items: StoredThread[]) {
   return [...items].sort((a, b) => {
     if (a.status !== b.status)
       return a.status === "active" ? -1 : 1;
     if (a.pinned !== b.pinned)
       return a.pinned ? -1 : 1;
-    return threadSortTime(b) - threadSortTime(a);
+    return b.createdAt - a.createdAt;
   });
-}
-
-function threadSortTime(thread: StoredThread) {
-  return thread.lastMessageAt ?? thread.updatedAt ?? thread.createdAt;
 }
 
 /**

@@ -14,8 +14,10 @@ export function SkillsSettingsPage() {
   const { colors } = useTheme();
   const { t, i18n } = useTranslation();
   const remote = useRemoteControls();
-  const installed = useDesktopResource(remote.listInstalledSkills, remote.skillsRevision, remote.desktopOnline);
-  const available = useDesktopResource(remote.listAvailableSkills, 0, remote.desktopOnline);
+  // Reads, not controls: a standalone machine's switch marks the page busy,
+  // while a machine another device drives refuses the read itself.
+  const installed = useDesktopResource(remote.listInstalledSkills, remote.skillsRevision, remote.desktopReadable);
+  const available = useDesktopResource(remote.listAvailableSkills, 0, remote.desktopReadable);
   const [tab, setTab] = useState<"installed" | "available">("installed");
   const [query, setQuery] = useState("");
   const [busy, setBusy] = useState(false);

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
-import { Keyboard, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { ArrowLeft } from "lucide-react-native";
+import { Button } from "../../components/Button";
 import { LanguageSettings } from "../../i18n/LanguageSettings";
 import { AppearanceSettings } from "../../theme/AppearanceSettings";
 import { PEER_ICONS, iconGlyph } from "../../remote/peerIcons";
@@ -21,6 +22,7 @@ import { TasksSettingsPage } from "./TasksSettingsPage";
 import type { SettingsPageBack } from "./pageBack";
 import { ResourceStatus, SettingsField, SettingsLink, SettingsSection, SettingsSwitch, createSettingsStyles, useSettingsStyles } from "./SettingsPrimitives";
 import { useDesktopResource } from "./useDesktopResource";
+import { useKeyboardHeight } from "../../lib/useKeyboardHeight";
 
 export type SettingsScreenHandle = { goBack(): void };
 
@@ -131,12 +133,32 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   // Which of the two surfaces this stack is: this phone's own settings, or one
   // paired desktop's.
   const deviceMode = deviceId !== undefined;
+  // This machine is somebody else's right now: pages read nothing, and the way
+  // out is the same takeover the session list offers.
+  const standby = remote.presence?.control === "standby";
+  const holderName = remote.presence?.holder?.name?.trim();
+  const [takingControl, setTakingControl] = useState(false);
+  const [takeControlFailed, setTakeControlFailed] = useState(false);
+  const takeControl = async () => {
+    if (takingControl) return;
+    setTakingControl(true);
+    setTakeControlFailed(false);
+    try {
+      await remote.takeControl();
+    }
+    catch {
+      setTakeControlFailed(true);
+    }
+    finally {
+      setTakingControl(false);
+    }
+  };
   const supported = remote.capabilities?.has("desktop_settings_v1") ?? false;
   const skillsSupported = remote.capabilities?.has("skill_management_v1") ?? false;
   const providersSupported = remote.capabilities?.has("provider_management_v1") ?? false;
   const tasksSupported = remote.capabilities?.has("tasks_v1") ?? false;
   const enabled = deviceMode && remote.desktopOnline && supported;
-  const resource = useDesktopResource(remote.getDesktopSettings, remote.desktopSettingsRevision, enabled);
+  const resource = useDesktopResource(remote.getDesktopSettings, remote.desktopSettingsRevision, enabled && remote.desktopReadable);
   const disabled = !enabled || saving || resource.loading || resource.failed || !resource.data;
   // Provider pages read and write their own authoritative snapshot; the shared
   // settings revision refetches them whenever the desktop changes a provider.
@@ -387,12 +409,22 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
     </ScrollView>;
   }
 
-  return <View
+  // iOS gets its inset from the KeyboardAvoidingView's padding; Android
+  // edge-to-edge measures it itself (see `useKeyboardHeight`) and replaces the
+  // bottom safe-area inset with the keyboard's height, because the covered
+  // strip is no longer visible. Without this, a field near the bottom of a long
+  // form had no scrollable path above the keyboard.
+  const keyboardHeight = useKeyboardHeight();
+  const bottomInset = Platform.OS === "android" && keyboardHeight > 0
+    ? keyboardHeight
+    : insets.bottom;
+  return <KeyboardAvoidingView
+    behavior={Platform.OS === "ios" ? "padding" : undefined}
     onAccessibilityEscape={goBack}
     // JS insets rather than SafeAreaView: this stack is presented in a native
     // Modal, whose views are not descendants of the app's SafeAreaProvider, so
     // the native SafeAreaView contributes nothing on Android.
-    style={[settingsStyles.page, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
+    style={[settingsStyles.page, { paddingTop: insets.top, paddingBottom: bottomInset }]}
   >
     <View style={styles.column}>
     <View style={styles.header}>
@@ -415,6 +447,34 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
         <Text style={settingsStyles.description}>{t("desktopSettings.sharedHint")}</Text>
       </View>
     </View> : null}
+    {/* A machine another device drives refuses every read this page makes, so
+        the page used to answer "无法读取桌面端数据，请重试" over a desktop that was
+        answering fine — just not to this phone. Say what is happening and offer
+        the one action that changes it. */}
+    {deviceMode && standby
+      ? (
+          <View style={styles.standby}>
+            <Text style={styles.standbyTitle}>
+              {holderName
+                ? t("connection.controlHeldBy", { name: holderName })
+                : t("connection.controlHeldByUnknown")}
+            </Text>
+            <Text style={settingsStyles.description}>{t("connection.standbyPageHint")}</Text>
+            <View>
+              <Button
+                compact
+                label={t("connection.takeControl")}
+                loading={takingControl}
+                onPress={() => void takeControl()}
+                variant="secondary"
+              />
+            </View>
+            {takeControlFailed
+              ? <Text accessibilityRole="alert" style={settingsStyles.error}>{t("connection.takeControlFailed")}</Text>
+              : null}
+          </View>
+        )
+      : null}
     {failed ? <Text accessibilityRole="alert" style={[styles.notice, settingsStyles.error]}>{t(failed)}</Text> : null}
     {page.name === "models" && enabled && (resource.failed || resource.loading) ? <View style={styles.notice}>
       <ResourceStatus loading={resource.loading} failed={resource.failed} onReload={() => void resource.reload()} />
@@ -422,7 +482,7 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
     {deviceMode && !remote.desktopOnline ? <Text style={styles.notice}>{t("desktopSettings.offline")}</Text> : null}
     {renderLevel()}
     </View>
-  </View>;
+  </KeyboardAvoidingView>;
 }
 
 const useStyles = createThemedStyles(theme => StyleSheet.create({
@@ -438,6 +498,17 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   deviceName: { color: theme.colors.inkStrong, fontSize: theme.font(14), fontWeight: "600", marginBottom: spacing.xs },
   version: { ...createSettingsStyles(theme).description, textAlign: "center" },
   notice: { color: theme.colors.inkMuted, padding: layout.gutter, fontSize: theme.font(13) },
+  standby: {
+    marginHorizontal: layout.gutter,
+    marginBottom: spacing.md,
+    padding: spacing.md,
+    gap: spacing.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.warning,
+    borderRadius: radius.lg,
+    backgroundColor: theme.colors.warningSoft,
+  },
+  standbyTitle: { color: theme.colors.inkStrong, fontSize: theme.font(14), fontWeight: "600" },
   approval: { minHeight: layout.touchTarget, justifyContent: "center", padding: spacing.sm, borderWidth: 1, borderColor: theme.colors.line, borderRadius: radius.md, backgroundColor: theme.colors.surface },
   approvalSelected: { borderColor: theme.colors.accent, backgroundColor: theme.colors.accentSoft },
   // One row of icons per device, wrapping for the narrowest phone: the same set

@@ -72,6 +72,11 @@ pub enum ScheduleMode {
     },
     Interval {
         every_minutes: i64,
+        /// Where the cadence counts from. Absent (or 0) means "from now": the
+        /// form that writes this schedule does not stamp a start, and a required
+        /// field made every interval task unparseable — it was created, listed
+        /// with no next slot, and never ran.
+        #[serde(default)]
         anchor: i64,
     },
     Daily {
@@ -135,9 +140,13 @@ fn next_due_for_mode(mode: &ScheduleMode, after_ms: i64, tz: Tz) -> Option<i64> 
             let step = Duration::minutes(*every_minutes)
                 .num_milliseconds()
                 .max(60_000);
-            let mut due = *anchor;
+            // `anchor <= after_ms` covers both "the anchor passed" and "there is
+            // no anchor": with 0 the next slot is one step from now, which is
+            // what "every N minutes" means when the cadence was just created.
+            let anchor = if *anchor > 0 { *anchor } else { after_ms };
+            let mut due = anchor;
             if due <= after_ms {
-                due = *anchor + ((after_ms - *anchor) / step + 1) * step;
+                due = anchor + ((after_ms - anchor) / step + 1) * step;
             }
             Some(due)
         }
@@ -1130,6 +1139,46 @@ mod tests {
         assert!(
             plain.find("summarise the week").unwrap() < plain.find("Completion contract").unwrap(),
             "{plain}"
+        );
+    }
+
+    /// An interval as the task form writes it — no `anchor` — still schedules.
+    ///
+    /// The form sends `{mode: "interval", every_minutes}`, so a required anchor
+    /// made `parse_schedule` return `None`: the task was stored with no next
+    /// slot and never fired, while "run once on a date" (whose fields the form
+    /// does send) worked.
+    #[test]
+    fn an_interval_without_an_anchor_still_schedules() {
+        let trigger = serde_json::json!({"mode": "interval", "every_minutes": 30});
+        let mode = parse_schedule(&trigger).expect("the form's own payload parses");
+        assert_eq!(
+            mode,
+            ScheduleMode::Interval {
+                every_minutes: 30,
+                anchor: 0
+            }
+        );
+
+        let mut task = task(trigger, TriggerKind::Schedule);
+        let now = 1_700_000_000_000_i64;
+        let due = next_due(&task, now).expect("an interval has a next slot");
+        assert_eq!(
+            due,
+            now + 30 * 60_000,
+            "the first slot is one step from now"
+        );
+
+        // An explicit anchor keeps its own cadence.
+        task.trigger_json = serde_json::json!({
+            "mode": "interval",
+            "every_minutes": 30,
+            "anchor": now,
+        });
+        assert_eq!(next_due(&task, now + 1).unwrap(), now + 30 * 60_000);
+        assert_eq!(
+            next_due(&task, now + 31 * 60_000).unwrap(),
+            now + 60 * 60_000
         );
     }
 

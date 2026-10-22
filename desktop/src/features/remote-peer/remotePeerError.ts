@@ -20,6 +20,7 @@ export type RemotePeerErrorKind
     | "timeout"
     | "pairing"
     | "pairingInUse"
+    | "revoked"
     | "secureChannel"
     | "signedOut"
     | "refused";
@@ -29,6 +30,7 @@ const ERROR_KEYS: Record<RemotePeerErrorKind, string> = {
   timeout: "errorTimeout",
   pairing: "errorPairing",
   pairingInUse: "errorPairingInUse",
+  revoked: "errorRevoked",
   secureChannel: "errorSecureChannel",
   signedOut: "errorSignedOut",
   refused: "errorRefused",
@@ -80,6 +82,14 @@ export function remotePeerErrorKind(message: string): RemotePeerErrorKind | null
   }
   if (/invitation_already_used/i.test(text))
     return "pairingInUse";
+  // The pairing was removed on the *other* computer: the platform answers this
+  // side's refresh/connect with "credential is invalid or revoked", and the
+  // serialized error carries the human sentence, not the wire code. Distinct
+  // from an expired invitation (re-pair on the other side, this row is fine) and
+  // from a network fault (retry helps): here the row itself is dead and the only
+  // way forward is to remove it and pair again.
+  if (/invalid_remote_credential|credential is invalid or revoked|credentials?_revoked|remote_credential_revoked/i.test(text))
+    return "revoked";
   if (/pairing_link_|pairing_code|invalid_pairing|invalid_jwt|invitation_expired|pairing_signature_invalid|pairing_identity_mismatch|pairing_challenge_expired|challenge_expired|peer_mismatch|peer_not_paired/i.test(text))
     return "pairing";
   // The two builds never completed the encrypted handshake. That is a version

@@ -226,18 +226,18 @@ fn read_sessions(pair_id: &str) -> Option<Value> {
             "status": status,
             // Last-activity timestamp, in the *same* coalesce the store's own
             // ordering uses (`pinned DESC, COALESCE(last_message_at, updated_at,
-            // created_at) DESC`). A client that merges several desktops ranks
-            // rows across machines by this field and must not disagree with how
-            // this desktop ranks its own list. Optional by contract: clients
-            // built before this field fall back to the snapshot order, and a
-            // row whose thread has no timestamps at all omits it.
+            // created_at) DESC`). A client merging several desktops shows this as
+            // a row's age, and ranks a row from a host that predates `createdAt`
+            // by it. Optional by contract: clients built before this field fall
+            // back to the snapshot order, and a row whose thread has no
+            // timestamps at all omits it.
             "lastMessageAt": t.last_message_at.unwrap_or(t.updated_at),
-            // When the conversation was *started*, which is what a client needs to
-            // rank the ones still running without their rows swapping places every
-            // second: an active run rewrites `lastMessageAt` about once a second,
-            // and a list ordered by that re-shuffles under the reader's thumb.
-            // Optional by contract: a client built before this field falls back to
-            // the recency key, which is what it ordered by before.
+            // When the conversation was *started*, which is what a client ranks
+            // rows by: an active run rewrites `lastMessageAt` about once a
+            // second, and a list ordered by that re-shuffles under the reader's
+            // thumb for as long as the run streams. Optional by contract: a
+            // client built before this field falls back to the recency key,
+            // which is what it ordered by before.
             "createdAt": t.created_at,
         }));
     }
@@ -282,10 +282,14 @@ mod tests {
         .expect("create thread under the test HOME")
     }
 
-    /// The cross-device ordering key. A client merging several desktops ranks
-    /// rows across machines by `lastMessageAt`, so it has to be present, be the
-    /// same coalesce the store orders by (`last_message_at`, else `updated_at`),
-    /// and move when a message lands. Clients older than this field ignore it.
+    /// The activity stamp a client shows as a row's age.
+    ///
+    /// It is the same coalesce the store orders by (`last_message_at`, else
+    /// `updated_at`), it has to be present, and it must move when a message
+    /// lands. A client no longer ranks rows by it (the creation time below is
+    /// the ranking key), but it is the fallback for a client older than that
+    /// field — and the age every row draws. Clients older than this field ignore
+    /// it.
     #[test]
     fn sessions_snapshot_carries_last_message_at() {
         let _home = crate::remote::test_support::HomeGuard::new("catalog-last-message");
@@ -310,14 +314,15 @@ mod tests {
         );
     }
 
-    /// When the conversation was started, so a client can rank the ones still
-    /// running by a key that does not move.
+    /// When the conversation was started, so a client ranks rows by a key that
+    /// does not move.
     ///
     /// `lastMessageAt` is rewritten about once a second while a run streams, and
-    /// a phone ordering its "active" list by it re-shuffles rows under the
-    /// reader's thumb. The creation time is stable for the life of the thread and
-    /// is what that list is ordered by. Optional by contract: clients that predate
-    /// this field keep ordering by recency.
+    /// a list ordered by it re-shuffles rows under the reader's thumb. The
+    /// creation time is stable for the life of the thread and is the ranking key
+    /// a client uses — every row of the desktop sidebar, and the running rows of
+    /// the phone's recent view. Optional by contract: clients that predate this
+    /// field keep ordering by recency.
     #[test]
     fn sessions_snapshot_carries_the_creation_time() {
         let _home = crate::remote::test_support::HomeGuard::new("catalog-created-at");

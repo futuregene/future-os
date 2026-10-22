@@ -19,6 +19,9 @@ const mockRemote = {
   credentials: { pairId: "pair", expectedDesktopId: "desktop" },
   desktops: [{ pairId: "pair", desktopId: "desktop", name: "Work computer" }],
   desktopOnline: true,
+  // The control plane's own rule: a machine that is online but driven by another
+  // device refuses reads, so a page gates on both.
+  get desktopReadable() { return this.desktopOnline; },
   capabilities: new Set(["desktop_settings_v1", "skill_management_v1", "provider_management_v1"]),
   desktopSettingsRevision: 0,
   skillsRevision: 0,

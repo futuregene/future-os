@@ -47,14 +47,29 @@ export async function toggleNativeFullscreen(): Promise<{ ok: true; fullscreen: 
  * fullscreen (the macOS green button) would be dropped out of it every time they opened
  * the panel. The shell calls this from the paths that actually close the panel.
  *
+ * One request is not enough on Windows: closing the panel in fullscreen sometimes left
+ * the reader with the frame gone and the shell filling the screen, i.e. still
+ * fullscreen. The request can be dropped while the window re-lays out, so this asks,
+ * checks, and asks again — and it asks *before* checking, because a window that has just
+ * changed state reports the old one for a moment. (`setFullscreen(false)` on a windowed
+ * window is a no-op, so the unconditional first call costs nothing.)
+ *
  * Best-effort: a refusal here is not something the reader asked for, so it is logged and
  * not toasted (unlike the toggle's refusal, which is the reader's own request failing).
  */
 export async function exitNativeFullscreen(): Promise<void> {
   try {
     const win = getCurrentWindow();
-    if (await win.isFullscreen())
+    await win.setFullscreen(false);
+    // Confirmed, not assumed. Three rounds is enough for a dropped request to be
+    // re-issued once or twice; beyond that the window is not ours to move.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (!(await win.isFullscreen()))
+        return;
+      await new Promise(resolve => setTimeout(resolve, 60));
       await win.setFullscreen(false);
+    }
+    console.error("vibe: the window is still fullscreen after leaving the panel");
   }
   catch (error) {
     console.error("vibe: leaving fullscreen failed", error);
