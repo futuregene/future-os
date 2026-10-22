@@ -37,6 +37,16 @@ const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
  */
 type TriggerMode = "" | "manual" | "once" | "interval" | "daily" | "weekly" | "monthly" | "yearly";
 
+/**
+ * Whether a schedule's times are wall-clock times. Only these read a time zone:
+ * "every N minutes" counts from the last run, and a manual task has no schedule
+ * at all, so the form asks which clock the times belong to after one of these
+ * modes is chosen — never before the trigger that uses it.
+ */
+function triggerReadsClock(mode: TriggerMode): boolean {
+  return mode === "once" || mode === "daily" || mode === "weekly" || mode === "monthly" || mode === "yearly";
+}
+
 interface DraftTrigger {
   mode: TriggerMode;
   date: string;
@@ -713,20 +723,6 @@ function TaskForm({
         </label>
       </div>
 
-      <div className="block space-y-1.5">
-        <span className="text-xs text-ink-soft">{t("form.timezone")}</span>
-        <Select value={draft.timezone} onChange={e => onChange({ timezone: e.target.value })}>
-          <option value="">{t("form.timezoneSystem")}</option>
-          {zones.map(zone => (
-            <option key={zone} value={zone}>{zone}</option>
-          ))}
-        </Select>
-        {/* The zone decides which clock the times above are read on, so the
-            hint says what an unset choice means rather than leaving the user
-            to guess whether it follows the machine or UTC. */}
-        <p className="text-xs text-ink-muted">{t("form.timezoneHint")}</p>
-      </div>
-
       <div className="grid grid-cols-2 gap-4">
         <label className="block space-y-1.5">
           <span className="text-xs text-ink-soft">{t("form.session")}</span>
@@ -905,6 +901,26 @@ function TaskForm({
                 {/* A clamped day is user-visible by design, the same rule the
                     monthly mode states. */}
                 <p className="text-2xs text-ink-muted">{t("form.shortMonthHint")}</p>
+              </div>
+            )
+          : null}
+
+        {/* The zone belongs to the schedule, not to the task: it says which
+            clock the times just chosen are read on, so it is asked for inside
+            the trigger, after the mode that has times. */}
+        {triggerReadsClock(trigger.mode)
+          ? (
+              <div className="block space-y-1.5">
+                <span className="text-xs text-ink-soft">{t("form.timezone")}</span>
+                <Select value={draft.timezone} onChange={e => onChange({ timezone: e.target.value })}>
+                  <option value="">{t("form.timezoneSystem")}</option>
+                  {zones.map(zone => (
+                    <option key={zone} value={zone}>{zone}</option>
+                  ))}
+                </Select>
+                {/* The hint says what an unset choice means rather than leaving
+                    the user to guess whether it follows the machine or UTC. */}
+                <p className="text-xs text-ink-muted">{t("form.timezoneHint")}</p>
               </div>
             )
           : null}
