@@ -183,10 +183,7 @@ fn check_sandbox() -> CheckResult {
                 lines.push(format!("version={version}"));
             }
             if cfg!(target_os = "linux") && !probe.available {
-                lines.push(
-                    "Install system Bubblewrap (apt/dnf package: bubblewrap); WSL is unsupported"
-                        .to_string(),
-                );
+                lines.push(sandbox_remedy(&probe.code));
             }
             CheckResult {
                 name: "OS sandbox".to_string(),
@@ -199,6 +196,71 @@ fn check_sandbox() -> CheckResult {
             status: Status::Warn,
             lines: vec![format!("backend=unknown code=probe_failed error={error}")],
         },
+    }
+}
+
+/// The one line `future doctor` prints after an unavailable Linux sandbox.
+///
+/// The probe already carries *why* it failed (`code`), and the remedies are not
+/// interchangeable: telling a machine whose Bubblewrap is merely old to "install
+/// the apt package" is advice it cannot act on, because on the releases that
+/// ship 0.4.x–0.8.0 that package is exactly what is too old. Each code therefore
+/// gets its own next step, and the version floor is read from the probe's own
+/// constant instead of being restated here.
+fn sandbox_remedy(code: &str) -> String {
+    match code {
+        "binary_missing" => {
+            "Install system Bubblewrap (apt/dnf package: bubblewrap); WSL is unsupported"
+                .to_string()
+        }
+        "version_too_old" => {
+            let (major, minor, patch) = future_agent::sandbox::linux::probe::MINIMUM_BWRAP_VERSION;
+            format!(
+                "Bubblewrap is installed but older than {major}.{minor}.{patch} — the distro \
+                 package may be too old for this host; install a newer Bubblewrap (backport or \
+                 build from source), then restart the agent"
+            )
+        }
+        "path_rejected" => {
+            "No trusted system Bubblewrap was found — check PATH and confirm bwrap is \
+             root-owned, then restart the agent"
+                .to_string()
+        }
+        "binary_invalid" => {
+            "System Bubblewrap is not a valid executable — reinstall it or repair its \
+             permissions, then restart the agent"
+                .to_string()
+        }
+        "version_unreadable" => {
+            "The Bubblewrap version could not be read — reinstall or upgrade it, then restart \
+             the agent"
+                .to_string()
+        }
+        "required_feature_missing" => {
+            "This Bubblewrap lacks options the sandbox requires — upgrade or replace the system \
+             package, then restart the agent"
+                .to_string()
+        }
+        "user_namespace_disabled" => {
+            "Unprivileged user namespaces are disabled — enable them, then restart the agent"
+                .to_string()
+        }
+        "proc_mount_restricted" => {
+            "The system does not allow the sandbox to mount a private /proc — adjust the system \
+             or container policy, then restart the agent"
+                .to_string()
+        }
+        "probe_timeout" => {
+            "Bubblewrap detection timed out — rerun `future doctor`, then restart the agent"
+                .to_string()
+        }
+        "binary_identity_changed" => {
+            "The Bubblewrap file changed after detection — verify the system package, then \
+             restart the agent"
+                .to_string()
+        }
+        _ => "The sandbox check failed — commands run without OS isolation until it is fixed"
+            .to_string(),
     }
 }
 
@@ -696,6 +758,18 @@ async fn check_providers() -> CheckResult {
 // ── 5. Sessions ────────────────────────────────────────────────────────────
 
 async fn check_sessions() -> CheckResult {
+    // Ask the storage owner first: it, not the legacy JSONL directory, answers
+    // "how many sessions does this machine have". The directory only ever held
+    // the pre-database transcripts, so its absence says nothing about sessions
+    // — rendering it as "no sessions created yet" made this one section print
+    // two different answers on the same screen.
+    let client = RunClient::new(&grpc_addr());
+    let health = client.storage_health().await;
+    let known_count = health
+        .as_ref()
+        .ok()
+        .and_then(|data| data["sessions"].as_u64());
+
     let mut lines: Vec<String> = Vec::new();
     let sessions_dir = sessions_dir_path();
 
@@ -716,13 +790,27 @@ async fn check_sessions() -> CheckResult {
             Err(_) => lines.push(format!("Cannot read {}", sessions_dir.display())),
         }
     } else {
-        lines.push("No session directory — no sessions created yet".to_string());
+        // Say what is missing and what the database says instead. Three cases,
+        // because "the database was not asked" is not "the database is empty".
+        let dir = sessions_dir.display();
+        lines.push(match known_count {
+            Some(count) if count > 0 => format!(
+                "No legacy session directory ({dir} is absent); the database holds {count} \
+                 session(s)"
+            ),
+            Some(_) => format!(
+                "No session directory ({dir} is absent) and no sessions in the database yet"
+            ),
+            None => format!(
+                "No legacy session directory ({dir} is absent); whether the database holds \
+                 sessions was not verified"
+            ),
+        });
     }
 
-    // Ask the storage owner. Legacy JSONL file counts do not prove that a
-    // current database is readable, and transport failures are not healthy.
-    let client = RunClient::new(&grpc_addr());
-    let status = match client.storage_health().await {
+    // Legacy JSONL file counts do not prove that a current database is readable,
+    // and transport failures are not healthy.
+    let status = match health {
         Ok(data) => {
             lines.push(format!(
                 "{} session(s), database={}, schema={}",
@@ -811,7 +899,14 @@ async fn check_skills() -> CheckResult {
                     // `if (localVer && skill?.latest_version && localVer !== skill.latest_version)`
                     let latest = skill.and_then(|s| s.latest_version.clone());
                     match (local_ver.as_deref(), latest) {
-                        (Some(local), Some(latest)) if local != latest => {
+                        // Same verdict `future skills update` acts on: an entry
+                        // that is *not newer* than what is installed is not an
+                        // update, however the two version strings compare. A
+                        // pair that is not full SemVer is not an update either,
+                        // which is also why the updater leaves it installed.
+                        (Some(local), Some(latest))
+                            if future_agent::skills::manager::is_newer(&latest, local) =>
+                        {
                             needs_update.push(format!("{id}: {local} {DIM}→{RESET} {latest}"));
                             continue;
                         }
@@ -898,6 +993,45 @@ mod tests {
         (code, stdout, stderr)
     }
 
+    /// The remedy line follows the probe's own diagnostic instead of assuming
+    /// Bubblewrap is missing: a machine with an installed-but-old Bubblewrap
+    /// must not be told to install the package it already has.
+    #[test]
+    fn sandbox_remedy_follows_the_diagnostic_code() {
+        let old = sandbox_remedy("version_too_old");
+        let (major, minor, patch) = future_agent::sandbox::linux::probe::MINIMUM_BWRAP_VERSION;
+        assert!(old.contains(&format!("{major}.{minor}.{patch}")), "{old}");
+        assert!(!old.contains("Install system Bubblewrap"), "{old}");
+
+        let missing = sandbox_remedy("binary_missing");
+        assert!(missing.contains("Install system Bubblewrap"), "{missing}");
+        assert!(missing.contains("WSL is unsupported"), "{missing}");
+
+        // Every remaining probe code gets its own next step, and none of them
+        // is the install hint that only fits `binary_missing`.
+        for code in [
+            "path_rejected",
+            "binary_invalid",
+            "version_unreadable",
+            "required_feature_missing",
+            "user_namespace_disabled",
+            "proc_mount_restricted",
+            "probe_timeout",
+            "probe_failed",
+            "binary_identity_changed",
+        ] {
+            let remedy = sandbox_remedy(code);
+            assert!(!remedy.is_empty(), "{code}");
+            assert!(
+                !remedy.contains("Install system Bubblewrap"),
+                "{code}: {remedy}"
+            );
+        }
+        // An unknown code (a newer Desktop's diagnostic) still says something
+        // actionable rather than promising isolation that is not there.
+        assert!(sandbox_remedy("something_new").contains("without OS isolation"));
+    }
+
     #[tokio::test]
     async fn doctor_clean_environment_output() {
         let _guard = crate::test_env::lock_env().await;
@@ -954,11 +1088,69 @@ mod tests {
         assert!(stdout.contains("Agent settings"));
         assert!(stdout.contains("(defaults apply)"));
         assert!(stdout.contains("No providers configured"));
-        assert!(stdout.contains("No session directory — no sessions created yet"));
+        // Neither the database nor a JSONL directory: the section may say the
+        // directory is absent, but it must not answer "how many sessions" with
+        // "none" from that absence alone.
+        assert!(
+            stdout.contains("whether the database holds sessions was not verified"),
+            "{stdout}"
+        );
+        assert!(
+            !stdout.contains("no sessions created")
+                && !stdout.contains("no sessions in the database"),
+            "{stdout}"
+        );
         assert!(stdout.contains("No skills installed."));
         assert!(stdout.contains("(directory not found)"));
         // Warns exist → no "All checks passed."
         assert!(!stdout.contains("All checks passed."));
+    }
+
+    /// The Sessions section used to answer "are there sessions?" twice: once
+    /// from the absence of the legacy JSONL directory ("no sessions created
+    /// yet") and once from the storage owner (135). Whichever line the reader
+    /// believed, one of them was wrong. The count now comes from the database
+    /// alone, and a missing directory is reported as a missing directory.
+    #[tokio::test]
+    async fn session_count_comes_from_the_database_not_the_directory() {
+        let _guard = crate::test_env::lock_env().await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut agent = crate::test_server::MockAgent::default();
+        agent.responses.insert(
+            "get_storage_health".into(),
+            serde_json::json!({
+                "databaseId":"mock-db","restoreGeneration":"mock-restore",
+                "schemaVersion":future_rpc::connection::AGENT_STORAGE_SCHEMA_VERSION,
+                "sessions":135,"deletedSessions":0,"failedImports":0,
+                "unrecoverableQueuedInputs":0,"pendingQueuedInputs":0,
+                "pendingHistoryIndexes":0,"catalogueConflicts":0,
+            })
+            .to_string(),
+        );
+        let addr = crate::test_server::spawn_mock(agent).await;
+        let _env = EnvGuard::set(&[
+            ("HOME", dir.path().as_os_str().to_owned()),
+            ("PATH", dir.path().join("empty-bin").into_os_string()),
+            ("FUTURE_AGENT_GRPC_ADDR", OsString::from(addr)),
+        ]);
+        // No `sessions/` directory exists under this HOME: the only thing that
+        // knows the session count is the database.
+        assert!(!sessions_dir_path().exists());
+
+        let (code, stdout, stderr) = run_doctor().await;
+        assert_eq!(code, 0, "{stderr}");
+        // One answer for "how many sessions": the storage owner's.
+        assert!(stdout.contains("135 session(s), database="), "{stdout}");
+        // And the absent directory is explained against that count, not instead
+        // of it.
+        assert!(
+            stdout.contains("the database holds 135 session(s)"),
+            "{stdout}"
+        );
+        // The two ways of claiming "no sessions" that the absence must never
+        // produce on a machine that has them.
+        assert!(!stdout.contains("no sessions created"), "{stdout}");
+        assert!(!stdout.contains("no sessions in the database"), "{stdout}");
     }
 
     /// The other half of the lookup contract (the test above): with a lookup
@@ -1326,21 +1518,39 @@ mod tests {
         tokio::fs::create_dir_all(skills.join("future-a"))
             .await
             .unwrap();
-        tokio::fs::write(skills.join("future-a/SKILL.md"), "---\nversion: 1.0\n---\n")
-            .await
-            .unwrap();
+        tokio::fs::write(
+            skills.join("future-a/SKILL.md"),
+            "---\nversion: 1.0.0\n---\n",
+        )
+        .await
+        .unwrap();
         tokio::fs::create_dir_all(skills.join("future-b"))
             .await
             .unwrap();
-        tokio::fs::write(skills.join("future-b/SKILL.md"), "---\nversion: 0.9\n---\n")
+        tokio::fs::write(
+            skills.join("future-b/SKILL.md"),
+            "---\nversion: 0.9.0\n---\n",
+        )
+        .await
+        .unwrap();
+        // Installed *newer* than the catalogue (a build ahead of the platform):
+        // not an update, however the two version strings compare.
+        tokio::fs::create_dir_all(skills.join("future-c"))
             .await
             .unwrap();
+        tokio::fs::write(
+            skills.join("future-c/SKILL.md"),
+            "---\nversion: 4.0.0\n---\n",
+        )
+        .await
+        .unwrap();
         let catalog = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
             "/client/v1/skills",
             200,
             "{\"skills\":[\
-                {\"id\":\"future-a\",\"latest_version\":\"1.0\"},\
-                {\"id\":\"future-b\",\"latest_version\":\"2.0\"}\
+                {\"id\":\"future-a\",\"latest_version\":\"1.0.0\"},\
+                {\"id\":\"future-b\",\"latest_version\":\"2.0.0\"},\
+                {\"id\":\"future-c\",\"latest_version\":\"3.0.0\"}\
             ]}",
         )])
         .await;
@@ -1389,13 +1599,23 @@ mod tests {
             stdout.contains("2 session(s), database="),
             "stdout: {stdout}"
         );
-        // Skills: one up-to-date with version, one needs update.
+        // Skills: one up-to-date with version, one needs update, and one whose
+        // installed version is ahead of the catalogue — reported as up to date,
+        // never as `future-c: 4.0.0 → 3.0.0`.
         assert!(
-            stdout.contains("Up to date: future-a (v1.0)"),
+            stdout.contains("Up to date: future-a (v1.0.0)"),
             "stdout: {stdout}"
         );
         assert!(
-            stdout.contains("Updates available: future-b: 0.9"),
+            stdout.contains("future-c (v4.0.0)"),
+            "ahead-of-catalogue skill must read as up to date: {stdout}"
+        );
+        assert!(
+            !stdout.contains("future-c:"),
+            "a downgrade must not be advertised as an update: {stdout}"
+        );
+        assert!(
+            stdout.contains("Updates available: future-b: 0.9.0"),
             "stdout: {stdout}"
         );
         assert!(stdout.contains("future skills update"), "stdout: {stdout}");
@@ -1440,7 +1660,7 @@ mod tests {
         let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
             "/client/v1/skills",
             200,
-            r#"{"skills":[{"id":"same","latest_version":"1.0"},{"id":"older","latest_version":"2.0"},{"id":"noversion"}]}"#,
+            r#"{"skills":[{"id":"same","latest_version":"1.0.0"},{"id":"older","latest_version":"2.0.0"},{"id":"noversion"}]}"#,
         )])
         .await;
         // auth.json: future key + base_url → platform mock; a non-object
@@ -1464,13 +1684,13 @@ mod tests {
         tokio::fs::create_dir_all(skills.join("same"))
             .await
             .unwrap();
-        tokio::fs::write(skills.join("same/SKILL.md"), "---\nversion: 1.0\n---\n")
+        tokio::fs::write(skills.join("same/SKILL.md"), "---\nversion: 1.0.0\n---\n")
             .await
             .unwrap();
         tokio::fs::create_dir_all(skills.join("older"))
             .await
             .unwrap();
-        tokio::fs::write(skills.join("older/SKILL.md"), "---\nversion: 1.0\n---\n")
+        tokio::fs::write(skills.join("older/SKILL.md"), "---\nversion: 1.0.0\n---\n")
             .await
             .unwrap();
         // Catalog entry without a latest_version → plain up-to-date.
@@ -1479,14 +1699,14 @@ mod tests {
             .unwrap();
         tokio::fs::write(
             skills.join("noversion/SKILL.md"),
-            "---\nversion: 3.1\n---\n",
+            "---\nversion: 3.1.0\n---\n",
         )
         .await
         .unwrap();
         let (_, stdout, _) = run_doctor().await;
-        assert!(stdout.contains("same (v1.0)"), "stdout: {stdout}");
-        assert!(stdout.contains("noversion (v3.1)"), "stdout: {stdout}");
-        assert!(stdout.contains("older: 1.0"), "stdout: {stdout}");
+        assert!(stdout.contains("same (v1.0.0)"), "stdout: {stdout}");
+        assert!(stdout.contains("noversion (v3.1.0)"), "stdout: {stdout}");
+        assert!(stdout.contains("older: 1.0.0"), "stdout: {stdout}");
         // The non-object provider was skipped; future counts as [key].
         assert!(stdout.contains("[key]"), "stdout: {stdout}");
     }
@@ -1792,13 +2012,16 @@ mod tests {
         tokio::fs::create_dir_all(skills.join("future-a"))
             .await
             .unwrap();
-        tokio::fs::write(skills.join("future-a/SKILL.md"), "---\nversion: 1.0\n---\n")
-            .await
-            .unwrap();
+        tokio::fs::write(
+            skills.join("future-a/SKILL.md"),
+            "---\nversion: 1.0.0\n---\n",
+        )
+        .await
+        .unwrap();
         let catalog = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
             "/client/v1/skills",
             200,
-            "{\"skills\":[{\"id\":\"future-a\",\"latest_version\":\"1.0\"}]}",
+            "{\"skills\":[{\"id\":\"future-a\",\"latest_version\":\"1.0.0\"}]}",
         )])
         .await;
         // auth.json: future key with the catalog base_url; a second key-only

@@ -227,7 +227,150 @@ fn retention_keeps_latest_and_ttl() {
     assert!(report.candidates[0].contains("d20"));
 }
 
-/// ── Stale-latest-run warns when state is newer than the latest run ────────
+/// ── Stale-latest-run reads the projection's own clock ─────────────────────
+///
+/// The projection's timestamp must come from the process that wrote it, not from
+/// the file system: a goal directory on a share whose server clock is minutes off
+/// would otherwise date every `next_action.txt` write with that share's clock,
+/// while `recorded_at`/`todo.updated_at` come from this machine. A fast share made
+/// the warning permanent (it exists to prompt a refresh, and the refresh could
+/// never clear it); a slow one hid it. `set_next_action` stamps the write in the
+/// file's content, and that is what the comparison reads.
+#[test]
+fn the_projection_writes_its_own_stamp_and_the_comparison_reads_it() {
+    let root = tmp_root("stamp");
+    let mut store = future_goal::store::Store::open(&root).unwrap();
+    let goal = future_goal::state::Goal::new("g1", "objective", "/tmp");
+    store.register(&goal).unwrap();
+    let ts = goal.created_at;
+    store
+        .append(future_goal::store::Event::GoalStarted {
+            goal_id: "g1".into(),
+            ts,
+        })
+        .unwrap();
+    let mut todo = future_goal::state::Todo::advancement("t1", "work");
+    todo.updated_at = 1_000;
+    store
+        .append(future_goal::store::Event::TodoAdded {
+            goal_id: "g1".into(),
+            todo,
+            ts,
+        })
+        .unwrap();
+    let mut record = future_goal::state::RunRecord {
+        agent_id: None,
+        turn: 1,
+        todo_id: "t1".to_string(),
+        run_id: "r1".to_string(),
+        terminal_state: "completed".to_string(),
+        error: None,
+        tokens_in_delta: 0,
+        tokens_out_delta: 0,
+        cost_delta: 0.0,
+        tools: vec![],
+        evidence: String::new(),
+        recorded_at: 2_000,
+        spend_source: Some("run".to_string()),
+        validation: None,
+        failure_kind: None,
+        truncation: None,
+    };
+    store.append_run("g1", &record).unwrap();
+    let dir = store.goal_dir("g1");
+    // Nothing has touched the projection: this machine's clock says the last run
+    // is still the newest thing that happened.
+    let goal = store.replay("g1").unwrap().unwrap();
+    assert!(stale_latest_run::stale_latest_run(&goal, &dir).is_none());
+
+    // The projection write is a touch, dated by the writer rather than by the
+    // file system.
+    store.set_next_action("g1", "inspect the artifact").unwrap();
+    let stamp: u64 = std::fs::read_to_string(dir.join("next_action.stamp"))
+        .expect("the write must leave its own timestamp")
+        .trim()
+        .parse()
+        .expect("the stamp is Unix seconds");
+    assert!(stamp >= goal.created_at, "stamped by this process: {stamp}");
+
+    let goal = store.replay("g1").unwrap().unwrap();
+    let warning = stale_latest_run::stale_latest_run(&goal, &dir)
+        .expect("a projection written after the last run needs a refresh");
+    assert_eq!(warning.active_state_updated_at, Some(stamp));
+    assert_eq!(warning.latest_run_recorded_at, Some(2_000));
+
+    // A run that starts after the touch clears it — which is the whole point of
+    // the warning, so a rule that could not be satisfied would be a trap.
+    record.recorded_at = stamp + 1;
+    store.append_run("g1", &record).unwrap();
+    let goal = store.replay("g1").unwrap().unwrap();
+    assert!(stale_latest_run::stale_latest_run(&goal, &dir).is_none());
+}
+
+/// The stamp travels with the goal through backup/restore: a restored goal must
+/// not have last week's projection dated by the moment it was restored.
+#[test]
+fn the_projection_stamp_is_backed_up_and_restored_with_the_goal() {
+    let root = tmp_root("stampbak");
+    let mut store = future_goal::store::Store::open(&root).unwrap();
+    let goal = future_goal::state::Goal::new("g1", "objective", "/tmp");
+    store.register(&goal).unwrap();
+    store
+        .append(future_goal::store::Event::GoalStarted {
+            goal_id: "g1".into(),
+            ts: goal.created_at,
+        })
+        .unwrap();
+    store.set_next_action("g1", "do work").unwrap();
+    let dir = store.goal_dir("g1");
+    let before = std::fs::read_to_string(dir.join("next_action.stamp")).unwrap();
+
+    let backup = store.backup_goal("g1").unwrap();
+    std::fs::remove_file(dir.join("next_action.stamp")).unwrap();
+    store.restore_goal("g1", &backup).unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(dir.join("next_action.stamp")).unwrap(),
+        before,
+        "the restore must bring the writer's clock back with the text"
+    );
+}
+
+/// A backup taken before the stamp existed restores *without* one, and the old
+/// goal's stamp is dropped rather than left to date text it does not describe.
+#[test]
+fn restoring_an_older_backup_drops_a_stamp_it_does_not_carry() {
+    let root = tmp_root("stamplegacy");
+    let mut store = future_goal::store::Store::open(&root).unwrap();
+    let goal = future_goal::state::Goal::new("g1", "objective", "/tmp");
+    store.register(&goal).unwrap();
+    store
+        .append(future_goal::store::Event::GoalStarted {
+            goal_id: "g1".into(),
+            ts: goal.created_at,
+        })
+        .unwrap();
+    let dir = store.goal_dir("g1");
+    // A projection and the stamp the backup will not contain.
+    std::fs::write(dir.join("next_action.txt"), "do work").unwrap();
+    std::fs::write(dir.join("next_action.stamp"), "4242").unwrap();
+    // The backup is made from a directory that has the text but no stamp, which is
+    // exactly what an older release left behind.
+    let backup = std::path::Path::new(&root).join("backups").join("legacy");
+    std::fs::create_dir_all(&backup).unwrap();
+    for file in ["events.jsonl", "next_action.txt"] {
+        std::fs::copy(dir.join(file), backup.join(file)).unwrap();
+    }
+
+    store
+        .restore_goal("g1", backup.to_str().unwrap())
+        .expect("a stamp-less backup is still a backup");
+    assert!(
+        !dir.join("next_action.stamp").exists(),
+        "the old goal's stamp must not survive to date the restored text"
+    );
+}
+
 #[test]
 fn stale_latest_run_warns_and_clears() {
     let root = tmp_root("stale");

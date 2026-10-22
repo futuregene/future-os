@@ -76,6 +76,21 @@ describe("remotePeerErrorText", () => {
     expect(remotePeerErrorKind("remote_secure_channel_invalid (disabled)")).toBe("unreachable");
   });
 
+  /**
+   * A code another device already claimed is the *one* pairing failure whose
+   * remedy is a separate link rather than "generate another": one code pairs one
+   * device. Reporting it as "expired" is what made a working code look broken and
+   * sent the reader to regenerate the same thing.
+   */
+  it.each([
+    "remote_secure_channel_invalid (invitation_already_used)",
+    "pairing_signature_invalid:invitation_already_used",
+  ])("says the code was used by another device for %s", (raw) => {
+    expect(remotePeerErrorKind(raw)).toBe("pairingInUse");
+    expect(remotePeerErrorText(raw, t)).toBe(en.errorPairingInUse);
+    expect(remotePeerErrorText(raw, t)).not.toMatch(/expired/i);
+  });
+
   /** An unexplained refusal is the one that means the builds disagree. */
   it("treats an unmatched secure-channel refusal as a version problem", () => {
     expect(remotePeerErrorKind("remote_secure_channel_invalid (open_undecryptable)")).toBe("secureChannel");

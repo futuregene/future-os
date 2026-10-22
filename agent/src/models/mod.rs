@@ -10,7 +10,7 @@ mod future;
 #[cfg(test)]
 mod reasoning_tests;
 pub use future::set_future_models_sync_callback;
-pub(crate) use future::{cached_model_count, display_base_url_from_auth};
+pub(crate) use future::{cached_model_count, display_base_url_from_auth, sweep_stale_cache_temps};
 use future::{
     derive_thinking_compat, get_future_models_with_cache, resolve_future_base_url,
     sync_future_models_cache as sync_future_models_cache_inner,
@@ -44,6 +44,12 @@ pub struct Model {
     pub compat: HashMap<String, serde_json::Value>,
     #[serde(rename = "ThinkingLevelMap", default)]
     pub thinking_level_map: HashMap<String, serde_json::Value>,
+    /// Levels this model offers, as declared by the user in `models.json`
+    /// (`thinkingLevels`, provider-level default with a model-level override).
+    /// Stored in canonical order; empty means "not declared", which is every
+    /// built-in model and keeps the full six-level vocabulary.
+    #[serde(rename = "ThinkingLevels", default)]
+    pub thinking_levels: Vec<String>,
     #[serde(default)]
     pub headers: HashMap<String, String>,
     /// If true, the model is hidden from model lists but still callable.
@@ -123,6 +129,63 @@ impl Cost {
         )
         .iter()
         .sum()
+    }
+}
+
+impl Model {
+    /// The thinking levels this model offers to clients, in canonical order.
+    ///
+    /// Three cases, in this order:
+    /// - `reasoning: false` — the model has no thinking controls at all, so `off`
+    ///   is the only level it can be in. Anything else would be a choice the
+    ///   request path silently drops (see `apply_reasoning`). This is what the
+    ///   desktop picker already enforced; publishing it keeps every client's list
+    ///   on the same rule instead of each carrying its own `reasoning` check.
+    /// - nothing declared — every built-in and Future-platform model, and the
+    ///   shape every existing `models.json` has. The full six-level vocabulary,
+    ///   i.e. exactly what clients offered before `thinkingLevels` existed.
+    /// - declared — the user's list, normalized to canonical order at load.
+    pub fn allowed_thinking_levels(&self) -> Vec<String> {
+        if !self.reasoning {
+            return vec!["off".to_string()];
+        }
+        self.cycling_thinking_levels()
+    }
+
+    /// The ring the cycle command walks: the declared list, or the full six when
+    /// nothing is declared — including a model that cannot think, whose level is
+    /// inert today (no thinking parameter is ever sent for it). Narrowing that
+    /// ring would change what cycling does on built-in non-reasoning models,
+    /// which this feature must not do.
+    pub fn cycling_thinking_levels(&self) -> Vec<String> {
+        if self.thinking_levels.is_empty() {
+            return crate::llm::schema::THINKING_LEVELS
+                .iter()
+                .map(|level| level.to_string())
+                .collect();
+        }
+        self.thinking_levels.clone()
+    }
+
+    /// Snap `level` onto what this model was *declared* to accept.
+    ///
+    /// Only a declaration snaps. A model that declares nothing accepts every
+    /// level unchanged, which is what keeps every existing model — built-in, the
+    /// Future catalogue, and any `models.json` written before `thinkingLevels`
+    /// existed — behaving byte for byte as it did: a stored `high` stays `high`
+    /// even on a model marked `reasoning: false`, exactly as today (the level is
+    /// inert there; `apply_reasoning` sends nothing).
+    ///
+    /// The clamp itself is [`crate::llm::schema::clamp_thinking_level`] — one
+    /// implementation, called from here so no caller has to remember the rule.
+    pub fn clamp_thinking_level(&self, level: &str) -> String {
+        if self.thinking_levels.is_empty() {
+            return level.to_string();
+        }
+        // Against the published list, not the raw declaration: a model marked
+        // `reasoning: false` publishes `off` alone whatever it declares, and the
+        // clamp must agree with what the pickers show.
+        crate::llm::schema::clamp_thinking_level(level, &self.allowed_thinking_levels())
     }
 }
 
@@ -268,6 +331,9 @@ fn model_from_builtin(m: builtin::Model) -> Model {
         },
         compat: serde_json::from_str(&m.compat_json).unwrap_or_default(),
         thinking_level_map: serde_json::from_str(&m.tlm_json).unwrap_or_default(),
+        // Built-in catalog models never declare a level list: they keep the full
+        // six-level vocabulary.
+        thinking_levels: Vec::new(),
         headers: serde_json::from_str(&m.headers_json).unwrap_or_default(),
         hide: m.hide,
         description: None,
@@ -500,6 +566,26 @@ fn load_user_models_with_overrides(
             if let Some(ref compat) = provider.compat {
                 m.compat = compat.clone();
             }
+            // Thinking levels: the model-level list wins, the provider-level one
+            // is its default, and neither means "not declared" (all six). Both are
+            // a set, normalized to canonical order here so every consumer — the
+            // list payload, the clamp, the pickers — reads one ordering.
+            let declared: Vec<&str> = model
+                .thinking_levels
+                .as_ref()
+                .or(provider.thinking_levels.as_ref())
+                .map(|levels| levels.iter().map(String::as_str).collect())
+                .unwrap_or_default();
+            let (levels, unknown) = crate::llm::schema::normalize_declared_levels(declared);
+            if !unknown.is_empty() {
+                tracing::warn!(
+                    "[models] provider `{provider_name}` model `{}`: ignoring unknown thinkingLevels [{}]; expected any of {:?}",
+                    m.id,
+                    unknown.join(", "),
+                    crate::llm::schema::THINKING_LEVELS
+                );
+            }
+            m.thinking_levels = levels;
             // Derive compat from supportedParameters (e.g. max_completion_tokens
             // → maxTokensField).  This mirrors what convert_future_model does for
             // Future platform models.
@@ -547,6 +633,11 @@ struct ProviderConfig {
     compat: Option<HashMap<String, serde_json::Value>>,
     #[serde(rename = "thinkingLevelMap", default)]
     thinking_level_map: Option<HashMap<String, serde_json::Value>>,
+    /// Provider-level default for every model under it (`thinkingLevels`): an
+    /// unlisted model in this `models[]` inherits it, an empty array means "no
+    /// declaration", i.e. all six levels.
+    #[serde(rename = "thinkingLevels", default)]
+    thinking_levels: Option<Vec<String>>,
     #[serde(rename = "models", default)]
     models: Option<Vec<ModelConfig>>,
 }
@@ -576,6 +667,10 @@ struct ModelConfig {
     /// Model-level compat overrides (e.g. maxTokensField for reasoning models).
     #[serde(rename = "compat", default)]
     compat: Option<HashMap<String, serde_json::Value>>,
+    /// The thinking levels this model offers (`thinkingLevels`); overrides the
+    /// provider-level list. Absent or empty means all six levels.
+    #[serde(rename = "thinkingLevels", default)]
+    thinking_levels: Option<Vec<String>>,
     /// Supported parameters, used to auto-derive compat (maxTokensField, thinkingFormat, etc.).
     #[serde(rename = "supportedParameters", default)]
     supported_parameters: Option<Vec<String>>,
@@ -685,6 +780,8 @@ fn find_best_builtin_match<'a>(user_model: &Model, builtins: &'a [Model]) -> Opt
 ///
 /// Rules:
 /// - `compat` — empty map → take all from builtin; non-empty → merge key-by-key
+/// - `thinking_levels` — never back-filled: the vocabulary is the user's own
+///   choice, and no built-in model declares one
 /// - `thinking_level_map` — same as compat
 /// - `reasoning` — preserve the user's value (defaults to true at load time)
 /// - `input` — fill from builtin when empty

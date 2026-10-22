@@ -741,6 +741,14 @@ export interface RemoteModelInfo {
    */
   reasoning?: boolean | null;
   thinkingLevel?: string | null;
+  /**
+   * The levels the host's model offers, canonical order, already resolved by its
+   * agent (`off` alone for a model without thinking controls, all six when the
+   * model declares nothing). Absent on an older host.
+   */
+  thinkingLevels?: string[] | null;
+  /** The level a conversation starts at on that model, already clamped. */
+  defaultThinkingLevel?: string | null;
 }
 
 /**
@@ -806,6 +814,10 @@ function parseModelList(raw: Record<string, unknown> | null | undefined): Remote
       ...(row.isDefault === true ? { isDefault: true } : {}),
       ...(typeof row.reasoning === "boolean" || row.reasoning === null ? { reasoning: row.reasoning as boolean | null } : {}),
       ...(typeof row.thinkingLevel === "string" ? { thinkingLevel: row.thinkingLevel } : {}),
+      ...(Array.isArray(row.thinkingLevels)
+        ? { thinkingLevels: row.thinkingLevels.filter((level): level is string => typeof level === "string") }
+        : {}),
+      ...(typeof row.defaultThinkingLevel === "string" ? { defaultThinkingLevel: row.defaultThinkingLevel } : {}),
     }];
   });
 }
@@ -825,6 +837,8 @@ export function remoteAgentModelOptions(models: RemoteModelInfo[]): AgentModelOp
     provider: model.provider ?? "",
     ...(model.reasoning === undefined ? {} : { reasoning: model.reasoning }),
     ...(model.thinkingLevel === undefined ? {} : { thinkingLevel: model.thinkingLevel }),
+    ...(model.thinkingLevels === undefined ? {} : { thinkingLevels: model.thinkingLevels }),
+    ...(model.defaultThinkingLevel === undefined ? {} : { defaultThinkingLevel: model.defaultThinkingLevel }),
     ...(model.isDefault === undefined ? {} : { isDefault: model.isDefault }),
   }));
 }

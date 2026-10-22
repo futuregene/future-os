@@ -176,20 +176,23 @@ async fn a_claim_without_a_tcp_endpoint_still_pairs() {
     teardown(&fx.pair_id).await;
 }
 
-/// A bad link is rejected *before* any network call, and carries the support
-/// code the two platforms share so the same fault reads the same way on each.
+/// A bad link is rejected *before* any network call, and the support code names
+/// which bad link it was: "the text you pasted is not a link", "this link is an
+/// older shape" and "five minutes have passed" are different problems with
+/// different fixes, and only the last is solved by generating another code.
 #[tokio::test]
-async fn a_bad_link_is_rejected_with_a_shared_support_code() {
+async fn a_bad_link_is_rejected_with_a_code_that_names_its_fault() {
     let (_home, fx) = start("peer-rt-bad-link").await;
     // The fixture itself claims a pairing; this test is about a link that never
     // gets that far, so the book is emptied first.
     creds::remove(&fx.paired.creds.desktop_id).expect("remove");
 
-    for (link, expected) in [
-        ("not a url", "pairing_link_malformed"),
-        ("https://future-os.cn/", "pairing_link_malformed"),
+    for (link, code_expected, expected) in [
+        ("not a url", "PA006", "pairing_link_malformed"),
+        ("https://future-os.cn/", "PA006", "pairing_link_malformed"),
         (
             "futureos://remote/pair?v=1",
+            "PA007",
             "pairing_link_unsupported_version",
         ),
     ] {
@@ -199,10 +202,10 @@ async fn a_bad_link_is_rejected_with_a_shared_support_code() {
         let crate::Error::Remote { code, message, .. } = error else {
             panic!("a link failure must be a Remote error");
         };
-        // Every link failure is `PA002` — the code the phone uses for "this
-        // code did not work, make a new one" — so a support conversation means
-        // the same thing on either platform.
-        assert_eq!(code.as_deref(), Some("PA002"));
+        // One code per failure: a truncated paste (`PA006`), an older link
+        // (`PA007`) and an expired code (`PA002`) send the reader to different
+        // places, and only the last one is fixed by generating another.
+        assert_eq!(code.as_deref(), Some(code_expected), "{message}");
         assert_eq!(message, expected);
     }
 

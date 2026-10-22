@@ -94,6 +94,15 @@ It remains alive when the last worker dies and does not require another paid run
 or an LLM polling session to discover the failure. `scheduler tick` and post-run
 sweeps remain supplemental reconciliation triggers.
 
+The lock is a duplicate guard, not the delivery itself, and the two failures it
+can report are kept apart. A held lock means another watcher owns the loop. A file
+system that will not grant a lock at all — `ENOLCK` on a network share without a
+lock manager, `ENOTSUP` on some FUSE mounts — is *not* read as "somebody is
+already watching": the watcher runs without the guard, says so once, and still
+delivers, because a goal with no watcher sends no reports at all. A lock file that
+cannot even be opened is a real fault and is reported as one: the derived watcher
+is not started, and the caller sees why instead of a silently absent supervisor.
+
 The watcher exits when the goal is deleted/cancelled or terminal with no pending
 notification. It is not an OS boot service: after host restart, launch the same
 CLI under a service manager or re-register/resume the goal. No local process can
@@ -122,6 +131,22 @@ and retry. A new registered supervisor can recover notes from the ledger. Treat
 old notifications as prompts to reconcile CURRENT status, not unconditional orders
 to restart a worker. Foreground embedders without a watchdog may flush immediately;
 the same persistence and replay rules apply.
+
+## Active-state timestamps come from one clock
+
+The projection beside the ledger (`next_action.txt`) is read back as state, and
+`runs stale` compares when it was last written with the latest run's
+`recorded_at`. That comparison must use one clock: `set_next_action` writes
+`next_action.stamp` beside the text, holding the *writing process's* Unix
+seconds. A goal directory is project-local and often lives on a network share
+whose server clock can be minutes off, so a projection dated by the file
+system's modification time compared a share's clock with the ledger's — a fast
+share produced a warning no refresh could ever clear, and a slow one hid it. A
+goal written before the stamp existed falls back to the modification time,
+clamped to now, and the next projection write stamps it properly. Editing
+`next_action.txt` by hand does not move the stamp: the edit is still
+authoritative (`replay` reads the text), and the next command's projection write
+is what dates it.
 
 ## Bounded validators
 

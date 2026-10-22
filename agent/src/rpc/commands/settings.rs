@@ -64,21 +64,38 @@ pub(crate) fn handle_set_model(
     cmd: &RpcCommand,
     id: &str,
 ) -> String {
-    let (result, model_id) = {
+    let (result, model_id, level_before) = {
         let mut sess = session.write();
         let model_id = cmd.model_id.clone();
-        (sess.set_model(&model_id), model_id)
+        let level_before = sess.thinking_level.clone();
+        (sess.set_model(&model_id), model_id, level_before)
     };
     match result {
         Ok(()) => {
-            {
+            let thinking_level = {
                 let sess = session.read();
                 sess.broadcaster.broadcast(SseEvent::new(
                     "model_changed",
                     serde_json::json!({"model": model_id}),
                 ));
-            }
-            RpcResponse::ok(id, "set_model", serde_json::json!({"model": model_id}))
+                // A model whose `thinkingLevels` excludes the running level is
+                // clamped by `set_model`. Announce it: the picker on every
+                // client shows the session's level, and a silent change would
+                // leave it displaying an effort the model never runs at.
+                let level = sess.thinking_level.clone();
+                if level != level_before {
+                    sess.broadcaster.broadcast(SseEvent::new(
+                        "thinking_level_changed",
+                        serde_json::json!({"level": level}),
+                    ));
+                }
+                level
+            };
+            RpcResponse::ok(
+                id,
+                "set_model",
+                serde_json::json!({"model": model_id, "thinkingLevel": thinking_level}),
+            )
         }
         Err(e) => RpcResponse::build_fail(id, "set_model", &e.to_string()),
     }
@@ -91,12 +108,20 @@ pub(crate) fn handle_set_thinking_level(
 ) -> String {
     let level = cmd.level.clone();
     session.write().set_thinking_level(&level);
+    // Report what the session actually took: a level the model does not offer is
+    // snapped to the nearest one it does, and echoing the requested value would
+    // leave the picker showing an effort that is not running.
     let sess = session.read();
+    let level = sess.thinking_level.clone();
     sess.broadcaster.broadcast(SseEvent::new(
         "thinking_level_changed",
         serde_json::json!({"level": level}),
     ));
-    RpcResponse::ok(id, "set_thinking_level", serde_json::json!({}))
+    RpcResponse::ok(
+        id,
+        "set_thinking_level",
+        serde_json::json!({"level": level}),
+    )
 }
 
 pub(crate) fn handle_cycle_model(
@@ -156,16 +181,24 @@ pub(crate) fn handle_cycle_thinking_level(
     session: &Arc<parking_lot::RwLock<ServerSession>>,
     id: &str,
 ) -> String {
-    // Cycle thinking level: off -> minimal -> low -> medium -> high -> xhigh -> off
-    let levels = ["off", "minimal", "low", "medium", "high", "xhigh"];
+    // Cycle over the levels this model offers, not the full six: a model that
+    // declares a subset would otherwise spend most steps on levels the session
+    // immediately snaps away from, looking like the key is stuck.
+    let levels = session.read().cycling_thinking_levels();
     let current = session.read().thinking_level.clone();
-    let idx = levels.iter().position(|l| *l == current).unwrap_or(0);
-    let next_idx = (idx + 1) % levels.len();
-    let next_level = levels[next_idx];
+    let next_level = match levels.iter().position(|level| *level == current) {
+        Some(index) => levels[(index + 1) % levels.len()].clone(),
+        // A level outside the list (stored before the vocabulary narrowed) is
+        // snapped instead of stepped: there is no "next" from a level the model
+        // does not have.
+        _ => crate::llm::schema::clamp_thinking_level(&current, &levels),
+    };
 
-    // Update session thinking level and propagate to provider
-    session.write().set_thinking_level(next_level);
+    // Update session thinking level and propagate to provider. `set_thinking_level`
+    // clamps as well, so a list that changed under us still leaves a valid level.
+    session.write().set_thinking_level(&next_level);
     let sess = session.read();
+    let next_level = sess.thinking_level.clone();
     sess.broadcaster.broadcast(SseEvent::new(
         "thinking_level_changed",
         serde_json::json!({"level": next_level}),

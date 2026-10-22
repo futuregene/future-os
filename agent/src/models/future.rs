@@ -675,6 +675,10 @@ fn convert_future_model(entry: FutureModelEntry, base_url: &str) -> Model {
         },
         compat,
         thinking_level_map,
+        // The Future platform catalogue declares an effort *vocabulary*
+        // (`reasoningEffortValues`), not a product-level level list: this model
+        // keeps the full six levels.
+        thinking_levels: Vec::new(),
         headers: HashMap::new(),
         hide: false,
         description: entry.description,
@@ -728,6 +732,84 @@ fn save_future_models_cache_inner(cache: &FutureModelsCache) {
     if std::fs::write(&tmp, json).is_ok() {
         let _ = std::fs::rename(&tmp, &path);
     }
+}
+
+/// Prefix of every cache temp file: `<cache>.tmp-<pid>-<seq>`.
+const CACHE_TEMP_PREFIX: &str = ".future-models-cache.tmp-";
+
+/// How long a temp file from another process may sit before it is debris.
+const CACHE_TEMP_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// Remove cache temp files left behind by writers that are gone.
+///
+/// [`save_future_models_cache_inner`] replaces the cache atomically — write a
+/// sibling, then rename — so a `tmp-*` file still on disk means that write or
+/// its rename did not finish: a killed process, a full disk. It is evidence of
+/// that once and useless afterwards, and nothing else on the machine collects
+/// it.
+///
+/// Two conditions must both hold before one is removed, because either alone
+/// would delete a live writer's file:
+///
+/// - the pid in its name is **not** this process's (a task in this process may
+///   be between its write and its rename right now), and
+/// - its mtime is more than [`CACHE_TEMP_MAX_AGE`] old (an interrupted writer
+///   from a moment ago is about to be superseded, not missed).
+///
+/// Any other entry is left alone, including one whose name does not parse: not
+/// being able to prove a file is ours is a reason not to delete it. Failures are
+/// logged and skipped — housekeeping must never fail a start.
+///
+/// Returns how many were removed.
+pub(crate) fn sweep_stale_cache_temps() -> usize {
+    let cache = std::path::PathBuf::from(future_models_cache_path());
+    let Some(dir) = cache.parent().map(std::path::Path::to_path_buf) else {
+        return 0;
+    };
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        // No cache directory yet: there is nothing that could be stale.
+        return 0;
+    };
+    let now = SystemTime::now();
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        // Both halves of the suffix must parse: that is what proves the name is
+        // the one this writer produced rather than something similar.
+        let Some((writer_pid, seq)) = name
+            .strip_prefix(CACHE_TEMP_PREFIX)
+            .and_then(|rest| rest.split_once('-'))
+            .and_then(|(pid, seq)| Some((pid.parse::<u32>().ok()?, seq.parse::<u64>().ok()?)))
+        else {
+            continue;
+        };
+        let _ = seq;
+        if writer_pid == std::process::id() {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .ok()
+            .and_then(|metadata| metadata.modified().ok())
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > CACHE_TEMP_MAX_AGE);
+        if !stale {
+            continue;
+        }
+        match std::fs::remove_file(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(error) => tracing::debug!(
+                path = %entry.path().display(),
+                %error,
+                "left a stale models-cache temp file in place"
+            ),
+        }
+    }
+    if removed > 0 {
+        tracing::info!(count = removed, "removed stale models-cache temp files");
+    }
+    removed
 }
 
 /// Get future models with caching logic.
@@ -1873,6 +1955,57 @@ mod tests {
                 "panic must not wedge the in-flight slot"
             );
         }
+    }
+
+    /// A temp file is evidence that a cache write or its rename did not finish,
+    /// so the sweep is deliberately narrow. Another process's file goes only once
+    /// it is an hour old; this process's own temp never goes, because a save in
+    /// this very process may be between its write and its rename right now.
+    #[test]
+    fn sweep_removes_only_other_processes_old_temps() {
+        let _guard = future_test_lock();
+        let _home = crate::test_support::TestHome::new();
+        let dir = std::path::Path::new(&super::future_models_cache_path())
+            .parent()
+            .expect("cache directory")
+            .to_path_buf();
+        std::fs::create_dir_all(&dir).unwrap();
+
+        fn write_with_age(path: &std::path::Path, age: std::time::Duration) {
+            std::fs::write(path, "{}").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - age)
+                .unwrap();
+        }
+
+        let me = std::process::id();
+        let other = me.wrapping_add(1);
+        let old = std::time::Duration::from_secs(2 * 60 * 60);
+        let fresh = std::time::Duration::from_secs(60);
+
+        // Names use the writer's own shape: `.future-models-cache.tmp-<pid>-<seq>`.
+        let stale = dir.join(format!(".future-models-cache.tmp-{other}-0"));
+        let own = dir.join(format!(".future-models-cache.tmp-{me}-0"));
+        let live = dir.join(format!(".future-models-cache.tmp-{other}-7"));
+        let unparseable = dir.join(".future-models-cache.tmp-notapid-0");
+        let cache = dir.join(".future-models-cache.json");
+
+        write_with_age(&stale, old);
+        write_with_age(&own, old);
+        write_with_age(&live, fresh);
+        write_with_age(&unparseable, old);
+        std::fs::write(&cache, "{\"fetched_at\":0,\"models\":[]}").unwrap();
+
+        assert_eq!(super::sweep_stale_cache_temps(), 1, "only the stale one");
+
+        assert!(!stale.exists(), "an hour-old temp of a dead writer goes");
+        assert!(own.exists(), "this process's own temp is never swept");
+        assert!(live.exists(), "a fresh temp is not adopted yet");
+        assert!(unparseable.exists(), "an unprovable name is left alone");
+        assert!(cache.exists(), "the cache itself is not a temp");
     }
 
     #[test]

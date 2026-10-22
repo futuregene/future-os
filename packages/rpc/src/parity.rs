@@ -444,6 +444,23 @@ fn list_models_wire_parity() {
                     "description": null,
                     "descriptionEn": null,
                     "recommended": false
+                },
+                {
+                    // A model whose `models.json` declares a level list: the two
+                    // fields travel, so clients can filter their pickers instead
+                    // of offering a level the agent would clamp away.
+                    "id": "m3",
+                    "label": "Model Three",
+                    "provider": "custom",
+                    "supportsImages": false,
+                    "thinkingLevel": "high",
+                    "thinkingLevels": ["off", "low", "high"],
+                    "defaultThinkingLevel": "low",
+                    "contextWindow": 128000,
+                    "isDefault": false,
+                    "description": null,
+                    "descriptionEn": null,
+                    "recommended": false
                 }
             ],
             "defaultModel": "m1",

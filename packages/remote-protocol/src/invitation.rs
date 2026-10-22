@@ -67,12 +67,21 @@ pub enum LinkError {
 }
 
 impl LinkError {
-    /// Stable support code (`PA*`), matching the mobile client's table.
+    /// Stable support code (`PA*`).
+    ///
+    /// One code per failure, because they send a support conversation (and the
+    /// reader) to different places: a truncated paste, an old link shape, a
+    /// missing field and an expired code all used to answer `PA002`, which the
+    /// table reserves for "invalid or expired" — so "your link got cut off when
+    /// you copied it" was indistinguishable from "five minutes have passed".
+    /// `Expired` keeps `PA002`; the other three get their own codes
+    /// (`docs/internals/desktop/CONNECTION.md` carries the table).
     pub fn support_code(self) -> &'static str {
         match self {
-            Self::UnsupportedVersion | Self::InvalidField => "PA002",
             Self::Expired => "PA002",
-            Self::Malformed => "PA002",
+            Self::Malformed => "PA006",
+            Self::UnsupportedVersion => "PA007",
+            Self::InvalidField => "PA008",
         }
     }
     pub fn message(self) -> &'static str {
@@ -492,24 +501,45 @@ mod tests {
     /// The public shape of a link failure: every variant carries the code and
     /// the message the UI shows, asserted directly so a new variant cannot be
     /// added without deciding both.
+    ///
+    /// The codes are per-failure on purpose: "this link is the wrong shape"
+    /// (a truncated paste), "this is an older link" (the two sides disagree) and
+    /// "five minutes have passed" used to answer one code, so the reader could not
+    /// tell the one they can fix by re-copying from the one they must regenerate.
     #[test]
-    fn every_link_failure_carries_the_shared_support_code_and_message() {
+    fn every_link_failure_carries_its_own_support_code_and_message() {
         let cases = [
-            (LinkError::Malformed, "pairing_link_malformed"),
+            (LinkError::Malformed, "PA006", "pairing_link_malformed"),
             (
                 LinkError::UnsupportedVersion,
+                "PA007",
                 "pairing_link_unsupported_version",
             ),
-            (LinkError::InvalidField, "pairing_link_invalid_field"),
-            (LinkError::Expired, "pairing_link_expired"),
+            (
+                LinkError::InvalidField,
+                "PA008",
+                "pairing_link_invalid_field",
+            ),
+            (LinkError::Expired, "PA002", "pairing_link_expired"),
         ];
-        for (error, message) in cases {
-            // Every link failure is `PA002` — the phone's "this code did not
-            // work, make a new one" — so a support conversation means the same
-            // thing on either platform.
-            assert_eq!(error.support_code(), "PA002", "{message}");
+        for (error, code, message) in cases {
+            assert_eq!(error.support_code(), code, "{message}");
             assert_eq!(error.message(), message);
         }
+        // No two failures share a code, so a support conversation can name one.
+        let codes: Vec<_> = [
+            LinkError::Malformed,
+            LinkError::UnsupportedVersion,
+            LinkError::InvalidField,
+            LinkError::Expired,
+        ]
+        .iter()
+        .map(|error| error.support_code())
+        .collect();
+        let mut unique = codes.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), codes.len(), "{codes:?}");
     }
 
     #[test]

@@ -186,6 +186,105 @@ pub struct ReasoningCapabilities {
     pub effort_values: ReasoningEffortValues,
 }
 
+/// The product-level thinking vocabulary, shallowest first.
+///
+/// This is a product concept (what the pickers offer), not a wire enum: see
+/// [`ReasoningEffortValues`] for the values a provider actually accepts. A model
+/// that declares none of its own offers all of these.
+pub const THINKING_LEVELS: [&str; 6] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+
+/// Depth position of every internal level, deeper is larger.
+///
+/// Unlike [`effort_rank`] this covers `off` (the shallowest state, below
+/// `minimal`), because a model may declare a subset that has to be ordered as a
+/// whole.
+pub fn thinking_level_rank(name: &str) -> Option<i32> {
+    Some(match name {
+        "off" => 0,
+        "minimal" => 1,
+        "low" => 2,
+        "medium" => 3,
+        "high" => 4,
+        "xhigh" => 5,
+        _ => return None,
+    })
+}
+
+/// Rewrite a declared level list into canonical order, dropping unknown names.
+///
+/// Order is canonical rather than declared so the pickers, the keyboard ring and
+/// the cycle command all walk the same scale; a hand-written list is a set, not a
+/// sequence. Unknown names are returned in `unknown` so the caller can report
+/// them against the provider/model that declared them, instead of silently
+/// turning a typo into "this level does not exist".
+pub fn normalize_declared_levels<'a>(
+    declared: impl IntoIterator<Item = &'a str>,
+) -> (Vec<String>, Vec<String>) {
+    let declared: Vec<&str> = declared.into_iter().collect();
+    let levels = THINKING_LEVELS
+        .iter()
+        .filter(|canonical| declared.contains(canonical))
+        .map(|canonical| canonical.to_string())
+        .collect();
+    let mut unknown: Vec<String> = Vec::new();
+    for name in declared {
+        if thinking_level_rank(name).is_none() && !unknown.iter().any(|seen| seen == name) {
+            unknown.push(name.to_string());
+        }
+    }
+    (levels, unknown)
+}
+
+/// Snap `level` onto the levels this model allows.
+///
+/// `allowed` is the model's effective list (never empty for a registered model).
+/// A level the model declares is returned untouched; one it does not is snapped
+/// to the nearest declared level **by depth**, and a tie goes to the shallower
+/// one.
+///
+/// Ties go down because of where the unmatched value comes from: the user could
+/// not have picked it for this model (it is absent from the picker), so it is a
+/// stored level from another model, a scheduled task, or a default applied
+/// without asking — `settings.json` and `DEFAULT_THINKING_LEVEL` both say
+/// `medium`. Spending *more* of the user's tokens and waiting longer than the
+/// value they actually see would be the one direction the agent must not take on
+/// its own.
+///
+/// A name that is not on the scale at all is returned unchanged: it is not a
+/// level this build knows, and the request path already forwards unknown names
+/// verbatim (see [`resolve_effort`]), so rewriting it would be a second, silent
+/// translation of a value nobody asked us to interpret.
+pub fn clamp_thinking_level(level: &str, allowed: &[String]) -> String {
+    if level.is_empty() || allowed.is_empty() || allowed.iter().any(|name| name == level) {
+        return level.to_string();
+    }
+    let Some(rank) = thinking_level_rank(level) else {
+        return level.to_string();
+    };
+    let mut best: Option<(i32, i32, &str)> = None;
+    for name in allowed {
+        let Some(candidate) = thinking_level_rank(name) else {
+            continue;
+        };
+        let distance = (candidate - rank).abs();
+        let better = match best {
+            None => true,
+            // Strictly closer wins; an equal distance keeps the shallower one.
+            Some((best_distance, best_candidate, _)) => {
+                distance < best_distance
+                    || (distance == best_distance && candidate < best_candidate)
+            }
+        };
+        if better {
+            best = Some((distance, candidate, name));
+        }
+    }
+    match best {
+        Some((_, _, name)) => name.to_string(),
+        None => level.to_string(),
+    }
+}
+
 /// Depth rank for the internal thinking levels and the standard enum names.
 /// Returns `None` for names the built-in scale does not know.
 fn effort_rank(name: &str) -> Option<f64> {
