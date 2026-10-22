@@ -174,23 +174,18 @@ impl Conversations {
             }
         };
 
-        // Bump first, then enqueue: a turn already streaming sees the new
-        // generation on its next event and stops.
-        //
-        // The generation is reserved speculatively and only published once the
-        // message is actually in the mailbox. Bumping it unconditionally would
-        // let a *rejected* message (a full mailbox) stop the turn that is
-        // already running and then drop its replacement, losing the answer
-        // entirely. Two concurrent submissions may reserve the same number;
-        // that is harmless, because a worker runs its job when the generation
-        // still matches and skips it when a newer message has overtaken it.
-        let reserved = generation.load(Ordering::SeqCst) + 1;
-        match tx.try_send(QueuedJob {
-            job,
-            generation: reserved,
-        }) {
-            Ok(()) => {
-                generation.store(reserved, Ordering::SeqCst);
+        // Reserve capacity before superseding the running turn: rejection must
+        // leave its generation intact. Publish the new generation before the
+        // worker can receive its job, or a fast worker can mistake that job for
+        // an already superseded turn. Atomic allocation also gives concurrent
+        // submissions distinct generations.
+        match tx.try_reserve_owned() {
+            Ok(permit) => {
+                let reserved = generation.fetch_add(1, Ordering::SeqCst) + 1;
+                permit.send(QueuedJob {
+                    job,
+                    generation: reserved,
+                });
                 SubmitOutcome::Accepted
             }
             Err(mpsc::error::TrySendError::Full(_)) => SubmitOutcome::Full,
@@ -361,6 +356,39 @@ mod tests {
         // superseded while queued.
         assert!(!seen.is_empty());
         assert_eq!(seen.last().unwrap().1, 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_fast_worker_never_supersedes_a_conversations_only_submission() {
+        let (completed, mut received) = mpsc::unbounded_channel();
+        let conversations = Conversations::new(Arc::new(move |job, watch| {
+            let completed = completed.clone();
+            Box::pin(async move {
+                assert!(!watch.is_superseded());
+                completed.send(job.conversation).unwrap();
+            })
+        }));
+        let sink = Arc::new(RecordingSink::default());
+        // Another runtime thread can receive each job as soon as it is sent.
+        // With no second submission, every accepted job must run exactly once.
+        for index in 0..DEFAULT_MAX_CONVERSATIONS {
+            assert_eq!(
+                conversations
+                    .submit(job(&format!("c{index}"), sink.clone()))
+                    .await,
+                SubmitOutcome::Accepted
+            );
+        }
+        let mut seen = std::collections::HashSet::new();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            for _ in 0..DEFAULT_MAX_CONVERSATIONS {
+                let conversation = received.recv().await.expect("worker completion");
+                assert!(seen.insert(conversation), "a job ran more than once");
+            }
+        })
+        .await
+        .expect("every accepted job must run");
+        assert_eq!(sink.superseded_count(), 0);
     }
 
     #[tokio::test]
