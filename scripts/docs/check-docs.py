@@ -162,8 +162,12 @@ PAIR_EXEMPT = ("docs/testing/", "docs/archives/testing/")
 # Each entry is the path of the existing file (relative to the repo root,
 # POSIX separators). Adding a pair without removing the entry is an error.
 BILINGUAL_PENDING = {
-    # All pending bilingual pairs have landed; keep the set empty so any
-    # future scope registers its pending entries here explicitly.
+    # The HPC guide was written Chinese-first and its English pair is still to
+    # be written (#1296 added it without either). Registered here so the
+    # ordinary run reports it as pending debt instead of a failure that every
+    # unrelated change has to explain; --strict-pending still fails until the
+    # pair lands and this entry is removed.
+    "docs/hpc-westlake-guide.zh-CN.md",
 }
 
 
