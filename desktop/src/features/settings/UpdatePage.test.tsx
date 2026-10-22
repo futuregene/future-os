@@ -30,12 +30,13 @@ it.each([false, true])("handles install under StrictMode including subscription 
     expect(button).toBeTruthy();
     await act(async () => button.click());
     if (failed) {
-      expect(container.textContent).toContain("subscription unavailable");
-      expect(invokeCommand).not.toHaveBeenCalledWith("install_app_update");
+      expect(container.textContent).toContain("The update couldn’t be completed");
+      expect(container.textContent).not.toContain("subscription unavailable");
+      expect(invokeCommand).not.toHaveBeenCalledWith("install_app_update", { language: "en" });
       expect([...container.querySelectorAll("button")].find(item => item.textContent === "Download and install")?.disabled).toBe(false);
     }
     else {
-      expect(invokeCommand).toHaveBeenCalledWith("install_app_update");
+      expect(invokeCommand).toHaveBeenCalledWith("install_app_update", { language: "en" });
       expect(unlisten).toHaveBeenCalledTimes(1);
     }
   }
@@ -60,7 +61,7 @@ function maintenance(overrides: Record<string, unknown> = {}) {
       diagnostic: null,
       fromVersion: "1.0",
       operationId: "op_1",
-      outcome: null,
+      outcome: "installed",
       repairAcknowledged: true,
       restartSafe: false,
       stage: "finished",
@@ -118,9 +119,11 @@ it("reports a failed install whose recovery read failed too", async () => {
   try {
     await act(async () => page.button("Download and install")!.click());
 
-    expect(invokeCommand).toHaveBeenCalledWith("install_app_update");
-    expect(page.container.textContent).toContain("disk full");
-    expect(page.container.textContent).toContain("maintenance offline");
+    expect(invokeCommand).toHaveBeenCalledWith("install_app_update", { language: "en" });
+    expect(page.container.textContent).toContain("The update couldn’t be completed");
+    expect(page.container.textContent).toContain("We can’t confirm the update status");
+    expect(page.container.textContent).not.toContain("disk full");
+    expect(page.container.textContent).not.toContain("maintenance offline");
   }
   finally {
     page.unmount();
@@ -132,14 +135,15 @@ it("offers a restart when the host says the failed install is safe to restart fr
   // restart-safe. The page's own restart action is the way out — the recovery
   // panel `UpdateRecoveryPanel` is for the case where nothing else is mounted.
   routeCommands({
-    app_maintenance_status: () => Promise.resolve(maintenance({ outcome: "repair-required", restartSafe: true })),
+    app_maintenance_status: () => Promise.resolve(maintenance({ outcome: "failed-restored", restartSafe: true })),
     install_app_update: () => Promise.reject(new Error("interrupted")),
     restart_after_app_update: () => Promise.resolve(undefined),
   });
   const page = await mountPage();
   try {
     await act(async () => page.button("Download and install")!.click());
-    expect(page.container.textContent).toContain("interrupted");
+    expect(page.container.textContent).toContain("Your previous version has been restored.");
+    expect(page.container.textContent).not.toContain("interrupted");
 
     const restart = page.button("Restart FutureOS");
     expect(restart).not.toBeUndefined();
@@ -171,13 +175,13 @@ it("confirms a repair with the operation it belongs to, and reports a refusal", 
   try {
     await act(async () => page.button("Download and install")!.click());
 
-    const confirm = page.button("Confirm completed manual repair");
+    const confirm = page.button("I’ve reinstalled FutureOS");
     expect(confirm).not.toBeUndefined();
     await act(async () => confirm!.click());
 
-    expect(invokeCommand).toHaveBeenCalledWith("acknowledge_update_repair", { operationId: "op_1" });
+    expect(invokeCommand).toHaveBeenCalledWith("acknowledge_update_repair", { operationId: "op_1", language: "en" });
     // The re-read says the repair was acknowledged, so the control is gone.
-    expect(page.button("Confirm completed manual repair")).toBeUndefined();
+    expect(page.button("I’ve reinstalled FutureOS")).toBeUndefined();
   }
   finally {
     page.unmount();
@@ -192,11 +196,11 @@ it("confirms a repair with the operation it belongs to, and reports a refusal", 
   });
   const retry = await mountPage();
   try {
-    await act(async () => retry.button("Download and install")!.click());
-    await act(async () => retry.button("Confirm completed manual repair")!.click());
+    await act(async () => retry.button("I’ve reinstalled FutureOS")!.click());
 
-    expect(retry.container.textContent).toContain("no such operation");
-    expect(retry.button("Confirm completed manual repair")).not.toBeUndefined();
+    expect(retry.container.textContent).toContain("Couldn’t confirm your reinstallation");
+    expect(retry.container.textContent).not.toContain("no such operation");
+    expect(retry.button("I’ve reinstalled FutureOS")).not.toBeUndefined();
   }
   finally {
     retry.unmount();

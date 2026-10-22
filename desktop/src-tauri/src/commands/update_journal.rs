@@ -1,5 +1,7 @@
 //! Durable maintenance results. No Agent database or storage migration.
+use super::state::Stage;
 use crate::AppError;
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
     path::PathBuf,
@@ -25,7 +27,7 @@ fn root() -> PathBuf {
     future_rpc::home::future_home().join("app/updates")
 }
 
-pub(super) fn latest() -> Result<Option<Record>, AppError> {
+fn read_latest() -> Result<Option<Record>, AppError> {
     let pointer = root().join("latest.json");
     let bytes = match std::fs::read(pointer) {
         Ok(bytes) => bytes,
@@ -40,20 +42,13 @@ pub(super) fn latest() -> Result<Option<Record>, AppError> {
     }
     let record: Record =
         serde_json::from_slice(&std::fs::read(root().join(&id).join("result.json"))?)?;
-    let known_stage = matches!(
-        record.stage.as_str(),
-        "checking"
-            | "downloading"
-            | "verified"
-            | "cleanup"
-            | "awaiting-exit"
-            | "installing"
-            | "finished"
-    );
+    let known_stage = Stage::parse(&record.stage).is_some();
     let known_outcome = matches!(
         record.outcome.as_deref(),
         None | Some(
             "installed"
+                | "pending-validation"
+                | "cancelled"
                 | "failed"
                 | "interrupted"
                 | "not-installed"
@@ -64,7 +59,7 @@ pub(super) fn latest() -> Result<Option<Record>, AppError> {
     );
     let safe_outcome = matches!(
         record.outcome.as_deref(),
-        Some("installed" | "failed-restored" | "not-installed")
+        Some("installed" | "pending-validation" | "failed-restored" | "not-installed")
     );
     if record.format_version != 1
         || record.operation_id != id
@@ -79,10 +74,146 @@ pub(super) fn latest() -> Result<Option<Record>, AppError> {
     Ok(Some(record))
 }
 
+// The process lock survives page unmounts and distinguishes a live operation
+// from a record left behind by a crash (where Drop never runs).
+fn transaction_lock() -> Result<std::fs::File, AppError> {
+    std::fs::create_dir_all(root())?;
+    Ok(std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(root().join("transaction.lock"))?)
+}
+
+pub(super) fn latest() -> Result<Option<Record>, AppError> {
+    let lock = transaction_lock()?;
+    if lock.try_lock_exclusive().is_err() {
+        return read_latest();
+    }
+    let Some(mut record) = read_latest()? else {
+        return Ok(None);
+    };
+    if record.outcome.is_none() {
+        let observer = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(root().join(&record.operation_id).join("observer.lock"))
+        {
+            Ok(file) => file,
+            Err(error)
+                if error.kind() == std::io::ErrorKind::PermissionDenied
+                    || error.raw_os_error() == Some(32) =>
+            {
+                return Ok(Some(record))
+            }
+            Err(error) => return Err(error.into()),
+        };
+        // Windows' FileShare.None and Unix's advisory lease protect handoff.
+        if observer.try_lock_exclusive().is_ok() {
+            let stage = Stage::parse(&record.stage).ok_or("Unknown update stage")?;
+            if stage.program_untouched() {
+                record.outcome = Some("not-installed".into());
+                record.restart_safe = true;
+                record.diagnostic = Some("Update preparation was interrupted; the installed version was not modified. You can retry.".into());
+            } else {
+                record.outcome = Some("interrupted".into());
+                record.restart_safe = false;
+                record.diagnostic = Some("Update was interrupted after shutdown began; inspect the retained transaction before restarting.".into());
+            }
+            save_record(&record)?;
+        }
+    }
+    Ok(Some(record))
+}
+
+fn save_record(record: &Record) -> Result<(), AppError> {
+    crate::config_io::write_json_atomic(
+        &root().join(&record.operation_id).join("result.json"),
+        &serde_json::to_value(record)?,
+        true,
+    )
+}
+
+pub(super) fn confirm_startup(version: &str) -> Result<(), AppError> {
+    let lock = transaction_lock()?;
+    if lock.try_lock_exclusive().is_err() {
+        return Ok(());
+    }
+    if let Some(mut record) = read_latest()? {
+        if (record.outcome.as_deref() == Some("pending-validation")
+            || (matches!(record.outcome.as_deref(), None | Some("interrupted"))
+                && matches!(record.stage.as_str(), "installing" | "awaiting-validation")))
+            && record.target_version.as_deref() == Some(version)
+        {
+            let observer = match std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(root().join(&record.operation_id).join("observer.lock"))
+            {
+                Ok(file) => file,
+                Err(error) if error.raw_os_error() == Some(32) => return Ok(()),
+                Err(error) => return Err(error.into()),
+            };
+            if observer.try_lock_exclusive().is_err() {
+                return Ok(());
+            }
+            super::adapters::validate_startup(&record.operation_id)?;
+            record.stage = "finished".into();
+            record.outcome = Some("installed".into());
+            record.diagnostic = None;
+            save_record(&record)?;
+            if let Err(error) = super::adapters::cleanup_confirmed(&record.operation_id) {
+                crate::host_environment::report(&format!(
+                    "Update confirmed; old backup retained because cleanup failed: {error}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(super) fn observer_lease(record: &std::path::Path) -> Result<std::fs::File, AppError> {
+    let lease = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(record.with_file_name("observer.lock"))?;
+    lease.try_lock_exclusive()?;
+    Ok(lease)
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(super) fn write_worker_result(
+    path: &std::path::Path,
+    outcome: &str,
+    diagnostic: Option<String>,
+    safe: bool,
+) -> Result<(), AppError> {
+    let mut record: Record = serde_json::from_slice(&std::fs::read(path)?)?;
+    record.stage = if outcome == "pending-validation" {
+        "awaiting-validation"
+    } else {
+        "finished"
+    }
+    .into();
+    record.outcome = Some(outcome.into());
+    record.diagnostic = diagnostic;
+    record.restart_safe = safe;
+    crate::config_io::write_json_atomic(path, &serde_json::to_value(record)?, true)
+}
+
 struct Inner {
     path: PathBuf,
     record: Record,
     handed_off: bool,
+    _lease: std::fs::File,
 }
 impl Inner {
     fn save(&self) -> Result<(), AppError> {
@@ -92,6 +223,13 @@ impl Inner {
 impl Drop for Inner {
     fn drop(&mut self) {
         if self.record.outcome.is_none() && !self.handed_off {
+            if std::fs::read(&self.path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Record>(&bytes).ok())
+                .is_some_and(|record| record.outcome.is_some())
+            {
+                return;
+            }
             self.record.outcome = Some("interrupted".into());
             self.record.diagnostic = Some("Update operation was interrupted. No successful installation was confirmed; check program files before restarting.".into());
             if let Err(error) = self.save() {
@@ -107,10 +245,19 @@ impl Drop for Inner {
 pub(super) struct Operation(Arc<Mutex<Inner>>);
 impl Operation {
     pub(super) fn begin(version: &str) -> Result<Self, AppError> {
-        if latest()?.is_some_and(|record| {
+        // Recover an abandoned pre-install record before reserving a new one.
+        let _ = latest()?;
+        let lease = transaction_lock()?;
+        lease
+            .try_lock_exclusive()
+            .map_err(|_| AppError::from("Another update transaction is active"))?;
+        if read_latest()?.is_some_and(|record| {
             !record.repair_acknowledged
                 && (record.outcome.is_none()
-                    || record.outcome.as_deref() == Some("repair-required")
+                    || matches!(
+                        record.outcome.as_deref(),
+                        Some("repair-required" | "pending-validation")
+                    )
                     || (record.outcome.as_deref() == Some("interrupted")
                         && matches!(record.stage.as_str(), "installing" | "awaiting-exit")))
         }) {
@@ -141,6 +288,7 @@ impl Operation {
                 repair_acknowledged: false,
             },
             handed_off: false,
+            _lease: lease,
         };
         inner.save()?;
         crate::config_io::write_json_atomic(
@@ -153,7 +301,12 @@ impl Operation {
 
     pub(super) fn stage(&self, stage: &str, target: Option<&str>) -> Result<(), AppError> {
         let mut inner = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        inner.record.stage = stage.into();
+        let next = Stage::parse(stage).ok_or("Unknown update stage")?;
+        let previous = Stage::parse(&inner.record.stage).ok_or("Unknown update stage")?;
+        if !previous.permits(next) {
+            return Err("Invalid update state transition".into());
+        }
+        inner.record.stage = next.as_str().into();
         if let Some(target) = target {
             inner.record.target_version = Some(target.into());
         }
@@ -170,7 +323,17 @@ impl Operation {
         if inner.handed_off || inner.record.outcome.is_some() {
             return Ok(());
         }
-        inner.record.stage = "finished".into();
+        let persisted: Record = serde_json::from_slice(&std::fs::read(&inner.path)?)?;
+        if persisted.outcome.is_some() {
+            inner.record = persisted;
+            return Ok(());
+        }
+        inner.record.stage = if outcome == "pending-validation" {
+            "awaiting-validation"
+        } else {
+            "finished"
+        }
+        .into();
         inner.record.outcome = Some(outcome.into());
         inner.record.diagnostic = diagnostic;
         inner.record.restart_safe = restart_safe;
@@ -214,6 +377,74 @@ pub(super) fn acknowledge_repair(operation_id: &str) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn abandoned_download_is_retryable_without_manual_repair() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-crash-before-install");
+        let operation = Operation::begin("old").unwrap();
+        operation.stage("downloading", Some("new")).unwrap();
+        let path = operation.path();
+        drop(operation);
+        // Model an OS kill: unlike a normal Drop, no outcome was written.
+        let mut record: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        record["outcome"] = serde_json::Value::Null;
+        crate::config_io::write_json_atomic(&path, &record, true).unwrap();
+        let recovered = latest().unwrap().unwrap();
+        assert_eq!(recovered.outcome.as_deref(), Some("not-installed"));
+        assert!(recovered.restart_safe);
+        assert!(!recovered.repair_acknowledged);
+        assert!(Operation::begin("old").is_ok());
+    }
+
+    #[test]
+    fn replacing_files_cannot_be_reclassified_as_a_safe_download() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-crash-during-install");
+        let operation = Operation::begin("old").unwrap();
+        operation.stage("installing", Some("new")).unwrap();
+        assert!(operation.stage("prepared", None).is_err());
+        drop(operation);
+        assert!(Operation::begin("old").is_err());
+    }
+
+    #[test]
+    fn old_process_cannot_confirm_the_new_version() {
+        let _home = crate::auth_store::test_support::HomeGuard::new("update-health-version");
+        let operation = Operation::begin("old").unwrap();
+        operation.stage("installing", Some("new")).unwrap();
+        operation.finish("pending-validation", None, true).unwrap();
+        drop(operation);
+        confirm_startup("old").unwrap();
+        assert_eq!(
+            latest().unwrap().unwrap().outcome.as_deref(),
+            Some("pending-validation")
+        );
+        assert!(Operation::begin("old").is_err());
+    }
+
+    #[test]
+    fn a_worker_result_survives_a_later_parent_error_and_drop() {
+        let _home =
+            crate::auth_store::test_support::HomeGuard::new("update-worker-result-authority");
+        let operation = Operation::begin("old").unwrap();
+        operation.stage("installing", Some("new")).unwrap();
+        let mut record = read_latest().unwrap().unwrap();
+        record.stage = "awaiting-validation".into();
+        record.outcome = Some("pending-validation".into());
+        record.restart_safe = true;
+        save_record(&record).unwrap();
+        operation
+            .finish(
+                "repair-required",
+                Some("parent lost the response".into()),
+                false,
+            )
+            .unwrap();
+        drop(operation);
+        let record = latest().unwrap().unwrap();
+        assert_eq!(record.outcome.as_deref(), Some("pending-validation"));
+        assert!(record.restart_safe);
+    }
 
     #[test]
     fn results_survive_operation_drop_and_record_failure_diagnostics() {

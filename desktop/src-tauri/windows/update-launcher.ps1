@@ -53,18 +53,28 @@ function Get-ProgramSnapshot {
 }
 try {
     $result = [IO.File]::ReadAllText($Record) | ConvertFrom-Json
-    if ($result.formatVersion -ne 1 -or $null -ne $result.outcome -or $result.stage -ne 'awaiting-exit') { throw 'Invalid update handoff record.' }
+    if ($result.formatVersion -ne 1 -or $null -ne $result.outcome -or $result.stage -ne 'preparing') { throw 'Invalid update handoff record.' }
     $observerLease = [IO.FileStream]::new((Join-Path ([IO.Path]::GetDirectoryName($Record)) 'observer.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     $parent = [Diagnostics.Process]::GetProcessById($ParentPid)
     $null = $parent.Handle
-    Write-Result 'awaiting-exit' $null $null
+    # Complete all fallible discovery and backup work while Desktop is alive.
+    $original = Get-ProgramSnapshot
+    $snapshotComplete = $true
+    $backup = Join-Path ([IO.Path]::GetDirectoryName($Record)) 'program-backup'
+    $null = New-Item -ItemType Directory -Path $backup -Force
+    $programRoot = [IO.Path]::GetDirectoryName($Desktop)
+    Get-ChildItem -LiteralPath $programRoot -Force | Copy-Item -Destination $backup -Recurse -Force
     [IO.File]::WriteAllText((Join-Path $Directory 'ready'), 'ready')
+    $deadline = [DateTime]::UtcNow.AddMinutes(15)
+    while (-not [IO.File]::Exists((Join-Path $Directory 'commit'))) {
+        if ($parent.HasExited -or [DateTime]::UtcNow -gt $deadline) { throw 'Update preparation cancelled; installation was not started.' }
+        Start-Sleep -Milliseconds 50
+    }
+    Write-Result 'awaiting-exit' $null $null
     if (-not $parent.WaitForExit($ParentExitTimeoutMs)) { throw 'Desktop did not exit; installation was not started.' }
     $parentExited = $true
     $argsFile = Join-Path $Directory 'resume-args.txt'
     if ([IO.File]::Exists($argsFile)) { $resumeArguments = [IO.File]::ReadAllText($argsFile) }
-    $original = Get-ProgramSnapshot
-    $snapshotComplete = $true
     $info = [Diagnostics.ProcessStartInfo]::new()
     $info.FileName = Join-Path $Directory 'installer.exe'
     $info.Arguments = '/P /R /UPDATE /FUTUREOS_CLEAN /ARGS ' + $resumeArguments
@@ -77,11 +87,19 @@ try {
     $installer.WaitForExit()
     Write-Diagnostic "Installer exit=$($installer.ExitCode)"
     if ($installer.ExitCode -ne 0) { throw "Installer failed with exit $($installer.ExitCode); NSIS rollback was requested." }
-    Write-Result 'finished' 'installed' $null $true
+    Write-Result 'awaiting-validation' 'pending-validation' $null $true
 } catch {
     $failure = $_.Exception.Message
     Write-Diagnostic $failure
     $restored = $snapshotComplete
+    if ($installationStarted -and $parentExited -and $snapshotComplete) {
+        try {
+            $programRoot = [IO.Path]::GetDirectoryName($Desktop)
+            # Preserve any new/unrecognized files; a mismatch requires repair
+            # rather than deleting data that was not present in our backup.
+            Get-ChildItem -LiteralPath $backup -Force | Copy-Item -Destination $programRoot -Recurse -Force
+        } catch { Write-Diagnostic "Backup restoration failed: $($_.Exception.Message)"; $restored = $false }
+    }
     if ($snapshotComplete) {
         try {
             $actual = Get-ProgramSnapshot
@@ -116,5 +134,6 @@ try {
     if ($null -ne $installer) { $installer.Dispose() }
     if ($null -ne $parent) { $parent.Dispose() }
     if ($null -ne $observerLease) { $observerLease.Dispose() }
+    if (-not $installationStarted -and $backup) { Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $Directory -Recurse -Force -ErrorAction SilentlyContinue
 }

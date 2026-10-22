@@ -111,6 +111,25 @@ pub struct Manager {
     registry: Mutex<Registry>,
 }
 
+/// Reversible admission reservation while the Agent's idle state is checked.
+/// It becomes permanent only when the update commits to service shutdown.
+pub(crate) struct IdleReservation {
+    manager: Arc<Manager>,
+    committed: bool,
+}
+impl IdleReservation {
+    pub(crate) fn commit(mut self) {
+        self.committed = true;
+    }
+}
+impl Drop for IdleReservation {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.manager.registry.lock().unwrap().closed = false;
+        }
+    }
+}
+
 impl Default for Manager {
     fn default() -> Self {
         Self::new()
@@ -280,6 +299,23 @@ impl Manager {
         registry.exit_order.clear();
     }
 
+    pub(crate) fn reserve_idle(self: &Arc<Self>) -> Option<IdleReservation> {
+        let mut registry = self.registry.lock().unwrap();
+        if registry.closed
+            || registry
+                .sessions
+                .values()
+                .any(|session| session.is_running())
+        {
+            return None;
+        }
+        registry.closed = true;
+        Some(IdleReservation {
+            manager: self.clone(),
+            committed: false,
+        })
+    }
+
     pub(crate) fn freeze(&self) {
         self.registry.lock().unwrap().closed = true;
     }
@@ -311,7 +347,6 @@ impl Manager {
         }
     }
 
-    #[cfg(test)]
     pub fn running_count(&self) -> usize {
         let registry = self.registry.lock().unwrap();
         registry
@@ -412,6 +447,29 @@ mod tests {
 
     fn manager_with_shell() -> Manager {
         Manager::new()
+    }
+
+    #[test]
+    fn idle_update_reservation_blocks_new_shells_and_cancel_reopens_admission() {
+        let manager = Arc::new(Manager::new());
+        let root = tempfile::tempdir().unwrap();
+        let attempt = || {
+            manager.create_with(
+                "thread".into(),
+                None,
+                root.path().join("missing-shell"),
+                Vec::new(),
+                root.path().to_owned(),
+                80,
+                24,
+            )
+        };
+        let reservation = manager.reserve_idle().expect("idle manager");
+        assert!(matches!(attempt(), Err(ManagerError::Stopping)));
+        drop(reservation);
+        assert!(matches!(attempt(), Err(ManagerError::Spawn(_))));
+        manager.reserve_idle().unwrap().commit();
+        assert!(matches!(attempt(), Err(ManagerError::Stopping)));
     }
 
     fn create_with_command(

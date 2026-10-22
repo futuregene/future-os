@@ -53,7 +53,7 @@ jobs:
       version: ${{ needs.version.outputs.version }}
       artifact_version: ${{ needs.version.outputs.artifact_version }}
       signed: ${{ inputs.nightly }}
-      strict_verification: false
+      strict_verification: true
       coordinated: true
     secrets: inherit
 

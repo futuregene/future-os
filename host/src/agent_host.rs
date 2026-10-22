@@ -105,6 +105,21 @@ impl AgentHost {
         state.yield_reason = None;
         true
     }
+    /// Used only after an update executor is ready, immediately before stop.
+    /// External Agents cannot be reserved or stopped by this application.
+    pub fn reserve_idle_update(&self) -> Result<bool, crate::Error> {
+        let state = self.0.state.lock().unwrap();
+        if !state.owned {
+            return Ok(false);
+        }
+        state
+            .handle
+            .as_ref()
+            .ok_or("Agent is still starting")?
+            .close_idle_admission()
+            .map_err(|error| error.to_string().into())
+    }
+
     pub fn activity(&self) -> Result<Option<future_agent::service::AgentActivity>, crate::Error> {
         let state = self.0.state.lock().unwrap();
         if !state.owned {

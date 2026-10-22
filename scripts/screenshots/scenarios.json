@@ -2798,6 +2798,94 @@
           }
         ]
       },
+      "update-available": {
+        "url": "http://localhost:5299/shot/?update=available",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "lixin"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "tapText": "设置"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "tapText": "检查更新"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const text = document.body.innerText; if (!text.includes(\"下载并安装\")) throw new Error('update guidance is missing'); for (const raw of ['update-raw-id', 'Program Files', 'os error 50', 'CLI diagnostic', 'shutdown-raw-id']) if (text.includes(raw)) throw new Error('developer detail exposed: ' + raw); })()"
+          },
+          {
+            "shot": "d-update-available.png"
+          }
+        ]
+      },
+      "update-restored": {
+        "url": "http://localhost:5299/shot/?update=restored",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "lixin"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "tapText": "设置"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "tapText": "检查更新"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const text = document.body.innerText; if (!text.includes(\"已恢复到原来的版本\")) throw new Error('update guidance is missing'); for (const raw of ['update-raw-id', 'Program Files', 'os error 50', 'CLI diagnostic', 'shutdown-raw-id']) if (text.includes(raw)) throw new Error('developer detail exposed: ' + raw); })()"
+          },
+          {
+            "shot": "d-update-restored.png"
+          }
+        ]
+      },
+      "update-repair-stopped": {
+        "ready": "document.body.innerText.includes('检查更新')",
+        "url": "http://localhost:5299/shot/?update=stopped-repair",
+        "steps": [
+          {
+            "eval": "(() => { const text = document.body.innerText; if (!text.includes(\"下载安装包重新安装 FutureOS\")) throw new Error('update guidance is missing'); for (const raw of ['update-raw-id', 'Program Files', 'os error 50', 'CLI diagnostic', 'shutdown-raw-id']) if (text.includes(raw)) throw new Error('developer detail exposed: ' + raw); })()"
+          },
+          {
+            "shot": "d-update-repair-stopped.png"
+          }
+        ]
+      },
+      "update-ready-stopped": {
+        "ready": "document.body.innerText.includes('检查更新')",
+        "url": "http://localhost:5299/shot/?update=stopped-ready",
+        "steps": [
+          {
+            "eval": "(() => { const text = document.body.innerText; if (!text.includes(\"重启 FutureOS\")) throw new Error('update guidance is missing'); for (const raw of ['update-raw-id', 'Program Files', 'os error 50', 'CLI diagnostic', 'shutdown-raw-id']) if (text.includes(raw)) throw new Error('developer detail exposed: ' + raw); })()"
+          },
+          {
+            "shot": "d-update-ready-stopped.png"
+          }
+        ]
+      },
       "settings-themes": {
         "note": "Settings → General's color-theme picker: one card per palette, each painting itself while the app keeps the active theme. The assertion pins that separation — a card that inherited the app's surfaces would make every preview identical.",
         "steps": [
