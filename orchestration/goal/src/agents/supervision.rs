@@ -435,6 +435,7 @@ mod tests {
 
     /// The lock file `lock_file` derives for a goal, so a test can make it
     /// something that cannot be locked.
+    #[cfg(target_os = "macos")]
     fn lock_path(store: &Store, goal: &str, suffix: &str) -> std::path::PathBuf {
         use sha2::{Digest, Sha256};
         std::path::PathBuf::from(store.root_path())
@@ -522,7 +523,7 @@ mod tests {
     }
 
     /// Spawn a child, kill it, reap it — its pid is now guaranteed dead.
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     fn dead_pid() -> u32 {
         let mut child = std::process::Command::new("sh")
             .arg("-c")
