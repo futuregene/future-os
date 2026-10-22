@@ -33,6 +33,31 @@ fn remote_json_gzip_enabled() -> bool {
 struct CachedReply {
     request: Value,
     response: Arc<tokio::sync::Mutex<Option<Vec<u8>>>>,
+    /// When this slot stops answering from cache.
+    ///
+    /// The background timer is reclamation, not the expiry itself: it runs on
+    /// the Host executor, which may be closed for admission or never poll a
+    /// best-effort cleanup. A read past this instant therefore replaces the
+    /// slot on the spot, so a lost timer cannot serve a stale reply — the same
+    /// reason the TTL is a property of the entry rather than of the task.
+    expires_at: std::time::Instant,
+}
+
+impl CachedReply {
+    /// Whether the command behind this slot is still executing.
+    ///
+    /// A command may legitimately run longer than the reply TTL (`prompt` with
+    /// a 600 s budget against a 600 s TTL). Expiry must not replace a slot that
+    /// is still in flight — that would execute the same command twice and drop
+    /// the single-flight guarantee this cache exists for. The executing
+    /// delivery holds `response` across the command, so a held mutex or an
+    /// unfilled one both mean "in flight".
+    fn in_flight(&self) -> bool {
+        match self.response.try_lock() {
+            Ok(cached) => cached.is_none(),
+            Err(_) => true,
+        }
+    }
 }
 
 type ReplySlot = Arc<CachedReply>;
@@ -494,13 +519,19 @@ async fn handle_command_singleflight(
 
     let request: Value = serde_json::from_slice(&msg.payload).expect("command already decoded");
     let slot = {
+        let now = std::time::Instant::now();
+        let expires_at = now + handshake.reply_ttl;
         let mut slots = reply_slots.0.lock().unwrap();
+        // An expired entry is replaced here, not only by its timer: the timer
+        // is best-effort (a closed Host executor drops it), and a retry must
+        // then execute instead of receiving a reply the TTL already retired.
         match slots.get(&command_id) {
-            Some(slot) => slot.clone(),
-            None => {
+            Some(slot) if slot.expires_at > now || slot.in_flight() => slot.clone(),
+            _ => {
                 let slot = Arc::new(CachedReply {
                     request: request.clone(),
                     response: Arc::new(tokio::sync::Mutex::new(None)),
+                    expires_at,
                 });
                 slots.insert(command_id.clone(), slot.clone());
                 slot

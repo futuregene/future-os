@@ -254,6 +254,13 @@ const TOGGLE_SLOP_LEFT = 44 - TOGGLE_WIDTH - TOGGLE_GAP;
 const TOGGLE_SLOP_RIGHT = TOGGLE_GAP;
 const rowInset = (title: string) =>
   StyleSheet.flatten(sessionBody(title).parent!.props.style).paddingLeft;
+// The setup is a render plus one flushed microtask; it asserts nothing about
+// speed. Jest's 5 s default still measured the machine: `jest --runInBand`
+// runs 145 suites in one worker, and one CI run (39742523871) spent more than
+// 5 s inside this hook and reported `Exceeded timeout of 5000 ms for a hook`
+// for a test that never ran. The budget below only keeps a real hang from
+// wedging the suite.
+const FIXTURE_TIMEOUT_MS = 30_000;
 beforeEach(async () => {
   jest.clearAllMocks();
   machinesAnswer = true;
@@ -279,7 +286,7 @@ beforeEach(async () => {
     // tree after the test body has finished.
     await Promise.resolve();
   });
-});
+}, FIXTURE_TIMEOUT_MS);
 afterEach(() => {
   act(() => tree.unmount());
   jest.restoreAllMocks();

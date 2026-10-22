@@ -665,10 +665,31 @@ fn windows_interrupt_helper() {
             );
             return;
         }
-        assert_ne!(SetConsoleCtrlHandler(None, 1), 0);
-        assert_ne!(GenerateConsoleCtrlEvent(0, 0), 0); // CTRL_C_EVENT
-                                                       // Delivery is asynchronous. Keep the attached console alive until the
-                                                       // child can receive the event; the parent separately bounds its exit.
+        // The console can go away with the child in the window between the
+        // attach above and either call below (the runner kills a fixture that
+        // finishes on its own). Both calls then fail because there is no longer
+        // a console to name, not because delivery broke: the old
+        // `assert_ne!(SetConsoleCtrlHandler(None, 1), 0)` reported exactly that
+        // as a failure (runs 39576790228, 39474870891). A failure with the
+        // target still alive is a real fault.
+        if SetConsoleCtrlHandler(None, 1) == 0 {
+            assert!(
+                exited(pid),
+                "could not install the console handler while the child was still alive"
+            );
+            return;
+        }
+        if GenerateConsoleCtrlEvent(0, 0) == 0 {
+            // CTRL_C_EVENT
+            assert!(
+                exited(pid),
+                "could not generate Ctrl+C while the child was still alive"
+            );
+            FreeConsole();
+            return;
+        }
+        // Delivery is asynchronous. Keep the attached console alive until the
+        // child can receive the event; the parent separately bounds its exit.
         std::thread::sleep(Duration::from_millis(100));
         FreeConsole();
     }

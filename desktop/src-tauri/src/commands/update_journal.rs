@@ -155,11 +155,23 @@ fn acquire_transaction_lease() -> Result<std::fs::File, AppError> {
     loop {
         match lease.try_lock_exclusive() {
             Ok(()) => return Ok(lease),
-            Err(_) if waited < LEASE_SETTLE_ATTEMPTS => {
+            // Only "someone else holds this file" is a concurrent transaction.
+            // Every other failure used to be reported with the same message, so
+            // a full-suite run that failed at its *first* `Operation::begin` in
+            // a fresh directory (1 round in 6, measured in #1305) could not say
+            // which of the two it was.
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if waited >= LEASE_SETTLE_ATTEMPTS {
+                    return Err(AppError::from("Another update transaction is active"));
+                }
                 waited += 1;
                 std::thread::sleep(LEASE_SETTLE_STEP);
             }
-            Err(_) => return Err(AppError::from("Another update transaction is active")),
+            Err(error) => {
+                return Err(AppError::from(format!(
+                    "Could not take the update transaction lease: {error}"
+                )))
+            }
         }
     }
 }
