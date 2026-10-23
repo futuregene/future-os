@@ -872,7 +872,7 @@ impl Drop for IsolatedHome {
 /// Install the process-level rustls crypto provider (production does this in
 /// `run()`); idempotent — a repeated install returns Err we ignore.
 pub fn ensure_crypto_provider() {
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
 /// Poll `cond` every 20ms until it holds or `timeout` elapses. Returns the
