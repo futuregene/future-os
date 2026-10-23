@@ -1,6 +1,5 @@
-import { peerIconId } from "@future-os/peer-icons";
+import { peerIconId, peerIconTint } from "@future-os/peer-icons";
 import { View } from "react-native";
-import { useTheme } from "../theme/ThemeContext";
 import { PEER_GLYPHS } from "./peerGlyphs";
 
 /**
@@ -10,26 +9,29 @@ import { PEER_GLYPHS } from "./peerGlyphs";
  * colour-emoji font the device ships: the same machine came out as Noto's
  * picture on Android, Apple's on iOS, and a monochrome fallback wherever the
  * stack found neither — three machines for one label. Stroke, proportions and
- * colour are the app's now, and the desktop draws the same path data, so a
- * machine looks the same in every client that shows it.
+ * colour are the app's now, and the desktop draws the same path data in the same
+ * hue, so a machine looks the same in every client that shows it.
  *
- * `size` is in points and `color` defaults to the theme's body ink: the glyph
- * is a mark, not a status, so it takes the palette around it rather than
- * carrying a colour of its own.
+ * `size` is in points. The colour comes from the shared palette rather than the
+ * theme: the point of it is that this machine's mark is the same colour on both
+ * clients, and a theme-dependent hue would break that the moment one of them
+ * was in dark mode. `tone` overrides it for the rare surface that has its own
+ * reason (the picker's selected tile), not as a per-screen choice.
  */
 export function PeerIconGlyph({
-  color,
   id,
   size = 20,
   strokeWidth = 2,
+  tone,
 }: {
-  color?: string;
   id: string | null | undefined;
   size?: number;
   strokeWidth?: number;
+  /** Override the icon's own colour; omit for the shared palette's. */
+  tone?: string;
 }) {
-  const { colors } = useTheme();
   const Glyph = PEER_GLYPHS[peerIconId(id)];
+  const color = tone ?? peerIconTint(id).color;
   // Unreachable in the app: the table is typed as a complete record and the id
   // is resolved into that union first. It exists because a test that replaces
   // the icon module with a handful of named stubs leaves the rest of the table
@@ -38,5 +40,5 @@ export function PeerIconGlyph({
   // draw.
   if (!Glyph)
     return <View style={{ width: size, height: size }} />;
-  return <Glyph color={color ?? colors.ink} size={size} strokeWidth={strokeWidth} />;
+  return <Glyph color={color} size={size} strokeWidth={strokeWidth} />;
 }
