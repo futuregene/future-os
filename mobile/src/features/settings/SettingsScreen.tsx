@@ -6,6 +6,7 @@ import { ArrowLeft } from "lucide-react-native";
 import { Button } from "../../components/Button";
 import { LanguageSettings } from "../../i18n/LanguageSettings";
 import { AppearanceSettings } from "../../theme/AppearanceSettings";
+import { PeerIconChip } from "../../remote/PeerIconChip";
 import { PeerIconGlyph } from "../../remote/PeerIconGlyph";
 import { PEER_ICONS } from "../../remote/peerIcons";
 import { useRemoteControls } from "../../remote/RemoteContext";
@@ -385,9 +386,10 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
         {/* The icon replaces the name in the session list, so it is a sibling of
             it rather than part of it, and the two are cleared separately. */}
         <SettingsField hint={t("desktops.iconHint")} label={t("desktops.iconLabel")}>
-          {/* The same two tones the desktop picker uses: the machine's own icon
-              in the accent colour, every other one muted — so the chosen icon
-              stands out, not only the tile around it. */}
+          {/* Each tile draws its icon in that icon's own colour — the same
+              palette the desktop picker uses — and the chosen one is marked by
+              its frame. Recolouring the glyph would hide the colour the choice
+              is about. */}
           <View accessibilityRole="radiogroup" style={styles.iconGrid}>
             {PEER_ICONS.map(icon => {
               const selected = device?.icon === icon.id;
@@ -404,7 +406,7 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
                     pressed && settingsStyles.pressed,
                   ]}
                 >
-                  <PeerIconGlyph color={selected ? colors.accent : colors.inkSoft} id={icon.id} size={20} />
+                  <PeerIconGlyph id={icon.id} size={20} />
                 </Pressable>
               );
             })}
@@ -470,7 +472,7 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
       {/* The machine's own mark, as the device list and the session list draw
           it: these pages write to it, and it is the one place the user's icon
           for it should be recognisable. */}
-      <View style={styles.deviceIcon}><PeerIconGlyph id={device?.icon} size={20} /></View>
+      <PeerIconChip id={device?.icon} size={36} />
       <View style={styles.heading}>
         <Text style={styles.deviceName}>{t("desktopSettings.boundDesktop", { name: deviceName })}</Text>
         <Text style={settingsStyles.description}>{t("desktopSettings.sharedHint")}</Text>
@@ -522,7 +524,6 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   headerButton: { width: layout.touchTarget, height: layout.touchTarget, borderRadius: radius.md, alignItems: "center", justifyContent: "center" },
   pressed: { backgroundColor: theme.colors.surfaceSubtle },
   deviceScope: { flexDirection: "row", alignItems: "flex-start", gap: spacing.md, marginHorizontal: layout.gutter, padding: spacing.md, borderRadius: radius.lg, backgroundColor: theme.colors.accentSoft },
-  deviceIcon: { width: 36, height: 36, borderRadius: radius.md, alignItems: "center", justifyContent: "center", backgroundColor: theme.colors.surface },
   deviceName: { color: theme.colors.inkStrong, fontSize: theme.font(14), fontWeight: "600", marginBottom: spacing.xs },
   version: { ...createSettingsStyles(theme).description, textAlign: "center" },
   notice: { color: theme.colors.inkMuted, padding: layout.gutter, fontSize: theme.font(13) },

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import en from "../../i18n/locales/en/remotePeer.json";
 import zh from "../../i18n/locales/zh/remotePeer.json";
 import { PeerIconGlyph } from "./PeerIconGlyph";
-import { PEER_ICONS, peerBadgeText, peerIconId } from "./peerIcons";
+import { PEER_ICONS, peerBadgeText, peerIconId, peerIconTint } from "./peerIcons";
 
 /**
  * The icon set a paired machine is drawn from.
@@ -46,6 +46,32 @@ describe("peerIcons", () => {
       // A missing entry in this app's table would render nothing at all.
       expect({ id: icon.id, hasSvg: drawn.svg !== null }).toEqual({ id: icon.id, hasSvg: true });
     }
+  });
+
+  /**
+   * Every mark is painted, and painted in a colour of its own.
+   *
+   * The palette lives in the shared package so the two clients paint the same
+   * machine the same hue; what this side can break is the wiring — a glyph drawn
+   * without its tint, or a chip whose wash is not the glyph's own colour.
+   */
+  it("paints every glyph in its own colour", () => {
+    const colors = new Set<string>();
+    for (const icon of PEER_ICONS) {
+      const tint = peerIconTint(icon.id);
+      expect({ id: icon.id, color: /^#[0-9a-f]{6}$/u.test(tint.color) }).toEqual({ id: icon.id, color: true });
+      expect(tint.soft.startsWith("rgba(")).toBe(true);
+      colors.add(tint.color);
+    }
+    // Not one shared colour wearing twenty names: the point of the palette is
+    // telling two marks apart.
+    expect(colors.size).toBeGreaterThan(10);
+  });
+
+  /** An unknown label draws the default picture, so it takes its paint too. */
+  it("gives an unknown id the default icon's tint", () => {
+    expect(peerIconTint("not-an-icon")).toEqual(peerIconTint(PEER_ICONS[0]!.id));
+    expect(peerIconTint(null)).toEqual(peerIconTint(PEER_ICONS[0]!.id));
   });
 
   /**

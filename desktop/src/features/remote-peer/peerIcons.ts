@@ -7,8 +7,8 @@
  * also export these (fast refresh draws the line there), which is why the two
  * are apart.
  */
-export { DEFAULT_PEER_ICON_ID, PEER_ICONS, peerIconId } from "@future-os/peer-icons";
-export type { PeerIcon, PeerIconId } from "@future-os/peer-icons";
+export { DEFAULT_PEER_ICON_ID, PEER_ICONS, peerIconId, peerIconTint } from "@future-os/peer-icons";
+export type { PeerIcon, PeerIconId, PeerIconTint } from "@future-os/peer-icons";
 
 /**
  * What to show for a host in a list: the name the user gave it, else a short

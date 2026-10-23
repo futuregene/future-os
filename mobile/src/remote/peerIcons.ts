@@ -7,5 +7,5 @@
  * table in `./peerGlyphs`: a module that exports components should export
  * nothing else, and a module of data should not pull the icon package in.
  */
-export { DEFAULT_PEER_ICON_ID, PEER_ICONS, peerIconId } from "@future-os/peer-icons";
-export type { PeerIcon, PeerIconId } from "@future-os/peer-icons";
+export { DEFAULT_PEER_ICON_ID, PEER_ICONS, peerIconId, peerIconTint } from "@future-os/peer-icons";
+export type { PeerIcon, PeerIconId, PeerIconTint } from "@future-os/peer-icons";

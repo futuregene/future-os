@@ -22,7 +22,10 @@ import { PEER_ICONS } from "./peerIcons";
  *
  * The glyph is a line icon from the shared set, not an emoji: a picture drawn
  * by the platform's emoji font would differ between macOS, Windows and the
- * phone, and the picker is where that was promised most loudly.
+ * phone, and the picker is where that was promised most loudly. Each tile draws
+ * its icon in that icon's own colour, and the chosen one is marked by its frame
+ * — a tile that recoloured its glyph would hide the very colour the choice is
+ * about.
  */
 export function PeerIconPicker({
   value,
@@ -48,8 +51,8 @@ export function PeerIconPicker({
             className={cn(
               "flex size-11 items-center justify-center rounded-xl border transition-colors",
               selected
-                ? "border-accent bg-accent-soft text-accent"
-                : "border-line bg-surface text-ink-soft hover:bg-surface-subtle hover:border-line",
+                ? "border-accent bg-accent-soft"
+                : "border-line bg-surface hover:bg-surface-subtle hover:border-line",
             )}
             key={icon.id}
             onClick={() => onChange(icon.id)}
