@@ -1575,8 +1575,13 @@ mod tests {
 
     #[test]
     fn control_is_read_from_presence_and_silence_is_not_a_state() {
+        assert_eq!(
+            Control::from_presence(&json!({})),
+            Control::default(),
+            "an older host says nothing"
+        );
         let mut control = Control::from_presence(&json!({ "agentAvailable": true }));
-        assert_eq!(control, Control::default(), "an older host says nothing");
+        assert_eq!(control.agent_available, Some(true));
         assert!(control.state.is_none() && control.holder.is_none());
 
         control.apply_presence(&json!({
