@@ -21,6 +21,7 @@
     "collapseSidebar": "Collapse sidebar",
     "expandSidebar": "Expand sidebar",
     "newWorkspace": "New workspace",
+    "newWorkspaceOn": "New workspace on {{host}}",
     "noWorkspaceThreads": "No workspace threads",
     "expandWorkspace": "Expand workspace",
     "collapseWorkspace": "Collapse workspace",

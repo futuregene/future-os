@@ -880,6 +880,19 @@ function ReadyAppShell({
   }
 
   /**
+   * The workspace "+" from a host's own list.
+   *
+   * The device picker above the list has already named the machine, so there is
+   * no disk to choose: the form opens addressed to that host, the same answer
+   * `handleNewConversationRequest` gives under the same filter.
+   */
+  function handleNewWorkspaceOnRemote(desktopId: string) {
+    const peer = remotePeers.find(candidate => candidate.desktopId === desktopId);
+    if (peer)
+      setRemoteWorkspaceHost(peer);
+  }
+
+  /**
    * A workspace was just created on a host.
    *
    * The host's catalogue is re-read so the row shows under that machine, and
@@ -1420,6 +1433,7 @@ function ReadyAppShell({
     onRenameRemoteConversation: setRemoteRename,
     onRenameRemoteWorkspace: setRemoteWorkspaceRename,
     onNewChatOnRemote: (desktopId: string, workspaceId: string | null) => startRemoteConversation(desktopId, workspaceId),
+    onNewWorkspaceOnRemote: handleNewWorkspaceOnRemote,
     onRemoteConversationsChanged: () => void refreshRemotePeers(),
     // The device picker's own takeover: the same `takeover` command the Remote
     // page sends, then a re-read so the machine's rows appear in the merged list
