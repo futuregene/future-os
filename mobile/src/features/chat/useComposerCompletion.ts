@@ -1,10 +1,10 @@
 import { useEffect, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
-import { BackHandler, Keyboard, type TextInput } from "react-native";
+import { BackHandler, Keyboard, type TextInputInstance } from "react-native";
 import { completeSessionReference, sessionQuery as findSessionQuery } from "./sessionCompletion";
 import { completeSkill, insertSkillSlash, removeSkillQuery, skillQuery, type SlashAction, type TextSelection } from "./skillCompletion";
 import type { SessionReferenceMap, SessionReferenceTarget } from "../../remote/types";
 
-export function useComposerCompletion(message: string, setMessage: Dispatch<SetStateAction<string>>, enabled: boolean, inputRef: RefObject<TextInput | null>, onAction?: (action: SlashAction) => void, sessionReference?: {
+export function useComposerCompletion(message: string, setMessage: Dispatch<SetStateAction<string>>, enabled: boolean, inputRef: RefObject<TextInputInstance | null>, onAction?: (action: SlashAction) => void, sessionReference?: {
   /** The draft's existing references, so a repeated title can be made distinct. */
   refs: SessionReferenceMap;
   /** Record which conversation a freshly inserted token stands for. */

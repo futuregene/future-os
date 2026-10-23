@@ -18,7 +18,7 @@ const TAP_SLOP = 14;
 type Touch = { locationX: number; locationY: number };
 
 /** Distance between the first two touches, or null when fewer than two are down. */
-export function pinchDistance(touches: Touch[]): number | null {
+export function pinchDistance(touches: readonly Touch[]): number | null {
   const [a, b] = touches;
   if (!a || !b) return null;
   return Math.hypot(a.locationX - b.locationX, a.locationY - b.locationY);
@@ -154,7 +154,7 @@ export function createZoomController({ now = Date.now }: ZoomOptions = {}): Zoom
     translateY.setValue(state.y);
   };
 
-  const begin = (touches: Touch[]) => {
+  const begin = (touches: readonly Touch[]) => {
     const [centerX, centerY] = centerOf(touches);
     start = { ...current, distance: pinchDistance(touches) ?? 0, centerX, centerY };
   };
@@ -196,7 +196,7 @@ export function createZoomController({ now = Date.now }: ZoomOptions = {}): Zoom
       scale.stopAnimation();
       translateX.stopAnimation();
       translateY.stopAnimation();
-      const touches = event.nativeEvent.touches as Touch[];
+      const touches = event.nativeEvent.touches;
       begin(touches);
       // Where this press started, relative to this view, and whether two fingers
       // were ever down: together with the release travel this decides
@@ -206,11 +206,11 @@ export function createZoomController({ now = Date.now }: ZoomOptions = {}): Zoom
       press = { x: origin.locationX, y: origin.locationY };
       multiFinger = touches.length > 1;
     },
-    onPanResponderStart: event => begin(event.nativeEvent.touches as Touch[]),
-    onPanResponderEnd: event => begin(event.nativeEvent.touches as Touch[]),
+    onPanResponderStart: event => begin(event.nativeEvent.touches),
+    onPanResponderEnd: event => begin(event.nativeEvent.touches),
     onPanResponderTerminationRequest: () => false,
     onPanResponderMove: event => {
-      const touches = event.nativeEvent.touches as Touch[];
+      const touches = event.nativeEvent.touches;
       const distance = pinchDistance(touches);
       if (distance !== null) {
         multiFinger = true;
@@ -261,7 +261,7 @@ export function createZoomController({ now = Date.now }: ZoomOptions = {}): Zoom
   };
 }
 
-function centerOf(touches: Touch[]): [number, number] {
+function centerOf(touches: readonly Touch[]): [number, number] {
   const [a, b] = touches;
   if (!a) return [0, 0];
   if (!b) return [a.locationX, a.locationY];

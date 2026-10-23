@@ -82,6 +82,8 @@ pub fn install_disconnect_notifier<R: tauri::Runtime>(app: &tauri::AppHandle<R>)
     let Ok(hwnd) = window.hwnd() else {
         return;
     };
+    // Tauri and this crate can use different versions of the Windows bindings.
+    let hwnd = HWND(hwnd.0 as _);
     let previous =
         unsafe { SetWindowLongPtrW(hwnd, GWLP_WNDPROC, power_wnd_proc as *const () as isize) };
     if previous != 0 {

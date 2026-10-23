@@ -512,7 +512,7 @@ async fn websocket_session(
         "data": { "token": token }
     });
     if sink
-        .send(WsMessage::Text(challenge.to_string()))
+        .send(WsMessage::Text(challenge.to_string().into()))
         .await
         .is_err()
     {

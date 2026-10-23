@@ -84,7 +84,7 @@ pub async fn mcp_post(
     }
 
     let effective_timeout = timeout_ms.unwrap_or(60_000);
-    let client = reqwest::Client::new();
+    let client = future_agent::http::client();
     let request = client.post(url).headers(headers).body(
         // Serializing a Value is infallible.
         serde_json::to_string(&Value::Object(body)).expect("json body serializes"),
@@ -180,7 +180,7 @@ pub async fn mcp_notify(
             .unwrap_or_else(|_| reqwest::header::HeaderValue::from_static("")),
     );
 
-    let _ = reqwest::Client::new()
+    let _ = future_agent::http::client()
         .post(url)
         .headers(headers)
         .body(serde_json::to_string(&Value::Object(body)).unwrap_or_default())

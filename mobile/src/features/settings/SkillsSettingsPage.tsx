@@ -113,6 +113,6 @@ export function SkillsSettingsPage() {
         </View>
       </View>;
     }}
-    ListEmptyComponent={!(installed.loading || available.loading) ? <Text style={settingsStyles.description}>{t("desktopSettings.noSkills")}</Text> : null}
+    ListEmptyComponent={!(installed.loading || available.loading) ? <Text style={settingsStyles.description}>{t("desktopSettings.noSkills")}</Text> : undefined}
   />;
 }

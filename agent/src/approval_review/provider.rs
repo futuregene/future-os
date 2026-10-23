@@ -13,7 +13,7 @@ use std::{
 };
 
 static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-    reqwest::Client::builder()
+    crate::http::client_builder()
         .timeout(REVIEW_TIMEOUT)
         .build()
         .expect("System One HTTP client")

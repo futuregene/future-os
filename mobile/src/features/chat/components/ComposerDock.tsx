@@ -1,6 +1,6 @@
 import { INPUT_MIN_HEIGHT, INPUT_MAX_HEIGHT } from "../composer/composerMetrics";
 import { ArrowDown, CircleAlert, FileText, Paperclip, X } from "lucide-react-native";
-import { Pressable, ScrollView, Text, TextInput, useWindowDimensions, View } from "react-native";
+import { Pressable, ScrollView, Text, TextInput, useWindowDimensions, View, type TextInputInstance } from "react-native";
 import { memo, useCallback, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { TFunction } from "i18next";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
@@ -163,7 +163,7 @@ function ComposerDockView({
     remote.selectedSessionId,
     remote.abort,
   );
-  const inputRef = useRef<TextInput>(null);
+  const inputRef = useRef<TextInputInstance>(null);
   const completion = useComposerCompletion(
     message,
     setMessage,

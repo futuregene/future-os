@@ -6,6 +6,24 @@
 use rustls_platform_verifier::BuilderVerifierExt;
 use std::sync::Arc;
 
+/// Default trust configuration, with Ring initialized before Reqwest 0.13.
+pub(crate) fn default_client_builder() -> reqwest::ClientBuilder {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    reqwest::Client::builder()
+}
+
+#[cfg(test)]
+pub(crate) fn default_client() -> reqwest::Client {
+    default_client_builder()
+        .build()
+        .expect("initialize HTTP client")
+}
+
+#[cfg(test)]
+pub(crate) async fn default_get(url: impl reqwest::IntoUrl) -> reqwest::Result<reqwest::Response> {
+    default_client().get(url).send().await
+}
+
 /// Build a `reqwest::Client` that trusts the platform certificate store.
 pub fn http_client() -> reqwest::Client {
     http_client_builder()
@@ -17,8 +35,9 @@ pub fn http_client() -> reqwest::Client {
 /// certificate verifier.  Callers can add timeouts, proxies, etc. before
 /// calling `.build()`.
 pub fn http_client_builder() -> reqwest::ClientBuilder {
+    let builder = default_client_builder();
     let tls = platform_tls_config();
-    reqwest::Client::builder().use_preconfigured_tls(tls)
+    builder.use_preconfigured_tls(tls)
 }
 
 /// Build a `tokio_tungstenite::Connector` that trusts the platform
@@ -34,6 +53,7 @@ pub fn ws_connector() -> tokio_tungstenite::Connector {
 fn platform_tls_config() -> rustls::ClientConfig {
     rustls::ClientConfig::builder()
         .with_platform_verifier()
+        .expect("initialize platform certificate verifier")
         .with_no_client_auth()
 }
 

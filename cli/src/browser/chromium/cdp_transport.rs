@@ -159,7 +159,7 @@ impl WebSocketTransport {
         if self.closed.load(Ordering::SeqCst) {
             return;
         }
-        let _ = self.sink.send(Message::Text(message.to_string()));
+        let _ = self.sink.send(Message::Text(message.to_string().into()));
     }
 
     /// Subscribe to inbound events. Dropping the receiver unsubscribes.
@@ -227,7 +227,9 @@ mod tests {
             while let Some(frame) = ws.next().await {
                 match frame {
                     Ok(Message::Text(text)) if text == "ping" => {
-                        ws.send(Message::Text("pong".to_string())).await.unwrap();
+                        ws.send(Message::Text("pong".to_string().into()))
+                            .await
+                            .unwrap();
                     }
                     Ok(Message::Close(_)) | Err(_) => break,
                     _ => continue,
@@ -394,7 +396,7 @@ mod tests {
             // lands while the client's close() is waiting → continue arm.
             let tickler = tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(40)).await;
-                let _ = ws.send(Message::Text("late".to_string())).await;
+                let _ = ws.send(Message::Text("late".to_string().into())).await;
                 ws
             });
             let mut ws = tickler.await.unwrap();
@@ -433,7 +435,11 @@ mod tests {
             // error) or when the count is reached — the task always
             // completes inside the test.
             for _ in 0..60_000 {
-                if ws.send(Message::Text("x".to_string())).await.is_err() {
+                if ws
+                    .send(Message::Text("x".to_string().into()))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -558,9 +564,11 @@ mod tests {
             // sees frames sent AFTER subscribe, so sending blind races the
             // client's subscribe (flaked on fast Linux CI runners).
             let _ = ws.next().await;
-            let _ = ws.send(Message::Binary(vec![1, 2, 3])).await;
-            let _ = ws.send(Message::Ping(vec![9])).await;
-            let _ = ws.send(Message::Text("{\"hello\":true}".to_string())).await;
+            let _ = ws.send(Message::Binary(vec![1, 2, 3].into())).await;
+            let _ = ws.send(Message::Ping(vec![9].into())).await;
+            let _ = ws
+                .send(Message::Text("{\"hello\":true}".to_string().into()))
+                .await;
             // Bounded hold: keeps the socket through the client assertions,
             // then closes so this task (and its closing lines) complete.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -587,7 +595,7 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = accept_async(stream).await.unwrap();
-            let _ = ws.send(Message::Text("first".to_string())).await;
+            let _ = ws.send(Message::Text("first".to_string().into())).await;
             // Just hold the socket; the assertions are client-side.
             // Bounded hold: keeps the socket through the client assertions,
             // then closes so this task (and its closing lines) complete.

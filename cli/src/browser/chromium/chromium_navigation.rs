@@ -244,10 +244,10 @@ mod tests {
             while let Some(Ok(Message::Text(text))) = ws.next().await {
                 if text.contains("\"Page.navigate\"") {
                     for ev in &events_before_reply {
-                        let _ = ws.send(Message::Text(ev.to_string())).await;
+                        let _ = ws.send(Message::Text(ev.to_string().into())).await;
                     }
                     let _ = ws.send(Message::Text(
-                        json!({"id": extract_id(&text), "result": {"frameId": "main", "loaderId": "loader-new"}}).to_string(),
+                        json!({"id": extract_id(&text), "result": {"frameId": "main", "loaderId": "loader-new"}}).to_string().into(),
                     ))
                     .await;
                     break;
@@ -255,7 +255,9 @@ mod tests {
                 // Any other command: answer with an id-matched empty result.
                 let _ = ws
                     .send(Message::Text(
-                        json!({"id": extract_id(&text), "result": {}}).to_string(),
+                        json!({"id": extract_id(&text), "result": {}})
+                            .to_string()
+                            .into(),
                     ))
                     .await;
             }

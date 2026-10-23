@@ -8,6 +8,7 @@ pub mod compaction;
 pub mod config;
 pub mod engine;
 pub mod grpc;
+pub mod http;
 pub mod llm;
 pub mod logfile;
 pub mod models;

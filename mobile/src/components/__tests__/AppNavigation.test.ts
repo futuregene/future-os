@@ -24,6 +24,14 @@ const mockRemote: {
 };
 jest.mock("../../remote/RemoteContext", () => ({ RemoteProvider: ({ children }: { children: unknown }) => children, useRemoteControls: () => mockRemote }));
 jest.mock("expo-status-bar", () => ({ StatusBar: () => null }));
+// SDK 58 registers a foreground handler during import. Supply the native
+// notification boundary so replacing that handler has a removable subscription.
+jest.mock("expo-notifications", () => ({
+  setNotificationHandler: jest.fn(),
+  addNotificationResponseReceivedListener: jest.fn(() => ({ remove: jest.fn() })),
+  getLastNotificationResponse: jest.fn(() => null),
+  clearLastNotificationResponse: jest.fn(),
+}));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaProvider: ({ children }: { children: unknown }) => children }));
 jest.mock("../../screens/SessionsScreen", () => ({ SessionsScreen: () => null }));
 jest.mock("../../features/chat/ChatScreen", () => ({ ChatScreen: () => null }));

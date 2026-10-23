@@ -24,7 +24,7 @@ let tree: ReactTestRenderer;
 beforeEach(async () => {
   jest.clearAllMocks();
   jest.spyOn(Clipboard, "setStringAsync").mockResolvedValue(true);
-  jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+  jest.spyOn(Linking, "openURL").mockResolvedValue(undefined);
   await act(async () => { tree = create(createElement(FollowAccountPage)); });
 });
 

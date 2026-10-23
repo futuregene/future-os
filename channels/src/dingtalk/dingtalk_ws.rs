@@ -246,7 +246,7 @@ where
     loop {
         tokio::time::sleep(Duration::from_secs(ping_secs)).await;
         let mut sink = sink.lock().await;
-        if sink.send(WsMessage::Ping(vec![])).await.is_err() {
+        if sink.send(WsMessage::Ping(vec![].into())).await.is_err() {
             break;
         }
     }
@@ -309,7 +309,7 @@ async fn send_ack_inner(
     });
     // The send only fails when the connection is already gone — the caller
     // doesn't care, so neither do we.
-    let _ = ws.send(WsMessage::Text(ack.to_string())).await;
+    let _ = ws.send(WsMessage::Text(ack.to_string().into())).await;
 }
 
 /// Parse a DingTalk event from a Stream protocol frame (EVENT or CALLBACK).
@@ -732,7 +732,7 @@ mod tests {
         assert!(acks.iter().any(|a| a.contains("cb-9")));
         assert!(
             got.iter()
-                .any(|m| matches!(m, WsMsg::Pong(p) if p == b"dt")),
+                .any(|m| matches!(m, WsMsg::Pong(p) if **p == *b"dt")),
             "client must answer WS ping"
         );
     }

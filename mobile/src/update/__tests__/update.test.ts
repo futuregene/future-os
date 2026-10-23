@@ -168,7 +168,7 @@ describe("checkAndroidUpdate", () => {
   });
 
   test("manual-only Android updates open the external download URL", async () => {
-    const openUrl = jest.spyOn(Linking, "openURL").mockResolvedValueOnce(true);
+    const openUrl = jest.spyOn(Linking, "openURL").mockResolvedValueOnce(undefined);
     const originalPlatform = Platform.OS;
     Object.defineProperty(Platform, "OS", { configurable: true, value: "android" });
     try {
@@ -283,7 +283,7 @@ describe("installUpdate", () => {
 
   test("iOS opens the App Store and never the APK path", async () => {
     restorePlatform("ios");
-    const openUrl = jest.spyOn(Linking, "openURL").mockResolvedValueOnce(true);
+    const openUrl = jest.spyOn(Linking, "openURL").mockResolvedValueOnce(undefined);
     try {
       await installUpdate({ ...base, appStoreUrl: "https://apps.apple.com/app/id1" });
       expect(openUrl).toHaveBeenCalledWith("https://apps.apple.com/app/id1");

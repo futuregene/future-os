@@ -367,7 +367,7 @@ async fn serve_broker(stream: tokio::net::TcpStream, mode: BrokerMode) {
         "\"auth_required\":true,\"nonce\":\"Zml4dHVyZQ==\"}\r\n"
     );
     if socket
-        .send(Message::Binary(info.as_bytes().to_vec()))
+        .send(Message::Binary(info.as_bytes().to_vec().into()))
         .await
         .is_err()
     {
@@ -394,7 +394,7 @@ async fn serve_broker(stream: tokio::net::TcpStream, mode: BrokerMode) {
             None => {
                 let _ = socket
                     .send(Message::Binary(
-                        b"-ERR 'Authorization Violation'\r\n".to_vec(),
+                        b"-ERR 'Authorization Violation'\r\n".to_vec().into(),
                     ))
                     .await;
                 // A live generation keeps its socket after the refusal, which is what
@@ -410,14 +410,16 @@ async fn serve_broker(stream: tokio::net::TcpStream, mode: BrokerMode) {
                 if text.contains("CONNECT") && mode == BrokerMode::Refuse {
                     let _ = socket
                         .send(Message::Binary(
-                            b"-ERR 'Authorization Violation'\r\n".to_vec(),
+                            b"-ERR 'Authorization Violation'\r\n".to_vec().into(),
                         ))
                         .await;
                     let _ = socket.close(None).await;
                     return;
                 }
                 if text.lines().any(|line| line.starts_with("PING")) {
-                    let _ = socket.send(Message::Binary(b"PONG\r\n".to_vec())).await;
+                    let _ = socket
+                        .send(Message::Binary(b"PONG\r\n".to_vec().into()))
+                        .await;
                 }
             }
             Some(Some(Ok(Message::Ping(payload)))) => {

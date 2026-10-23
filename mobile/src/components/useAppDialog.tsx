@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Modal, Platform, StyleSheet, Text, View, type AlertButton, type AlertOptions } from "react-native";
+import { Modal, Platform, StyleSheet, Text, View, type AlertOptions } from "react-native";
+import type { AppAlertButton } from "./appAlerts";
 import { useTranslation } from "react-i18next";
 import { Button } from "./Button";
 import { DialogSurface } from "./DialogSurface";
@@ -9,7 +10,7 @@ import { createThemedStyles } from "../theme/ThemeContext";
 interface DialogRequest {
   title: string;
   message?: string;
-  buttons?: AlertButton[];
+  buttons?: AppAlertButton[];
   options?: AlertOptions;
 }
 
@@ -44,7 +45,7 @@ export function useAppDialog(active = true) {
     setVisible(false);
     if (Platform.OS !== "ios") timer.current = setTimeout(flush, 0);
   };
-  const alert = useCallback((title: string, message?: string, buttons?: AlertButton[], options?: AlertOptions) => {
+  const alert = useCallback((title: string, message?: string, buttons?: AppAlertButton[], options?: AlertOptions) => {
     setRequest({ title, message, buttons, options });
     setVisible(true);
   }, []);

@@ -79,6 +79,8 @@ jest.mock("expo-network", () => ({
   addNetworkStateListener: jest.fn(() => ({ remove: jest.fn() })),
 }));
 
+jest.mock("expo-localization", () => ({ getLocales: () => [{ languageCode: "en" }] }));
+
 jest.mock("react-native", () => ({
   __esModule: true,
   AppState: {

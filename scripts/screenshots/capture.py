@@ -525,7 +525,7 @@ def mobile_web_dep_specs() -> dict[str, str]:
     """
     bundled = ROOT / "node_modules" / "expo" / "bundledNativeModules.json"
     pins = json.loads(bundled.read_text(encoding="utf-8")) if bundled.exists() else {}
-    fallback = {"react-native-web": "~0.21.0", "@expo/metro-runtime": "~57.0.15", "react-dom": "19.2.3"}
+    fallback = {"react-native-web": "~0.21.4", "@expo/metro-runtime": "~58.0.15", "react-dom": "19.3.0"}
     specs = {name: pins.get(name, fallback[name]) for name in MOBILE_WEB_DEPS}
     # react-dom is not a loose range: it must equal the app's react exactly.
     specs["react-dom"] = app_react_version() or specs["react-dom"]

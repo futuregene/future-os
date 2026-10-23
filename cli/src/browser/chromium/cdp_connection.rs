@@ -698,7 +698,7 @@ mod tests {
                 r#"{"method": 42}"#,                           // non-string method
             ];
             for frame in junk {
-                let _ = ws.send(Message::Text(frame.to_string())).await;
+                let _ = ws.send(Message::Text(frame.to_string().into())).await;
             }
             // Now answer real commands forever.
             while let Some(frame) = ws.next().await {
@@ -709,7 +709,7 @@ mod tests {
                 let id = v.get("id").and_then(Value::as_u64).unwrap();
                 let _ = ws
                     .send(Message::Text(
-                        json!({"id": id, "result": {"ok": true}}).to_string(),
+                        json!({"id": id, "result": {"ok": true}}).to_string().into(),
                     ))
                     .await;
             }
@@ -887,7 +887,9 @@ mod tests {
                 // Error object without code/message → defaults kick in.
                 let _ = ws
                     .send(Message::Text(
-                        json!({"id": id, "error": {"something": "else"}}).to_string(),
+                        json!({"id": id, "error": {"something": "else"}})
+                            .to_string()
+                            .into(),
                     ))
                     .await;
             }
@@ -1057,7 +1059,9 @@ mod tests {
                 assert_eq!(value["method"], "Browser.getVersion");
                 let _ = ws
                     .send(Message::Text(
-                        json!({"id": id, "result": {"protocolVersion": "socket"}}).to_string(),
+                        json!({"id": id, "result": {"protocolVersion": "socket"}})
+                            .to_string()
+                            .into(),
                     ))
                     .await;
             }

@@ -32,9 +32,9 @@ export function RunIndicator({ startedAt }: { startedAt?: number; }) {
   useEffect(() => {
     if (!startedAt || !visible) return;
     let timer: ReturnType<typeof setInterval> | undefined;
-    const updateActivity = (state: string | null) => {
+    const updateActivity = (state: string | null | undefined) => {
       clearInterval(timer);
-      if (state !== null && state !== "active") return;
+      if (state != null && state !== "active") return;
       // The label only displays whole seconds. Do not wake twice per second
       // or keep its timer alive while the app is backgrounded.
       timer = setInterval(() => setNow(Date.now()), 1000);

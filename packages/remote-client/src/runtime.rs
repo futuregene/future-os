@@ -884,14 +884,22 @@ impl Client {
             .is_some()
     }
     #[cfg(any(test, feature = "test-support"))]
-    pub fn spawn_fixture_stream(
+    pub async fn spawn_fixture_stream(
         &self,
-        session: &PeerSession,
+        session: Arc<PeerSession>,
         subscriptions: session::Subscriptions,
         desktop: &str,
         emitter: Emitter,
         capacity: usize,
     ) -> (TaskHandle, tokio::sync::watch::Sender<Option<String>>) {
+        // The production stream only accepts pushes from the currently owned
+        // session. Give the fixture the same ownership as a real connection.
+        self.inner
+            .state
+            .lock()
+            .await
+            .live
+            .insert(desktop.to_string(), session.clone());
         let (sender, receiver) = tokio::sync::watch::channel(None);
         let task = self.spawn_event_stream_capped(
             desktop.to_string(),
