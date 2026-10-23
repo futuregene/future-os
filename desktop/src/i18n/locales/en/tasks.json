@@ -73,6 +73,8 @@
     "thinkingPlaceholder": "Choose a thinking level",
     "timezone": "Time zone",
     "timezoneSystem": "This machine's zone",
+    "timezoneSearch": "Search a zone, city or +8",
+    "timezoneNoMatches": "No zone matches “{{query}}”",
     "timezoneHint": "The clock the trigger times are read on. Leave it on this machine's zone to follow the computer running the task; if that cannot be read, Asia/Shanghai is used.",
     "session": "Conversation",
     "sessionNew": "New conversation each run",

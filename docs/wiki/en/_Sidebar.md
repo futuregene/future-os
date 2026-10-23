@@ -10,6 +10,7 @@
 - [[Settings]]
 - [[Approvals and sandboxing|Sandbox]]
 - [[Skills]]
+- [[Scheduled tasks|Scheduled-Tasks]]
 
 **Command line (advanced)**
 - [[CLI (future)|CLI]]
@@ -19,6 +20,9 @@
 - [[Feishu Integration|Feishu]]
 - [[DingTalk Integration|DingTalk]]
 - Other channels: [Channel providers](../../guide/channels-providers.md)
+
+**Reference**
+- [[Model catalog|Models]]
 
 **Help**
 - [[FAQ]]

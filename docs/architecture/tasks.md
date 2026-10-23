@@ -6,7 +6,7 @@
 
 ## 0. Scope
 
-- **Crate:** `orchestration/tasks` (`future-tasks`), alongside `orchestration/goal`.
+- **Crate:** `orchestration/tasks` (`future-tasks`) holds the kernel, types and store, alongside `orchestration/goal`. The executor and its tick loop live in `future-host` (`host/src/tasks.rs`, `host/src/tasks/service.rs`), which is what both desktop hosts and the `future task` CLI share.
 - **Hosts:** GUI and headless desktop share the same tick loop. TUI hosting is not connected. Mobile uses the desktop remote bridge.
 - **Layers:** the deterministic `next_due`, truncation and prompt-revision helpers are host-independent pure functions. One executor serves both desktop hosts; their difference is a `Notifier` closure (§8).
 
@@ -117,7 +117,7 @@ A nullable `threads.task_id` badge is deferred until needed. It would require a 
 - **Short months:** a requested day beyond the month's length uses its final day. UI and CLI expose this rule.
 - **Once:** completion sets `enabled=0`.
 
-**Time zone.** `tasks.timezone` names the IANA zone (`Asia/Shanghai`, `Europe/Berlin`, `UTC`) the wall-clock times above are read in, so a schedule keeps its meaning when the host's own zone changes or the task is managed from another machine. Every writer stores a concrete name: the CLI flag `--timezone`, the desktop form and the phone editor all send one, and a client that sends nothing is resolved at write time to the host's own zone — **Asia/Shanghai when that cannot be read**, because an unreadable zone must not silently mean UTC. A row with no stored zone (written before the setting existed) resolves the same way each time the schedule is recomputed. The chosen zone is printed by `future task show`, included in the run envelope (`run settings: … | timezone=…`) and used to render `due=` and the CLI's date columns; the task detail panel shows it next to the working directory. An unknown name is refused with an error rather than replaced.
+**Time zone.** `tasks.timezone` names the IANA zone (`Asia/Shanghai`, `Europe/Berlin`, `UTC`) the wall-clock times above are read in, so a schedule keeps its meaning when the host's own zone changes or the task is managed from another machine. Every writer stores a concrete name: the CLI flag `--timezone`, the desktop form and the phone editor all send one, and a client that sends nothing is resolved at write time to the host's own zone — **Asia/Shanghai when that cannot be read**, because an unreadable zone must not silently mean UTC. A row with no stored zone (written before the setting existed) resolves the same way each time the schedule is recomputed. The chosen zone is printed by `future task show`, included in the run envelope (`run settings: … | timezone=…`) and used to render `due=` and the CLI's date columns; the task detail panel shows it next to the working directory. An unknown name is refused with an error rather than replaced. The identifier is what gets stored, not necessarily what is read: the desktop picker names each zone in the UI's language with its offset at the next run (`中国时间 · UTC+8`, `Central European Time · UTC+2`), leads with this machine's zone and the common ones, and answers a search by name, identifier, city or offset. That is display only — the saved value stays the IANA name, so switching the interface language never rewrites a schedule.
 
 ## 5. Execution: tick → claim → run
 
@@ -201,20 +201,24 @@ Automatic post-run reflection, proposed prompt rewrites, proposal cards and acce
 
 ## 8. Hosts: `Notifier`, not an Executor trait
 
-One executor lives in desktop `tasks.rs`. Only its completion notification differs between hosts:
+One executor lives in `future_host::tasks` (`host/src/tasks.rs`); the desktop module of the same name is only the notification adapter. Only its completion notification differs between hosts:
 
 ```rust
 pub type Notifier = Arc<dyn Fn(Option<&str /* thread_id */>) + Send + Sync>;
 
-pub fn start<R: tauri::Runtime>(app: AppHandle<R>)  // GUI activity/thread events
+// future-host: the executor and its loop
+pub fn start_with_notifier(notify: Notifier)       // resident supervision, 30s tick
 pub fn start_headless()                            // ledger-only notification
 async fn run_loop(notify: Notifier)                // reconcile, then tick every 30s
+
+// desktop/src-tauri/src/tasks.rs: the GUI adapter
+pub fn start<R: tauri::Runtime>(app: AppHandle<R>) // emit_remote_activity + emit_threads_updated
 ```
 
 An Executor trait would add indirection around five thin `agent_bridge` wrappers used by this one implementation. GUI and headless both call `run_loop`; headless omits the notification outlet.
 
-- **GUI desktop:** connected in `lib.rs` setup through `tasks::start`.
-- **Headless desktop:** connected in `headless/mod.rs` through `tasks::start_headless`.
+- **GUI desktop:** `desktop/src-tauri/src/lib.rs` setup calls the local `tasks::start`, which installs the notifier and calls `future_host::tasks::start_with_notifier`.
+- **Headless desktop:** `cli/src/headless/mod.rs` calls `future_host::tasks::start_headless`.
 - **Mobile:** manages tasks through the remote bridge (`tasks_v1`), without hosting.
 - **TUI:** hosting is not connected. The crate and CLI already work; a panel is future work.
 
@@ -276,6 +280,14 @@ Both forms default new scheduled tasks to **chat conversations**, requiring a di
 
 **Immediate runs:** desktop/mobile Run now writes `pending_request_at`, then calls `tasks::wake()`. The tick loop remains the sole claimer but wakes immediately rather than waiting for the 30-second interval. Start/end `threads-updated` events refresh the list and open detail so they do not stay at Queued.
 
+**A definition changed elsewhere also refreshes:** `threads-updated` says a conversation moved, but when the phone disables, edits or deletes a task on its "Scheduled tasks" page it writes the same store *in this very process*, and the desktop panel had no signal at all — a manual refresh was the only way to see it, which is how one field report arrived. The remote task writes (create / update / delete / set_enabled / run / apply_revision) therefore publish `tasks-updated` on success, and the desktop's `useTasks` re-reads the list on it (local backend only: a panel pointed at another host is refreshed by that host's own pushes).
+
+**Three requirements for the mobile form** (2026-10-22, from field reports):
+
+- **The time is chosen, not typed.** The desktop is an `<input type="time">` and gets the system picker; the phone has no such element, and its text field needed the keyboard, which then covered the bottom of the form (Android edge-to-edge does not resize the window — see `lib/useKeyboardHeight`). `TimeField` now offers two strips of chips: all 0–23 hours expanded, and 0–59 minutes in one horizontal strip that opens scrolled to the current minute. A pick writes `HH:MM`; no keyboard is involved. The settings stack also gained keyboard avoidance, so the fields that still need typing (name, prompt) can no longer push Save under the keyboard.
+- **The draft survives a cold start.** The form has a dozen fields and the phone can be killed mid-edit. The draft is keyed by "Desktop + task (`create` for a new one)" in AsyncStorage (`features/settings/taskDraftStorage.ts`), read back when the form opens and written 250 ms after a change. A successful save, cancel, delete or a step back clears it, so the next open cannot resume an edit the task no longer has. An edit draft carries `promptVersion` and is dropped once the prompt changed elsewhere. Stored fields are validated one by one; a bad value only resets that field to its default.
+- **The entry button says Edit**, matching the desktop (`tasks.edit`), not "Settings".
+
 **Prompt versions are not a client feature.** Both app UIs hide the history and offer no rollback: the version in force is a CLI/skill concern (`prompt log|apply|revert`), and a client that showed a list could only mislead about which version a run used. Edits through either client still record a version server-side, so the CLI sees the same history (§7). Each run still has its own card with status, kind, version, time and Open conversation; a long summary does not run into the next card's header.
 
 Desktop opens the run's thread. Mobile opens `run.sessionId` when available, closes Settings through `SessionsScreen`, then selects that conversation. Older desktop hosts lacking this field have no mobile conversation link. Chat is a separate top-level screen rather than part of a mobile navigation library.
@@ -284,7 +296,7 @@ The run ledger follows the task's actions. Desktop's Settings disclosure precede
 
 ## 12. Out of scope
 
-Removed: task dependencies (edges, joins, chained runs, the `--depends-on`/`--join-any` flags and both dependency editors) — a scheduled task is started by its own schedule or on demand. Out of scope: cron expressions, orchestration between tasks, OS background services, shell/goal/skill action kinds, system notifications and per-task tool allowlists. Full permissions remain the only policy.
+Removed: task dependencies (edges, joins, chained runs, the `--depends-on`/`--join-any` flags and both dependency editors) — a scheduled task is started by its own schedule or on demand. The host IPC commands `list_task_deps`, `set_task_dep` and `remove_task_dep` still answer for clients of older builds (an empty list; an explicit refusal), and go away once no shipped client asks for them (`host/src/tasks/service.rs`). Out of scope: cron expressions, orchestration between tasks, OS background services, shell/goal/skill action kinds, system notifications and per-task tool allowlists. Full permissions remain the only policy.
 
 ## 13. Core invariants
 

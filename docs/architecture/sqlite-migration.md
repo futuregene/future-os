@@ -68,8 +68,8 @@ the one-Agent-per-OS-user rule and never start a second instance by changing
 the socket/port.
 
 ```sh
-future-agent --migrate-sessions
-future-agent --retry-session-import SESSION_ID
+future agent --migrate-sessions
+future agent --retry-session-import SESSION_ID
 ```
 
 Reports contain only the session identifier, status, error source/line
@@ -81,8 +81,8 @@ For isolated verification, copy `sessions/` and its sibling `run-events/` into
 a separate directory and use:
 
 ```sh
-future-agent --migrate-sessions --migration-source /absolute/path/isolated-copy/sessions
-future-agent --retry-session-import SESSION_ID --migration-source /absolute/path/isolated-copy/sessions
+future agent --migrate-sessions --migration-source /absolute/path/isolated-copy/sessions
+future agent --retry-session-import SESSION_ID --migration-source /absolute/path/isolated-copy/sessions
 ```
 
 The database is created in that `sessions/`'s parent directory. An isolated
@@ -222,10 +222,10 @@ rebuilds. Agent failures are reported as unverified health, not an empty healthy
 catalogue. This is catalogue diagnosis, not a full SQLite integrity scan; offline
 backup verification performs SQLite integrity and file-hash checks.
 
-## Manual acceptance for this change
+## Manual acceptance
 
-Local unit tests are intentionally not executed. Added fault cases compile with
-static checks; CI can execute them once a PR is authorized. Validate a consistent
+These cases are the human-held half of the gate; the automated half runs in CI
+(`cargo test -p future-agent`, the desktop and host suites). Validate a consistent
 copy under an isolated `FUTURE_HOME`: historical database upgrades and repeated
 startup; archive-only read-only paging; foreign database refusal; orphan-run
 termination and repeated abort; accepted queued inputs after restart; Force quit
@@ -258,8 +258,8 @@ Restore journal version 2 records deterministic preimage digests, checks retaine
 roots before moving more files and verifies originals before clearing a rollback
 fence. Version 1 pending journals remain supported. Backup verification rejects
 unmanifested SQLite sidecars; snapshot publication and complete tree staging sync
-directory entries as well as file bodies. Added cases cover these boundaries but
-are only compiled locally, as local unit-test execution is intentionally disabled.
+directory entries as well as file bodies. Added cases cover these boundaries; local unit-test execution is not a substitute
+for the CI matrix.
 
 ### Preflight verification on repeated recovery
 
@@ -283,7 +283,7 @@ remains in place.
 
 Regression cases cover omitted attachments, damaged staged replacements, repeated
 rollback interruption, contradictory migration ledgers, foreign-database background
-repair and mutation. Tests are compiled by static checks but are not run locally.
+repair and mutation. These cases run in CI; they are not replaced by a local pass.
 
 Remote forward/backward history reads also report unavailable transcripts explicitly
 instead of returning successful empty pages, and verify any known database ownership

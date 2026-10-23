@@ -12,6 +12,7 @@ access to your files. Availability is checked on the machine running the agent.
 | **Full access** (`off`, desktop default) | No approval rules or OS sandbox. Commands run with your user privileges. |
 | **Manual** (`manual`) | Path rules decide Allow/Ask/Deny; ordinary reads and workspace/temp writes can run without asking. Sensitive paths and external writes may ask or be denied. Shell commands ask except for the read-only allowlist. |
 | **Sandboxed** (`sandbox`) | File tools follow the same path rules. Shell commands run in the available OS backend, usually without a pre-execution prompt. |
+| **Automatic review** (`auto`) | The same sandbox and path rules as Sandboxed, but a model reviewer decides the requests that would otherwise ask you: it approves or rejects them and returns its reason to the agent. It needs both the OS sandbox and a signed-in FutureOS account, and the two failures fall back differently. **OS sandbox unavailable** → requests use manual review and the `auto` setting is kept, so it comes back when the sandbox does. **Signed out or credentials invalid** → the saved setting is persistently downgraded to `sandbox` (still sandboxed, with the human approval flow); signing in again does not restore `auto`, and a temporary account verification failure keeps the preference. |
 
 Fresh agent sessions use legacy permission level `all`. TUI, CLI and channel
 clients do not independently enable the desktop sandbox policy for fresh sessions;
@@ -24,7 +25,7 @@ and `none` denies **all** tool calls. It does not select an OS sandbox.
 | Platform | Backend | Important limits |
 |---|---|---|
 | macOS | Seatbelt (`sandbox-exec`) | Filesystem rules; network remains open. |
-| Native Linux | System Bubblewrap ≥ 0.9.0 | Snapshot-based filesystem mounts; network open, no seccomp filter. WSL is outside the supported validation scope. |
+| Native Linux | System Bubblewrap with runtime-probed capabilities | Snapshot-based filesystem mounts; network open, no seccomp filter. WSL is outside the supported validation scope. |
 | Windows | Unelevated restricted token + filesystem ACLs | Write protection only; shell reads/network remain open. Existing ACLs and parent deletion rights can weaken protection. |
 
 Linux protects existing matching paths at command launch. A protected name that
@@ -47,10 +48,7 @@ future agent --probe-sandbox
 future doctor
 ```
 
-FutureOS does not bundle or download Bubblewrap. An older distribution package
-may be below 0.9.0; use a supported, trusted upgrade rather than an arbitrary
-binary. The version floor is compatibility, not a guarantee of all upstream
-security fixes. Completely quit and restart FutureOS after installing or fixing it.
+FutureOS does not bundle or download Bubblewrap. A package with basic write protection remains usable when read protection is unavailable; the selector suggests upgrading. Missing basic protection disables the sandbox. Use maintained, trusted packages with security fixes. Completely quit and restart FutureOS after installing or fixing it.
 
 The Linux option stays visible but disabled while checking or unavailable.
 Settings shows the reason, a suggested action and a diagnostic code:

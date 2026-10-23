@@ -143,8 +143,8 @@ it("says when another paired device is driving a machine", async () => {
     { ...peer, desktopId: "desktop_c", name: "Ours", control: "active" },
   ]);
 
-  expect(found.desktop_a).toBe("In use by Hui's phone");
-  expect(found.desktop_b).toBe("In use by another device");
+  expect(found.desktop_a).toBe("Another device (Hui's phone) is in control");
+  expect(found.desktop_b).toBe("Another device is in control");
   // A machine this desktop drives needs no note: its rows are in the list.
   expect(found.desktop_c).toBe("");
 });
@@ -189,7 +189,7 @@ it("draws no takeover when the caller has none to send", async () => {
   try {
     expect(view.container.querySelector("button[aria-label='Take over Held']")).toBeNull();
     expect(view.container.querySelector("[data-testid='option-note']")?.textContent)
-      .toBe("In use by another device");
+      .toBe("Another device is in control");
   }
   finally {
     await act(async () => view.root.unmount());

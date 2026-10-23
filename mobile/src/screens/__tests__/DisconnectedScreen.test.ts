@@ -38,6 +38,11 @@ function render(props: Partial<Parameters<typeof DisconnectedScreen>[0]> = {}) {
     }));
   });
 }
+/** The action with this label, on a page that may offer more than one. */
+function action(label: string) {
+  return tree.root.findAllByType(Button).find(node => node.props.label === label)!;
+}
+
 function painted() {
   return tree.root
     .findAll(node => typeof node.type === "string" && node.props.children !== undefined)
@@ -50,7 +55,7 @@ test("an ordinary disconnect explains the cause and offers a reconnect", () => {
   const onReconnect = jest.fn();
   useRemoteMock.mockReturnValue(remoteFor({ presence: { reason: "app_exit" } }));
   render({ onReconnect });
-  const button = tree.root.findByType(Button);
+  const button = action(i18n.t("connection.reconnect"));
   expect(button.props.label).toBe(i18n.t("connection.reconnect"));
   expect(button.props.loading).toBe(false);
   act(() => button.props.onPress());
@@ -58,6 +63,27 @@ test("an ordinary disconnect explains the cause and offers a reconnect", () => {
   // The screen explains the cause and what to do, not just that it failed.
   expect(painted()).toContain(i18n.t("connection.disconnectDetails.exit.reason"));
   expect(painted()).toContain(i18n.t("connection.disconnectDetails.exit.solution"));
+});
+
+/**
+ * The way out of a pairing that cannot be used is on this page, not only in
+ * Settings.
+ *
+ * The desktop can be unpaired on the *other* computer while the phone is away;
+ * the notice never reaches it, so the phone sits on "disconnected" with a
+ * reconnect that can only fail. Removing the pairing has to be reachable here.
+ */
+test("an ordinary disconnect also offers to remove the pairing", () => {
+  const onUnpair = jest.fn();
+  const onReconnect = jest.fn();
+  useRemoteMock.mockReturnValue(remoteFor({ presence: { reason: "app_exit" } }));
+  render({ onReconnect, onUnpair });
+
+  const unpair = action(i18n.t("sessions.unpair"));
+  expect(unpair.props.variant).toBe("ghost");
+  act(() => unpair.props.onPress());
+  expect(onUnpair).toHaveBeenCalledTimes(1);
+  expect(onReconnect).not.toHaveBeenCalled();
 });
 
 test("a revoked pairing offers re-pairing instead of a reconnect that cannot work", () => {
@@ -71,7 +97,7 @@ test("a revoked pairing offers re-pairing instead of a reconnect that cannot wor
   }));
   render({ onReconnect, onUnpair });
   expect(painted()).toContain(i18n.t("connection.pairingExpired"));
-  const button = tree.root.findByType(Button);
+  const button = action(i18n.t("sessions.unpair"));
   expect(button.props.label).toBe(i18n.t("sessions.unpair"));
   act(() => button.props.onPress());
   expect(onUnpair).toHaveBeenCalledTimes(1);
@@ -114,7 +140,7 @@ test("a reconnecting screen never offers the destructive unpair, even for a revo
     },
   }));
   render({ reconnecting: true });
-  expect(tree.root.findByType(Button).props.label).toBe(i18n.t("connection.reconnect"));
+  expect(action(i18n.t("connection.reconnect")).props.label).toBe(i18n.t("connection.reconnect"));
   expect(painted()).toContain(i18n.t("connection.connecting"));
   expect(painted()).not.toContain(i18n.t("connection.pairingExpired"));
 });

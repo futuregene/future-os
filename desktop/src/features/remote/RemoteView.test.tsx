@@ -13,6 +13,7 @@ const stopRemote = vi.fn<() => Promise<unknown>>();
 const addRemoteDevice = vi.fn<() => Promise<unknown>>();
 const unpairRemoteDevice = vi.fn<(pairId: string) => Promise<unknown>>();
 const takeoverRemote = vi.fn<(pairId: string) => Promise<unknown>>();
+const getRemoteStatus = vi.fn<() => Promise<RemoteStatus>>();
 
 vi.mock("./remoteClient", async importOriginal => ({
   ...await importOriginal<typeof import("./remoteClient")>(),
@@ -21,6 +22,9 @@ vi.mock("./remoteClient", async importOriginal => ({
   addRemoteDevice: () => addRemoteDevice(),
   unpairRemoteDevice: (pairId: string) => unpairRemoteDevice(pairId),
   takeoverRemote: (pairId: string) => takeoverRemote(pairId),
+  // Closing the invitation window re-reads the device list before discarding
+  // anything, so the harness has to answer as the backend would.
+  getRemoteStatus: () => getRemoteStatus(),
 }));
 
 const openExternalUrl = vi.fn<(url: string) => Promise<void>>();
@@ -99,6 +103,7 @@ async function mount(overrides: Props = {}) {
     remoteStatus: status(),
     ...overrides,
   };
+  getRemoteStatus.mockResolvedValue(props.remoteStatus ?? status());
   await act(async () => {
     root.render(createElement(RemoteHostSection, props));
   });
@@ -151,6 +156,7 @@ beforeEach(() => {
   addRemoteDevice.mockReset();
   unpairRemoteDevice.mockReset();
   takeoverRemote.mockReset();
+  getRemoteStatus.mockReset();
   openExternalUrl.mockReset();
   startWindowDrag.mockReset();
   startRemote.mockResolvedValue(undefined);
@@ -160,6 +166,7 @@ beforeEach(() => {
   // for that one, so the mock has to name it.
   addRemoteDevice.mockResolvedValue({ pairId: "pair_gamma" });
   unpairRemoteDevice.mockResolvedValue(undefined);
+  getRemoteStatus.mockResolvedValue(status());
   openExternalUrl.mockResolvedValue(undefined);
   // Freeze the clock before minting the invitation: even a short render can
   // cross a real second boundary and start the countdown at 1:59, not 2:00.
@@ -542,6 +549,42 @@ describe("adding a connection", () => {
     expect(container.textContent).not.toContain("Waiting to pair");
   });
 
+  /**
+   * Every invitation nobody claimed goes with the window, not only the last one.
+   *
+   * Each pending invitation occupies a row of the platform's per-desktop cap
+   * whether or not its code is on screen. An invitation minted by an earlier
+   * press and then displaced (a second press replaced the one this window spoke
+   * for, or the window closed before the refresh landed) stayed behind as a row
+   * the user could neither see nor use — enough of them filled the cap and made
+   * "add a device" fail over devices that did not exist.
+   */
+  it("discards every unclaimed invitation when the window closes", async () => {
+    const second = {
+      ...invited,
+      pairId: "pair_delta",
+      pairingCode: "futureos://remote/pair?code=delta",
+    };
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, invited, second] }),
+    });
+    // The list the window closed against still knows about both.
+    getRemoteStatus.mockResolvedValue(
+      status({ pairId: "pair_alpha", phase: "ready", devices: [control, invited, second] }),
+    );
+    await act(async () => buttonByText("Add a device")!.click());
+    await flush();
+
+    await act(async () => buttonByText("Cancel")!.click());
+    await flush();
+
+    expect(unpairRemoteDevice).toHaveBeenCalledWith("pair_gamma");
+    expect(unpairRemoteDevice).toHaveBeenCalledWith("pair_delta");
+    // A device that claimed its code is a connection, not an invitation: it must
+    // not be discarded by closing this window.
+    expect(unpairRemoteDevice).not.toHaveBeenCalledWith("pair_alpha");
+  });
+
   it("closes itself once the scanned code becomes a device", async () => {
     await mount({
       remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control, invited] }),
@@ -607,11 +650,27 @@ describe("adding a connection", () => {
       await mount({
         remoteStatus: status({ pairId: "pair_alpha", phase: "ready", devices: [control] }),
       });
-      addRemoteDevice.mockRejectedValue(new Error("Remote { code: Some(\"pairing_limit_reached\") }"));
+      // What `remote_add_device` actually sends: the AppError serializes as a
+      // display string, and the command translates the typed cap code into the
+      // one token the UI matches on. The old test used a Debug-formatted error,
+      // a shape that never crosses the wire — it passed while the real refusal
+      // reached the user as "try again later (LC999)".
+      addRemoteDevice.mockRejectedValue(new Error("pairing_limit_reached"));
       await act(async () => buttonByText("Add a device")!.click());
       await flush();
       expect(container.textContent).toContain("This computer already has the maximum number of devices. Unpair one first.");
       expect(addDialog()).toBeNull();
+
+      // The refusal's own words name the same state, so a backend that reports
+      // the platform's sentence instead of the code still lands on this
+      // sentence rather than on the generic one.
+      addRemoteDevice.mockRejectedValue(
+        new Error("This desktop already holds 5 devices. Unpair one of them before adding another."),
+      );
+      await act(async () => buttonByText("Add a device")!.click());
+      await flush();
+      expect(container.textContent).toContain("This computer already has the maximum number of devices. Unpair one first.");
+      expect(container.textContent).not.toContain("LC999");
     }
     finally {
       consoleError.mockRestore();

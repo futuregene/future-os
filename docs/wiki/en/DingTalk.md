@@ -82,8 +82,8 @@ Edit `~/.future/channels/config.json`:
 | `dingtalk.domain` | API domain (default: `api.dingtalk.com`) |
 | `dingtalk.sender_allowlist` | Authorized sender IDs in both DMs and groups. Empty denies **every** sender (including `/help`); `["*"]` trusts everyone who can reach the bot |
 
-> **Upgrade note:** previously configured DingTalk bridges must populate
-> `sender_allowlist` before receiving prompts — group membership alone does
+> **`sender_allowlist` is the access gate:** the DingTalk bridge receives no
+> prompts until you fill it — group membership alone does
 > not authorize access to the agent.
 
 > DingTalk and Feishu also accept a `providers.dingtalk` / `providers.feishu` block;

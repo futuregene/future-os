@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
 import { AppState } from "react-native";
 import { RemoteApiError, classifyError } from "@future-os/remote-client/connectionState";
-import { attemptPendingRevoke, claimPairingCode, serverRevoke } from "./pairing";
+import { attemptPendingRevoke, claimPairingCode, refreshCredentials, serverRevoke } from "./pairing";
 import { discardPendingPrompt } from "./pendingPromptStorage";
 import { discardPendingContinuation } from "./pendingContinuationStorage";
 import {
@@ -56,6 +56,26 @@ export interface PairedDesktops {
   /** Remove the pairing this phone is reading. */
   unpair(): Promise<void>;
   removeDesktop(desktopId: string): Promise<void>;
+  /**
+   * Drop a pairing the *desktop* ended.
+   *
+   * The same local result as `removeDesktop`, without asking the platform to
+   * revoke anything: there is nothing left to revoke, and queuing a revoke for
+   * a credential the desktop already killed would keep a retry alive for no
+   * one's benefit. Anything the phone staged for that machine — a pending
+   * prompt, a continuation, a queued revoke from an earlier local removal — goes
+   * with it.
+   */
+  forgetDesktop(desktopId: string): Promise<void>;
+  /**
+   * Ask the platform whether a pairing still exists.
+   *
+   * Resolves while it does (with a fresh JWT the caller may ignore — the
+   * platform issues no new refresh token, so nothing is rotated) and rejects
+   * with a credential error once the desktop has revoked this device. This is
+   * the only authority a connection that got no answer can consult.
+   */
+  verifyPairing(credentials: RemoteCredentials): Promise<void>;
   renameDesktop(desktopId: string, name: string): Promise<void>;
   labelDesktop(desktopId: string, patch: { name?: string; icon?: string }): Promise<void>;
   /** Read another paired desktop. Persisted, so the next launch opens it. */
@@ -211,6 +231,20 @@ export function usePairedDesktops({
     void drainRevokes();
   }, [activeDesktopId, drainRevokes, refreshDesktops, unpair]);
 
+  const verifyPairing = useCallback(async (credentials: RemoteCredentials) => {
+    await refreshCredentials(credentials);
+  }, []);
+
+  const forgetDesktop = useCallback(async (desktopId: string) => {
+    const stored = await loadCredentials(desktopId);
+    if (!stored) return;
+    await clearCredentials(stored.pairId);
+    await discardPendingPrompt(stored.pairId);
+    await discardPendingContinuation(stored.pairId);
+    await clearPendingRevoke(stored.pairId);
+    await refreshDesktops();
+  }, [refreshDesktops]);
+
   const renameDesktop = useCallback(async (desktopId: string, name: string) => {
     await renameStoredDesktop(desktopId, name);
     await refreshDesktops();
@@ -236,6 +270,8 @@ export function usePairedDesktops({
     pair,
     unpair,
     removeDesktop,
+    forgetDesktop,
+    verifyPairing,
     renameDesktop,
     labelDesktop,
     selectDesktop,

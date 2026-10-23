@@ -334,6 +334,130 @@ describe("the recent view's order", () => {
   });
 });
 
+describe("child conversations in the recent view", () => {
+  /**
+   * The `/future-goal` shape: a conversation that started a worker session for
+   * each piece of work. The workers are newer than the conversation, so a list
+   * that ranked every session put them above it — which is what the reader was
+   * complaining about: the conversations they made were buried under the work.
+   */
+  function goal(): StoredThread[] {
+    return [
+      thread("goal", { title: "Goal", createdAt: now - 3 * hour, lastMessageAt: now - 2 * minute }),
+      thread("worker", {
+        title: "Worker",
+        parentSessionId: "goal",
+        createdAt: now - 2 * minute,
+        lastMessageAt: now - minute,
+      }),
+      thread("helper", {
+        title: "Helper",
+        parentSessionId: "worker",
+        createdAt: now - minute,
+        lastMessageAt: now - 30_000,
+      }),
+      thread("other", { title: "Other", createdAt: now - 5 * hour, lastMessageAt: now - 10 * minute }),
+    ];
+  }
+
+  it("lists the conversation, not the sessions it started", () => {
+    const view = mount(<ActivityRail {...props(goal())} />);
+    showRecent(view.container);
+
+    // The workers are absent from the list even though they are the newest
+    // rows in it, and the caption counts the conversations the reader made.
+    expect(drawnTitles(view.container)).toEqual(["Goal", "Other"]);
+    expect(captions(view.container)).toEqual(["earlier:Earlier:2"]);
+    view.unmount();
+  });
+
+  it("keeps a running worker out of the active stretch", () => {
+    // A child is never a row of the view's own: filing a goal's worker under
+    // "Active" would put a session in the list that the list is supposed to
+    // leave to its conversation.
+    const view = mount(
+      <ActivityRail {...props(goal(), {
+        threadRunStatuses: { worker: { status: "running", endedAt: null } },
+      })}
+      />,
+    );
+    showRecent(view.container);
+
+    expect(captions(view.container)).toEqual(["earlier:Earlier:2"]);
+    view.unmount();
+  });
+
+  it("draws the children under their conversation when its + is opened", () => {
+    const view = mount(<ActivityRail {...props(goal())} />);
+    showRecent(view.container);
+
+    const row = (key: string) => view.container.querySelector<HTMLElement>(`[data-recent-row="local::${key}"]`)!;
+    const rowStyle = (key: string) => row(key).querySelector<HTMLElement>("div[style]")!.style;
+    const toggle = (key: string) => row(key).querySelector<HTMLButtonElement>("button[aria-expanded]:not([aria-haspopup])")!;
+    // A childless conversation has no + at all.
+    expect(toggle("other")).toBeNull();
+    expect(toggle("goal").getAttribute("aria-expanded")).toBe("false");
+
+    act(() => toggle("goal").click());
+
+    // Only the direct worker appears: a child's own children need its own open.
+    expect(drawnTitles(view.container)).toEqual(["Goal", "Worker", "Other"]);
+    // One level in, on the tree's own 20px step — the row lands on its parent's
+    // title column rather than merely looking nested.
+    expect(rowStyle("goal").paddingLeft).toBe("16px");
+    expect(rowStyle("worker").paddingLeft).toBe("36px");
+    // The caption still counts conversations: the worker is not one of them.
+    expect(captions(view.container)).toEqual(["earlier:Earlier:2"]);
+
+    act(() => toggle("worker").click());
+    expect(drawnTitles(view.container)).toEqual(["Goal", "Worker", "Helper", "Other"]);
+
+    act(() => toggle("goal").click());
+    // Folding the conversation takes its whole subtree with it.
+    expect(drawnTitles(view.container)).toEqual(["Goal", "Other"]);
+    view.unmount();
+  });
+
+  it("hides a worker whose conversation sits on another machine the same way", () => {
+    // The lineage is the host's to report, and the merged list is one list: a
+    // child is a child whichever machine's catalogue named it.
+    const view = mount(
+      <ActivityRail {...props([], {
+        remoteCatalogs: [{
+          desktopId: "desk-b",
+          sessions: [
+            {
+              sessionId: "parent",
+              title: "Remote goal",
+              mode: "chat",
+              createdAt: now - hour,
+              lastMessageAt: now - 10 * minute,
+            },
+            {
+              sessionId: "worker",
+              title: "Remote worker",
+              mode: "chat",
+              parentSessionId: "parent",
+              createdAt: now - minute,
+              lastMessageAt: now - minute,
+            },
+          ],
+        }],
+      })}
+      />,
+    );
+    showRecent(view.container);
+
+    expect(drawnTitles(view.container)).toEqual(["Remote goal · desk-b"]);
+    const toggle = view.container.querySelector<HTMLButtonElement>(
+      "[data-recent-row=\"desk-b::parent\"] button[aria-expanded]:not([aria-haspopup])",
+    )!;
+    act(() => toggle.click());
+    expect(drawnTitles(view.container)).toEqual(["Remote goal · desk-b", "Remote worker · desk-b"]);
+    view.unmount();
+  });
+});
+
 describe("the recent view's window", () => {
   it("draws one window of the finished rows and opens the rest on request", () => {
     const many = [
@@ -458,6 +582,53 @@ describe("opening a conversation from the recent list", () => {
 });
 
 describe("the recent view from the keyboard", () => {
+  it("skips the children a folded conversation is hiding", async () => {
+    resetAllCommandBindings();
+    const uninstallShortcuts = installShortcuts();
+    const onSelectThread = vi.fn();
+    const threads = () => [
+      thread("goal", { title: "Goal", createdAt: now - hour, lastMessageAt: now - minute }),
+      thread("worker", {
+        title: "Worker",
+        parentSessionId: "goal",
+        createdAt: now - minute,
+        lastMessageAt: now,
+      }),
+      thread("other", { title: "Other", createdAt: now - 2 * hour, lastMessageAt: now - 10 * minute }),
+    ];
+    const view = mount(<ActivityRail {...props(threads(), { onSelectThread })} />);
+    showRecent(view.container);
+
+    const press = (init: KeyboardEventInit) => act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+    });
+    // The fine move: `thread.next`. The coarse move (`group.next`, the same key
+    // with shift) steps between conversations, so a child — drawn inside its
+    // parent — is never one of its stops either way; this test is about the row
+    // walk, which is the one a reader uses inside a conversation's subtree.
+    const next = () => press({ code: "BracketRight", ctrlKey: true, key: "]" });
+
+    // The worker is the newest row in the data and the last row the list draws:
+    // a walk that stepped it would land somewhere the reader cannot see.
+    next();
+    expect(onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "goal" }));
+    view.rerender(<ActivityRail {...props(threads(), { activeThreadId: "goal", onSelectThread })} />);
+    next();
+    expect(onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "other" }));
+
+    // Opened, it is a row of the order like any other.
+    act(() =>
+      view.container
+        .querySelector<HTMLButtonElement>("[data-recent-row=\"local::goal\"] button[aria-expanded]:not([aria-haspopup])")!
+        .click());
+    next();
+    expect(onSelectThread).toHaveBeenLastCalledWith(expect.objectContaining({ id: "worker" }));
+
+    view.unmount();
+    uninstallShortcuts();
+    resetAllCommandBindings();
+  });
+
   it("walks the drawn order, not the tree's", async () => {
     // The rail's walk and the list it walks are one order: a view that drew one
     // list and stepped another would move the selection somewhere the reader

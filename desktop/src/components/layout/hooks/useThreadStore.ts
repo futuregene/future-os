@@ -329,10 +329,11 @@ export function useThreadStore(): ThreadStore {
   }, []);
   // A conversation's activity stamp moved. Externally-driven runs (the CLI, a
   // scheduler, another machine) arrive this way and nowhere else: their row's
-  // age label and its place in the list are read from `lastMessageAt`, which
-  // used to stay at the value from before the run for the whole reply. Patch
-  // the one row — a full `refreshStore` at push frequency would reload the
-  // list out from under the reader (see `applyThreadActivity`).
+  // age label is read from `lastMessageAt`, which used to stay at the value from
+  // before the run for the whole reply. Patch the one row — a full
+  // `refreshStore` at push frequency would reload the list out from under the
+  // reader (see `applyThreadActivity`). A row's *place* is its creation time,
+  // which this event never touches, so a push does not reorder the list.
   useEffect(() => {
     const unlisten = listen<ThreadActivityUpdate>("thread-activity-updated", (event) => {
       setThreads(previous => applyThreadActivity(

@@ -7,7 +7,8 @@
 //!   - read/write/edit tools: the approval layer prompts (Ask) / proceeds
 //!     (Allow) / errors (Deny) before the in-process op runs.
 //!   - shell: the rules compile into a Seatbelt profile (macOS) or Bubblewrap
-//!     mount plan (Linux); Ask and Deny become OS-level read/write denials, and
+//!     mount plan (Linux); Ask and Deny become supported OS-level denials
+//!     (write-only on limited Linux backends), and
 //!     a resulting failure returns directly to the model without approval or replay.
 //!
 //! Network is unrestricted. The whole system is gated by `enabled`: only GUI
@@ -255,7 +256,7 @@ impl ResolvedSandbox {
                     size: 3,
                     modified_nanos: 4,
                 }),
-                capabilities: None,
+                capabilities: Some(linux::probe::LinuxSandboxCapabilities::baseline(true)),
                 expires_at_unix_ms: None,
                 diagnostic: None,
             },
@@ -265,6 +266,12 @@ impl ResolvedSandbox {
     /// Read access to the resolved rule set (Seatbelt profile builder).
     pub fn rule_set(&self) -> &RuleSet {
         &self.rules
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn linux_read_protection(&self) -> bool {
+        matches!(&self.backend_receipt, SandboxBackendReceipt::LinuxBubblewrap { probe }
+            if probe.capabilities.as_ref().is_some_and(|caps| caps.read_protection))
     }
 
     /// Prepare a structured shell invocation. Backend construction failures
@@ -298,8 +305,9 @@ impl ResolvedSandbox {
             }
             #[cfg(target_os = "linux")]
             if let SandboxBackendReceipt::LinuxBubblewrap { probe } = &self.backend_receipt {
-                let plan = linux::plan::LinuxSandboxPlan::compile_with_cancel(
+                let plan = linux::plan::LinuxSandboxPlan::compile_with_read_protection(
                     &self.rules.snapshot(),
+                    self.linux_read_protection(),
                     cancelled,
                 )?;
                 return Ok(linux::runner::prepare(probe, plan, command, cwd)?);
@@ -1459,7 +1467,7 @@ mod tests {
                     size: 3,
                     modified_nanos: 4,
                 }),
-                capabilities: None,
+                capabilities: Some(linux::probe::LinuxSandboxCapabilities::baseline(true)),
                 expires_at_unix_ms: None,
                 diagnostic: None,
             },

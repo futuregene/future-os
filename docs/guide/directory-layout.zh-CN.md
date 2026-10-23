@@ -125,13 +125,17 @@ FUTURE_HOME=/tmp/futureos-b future tui
 
 FutureOS 自己拥有的一切都会随之移动：`<home>/agent`（settings、models、`auth.json`、
 `agent.db`、sessions、`agent-instance.lock`、skills、images、logs）、
-`<home>/run/agent.sock`、`<home>/approval_rule.json` 与
+`<home>/run/agent.sock`、`<home>/app/`（桌面应用的数据库、图片、评审仓、预览与日志）、
+`<home>/tasks/tasks.db`、`<home>/workspaces/chat/`、`<home>/channels/`、`<home>/tui/`、
+`<home>/bin/`、`<home>/mcp.json`、`<home>/approval_rule.json`、远程配对凭据簿与
 `<home>/windows-capabilities.json`。因此两个实例不会共享锁、数据库或端点，相互也无需停掉。
 
-**不**随之移动的是操作系统的 home：针对 `~/.ssh` 的沙箱守卫和共享的 `~/.agents/skills`
-目录仍指向真实用户 home。该值必须是绝对路径——相对路径或空值会被忽略；目录不存在时会自动创建。客户端通过设置同一个
-`FUTURE_HOME` 选择实例；客户端自身的 UI 状态（`~/.future/tui/`、桌面应用的
-`~/.future/app/`）仍留在真实 home 中。
+**不**随之移动的是操作系统的 home：针对 `~/.ssh` 的沙箱守卫、iMessage 渠道读取的
+Messages.app 数据库，以及共享的 `~/.agents/skills` 目录仍指向真实用户 home。
+项目级状态（`<workspace>/.future/approval_rule.json`、`<workspace>/.future/goal/`）
+留在各自项目里。该值必须是绝对路径——相对路径或空值会被忽略；目录不存在时会自动创建。
+客户端通过设置同一个 `FUTURE_HOME` 选择实例，它自己的 UI 状态
+（`<home>/tui/`、桌面应用的 `<home>/app/`）也随之移动。
 
 ## `~/.future/agent-app/` — 遗留凭据目录
 
@@ -151,7 +155,8 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
 若文件不存在，桥会写入默认模板并退出，提示编辑后重启。
 
 `<channel>/` 保存该通道自己持久化的东西：会话映射文件，以及它下载过的附件。
-`feishu/` 是飞书桥的目录，其中还保留了从平台收到的文件。
+`feishu/` 是飞书桥的目录，其中还保留了从平台收到的文件。整个目录遵循
+`FUTURE_HOME`（见下文），因此隔离实例拥有自己的渠道配置、队列与状态。
 
 ## `~/.future/tui/` — 终端界面
 
@@ -160,7 +165,8 @@ agent 解析 `auth.json` 时会先读 `~/.future/agent/auth.json`，只有该文
 `skillRecommend`）；按键绑定覆盖放在 `keybindings.json`（`/keymap` 写入与默认值不同的
 绑定，启动时读取）；`skill_reco.json` 保存当天技能推荐配额（已推荐过哪些技能、已评估过
 哪些草稿——按天滚动，从不跨天读取）；`debug.log` 在设置 `PI_DEBUG_REDRAW=1` 时写入调试重绘日志，设置 `PI_TUI_WRITE_LOG=1` 时 `write.log` 记录原始屏幕写入；`crash.log` 在 TUI 崩溃时接收 panic 回溯。
-见 [tui.zh-CN.md](tui.zh-CN.md)。
+见 [tui.zh-CN.md](tui.zh-CN.md)。整个目录遵循 `FUTURE_HOME`（见下文），
+所以客户端状态与实例其余数据一样按实例隔离。
 
 ## `~/.future/app/` — 桌面 GUI
 

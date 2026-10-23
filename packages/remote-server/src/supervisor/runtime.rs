@@ -92,6 +92,49 @@ impl Supervisor {
     ) -> Result<ConnectedNats, crate::Error> {
         crate::connection::connect_nats(creds, refreshed, &self.executor.connection_options()).await
     }
+    /// Record the device a pairing's client says it is, retiring any older
+    /// pairing of the same device.
+    ///
+    /// Called from the command loop on `secure_ready` — the first place the
+    /// desktop learns which physical device this is — so the work is detached:
+    /// unpairing is a store write, a bridge teardown and a revoke, none of which
+    /// the client's handshake should wait for.
+    pub fn note_client_device(self: &Arc<Self>, pair_id: &str, device_id: &str) {
+        let device = device_id.trim();
+        if device.is_empty() {
+            return;
+        }
+        let live: Vec<String> = self.state.lock().unwrap().keys().cloned().collect();
+        let duplicate = {
+            let mut devices = self.client_devices.lock().unwrap();
+            // A stable order, so "older" means the pairing that was declared
+            // first. Without it both pairings of one device would take turns
+            // retiring each other for as long as the phone reconnects: whichever
+            // declaration arrived last would be the one kept, and the other would
+            // be unpaired on its own reconnect.
+            let seq = match devices.get(pair_id) {
+                Some((_, seq)) => *seq,
+                None => self.client_device_seq.fetch_add(1, Ordering::AcqRel),
+            };
+            devices.insert(pair_id.to_string(), (device.to_string(), seq));
+            duplicate_pairing_in(pair_id, device, seq, &devices, live.into_iter())
+        };
+        let Some(older) = duplicate else {
+            return;
+        };
+        // Said out loud: this removes a device row the user may remember
+        // pairing, and the log is the only place that explains why.
+        eprintln!(
+            "remote: the same device is already paired [{older}]; dropping that pairing instead of serving it twice [PA001]"
+        );
+        let server = self.clone();
+        self.spawn(async move {
+            if let Err(error) = server.unpair_slot(&older).await {
+                eprintln!("remote: could not drop the duplicate pairing [{older}]: {error}");
+            }
+        });
+    }
+
     pub fn spawn_revoke_cleanup(self: &Arc<Self>) {
         if self.closed.load(Ordering::Acquire) || !self.executor.options().revoke_cleanup {
             return;
@@ -224,5 +267,97 @@ impl Supervisor {
         *maintenance = None;
         self.access
             .invalidate(|| self.closed.store(false, Ordering::Release));
+    }
+}
+
+/// Another live pairing of `device_id`, or `None`.
+///
+/// Pure so the rule can be tested without a running bridge: `devices` is the
+/// record of what each pairing declared, `live` is the pairings this machine is
+/// currently serving. A pairing that is not live is ignored — a stale record for
+/// a device the user removed must not make the *next* pairing of that device
+/// unpair nothing.
+fn duplicate_pairing_in(
+    pair_id: &str,
+    device_id: &str,
+    seq: u64,
+    devices: &HashMap<String, (String, u64)>,
+    live: impl Iterator<Item = String>,
+) -> Option<String> {
+    live.filter(|other| other != pair_id).find(|other| {
+        devices
+            .get(other)
+            .is_some_and(|(device, other_seq)| device == device_id && *other_seq < seq)
+    })
+}
+
+#[cfg(test)]
+mod device_dedup_tests {
+    use super::*;
+
+    /// Pairing, device, and the order its declaration arrived in.
+    fn map(pairs: &[(&str, &str, u64)]) -> HashMap<String, (String, u64)> {
+        pairs
+            .iter()
+            .map(|(pair, device, seq)| (pair.to_string(), (device.to_string(), *seq)))
+            .collect()
+    }
+
+    #[test]
+    fn a_second_pairing_of_the_same_device_names_the_first() {
+        let devices = map(&[("pair_old", "dev_phone", 0), ("pair_new", "dev_phone", 1)]);
+        let live = vec!["pair_old".to_string(), "pair_new".to_string()];
+        assert_eq!(
+            duplicate_pairing_in("pair_new", "dev_phone", 1, &devices, live.into_iter()),
+            Some("pair_old".to_string())
+        );
+    }
+
+    /// The older declaration never retires the newer one.
+    ///
+    /// Both pairings of a device stay live while the phone reconnects, and each
+    /// of them calls this on its own `secure_ready`. Comparing the declaration
+    /// order — not "somebody else has it" — is what keeps them from unpairing
+    /// each other in turns.
+    #[test]
+    fn the_older_declaration_never_retires_the_newer_one() {
+        let devices = map(&[("pair_old", "dev_phone", 0), ("pair_new", "dev_phone", 1)]);
+        let live = vec!["pair_old".to_string(), "pair_new".to_string()];
+        assert_eq!(
+            duplicate_pairing_in("pair_old", "dev_phone", 0, &devices, live.into_iter()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_different_device_is_not_a_duplicate() {
+        let devices = map(&[("pair_old", "dev_phone", 0), ("pair_new", "dev_tablet", 1)]);
+        let live = vec!["pair_old".to_string(), "pair_new".to_string()];
+        assert_eq!(
+            duplicate_pairing_in("pair_new", "dev_tablet", 1, &devices, live.into_iter()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_record_of_a_pairing_this_machine_is_not_serving_is_ignored() {
+        // The user unpaired the old row; its record lingers, but that pairing is
+        // not live, so nothing is "already paired".
+        let devices = map(&[("pair_gone", "dev_phone", 0), ("pair_new", "dev_phone", 1)]);
+        let live = vec!["pair_new".to_string()];
+        assert_eq!(
+            duplicate_pairing_in("pair_new", "dev_phone", 1, &devices, live.into_iter()),
+            None
+        );
+    }
+
+    #[test]
+    fn the_pairing_itself_is_never_its_own_duplicate() {
+        let devices = map(&[("pair_new", "dev_phone", 1)]);
+        let live = vec!["pair_new".to_string()];
+        assert_eq!(
+            duplicate_pairing_in("pair_new", "dev_phone", 1, &devices, live.into_iter()),
+            None
+        );
     }
 }

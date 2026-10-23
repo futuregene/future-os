@@ -6,6 +6,12 @@ worker wrote in its own doc; an empty cell means that module recorded nothing
 for that dimension, which is a gap for the reviewer to chase rather than a
 claim — the honest form, because the line gate cannot see boundaries at all.
 
+> The two helpers named here (`gen-final-docs.py`, `check-matrix-evidence.py`)
+> lived in the campaign's `.future/cov100/` workspace and are not in the
+> repository — `.future/` is gitignored. The table therefore cannot be
+> regenerated from a clean checkout: rebuild it from the module records, or add
+> the scripts under `scripts/measure/` if it needs to be reproducible.
+
 Dimensions: `boundary`, `error-path`, `concurrency`, `property`, `platform-cfg`, `serialization`
 
 | module | dimension | evidence (quoted from the module doc) | doc |

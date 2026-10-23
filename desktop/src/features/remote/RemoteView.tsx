@@ -11,6 +11,7 @@ import { emitFutureEvent } from "../../lib/futureEvents";
 import { usePolling } from "../../lib/usePolling";
 import {
   addRemoteDevice,
+  getRemoteStatus,
   remoteConnectionPresentation,
   startRemote,
   stopRemote,
@@ -247,20 +248,33 @@ export function RemoteHostSection({
     invitationShownRef.current = false;
     invitationExpiryRef.current = null;
     setAddOpen(false);
-    const discarded = pendingPairId;
     setPendingPairId(null);
-    if (!discarded)
-      return;
-    // Only while it is still unclaimed: a device that scanned the code in the
-    // meantime is a real connection, and closing the window is not "unpair it".
-    const unclaimed = allDevices.some(
-      device => device.pairId === discarded && device.pairingCode != null,
-    );
-    if (!unclaimed)
-      return;
+    // Re-read instead of trusting the last render: a device that claimed its
+    // code in the meantime is a real connection, and closing this window is not
+    // "unpair it".
+    let unclaimed: string[] = [];
     setBusy(true);
     try {
-      await unpairRemoteDevice(discarded);
+      const latest = await getRemoteStatus();
+      unclaimed = (latest.devices ?? [])
+        .filter(device => device.pairingCode != null)
+        .map(device => device.pairId);
+    }
+    catch (err) {
+      console.error("remote discard invitation: could not read the device list:", err);
+    }
+    try {
+      // **Every** unclaimed invitation goes, not just the one this window last
+      // spoke for. An invitation counts against the platform's per-desktop
+      // allowance from the moment it is minted, whether or not its code is on
+      // screen — so one that was minted by an earlier press and then lost track
+      // of (a second press replaced it here, or the window was closed before the
+      // refresh landed) kept a slot occupied that the user could neither use nor
+      // see. Several of those filled the allowance, and "add a device" started
+      // failing with a limit error over devices that did not exist.
+      for (const pairId of unclaimed) {
+        await unpairRemoteDevice(pairId);
+      }
     }
     catch (err) {
       console.error("remote discard invitation failed:", err);
@@ -270,7 +284,7 @@ export function RemoteHostSection({
       setBusy(false);
       await onRefreshRemote();
     }
-  }, [allDevices, onRefreshRemote, pendingPairId, t]);
+  }, [onRefreshRemote, t]);
 
   // The invitation is over once its code leaves the status, and the window has
   // nothing left to show: it carries the invitation, not the connection. A

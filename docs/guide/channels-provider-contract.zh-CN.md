@@ -4,7 +4,7 @@
 每会话排队、流式回复、审批回信路由、分片、节流与重试——已经写好且共享。
 **provider 只承载平台知识，别的都不管。**
 
-请先读 `channels/src/providers/cli.rs`：它是一个完整可用的 provider，约 150 行，
+请先读 `channels/src/providers/cli.rs`：它是一个完整可用的 provider，约 200 行，
 也是其余 provider 应遵循的形态。面向使用者的部分见
 [通道 provider 参考](channels-providers.zh-CN.md)。
 

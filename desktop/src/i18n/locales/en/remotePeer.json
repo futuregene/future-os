@@ -25,8 +25,9 @@
   "statusOffline": "Offline",
   "statusAgentUnavailable": "Agent unavailable",
   "statusTakenOver": "Taken over",
-  "heldBy": "In use by {{name}}",
-  "heldByUnknown": "In use by another device",
+  "heldBy": "Another device ({{name}}) is in control",
+  "heldByUnknown": "Another device is in control",
+  "takeOverHint": "Take over this computer before changing its settings",
   "takeOver": "Take over",
   "peersSummary": "{{connected}} of {{total}} connected",
   "peersSummaryHeld": "{{connected}} of {{total}} connected · {{held}} taken over",
@@ -165,6 +166,7 @@
   "toolRan": "{{name}} ran",
   "approvalSection": "Approval mode",
   "approvalHint": "The approval mode on that computer. This machine has its own, in Settings; changing one does not change the other.",
+  "approvalTierUpgrade": "Upgrade system Bubblewrap on that computer and restart FutureOS to enable full sandbox protection.",
   "approvalTier": "Approval mode",
   "approvalTierLabel.manual": "Manual",
   "approvalTierLabel.sandbox": "Sandboxed",
@@ -242,5 +244,7 @@
   "deleteFailed": "Some conversations could not be deleted: {{message}}",
   "renameWorkspaceTitle": "Rename “{{name}}”",
   "renameWorkspaceLabel": "Workspace name",
-  "renameWorkspaceHint": "The name changes on the computer that owns this folder. Nothing is moved, and the conversations in it are not touched."
+  "renameWorkspaceHint": "The name changes on the computer that owns this folder. Nothing is moved, and the conversations in it are not touched.",
+  "statusPairingRevoked": "Pairing revoked",
+  "errorRevoked": "That computer no longer has this pairing — it was unpaired there. Remove the pairing here, then add that computer again."
 }

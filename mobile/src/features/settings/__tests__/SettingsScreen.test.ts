@@ -42,11 +42,19 @@ const mockRemote = {
   // them — which a test that writes an icon cannot do without.
   desktops: pairedDesktops(),
   desktopOnline: true,
+  // The provider's own rule: reads need the machine to be online *and* to be
+  // this phone's to drive.
+  get desktopReadable() {
+    return this.desktopOnline && (this.presence?.control ?? "active") !== "standby";
+  },
+  presence: null as { control?: "active" | "standby"; holder?: { name?: string } | null } | null,
+  takeControl: jest.fn(async () => {}),
   capabilities: new Set(["desktop_settings_v1", "skill_management_v1", "tasks_v1"]),
   desktopSettingsRevision: 0,
   skillsRevision: 0,
   approvalTier: "manual",
   sandboxAvailable: true,
+  sandboxCode: undefined as string | undefined,
   getDesktopSettings: jest.fn(async () => ({ ...stored })),
   updateDesktopSettings: jest.fn(async (patch: Partial<DesktopSettings>) => { stored = { ...stored, ...patch }; return stored; }),
   setApprovalTier: jest.fn(async () => {}),
@@ -108,6 +116,10 @@ beforeEach(async () => {
   mockRemote.desktops = pairedDesktops();
   mockRemote.credentials = { pairId: "pair", expectedDesktopId: "desktop" };
   mockRemote.desktopOnline = true;
+  mockRemote.sandboxAvailable = true;
+  mockRemote.sandboxCode = undefined;
+  mockRemote.presence = null;
+  mockRemote.takeControl = jest.fn(async () => {});
   mockRemote.capabilities = new Set(["desktop_settings_v1", "skill_management_v1", "tasks_v1"]);
   tasksPageProps = null;
   mockRemote.desktopSettingsRevision = 0;
@@ -126,6 +138,80 @@ beforeEach(async () => {
   await act(async () => { tree = create(createElement(SettingsScreen, deviceProps)); });
 });
 afterEach(() => act(() => tree.unmount()));
+
+// A machine another device is driving refuses every read, so the page used to
+// answer "无法读取桌面端数据，请重试" over a desktop that was working perfectly — just
+// not for this phone. It says what is happening and offers the one action that
+// changes it, and it does not ask for data it knows will be refused.
+test("a taken-over desktop says so and offers the takeover instead of a read failure", async () => {
+  mockRemote.presence = { control: "standby", holder: { name: "Studio laptop" } };
+  mockRemote.desktopOnline = true;
+  mockRemote.getDesktopSettings.mockClear();
+
+  await act(async () => { tree = create(createElement(SettingsScreen, deviceProps)); });
+  await flush();
+
+  expect(strings()).toContain("connection.controlHeldBy: Studio laptop");
+  expect(strings()).toContain("connection.standbyPageHint");
+  // No read was attempted against a machine that would refuse it, so there is
+  // no "could not read the desktop" banner to explain away.
+  expect(mockRemote.getDesktopSettings).not.toHaveBeenCalled();
+  expect(strings()).not.toContain("desktopSettings.loadFailed");
+
+  await act(async () => button("connection.takeControl").props.onPress());
+  expect(mockRemote.takeControl).toHaveBeenCalledTimes(1);
+});
+
+test("a refused takeover is reported beside the button, not swallowed", async () => {
+  mockRemote.presence = { control: "standby", holder: { name: "Studio laptop" } };
+  mockRemote.takeControl = jest.fn(async () => { throw new Error("device_offline"); });
+  await act(async () => { tree = create(createElement(SettingsScreen, deviceProps)); });
+  await flush();
+
+  await act(async () => button("connection.takeControl").props.onPress());
+  await flush();
+  expect(strings()).toContain("connection.takeControlFailed");
+});
+
+// The stack behind the device page was the last way in: every row on it opened a
+// page whose reads that desktop refuses while another device drives it, and the
+// approval radios were not even disabled — a tap wrote into a refusal. None of
+// that is offered now: the banner is what the page keeps, and it carries the one
+// action that changes the state.
+test("a taken-over desktop offers no way into its settings", async () => {
+  mockRemote.presence = { control: "standby", holder: { name: "Studio laptop" } };
+  await mountDevice("other-desktop");
+
+  const labels = tree.root.findAllByType(SettingsLink).map(node => node.props.label);
+  for (const page of ["preferences", "models", "providers", "skills", "tasks"])
+    expect(labels).not.toContain(`desktopSettings.${page}`);
+
+  // The machine's name is this phone's own record of it, not the machine's, so
+  // renaming keeps working while somebody else has the desktop.
+  await act(async () => nameField().props.onChangeText("Renamed"));
+  await act(async () => nameField().props.onSubmitEditing());
+  expect(mockRemote.renameDesktop).toHaveBeenCalledWith("other-desktop", "Renamed");
+
+  await act(async () => button("connection.takeControl").props.onPress());
+  expect(mockRemote.takeControl).toHaveBeenCalledTimes(1);
+});
+
+// Control can move while a level is open — another device takes the machine
+// mid-edit. Its data is the last thing that read returned and every write from
+// it would be refused, so the level gives way to the banner and comes back with
+// the machine.
+test("a settings page gives way to the banner when the machine is taken over", async () => {
+  await mountDevice("other-desktop");
+  await act(async () => link("desktopSettings.preferences").props.onPress());
+  expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.manual" }).length).toBeGreaterThan(0);
+
+  mockRemote.presence = { control: "standby", holder: { name: "Studio laptop" } };
+  await act(async () => { tree.update(createElement(SettingsScreen, { ...props, deviceId: "other-desktop" })); });
+  await flush();
+
+  expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.manual" })).toHaveLength(0);
+  expect(strings()).toContain("connection.standbyPageHint");
+});
 
 test("the device page configures the desktop, and keeps the phone's own rows out", async () => {
   expect(tree.root.findAllByType(ScrollView).length).toBeGreaterThan(0);
@@ -864,4 +950,22 @@ test("automatic review is offered only by capable desktops with a working sandbo
   mockRemote.sandboxAvailable = false;
   await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
   expect(tree.root.findAllByProps({ accessibilityLabel: "approvalTier.auto" })).toHaveLength(0);
+});
+
+test("limited protection keeps the usual approval choices and only adds the upgrade hint", async () => {
+  mockRemote.sandboxCode = "available_write_only";
+  mockRemote.capabilities.add("auto_approval_v1");
+  await openPreferences();
+  expect(texts()).toContain("approvalTier.upgrade");
+  // React Native forwards these props through multiple wrapper nodes. Select
+  // the actual radio control, then verify that limited protection stays usable.
+  expect(radio("approvalTier.sandbox").props.disabled).toBe(false);
+  expect(radio("approvalTier.auto").props.disabled).toBe(false);
+  await act(async () => radio("approvalTier.sandbox").props.onPress());
+  expect(mockRemote.setApprovalTier).toHaveBeenLastCalledWith("sandbox");
+  await act(async () => radio("approvalTier.auto").props.onPress());
+  expect(mockRemote.setApprovalTier).toHaveBeenLastCalledWith("auto");
+  mockRemote.sandboxAvailable = false;
+  await act(async () => { tree.update(createElement(SettingsScreen, deviceProps)); });
+  expect(texts()).not.toContain("approvalTier.upgrade");
 });

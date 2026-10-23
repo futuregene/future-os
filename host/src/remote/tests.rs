@@ -3945,6 +3945,112 @@ mod slot_tests {
         stop();
     }
 
+    /// Pressing "add a device" again while an invitation is live re-shows that
+    /// invitation instead of minting another.
+    ///
+    /// Every pending invitation is a row of the platform's per-desktop
+    /// allowance, and only one of them can be on screen. Minting on each press
+    /// filled that allowance with codes nobody could see, and the next press was
+    /// refused for reaching a cap the user had never spent on devices.
+    #[tokio::test]
+    async fn adding_twice_while_an_invitation_is_live_reuses_it() {
+        let _home = HomeGuard::new("remote-add-device-reuses-invitation");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        let code = platform.respond_pair_code(nats.url());
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+        SUPERVISOR.restore_active(None);
+
+        let first = crate::remote::supervisor::add_device()
+            .await
+            .expect("first add");
+        let second = crate::remote::supervisor::add_device()
+            .await
+            .expect("second add");
+
+        assert_eq!(
+            second.pair_id, first.pair_id,
+            "the live invitation is the answer, not a new one"
+        );
+        assert_eq!(
+            second.pairing_code.as_deref(),
+            first.pairing_code.as_deref(),
+            "the same code is shown again"
+        );
+        assert!(first
+            .pairing_code
+            .as_deref()
+            .is_some_and(|shown| shown.contains(&code)));
+        let mints = platform
+            .requests()
+            .into_iter()
+            .filter(|(_, path, _)| path == "/client/v1/remote/pair/code")
+            .count();
+        assert_eq!(mints, 1, "the platform was asked for one code, not two");
+
+        stop();
+    }
+
+    /// Cancelling the add-device window removes the invitation from the
+    /// platform as well as from this machine.
+    ///
+    /// An invitation is a platform row from the moment it is minted, and it
+    /// counts against the per-desktop allowance whether or not anybody ever
+    /// scans it. "Cancel" therefore has to mean *deleted*, not "forgotten here":
+    /// the reported defect was five presses of add and cancel leaving the machine
+    /// unable to add anything at all, with no device behind any of it. The
+    /// deletion is queued rather than delivered inline — the user is closing a
+    /// window, and an unreachable platform must not hold it open.
+    #[tokio::test]
+    async fn cancelling_an_unclaimed_invitation_revokes_it_on_the_platform() {
+        let _home = HomeGuard::new("remote-cancel-invitation");
+        init_store();
+        let platform = MockPlatform::start().await;
+        let nats = FakeNats::start().await;
+        sign_in(platform.url());
+        platform.respond_pair_code(nats.url());
+        SUPERVISOR.start_requested.store(false, Ordering::Release);
+        SUPERVISOR.restore_active(None);
+
+        let added = crate::remote::supervisor::add_device()
+            .await
+            .expect("add device");
+        let pair_id = added.pair_id.clone();
+        assert!(
+            pairing::load_slots().is_empty(),
+            "an unclaimed invitation is not in the book, which is why unpairing by\n             credential could never reach it"
+        );
+
+        // Exactly what the window's Cancel does for every unclaimed invitation.
+        crate::remote::supervisor::unpair_slot(&pair_id)
+            .await
+            .expect("discard the invitation");
+        assert!(
+            !SUPERVISOR.state.lock().unwrap().contains_key(&pair_id),
+            "the runtime that served the invitation is gone"
+        );
+
+        // The platform row is queued by pair id — the only thing an unclaimed
+        // invitation has — and the compensation loop delivers it.
+        platform.push("/client/v1/remote/pair/revoke", 200, json!({}));
+        pairing::retry_pending_revokes()
+            .await
+            .expect("deliver the queued revoke");
+        let delivery = platform
+            .requests()
+            .into_iter()
+            .find(|(_, path, _)| path == "/client/v1/remote/pair/revoke");
+        let (_, _, body) = delivery.expect("the invitation must be revoked, not merely dropped");
+        assert!(
+            body.contains(&pair_id),
+            "the revoke names the invitation's own pair id: {body}"
+        );
+
+        stop();
+    }
+
     /// The device a request adds shows up in the machine's device list as a
     /// **standby** row carrying its invitation, while the device in control keeps
     /// the machine.

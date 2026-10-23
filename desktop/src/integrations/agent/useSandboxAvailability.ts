@@ -17,6 +17,15 @@ export interface SandboxAvailability {
   resolved: boolean;
   code?: string;
   backend?: string;
+  capabilities?: Record<string, boolean>;
+}
+
+/** A usable Linux backend whose shell cannot enforce read-denial rules. */
+export function isWriteOnlySandbox(availability: SandboxAvailability): boolean {
+  return availability.available
+    && availability.backend === "linux_bubblewrap"
+    && (availability.capabilities?.readProtection === false
+      || availability.code === "available_write_only");
 }
 
 // Share one probe for this webview process. A full app restart creates a new
@@ -121,6 +130,7 @@ export function useSandboxAvailability(): SandboxAvailability {
             resolved: true,
             code: result.code,
             backend: result.backend,
+            ...(result.capabilities ? { capabilities: result.capabilities } : {}),
           });
         }
       })

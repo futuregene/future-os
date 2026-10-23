@@ -33,7 +33,6 @@ future-rpc = { path = "../packages/rpc" }
 # In-process Agent hosting (the Agent no longer runs as this process's child).
 future-host = { path = "../host" }
 chrono = { workspace = true, features = ["clock"] }
-dirs = "5"
 
 # Windows terminal backend (terminal_windows.rs): console API for raw mode,
 # VT input/output, window size and input waits. Target-gated — POSIX uses libc.

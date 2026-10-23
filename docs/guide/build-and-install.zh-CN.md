@@ -119,8 +119,10 @@ curl -fsSL https://dl.future-os.cn/install.sh | bash
 所选 host target，不一定是静态链接。
 
 用 `FUTUREOS_VERSION` 锁定特定版本（如 `FUTUREOS_VERSION=1.2.0`），或用 `FUTUREOS_BASE` 指向镜像。
-当前指定版本路径会跳过 manifest SHA-256 校验并打印警告，请自行对照可信发布校验和验证
-指定产物；latest 路径会校验发布清单中的 SHA-256。
+指定版本时会读取该版本自己的清单（`releases/<version>/latest.json`），与 latest 路径一样校验
+产物的 SHA-256。校验是强制的：该版本没有对应平台的清单条目，或主机既没有 `shasum` 也没有
+`sha256sum` 时，安装器直接退出，不会安装未经校验的二进制。`FUTUREOS_SKIP_VERIFY=1` 仅在本次运行
+跳过校验；只有在你已经确认产物来源时才这样用，因为脚本会把镜像给出的任何东西装进系统。
 
 ### 从源码构建（开发者）
 
@@ -154,8 +156,8 @@ make package-desktop    # 命名后的 .deb 与便携包位于仓库根目录
 
 ### 可选 OS 沙箱
 
-安装可信系统 Bubblewrap ≥ 0.9.0（`sudo apt install bubblewrap`；Fedora 用
-`sudo dnf install bubblewrap`），然后完全重启 FutureOS。旧发行版包可能需要可信渠道升级；
+安装可信系统 Bubblewrap（按实际能力探测）（`sudo apt install bubblewrap`；Fedora 用
+`sudo dnf install bubblewrap`），然后完全重启 FutureOS。旧包可能仅提供写保护，选择器提示升级以启用完整保护；缺少基本写保护时不可用。
 应用不捆绑它。运行 `future agent --probe-sandbox` 和 `future doctor`，主机策略必须允许
 所需 user namespace 与 fresh `/proc` 挂载。回退、快照、凭据和网络限制见
 [沙箱指南](../wiki/zh/Sandbox.md)；可用不代表所有发行版与架构已通过认证。
@@ -272,7 +274,7 @@ future init                                  # 安装技能并在 macOS/Linux �
 ## 验证
 
 ```bash
-make test        # 全部 7 个套件：agent、channels、CLI、TUI、GUI、GUI Rust、mobile
+make test        # 全部 8 个套件：agent、channels、CLI、app-settings、TUI、GUI、GUI Rust、mobile
 make lint        # 全量 lint：agent、channels、TUI、CLI、GUI（含 stylelint）、mobile
 ```
 
@@ -283,8 +285,8 @@ make lint        # 全量 lint：agent、channels、TUI、CLI、GUI（含 stylel
 ```bash
 make build          # 构建 GUI + 统一 CLI（不安装到系统；agent/tui/channel/goal 内嵌于 future，GUI 自带 sidecar）
 make lint           # 全量 lint：agent、channels、TUI、CLI、GUI（含 stylelint）、mobile
-make fmt            # cargo fmt --all（workspace）+ desktop/src-tauri + mobile 格式化
-make test           # 全部 7 个套件：agent、channels、CLI、TUI、GUI、GUI Rust、mobile
+make fmt            # cargo fmt --all（整个 Rust workspace，含 desktop/src-tauri）
+make test           # 全部 8 个套件：agent、channels、CLI、app-settings、TUI、GUI、GUI Rust、mobile
 make clean          # 清理构建产物（已安装二进制请用 make uninstall 删除）
 ```
 
@@ -297,7 +299,7 @@ make setup
 make run-desktop
 ```
 
-`make setup` 安装 JavaScript workspace、初始化内置技能并创建仅供编译的 CLI 占位文件；运行时会拒绝空占位文件。`make run-desktop` 通过平台开发脚本构建/暂存真正的 CLI 并启动 Desktop，由应用内置完整 Agent，无需单独运行 `future agent`。若本地 IPC 或显式 `FUTURE_AGENT_GRPC_ADDR` 地址存在兼容 Agent，则连接它而不接管其退出。设置 `FUTURE_DESKTOP_AGENT_MODE=external` 可仅连接外部服务，请在另一个终端用相同 FutureOS home 启动匹配的 Agent。脚本不改写旧运行记录，也不会根据旧 PID 文件结束进程。`BUILD_CLI=0` 跳过 CLI 构建，`DESKTOP_DEV_PORT` 选择 Vite 端口，`RUN_CHECKS=1` 只执行静态检查，`DRY_RUN=1` 只打印配置。独立 Agent 日志保持在 `agent/logs/agent.log`，内置 Agent/宿主日志使用 `app/logs/desktop.log`。socket 规则见[目录布局](directory-layout.zh-CN.md)。
+`make setup` 安装 JavaScript workspace、初始化内置技能。`make run-desktop` 通过平台开发脚本构建/暂存真正的 CLI 并启动 Desktop（没有 CLI 产物时脚本写入仅供编译的占位文件，运行时会拒绝空占位文件），由应用内置完整 Agent，无需单独运行 `future agent`。若本地 IPC 或显式 `FUTURE_AGENT_GRPC_ADDR` 地址存在兼容 Agent，则连接它而不接管其退出。设置 `FUTURE_DESKTOP_AGENT_MODE=external` 可仅连接外部服务，请在另一个终端用相同 FutureOS home 启动匹配的 Agent。脚本不改写旧运行记录，也不会根据旧 PID 文件结束进程。`BUILD_CLI=0` 跳过 CLI 构建，`DESKTOP_DEV_PORT` 选择 Vite 端口，`RUN_CHECKS=1` 只执行静态检查，`DRY_RUN=1` 只打印配置。独立 Agent 日志保持在 `agent/logs/agent.log`，内置 Agent/宿主日志使用 `app/logs/desktop.log`。socket 规则见[目录布局](directory-layout.zh-CN.md)。
 Android 与 iOS 还需要各自的 SDK 和模拟器或真机，详见[移动端指南](../internals/mobile/README.md)。
 
 ### Proto

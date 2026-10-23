@@ -445,23 +445,18 @@ app over CDP): with the terminal focused, `Ctrl+[` delivered `0x1b` (ESC) to the
 pseudo-terminal and `Ctrl+]` delivered `0x1d`, and neither was taken by the app.
 This is Chromium, not WebKitGTK — the engine a packaged Linux build actually runs.
 
-**Not verified by hand — Linux + WebKitGTK + a Chinese IME.** The rule "a key
-pressed mid-composition does not fire a command" is covered at the logic level
+**Not verified by hand — a modified chord pressed mid-composition.** The rule "a
+key pressed mid-composition does not fire a command" is covered at the logic level
 only: `dispatchShortcut` has cases for `isComposing`, `keyCode 229` and
 `key: "Unidentified"`, the three shapes those engines report
-(`dispatch.test.ts`). It has **not** been exercised against WebKitGTK with
-ibus-libpinyin, the combination that produced the original terminal bug this rule
-descends from (`embedded-terminal.md`). Neither a Linux desktop nor a container
-able to run a WebKitGTK webview with an IME was available on the machine this was
-written on.
-
-> **TODO.** To close it, on a Linux desktop with `ibus-libpinyin` (or any IME
-> that composes CJK): run the app, open a conversation, start composing a word,
-> then press a modified key a command is bound to (e.g. `Ctrl+B`). Expected: no
-> command runs and the preedit box stays. Repeat inside the embedded terminal,
-> where the expectation is the same and the stale failure mode is the composition
-> being committed twice (`keyPolicy.ts`). When it is done, the two outcomes belong
-> in this section.
+(`dispatch.test.ts`). The engine pairing is no longer the blocker — a real
+WebKitGTK webview with `ibus-libpinyin` has since been driven for the terminal's
+own IME behaviour (`embedded-terminal.md` §Platforms) — but nobody has yet pressed
+a command's modified chord (e.g. `Ctrl+B`) during a live composition in that
+session. Expected: no command runs and the preedit box stays; inside the embedded
+terminal the expectation is the same, and the stale failure mode to guard is the
+composition being committed twice (`keyPolicy.ts`). Record both outcomes here
+when it is measured.
 
 ## Going further (not implemented)
 

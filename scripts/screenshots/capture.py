@@ -148,7 +148,12 @@ def list_processes() -> list[dict]:
 
     `ps` has no cross-platform structured output and this script needs only
     those three columns (the same ones the reap below is documented against).
+    Windows has no `ps` at all, which is why it has its own listing: returning an
+    empty list there looked like "no processes", so the sweep silently kept every
+    orphan it was written to remove.
     """
+    if os.name == "nt":
+        return _windows_processes()
     try:
         listing = subprocess.run(["ps", "-Ao", "pid=,ppid=,command="],
                                  capture_output=True, text=True, check=True).stdout
@@ -161,6 +166,56 @@ def list_processes() -> list[dict]:
         if pid.isdigit() and ppid.isdigit() and command:
             processes.append({"pid": int(pid), "ppid": int(ppid), "command": command})
     return processes
+
+
+def _windows_processes() -> list[dict]:
+    """`list_processes` on Windows, from the same CIM instances Task Manager reads.
+
+    `tasklist` is the built-in listing and it carries neither field this script
+    needs: the parent id (which tells a live run's browser from a dead run's) and
+    the command line (where the `future-shot-` profile is named). So the listing
+    comes from `Get-CimInstance Win32_Process` as JSON.
+
+    UTF-8 is requested from the PowerShell host explicitly: its default output
+    encoding follows the console code page, and a profile path under a non-ASCII
+    user name would otherwise arrive mangled — which reads as "not our profile".
+    """
+    script = (
+        "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);"
+        "Get-CimInstance Win32_Process |"
+        "Select-Object ProcessId,ParentProcessId,CommandLine |"
+        "ConvertTo-Json -Compress"
+    )
+    for shell in ("powershell", "pwsh"):
+        if shutil.which(shell) is None:
+            continue
+        try:
+            listing = subprocess.run(
+                [shell, "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                check=True, timeout=120,
+            ).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        try:
+            rows = json.loads(listing or "[]")
+        except ValueError:
+            continue
+        # `ConvertTo-Json` answers a bare object when the pipeline held one.
+        if isinstance(rows, dict):
+            rows = [rows]
+        if not isinstance(rows, list):
+            continue
+        processes = []
+        for row in rows:
+            pid, ppid, command = (row.get("ProcessId"), row.get("ParentProcessId"),
+                                  row.get("CommandLine"))
+            # `CommandLine` is null for processes this account may not inspect;
+            # there is nothing to match a profile against, so it is skipped.
+            if isinstance(pid, int) and isinstance(ppid, int) and isinstance(command, str) and command:
+                processes.append({"pid": pid, "ppid": ppid, "command": command})
+        return processes
+    return []
 
 
 def owned_profile(command: str) -> Path | None:
@@ -178,6 +233,21 @@ def owned_profile(command: str) -> Path | None:
     return None
 
 
+def parent_is_gone(process: dict, live: set[int]) -> bool:
+    """Whether the process that started `process` has exited.
+
+    On POSIX that is what `ppid == 1` says: the orphan was re-parented to init.
+    A live run's browser cannot be mistaken for one, because its parent is the
+    capture process itself.
+
+    Windows does not re-parent — the parent id keeps naming a process that no
+    longer exists — so there it is absence from `live` that means the parent is
+    gone. Checking both covers either behaviour, and neither can select a browser
+    whose capture is still running.
+    """
+    return process["ppid"] == 1 or process["ppid"] not in live
+
+
 def orphan_browsers(processes: list[dict]) -> list[dict]:
     """Browsers a *dead* capture run left behind.
 
@@ -188,8 +258,9 @@ def orphan_browsers(processes: list[dict]) -> list[dict]:
     its profile. Both facts must hold, so the user's own browsers and a
     concurrent capture are never selected.
     """
+    live = {process["pid"] for process in processes}
     return [process for process in processes
-            if process["ppid"] == 1 and owned_profile(process["command"]) is not None]
+            if parent_is_gone(process, live) and owned_profile(process["command"]) is not None]
 
 
 def reap_orphans() -> tuple[list[int], list[Path]]:
@@ -204,6 +275,10 @@ def reap_orphans() -> tuple[list[int], list[Path]]:
     reaped_pids = []
     for orphan in orphans:
         try:
+            # POSIX delivers SIGTERM, which Chrome handles by exiting cleanly.
+            # Windows has no POSIX signals: this calls TerminateProcess, and the
+            # browser goes down hard — which is the same outcome this sweep needs,
+            # since the run it belonged to is already gone.
             os.kill(orphan["pid"], signal.SIGTERM)
             reaped_pids.append(orphan["pid"])
         except OSError:
@@ -297,6 +372,14 @@ class Browser:
         return False
 
     def _install_sigterm_handler(self):
+        """Take the browser down when this run is killed with SIGTERM.
+
+        POSIX only in practice: Windows cannot deliver SIGTERM to a Python
+        process, so a killed run there leaves its browser behind and the startup
+        sweep in `reap_orphans` is what removes it.
+        """
+        if os.name == "nt":
+            return
         if threading.current_thread() is not threading.main_thread():
             return
         self._previous_sigterm = signal.getsignal(signal.SIGTERM)

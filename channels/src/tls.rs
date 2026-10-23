@@ -44,7 +44,7 @@ mod tests {
     /// Install the process-level rustls provider (production does this in
     /// `run()`); idempotent — a second install returns Err we ignore.
     fn ensure_provider() {
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        let _ = rustls::crypto::ring::default_provider().install_default();
     }
 
     #[test]

@@ -12,7 +12,7 @@ To use the built-in models, connect your FutureOS account:
 
 1. On first launch, with no provider configured, FutureOS shows its welcome screen.
 2. Click **Sign in / Sign up**. Later you can sign in again from **Settings → Providers → Built-in → Future → Sign in**.
-3. Your browser opens the authorization page. Current builds open it automatically; they no longer show a separate verification code.
+3. Your browser opens the authorization page automatically.
 4. Once authorized, the app loads the model catalog and installs its skills. If several recommended models are available, it asks you to pick a default one.
 
 > Prefer your own model provider? You can add an OpenAI-compatible or Anthropic-compatible provider instead. See [[Settings]].
@@ -39,7 +39,7 @@ Type in the input box at the bottom and press **Enter** to send. You'll see:
 
 - The reply **streaming in** live.
 - **Tool activity** shown as the agent reads files, runs commands, and so on.
-- **Approval cards** when your selected mode and rules require them. The desktop defaults to **Full access**: before working with untrusted content, choose **Manual** or **Sandboxed** in Settings → General or the composer shield. Not every tool call asks; see [[Approvals and sandboxing|Sandbox]].
+- **Approval cards** when your selected mode and rules require them. The desktop defaults to **Full access**: before working with untrusted content, choose **Manual**, **Sandboxed** or **Automatic review** in Settings → General or the composer shield. Not every tool call asks; see [[Approvals and sandboxing|Sandbox]].
 
 You can attach local files with the paperclip button or drag-and-drop, and paste images directly. Each message supports up to **4 images** (25 MiB each); other file types are not count-limited.
 

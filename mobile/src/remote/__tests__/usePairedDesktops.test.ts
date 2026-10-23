@@ -1,7 +1,7 @@
 import { createElement, useRef } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { RemoteApiError } from "@future-os/remote-client/connectionState";
-import { attemptPendingRevoke, claimPairingCode, serverRevoke } from "../pairing";
+import { attemptPendingRevoke, claimPairingCode, refreshCredentials, serverRevoke } from "../pairing";
 import { discardPendingContinuation } from "../pendingContinuationStorage";
 import { discardPendingPrompt } from "../pendingPromptStorage";
 import {
@@ -39,6 +39,7 @@ jest.mock("../pairing", () => ({
   __esModule: true,
   attemptPendingRevoke: jest.fn(async () => {}),
   claimPairingCode: jest.fn(async () => null),
+  refreshCredentials: jest.fn(async (credentials: unknown) => credentials),
   serverRevoke: jest.fn(async () => {}),
 }));
 
@@ -375,6 +376,40 @@ describe("usePairedDesktops", () => {
       expect(discardPendingPrompt).toHaveBeenCalledWith(second.pairId);
       expect(pairing.current.activeDesktopId).toBe("desktop");
       expect(pairing.current.desktops).toEqual([first]);
+    });
+
+    // The desktop ended the pairing itself: the phone's copy goes, but asking the
+    // platform to revoke a credential the desktop has already killed would only
+    // leave a retry behind.
+    test("forgetting a desktop the desktop unpaired revokes nothing", async () => {
+      cast<jest.Mock>(loadPairedDesktops).mockResolvedValue([first, other] as PairedDesktop[]);
+      cast<jest.Mock>(loadActiveDesktopId).mockResolvedValue("desktop");
+      render();
+      await flush();
+      cast<jest.Mock>(loadCredentials).mockImplementation(async (id?: string) =>
+        id === "desktop-2" ? second : null);
+      cast<jest.Mock>(loadPairedDesktops).mockResolvedValue([first] as PairedDesktop[]);
+
+      await act(async () => { await pairing.current.forgetDesktop("desktop-2"); });
+
+      expect(clearCredentials).toHaveBeenCalledWith(second.pairId);
+      expect(discardPendingPrompt).toHaveBeenCalledWith(second.pairId);
+      expect(discardPendingContinuation).toHaveBeenCalledWith(second.pairId);
+      expect(savePendingRevoke).not.toHaveBeenCalled();
+      expect(serverRevoke).not.toHaveBeenCalled();
+      expect(pairing.current.desktops).toEqual([first]);
+      expect(pairing.current.activeDesktopId).toBe("desktop");
+    });
+
+    // The check a failed connection runs: the platform's own answer about this
+    // pairing, with nothing stored and no revoke implied.
+    test("verifying a pairing only asks the platform to renew its credentials", async () => {
+      render();
+      await flush();
+      await act(async () => { await pairing.current.verifyPairing(credentials); });
+      expect(refreshCredentials).toHaveBeenCalledWith(credentials);
+      expect(saveCredentials).not.toHaveBeenCalled();
+      expect(clearCredentials).not.toHaveBeenCalled();
     });
 
     test("removing a desktop that is not paired locally changes nothing", async () => {

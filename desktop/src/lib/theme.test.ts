@@ -8,6 +8,17 @@ vi.mock("../integrations/tauri/invoke", () => ({
 }));
 
 /**
+ * The native window theme is an *input* to the next resolution, not only an
+ * output: a pinned `setTheme("dark")` makes the webview report a dark
+ * `prefers-color-scheme`, so the mode switch back to "system" has to be
+ * observed here — that pin is what kept the app dark on a light desktop.
+ */
+const setTheme = vi.fn<(theme: "light" | "dark" | null) => Promise<void>>(() => Promise.resolve());
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({ setTheme }),
+}));
+
+/**
  * Theme module under test.
  *
  * The module keeps its state at module scope (it has to apply before the first
@@ -52,6 +63,7 @@ beforeEach(() => {
   document.documentElement.style.removeProperty("--color-ink");
   delete document.documentElement.dataset.palette;
   vi.mocked(invokeCommand).mockClear();
+  setTheme.mockClear();
   vi.unstubAllGlobals();
   vi.resetModules();
 });
@@ -129,6 +141,21 @@ describe("theme", () => {
 
     expect(theme.getResolvedTheme()).toBe("light");
     expect(document.documentElement.classList.contains("dark")).toBe(false);
+  });
+
+  /// The native window theme is what the webview reports back through
+  /// `prefers-color-scheme`. Pinning it on "system" made "follow the system"
+  /// resolve to the last explicit choice — on a light desktop, Dark → System
+  /// stayed dark. Switching back must therefore *clear* the pin.
+  it("clears the pinned native theme when following the system again", async () => {
+    installMatchMedia(false);
+    const theme = await import("./theme");
+
+    theme.setThemeMode("dark");
+    expect(setTheme).toHaveBeenLastCalledWith("dark");
+
+    theme.setThemeMode("system");
+    expect(setTheme).toHaveBeenLastCalledWith(null);
   });
 
   it("notifies subscribers on a mode change and on a system-driven resolve", async () => {

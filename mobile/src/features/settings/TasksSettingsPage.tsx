@@ -9,12 +9,17 @@ import type { RemoteTaskDetail, RemoteTaskRow, RemoteTaskRun } from "../../remot
 import { layout, radius, spacing } from "../../theme/tokens";
 import { createThemedStyles } from "../../theme/ThemeContext";
 import { ResourceStatus, SettingsField, SettingsSection, useSettingsStyles } from "./SettingsPrimitives";
+import { DateField } from "./DateField";
+import { TimeField } from "./TimeField";
+import { TimezoneField } from "./TimezoneField";
 import type { SettingsPageBack } from "./pageBack";
+import { clearTaskDraft, loadTaskDraft, saveTaskDraft, taskDraftKey } from "./taskDraftStorage";
 import { useDesktopResource } from "./useDesktopResource";
 
 /** Local draft of the trigger, mirroring the desktop form. */
 interface DraftTrigger {
-  mode: "manual" | "once" | "interval" | "daily" | "weekly" | "monthly" | "yearly";
+  /** Empty is "not chosen yet": a new task must pick one (see `draftProblem`). */
+  mode: "" | "manual" | "once" | "interval" | "daily" | "weekly" | "monthly" | "yearly";
   date: string;
   time: string;
   everyMinutes: string;
@@ -23,8 +28,24 @@ interface DraftTrigger {
   month: string;
 }
 
+/** The weekdays a weekly trigger can run on, in the order both clients store. */
+const WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+
+/** The trigger modes a *new* task may pick, in the desktop's order. */
+const TRIGGER_MODES = ["once", "interval", "daily", "weekly", "monthly", "yearly"] as const;
+
+/**
+ * The trigger a new task starts on: none chosen.
+ *
+ * The desktop dropped "manual" as a fresh choice when it dropped the run-now
+ * button — a task whose trigger never fires, and which nothing can start, is not
+ * a scheduled task. The phone's form used to start there, so the task it built
+ * by default was exactly that: `TriggerKind::Manual` has no next due time, and
+ * the phone has no run-now either. Asking is the fix; the old option stays
+ * reachable for a task that is already manual, so an edit round-trips.
+ */
 const defaultTrigger: DraftTrigger = {
-  mode: "manual",
+  mode: "",
   date: "",
   time: "09:00",
   everyMinutes: "60",
@@ -32,6 +53,28 @@ const defaultTrigger: DraftTrigger = {
   day: "1",
   month: "12",
 };
+
+/** Whether a mode's times are read on a clock, and so needs a zone. */
+function triggerReadsClock(mode: DraftTrigger["mode"]): boolean {
+  return mode === "once" || mode === "daily" || mode === "weekly"
+    || mode === "monthly" || mode === "yearly";
+}
+
+/** The weekdays a weekly trigger runs on, as the list the payload takes. */
+function selectedDays(days: string): string[] {
+  return days.split(",").map(day => day.trim()).filter(Boolean);
+}
+
+/** Flip one weekday on or off, stored in week order rather than tap order. */
+function toggleDay(days: string, weekday: string): string {
+  const chosen = selectedDays(days);
+  const next = chosen.includes(weekday)
+    ? chosen.filter(day => day !== weekday)
+    : [...chosen, weekday];
+  // Week order, not tap order: both clients then build the same payload for the
+  // same set, and the summary reads the same whichever order the user tapped.
+  return WEEKDAYS.filter(day => next.includes(day)).join(",");
+}
 
 /** Thinking levels a task may pin, in the composer's order. */
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
@@ -57,7 +100,9 @@ interface Draft {
 
 function triggerFrom(detail: RemoteTaskDetail): DraftTrigger {
   if (detail.triggerKind !== "schedule")
-    return { ...defaultTrigger };
+    // Already manual: the option comes back on the form so an edit round-trips,
+    // rather than silently turning the task into something that runs.
+    return { ...defaultTrigger, mode: "manual" };
   const trigger = detail.trigger ?? {};
   const mode = String(trigger.mode ?? "daily") as DraftTrigger["mode"];
   return {
@@ -72,7 +117,9 @@ function triggerFrom(detail: RemoteTaskDetail): DraftTrigger {
 }
 
 function triggerPayload(draft: DraftTrigger): { triggerKind: string; trigger: Record<string, unknown> } {
-  if (draft.mode === "manual")
+  // "" never reaches here: `draftProblem` refuses the save until a mode is
+  // picked, the same way the desktop's form does.
+  if (draft.mode === "" || draft.mode === "manual")
     return { triggerKind: "manual", trigger: {} };
   const time = draft.time.trim() || "09:00";
   switch (draft.mode) {
@@ -81,8 +128,7 @@ function triggerPayload(draft: DraftTrigger): { triggerKind: string; trigger: Re
     case "interval":
       return { triggerKind: "schedule", trigger: { mode: "interval", every_minutes: Number(draft.everyMinutes) || 1 } };
     case "weekly": {
-      const days = draft.days.split(",").map(day => day.trim()).filter(Boolean);
-      return { triggerKind: "schedule", trigger: { mode: "weekly", days, time } };
+      return { triggerKind: "schedule", trigger: { mode: "weekly", days: selectedDays(draft.days), time } };
     }
     case "monthly":
       return { triggerKind: "schedule", trigger: { mode: "monthly", day: Number(draft.day) || 1, time } };
@@ -145,6 +191,58 @@ function newDraft(): Draft {
   };
 }
 
+/**
+ * A stored draft, with every field held to the shape this form writes.
+ *
+ * The stored value is read from disk, where it may have come from an older
+ * build, a truncated write or another writer entirely; a field of the wrong
+ * type falls back to the blank draft's own default instead of reaching an input
+ * as `[object Object]`. Unknown keys are dropped rather than carried along.
+ */
+function restoredDraft(raw: unknown, base: Draft): Draft | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const value = raw as Record<string, unknown>;
+  const text = (candidate: unknown, fallback: string) =>
+    typeof candidate === "string" ? candidate : fallback;
+  const oneOf = <T extends string>(candidate: unknown, allowed: readonly T[], fallback: T): T =>
+    typeof candidate === "string" && (allowed as readonly string[]).includes(candidate)
+      ? candidate as T
+      : fallback;
+  const rawTrigger = value.trigger && typeof value.trigger === "object" && !Array.isArray(value.trigger)
+    ? value.trigger as Record<string, unknown>
+    : {};
+  return {
+    name: text(value.name, base.name),
+    prompt: text(value.prompt, base.prompt),
+    cwd: text(value.cwd, base.cwd),
+    modelId: text(value.modelId, base.modelId),
+    thinkingLevel: text(value.thinkingLevel, base.thinkingLevel),
+    timezone: text(value.timezone, base.timezone),
+    sessionPolicy: oneOf(value.sessionPolicy, ["new", "existing"] as const, base.sessionPolicy),
+    sessionRetention: oneOf(value.sessionRetention, ["keep", "delete"] as const, base.sessionRetention),
+    conversationMode: oneOf(value.conversationMode, ["chat", "workspace"] as const, base.conversationMode),
+    enabled: typeof value.enabled === "boolean" ? value.enabled : base.enabled,
+    trigger: {
+      mode: oneOf(
+        rawTrigger.mode,
+        // "manual" only survives where the base already is manual (an edit of a
+        // manual task). A stored *new-task* draft that predates this change must
+        // not restore the dead default the form no longer offers.
+        base.trigger.mode === "manual"
+          ? ["manual", ...TRIGGER_MODES] as const
+          : TRIGGER_MODES,
+        base.trigger.mode,
+      ),
+      date: text(rawTrigger.date, base.trigger.date),
+      time: text(rawTrigger.time, base.trigger.time),
+      everyMinutes: text(rawTrigger.everyMinutes, base.trigger.everyMinutes),
+      days: text(rawTrigger.days, base.trigger.days),
+      day: text(rawTrigger.day, base.trigger.day),
+      month: text(rawTrigger.month, base.trigger.month),
+    },
+  };
+}
+
 /** The payload `createTask` / `updateTask` take, from the draft. */
 function draftPayload(draft: Draft): Record<string, unknown> {
   return {
@@ -169,7 +267,7 @@ function draftPayload(draft: Draft): Record<string, unknown> {
 }
 
 /** Why the form cannot be submitted yet, or null when it can. */
-function draftProblem(draft: Draft): "name" | "prompt" | "cwd" | "model" | "thinking" | "date" | "time" | null {
+function draftProblem(draft: Draft): "name" | "prompt" | "cwd" | "model" | "thinking" | "trigger" | "date" | "time" | null {
   if (!draft.name.trim())
     return "name";
   if (!draft.prompt.trim())
@@ -181,6 +279,10 @@ function draftProblem(draft: Draft): "name" | "prompt" | "cwd" | "model" | "thin
     return "model";
   if (!draft.thinkingLevel)
     return "thinking";
+  // A trigger is required, like the model: nothing else starts a scheduled task,
+  // and a manual one has no next due time at all.
+  if (draft.trigger.mode === "")
+    return "trigger";
   if (draft.trigger.mode === "once" && !/^\d{4}-\d{2}-\d{2}$/.test(draft.trigger.date.trim()))
     return "date";
   // A one-off also needs a time: the desktop no longer seeds one the user
@@ -203,20 +305,35 @@ function intervalLabel(
 }
 
 /**
- * Date + time at minute precision, localized. Matches the desktop's
- * `formatDateTime` so both clients describe the same instant the same way.
+ * Date + time at minute precision, localized on the task's own clock.
+ *
+ * `timeZone` is the task's, not the viewer's: a task scheduled for 09:00
+ * Asia/Shanghai is 09:00 there whatever the phone is set to, and the desktop
+ * already renders it that way (`formatDateTime(…, task.timezone)`). Without it
+ * the two clients showed different wall clocks for the same run, which is
+ * exactly the reading a schedule must not disagree about. An unknown zone falls
+ * back to the phone's clock rather than throwing.
  */
-function formatWhen(value: string | number, locale: string): string {
+function formatWhen(value: string | number, locale: string, timeZone?: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime()))
     return String(value);
-  return new Intl.DateTimeFormat(locale, {
+  const options: Intl.DateTimeFormatOptions = {
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",
     minute: "2-digit",
-  }).format(date);
+  };
+  if (timeZone)
+    options.timeZone = timeZone.trim();
+  try {
+    return new Intl.DateTimeFormat(locale, options).format(date);
+  }
+  catch {
+    delete options.timeZone;
+    return new Intl.DateTimeFormat(locale, options).format(date);
+  }
 }
 
 function summarize(
@@ -300,7 +417,9 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
   const styles = useStyles();
   const { t, i18n } = useTranslation();
   const remote = useRemoteControls();
-  const tasks = useDesktopResource(remote.listTasks, 0, desktopOnline);
+  // `desktopOnline` disables controls; reading needs the machine to be its own
+  // controller too (see `RemoteControls.desktopReadable`).
+  const tasks = useDesktopResource(remote.listTasks, 0, desktopOnline && remote.desktopReadable);
   const [openId, setOpenId] = useState<string | null>(null);
   /** Creating opens the same editor with no task behind it. */
   const [creating, setCreating] = useState(false);
@@ -321,6 +440,29 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
   // `writing` guard).
   const writing = useRef(false);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
+
+  /**
+   * The form's draft slot on this machine.
+   *
+   * A task id is only meaningful on the desktop that owns it, so the pair is
+   * the identity. `unknown` is the brief window before the connection reports
+   * which machine it is — the draft still saves, and a later mount on the same
+   * machine simply uses the real key.
+   */
+  const draftKeyFor = useCallback(
+    (taskId: string | null) => taskDraftKey(remote.credentials?.expectedDesktopId ?? "unknown", taskId),
+    [remote.credentials],
+  );
+  /**
+   * Drop a draft the user has left behind.
+   *
+   * A form that is saved, cancelled, deleted or backed out of has no unfinished
+   * work any more; keeping its draft would hand the next open a page of edits
+   * the task itself no longer has.
+   */
+  const discardDraft = useCallback((taskId: string | null) => {
+    void clearTaskDraft(draftKeyFor(taskId));
+  }, [draftKeyFor]);
 
   const loadDetail = useCallback(async (taskId: string) => {
     const [nextDetail, nextRuns] = await Promise.all([
@@ -354,7 +496,11 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
   // gesture and the header arrow call — otherwise a swipe out of a task left
   // the whole Tasks page (and the list's scroll position) behind.
   const goBackOneLevel = useCallback(() => {
-    // The form sits above the task: back from it is the task, not the list.
+    // Back is not "throw this away": the phone's system gesture and the header
+    // arrow are the way out of a screen, and a form a minute's phone call
+    // interrupted is why the draft exists at all. The draft therefore stays —
+    // it comes back when the form is opened again — and only the two deliberate
+    // endings clear it: Cancel, and a save that landed.
     if (settingsOpen) {
       setSettingsOpen(false);
       return true;
@@ -418,6 +564,7 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
   const remove = (task: RemoteTaskDetail) => {
     void mutate(async () => {
       await remote.deleteTask(task.id);
+      discardDraft(task.id);
       close();
     });
   };
@@ -430,9 +577,13 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
         failed={failed}
         kind="create"
         settings={settings}
-        onCancel={close}
+        onCancel={() => {
+          discardDraft(null);
+          close();
+        }}
         onCreate={draft => void mutate(async () => {
           await remote.createTask(draftPayload(draft));
+          discardDraft(null);
           close();
         })}
       />
@@ -487,7 +638,7 @@ export function TasksSettingsPage({ desktopOnline, settings, onOpenConversation,
                   </View>
                     <Text style={settingsStyles.description}>
                       {summarize(t, task, i18n.language)}
-                      {task.nextDueAt ? ` · ${formatWhen(task.nextDueAt, i18n.language)}` : ""}
+                      {task.nextDueAt ? ` · ${formatWhen(task.nextDueAt, i18n.language, task.timezone)}` : ""}
                     </Text>
                   </Pressable>
                 ))}
@@ -543,15 +694,77 @@ function TaskForm({
   const styles = useStyles();
   const { t } = useTranslation();
   const remote = useRemoteControls();
-  const models = useDesktopResource(remote.listSettingsModels, 0, desktopOnline);
+  const models = useDesktopResource(remote.listSettingsModels, 0, desktopOnline && remote.desktopReadable);
   // Provider id → display name (same source the Models page groups by), so a
   // model chip can say which vendor it runs on.
-  const providers = useDesktopResource(remote.listProviders, 0, desktopOnline);
+  const providers = useDesktopResource(remote.listProviders, 0, desktopOnline && remote.desktopReadable);
   const providerNames = useMemo(() => new Map(
     [...providers.data?.builtin ?? [], ...providers.data?.custom ?? []].map(provider => [provider.id, provider.name]),
   ), [providers.data]);
   const [draft, setDraft] = useState<Draft>(() => detail ? draftFrom(detail) : newDraft());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  /**
+   * Where this form's unfinished work is kept between mounts.
+   *
+   * The form is long and the phone leaves the app at a moment's notice; a draft
+   * that lives only in state came back empty after the process was killed. It
+   * is read once when the form opens and written as it changes, so the next
+   * open — after a cold start, or after coming back from another app — finds
+   * what was being typed.
+   */
+  const draftKey = taskDraftKey(
+    remote.credentials?.expectedDesktopId ?? "unknown",
+    kind === "edit" ? detail!.id : null,
+  );
+  /**
+   * The slot whose stored draft has been read (or found absent).
+   *
+   * A key rather than a flag: a pairing whose desktop id only arrives after the
+   * first render changes `draftKey` without remounting the form, and a bare
+   * "loaded" flag would let the write effect replace the new slot's draft before
+   * anything had read it.
+   */
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const draftReady = loadedKey === draftKey;
+  const edited = useRef(false);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    let active = true;
+    void loadTaskDraft(draftKey).then(stored => {
+      if (!active) return;
+      // An edit draft written against a prompt that has since changed is not
+      // this task's work any more: the desktop's new prompt wins, and the stale
+      // slot is dropped rather than offered back.
+      const currentVersion = kind === "edit" ? detail?.promptVersion ?? null : null;
+      const usable = stored && (kind === "create" || stored.promptVersion === currentVersion);
+      if (stored && !usable) void clearTaskDraft(draftKey);
+      if (usable && !edited.current) {
+        const restored = restoredDraft(stored.draft, draft);
+        if (restored) setDraft(restored);
+      }
+      setLoadedKey(draftKey);
+    });
+    return () => { active = false; };
+    // `draft` is read as the fallback shape only; re-running on it would reload
+    // the stored draft over every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey, detail?.promptVersion, kind]);
+  useEffect(() => {
+    // Until the stored draft has been read, writing would replace the very
+    // draft this mount is about to restore with the blank one. And a form the
+    // user has only looked at is not a draft at all: storing the task's own
+    // values would later be "restored" over a task somebody has since edited
+    // elsewhere (the prompt version check catches a prompt change, not a
+    // schedule change).
+    if (!draftReady || !edited.current) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      void saveTaskDraft(draftKey, draft, kind === "edit" ? detail?.promptVersion ?? null : null);
+    }, 250);
+    return () => {
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+    };
+  }, [draft, draftKey, draftReady, detail?.promptVersion, kind]);
   // Which of the editor's two pages is on screen: an existing task opens on
   // what it did, with the form one level down behind the Settings button.
   const taskPage = kind === "edit" && !settingsOpen;
@@ -587,9 +800,16 @@ function TaskForm({
     enabledModels.find(model => modelKey(model) === draft.modelId),
   );
   const thinkingLevel = draft.thinkingLevel ? (resolvedLevel ?? draft.thinkingLevel) : "";
-  const patch = (values: Partial<Draft>) => setDraft(current => ({ ...current, ...values }));
-  const patchTrigger = (values: Partial<DraftTrigger>) =>
+  const patch = (values: Partial<Draft>) => {
+    // A keystroke makes the on-screen form the user's own: a stored draft that
+    // arrives after it must not overwrite what is being typed.
+    edited.current = true;
+    setDraft(current => ({ ...current, ...values }));
+  };
+  const patchTrigger = (values: Partial<DraftTrigger>) => {
+    edited.current = true;
     setDraft(current => ({ ...current, trigger: { ...current.trigger, ...values } }));
+  };
   const problem = draftProblem(draft);
   const trigger = draft.trigger;
 
@@ -606,7 +826,12 @@ function TaskForm({
       await remote.updateTask(detail!.id, draftPayload({ ...draft, thinkingLevel }));
     });
     // A save that did not land keeps the form open: the draft is its own retry.
-    if (saved) onCloseSettings?.();
+    // A save that landed has the task on the desktop, so the stored draft has
+    // nothing left to recover.
+    if (saved) {
+      void clearTaskDraft(draftKey);
+      onCloseSettings?.();
+    }
   };
 
   return (
@@ -646,7 +871,7 @@ function TaskForm({
                 {/* The way into the form. Leaving it is the same level back as
                     everywhere else (the header arrow, the system back
                     gesture), so it needs no button of its own. */}
-                <Button compact label={t("tasks.settings")} variant="secondary" disabled={busy} onPress={() => onOpenSettings?.()} />
+                <Button compact label={t("tasks.edit")} variant="secondary" disabled={busy} onPress={() => onOpenSettings?.()} />
               </View>
               {/* The confirmation is a sentence, so it gets its own line under the row. */}
               {confirmDelete
@@ -701,7 +926,7 @@ function TaskForm({
             <>
             {/* The heading says which page this is: a new task, or the form
                 that changes an existing one (whose name is its first field). */}
-            <SettingsSection title={kind === "create" ? t("tasks.newTitle") : t("tasks.settings")}>
+            <SettingsSection title={kind === "create" ? t("tasks.newTitle") : t("tasks.editTitle")}>
               {/* A new task is cancelled from here; an existing one leaves the
                   form with the level back (header arrow / system gesture), or
                   by saving. */}
@@ -823,42 +1048,6 @@ function TaskForm({
                 </View>
               </SettingsField>
 
-              {/* The trigger times are read on the desktop's clock, not the
-                  phone's, so the empty choice says "desktop" rather than
-                  "this device". A zone the chips do not offer can be typed;
-                  the desktop refuses a name it cannot resolve. */}
-              <SettingsField
-                label={t("tasks.form.timezone")}
-                hint={t("tasks.form.timezoneHint")}
-              >
-                <View style={settingsStyles.actions}>
-                  <Choice
-                    disabled={busy}
-                    label={t("tasks.form.timezoneDesktop")}
-                    onPress={() => patch({ timezone: "" })}
-                    selected={draft.timezone.trim() === ""}
-                  />
-                  {["Asia/Shanghai", "UTC", "Europe/Berlin", "America/New_York"].map(zone => (
-                    <Choice
-                      disabled={busy}
-                      key={zone}
-                      label={zone}
-                      onPress={() => patch({ timezone: zone })}
-                      selected={draft.timezone.trim() === zone}
-                    />
-                  ))}
-                </View>
-                <TextInput
-                  accessibilityLabel={t("tasks.form.timezone")}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  placeholder={t("tasks.form.timezonePlaceholder")}
-                  style={settingsStyles.input}
-                  value={draft.timezone}
-                  onChangeText={timezone => patch({ timezone })}
-                />
-              </SettingsField>
-
               <SettingsField label={t("tasks.form.session")} hint={draft.sessionPolicy === "existing" ? t("tasks.form.sessionExistingHint") : undefined}>
                 <View style={settingsStyles.actions}>
                   {(["new", "existing"] as const).map(policy => (
@@ -912,8 +1101,14 @@ function TaskForm({
             </SettingsSection>
 
             <SettingsSection title={t("tasks.form.trigger")}>
+              {/* No "manual" as a fresh choice: the desktop dropped it when it
+                  dropped the run-now button, and the phone has none either — a
+                  task that never fires and that nothing can start is not a
+                  scheduled task. A task that is already manual keeps its own
+                  chip so an edit round-trips instead of quietly changing what
+                  the task does. */}
               <View style={settingsStyles.actions}>
-                {(["manual", "once", "interval", "daily", "weekly", "monthly", "yearly"] as const).map(mode => (
+                {(trigger.mode === "manual" ? (["manual", ...TRIGGER_MODES] as const) : TRIGGER_MODES).map(mode => (
                   <Choice
                     disabled={busy}
                     key={mode}
@@ -926,16 +1121,32 @@ function TaskForm({
               {trigger.mode === "once"
                 ? (
                     <SettingsField label={t("tasks.form.date")}>
-                      {/* A time is required with it: the desktop's form refuses a
-                          one-off without both, and this payload must match. */}
-                      <TextInput accessibilityLabel={t("tasks.form.date")} placeholder="2026-12-24" style={settingsStyles.input} value={trigger.date} onChangeText={date => patchTrigger({ date })} />
+                      {/* A picker here too: a `2026-12-24` placeholder read as a
+                          date already chosen, which is why the desktop replaced
+                          its text field with a date picker. A time is required
+                          with it, and this payload must match the desktop's. */}
+                      <DateField
+                        disabled={busy}
+                        label={t("tasks.form.date")}
+                        onChange={date => patchTrigger({ date })}
+                        value={trigger.date}
+                      />
                     </SettingsField>
                   )
                 : null}
-              {trigger.mode !== "manual" && trigger.mode !== "interval"
+              {triggerReadsClock(trigger.mode)
                 ? (
                     <SettingsField label={t("tasks.form.time")}>
-                      <TextInput accessibilityLabel={t("tasks.form.time")} style={settingsStyles.input} value={trigger.time} onChangeText={time => patchTrigger({ time })} />
+                      {/* A picker, like the desktop's native time input: the filed
+                          field needed the keyboard, which covered the bottom of
+                          this form, and a schedule is a choice from 24 hours
+                          rather than something to spell out. */}
+                      <TimeField
+                        disabled={busy}
+                        label={t("tasks.form.time")}
+                        onChange={time => patchTrigger({ time })}
+                        value={trigger.time}
+                      />
                     </SettingsField>
                   )
                 : null}
@@ -948,8 +1159,22 @@ function TaskForm({
                 : null}
               {trigger.mode === "weekly"
                 ? (
-                    <SettingsField label={t("tasks.form.days")} hint="mon,tue,wed">
-                      <TextInput accessibilityLabel={t("tasks.form.days")} autoCapitalize="none" style={settingsStyles.input} value={trigger.days} onChangeText={days => patchTrigger({ days })} />
+                    <SettingsField label={t("tasks.form.days")}>
+                      {/* Seven toggles, not a text field asking the user to spell
+                          `mon,tue,wed`: the desktop's form draws the same seven
+                          checkboxes, and a typed list had no way to say which
+                          names it would accept. */}
+                      <View style={settingsStyles.actions}>
+                        {WEEKDAYS.map(day => (
+                          <Choice
+                            disabled={busy}
+                            key={day}
+                            label={t(`tasks.weekday.${day}`)}
+                            onPress={() => patchTrigger({ days: toggleDay(trigger.days, day) })}
+                            selected={selectedDays(trigger.days).includes(day)}
+                          />
+                        ))}
+                      </View>
                     </SettingsField>
                   )
                 : null}
@@ -969,6 +1194,25 @@ function TaskForm({
                 ? (
                     <SettingsField label={t("tasks.form.day")} hint={t("tasks.form.shortMonthHint")}>
                       <TextInput accessibilityLabel={t("tasks.form.day")} keyboardType="number-pad" style={settingsStyles.input} value={trigger.day} onChangeText={day => patchTrigger({ day })} />
+                    </SettingsField>
+                  )
+                : null}
+              {/* The zone belongs to the schedule, not to the task: it says which
+                  clock the times just chosen are read on, so it is asked inside
+                  the trigger, after the mode that has times — the desktop asks
+                  for it in exactly this place, and only for a mode that has one.
+                  Empty means "the desktop's own zone", which is why it is a row
+                  of its own rather than a blank field. */}
+              {triggerReadsClock(trigger.mode)
+                ? (
+                    <SettingsField label={t("tasks.form.timezone")}>
+                      <TimezoneField
+                        disabled={busy}
+                        hint={t("tasks.form.timezoneHint")}
+                        label={t("tasks.form.timezone")}
+                        onChange={timezone => patch({ timezone })}
+                        value={draft.timezone}
+                      />
                     </SettingsField>
                   )
                 : null}

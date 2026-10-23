@@ -13,6 +13,8 @@ import { peerMachineStatus } from "./desktopStatus";
 import type { MachineSummary, MachineStatus } from "./desktopStatus";
 import type { DesktopCommands } from "./desktopCommands";
 import { prepareTaskNotifications } from "../notifications/taskNotifications";
+import i18n from "../i18n";
+import { AppAlert } from "../components/appAlerts";
 import { connectionPresentation as buildConnectionPresentation } from "./connectionPresentation";
 import type { ConnectionPresentation } from "./connectionPresentation";
 import type { CatalogSyncState } from "./useSessionCatalog";
@@ -63,6 +65,16 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
    */
   takeControl(): Promise<void>;
   desktopOnline: boolean;
+  /**
+   * Whether this desktop answers *reads*.
+   *
+   * Online is not enough: a machine another device drives refuses every command
+   * before it reaches a handler (`superseded`), so a page that read it anyway
+   * showed "could not read the desktop" over a machine that was answering
+   * perfectly well — the user just had not taken control. Pages that load
+   * something from the desktop gate on this and say why instead.
+   */
+  desktopReadable: boolean;
   hasConnectedContent: boolean;
   agentAvailable: boolean;
   connectionPresentation: ConnectionPresentation;
@@ -101,6 +113,7 @@ interface RemoteContextValue extends ReturnType<typeof useDesktopManagement> {
   refreshSessionUsage: () => Promise<void>;
   approvalTier: string;
   sandboxAvailable: boolean;
+  sandboxCode?: string;
   busy: boolean;
   compacting: boolean;
   fileTransferSupported: boolean;
@@ -318,6 +331,7 @@ function samePublishedData(previous: RuntimeEntry | undefined, next: RuntimeEntr
     && previous.catalog.catalogSync === next.catalog.catalogSync
     && previous.catalog.approvalTier === next.catalog.approvalTier
     && previous.catalog.sandboxAvailable === next.catalog.sandboxAvailable
+    && previous.catalog.sandboxCode === next.catalog.sandboxCode
     && previous.conversation.modelId === next.conversation.modelId
     && previous.conversation.thinkingLevel === next.conversation.thinkingLevel
     && previous.conversation.sessionUsage === next.conversation.sessionUsage;
@@ -354,6 +368,8 @@ function DesktopRuntimeHost({
   icon,
   active,
   foreground,
+  onUnpaired,
+  verifyPairing,
   publish,
 }: {
   desktopId: string;
@@ -361,9 +377,21 @@ function DesktopRuntimeHost({
   icon?: string;
   active: boolean;
   foreground: boolean;
+  onUnpaired(desktopId: string): void;
+  verifyPairing(credentials: RemoteCredentials): Promise<unknown>;
   publish(entry: RuntimeEntry): void;
 }): null {
-  const runtime = useDesktopRuntime({ desktopId, active, foreground, label });
+  // Stable per machine: the connection rebuilds its callbacks when this one
+  // changes, and a fresh arrow on every render would reconnect on every render.
+  const unpaired = useCallback(() => onUnpaired(desktopId), [desktopId, onUnpaired]);
+  const runtime = useDesktopRuntime({
+    desktopId,
+    active,
+    foreground,
+    label,
+    onUnpaired: unpaired,
+    verifyPairing,
+  });
   const entry = useMemo<RuntimeEntry>(
     () => (icon ? { ...runtime, icon } : { ...runtime }),
     [icon, runtime],
@@ -464,6 +492,7 @@ function machineSurface(
     error: connection?.error ?? app.error,
     presence,
     desktopOnline: connection?.desktopOnline ?? false,
+    desktopReadable: (connection?.desktopOnline ?? false) && presence?.control !== "standby",
     hasConnectedContent: connection?.hasConnectedContent ?? false,
     catalogSync: runtime?.catalog.catalogSync ?? {
       sessions: "idle", workspaces: "idle", models: "idle", settings: "idle",
@@ -494,6 +523,7 @@ function machineSurface(
     refreshSessionUsage: runtime?.conversation.refreshSessionUsage ?? noop,
     approvalTier: runtime?.catalog.approvalTier ?? "off",
     sandboxAvailable: runtime?.catalog.sandboxAvailable ?? false,
+    sandboxCode: runtime?.catalog.sandboxCode,
     busy: runtime?.busy ?? false,
     fileTransferSupported: connection?.fileTransferSupported ?? false,
     capabilities: connection?.capabilities ?? new Set<string>(),
@@ -674,6 +704,26 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
   }, []);
+
+  /**
+   * A desktop ended this phone's pairing.
+   *
+   * The desktop is the authority on its own pairings: once it says the device
+   * was unpaired — by its own notice, or by refusing to renew the credentials —
+   * there is nothing left for the phone to retry. Keeping the record produced a
+   * "已断开 / 重试" screen against a pairing that could never come back, so the
+   * record is dropped and the user is told why; the picker (or the pairing
+   * screen, if it was the only one) is what is left, which is the one honest
+   * answer.
+   */
+  const { forgetDesktop } = pairing;
+  const forgetUnpaired = useCallback((desktopId: string) => {
+    const name = pairing.desktops.find(desktop => desktop.desktopId === desktopId)?.name
+      || desktopId;
+    void forgetDesktop(desktopId).then(() => {
+      AppAlert.alert(i18n.t("desktops.unpairedTitle"), i18n.t("desktops.unpaired", { name }));
+    });
+  }, [forgetDesktop, pairing.desktops]);
 
   const { selectDesktop } = pairing;
   const switchDesktop = useCallback(
@@ -1006,6 +1056,7 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     activeRuntime?.catalog.rename,
     activeRuntime?.catalog.renameWorkspace,
     activeRuntime?.catalog.sandboxAvailable,
+    activeRuntime?.catalog.sandboxCode,
     activeRuntime?.catalog.sessions,
     activeRuntime?.catalog.setSessionPinned,
     activeRuntime?.catalog.setWorkspacePinned,
@@ -1159,6 +1210,8 @@ export function RemoteProvider({ children }: PropsWithChildren) {
               icon={desktop.icon}
               active={desktop.desktopId === activeDesktopId}
               foreground={foreground}
+              onUnpaired={forgetUnpaired}
+              verifyPairing={pairing.verifyPairing}
               publish={publish}
             />
           ))}

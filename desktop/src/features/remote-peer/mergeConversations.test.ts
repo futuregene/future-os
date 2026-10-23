@@ -33,17 +33,66 @@ function catalog(desktopId: string, sessions: RemoteCatalog["sessions"]): Remote
 const ALL: DeviceFilter = { kind: "all" };
 
 describe("mergeConversations", () => {
-  it("interleaves local threads and remote sessions by time, not by source", () => {
+  it("interleaves local threads and remote sessions by when they started, not by source", () => {
     const merged = mergeConversations(
-      [thread({ id: "local_old", updatedAt: 100 }), thread({ id: "local_new", updatedAt: 900 })],
+      [thread({ id: "local_old", createdAt: 100 }), thread({ id: "local_new", createdAt: 900 })],
       [catalog("desktop_a", [
-        { sessionId: "a_mid", title: "a mid", lastMessageAt: 500 },
-        { sessionId: "a_newest", title: "a newest", lastMessageAt: 1_000 },
+        { sessionId: "a_mid", title: "a mid", createdAt: 500 },
+        { sessionId: "a_newest", title: "a newest", createdAt: 1_000 },
       ])],
       ALL,
     );
 
     expect(merged.map(row => row.id)).toEqual(["a_newest", "local_new", "a_mid", "local_old"]);
+  });
+
+  /**
+   * The start time is the key, not the last reply.
+   *
+   * A run rewrites `lastMessageAt` about once a second while it streams, so a
+   * list ranked by it swapped rows under the reader's thumb for as long as a run
+   * was going: the row that had just started climbed above its neighbours and
+   * stayed there once it finished. Ranking by the creation time leaves every row
+   * where it was made, whatever it is doing now.
+   */
+  it("keeps a streaming row in place while its last message advances", () => {
+    const ids = (streamingLastMessage: number) =>
+      mergeConversations(
+        [thread({ id: "older_started", createdAt: 100 })],
+        [catalog("desktop_a", [
+          {
+            sessionId: "streaming",
+            title: "streaming",
+            createdAt: 50,
+            lastMessageAt: streamingLastMessage,
+            streaming: true,
+          },
+        ])],
+        ALL,
+      ).map(row => row.id);
+
+    // The run is producing output, so its activity stamp is the newest thing in
+    // the list — and it still sits below the newer conversation, as when idle.
+    expect(ids(9_000)).toEqual(["older_started", "streaming"]);
+    expect(ids(9_000)).toEqual(ids(200));
+  });
+
+  /**
+   * A host older than the `createdAt` field has no start to rank by. It falls
+   * back to `lastMessageAt` — the key this list used for every row before — so
+   * its rows still interleave sensibly instead of dropping to the bottom.
+   */
+  it("ranks a row from a host without a start time by its last activity", () => {
+    const merged = mergeConversations(
+      [thread({ id: "local", createdAt: 500 })],
+      [catalog("desktop_a", [
+        { sessionId: "legacy_newest", title: "legacy", lastMessageAt: 2_000 },
+        { sessionId: "legacy_oldest", title: "legacy", lastMessageAt: 100 },
+      ])],
+      ALL,
+    );
+
+    expect(merged.map(row => row.id)).toEqual(["legacy_newest", "local", "legacy_oldest"]);
   });
 
   /**
@@ -54,10 +103,10 @@ describe("mergeConversations", () => {
    */
   it("keeps same-id sessions from different machines apart, each labelled", () => {
     const merged = mergeConversations(
-      [thread({ id: "shared", updatedAt: 100 })],
+      [thread({ id: "shared", createdAt: 100 })],
       [
-        catalog("desktop_a", [{ sessionId: "shared", title: "on a", lastMessageAt: 300 }]),
-        catalog("desktop_b", [{ sessionId: "shared", title: "on b", lastMessageAt: 200 }]),
+        catalog("desktop_a", [{ sessionId: "shared", title: "on a", createdAt: 300 }]),
+        catalog("desktop_b", [{ sessionId: "shared", title: "on b", createdAt: 200 }]),
       ],
       ALL,
     );
@@ -70,16 +119,17 @@ describe("mergeConversations", () => {
 
   it("ranks pinned rows above newer unpinned ones, from every source", () => {
     const merged = mergeConversations(
-      [thread({ id: "local_pinned", pinned: true, updatedAt: 1 })],
+      [thread({ id: "local_pinned", pinned: true, createdAt: 1 })],
       [catalog("desktop_a", [
-        { sessionId: "a_old_pinned", title: "pinned", pinned: true, lastMessageAt: 10 },
-        { sessionId: "a_fresh", title: "fresh", lastMessageAt: 10_000 },
+        { sessionId: "a_old_pinned", title: "pinned", pinned: true, createdAt: 10 },
+        { sessionId: "a_fresh", title: "fresh", createdAt: 10_000 },
       ])],
       ALL,
     );
 
-    // Within the pinned group the same recency rule applies, so the pinned row
-    // with the newer activity leads — pinned is a section, not a tie-breaker.
+    // Within the pinned group the same start-time rule applies, so the pinned
+    // row started later leads — pinned is a section, not a tie-breaker. The
+    // unpinned conversation started last is still below the pins.
     expect(merged.map(row => row.id)).toEqual(["a_old_pinned", "local_pinned", "a_fresh"]);
   });
 
@@ -124,10 +174,10 @@ describe("mergeConversations", () => {
    */
   it("puts this machine first, then a host by its device id, when timestamps tie", () => {
     const merged = mergeConversations(
-      [thread({ id: "shared", lastMessageAt: 7 })],
+      [thread({ id: "shared", createdAt: 7, lastMessageAt: 7 })],
       [
-        catalog("desktop_b", [{ sessionId: "shared", title: "on b", lastMessageAt: 7 }]),
-        catalog("desktop_a", [{ sessionId: "shared", title: "on a", lastMessageAt: 7 }]),
+        catalog("desktop_b", [{ sessionId: "shared", title: "on b", createdAt: 7, lastMessageAt: 7 }]),
+        catalog("desktop_a", [{ sessionId: "shared", title: "on a", createdAt: 7, lastMessageAt: 7 }]),
       ],
       ALL,
     );
@@ -298,8 +348,8 @@ describe("mergeConversations", () => {
   it("selects one machine's rows when filtered to it", () => {
     // Explicit timestamps: the local row is the newer one, so "all" must order
     // it first — the filter decides which rows are candidates, not their order.
-    const threads = [thread({ id: "local", updatedAt: 2_000 })];
-    const catalogs = [catalog("desktop_a", [{ sessionId: "a", title: "a", lastMessageAt: 1_000 }])];
+    const threads = [thread({ id: "local", createdAt: 2_000 })];
+    const catalogs = [catalog("desktop_a", [{ sessionId: "a", title: "a", createdAt: 1_000 }])];
     const ids = (filter: DeviceFilter) =>
       mergeConversations(threads, catalogs, filter).map(row => row.id);
 
@@ -396,7 +446,7 @@ describe("mergeConversations", () => {
      * A fork is a conversation's, so it is ranked — and filed — by that
      * conversation, not by its own time.
      *
-     * A fork's last message is newer than the one it was forked from, by
+     * A fork is started after the conversation it was forked from, by
      * construction, so ranking the rows themselves put the fork *above* its own
      * conversation: pressing the parent's `+` looked like it did nothing, because
      * the row it revealed had already been on screen, one line higher. The forks
@@ -407,9 +457,9 @@ describe("mergeConversations", () => {
     it("ranks a fork by its conversation, next to it", () => {
       const merged = rows(
         [
-          thread({ id: "parent", mode: "workspace", workspaceId: "ws_1", updatedAt: 500 }),
-          thread({ id: "fork", mode: "workspace", workspaceId: "ws_1", parentThreadId: "parent", updatedAt: 900 }),
-          thread({ id: "other", mode: "workspace", workspaceId: "ws_1", updatedAt: 950 }),
+          thread({ id: "parent", mode: "workspace", workspaceId: "ws_1", createdAt: 500 }),
+          thread({ id: "fork", mode: "workspace", workspaceId: "ws_1", parentThreadId: "parent", createdAt: 900 }),
+          thread({ id: "other", mode: "workspace", workspaceId: "ws_1", createdAt: 950 }),
         ],
         [],
       );

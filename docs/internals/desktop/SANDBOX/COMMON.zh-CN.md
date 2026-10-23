@@ -9,12 +9,12 @@
 | 维度 | macOS | Linux | Windows |
 |---|---|---|---|
 | OS 后端 / 档名 | Seatbelt / 沙箱保护 | system Bubblewrap / 沙箱保护 | Unelevated RestrictedToken + NTFS ACL / 写保护 |
-| shell 读保护 | SBPL 路径规则 | 启动时已有目标的遮罩 | **不提供** |
+| shell 读保护 | SBPL 路径规则 | 能力支持时遮罩启动时已有目标；仅写保护兼容模式不提供 | **不提供** |
 | shell 写保护 | SBPL 动态路径规则 | 只读 root + 可写/保护 mount | capability SID 写边界，受既有 ACL 与删除权限限制 |
 | 缺失保护目标 / 新 glob | 路径出现后仍按 profile 匹配 | 缺失目标省略；新目标仅结束检测 | 不存在对象无法附 ACE；glob 不强制 |
 | 额外授权 | 单命令精确 read/write 授权，仍在沙箱 | 单命令精确 read/write 授权，仍在沙箱 | 声明具体 write capability，批准后仍受限 |
 | 网络 | 开放 | 开放，无 seccomp | 开放 |
-| 可用性检查 | `sandbox-exec` 存在检查 | PATH / 版本与参数 / 实际 namespace-mount probe | 实际 token/ACL/private desktop/shell/cleanup probe |
+| 可用性检查 | `sandbox-exec` 存在检查 | PATH / 版本与参数 / 写保护和读保护独立运行探测 | 实际 token/ACL/private desktop/shell/cleanup probe |
 | 进度 | v2 已实现，历史 smoke 通过 | L0–L4/L6 接入已实现；最新加固与 L5 发布矩阵待复验 | W1–W7 已接入，有原生及安装包历史 PASS；部分产品交互需逐项复验 |
 
 注意：三个平台共用规则，不代表 OS 能表达同等规则。工具层审批也不等于任意 shell 子程序都受相同保护。

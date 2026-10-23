@@ -11,14 +11,13 @@
  * decoration: someone deciding what to bind needs to see what Enter, Escape and
  * the transcript already answer, or the table looks emptier than the keyboard is.
  */
-import type { CommandId } from "../keyboard/catalog";
 import { RotateCcw, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { IconButton } from "../../components/ui/IconButton";
 import { TextInput } from "../../components/ui/TextInput";
-import { formatBinding, keyLabel, parseBinding } from "../../lib/keybinding";
+import { formatBinding, parseBinding } from "../../lib/keybinding";
 import { isMacOS } from "../../lib/platform";
 import { aliasBindingTexts, CATEGORIES, COMMANDS, FIXED_KEYS, scopeOf } from "../keyboard/catalog";
 import { bindingLabel, isMultiKeyCommand, resetAllCommandBindings, resetCommandBinding, useShortcutOverrides } from "../keyboard/shortcuts";
@@ -31,15 +30,6 @@ export function ShortcutsPage() {
   const [query, setQuery] = useState("");
   const [recording, setRecording] = useState<string | null>(null);
   const isMac = isMacOS;
-
-  // The three levels, spelled with the *live* bindings: a fixed sentence naming
-  // ⌘⇧[ would keep naming it after the user rebound it.
-  const pair = (previous: CommandId, next: CommandId) => `${bindingLabel(previous, overrides, isMac)} / ${bindingLabel(next, overrides, isMac)}`;
-  const levels = t("page.levels", {
-    coarse: pair("group.previous", "group.next"),
-    fine: pair("thread.previous", "thread.next"),
-    questions: `${keyLabel("PageUp", isMac)} / ${keyLabel("PageDown", isMac)}`,
-  });
 
   const normalized = query.trim().toLowerCase();
   const matches = useMemo(
@@ -56,10 +46,6 @@ export function ShortcutsPage() {
   return (
     <div className="space-y-6">
       <SettingsSection>
-        {/* The three levels, then the search box: the sentences are part of the
-            page's own explanation, and a section keeps its `description` only
-            when it has a title — so they are content here. */}
-        <p className="px-1 text-xs leading-5 text-ink-muted">{levels}</p>
         <div className="flex items-center gap-2">
           <div className="relative min-w-0 flex-1">
             <Search aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-ink-muted" />
@@ -83,9 +69,6 @@ export function ShortcutsPage() {
             {t("page.resetAll")}
           </Button>
         </div>
-        {/* Said once, not on thirteen rows: the terminal's rule is a rule about
-            the *terminal*, and repeating it under every command reads as noise. */}
-        <p className="px-1 text-xs leading-5 text-ink-muted">{t("page.terminalBlocked")}</p>
       </SettingsSection>
 
       {matches.length === 0

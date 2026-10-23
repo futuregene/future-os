@@ -3,7 +3,7 @@
 > [English](agent-supervision.md)
 >
 > 设计日期：2026-10-21。源码基线：`a91fcf0ec`。
-> 状态：**P1 已落地**（监督器、`Busy` 让位、有界等待、熔断、三入口接线、Agent 自触发续跑）。
+> 状态：**P1 与 D6 已落地**（监督器、`Busy` 让位、有界等待、熔断、三入口接线、Agent 自触发续跑，以及 TUI 进程内托管 Agent）。
 > 本文把"已落地的设计"与"必须由用户拍板的产品决定"分开写，见 [§2](#2-判定分区设计-vs-产品决定)；待决项汇总在 [§12](#12-待决问题汇总)，实测记录在 [§13](#13-实测记录)。
 
 现在有三个入口会把 Agent 带起来：`future agent`、`future host`、`future tui`。三者都遵守同一个实例锁，但**谁先启动、谁负责、死了怎么办**三件事各有各的写法，缺的正是这一层。本文补的是这一层，不改变实例锁、存储格式和 RPC 契约。
@@ -16,11 +16,13 @@
 |---|---|---|---|
 | `future agent` | 它自己 | — | `~/.future/agent/agent-instance.lock`（服务锁）+ socket 的 `.owner.lock`（端点租约） |
 | `future host` | 取到服务锁时 | 否 | `~/.future/app/desktop.lock`（宿主锁）+ 视情况服务锁 |
-| `future tui` | 否 | 是：`future agent --grpc-addr auto` 子进程 | 都不持 |
+| `future tui` | 是：二进制为 `future` 时经 `crate::agent_host` 内嵌 | 否 | 内嵌时持服务锁 |
 
 三者的判定都收敛在 [`select_agent`](../../packages/rpc/src/connection.rs)：先握手外部服务，失败且确认本地端点缺席（`NotFound`/`ConnectionRefused`）+ [`check_instance_lock`](../../packages/rpc/src/connection.rs) 通过，才发 `LocalStartPermit`，最终由 [`AgentService::with_instance`](../../agent/src/service/mod.rs) 里的 `try_write()` 真正仲裁。
 
 ### 1.2 四个缺口
+
+四个缺口今天均已关闭（1–3 由 P1 关闭，4 由 D6 关闭）；保留这段是为了记住监督器取代了什么。两个 TUI 缺口（1 与 4）是由 [§7](#7-tui-改为进程内启动) 关闭的，不是靠改良 sidecar。
 
 1. **只有启动时拉起一次。** TUI 的 [`ensure_agent_running`](../../tui/src/agent_supervisor.rs) 在 `run` 开头调用一次，之后只剩 [grpc_client 的重连探测器](../../tui/src/rpc/grpc_client.rs)（1s→30s backoff，界面显示 "Connection to agent lost"），**永远不会重新 spawn**。Desktop 同理，只在 setup 里调一次。
 2. **headless 看不见外部 Agent 的死。** 主循环每秒调 [`check_running`](../../cli/src/headless/agent.rs)，但它只读**自己 host 的 `Phase::Failed`**；attach 外部 Agent 时 `Phase` 恒为 `Ready`，所以外部 Agent 死了 headless 继续 serving，然后每个 RPC 报错。
@@ -37,14 +39,14 @@
 | D4 | 等待必须有界，且期间界面必须说明（[§5](#5-等待必须有界)） | 设计要求 | **已认可** |
 | D5 | 崩溃循环熔断（[§6](#6-熔断)） | 设计 | **已认可** |
 | **P1** | 监督器核心 + `Busy` 分类 + 三个入口接线（[§10](#10-落地清单)） | 实现 | **已落地** |
-| **D6** | TUI 改为"外部优先，否则进程内启动"，去掉子进程 sidecar（[§7](#7-tui-改为进程内启动)） | **产品决定** | **待用户决定** |
+| **D6** | TUI 改为"外部优先，否则进程内启动"，去掉子进程 sidecar（[§7](#7-tui-改为进程内启动)） | **产品决定** | **已落地**：`tui/src/agent_host.rs` 经 `future_host` 内嵌，`tui/src/agent_supervisor.rs` 把 `start_in_process` 装成驱动；独立的 `future-tui` 二进制仍是 attach-only |
 | **P2** | 让 Agent 活过 TUI 退出：detached sidecar + `--ephemeral` 空闲退出（[§8](#8-生命周期与所有权)） | **产品决定** | **待用户决定** |
 | **D7** | Agent 被**用户主动**停掉后，其他客户端是否自动重启（[§4.3](#43-四种死法要分开)） | 产品决定 | 建议：不自动；**待确认** |
 | **D8** | 重启后的续跑语义：谁跑、什么时候算可续跑（§9.1、§9.2） | 设计 | **部分落地**：续跑判据已实现；`cause` 区分尚未实现（见 §12） |
 | **D9** | 触发也放进 Agent（用户 2026-10-21 提出） | 产品决定 | **已落地**：Agent 启动后自触发，开关 `~/.future/agent/settings.json` 的 `resumeInterruptedOnStart`（**默认开**，与桌面原有的 `autoResumeInterrupted` 一致）；Desktop 的一次性 pass 已退役 |
 | **D10** | 续跑不发用户消息，在 loop 内以 request-only 指令续上（§9.3，用户 2026-10-21 提出） | 产品决定 → 设计 | **已落地**，分三步：接受路径 + 指令、占位 tool 结果、放开 assistant 尾巴 |
 
-标注为"待用户决定"的两项**不是已定方案**，本文不为它们设计代码路径，只描述选项、代价与影响面。
+P2 与 D7 **不是已定方案**，本文不为它们设计代码路径，只描述选项、代价与影响面。
 
 标注"已落地"的项有代码与测试；标注"已认可"的仍只是方案：D8 的 cause 区分尚未实现。
 
@@ -76,10 +78,10 @@
 - `Candidate` 之前的抖动：`min(30s, 1s·2ⁿ) × U(0.8, 1.2)`，与 TUI 现有的重连 backoff 同量级，避免两个客户端同一毫秒一起抢。
 - `Blocked` 包含：版本/协议/存储契约不符、`agent_stopping`、显式 `--grpc-addr` 不可达、`FUTURE_DESKTOP_AGENT_MODE=external`。这些**永远不触发启动**（现有语义，保持）。
 
-### 4.1 需要新增的两个分类
+### 4.1 两个分类
 
-- `agent/src/service/instance.rs`：锁冲突提升为 typed error `InstanceBusy`，不再只靠文案。
-- `host/src/agent_host.rs`：新增 `Phase::Busy`，**不得落进 `Phase::Failed`**。`Failed` 是"清理不确定、保锁、本进程内不许重启"的终态；`Busy` 只是"让别人跑"，随后必须能 `detach()`（`Ready && !owned` → `Stopped`）再重新 `start()`。
+- `agent/src/service/instance.rs`：锁冲突是 typed error 而不是文案匹配——`InstanceFile::acquire` 用 `future_rpc::instance_lock::lock_conflict_message` 把 `WouldBlock` 答复出去，`future-host` 再映射成 `Error::AgentBusy`（[`host/src/agent_host.rs`](../../host/src/agent_host.rs)）。
+- `host/src/agent_host.rs`：输掉竞争**不得**落进 `Phase::Failed`。`Failed` 是"清理不确定、保锁、本进程内不许重启"的终态；实现上让位的那次尝试停在 `Stopped`，旁边带一个 `yield_reason`（没有单独的 `Phase::Busy`），这样 `start` 与状态页能报告持锁者自己的拒绝，而不是一次没人要求过的取消。
 
 ### 4.2 谁负责发起启动
 
@@ -87,7 +89,7 @@
 |---|---|---|---|
 | `future host` | 是 | 否（自己能内嵌，多进程无收益） | 是 |
 | Desktop GUI | 是 | 否 | 是 |
-| `future tui` | 见 D6 | 现状是；D6 采纳后否 | 是 |
+| `future tui` | 是（仅限合并后的 `future` 二进制） | 否 | 是 |
 | channels / goal / `future run` / 手机 | 否 | 否 | 只 attach |
 
 生产部署仍建议用 systemd / launchd / NSSM 包住 `future host`：进程管理器不会"自己也死掉"，客户端自愈只该是兜底。
@@ -107,7 +109,7 @@
 
 | 入口 | 探测节奏 | 等待上限 | 期间界面/终端 | 对它自己的 run 的影响 | 上限到达后 |
 |---|---|---|---|---|---|
-| `future tui` | 250ms，逐步放宽到 1s | **180s**（与 `AgentHost::START_TIMEOUT` 一致） | 状态行：`等待另一个客户端启动的 Agent（pid 1234 @ host-a）… 12s`；超过 30s 追加"冷数据根可能要几分钟，进度见 `<日志路径>`" | 输入仍可编辑；发送被拒并显示同一句话——**不排队、不假装成功** | 界面保持可用，转为每 30s 一次的后台探测，状态行常驻不隐藏 |
+| `future tui` | 1s（`WAIT_PROBE_INTERVAL`） | **180s**（`WAIT_FOR_OWNER`） | 状态行：`等待另一个客户端启动的 Agent（pid 1234 @ host-a）… 12s`；从 30s（`WAIT_NOTICE_AFTER`）起追加"冷数据根可能要几分钟，进度见 `<日志路径>`" | 输入仍可编辑；发送被拒并显示同一句话——**不排队、不假装成功** | 以 exit 1 报错并打印同一句话（TUI 的启动发生在界面之前，没有可退回的可用界面） |
 | `future host` | 250ms→1s | **180s** | stderr 每 30s 一行，同上信息 | 不接单（它本来就没起来） | **报错退出**（exit 1），打印持锁者 pid/host + 日志路径，交给进程管理器 |
 | Desktop GUI | 250ms→1s | **180s** | Agent 状态页显示"等待另一个客户端启动的 Agent"，带 pid/host | 依赖 Agent 的页面不可用 | 进入 `Failed` 并给"重试"按钮；不启动第二份 |
 
@@ -141,7 +143,7 @@
 
 ## 7 TUI 改为进程内启动
 
-> **待用户决定（D6）。** 本节只描述选项与代价。
+> **已落地（D6）。** TUI 现在就是这么做的：`tui/src/agent_host.rs` 在进程内托管完整 Agent（只有合并后的 `future` 二进制可以），`tui/src/agent_supervisor.rs` 负责 attach → 等待 → 启动。下面的内容是当时被接受的那个方案，保留其代价分析。
 
 ### 7.1 方案
 
@@ -222,7 +224,7 @@ TUI 采用与 headless 完全相同的策略：外部可达就 attach；缺席�
 | 会话必须在 `app.db` 里有 thread + run 行 | run 行由宿主提交 prompt 或 import 生成（discovery 每 60s） | 只有 TUI 在跑、没有任何宿主的机器没有候选；自愈首次拉起时补一次 import |
 | 其余产品门槛 | 最新 run、非 `waiting_approval`、7 天内、`autoResumeInterrupted`（默认开，等于代用户花钱） | 不改 |
 
-第 2 行是当前最容易改坏的一处：今天的 TUI 用 `SIGKILL` 杀自己的 sidecar（`OwnedAgent::drop`），**不走优雅停机**，所以 journal 留着未终止的 run，恰好可续跑。D6 改成进程内之后，正常退出会走优雅停机，run 变成 `cancelled`，**反而不可续跑**。
+第 2 行是最容易改坏的一处：TUI 过去用 `SIGKILL` 杀自己的 sidecar（`OwnedAgent::drop`），**不走优雅停机**，所以 journal 留着未终止的 run，恰好可续跑。D6 落地后 Agent 在进程内，正常退出会走优雅停机，run 变成 `cancelled`，**反而不可续跑**——这正是必须记录 cause 的原因（§9.2 前提一）。
 
 #### D8 的判据（已修正）
 
@@ -420,14 +422,13 @@ D10 优先于"发 prompt"的初版：先做"尾部是 tool"和"assistant 带 too
 
 | 改动 | 位置 |
 |---|---|
-| `Supervisor` / `Decision` / backoff；`StartupBlocked` 细分 `Busy` 与 `Blocked` | `packages/rpc/src/connection.rs` |
-| `InstanceBusy` typed error | `agent/src/service/instance.rs`、`agent/src/service/mod.rs` |
-| `Phase::Busy`、`detach()` | `host/src/agent_host.rs` |
+| `Supervisor` / `Decision` / backoff；`StartupBlocked` 细分 `Busy` 与 `Blocked` | `packages/rpc/src/supervision.rs`（`select_agent` 在 `packages/rpc/src/connection.rs`） |
+| 锁冲突的 typed error | `agent/src/service/instance.rs`（`lock_conflict_message`）、`host/src/agent_host.rs`（`Error::AgentBusy`） |
+| 让位而非失败：`Stopped` + `yield_reason`、`detach_attached()` | `host/src/agent_host.rs` |
 | 一次性启动 → 常驻监督；等待状态行（§5） | `tui/src/agent_supervisor.rs` |
 | `check_running` → 监督 tick（探端点，而不只看自己的 phase） | `cli/src/headless/agent.rs` |
 | 同一 tick 接入 | `desktop/src-tauri/src/agent_supervisor.rs` |
 | 熔断（§6） | 监督器内部，不落新文件 |
-| 锁冲突退出码（如 75）供父进程判定"输掉选举" | `agent/src/cli.rs` |
 | `CancelCause` 贯穿 abort → 终态记录（D8 的前提） | `agent/src/rpc/session.rs`、`agent/src/runtime/`、`agent/src/session/entry.rs` |
 | Agent 自触发续跑（§9.2）：Ready 后判定 + 原子提交，含护栏 | `agent/src/service/startup.rs`、`agent/src/rpc/`、`agent/src/config/mod.rs` |
 | `~/.future/agent/settings.json` 新增开关 + 旧 `app.db` 值的一次性映射 | `agent/src/config/mod.rs`、`packages/app-settings`、桌面设置页 |
@@ -438,12 +439,12 @@ D10 优先于"发 prompt"的初版：先做"尾部是 tool"和"assistant 带 too
 
 ### 后续
 
-- **D6**（TUI 内嵌）：`tui/Cargo.toml` 加 `future-host`；`environment::report` sink；删掉 spawn 分支与 `check_sidecar_program`。
-- **P2**（生命周期）：`--ephemeral` + 活跃订阅计数 + 空闲退出。
+- **D6**（TUI 内嵌）：已落地——`future-host` 已在 `tui/Cargo.toml`，`tui/src/agent_host.rs` 驱动它，spawn 分支与 `check_sidecar_program` 已删除。
+- **P2**（生命周期）：`--ephemeral` + 活跃订阅计数 + 空闲退出。尚未实现：`future agent` 没有 `--ephemeral` 参数。
 
 ## 11 验收
 
-全部是进程级测试，形态参照现有 `tui/tests/agent_sidecar_launch.rs`：
+全部是进程级测试，形态参照 `agent/tests/service_startup.rs`（实例锁与启动竞争）与 `cli/tests/remote_start_refusal.rs`（入口在任何 Agent 启动之前的拒绝）：
 
 1. **并发冷启动**：同一 fresh home 同时起 headless + tui → 恰好 1 份 Agent、另一方 attach、**没有任何一方报错退出**、instance id 一致。
 2. **owner 被 `kill -9`**：剩下的一/两个在预算内拉起 Agent，新 instance id，DB 完整，旧 run 变 interrupted。
@@ -463,12 +464,12 @@ D10 优先于"发 prompt"的初版：先做"尾部是 tool"和"assistant 带 too
 
 需要用户明确回答的（按影响面排序）：
 
-1. **D6：TUI 是否改为进程内启动？** 影响 TUI 的崩溃隔离、内存与冷启动；收益是三入口一条策略。
+1. ~~D6：TUI 是否改为进程内启动？~~（**已定**：已落地，见 §7）
 2. **P2：Agent 该不该活过 TUI 退出？** 选项 A（随启动者死 + 他人重启，会打断当前这一轮，但会话会续上，见 §9.1）vs B（detached + 空闲退出）。
 3. **D7：用户主动停止后，别的客户端要不要自动把它拉起来？** 建议不自动（尊重"我说停就停"），但需要确认。
 4. ~~续跑的默认值~~（已定）：`resumeInterruptedOnStart` 默认**开**，与桌面原有的 `autoResumeInterrupted` 一致，避免搬动机制时静默丢掉既有行为。
 5. **续跑要不要覆盖非交互来源的会话？**（channels / goal / CLI / 子会话）。默认建议：先只续"用户眼前对话"能识别的会话，其余需额外标记。
-6. **P1 开工许可。** 设计已认可，但三个入口的启动路径都会变；D8/D9/D10 的几项（cause、Agent 自触发、开关跟着执行者、无 user 续跑）建议一并入 P1，否则自愈会把会话停在半路。
+6. ~~P1 开工许可。~~（**已定**：已落地，见 §10）
 
 不需要用户决定、仅记录为实测可调的参数：等待上限 180s、熔断阈值 3 次/300s、冷却 60s 起步、`IDLE_GRACE` 120s、`future tui -p` 是否也内嵌。
 

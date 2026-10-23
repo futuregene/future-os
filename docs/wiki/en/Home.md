@@ -33,6 +33,7 @@ Three steps take you from download to your first answer:
 - [[Settings]] — sign in to the built-in **Future** provider, add your own provider, and choose which models appear.
 - [[Skills]] — browse, install, and use the built-in capability packs.
 - [[CLI (future)|CLI]] — an optional command-line tool for scripting and automation.
+- [[Model catalog|Models]] — every model FutureOS can reach, per provider.
 - [[FAQ]] — common questions and troubleshooting.
 
 ---

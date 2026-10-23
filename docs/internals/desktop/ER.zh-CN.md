@@ -113,6 +113,7 @@ Thread 表示用户可恢复、可继续、可管理的一段对话。
 | `workspace_id` | 所属 Workspace |
 | `mode` | `chat` 或 `workspace` |
 | `title` | 对话标题 |
+| `title_seed` | 对话创建时的占位标题（`store/schema.rs` 的 `threads.title_seed`，迁移 `v1.2.4-thread-title-seed`）；为空表示「永不自动改标题」。只有标题仍等于该占位值时才允许自动改名，用户重命名后即定型（`store/threads.rs`） |
 | `status` | `active`、`archived`、`deleted` |
 | `pinned` | 是否置顶 |
 | `readonly` | 是否只读 |
@@ -360,9 +361,9 @@ Agent 当前审批未决时应停在对应危险操作处等待用户明确允�
 - 批量操作使用 `batch_operation`，用于一组文件写入、批量删除、批量命令或跨多个资源的高风险动作。
 - **产品设计：** workspace 外的普通读取不拦截，也不产生 `outside_workspace_read` 审批；敏感路径仍由不可覆盖的敏感文件守卫按 `file_read` 处理。workspace 外的写入 / 编辑 / 删除继续通过 `outside_workspace_write` 等审批。
 - GUI 或 Agent 重启后遗留的 `pending` 审批**不**无条件取消：启动收敛保留它们，由 `reconcile_pending_approvals`（启动一次 + watchdog 周期）按 Agent `get_state.pendingApprovals` 的权威集合裁决——Agent 仍在等待的保留卡片（run 复活并回到 `waiting_approval`），Agent 已不持有的（在他处已决、已 abort、或 Agent 自身重启丢失）才转为 `cancelled`，本地缺失的可从 Agent payload 重建。非终态 Run 同样不启动即取消，而是经 `reconcile_interrupted_runs` + `reanimate_run` + active-run watchdog 按 Agent 实际状态收敛（GUI 崩溃期间 Agent 可能仍在运行；仅当 Agent 确认 run 已消失才 settle）。GUI 自己 settle 的行——`failed`，或启动收敛的 `cancelled`+`interrupted` 猜测——随后会按同一账本复读：在该 run 仍被 Agent 处理时写下的行（排队提交在 ack 处即返回 invoke 响应）会被复原，或在 Agent 完成后 settle 为 `completed`；用户中止与 `completed` 行永不复读。
-- **退出中断的对话会在下次启动时继续。** Agent 内嵌在应用里，退出即结束正在流式运行的那一轮：日志留下没有终态的 `run_started`，`get_run_state` 把它报为 `interruptedRun`，本地行保持非终态。每次启动、Agent 可达后，`resume_interrupted_runs_at_launch` 对每个对话的**最新** run 询问 Agent，只有得到该标记（不是 watchdog 会重新挂接的活跃/排队 run，也不是持久终态）时，才把该行 settle 为 `cancelled`+`interrupted`，并经 headless 管道提交一条继续指令——与手机发来的 prompt 同一条路径，`runs.trigger_message_id = resume:<run id>` 让第二次遍历找到已有续跑而不是重复提问。超过一周的 run、停在审批上的对话，以及关闭 `autoResumeInterrupted` 设置时的所有对话都不处理。
+- **退出中断的对话会在下次启动时继续。** Agent 内嵌在应用里，退出即结束正在流式运行的那一轮：日志留下没有终态的 `run_started`，`get_run_state` 把它报为 `interruptedRun`，本地行保持非终态。该续跑现在由 Agent 自己执行，每次启动后运行一次（`agent/src/rpc/resume.rs` 的 `resume_interrupted_sessions`，由 `agent/src/service/startup.rs:314` 调用）：最新 run 带该标记（不是 watchdog 重新挂接的活跃/排队 run，也不是持久终态）的会话会收到一条继续指令——日志是「哪一轮被中断」的唯一权威，实例锁保证只有一个进程发问。仍在流式、停在审批上、未配置模型或空闲超过一周的会话跳过；Agent 读取的偏好与 UI 开关写的是同一项 `resume_interrupted_on_start`（默认开，Desktop 的 `autoResumeInterrupted` 经 `store/app_settings.rs` 的 `write_agent_resume_policy` 写穿到它）。Desktop 保留自己的一半：`reconcile_interrupted_runs` 以 Agent 的账本为准 settle GUI 崩溃留下的未结行，未知原因重读而不猜测。
 - 如果审批通过后产生文件变更，再由 Review Changeset 展示实际修改对比。
-- P2 引入结构化 `action_payload` 和 `sandbox_boundary` 字段（设计细节见 git history，原 `P2_APPROVAL_MODEL.md`）。
+- P2 已加入结构化 `action_payload` 与 `sandbox_boundary` 字段；两者都是 `approval_requests` 的列（`store/schema.rs`），设计记录在 git history 里。
 - **v2（审批规则重构，2026-07-04）**：常规审批对象收敛为**文件路径访问**，规则改为**文件式**（`${WS}/.future/approval_rule.json`、`~/.future/approval_rule.json`，agent 直接读）；手动 shell 与 macOS/Linux escalation 仍是整命令审批，完整语义见 [SANDBOX/COMMON.zh-CN.md](SANDBOX/COMMON.zh-CN.md)。相应地：
   - `approval_requests` 新增 `save_suggestion`（TEXT，JSON）——审批卡片“本工作区/对话允许”的建议规则 `{path, access, action}`；敏感文件为空（只能允许一次）。
   - **三张预留配置表 `sandbox_config` / `approval_policy_config` / `approval_rules` 已删除**（2026-07-05）——规则迁到文件后它们成为死结构；对应 `store/approval_config.rs` 模块与三个 record 类型一并移除。旧库里遗留的空表无害（无代码引用），新库不再创建。Phase 2 曾短暂用 `approval_rules` 存规则并经 gRPC 下发，v2 已拆除该链路。
@@ -619,9 +620,9 @@ Object Reference 表示某个对象引用了另一个对象。
 - Message 中 `@` 引用的对象可以记录为 Object Reference。
 - Review File Change 对比的文件或 artifact 也可以记录为 Object Reference。
 
-## 5. 第一版建议表清单
+## 5. GUI 表清单
 
-第一版建议优先落地：
+GUI 数据库（`~/.future/app/app.db`）包含以下业务对象表：
 
 - `workspaces`
 - `threads`
@@ -634,9 +635,14 @@ Object Reference 表示某个对象引用了另一个对象。
 - `workspace_files`
 - `reference_targets`
 - `object_references`
-- `app_settings`（应用级设置键值表；缺键时取以下默认值，见 `store/app_settings.rs:64-77,212-262`）：`approval_tier`（默认 `off`，另可 `manual`/`sandbox`；未知值收敛为 `off`）、`hidden_models`、`title_language`（`en`/`zh`，默认 `en`，由 Desktop UI 镜像给后台标题生成）、`auto_compact_first_turn`（保留的存储键名，用于「首个回答后生成标题」；默认 true，从不触发压缩）、`auto_upgrade_skills`（true）、`auto_connect_remote`（false，仅非 release 构建消费）、`bell_on_complete`（true）、`skill_recommend`（true）、`skill_guide_dismissed` / `skill_intro_dismissed`（false）、`community_edition`（false，仅呈现层）以及内部 `device_id`。全部走既有键值表与缺键默认，无需结构性迁移。已退役的 `show_thinking` 键允许留在旧数据库中，但不再读取、写入或通过设置 API 返回，无需破坏性迁移；旧 `remote_enabled` / `remote_nats_url` 键同样不再读取，运行状态驻内存、地址由平台环境派生。
+- `app_settings`（应用级设置键值表；缺键时取以下默认值，默认值定义在 `packages/app-settings/src/lib.rs:424-440` 的 `defaults()` 与 `:462-500` 的 `read()`）：`approval_tier`（默认 `off`，另可 `manual`/`sandbox`/`auto`；未知值收敛为 `off`）、`hidden_models`、`title_language`（`en`/`zh`，默认 `en`，由 Desktop UI 镜像给后台标题生成）、`auto_compact_first_turn`（保留的存储键名，用于「首个回答后生成标题」；默认 true，从不触发压缩）、`auto_upgrade_skills`（true）、`auto_connect_remote`（true——Remote 页自己的开关，存在这里使重启后仍对已配对设备提供服务；`host/src/remote/mod.rs` 的 `remember_switch`）、`bell_on_complete`（true）、`skill_recommend`（false，用户主动开启才生效）、`skill_guide_dismissed` / `skill_intro_dismissed`（false）、`community_edition`（false，仅呈现层）、`auto_resume_interrupted`（true，写穿到 Agent 的 `resume_interrupted_on_start`，见 `store/app_settings.rs` 的 `write_agent_resume_policy`）以及内部 `device_id`。全部走既有键值表与缺键默认，无需结构性迁移。已退役的 `show_thinking` 键允许留在旧数据库中，但不再读取、写入或通过设置 API 返回，无需破坏性迁移；旧 `remote_enabled` / `remote_nats_url` 键同样不再读取，运行状态驻内存、地址由平台环境派生。
 - `agent_delete_outbox`（删除 Thread 时登记的 Agent 会话删除投递队列，后台重试直至 Agent 确认，见 `store/deletions.rs`）
-- `skill_reco_events`（每次真正展示给用户的技能推荐一行：`day`、`skill_id`、`message_hash`——回答「今天推荐了几次 / 该技能今天是否展示过 / 该消息是否已产生过推荐」；没有可推荐项的调用不写行，见 `store/skill_reco.rs` 与 `store/schema.rs:249-254` 的 DDL）
+- `skill_reco_events`（每次真正展示给用户的技能推荐一行：`day`、`skill_id`、`message_hash`——回答「今天推荐了几次 / 该技能今天是否展示过 / 该消息是否已产生过推荐」；没有可推荐项的调用不写行，见 `store/skill_reco.rs` 与 `store/schema.rs:262-268` 的 DDL）
+- `approval_assessments`（不可变的模型审批结果，一个审批请求一行——见 §4.8「自动审批审计」）
+
+> 迁移、血统与清理记账表不承载产品对象：`schema_migrations`、`app_schema_migrations`、
+> `app_database_identity`、`legacy_thread_bindings`、`thread_sources`、
+> `agent_delete_sources`、`managed_directory_cleanup`。各自记录什么见 §4.2 与 §7。
 
 > `messages`、`run_events`、`tool_calls`、`tool_outputs` 已从 GUI schema 删除（`DROPPED_TABLES` 在旧库清除）；其数据由独立 Agent SQLite 持久化，详见 §4.3、§4.5–4.7、§7。
 >

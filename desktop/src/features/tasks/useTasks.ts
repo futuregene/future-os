@@ -113,6 +113,16 @@ export function useTasks(backend: TaskBackend = localTaskBackend) {
       void reload();
   });
 
+  // A scheduled task's *definition* changed behind the panel's back: a phone
+  // toggled, edited, created or deleted it over Remote (the write happens in
+  // this process, so the store is already current — only the view is stale),
+  // or another process sharing this home did. No conversation changed, so the
+  // host says so with its own event instead of "threads-updated".
+  useTauriEvent("tasks-updated", () => {
+    if (backend.kind === "local")
+      void reload();
+  });
+
   const createTask = useCallback(async (input: TaskInput) => {
     const created = await backend.create(input);
     await reload();

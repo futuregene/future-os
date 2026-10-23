@@ -155,7 +155,15 @@ export function useHostCatalogueInvalidation(
     let cancelled = false;
     void listen<RemotePeerEvent>("remote-peer-event", (event) => {
       const { desktopId: source, kind, payload } = event.payload;
-      if (kind !== "event" || source !== desktopId)
+      if (source !== desktopId)
+        return;
+      if (kind === "resumed") {
+        forgetHostCatalogue(desktopId);
+        for (const domain of ["settings", "models", "skills"] as const)
+          sinkRef.current(domain);
+        return;
+      }
+      if (kind !== "event")
         return;
       const type = readString(payload, "type");
       if (!type)

@@ -113,6 +113,18 @@ macro_rules! define_supervisor {
             /// written by start (the slots it served), by a slot being added, and by an
             /// unpair.
             $visibility known: Mutex<std::collections::HashSet<String>>,
+            /// The physical device (`device_id`, declared by its client) behind
+            /// each pairing, by pair id.
+            ///
+            /// The platform allows one desktop to hold several pairings and does
+            /// not know that two of them are the same phone: pairing the same
+            /// device twice produced two rows, and the second one could never
+            /// take control because the first still held it. This map is what
+            /// lets a later declaration retire the older pairing.
+            $visibility client_devices: Mutex<HashMap<String, (String, u64)>>,
+            /// Declaration order for [`Supervisor::client_devices`]: a later
+            /// pairing of a device retires an earlier one, never the reverse.
+            $visibility client_device_seq: AtomicU64,
             $visibility last_error_code: Mutex<Option<String>>,
             $visibility start_lock: tokio::sync::Mutex<()>,
             $visibility start_requested: AtomicBool,
@@ -167,6 +179,8 @@ impl Supervisor {
             bridge_shared: Mutex::new(HashMap::new()),
             active: Arc::new(Mutex::new(None)),
             known: Mutex::new(std::collections::HashSet::new()),
+            client_devices: Mutex::new(HashMap::new()),
+            client_device_seq: AtomicU64::new(0),
             last_error_code: Mutex::new(None),
             start_lock: tokio::sync::Mutex::const_new(()),
             start_requested: AtomicBool::new(false),

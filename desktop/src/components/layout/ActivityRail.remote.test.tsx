@@ -321,16 +321,17 @@ describe("the rail's remote conversations", () => {
   it("keeps local and remote conversations in one ordered list", async () => {
     const view = await mountRail({
       deviceFilter: { kind: "all" },
-      remoteCatalogs: [catalogRow("sess_remote", { lastMessageAt: 9_000 })],
+      remoteCatalogs: [catalogRow("sess_remote", { createdAt: 9_000, lastMessageAt: 9_000 })],
       remotePeers: [peer],
-      threads: [thread("local_newer", { lastMessageAt: 10_000, title: "Local newer", updatedAt: 10_000 })],
+      threads: [thread("local_newer", { createdAt: 10_000, title: "Local newer", updatedAt: 10_000 })],
     });
 
     const titles = [...view.container.querySelectorAll("[title]")]
       .map(node => node.getAttribute("title")!.split(" · ")[0]);
     expect(titles).toContain("Local newer");
     expect(titles).toContain("Remote conversation");
-    // Newer first, regardless of which machine it lives on.
+    // The newer conversation first, regardless of which machine it lives on —
+    // the start time, which both machines report.
     expect(titles.indexOf("Local newer")).toBeLessThan(titles.indexOf("Remote conversation"));
     view.unmount();
   });

@@ -225,7 +225,7 @@ debug APK。
 
 首次启动后：
 
-1. 在 FutureOS 桌面端登录，打开 Remote，点击“配对并启动”。
+1. 在 FutureOS 桌面端登录，打开 Remote 页，用「添加设备」开始配对。
 2. 手机授予相机权限并扫描桌面端二维码。
 3. 配对成功后选择一个桌面会话，或创建新对话。
 
@@ -354,8 +354,8 @@ npm run ios:device
 1. 在 GitHub 仓库 Settings → Secrets 配置：
    - `IOS_DIST_CERT_P12_BASE64` / `IOS_DIST_CERT_P12_PWD` — iOS Distribution 证书。
    - `IOS_PROVISIONING_PROFILE_BASE64` — 主 App 的 App Store provisioning profile。
-   - Share Extension 默认不进入现有发版；启用需要独立 profile 和后续签名流程配置，
-     见 [签名配置](ios-platform-parity.zh-CN.md)，本次不修改工作流。
+   - Share Extension 不由该工作流签名；启用需要独立 profile 和单独的签名配置，
+     见 [签名配置](ios-platform-parity.zh-CN.md)。
    - `APPLE_API_KEY` / `APPLE_API_KEY_ID` / `APPLE_API_ISSUER` — App Store Connect API Key。
 2. 通过构建/发布协调工作流触发；iOS 子工作流不单独手动触发。
 3. 协调工作流传入纯数字 marketing version 与递增 build number。

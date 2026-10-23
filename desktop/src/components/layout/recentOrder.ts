@@ -4,10 +4,20 @@
  *
  * The rail's tree answers "where does this conversation live" — a workspace, or
  * the chats section — and the tree is the product's primary shape, so it stays
- * the default. This is the second view: it ignores the tree, forks and pinning
- * for its *order*, on one question, "what did I last touch". A pinned
- * conversation keeps its marker but not its place; a fork is a row of its own at
- * its own time (there is no parent above it to indent under).
+ * the default. This is the second view: it ignores the tree and pinning for its
+ * *order*, on one question, "what did I last touch". A pinned conversation
+ * keeps its marker but not its place.
+ *
+ * - A conversation that has children is **one row here**, not several. A fork,
+ *   and a session an agent started to do one piece of work (a `/future-goal`
+ *   worker), are not conversations the reader scans the recent list for — they
+ *   are the work *of* a conversation they did scan it for. So the stretches rank
+ *   only the top level, a conversation with no parent in this list, and a child
+ *   is drawn under its parent, indented, when that parent's `+` is opened. The
+ *   fold state is the rail's own (the one the tree folds with), so a parent
+ *   opened here is opened there too. Search is the one exception where a row
+ *   without its parent is drawn on its own: a match the reader asked for must not
+ *   be hidden behind a parent that did not match.
  *
  * The two stretches are ranked by different clocks, on purpose:
  *
@@ -43,7 +53,7 @@ const ACTIVE_STATUSES = new Set(["running", "queued", "waiting_approval"]);
  */
 export const RECENT_PAGE_SIZE = 30;
 
-/** One row, reduced to the facts the view orders and splits by. */
+/** One row, reduced to the facts the view orders, splits and nests by. */
 export interface RecentItem {
   /** Unique within the list; breaks ties so a poll cannot reshuffle rows. */
   key: string;
@@ -54,6 +64,15 @@ export interface RecentItem {
   createdAt: number | null;
   /** When it last produced a reply, or null when the source has no such stamp. */
   lastActivityAt: number | null;
+  /**
+   * The conversation this one hangs under, as a key in this list, or `null`.
+   *
+   * Resolved by the merge, not read from the row's own fields: a parent is only
+   * addressable when it is a row *of this list*, and a parent the device filter
+   * dropped leaves its child a root rather than a row that cannot be drawn.
+   * Absent for a root, and for a source that reports no lineage at all.
+   */
+  parentKey?: string | null;
 }
 
 export type RecentSectionKind = "active" | "earlier";
@@ -124,12 +143,133 @@ export function byActivity(a: RecentItem, b: RecentItem): number {
   return byStamp(a.lastActivityAt, b.lastActivityAt, a, b);
 }
 
+/** The view's rows, split by which ones rank as rows of their own. */
+export interface RecentTree<T> {
+  /** What the stretches rank: every row whose parent is not in this list. */
+  roots: T[];
+  /** Each row's children, in the order they arrived (the list's own order). */
+  children: Map<string, T[]>;
+}
+
+/**
+ * Split the rows into what the view ranks and what hangs under it.
+ *
+ * The view ranks conversations, not sessions: a conversation's children are its
+ * work, drawn inside its fold. A row whose parent is not a row here — dropped by
+ * a search, hidden by the device filter, archived, or gone — is a root, which is
+ * the tree's own rule and the only one that never loses a conversation. So is a
+ * row that names itself, and a malformed ring loses one edge rather than every
+ * row in it.
+ *
+ * Pinning is deliberately not consulted: a pinned child is still a child. The
+ * recent view has no pinned section to hoist it into — a pin there is a marker on
+ * the row — so hoisting one would put a session on the top level that its parent
+ * is supposed to explain.
+ */
+export function recentTree<T extends RecentItem>(rows: readonly T[]): RecentTree<T> {
+  const present = new Set(rows.map(row => row.key));
+  const parents = new Map<string, string>();
+  for (const row of rows) {
+    const parent = row.parentKey;
+    if (parent && parent !== row.key && present.has(parent))
+      parents.set(row.key, parent);
+  }
+  // One edge per ring is dropped, so a malformed lineage costs one row its place
+  // under a parent instead of costing every row in the ring its place at all.
+  const resolved = new Set<string>();
+  for (const key of present) {
+    const path = new Set<string>();
+    let id: string | undefined = key;
+    while (id && !resolved.has(id)) {
+      path.add(id);
+      const parent = parents.get(id);
+      if (parent && path.has(parent)) {
+        parents.delete(id);
+        break;
+      }
+      id = parent;
+    }
+    for (const visited of path) resolved.add(visited);
+  }
+  const roots: T[] = [];
+  const children = new Map<string, T[]>();
+  for (const row of rows) {
+    const parent = parents.get(row.key);
+    if (!parent) {
+      roots.push(row);
+      continue;
+    }
+    const siblings = children.get(parent);
+    if (siblings)
+      siblings.push(row);
+    else children.set(parent, [row]);
+  }
+  return { roots, children };
+}
+
+/** Where one drawn row sits in the view. */
+export interface RecentRowMeta {
+  /** How far it is indented under its root; a root itself is 0. */
+  depth: number;
+  /** Whether opening it would reveal rows of its own. */
+  hasChildren: boolean;
+}
+
+export interface RecentExpansion<T> {
+  /** The rows to draw, each parent before the children its fold reveals. */
+  rows: T[];
+  /** Where each drawn row sits, by row key. */
+  meta: Map<string, RecentRowMeta>;
+  /** Which root each drawn row hangs under, by row key — the keyboard's blocks. */
+  roots: Map<string, string>;
+}
+
+/**
+ * The deepest indent the view draws.
+ *
+ * The same three levels the tree flattens to: as much indentation as a rail has
+ * room for. A deeper chain keeps its rows and stops indenting rather than
+ * eating the title's width.
+ */
+const MAX_DEPTH = 2;
+
+/**
+ * A stretch's rows, with the children each opened row reveals.
+ *
+ * `rows` arrives ranked (a stretch's roots, in the order that stretch draws).
+ * An opened row is followed immediately by its children, one level in, and by
+ * their children if those are opened too. A child is therefore only ever drawn
+ * inside an ancestor's expansion — never as a row of the stretch's own.
+ */
+export function expandRecent<T extends RecentItem>(
+  rows: readonly T[],
+  tree: Pick<RecentTree<T>, "children">,
+  expanded: ReadonlySet<string>,
+): RecentExpansion<T> {
+  const out: RecentExpansion<T> = { rows: [], meta: new Map(), roots: new Map() };
+  function visit(row: T, depth: number, root: string, ancestors: ReadonlySet<string>) {
+    const kids = tree.children.get(row.key) ?? [];
+    out.rows.push(row);
+    out.meta.set(row.key, { depth: Math.min(depth, MAX_DEPTH), hasChildren: kids.length > 0 });
+    out.roots.set(row.key, root);
+    if (kids.length === 0 || !expanded.has(row.key) || ancestors.has(row.key))
+      return;
+    const next = new Set(ancestors);
+    next.add(row.key);
+    for (const kid of kids) visit(kid, depth + 1, root, next);
+  }
+  for (const row of rows) visit(row, 0, row.key, new Set());
+  return out;
+}
+
 /**
  * Split the list into its two stretches.
  *
  * `rows` must already be filtered by whatever the reader asked for (a device, a
- * search): this function decides order and how much of it is drawn, nothing
- * about what is in the list.
+ * search) and reduced to the conversations that rank on their own (`recentTree`'s
+ * roots — a child is ranked by the conversation it belongs to, not by itself):
+ * this function decides order and how much of it is drawn, nothing about what is
+ * in the list.
  */
 export function recentSplit<T extends RecentItem>(
   rows: readonly T[],

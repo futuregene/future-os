@@ -677,6 +677,20 @@ describe("useSessionCatalog", () => {
     expect(result.current.sandboxAvailable).toBe(true);
   });
 
+  test("keeps the remote sandbox diagnostic and clears it for an older host or reset", async () => {
+    render();
+    request.mockResolvedValueOnce({ data: { approvalTier: "auto", sandboxAvailable: true, sandboxCode: "available_write_only" } });
+    await act(async () => { await result.current.refreshSettings(); });
+    expect(result.current.sandboxCode).toBe("available_write_only");
+    request.mockResolvedValueOnce({ data: { approvalTier: "sandbox", sandboxAvailable: true } });
+    await act(async () => { await result.current.refreshSettings(); });
+    expect(result.current.sandboxCode).toBeUndefined();
+    request.mockResolvedValueOnce({ data: { approvalTier: "auto", sandboxAvailable: true, sandboxCode: "available_write_only" } });
+    await act(async () => { await result.current.refreshSettings(); });
+    await act(async () => { result.current.reset(); });
+    expect(result.current.sandboxCode).toBeUndefined();
+  });
+
   test("a failed settings read is recorded as failed and keeps the previous tier", async () => {
     render();
     request.mockResolvedValueOnce({ data: { approvalTier: "sandbox", sandboxAvailable: true } });
