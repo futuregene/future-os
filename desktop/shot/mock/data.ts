@@ -1436,11 +1436,15 @@ export const remoteWorkspaces = {
  * Two files the overlay can render and one it cannot, which is the distinction the
  * panel draws: `forest-plot.png` is a real PNG under `shot/assets/`, so the
  * preview the panel opens paints an actual picture rather than a broken image.
+ * The folder is the third kind of row: it carries neither a size label nor a
+ * download control, so a listing of files alone could not show whether all three
+ * kinds are drawn at one height.
  */
 export const remoteFileListing = {
   rootPath: "/Users/studio/papers/figures",
   path: "/Users/studio/papers/figures",
   entries: [
+    { name: "raw", path: "/Users/studio/papers/figures/raw", isDir: true, size: 0 },
     { name: "forest-plot.png", path: "/Users/studio/papers/figures/forest-plot.png", isDir: false, size: 184_320 },
     { name: "effect-size.R", path: "/Users/studio/papers/figures/effect-size.R", isDir: false, size: 3_411 },
     { name: "archive.zip", path: "/Users/studio/papers/figures/archive.zip", isDir: false, size: 2_048_576 },
