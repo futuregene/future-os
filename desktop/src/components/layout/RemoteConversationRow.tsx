@@ -2,7 +2,7 @@ import type { MergedConversation } from "../../features/remote-peer/mergeConvers
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { iconGlyph } from "../../features/remote-peer/peerIcons";
+import { PeerIconGlyph } from "../../features/remote-peer/PeerIconGlyph";
 import { RemoteConversationMenu } from "../../features/remote-peer/RemoteConversationMenu";
 import { useDismissableLayer } from "../../lib/useDismissableLayer";
 import { RailRow, RailRowIndicator, RailRowMenuButton, RailRowSpacer, RailRowTitle, RailRowTreeToggle } from "./RailRow";
@@ -135,8 +135,8 @@ export function RemoteConversationRow({
       {showSource === false
         ? null
         : (
-            <span aria-hidden className="pointer-events-none shrink-0 text-xs" data-testid="remote-source-icon">
-              {iconGlyph(peer?.icon)}
+            <span aria-hidden className="pointer-events-none shrink-0" data-testid="remote-source-icon">
+              <PeerIconGlyph className="size-3" id={peer?.icon} />
             </span>
           )}
       <RailRowSpacer />

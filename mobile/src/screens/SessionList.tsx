@@ -32,6 +32,7 @@ import { ActionMenu } from "../components/ActionMenu";
 import { useAppDialog } from "../components/useAppDialog";
 import { RenameModal } from "../features/chat/components/RenameModal";
 import { showToast } from "../features/chat/utils";
+import { PeerIconGlyph } from "../remote/PeerIconGlyph";
 import { useRemoteControls as useRemote } from "../remote/RemoteContext";
 import type { DesktopCommands } from "../remote/desktopCommands";
 import { effectiveRunStatus } from "../remote/sessionStatus";
@@ -129,8 +130,8 @@ export function SessionList({
    * conversations under another machine's name.
    */
   merged?: import("../remote/mergeSessions").MergedSessionRow[];
-  /** Per-desktop glyph, so a merged row shows which machine it is on. */
-  icons?: Map<string, string>;
+  /** Per-desktop icon id, so a merged row shows which machine it is on. */
+  icons?: Map<string, string | undefined>;
   /**
    * The desktop this screen is connected to. It is what tells a row of the
    * active machine from a row of another one — which decides where a tap and a
@@ -701,9 +702,9 @@ export function SessionList({
               {name}
             </Text>
             {showSource && icons?.get(item.desktopId ?? "") ? (
-              <Text accessibilityLabel={item.desktopId} style={styles.sourceIcon}>
-                {icons.get(item.desktopId ?? "")}
-              </Text>
+              <View accessibilityLabel={item.desktopId} style={styles.sourceIcon}>
+                <PeerIconGlyph id={icons.get(item.desktopId ?? "")} size={13} />
+              </View>
             ) : null}
             {item.workspace.pinned && <Pin size={13} color={colors.accent} />}
             <Text style={styles.count}>{item.count}</Text>
@@ -858,9 +859,9 @@ export function SessionList({
                     glyph column lines up with the title above it instead of
                     trailing whatever the name happens to be. */}
                 {showSource && item.desktopId && icons?.get(item.desktopId) ? (
-                  <Text accessibilityLabel={item.desktopId} style={[styles.sourceIcon, styles.leadingSourceIcon]}>
-                    {icons.get(item.desktopId)}
-                  </Text>
+                  <View accessibilityLabel={item.desktopId} style={[styles.sourceIcon, styles.leadingSourceIcon]}>
+                    <PeerIconGlyph id={icons.get(item.desktopId)} size={13} />
+                  </View>
                 ) : null}
                 <Text numberOfLines={1} style={styles.recentWhere}>
                   {session.mode === "workspace"
@@ -882,9 +883,9 @@ export function SessionList({
               group the heading carries the same glyph, so the row would repeat
               it on every line of that group's list. */}
           {showSource && !item.groupHasSource && item.desktopId && icons?.get(item.desktopId) ? (
-            <Text accessibilityLabel={item.desktopId} style={styles.sourceIcon}>
-              {icons.get(item.desktopId)}
-            </Text>
+            <View accessibilityLabel={item.desktopId} style={styles.sourceIcon}>
+              <PeerIconGlyph id={icons.get(item.desktopId)} size={13} />
+            </View>
           ) : null}
           {session.pinned && <Pin size={13} color={colors.accent} />}
           {statusIndicator}
@@ -1336,7 +1337,7 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   },
   checkboxChecked: { backgroundColor: theme.colors.accent, borderColor: theme.colors.accent },
   dot: { width: 7, height: 7, borderRadius: radius.pill },
-  sourceIcon: { fontSize: theme.font(13), marginLeft: spacing.xs },
+  sourceIcon: { marginLeft: spacing.xs },
   // First in its row, where the margin the glyph carried as a follower would
   // read as an indent against the title's edge: the pair keeps its 8px
   // separation (the row's own 4px gap plus this one) on the other side.

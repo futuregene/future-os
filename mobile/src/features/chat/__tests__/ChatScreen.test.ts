@@ -1110,20 +1110,20 @@ test("conversation navigation removes outgoing transfer progress and rejects lat
  *
  * Every conversation on this phone lives on a paired desktop — there is no agent
  * on the phone — and the bar said nothing about which one, so a user who paired a
- * second desktop could not tell them apart from inside a conversation. The glyph
- * and the user's own name are the session list's vocabulary, so the same desktop
+ * second desktop could not tell them apart from inside a conversation. The icon
+ * id (the shared set's mark) and the user's own name are the session list's vocabulary, so the same desktop
  * reads the same way in both places; a machine the user never renamed falls back
  * to its id.
  */
 test("the bar carries the desktop this conversation is on, named the way the list names it", () => {
   expect(tree.root.findByType(ChatTopBar).props.machine)
-    .toEqual({ glyph: "💻", label: "Lab MacBook Pro" });
+    .toEqual({ icon: "laptop", label: "Lab MacBook Pro" });
 
   // Renamed or not, the machine is still named: the id is what is left when the
   // user has not given it a label.
   mockRemote.desktops = [{ desktopId: "desktop", pairId: "pair_1" }];
   act(() => tree.update(createElement(ChatScreen)));
   expect(tree.root.findByType(ChatTopBar).props.machine)
-    .toEqual({ glyph: "🖥️", label: "desktop" });
+    .toEqual({ icon: undefined, label: "desktop" });
 });
 

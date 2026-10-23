@@ -1845,6 +1845,36 @@
           }
         ]
       },
+      "remote-workspace-add-on-host-filter": {
+        "note": "With the picker narrowed to one machine, the workspace section's + adds to that machine: it has already named the machine, so the form opens directly instead of asking again.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "全部设备"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "工作室 iMac"
+          },
+          {
+            "wait": 1800
+          },
+          {
+            "eval": "(() => {\n  const buttons = [...document.querySelectorAll('button[aria-label]')];\n  const label = (node) => node.getAttribute('aria-label') || '';\n  if (buttons.some(node => label(node) === '新建工作区'))\n    throw new Error('this machine still offers its own + under a host filter');\n  const add = buttons.find(node => label(node).includes('新建工作区') && label(node).includes('工作室 iMac'));\n  if (!add)\n    throw new Error('the filtered list offers no way to add a workspace: ' + JSON.stringify(buttons.map(label).filter(text => text.includes('工作区'))));\n  add.click();\n  return new Promise((resolve) => {\n    setTimeout(() => {\n      const dialog = document.querySelector(\"[role='dialog']\");\n      if (!dialog) throw new Error('the + opened nothing');\n      const title = (dialog.querySelector('h2') || {}).textContent || '';\n      if (!title.includes('工作室 iMac')) throw new Error('the form does not name the machine: ' + title);\n      if (title.includes('选择设备') || title.includes('Choose a device'))\n        throw new Error('the machine was asked again although the picker names it');\n      const path = dialog.querySelector(\"input[aria-label='目录路径']\");\n      if (!path) throw new Error('the form is not the host create form');\n      const create = [...dialog.querySelectorAll('button')].find(node => (node.textContent || '').trim() === '新建');\n      if (!create || !create.disabled) throw new Error('an empty path is submit-ready');\n      resolve(title);\n    }, 300);\n  });\n})()"
+          },
+          {
+            "shot": "d-remote-workspace-add-on-host-filter.png"
+          }
+        ]
+      },
       "remote-add-one-machine": {
         "note": "With one machine on screen, the chat section's + starts a conversation on that machine.",
         "url": "http://localhost:5299/shot/",

@@ -4,7 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { TasksView } from "../tasks/TasksView";
-import { iconGlyph, peerBadgeText } from "./peerIcons";
+import { PeerIconChip } from "./PeerIconChip";
+import { peerBadgeText } from "./peerIcons";
 import { fetchRemoteSessions, listRemoteModels, remoteAgentModelOptions } from "./remotePeerClient";
 import { remoteTaskBackend } from "./remoteTaskBackend";
 
@@ -86,7 +87,7 @@ export function RemoteTasksView({
         <Button leftIcon={<ChevronLeft className="size-4" />} onClick={onBack} size="xs" variant="ghost">
           {t("backToDesktops")}
         </Button>
-        <span aria-hidden className="text-base">{iconGlyph(peer.icon)}</span>
+        <PeerIconChip id={peer.icon} variant="page" />
         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-ink">
           {t("tasksOnHost", { name: peerBadgeText(peer, peer.desktopId) })}
         </span>

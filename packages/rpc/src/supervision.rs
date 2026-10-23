@@ -17,6 +17,7 @@
 //! Nothing here launches anything: it classifies, and it bounds the waiting and
 //! the restart rate so the three entries cannot storm a misbehaving Agent.
 
+use std::future::Future;
 use std::time::{Duration, Instant};
 
 use crate::connection::{self, AgentSelection, ConnectionError};
@@ -48,22 +49,44 @@ pub enum LocalAgentState {
     Blocked(String),
 }
 
+/// How many times one readiness probe is attempted before a transient
+/// "could not verify" answer is reported as final.
+///
+/// One attempt is not enough on a loaded or network-backed host. The process can
+/// be descheduled for longer than the handshake timeout (a CPU quota on a login
+/// node, a page-fault storm, a synchronous write to a file system that stalls),
+/// and when it resumes the first probe's deadline has already expired even
+/// though the Agent answered meanwhile. A retry starts a fresh deadline on a
+/// fresh connection, so a stall costs one attempt instead of the whole entry.
+pub const READINESS_PROBE_ATTEMPTS: u32 = 3;
+
+/// First backoff between readiness attempts; each further attempt doubles it.
+const READINESS_RETRY_BASE: Duration = Duration::from_millis(250);
+
+/// Upper bound on one readiness backoff, so a probe never waits unboundedly.
+const READINESS_RETRY_CAP: Duration = Duration::from_secs(2);
+
 /// Probe the local Agent and classify the result.
 ///
-/// A successful selection is dropped immediately: this only classifies.
+/// A successful selection is dropped immediately: this only classifies. An
+/// answer that a later attempt could change (`Unverified`: the readiness
+/// handshake timed out, or the RPC failed) is retried with exponential backoff
+/// before it is classified as `Blocked`.
 pub async fn probe_local_agent(
     configured: &str,
     connect_timeout: Duration,
     handshake_timeout: Duration,
 ) -> LocalAgentState {
-    match connection::select_agent(
-        configured,
-        connection::EXPECTED_AGENT_VERSION,
-        connect_timeout,
-        handshake_timeout,
-    )
-    .await
-    {
+    let outcome = with_readiness_retries(READINESS_PROBE_ATTEMPTS, READINESS_RETRY_BASE, || {
+        connection::select_agent(
+            configured,
+            connection::EXPECTED_AGENT_VERSION,
+            connect_timeout,
+            handshake_timeout,
+        )
+    })
+    .await;
+    match outcome {
         Ok(AgentSelection::External(client)) => {
             drop(client);
             LocalAgentState::Attached
@@ -101,6 +124,51 @@ impl ReadinessLoss {
         self.failures = self.failures.saturating_add(1);
         self.failures >= 3 && now.saturating_duration_since(since) >= Duration::from_secs(15)
     }
+}
+
+/// Run one probe, retrying only the answers that another attempt could change.
+async fn with_readiness_retries<T, F, Fut>(
+    attempts: u32,
+    retry_base: Duration,
+    mut probe: F,
+) -> Result<T, ConnectionError>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, ConnectionError>>,
+{
+    let attempts = attempts.max(1);
+    let mut attempt = 1;
+    loop {
+        match probe().await {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                if !readiness_retryable(&error) || attempt >= attempts {
+                    return Err(error);
+                }
+                tokio::time::sleep(readiness_retry_delay(retry_base, attempt)).await;
+                attempt += 1;
+            }
+        }
+    }
+}
+
+/// Whether another readiness attempt could answer differently.
+///
+/// `Unverified` is "the Agent did not answer in time" (or answered with an RPC
+/// error): a momentarily frozen process, a stalled socket or a transport burst
+/// all produce it, and the next attempt starts a fresh deadline on a fresh
+/// connection. Every other variant is a definite answer — a version/protocol
+/// mismatch, a changed instance identity, a refused start — and retrying would
+/// only repeat it.
+fn readiness_retryable(error: &ConnectionError) -> bool {
+    matches!(error, ConnectionError::Unverified(_))
+}
+
+/// Backoff before readiness attempt `attempt` (1-based): `base × 2^(n-1)`,
+/// capped so one probe cannot grow without bound.
+fn readiness_retry_delay(base: Duration, attempt: u32) -> Duration {
+    base.saturating_mul(1u32 << attempt.saturating_sub(1).min(5))
+        .min(READINESS_RETRY_CAP)
 }
 
 /// How long an attached Agent must stay answering before a restart counts as a
@@ -338,5 +406,83 @@ mod tests {
         // Three inside the window is the threshold.
         assert!(budget.allow(start + Duration::from_secs(402)));
         assert!(!budget.allow(start + Duration::from_secs(403)));
+    }
+
+    #[test]
+    fn readiness_backoff_doubles_and_caps() {
+        let base = Duration::from_millis(250);
+        assert_eq!(readiness_retry_delay(base, 1), Duration::from_millis(250));
+        assert_eq!(readiness_retry_delay(base, 2), Duration::from_millis(500));
+        assert_eq!(readiness_retry_delay(base, 3), Duration::from_millis(1000));
+        // The fourth rung would be 2s, which the cap already allows; later
+        // attempts stay there instead of growing without bound.
+        assert_eq!(readiness_retry_delay(base, 4), READINESS_RETRY_CAP);
+        assert_eq!(readiness_retry_delay(base, 99), READINESS_RETRY_CAP);
+    }
+
+    #[test]
+    fn only_unverified_readiness_answers_are_retried() {
+        assert!(readiness_retryable(&ConnectionError::Unverified(
+            "handshake timed out".into()
+        )));
+        assert!(!readiness_retryable(&ConnectionError::Incompatible {
+            agent_version: None,
+            reason: "mismatch".into(),
+        }));
+        assert!(!readiness_retryable(&ConnectionError::InstanceChanged));
+        assert!(!readiness_retryable(&ConnectionError::StartupBlocked(
+            "refused".into()
+        )));
+        assert!(!readiness_retryable(&ConnectionError::InstanceBusy(
+            "held".into()
+        )));
+    }
+
+    #[tokio::test]
+    async fn a_readiness_timeout_is_retried_until_the_probe_gives_up() {
+        let mut calls = 0;
+        let outcome: Result<(), ConnectionError> =
+            with_readiness_retries(READINESS_PROBE_ATTEMPTS, Duration::from_millis(1), || {
+                calls += 1;
+                std::future::ready(Err(ConnectionError::Unverified(
+                    "handshake timed out".into(),
+                )))
+            })
+            .await;
+        assert!(matches!(outcome, Err(ConnectionError::Unverified(_))));
+        assert_eq!(calls, READINESS_PROBE_ATTEMPTS as usize);
+    }
+
+    #[tokio::test]
+    async fn a_definite_readiness_answer_is_not_retried() {
+        let mut calls = 0;
+        let outcome: Result<(), ConnectionError> =
+            with_readiness_retries(5, Duration::from_millis(1), || {
+                calls += 1;
+                std::future::ready(Err(ConnectionError::Incompatible {
+                    agent_version: None,
+                    reason: "mismatch".into(),
+                }))
+            })
+            .await;
+        assert!(matches!(outcome, Err(ConnectionError::Incompatible { .. })));
+        assert_eq!(calls, 1);
+    }
+
+    #[tokio::test]
+    async fn a_later_readiness_attempt_can_succeed() {
+        let mut calls = 0;
+        let outcome: Result<&'static str, ConnectionError> =
+            with_readiness_retries(3, Duration::from_millis(1), || {
+                calls += 1;
+                std::future::ready(if calls < 3 {
+                    Err(ConnectionError::Unverified("handshake timed out".into()))
+                } else {
+                    Ok("attached")
+                })
+            })
+            .await;
+        assert_eq!(outcome.unwrap(), "attached");
+        assert_eq!(calls, 3);
     }
 }
