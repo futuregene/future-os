@@ -22,7 +22,7 @@ Agent；默认端点不存在且实例锁空闲时，在自身进程内运行完
 不启动图形界面，按 Ctrl+C 关闭；不是 futureos 的 sidecar。
 在第二个终端运行 ./future remote devices add 配手机：二维码与链接在那里打印，
 手机扫码后主机立即开始服务。
-futureos 只启动 GUI，原 --headless 选项已移除。
+futureos 只启动 GUI，不提供主机模式入口；服务器请用 ./future host。
 
 【可选沙箱】
 桌面默认是完全访问模式，请在设置中按需选择手动或沙箱模式。

@@ -8,11 +8,12 @@ Desktop running (graphical, or explicitly in host mode), and both devices connec
 
 1. Install the mobile build from the official distribution channel appropriate to
    your platform (Android package or iOS TestFlight invitation when offered).
-2. Sign in on the desktop, open **Phone Control** (the phone icon in the left panel), and select **Pair & start**.
-3. Open FutureOS Mobile, grant camera permission and scan the desktop QR code.
-   You can also paste the pairing code manually.
-4. The code is valid for **five minutes** and can be used **once**. If expired,
-   generate a new one. Do not share or post screenshots of it.
+2. Sign in on the desktop, open **Remote** (the phone icon in the left panel), and turn on **Remote desktop** under *Let other devices connect here*.
+3. Click **Add a device**: the dialog shows a QR code and a pairing code. Open FutureOS Mobile,
+   grant camera permission and scan it, or enter the code on another computer.
+4. The code is valid for **five minutes** and can be used **once**. If expired, generate a new one.
+   The dialog's **Cancel** gives up this attempt only; it does not turn the remote desktop off.
+   Do not share or post screenshots of it.
 5. Choose an existing desktop conversation or create one from the phone.
 
 Production and test builds must use matching service environments. A code issued
@@ -23,8 +24,8 @@ code or endpoint.
 
 Install the Linux `.deb` or portable package, or build from source, then run
 `future host` to open phone remote access in the foreground without GUI
-libraries or a desktop UI. `futureos` is GUI-only; its former
-`--headless` option has been removed. When no valid login is stored it prints a
+libraries or a desktop UI. `futureos` starts only the GUI; it does not provide the
+host entry. When no valid login is stored it prints a
 browser login QR. It prints no pairing code of its own: pair the phone from a
 second terminal with `future remote devices add`, which shows the QR and the
 complete link to scan or paste in the FutureOS app. Valid login and pairing are
@@ -71,11 +72,29 @@ shared, and protect the desktop account too.
 The same list is manageable from a terminal: `future remote devices` shows the
 paired devices and which one is in control, `add` pairs a new one (printing its QR
 code and link), `remove` drops one, `remove --all` drops every device, and `use`
-chooses the one in control. `list`/`remove`/`use` read and write the pairing book
-directly and need no running Desktop; `add` is the exception — an invitation can
-only be minted by the process serving that pairing, so it needs a live Desktop
-(the window or `future host`) and fails with a non-zero exit if there is
-none.
+chooses the one in control. The list reads and `use` writes the pairing book
+directly (`~/.future/remote_pairings.json`), so none of them needs a running
+Desktop; `add`, `remove` and `use` still ask a running Desktop (the window or
+`future host`) when there is one, because the invitation and the handover only
+take effect in the process that serves the pairing. `add` cannot work without it
+— an invitation can only be minted by that process — and fails with a non-zero
+exit if there is none.
+
+## Connect to another computer
+
+The Remote page also runs the other direction: this computer can connect to
+another computer's remote desktop and use its conversations, with the tools and
+files staying on that machine. On the other computer, open **Remote → Let other
+devices connect here** and copy its pairing link; here, add it under **Add a
+desktop** and paste the link, then **Connect**. Its conversations join the
+shared list, and the selector above it switches between **All devices**, **This
+computer** and that desktop; each conversation shows the machine it runs on.
+
+One device drives a machine at a time. If another device is driving the remote
+desktop, **Take over** makes this one the driver — do that before changing its
+settings. A desktop that is not connected cannot have its settings read or
+changed. The same list is in the terminal as `future remote peers list|add|
+connect|disconnect|takeover|remove`; see [[CLI]].
 
 ## Privacy and transport
 

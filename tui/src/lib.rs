@@ -58,6 +58,7 @@ pub mod paste_burst;
 pub mod rpc;
 pub mod skill_reco;
 pub mod skills_cli;
+pub mod stderr_log;
 pub mod stdin_buffer;
 pub mod terminal;
 pub mod terminal_image;

@@ -144,8 +144,6 @@
     "reset": "恢复默认",
     "resetAll": "全部恢复默认",
     "unbound": "未设置",
-    "terminalBlocked": "终端获得焦点时不生效：这个组合属于 shell",
-    "levels": "{{coarse}} 在不同工作区与对话之间切换；{{fine}} 逐个对话移动；对话内部 {{questions}} 在提问之间跳转。修改后立即生效。",
     "scopedGlobal": "任何地方都生效。",
     "scopedVibe": "只在 Vibe 面板打开时生效；此时这些键可以覆盖上面的同名键。",
     "multiKey": "这组按键暂时固定。"

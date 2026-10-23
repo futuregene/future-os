@@ -20,9 +20,9 @@ if grep -q NEEDED <<<"$dynamic_section"; then
 fi
 file -b "$binary" 2>/dev/null || true
 
-# No network, real user data, Agent or TTY: first setup must refuse to start
-# before contacting an Agent or emitting login/pairing secrets. Unlike --help
-# alone, this also exercises the runtime and shared Desktop instance guard.
+# No network, real user data or TTY: a signed-out host must serve locally
+# without emitting login/pairing secrets. Unlike --help alone, this exercises
+# the embedded Agent, local store and shared Desktop instance guard.
 # Rocky 8 ships glibc 2.28 — older than every GLIBC_x the build host could
 # stamp onto a gnu binary — so a linkage regression fails here, not on a
 # user's HPC login node.
@@ -37,20 +37,30 @@ timeout --signal=TERM --kill-after=10s 180s docker run --rm --name "$container_n
     timeout 20s future host --help
     test ! -e "$HOME/.future"
     set +e
-    output=$(timeout 20s future host </dev/null 2>&1)
+    output=$(timeout --kill-after=10s 20s future host </dev/null 2>&1)
     status=$?
     set -e
     printf "%s\n" "$output"
-    test "$status" -eq 1
-    printf "%s\n" "$output" | grep -F "interactive terminal"
-    # Dev builds persist their default test-environment base_url before the
-    # interactive-terminal gate. That configuration is expected and contains
+    # timeout sends SIGTERM to the serving host; 124 proves it stayed alive.
+    test "$status" -eq 124
+    printf "%s\n" "$output" | grep -F "FutureOS: embedded Agent ready"
+    printf "%s\n" "$output" | grep -F "Not signed in to FutureOS: serving local"
+    printf "%s\n" "$output" | grep -F "FutureOS: cleanup stage=verification"
+    if printf "%s\n" "$output" | grep -E "PHONE PAIRING|user code"; then
+      echo "Signed-out startup printed authorization material." >&2
+      exit 1
+    fi
+    # Dev builds persist their default test-environment base_url during
+    # startup. That configuration is expected and contains
     # no credential; reject an actual saved API key instead of requiring the
     # whole auth file to be absent. Release builds normally leave it absent.
     auth="$HOME/.future/agent/auth.json"
     if test -e "$auth"; then
-      ! grep -Eq '"key"[[:space:]]*:' "$auth"
+      if grep -Eq "\"key\"[[:space:]]*:" "$auth"; then
+        echo "Signed-out startup persisted credentials." >&2
+        exit 1
+      fi
     fi
     test ! -e "$HOME/.future/remote_pairing.json"
-    test ! -e "$HOME/.future/app/app.db"
+    test -s "$HOME/.future/app/app.db"
   '

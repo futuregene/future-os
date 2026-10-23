@@ -80,11 +80,14 @@ export function MergedRows({
   /** The age label to draw on a row, by row key (the recent view only). */
   ageLabels?: ReadonlyMap<string, string>;
   /**
-   * The recent view's stretches, already split and windowed.
+   * The recent view's stretches, already split, ranked, windowed and expanded.
    *
    * Split by the rail rather than here because the rail also has to walk the
    * same rows with the keyboard: two splits of the same list would be two
    * answers to "which row is next", and the window is a piece of that order.
+   * A stretch ranks the conversations that have no parent in this list; a
+   * conversation's children are in `rows` only when its fold is open, drawn
+   * after it, and `rowMeta` says how far in each one sits.
    */
   recentSections?: RecentSection<MergedConversation>[];
   /** Finished rows the window is holding back, and how to open it further. */
@@ -160,13 +163,15 @@ export function MergedRows({
    */
   expandedRemoteRows: ReadonlySet<string>;
   /**
-   * Where each listed row sits in the shared list's tree, by row key.
+   * Where each listed row sits, by row key: its indent and whether it folds.
    *
    * One map for both machines' rows, because it is one tree: a conversation
    * forked from one on the other machine is drawn with the same indent and
    * folded by the same toggle as a local one, and two maps meant two places to
-   * be right about a row's depth. Built by the rail from the tree it folds with
-   * — a fold decides which rows are *here*, not how deep any of them are.
+   * be right about a row's depth. Built by the rail from the tree the current
+   * view folds with — the tree in the tree view, the recent view's own
+   * hierarchy in the recent one — because a fold decides which rows are *here*,
+   * not how deep any of them are.
    */
   rowMeta: ReadonlyMap<string, { depth: number; hasChildren: boolean }>;
   peers: RemotePeer[];
@@ -219,8 +224,10 @@ export function MergedRows({
    * `tree` is the rail's own shape — pinned, workspaces, chats — and the default.
    * `recent` is the second view over the same rows: no headings for where a
    * conversation lives, two stretches instead ("active", "earlier"), each ranked
-   * by one clock (`recentOrder.ts`). Both are drawn from the rows this component
-   * is handed, so switching views moves nothing about a conversation itself.
+   * by one clock (`recentOrder.ts`) and holding a conversation's children inside
+   * its fold rather than as rows of their own. Both are drawn from the rows this
+   * component is handed, so switching views moves nothing about a conversation
+   * itself.
    */
   view?: "tree" | "recent";
   workspaceSectionCollapsed: boolean;
@@ -247,13 +254,14 @@ export function MergedRows({
     compact: boolean,
     groupHasSource: boolean,
     /**
-     * The recent view's overrides.
+     * The recent view's own column.
      *
-     * A flat list says both things itself: every row sits at depth 0 (there is
-     * no parent above it to indent under) and carries its own age. The tree view
-     * passes nothing, so its rows keep the depth its tree computed.
+     * The age a row draws, which only this view has a place for. Where the row
+     * sits (its indent, whether it folds) is not an override: both views read it
+     * from `rowMeta`, because in both it is the same question — which row is
+     * above this one — asked of the tree that view draws.
      */
-    flat?: { age?: string; depth: 0 },
+    recent?: { age?: string },
   ): ReactNode {
     if (conversation.desktopId === null) {
       const thread = threadById.get(conversation.id);
@@ -271,12 +279,12 @@ export function MergedRows({
       // always draws its workspace rows compact and this one did not.
       return renderLocalRow(
         thread,
-        flat?.depth ?? meta?.depth ?? 0,
-        // A fork has no fold control here: its children are rows of their own in
-        // this list, so folding it would promise a subtree that is not under it.
-        flat ? false : meta?.hasChildren ?? false,
+        meta?.depth ?? 0,
+        // A fork or a worker session folds here too: its children are drawn
+        // under it when it is opened, the same `+`/`−` the tree uses.
+        meta?.hasChildren ?? false,
         compact,
-        flat?.age,
+        recent?.age,
       );
     }
     const selectable = remoteSelection?.selectable(conversation) === true;
@@ -284,12 +292,12 @@ export function MergedRows({
     return (
       <RemoteConversationRow
         active={activeKey === conversation.key}
-        ageLabel={flat?.age}
+        ageLabel={recent?.age}
         compact={compact}
         conversation={conversation}
-        depth={flat?.depth ?? meta?.depth ?? 0}
+        depth={meta?.depth ?? 0}
         expanded={expandedRemoteRows.has(conversation.key)}
-        hasChildren={flat ? false : meta?.hasChildren ?? false}
+        hasChildren={meta?.hasChildren ?? false}
         key={conversation.key}
         onChanged={onChangedRemote}
         onDeletedRemote={onDeletedRemote}
@@ -346,7 +354,6 @@ export function MergedRows({
               <div data-recent-row={row.key} data-testid="recent-row" key={row.key}>
                 {renderRow(row, false, false, {
                   age: ageLabels?.get(row.key),
-                  depth: 0,
                 })}
               </div>
             ))}

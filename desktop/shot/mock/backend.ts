@@ -287,6 +287,29 @@ function remoteDevicesMode(): string {
   return new URLSearchParams(window.location.search).get("remoteDevices") ?? "";
 }
 
+/**
+ * The paired computers this machine connects *out* to, with the states a screen
+ * has to draw.
+ *
+ * `?peers=held` makes the first one a machine another paired device is driving:
+ * its row says who holds it and refuses Settings until somebody takes it over.
+ * The plain list is two peers — one reachable, one not — because "a host that
+ * cannot be reached" is the state the merged list has to survive.
+ */
+function peerList(): typeof remotePeers {
+  if (typeof window === "undefined")
+    return remotePeers;
+  if (new URLSearchParams(window.location.search).get("peers") !== "held")
+    return remotePeers;
+  return remotePeers.map((peer, index) => index === 0
+    ? {
+        ...peer,
+        control: "standby" as const,
+        holder: { pairId: "pair_phone", name: "LNA-AL00", kind: "mobile" },
+      }
+    : { ...peer, control: "active" as const });
+}
+
 /** Command name → implementation. Anything missing goes to the fallback. */
 /** Mutable copy so a capture can show a task being toggled or deleted. */
 const taskList = tasks.map(task => ({ ...task }));
@@ -661,7 +684,7 @@ const handlers: Record<string, (args: any) => unknown> = {
   // what this machine is connected to, not what is connected to it. The two
   // halves are separate screens reading separate commands, so a fixture that
   // served both from one shape would hide a screen reading the wrong one.
-  remote_peer_list: () => remotePeers,
+  remote_peer_list: () => peerList(),
   // A freshly claimed host has no name yet and is not connected until the
   // supervisor gets there — which is the state the pairing screen shows.
   remote_peer_pair: () => ({

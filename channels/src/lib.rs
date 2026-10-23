@@ -95,9 +95,10 @@ pub fn run(args: &[String]) -> Result<()> {
     runtime.block_on(run_async())
 }
 
-/// Where channel data lives: `~/.future/channels`.
+/// Where channel data lives: `<future home>/channels` (`~/.future/channels`, or
+/// the `FUTURE_HOME` override).
 pub fn data_root() -> std::path::PathBuf {
-    config::home_dir().join(".future").join("channels")
+    config::future_home().join("channels")
 }
 
 /// What a started bridge is holding, so `run_async` and tests share one path.
@@ -461,6 +462,25 @@ mod tests {
         let root = data_root();
         assert!(root.starts_with(&home.path), "{root:?}");
         assert!(root.ends_with("channels"));
+
+        // The override replaces the whole root: an isolated instance keeps its
+        // own channel config, queue and status, and never reaches into the
+        // default home's channels.
+        let isolated = crate::test_support::temp_dir("lib-data-root-override");
+        std::env::set_var("FUTURE_HOME", &isolated);
+        assert_eq!(data_root(), isolated.join("channels"));
+        assert_eq!(
+            config::ChannelConfig::default_path(),
+            isolated.join("channels").join("config.json")
+        );
+        assert_eq!(
+            delivery::DeliveryQueue::default_path(),
+            isolated.join("channels").join("deliveries.json")
+        );
+        assert_eq!(
+            status::StatusSnapshot::default_path(),
+            isolated.join("channels").join("status.json")
+        );
     }
 
     fn config_with(entries: &[(&str, bool)]) -> config::ChannelConfig {

@@ -255,6 +255,70 @@ payload on **stderr** and exits 1, the same way `future tools call` reports a
 failed tool — a script or an agent does not have to parse a marker out of stdout
 to learn the call did not work.
 
+### `desktop` / `workspace` — the desktop app's own settings and workspaces
+
+```bash
+future desktop settings                       # every effective desktop setting
+future desktop settings get approvalTier      # one value, for scripts
+future desktop settings set approvalTier auto # off | manual | sandbox | auto
+future workspace list                         # workspaces, with their conversations
+future workspace add ~/projects/demo --name Demo
+```
+
+These read and write the desktop app's database (`~/.future/app/app.db`), not the
+agent's settings document — `future config` owns the latter. No running desktop
+is needed: a running app picks the change up the next time it reads the settings.
+`future desktop settings --help` lists every settable key, including
+`hiddenModels`, `autoUpgradeSkills`, `autoConnectRemote`, `bellOnComplete`,
+`titleLanguage`, `skillRecommend` and `autoResumeInterrupted`. A workspace added
+here appears in the app's sidebar (and on a paired phone) once the app publishes
+its catalogue; the directory must already exist.
+
+### `remote` — paired devices and remote desktops
+
+```bash
+future remote status                       # is the remote desktop on, and who is connected
+future remote enable | disable             # that switch, from a terminal
+future remote devices [list]               # paired devices, and the one in control
+future remote devices add                  # mint an invitation (needs a running Desktop)
+future remote peers [list]                 # remote desktops THIS machine connects to
+```
+
+See [[Phone remote access|Remote]] for pairing, host mode and what each side can
+do.
+
+### `task` — scheduled tasks
+
+```bash
+future task list [--all]
+future task add --name "Nightly review" --prompt "Review new issues" \
+  --cwd ~/project --model <model> --thinking high --daily --time 09:00
+future task runs "Nightly review"          # the run ledger
+future task output <run-id>                # a run's full answer
+```
+
+A scheduled task is a reusable prompt plus a trigger, run at full permission when
+the trigger fires or on demand. `--every`, `--at`, `--weekly`, `--monthly` and
+`--yearly` are the other triggers; `--timezone` says which clock the wall-clock
+times are read on. Runs are executed by the desktop (or host) tick loop, not by
+this command, so `future task run` queues and `--wait` blocks for the result. See
+[[Scheduled tasks|Scheduled-Tasks]].
+
+### `data` — offline backup and recovery
+
+```bash
+future data backup <new-directory>
+future data verify <backup-directory>
+future data restore <backup-directory> --yes
+future data resume | rollback
+```
+
+Stop the desktop, the agent and every other writer first. A backup takes both
+databases, managed images/workspaces/review data, legacy import sources and the
+agent configuration including credentials — keep it private. Restore targets the
+original FutureOS home; an incomplete restore fences startup until `resume` or
+`rollback` finishes it.
+
 ### `models` — list available models
 
 ```bash
@@ -279,17 +343,24 @@ sessions, a lock or a socket (see
 [Directory layout](../../guide/directory-layout.md#running-several-isolated-instances-future_home)).
 Clients join a specific instance by setting the same `FUTURE_HOME`.
 
-### `tui` / `channel` / `loop` — run the other components
+### `tui` / `channel` / `goal` / `host` — run the other components
 
 `future` is the unified entry point for every Rust component — each runs the
-same code as its standalone binary (the `future-*` binaries still exist as
-build targets but no longer ship by default):
+same code as its standalone binary (the `future-*` binaries remain build
+targets for `cargo build -p <crate>`; the released artifact is `future`):
 
 ```bash
 future tui                # terminal UI
 future channel            # IM channel bridge: Feishu / DingTalk
 future goal status        # goal control plane: goals/todos/gates
+future host               # foreground host: this machine as a remote desktop
+future relay init|serve   # self-hosted, account-free relay for remote control
 ```
+
+`future host` is the GUI-free way to keep this machine reachable from a phone or
+another computer; see [Host mode](../../guide/desktop-host.md) and
+[[Phone remote access|Remote]]. `future relay` runs your own NATS relay when you
+do not want to use the official one.
 
 ### `session` — manage sessions
 
@@ -415,3 +486,4 @@ Checks login status, component installation, agent connectivity, OS sandbox avai
 - [[Install FutureOS|Installation]] — where the tool ships.
 - [[Skills]] — the same skills, managed from the app.
 - [[FAQ]] — common issues.
+- [Host mode](../../guide/desktop-host.md), [self-hosted relay](../../guide/self-hosted-relay.md), [scheduled tasks](../../architecture/tasks.md) and [data and storage](../../architecture/sqlite-migration.md) — the guides behind `future host`, `future relay`, `future task` and `future data`.

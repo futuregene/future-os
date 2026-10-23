@@ -157,7 +157,12 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   const skillsSupported = remote.capabilities?.has("skill_management_v1") ?? false;
   const providersSupported = remote.capabilities?.has("provider_management_v1") ?? false;
   const tasksSupported = remote.capabilities?.has("tasks_v1") ?? false;
-  const enabled = deviceMode && remote.desktopOnline && supported;
+  // A machine another device drives answers every command with a refusal
+  // before a handler runs, so it is *answering* and still not ours to
+  // configure. Online is one question, "may this phone write to it" is another:
+  // folding standby into `enabled` is what keeps a row from being offered for a
+  // page whose every read would be refused.
+  const enabled = deviceMode && remote.desktopOnline && supported && !standby;
   const resource = useDesktopResource(remote.getDesktopSettings, remote.desktopSettingsRevision, enabled && remote.desktopReadable);
   const disabled = !enabled || saving || resource.loading || resource.failed || !resource.data;
   // Provider pages read and write their own authoritative snapshot; the shared
@@ -185,7 +190,10 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
     }
   };
   const selectApproval = async (tier: string) => {
-    if (!remote.desktopOnline || saving || writing.current) return;
+    // A standby machine refuses this write at the host, so it is not sent: the
+    // page is not reachable in that state, and this keeps the rule true for any
+    // later caller that forgets to ask.
+    if (!remote.desktopOnline || standby || saving || writing.current) return;
     writing.current = true;
     setSaving(true);
     setFailed(null);
@@ -237,6 +245,13 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   // Each level renders on its own; the stack keeps only the visible one mounted,
   // so returning to the provider list always re-reads the desktop's snapshot.
   function renderLevel() {
+    // Taken over while a level was open: its reads are already refused, so the
+    // page would either show data it can no longer vouch for or answer with the
+    // "could not read the desktop" banner this milestone exists to remove. The
+    // banner above is the page in that state, and taking control brings it back
+    // in the same render.
+    if (deviceMode && standby && page.name !== "home")
+      return null;
     switch (page.name) {
       case "providers":
         return <ProvidersSettingsPage
@@ -392,20 +407,30 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
           </View>
         </SettingsField>
       </SettingsSection>
-      <SettingsSection title={t("desktops.deviceSettings")}>
-        {/* The machine's own rows, on every paired machine. Each one keeps a
-            runtime of its own (see `DesktopScope`), so a machine's settings are
-            read and written over its own connection — there is no connection
-            step to perform first, and nothing here edits another machine. A
-            machine that is not answering says so below, in the notice, and the
-            rows that need it are disabled. */}
-        <SettingsLink label={t("desktopSettings.preferences")} onPress={() => push({ name: "preferences" })} />
-        <SettingsLink label={t("desktopSettings.models")} disabled={!enabled} onPress={() => push({ name: "models" })} />
-        <SettingsLink label={t("desktopSettings.providers")} disabled={!remote.desktopOnline || !providersSupported} onPress={() => push({ name: "providers" })} />
-        <SettingsLink label={t("desktopSettings.skills")} disabled={!remote.desktopOnline || !skillsSupported} onPress={() => push({ name: "skills" })} />
-        <SettingsLink label={t("desktopSettings.tasks")} disabled={!remote.desktopOnline || !tasksSupported} onPress={() => push({ name: "tasks" })} />
-        {remote.desktopOnline && !capable ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text> : null}
-      </SettingsSection>
+      {/* A machine somebody else drives has no settings to show here: every row
+          below it opens a page the desktop would refuse to answer, which is how
+          this phone used to offer a stack of dead ends. The banner above names
+          the holder and carries the takeover, so the page keeps the one action
+          that changes the state instead of a list that pretends otherwise. The
+          machine's own name and icon stay: those live on this phone. */}
+      {standby
+        ? null
+        : (
+            <SettingsSection title={t("desktops.deviceSettings")}>
+              {/* The machine's own rows, on every paired machine. Each one keeps a
+                  runtime of its own (see `DesktopScope`), so a machine's settings are
+                  read and written over its own connection — there is no connection
+                  step to perform first, and nothing here edits another machine. A
+                  machine that is not answering says so below, in the notice, and the
+                  rows that need it are disabled. */}
+              <SettingsLink disabled={!remote.desktopOnline} label={t("desktopSettings.preferences")} onPress={() => push({ name: "preferences" })} />
+              <SettingsLink disabled={!enabled} label={t("desktopSettings.models")} onPress={() => push({ name: "models" })} />
+              <SettingsLink disabled={!remote.desktopOnline || !providersSupported} label={t("desktopSettings.providers")} onPress={() => push({ name: "providers" })} />
+              <SettingsLink disabled={!remote.desktopOnline || !skillsSupported} label={t("desktopSettings.skills")} onPress={() => push({ name: "skills" })} />
+              <SettingsLink disabled={!remote.desktopOnline || !tasksSupported} label={t("desktopSettings.tasks")} onPress={() => push({ name: "tasks" })} />
+              {remote.desktopOnline && !capable ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text> : null}
+            </SettingsSection>
+          )}
     </ScrollView>;
   }
 

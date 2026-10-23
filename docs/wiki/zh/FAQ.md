@@ -58,7 +58,7 @@
 
 ### Linux 沙箱不可用
 
-安装可信系统 Bubblewrap ≥ 0.9.0，完全重启 FutureOS，再运行 `future agent --probe-sandbox` 和 `future doctor`。主机策略可能限制 user namespace 或 fresh `/proc` 挂载，请管理员评估，不要绕过策略。诊断 code 与手动回退见 [[审批与沙箱|Sandbox]]。
+安装可信系统 Bubblewrap（多数发行版为 0.9.0 及以上；应用会在运行时探测所需选项），完全重启 FutureOS，再运行 `future agent --probe-sandbox` 和 `future doctor`。主机策略可能限制 user namespace 或 fresh `/proc` 挂载，请管理员评估，不要绕过策略。诊断 code 与手动回退见 [[审批与沙箱|Sandbox]]。
 
 ### 旧服务器上 Linux GUI 无法启动
 

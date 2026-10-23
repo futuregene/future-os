@@ -39,7 +39,7 @@ Agent 执行一个有界回合（gRPC）→ 写证据 → 内核据此决定下�
 |---|---|---|
 | 目标 goal | `init` | 项目本地状态 `<cwd>/.future/goal/`，事件溯源 + 可重放 |
 | 任务 todo | `todo add/update/claim/complete/archive/supersede` | 类别：advancement（推进）/ user-gate（人工门禁）/ user-action（不冻结的人待办）/ monitor（监视）/ blocker（阻塞）/ coordination（编排记账）；`--blocks` 依赖链；`--priority`；`todo add --parent T` 在同一目标内建立不可变的组织父链（最多三层，与依赖/完成无关） |
-| 证据 evidence | `todo complete --evidence` | **非空强制**：关单必须写明实际落地了什么（路径、attempt id、测量结果），`--force` 是操作者显式覆盖 |
+| 证据 evidence | `todo complete --evidence` | **非空强制**：关单必须写明实际落地了什么（路径、attempt id、测量结果），`--force` 是操作者显式覆盖；关 advancement 任务还要求交代退出意图——`--no-follow-up` 或 `--successor <todo>`，静默关单会被拒绝 |
 | 验收契约 acceptance | `todo add --acceptance "tok1,tok2"` | 关单证据必须包含全部 token（大小写不敏感）——"done ≠ delivered" 的硬形式 |
 | 验证器 verify | `todo add --verify "cmd"` | 每个 **run 回合边界**后内核执行命令，exit 0 才算完成；上限 `--max-validation-attempts`。用于机器可判的确定性交付物。**不适用于探索性任务**（检索/报告）——内核判不了其正确性，正确性由编排 agent 读工件判断；手动 `todo complete` 也刻意不重跑 `--verify` |
 | 租约 lease | `lease claim/renew/release/expire/status` | 任务被谁租用、多久过期。**租约活性自愈**：记录持有进程 pid，进程死了自动回收——杀掉 worker 后无需手动清理 |
@@ -145,6 +145,7 @@ watchdog 投递 goal 事件；外部评分和算力结果需显式监控任务�
 ## 硬校验优先（约定靠不住，闸门靠得住）
 
 - 空证据关单会被**拒绝**（默认 fail-closed，`--force` 才放行）
+- advancement 任务关单必须声明退出意图：`--no-follow-up` 或 `--successor <todo>`。内核不会替你发明后继，也不接受静默关单
 - `--verify` 校验确定性交付物（如能编译、产物存在）；只在存在有意义的机器检查时使用，不要用它替代对研究正确性的审阅
 - `--acceptance` 把"验收以外部可观测信号为准"变成硬校验
 - 租约活性自愈：死进程的租约自动回收，重启 worker 不再需要手动 release
@@ -199,7 +200,7 @@ supervisor（运行 `/future-goal` 技能的编排 agent）与其 worker 通过�
 经 agent 服务运行，所以在一个客户端（如 TUI）启动的目标可以在任何其他客户端
 （如飞书聊天）继续驾驶。
 
-## CLI 全景（7 组 41 命令）
+## CLI 全景（7 组 43 命令）
 
 ```bash
 future goal registry        # 全部命令（组/命令）
@@ -211,7 +212,7 @@ future goal commands        # 按操作者旅程分组视图
 `--instruction`），`<cmd> --help` 列出其子命令——编排者无需解析合并后的顶层
 usage 即可发现参数。
 
-- **goal 组**（5）：`goal` `status` `ui` `models` `diagnose`
+- **goal 组**（7）：`init` `cancel` `delete` `status` `ui` `models` `diagnose`
 - **todo 组**（6）：`todo` `gate` `replan` `frontier` `lease` `task-graph`
 - **agent 组**（6）：`agent` `scope` `lane` `supervisor` `report` `worker`（list / stop / **tail**）
 - **ops 组**（18）：`version` `doctor` `history` `turn` `todo-event` `evidence-log` `backup` `authority` `profile` `quota` `scheduler` `store` `backfill` `privacy` `runs` `heartbeat-prompt` `worker-bridge` `run`

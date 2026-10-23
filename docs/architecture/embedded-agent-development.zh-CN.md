@@ -738,7 +738,7 @@ Linux `headless_cli` 入口/信号集成 8 例通过，CI fmt/Clippy 及三平�
 
 用户授权在既有修复之上完成统一连接门禁、Unix 端点所有权及外部任务停止确认，不执行本地单测。本节记录实现与待验收边界；第 10.15 节之前的计数和协议版本属于对应历史提交，不作为本轮执行结果。
 
-**A：连接契约。** 共享 RPC 协议从 1 升至 2，数据库 schema 保持 6，protobuf 字段和存储格式不变。只有 `get_agent_readiness` 允许在业务握手前访问。所有业务命令（包括只读命令）和订阅必须携带客户端版本、protocol/schema、预期 Agent 实例及数据根；服务端在命令分派和 session hydration 前统一拒绝缺失、部分、格式异常及不匹配的契约。版本继续按 release core 判断，不要求开发 hash 相等。这些头用于兼容性和实例隔离，不代替 Unix UID/socket 权限和 Windows pipe DACL。
+**A：连接契约。** 共享 RPC 协议从 1 升至 2，数据库 schema 当时保持 6（现为 7；两者读取 `packages/rpc/src/connection.rs` 的共享常量），protobuf 字段和存储格式不变。只有 `get_agent_readiness` 允许在业务握手前访问。所有业务命令（包括只读命令）和订阅必须携带客户端版本、protocol/schema、预期 Agent 实例及数据根；服务端在命令分派和 session hydration 前统一拒绝缺失、部分、格式异常及不匹配的契约。版本继续按 release core 判断，不要求开发 hash 相等。这些头用于兼容性和实例隔离，不代替 Unix UID/socket 权限和 Windows pipe DACL。
 
 Channels 与 CLI/TUI/Desktop 一样使用 `VerifiedAgentClient`，每次业务调用和订阅验证 readiness 并绑定实例；物理连接不透明重连到替代实例。重新建立 Channels 客户端时重新验证并创建新的运行映射；旧客户端克隆仍被旧实例约束，不能自动向新实例提交工作。原有显式端点只连接、不兼容或停止中不接管、持锁不可用不启动内置服务的策略不变。旧客户端须同步升级；不保留无头业务请求的隐式放行路径。
 

@@ -6,10 +6,9 @@ bridge / desktop backend).
 This crate is the **single owner** of the generated proto code for
 `proto/future.proto` (both tonic server and client modules) and of the
 typed-RPC payload contract: the shared payload structs plus the encode/decode
-layer. The per-crate generated copies that used to live in `agent/`,
-`channels/` and `desktop/src-tauri/` have been retired onto this crate. Every
-consumer is Rust; the former sibling npm package `future-rpc/ts`
-(`@future-os/rpc`) was removed when the TUI/CLI were ported to Rust.
+layer. Every consumer is Rust: `future-agent`, `future-channel`, `future-cli`,
+`future-tui`, `future-goal` and the desktop Tauri backend (by path dependency).
+No other directory holds a copy of `future.proto`.
 
 ## Typed responses and dual-written events
 
@@ -43,6 +42,18 @@ and replay semantics byte-compatible.
 - `payloads.rs` / `payloads_ext.rs` / `event_payloads.rs` — the serde payload
   carriers shared by encode and decode (parity by construction).
 - `events.rs` — `AgentEvent` enum + `parse_agent_event` (channel-bridge view).
+- `instance_lock.rs` / `supervision.rs` / `home.rs` — the rules every frontend
+  shares before it starts anything: instance-lock conflict text and metadata,
+  the probe/decision/restart-budget policy used by `future agent`, `future host`
+  and `future tui` (see [agent-supervision.md](agent-supervision.md)), and the
+  FutureOS home resolution.
+- `history.rs` / `session_deletion.rs` / `session_errors.rs` / `title.rs` —
+  history paging, batched deletion, the session-not-found code both sides key
+  off, and the plain title a conversation falls back to.
+- `message.rs` / `shell_result.rs` / `command_policy.rs` / `cli_capabilities.rs`
+  / `connection.rs` — shared message and shell-result shapes, per-command
+  policy, CLI capability discovery, and `select_agent`'s external-first
+  selection.
 
 ## Proto codegen
 
@@ -70,7 +81,7 @@ freshness gate that regenerates and fails on any diff.
   local IPC); its dependencies include async/network and platform IPC support
   (see Cargo.toml).
   All
-  consumers (`future-agent`, `future-channel`, the desktop Tauri backend via a
-  path dependency) depend on it — never the other way around. The desktop backend
+  consumers (`future-agent`, `future-channel`, `future-cli`, `future-tui`, the
+  desktop Tauri backend) depend on it — never the other way around. The desktop backend
   lives in its own cargo workspace: keep its `tonic`/`prost` versions aligned
   with the root `workspace.dependencies` pins.

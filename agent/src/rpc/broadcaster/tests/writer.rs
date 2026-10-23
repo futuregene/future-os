@@ -377,7 +377,12 @@ fn asynchronous_delta_failure_interrupts_the_run() {
         .hold_worker_for_test();
     gate.wait();
     gate.wait();
-    for _ in 0..50 {
+    // The journal's failure is eventual, not synchronous: the worker flushes on
+    // its batch window, and its thread competes with the rest of a fully
+    // parallel suite. Five seconds still fails a journal that never reports,
+    // while not measuring how fast a loaded runner schedules the worker (the
+    // previous 500 ms bound failed once on `main`, run 39767494038).
+    for _ in 0..500 {
         if b.persistence_error().is_some() {
             break;
         }

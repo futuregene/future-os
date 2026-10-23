@@ -1,6 +1,6 @@
 # iOS 平台能力与 Share Extension
 
-## 本次补齐
+## 能力清单
 
 - **其他 App → FutureOS**：原生 `ShareViewController` 支持文字、网页链接、图片和文件。
   用户在系统分享面板选 FutureOS，添加说明并保存；再打开 FutureOS，配对后新建普通/工作区
@@ -12,7 +12,7 @@
   锚点；没有阅读器只影响打开，不影响保存和分享。
 - **分享出去**继续使用 `UIActivityViewController`。旧 iOS 原生包没有新的文件模块时，
   打开和保存保留原分享面板回退；更新 JS 不能凭空添加 Share Extension，必须重新构建。
-- 删除已无生产调用方的 `future-native-ui` Android 模块、npm 依赖和无效 mock。
+- 已退役的 `future-native-ui` Android 模块没有生产调用方，已不在仓库和 mobile 包依赖中。
 
 ## 收件箱边界
 

@@ -11,7 +11,7 @@ SDK.
 **The process stays in the foreground. Press Ctrl+C to close remote access and exit.**
 It does not daemonize or install a system service.
 
-The unified entry is implemented on this branch; final cross-platform and release acceptance remains pending. See the [Headless extraction plan](../architecture/headless-package-development.md).
+The unified entry ships with the CLI. Release packaging, signing and same-candidate acceptance are tracked in the [Headless extraction plan](../architecture/headless-package-development.md).
 
 ## 1. Before you start
 
@@ -222,7 +222,10 @@ future remote devices use <id|#>       # choose the one in control
   row is removed, and `control` keeps its meaning (the stored pointer): `paired`,
   `unclaimed` (an invitation no phone has scanned yet), `unclaimed, expired` (an
   invitation nobody ever claimed, past its deadline — it can neither be claimed nor
-  connect, so nothing happens behind it until `remove` clears it), and `legacy` (a
+  connect, so nothing happens behind it until `remove` clears it, and `remove` does
+  clear it on the platform: the invitation's row counts against the platform's
+  per-desktop cap whether or not anyone scans it, so discarding it is a real
+  deletion rather than bookkeeping), and `legacy` (a
   credential from before the v2 handshake, which cannot connect on this version).
   The `expiresAt` in a pairing is the invitation's deadline, not the pairing's: a
   device that claimed its invitation keeps working after that instant, because only
@@ -396,7 +399,7 @@ logs and recovery.
 ## 6. Data, permissions and troubleshooting
 
 Host mode uses the running user's existing directories, including
-`~/.future/agent/auth.json`, `~/.future/remote_pairing.json` and `~/.future/app/`.
+`~/.future/agent/auth.json`, `~/.future/remote_pairings.json` and `~/.future/app/`.
 Being signed in on your laptop does not sign in the SSH server. Changing the
 system user or HOME does not automatically inherit credentials. For later service
 hosting, use the same user and directories as the initial interactive setup.

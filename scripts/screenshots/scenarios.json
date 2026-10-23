@@ -2771,13 +2771,28 @@
             "wait": 1200
           },
           {
-            "eval": "var list=document.querySelector('[data-testid=\"recent-rows\"]');if(!list) throw new Error('the recent view is not drawn');var secs=[...list.querySelectorAll('[data-recent-section]')].map(s=>s.getAttribute('data-recent-section'));if(JSON.stringify(secs)!==JSON.stringify(['active','earlier'])) throw new Error('stretches: '+JSON.stringify(secs));var counts=[...list.querySelectorAll('[data-recent-count]')].map(n=>Number(n.getAttribute('data-recent-count')));if(counts[0]!==3||counts[1]!==14) throw new Error('caption counts: '+JSON.stringify(counts));var rows=[...list.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));if(rows.length!==17) throw new Error('rows drawn: '+rows.length);'a11y: two stretches, 3 active over 14 earlier'"
+            "eval": "var list=document.querySelector('[data-testid=\"recent-rows\"]');if(!list) throw new Error('the recent view is not drawn');var secs=[...list.querySelectorAll('[data-recent-section]')].map(s=>s.getAttribute('data-recent-section'));if(JSON.stringify(secs)!==JSON.stringify(['active','earlier'])) throw new Error('stretches: '+JSON.stringify(secs));var counts=[...list.querySelectorAll('[data-recent-count]')].map(n=>Number(n.getAttribute('data-recent-count')));if(counts[0]!==3||counts[1]!==10) throw new Error('caption counts: '+JSON.stringify(counts));var rows=[...list.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));if(rows.length!==13) throw new Error('rows drawn: '+rows.length);var hidden=['local::th_review_a','local::th_review_b','local::th_review_b1','desktop_studio::rs_forest_mono'];for(var i=0;i<hidden.length;i+=1) if(rows.indexOf(hidden[i])>=0) throw new Error('a child session is a row of the list: '+hidden[i]);'a11y: two stretches, 3 active over 10 earlier, child sessions are not rows'"
           },
           {
-            "eval": "var rows=[...document.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));var sc=rows.indexOf('local::th_sc'), lf=rows.indexOf('local::th_longformer');if(sc<0||lf<0) throw new Error('the two running rows are missing: '+JSON.stringify(rows));if(sc>lf) throw new Error('the active stretch is not ordered by start time: th_sc at '+sc+', longformer at '+lf);if(rows.length>0 && rows.indexOf('desktop_studio::rs_forest')!==0)  throw new Error('a host run in flight is not the first row: '+rows[0]);'a11y: active ordered by creation, runs of both machines are in it'"
+            "eval": "var rows=[...document.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));var sc=rows.indexOf('local::th_sc'), lf=rows.indexOf('local::th_longformer');if(sc<0||lf<0) throw new Error('the two running rows are missing: '+JSON.stringify(rows));if(sc>lf) throw new Error('the active stretch is not ordered by start time: th_sc at '+sc+', longformer at '+lf);if(rows.indexOf('desktop_studio::rs_forest')!==0) throw new Error('a host run in flight is not the first row: '+rows[0]);var review=rows.indexOf('local::th_review'), chat=rows.indexOf('local::th_chat1');if(review<3) throw new Error('the pinned conversation was lifted into the active stretch');if(chat<review) throw new Error('the earlier stretch is not ordered by last reply: '+JSON.stringify(rows));var pinnedHeadings=[...document.querySelectorAll('[data-testid=\"recent-rows\"] *')].filter(e=>e.children.length===0&&(e.textContent||'').trim()==='置顶');if(pinnedHeadings.length) throw new Error('the recent view drew a pinned section');'a11y: active by creation, earlier by reply, pin is a marker'"
           },
           {
-            "eval": "var rows=[...document.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));var order=['local::th_review','local::th_chat1','local::th_review_a','local::th_review_b'];var idx=order.map(k=>rows.indexOf(k));if(idx.some(i=>i<0)) throw new Error('a finished row is missing: '+JSON.stringify(rows));if(idx[0]<3) throw new Error('the pinned conversation was lifted into the active stretch');for(var i=1;i<idx.length;i++) if(idx[i]<idx[i-1])  throw new Error('the earlier stretch is not ordered by last reply: '+JSON.stringify(idx));var pinnedHeadings=[...document.querySelectorAll('[data-testid=\"recent-rows\"] *')].filter(e=>e.children.length===0&&(e.textContent||'').trim()==='置顶');if(pinnedHeadings.length) throw new Error('the recent view drew a pinned section');'a11y: earlier by reply, pin is a marker'"
+            "eval": "var parent=document.querySelector('[data-recent-row=\"local::th_review\"]');if(!parent) throw new Error('the parent row is missing');var toggle=parent.querySelector('button[aria-expanded]:not([aria-haspopup])');if(!toggle) throw new Error('a conversation with children has no + toggle');if(toggle.getAttribute('aria-expanded')!=='false') throw new Error('the conversation did not start folded');toggle.click();'a11y: the + toggle opens the conversation\\'s children'"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "var rows=[...document.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));var at=rows.indexOf('local::th_review');if(at<0) throw new Error('the parent row disappeared');if(rows[at+1]!=='local::th_review_a'||rows[at+2]!=='local::th_review_b') throw new Error('the children are not drawn under their conversation: '+JSON.stringify(rows.slice(at,at+4)));if(rows.indexOf('local::th_review_b1')>=0) throw new Error('a grandchild is drawn before its own parent is open');var child=document.querySelector('[data-recent-row=\"local::th_review_a\"] div[style]');if(!child||child.style.paddingLeft!=='36px') throw new Error('the child is not indented: '+(child&&child.style.paddingLeft));var counts=[...document.querySelectorAll('[data-recent-count]')].map(n=>Number(n.getAttribute('data-recent-count')));if(JSON.stringify(counts)!==JSON.stringify([3,10])) throw new Error('opening a conversation changed the caption counts: '+JSON.stringify(counts));'a11y: children under the conversation, one level in, counts unchanged'"
+          },
+          {
+            "eval": "var parent=document.querySelector('[data-recent-row=\"local::th_review_b\"]');if(!parent) throw new Error('the child row is missing');var toggle=parent.querySelector('button[aria-expanded]:not([aria-haspopup])');if(!toggle) throw new Error('the child has no toggle for its own children');toggle.click();'a11y: a child folds its own children'"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "var rows=[...document.querySelectorAll('[data-recent-row]')].map(r=>r.getAttribute('data-recent-row'));var at=rows.indexOf('local::th_review_b');if(rows[at+1]!=='local::th_review_b1') throw new Error('the grandchild is not under its parent: '+JSON.stringify(rows.slice(at,at+3)));var deep=document.querySelector('[data-recent-row=\"local::th_review_b1\"] div[style]');if(!deep||deep.style.paddingLeft!=='56px') throw new Error('the grandchild is not indented twice: '+(deep&&deep.style.paddingLeft));'a11y: two levels of children, each inside its own fold'"
           },
           {
             "shot": "d-rail-recent.png"
@@ -2948,6 +2963,147 @@
           },
           {
             "shot": "d-settings-themes-dark.png"
+          }
+        ]
+      },
+      "settings-shortcuts": {
+        "note": "Settings → Keyboard shortcuts without the two paragraphs that used to explain the key levels and the terminal's rule. The page is the search box, the reset button and the list; nothing above the list has to be read first.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "lixin"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "设置"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "tapText": "快捷键"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(() => { const dialog = document.querySelector(\"[role='dialog']\"); if (!dialog) throw new Error('the settings dialog did not open'); const text = dialog.textContent || ''; const stray = ['在不同工作区与对话之间切换', '终端获得焦点时不生效']; const found = stray.filter(line => text.includes(line)); if (found.length) throw new Error('the removed paragraphs are still on the page: ' + found.join(' / ')); if (!text.includes('全部恢复默认')) throw new Error('the reset button is gone too'); const search = dialog.querySelector(\"input[aria-label='搜索命令']\"); if (!search) throw new Error('the search box is gone too'); if (!dialog.textContent.includes('新建对话')) throw new Error('the command list is empty'); const recorders = dialog.querySelectorAll('button[title], button'); if (recorders.length < 10) throw new Error('the page has no controls to bind: ' + recorders.length); return 'no paragraphs above the list';})()"
+          },
+          {
+            "shot": "d-settings-shortcuts.png"
+          }
+        ]
+      },
+      "tasks-timezone-picker": {
+        "note": "The scheduled task's time zone, open. Each row names the zone in the UI's language and gives its offset (中国时间 · UTC+8) instead of quoting Asia/Shanghai; this machine's zone and the common ones lead.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "定时任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "编辑"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "时区"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => { const rows = [...document.querySelectorAll(\"[data-testid='timezone-option']\")]; if (rows.length < 20) throw new Error('the zone list did not open: ' + rows.length); const text = rows.map(row => (row.textContent || '').trim()).join(' | '); if (/Asia\\/Shanghai|Europe\\/Berlin/.test(text)) throw new Error('a raw identifier is still shown in the list: ' + text.slice(0, 200)); if (!text.includes('UTC+8')) throw new Error('no offset is printed beside the name: ' + text.slice(0, 200)); if (!/[\\u4e00-\\u9fff]/.test(text)) throw new Error('the zone names are not in Chinese: ' + text.slice(0, 200)); return 'names in Chinese, offsets beside them';})()"
+          },
+          {
+            "shot": "d-tasks-timezone-picker.png"
+          }
+        ]
+      },
+      "tasks-timezone-search": {
+        "note": "The same picker narrowed by what a reader would type: '+' and the number of hours they are away, rather than a name they may not know.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "tap": "定时任务"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tapText": "每周进展周报"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "编辑"
+          },
+          {
+            "wait": 900
+          },
+          {
+            "tap": "时区"
+          },
+          {
+            "wait": 600
+          },
+          {
+            "eval": "(() => { document.querySelector(\"[data-testid='timezone-search']\").focus(); return 'search focused'; })()"
+          },
+          {
+            "type": "+8"
+          },
+          {
+            "wait": 500
+          },
+          {
+            "eval": "(() => { const zones = [...document.querySelectorAll(\"[data-testid='timezone-option']\")].map(row => row.dataset.zone); if (!zones.includes('Asia/Shanghai')) throw new Error('+8 does not find Shanghai: ' + zones.join(',')); if (zones.includes('Europe/Berlin')) throw new Error('+8 kept a zone four hours away: ' + zones.join(',')); return zones.length + ' zones match +8';})()"
+          },
+          {
+            "shot": "d-tasks-timezone-search.png"
+          }
+        ]
+      },
+      "remote-peers-held": {
+        "note": "A paired computer another device is driving. The row says who drives it in one sentence, and Settings is refused before the machine has been taken over — a control that cannot work reads as a broken app.",
+        "url": "http://localhost:5299/shot/?lang=zh&peers=held",
+        "steps": [
+          {
+            "wait": 1500
+          },
+          {
+            "tap": "远程"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "eval": "(() => { const row = document.querySelector(\"[data-testid='peer-held']\"); if (!row) throw new Error('the held row is not marked'); const text = (row.textContent || '').trim(); if (!text.includes('另一台设备')) throw new Error('the sentence does not name who drives it: ' + text); if (!text.includes('正在接管')) throw new Error('the sentence does not say what is happening: ' + text); const buttons = [...row.closest(\"[data-testid='peer-row']\").querySelectorAll('button')]; const settings = buttons.find(button => (button.textContent || '').trim() === '设置'); if (!settings) throw new Error('the row has no Settings button'); if (!settings.disabled) throw new Error('Settings is offered on a machine this device does not drive'); const takeOver = buttons.find(button => (button.textContent || '').trim() === '接管'); if (!takeOver || takeOver.disabled) throw new Error('the way to take the machine back is missing'); return text;})()"
+          },
+          {
+            "shot": "d-remote-peers-held.png"
           }
         ]
       }
@@ -5435,16 +5591,28 @@
             "wait": 1500
           },
           {
-            "eval": "var heads=['活跃','更早'];var titles=['把清洗脚本写到 ~/clean.py','再跑一遍 marker 富集','跑通 Longformer 的 baseline','整理两篇文献的结论对比表','把这份问卷数据清洗一下','只看风险偏好那一段','把结论改成中文表格','找一下这批细胞的 marker 基因','基金申报书的创新点怎么写','解释一下 p 值的常见误用'];var seen=[...document.querySelectorAll('div')].filter(d=>d.children.length===0&&d.textContent.trim()).map(d=>d.textContent.trim()).filter(s=>titles.indexOf(s)>=0||heads.indexOf(s)>=0).filter((s,i,a)=>a.indexOf(s)===i);var expected=['活跃','把清洗脚本写到 ~/clean.py','再跑一遍 marker 富集','跑通 Longformer 的 baseline','更早','整理两篇文献的结论对比表','把这份问卷数据清洗一下','只看风险偏好那一段','把结论改成中文表格','找一下这批细胞的 marker 基因','基金申报书的创新点怎么写','解释一下 p 值的常见误用'];if(JSON.stringify(seen)!==JSON.stringify(expected)) throw new Error('recency order wrong: '+JSON.stringify(seen));'a11y: order ok'"
+            "eval": "var heads=['活跃','更早'];var titles=['把清洗脚本写到 ~/clean.py','再跑一遍 marker 富集','跑通 Longformer 的 baseline','整理两篇文献的结论对比表','把这份问卷数据清洗一下','只看风险偏好那一段','把结论改成中文表格','找一下这批细胞的 marker 基因','基金申报书的创新点怎么写','解释一下 p 值的常见误用'];var seen=[...document.querySelectorAll('div')].filter(d=>d.children.length===0&&d.textContent.trim()).map(d=>d.textContent.trim()).filter(s=>titles.indexOf(s)>=0||heads.indexOf(s)>=0).filter((s,i,a)=>a.indexOf(s)===i);var expected=['活跃','把清洗脚本写到 ~/clean.py','再跑一遍 marker 富集','跑通 Longformer 的 baseline','更早','整理两篇文献的结论对比表','把这份问卷数据清洗一下','找一下这批细胞的 marker 基因','基金申报书的创新点怎么写','解释一下 p 值的常见误用'];if(JSON.stringify(seen)!==JSON.stringify(expected)) throw new Error('recency order wrong: '+JSON.stringify(seen));if(document.querySelector('[data-testid=\"recent-row:earlier:sess_branch_risk\"]')) throw new Error('a child session is drawn as a row of the page');'a11y: order ok, child sessions are not rows'"
           },
           {
-            "eval": "var active=document.querySelector('[data-testid=\"recent-section:sessions.activeSection\"]');var earlier=document.querySelector('[data-testid=\"recent-section:sessions.earlierSection\"]');if(!active||!earlier) throw new Error('section captions missing');var txt=e=>[...e.querySelectorAll('div')].filter(d=>d.children.length===0).map(d=>d.textContent.trim()).filter(Boolean);var a=txt(active), e=txt(earlier);if(a[0]!=='活跃'||a[1]!=='3') throw new Error('active caption: '+JSON.stringify(a));if(e[0]!=='更早'||e[1]!=='7') throw new Error('earlier caption: '+JSON.stringify(e));'a11y: counts ok'"
+            "eval": "var active=document.querySelector('[data-testid=\"recent-section:sessions.activeSection\"]');var earlier=document.querySelector('[data-testid=\"recent-section:sessions.earlierSection\"]');if(!active||!earlier) throw new Error('section captions missing');var txt=e=>[...e.querySelectorAll('div')].filter(d=>d.children.length===0).map(d=>d.textContent.trim()).filter(Boolean);var a=txt(active), e=txt(earlier);if(a[0]!=='活跃'||a[1]!=='3') throw new Error('active caption: '+JSON.stringify(a));if(e[0]!=='更早'||e[1]!=='5') throw new Error('earlier caption: '+JSON.stringify(e));'a11y: counts ok'"
           },
           {
             "eval": "var rows=[...document.querySelectorAll('[data-testid^=\"recent-row:active:\"]')].map(r=>r.getAttribute('data-testid').split(':').slice(2).join(':'));var want=['sess_dopamine_approve','sess_sc_marker_run','sess_sparse_baseline'];if(JSON.stringify(rows)!==JSON.stringify(want)) throw new Error('active order is not by creation: '+JSON.stringify(rows));'a11y: active by creation'"
           },
           {
             "shot": "m-recent.png"
+          },
+          {
+            "eval": "var parent=document.querySelector('[data-testid=\"recent-row:earlier:sess_dopamine_review\"]');if(!parent) throw new Error('the conversation with children is missing');var toggle=[...parent.querySelectorAll('[role=button]')].find(b=>b.getAttribute('aria-label')==='展开子会话');if(!toggle) throw new Error('a conversation with children has no + toggle');toggle.click(); 'a11y: opened the conversation'"
+          },
+          {
+            "wait": 700
+          },
+          {
+            "eval": "var risk=document.querySelector('[data-testid=\"recent-row:earlier:sess_branch_risk\"]');var table=document.querySelector('[data-testid=\"recent-row:earlier:sess_branch_table\"]');var parent=document.querySelector('[data-testid=\"recent-row:earlier:sess_dopamine_review\"]');if(!risk||!table) throw new Error('the children were not revealed');if(!(parent.compareDocumentPosition(risk) & Node.DOCUMENT_POSITION_FOLLOWING)) throw new Error('the child is not under its conversation');var indent=el=>getComputedStyle(el).paddingLeft;if(indent(parent)!=='8px'||indent(risk)!=='28px'||indent(table)!=='28px') throw new Error('indent: parent '+indent(parent)+', child '+indent(risk));var earlier=document.querySelector('[data-testid=\"recent-section:sessions.earlierSection\"]');var n=[...earlier.querySelectorAll('div')].filter(d=>d.children.length===0).map(d=>d.textContent.trim()).filter(Boolean);if(n[1]!=='5') throw new Error('opening a conversation changed the caption: '+JSON.stringify(n));'a11y: children under the conversation, one level in'"
+          },
+          {
+            "shot": "m-recent-children.png"
           },
           {
             "tap": "会话列表操作"

@@ -8,7 +8,7 @@
 
 ## 0. 定位
 
-- **位置**：新增 crate `orchestration/tasks`（crate 名 `future-tasks`），与 `orchestration/goal` 同层。
+- **位置**：crate `orchestration/tasks`（crate 名 `future-tasks`）持有内核、类型与 store，与 `orchestration/goal` 同层；执行器与 tick 循环住在 `future-host`（`host/src/tasks.rs`、`host/src/tasks/service.rs`），两个 desktop 宿主与 `future task` CLI 共用这一份。
 - **宿主**：desktop（GUI）与 headless desktop 已接，共用同一份 tick 循环；TUI 未接；mobile 不 host，走 desktop 远程桥。
 - **分层**：确定性内核（`next_due` / 截断 / prompt 版本）全是纯函数，与 host 无关；执行器只有一份，host 差异收敛成 `Notifier` 闭包（见 §8）。
 
@@ -127,7 +127,7 @@ CREATE TABLE task_prompt_revisions (
 - **短月**：monthly `day > 当月天数` 时顺延到当月最后一天；UI/CLI 常驻可见此规则。
 - **once**：跑完 `enabled=0`。
 
-**时区**。`tasks.timezone` 存 IANA 时区名（`Asia/Shanghai`、`Europe/Berlin`、`UTC`），上面所有墙钟时间都按它读——机器自身时区变了、或者任务由另一台设备管理，计划仍保持原意。所有写入方都落具体名字：CLI 的 `--timezone`、桌面表单、手机编辑器都会传；客户端没传时在写入时解析为本机时区，**读不到时区时用 Asia/Shanghai**（读不到不能悄悄当成 UTC，否则中文用户的早间任务会跑到下午）。没有存过时区的旧行（该设置出现之前写的）每次重算计划时按同一规则解析。选中的时区会出现在 `future task show`、运行信封（`run settings: … | timezone=…`）、`due=` 与 CLI 的日期列里；任务详情页与工作目录并列显示。无法识别的名字会直接报错，不会被替换。
+**时区**。`tasks.timezone` 存 IANA 时区名（`Asia/Shanghai`、`Europe/Berlin`、`UTC`），上面所有墙钟时间都按它读——机器自身时区变了、或者任务由另一台设备管理，计划仍保持原意。所有写入方都落具体名字：CLI 的 `--timezone`、桌面表单、手机编辑器都会传；客户端没传时在写入时解析为本机时区，**读不到时区时用 Asia/Shanghai**（读不到不能悄悄当成 UTC，否则中文用户的早间任务会跑到下午）。没有存过时区的旧行（该设置出现之前写的）每次重算计划时按同一规则解析。选中的时区会出现在 `future task show`、运行信封（`run settings: … | timezone=…`）、`due=` 与 CLI 的日期列里；任务详情页与工作目录并列显示。无法识别的名字会直接报错，不会被替换。存下来的是 IANA 名，读到的却不必是：桌面端的选择器按界面语言给出时区名和下次运行时的偏移（`中国时间 · UTC+8`、`中欧时间 · UTC+2`），本机时区与常用区排在最前，搜索同时匹配名称、IANA 名、城市和偏移。这只是显示——保存值仍是 IANA 名，所以换界面语言不会改写计划。
 
 ## 5. 执行链路（tick → claim → 执行）
 
@@ -214,21 +214,25 @@ Completion contract:
 
 ## 8. Host 抽象（实际实现：`Notifier`，不是 Executor trait）
 
-执行器只有一份，住在 desktop 的 `tasks.rs`；host 差异只有「跑完之后怎么通知」，因此抽象是一个闭包而不是 trait：
+执行器只有一份，住在 `future_host::tasks`（`host/src/tasks.rs`）；同名的 desktop 模块只是通知适配器。host 差异只有「跑完之后怎么通知」，因此抽象是一个闭包而不是 trait：
 
 ```rust
 pub type Notifier = Arc<dyn Fn(Option<&str /* thread_id */>) + Send + Sync>;
 
-pub fn start<R: tauri::Runtime>(app: AppHandle<R>)  // GUI：emit_remote_activity + emit_threads_updated
+// future-host：执行器与其循环
+pub fn start_with_notifier(notify: Notifier)       // 常驻监管，30s tick
 pub fn start_headless()                            // 无 GUI：通知降级为空，台账就是信号
 async fn run_loop(notify: Notifier)                // 启动对账 + 每 30s tick
+
+// desktop/src-tauri/src/tasks.rs：GUI 适配器
+pub fn start<R: tauri::Runtime>(app: AppHandle<R>) // emit_remote_activity + emit_threads_updated
 ```
 
 理由：`Executor` trait 需要 5 个方法，但它们全部只被这一份实现调用，且都是对 `agent_bridge` 既有函数的薄包装——加一层 trait 只增加间接性。tick 循环本身与 GUI 无关（`start_headless` 与 GUI 走同一个 `run_loop`），所以"headless 也支持"是同一份代码少一个通知出口，而不是第二套实现。
 
 host 现状：
-- **GUI desktop**：已接（`lib.rs` setup 里 `tasks::start`）。
-- **headless desktop**：已接（`headless/mod.rs` 里 `tasks::start_headless`）。
+- **GUI desktop**：已接（`desktop/src-tauri/src/lib.rs` setup 里调用本地的 `tasks::start`，它装上 notifier 后再调 `future_host::tasks::start_with_notifier`）。
+- **headless desktop**：已接（`cli/src/headless/mod.rs` 里 `future_host::tasks::start_headless`）。
 - **mobile**：不 host；经 remote 桥管理（能力 `tasks_v1`）。
 - **TUI**：**未接**。crate 与 CLI 已经可用，TUI 面板是后续增量。
 
@@ -293,17 +297,25 @@ HOME=/tmp/try FUTURE_AGENT_GRPC_ADDR=127.0.0.1:5099 \
   - **mobile**：定义是**单独一页**（详情页的「设置」按钮推上去，即 `TaskForm` 的 `settingsOpen` 一层），进去后不再渲染运行记录；系统返回手势（Android）或头部返回箭头退回详情，保存成功也回到详情（保存失败留在表单上，草稿即重试）。手机不照搬折叠：折叠行虽在运行记录上方，展开的字段却排在运行记录**之后**，而定义本身有两三屏，等于把「改设置」埋在一长段历史下面。
 - **mobile（已实现）**：Settings 栈内「定时任务设置」页（入口文案从「定时任务」改成「定时任务设置」，与「模型」「提供商」这类设置项同形，点进去是设置而不是导航），由 `tasks_v1` 能力门控；列表不带 prompt 正文（wire 预算），详情单独取；含运行记录。
 
-两个客户端共用同一套表单规则：新建定时任务默认**对话会话**（因此不要求目录；切到工作区会话才要），模型与思考等级**必须显式选择**（没有“默认”选项，未选时保存被拒并说明缺哪项），模型列表只给用户在「模型」页启用的那批（任务已绑定但被停用的模型仍保留可选，避免编辑其它字段时静默改写）。
+四个客户端共用同一套表单规则：新建定时任务默认**对话会话**（因此不要求目录；切到工作区会话才要），模型与思考等级**必须显式选择**（没有“默认”选项，未选时保存被拒并说明缺哪项），模型列表只给用户在「模型」页启用的那批（任务已绑定但被停用的模型仍保留可选，避免编辑其它字段时静默改写）。**触发器同样必须选**：新建任务不预设任何模式（见下「手机表单与桌面端对齐」）。
 
-**即时性**：`Run now`（桌面按钮、手机点击）写 `pending_request_at` 后调用 `tasks::wake()` 唤醒 tick 循环，运行在毫秒级开始，而不是等下一个 30s 节拍（tick 仍是唯一的 claim 者）；运行开始/结束时 host 既有 `threads-updated` 事件，任务面板据此重读列表与已打开的详情（否则会一直停在“已排队”）。
+**即时性**：远程命令 `run_task` 写 `pending_request_at` 后调用 `tasks::wake()` 唤醒 tick 循环（tick 仍是唯一的 claim 者），所以一次显式触发在毫秒级开始，而不是等下一个 30s 节拍；运行开始/结束时 host 既有 `threads-updated` 事件，任务面板据此重读列表与已打开的详情（否则会一直停在“已排队”）。**两端的「立即运行」按钮都已移除**：任务在触发器到点时运行，显式触发只剩 `future task run`。
 
 **定义被别处改了也要刷新**：`threads-updated` 只说明会话变了，而手机在「定时任务」页停用/改定义/删除时，写的是同一个进程里的同一个 store，桌面面板却没有任何信号，只能手动刷新才看到——一次真机反馈就是这么来的。因此远程任务的写入命令（create / update / delete / set_enabled / run / apply_revision）成功后在 host 发 `tasks-updated`，桌面的 `useTasks` 监听它重读列表（只对本地后端生效：远端面板由那台宿主自己推）。
 
-**手机表单的三处硬要求**（2026-10-22，来自真机反馈）：
+**手机表单的四条硬要求**（2026-10-22，来自真机反馈）：
 
 - **时间是选出来的，不是打出来的**。桌面端是 `<input type="time">`，由系统给出选择器；手机端没有这个元素，原先的文本框既要用键盘、又会被键盘挡住表单底部（Android 边到边下窗口不缩，见 `lib/useKeyboardHeight`）。现在 `TimeField` 用两排芯片：0–23 时全展开，0–59 分横向一条（打开时滚到当前分钟），点选即写回 `HH:MM`，没有键盘参与。设置栈整体也补上了键盘避让，所以名称、提示词这些仍要打字的字段不会再把「保存」压在键盘下面。
-- **草稿跨冷启动保留**。表单有十几个字段，而手机随时会在中途被系统杀掉。草稿按「Desktop + 任务（新建是 `create`）」写在 AsyncStorage（`features/settings/taskDraftStorage.ts`），打开表单时读回、输入后 250 ms 落盘；保存成功、取消、删除、逐层返回都会清掉它，避免下一次打开拿到一份任务本身已不存在的编辑。编辑草稿带 `promptVersion`：prompt 在别处被改过就不恢复，直接丢弃。读回来的内容逐字段校验类型，坏数据只让那个字段回默认值。
+- **草稿跟冷启动与返回一起活**。表单有十几个字段，而手机随时会在中途被系统杀掉。草稿按「Desktop + 任务（新建是 `create`）」写在 AsyncStorage（`features/settings/taskDraftStorage.ts`），打开表单时读回、输入后 250 ms 落盘。**只有两种有意的结束会清掉它**：取消（`tasks.form.cancel`）与落地的保存；**逐层返回（系统手势 / 头部箭头）不清**——返回是手机离开一屏的方式，接个电话回来要重新打一遍正是草稿要防的事（2026-10-22 按真机反馈改正，之前返回也清）。删除任务同样清它的草稿。编辑草稿带 `promptVersion`：prompt 在别处被改过就不恢复，直接丢弃。读回来的内容逐字段校验类型，坏数据只让那个字段回默认值。
 - **入口按钮叫「编辑」**，与桌面端一致（`tasks.edit`），不再叫「设置」。
+
+**手机表单与桌面端对齐**（2026-10-22，同一批真机反馈）。手机端编辑器一度只是桌面表单的近似物，五个细节各说各的；现在一律按桌面端裁决：
+
+- **新建任务没有「手动」**。桌面端去掉「立即运行」时也去掉了这个新选项（`TriggerKind::Manual` 没有 `next_due`），手机端却仍以它作为新建默认——于是手机上按默认建出来的任务永远不会自己跑，而手机也没有「立即运行」。现在新建任务不预设触发方式，未选时保存被拒并说明（`tasks.form.problem.trigger`）；**已经是 manual 的旧任务**编辑时保留这一项，一次编辑不会把它悄悄改成会跑的任务。
+- **每周是七个勾选，不是一行文本**。之前要在文本框里写 `mon, fri`，而没有任何东西说明它接受哪些名字；现在与桌面同样七个开关，写回时按周序排序，两端对同一个集合产生同一个 payload。
+- **一次性日期是选出来的**。桌面端把文本框换成原生日期选择器，正是因为占位符 `2026-12-24` 会被读成“已经选好了”。手机端补上同样的事：`DateField` 用年/月/日三排芯片，日排随月份变（不会出现 2 月 31 日），点选即写回 `YYYY-MM-DD`。
+- **时区在触发器里，且只在读时钟的模式下出现**。时区是计划的属性（它说明刚选的时间按哪个钟读），不是任务的属性：桌面把它放在触发器内部、只有 `once/daily/weekly/monthly/yearly` 才问，手机之前把它常显在「定时任务信息」区、只有四个写死的选项加一个自由输入框。现在位置、出现条件与文案都与桌面一致，候选是运行时认识的全部 IANA 名字（`features/settings/timezones.ts`；取不到 `Intl.supportedValuesOf` 时用一份常用列表），带搜索框；列表里没有、但任务已经存着的时区会被加进候选，编辑不会静默改写它。空值仍是「桌面端时区」，由桌面解析并落具体名字。
+- **列表行的下次运行时间按任务的钟显示**。`nextDueAt` 是一个瞬间：手机之前用手机自己的时区格式化，桌面用 `task.timezone`，同一个任务在两端显示成不同的钟点，而手机的注释还写着“与桌面端一致”。现在 `list_tasks` 的行自带 `timezone`（`host/src/remote_host/business/tasks.rs`），列表按任务的时区渲染——顺带也让手机不必为显示一个时间点去逐个取任务详情。
 
 **版本区不在客户端**：两端的界面都不列版本、也不给回退入口——生效中的是哪一版是 CLI / 技能的事（`prompt log|apply|revert`），一个只列版本却无法核对某次运行到底用了哪版的客户端只会误导人。从任一端改 prompt 仍会在服务端记一条版本，CLI 看到的历史不缺（见 §7）。运行记录仍是每条运行一张独立卡片（头部是状态 · 类型 · `v版本` · 时间 + 「打开会话」，卡片之间有间距）——以前所有运行共用一个框、用细线分隔，一条带大段总结的运行会顶到下一次运行的表头上。手机同样是每条一张卡片。
 - **回顾一次运行**：桌面的「打开会话」按 thread 打开；手机按 session 打开（`run.sessionId`，老桌面端不发这个字段，因此那条链接只在有值时出现），由 `SessionsScreen` 关掉设置弹窗后再 `selectSession`——手机没有导航库，聊天是另一个顶层屏幕。
@@ -312,7 +324,7 @@ HOME=/tmp/try FUTURE_AGENT_GRPC_ADDR=127.0.0.1:5099 \
 
 ## 12. 明确不做
 
-**已移除**：任务之间的依赖（边、join、链式运行、`--depends-on`/`--join-any` 两个 flag，以及两端编辑器里的依赖块）——定时任务只由自己的计划或手动触发。**不在范围内**：cron 表达式；任务之间的编排；OS 常驻服务；shell/goal/skill 类动作；系统通知；每任务工具白名单（全权限是唯一策略）。
+**已移除**：任务之间的依赖（边、join、链式运行、`--depends-on`/`--join-any` 两个 flag，以及两端编辑器里的依赖块）——定时任务只由自己的计划或手动触发。host 的 `list_task_deps`、`set_task_dep`、`remove_task_dep` 三条 IPC 命令仍为旧版本客户端作答（空列表；明确拒绝），等没有已发布客户端再问时再删（`host/src/tasks/service.rs`）。**不在范围内**：cron 表达式；任务之间的编排；OS 常驻服务；shell/goal/skill 类动作；系统通知；每任务工具白名单（全权限是唯一策略）。
 
 ---
 

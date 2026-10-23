@@ -3,10 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   byActivity,
   byCreation,
+  expandRecent,
   isActiveRun,
   RECENT_PAGE_SIZE,
 
   recentSplit,
+  recentTree,
 } from "./recentOrder";
 
 const minute = 60_000;
@@ -95,6 +97,87 @@ describe("the recent view's order", () => {
     const a = item("a", { lastActivityAt: now });
     const b = item("b", { lastActivityAt: now });
     expect(keys([b, a].sort(byActivity))).toEqual(["a", "b"]);
+  });
+});
+
+describe("the recent view's hierarchy", () => {
+  it("ranks a conversation, not the children that do its work", () => {
+    // The `/future-goal` shape: a conversation that started a worker session per
+    // piece of work. The worker is newer than its parent by construction, so a
+    // list that ranked every session put the worker above the conversation the
+    // reader actually made.
+    const tree = recentTree([
+      item("parent", { createdAt: now - 2 * hour }),
+      item("worker", { createdAt: now - minute, parentKey: "parent" }),
+      item("other", { createdAt: now - hour }),
+    ]);
+    expect(keys(tree.roots)).toEqual(["parent", "other"]);
+    expect(keys(tree.children.get("parent") ?? [])).toEqual(["worker"]);
+  });
+
+  it("keeps a pinned child a child: this view has no pinned section to hoist it into", () => {
+    const tree = recentTree([
+      item("parent"),
+      item("pinned-worker", { parentKey: "parent", pinned: true }),
+    ]);
+    expect(keys(tree.roots)).toEqual(["parent"]);
+  });
+
+  it("makes a child whose parent is not in the list a root", () => {
+    // The filter, a search or a deleted parent: a row that cannot be drawn under
+    // something is drawn on its own rather than lost.
+    const tree = recentTree([item("orphan", { parentKey: "missing" })]);
+    expect(keys(tree.roots)).toEqual(["orphan"]);
+    expect(tree.children.size).toBe(0);
+  });
+
+  it("breaks a malformed ring instead of losing every row in it", () => {
+    const tree = recentTree([
+      item("a", { parentKey: "b" }),
+      item("b", { parentKey: "a" }),
+    ]);
+    expect(tree.roots).toHaveLength(1);
+    expect(keys(expandRecent(tree.roots, tree, new Set(tree.roots.map(row => row.key))).rows)).toHaveLength(2);
+  });
+
+  it("draws a child only inside its parent's fold", () => {
+    const tree = recentTree([
+      item("parent"),
+      item("worker", { parentKey: "parent" }),
+    ]);
+    const folded = expandRecent(tree.roots, tree, new Set());
+    expect(keys(folded.rows)).toEqual(["parent"]);
+    expect(folded.meta.get("parent")).toEqual({ depth: 0, hasChildren: true });
+
+    const opened = expandRecent(tree.roots, tree, new Set(["parent"]));
+    expect(keys(opened.rows)).toEqual(["parent", "worker"]);
+    expect(opened.meta.get("worker")).toEqual({ depth: 1, hasChildren: false });
+    // The keyboard's block: a child belongs to the conversation it explains, so
+    // stepping by conversation does not stop on it separately.
+    expect(opened.roots.get("worker")).toBe("parent");
+  });
+
+  it("draws a grandchild only when its own parent is open", () => {
+    const tree = recentTree([
+      item("parent"),
+      item("worker", { parentKey: "parent" }),
+      item("helper", { parentKey: "worker" }),
+    ]);
+    expect(keys(expandRecent(tree.roots, tree, new Set(["parent"])).rows)).toEqual(["parent", "worker"]);
+    expect(keys(expandRecent(tree.roots, tree, new Set(["parent", "worker"])).rows))
+      .toEqual(["parent", "worker", "helper"]);
+  });
+
+  it("keeps indenting at three levels, whatever the chain's length", () => {
+    const tree = recentTree([
+      item("a"),
+      item("b", { parentKey: "a" }),
+      item("c", { parentKey: "b" }),
+      item("d", { parentKey: "c" }),
+    ]);
+    const expanded = expandRecent(tree.roots, tree, new Set(["a", "b", "c"]));
+    expect(keys(expanded.rows)).toEqual(["a", "b", "c", "d"]);
+    expect(expanded.meta.get("d")?.depth).toBe(2);
   });
 });
 

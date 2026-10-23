@@ -190,11 +190,15 @@ fn hook_body(info: &std::panic::PanicHookInfo<'_>) {
     report(&info.to_string());
 }
 
-/// Restore the terminal, append the crash report to `~/.future/tui/crash.log`
+/// Restore the terminal, append the crash report to `<future home>/tui/crash.log`
 /// and print a note on stderr. `message` is [`std::panic::PanicHookInfo`]'s
 /// rendering of the panic (`panicked at <file>:<line>:\n<payload>`).
 fn report(message: &str) {
-    // 1. Restore the terminal (best-effort).
+    // 1. Restore the terminal (best-effort). While the TUI owns the screen,
+    // stderr points at `~/.future/tui/stderr.log` (see `stderr_log`); the
+    // teardown sequences and the note below have to reach the real terminal,
+    // so hand stderr back first.
+    let _ = crate::stderr_log::restore();
     raw_write_stderr(RESTORE_SEQUENCES.as_bytes());
     #[cfg(unix)]
     crate::terminal::panic_restore_raw();
@@ -206,13 +210,17 @@ fn report(message: &str) {
         std::backtrace::Backtrace::force_capture(),
     );
 
-    // 3. Persist: append to ~/.future/tui/crash.log.
-    append_crash_log(crate::home::home_dir(), &report);
+    // 3. Persist: append to <future home>/tui/crash.log.
+    append_crash_log(Some(crate::home::future_state_dir()), &report);
 
     // 4. Human-readable note on stderr (terminal is restored by now).
     raw_write_stderr(
         format!(
-            "\nfuture-tui panicked: {message}\n(full backtrace appended to ~/.future/tui/crash.log)\n"
+            "\nfuture-tui panicked: {message}\n(full backtrace appended to {})\n",
+            crate::home::future_state_dir()
+                .join("tui")
+                .join("crash.log")
+                .display()
         )
         .as_bytes(),
     );
@@ -253,11 +261,11 @@ impl Drop for ReportArmed {
 }
 
 /// Append the crash report to ~/.future/tui/crash.log (best-effort).
-fn append_crash_log(home: Option<std::path::PathBuf>, report: &str) {
-    let Some(home) = home else {
+fn append_crash_log(root: Option<std::path::PathBuf>, report: &str) {
+    let Some(root) = root else {
         return;
     };
-    let dir = home.join(".future").join("tui");
+    let dir = root.join("tui");
     if std::fs::create_dir_all(&dir).is_ok() {
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
@@ -490,10 +498,10 @@ mod tests {
     fn append_crash_log_handles_all_paths() {
         // No home → no-op.
         append_crash_log(None, "report");
-        // Normal home → file written.
+        // Normal root → file written.
         let home = tempfile::tempdir().unwrap();
         append_crash_log(Some(home.path().to_path_buf()), "report-body");
-        let content = std::fs::read_to_string(home.path().join(".future/tui/crash.log")).unwrap();
+        let content = std::fs::read_to_string(home.path().join("tui/crash.log")).unwrap();
         assert!(content.contains("report-body"));
         // Unwritable target (home is a file) → tolerated.
         let file_home = tempfile::tempdir().unwrap();

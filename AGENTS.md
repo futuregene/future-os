@@ -12,11 +12,12 @@ The Rust workspace (`Cargo.toml`) members and their slice of `~/.future/` (see `
 - `agent/` — `future-agent`, the gRPC backend. Owns `~/.future/agent/` (settings, models, auth, JSONL sessions, skills).
 - `channels/` — `future-channel`, the Feishu / DingTalk IM bridge. Owns `~/.future/channels/config.json`.
 - `orchestration/goal/` — `future-goal`, the goal control plane (durable goals/todos/gates, deterministic should-run kernel, event-sourced state). Owns project-local `<cwd>/.future/goal/` by default (`FUTURE_GOAL_ROOT` overrides it); see `docs/architecture/goal-control-plane.md`.
+- `orchestration/tasks/` — `future-tasks`, the scheduled-task control plane (reusable prompt + trigger + run ledger; a pure `next_due` kernel with a host-agnostic executor driven by the desktop, host mode and TUI). Owns `<home>/.future/tasks/tasks.db`; see `docs/architecture/tasks.md`.
 - `tui/` — `future-tui`, the terminal UI (a gRPC client of the agent). Owns `~/.future/tui/`.
 - `cli/` — `future-cli`, builds the unified `future` binary that embeds host/agent/tui/channel/goal.
 - `packages/rpc/` — `future-rpc`, the protobuf wire-contract crate (single source of truth; see proto notes below).
 
-`desktop/src-tauri` (`futureos`) is a workspace member: every Rust entry point shares the root `Cargo.lock`, `target/`, and release profile (Thin LTO). `default-members` keeps GUI dependencies out of ordinary root builds; select `-p futureos` explicitly for Desktop, or `--workspace --exclude futureos` for all CLI/server crates. `packages/` also holds shared npm packages (`markdown`, `thread-projection`, `json-preview`) consumed by desktop/mobile; the repo-root `package.json` declares npm workspaces `["packages/*", "desktop", "mobile"]`, so a single `npm install` at the root hoists all deps.
+`desktop/src-tauri` (`futureos`) is a workspace member: every Rust entry point shares the root `Cargo.lock`, `target/`, and release profile (Thin LTO). `default-members` keeps GUI dependencies out of ordinary root builds; select `-p futureos` explicitly for Desktop, or `--workspace --exclude futureos` for all CLI/server crates. `packages/` also holds the remote-stack crates (`remote-crypto`, `remote-protocol`, `remote-client`, `remote-server`) and shared npm packages (`markdown`, `thread-projection`, `json-preview`) consumed by desktop/mobile; the repo-root `package.json` declares npm workspaces `["packages/*", "desktop", "mobile", "tests/remote-interop"]`, so a single `npm install` at the root hoists all deps.
 
 ## Project memory
 

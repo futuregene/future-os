@@ -4,6 +4,7 @@ import type { RemotePeer, RemotePeerEvent } from "../../../features/remote-peer/
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CatalogVersionGate } from "../../../features/remote-peer/catalogVersion";
+import { peerRevoked } from "../../../features/remote-peer/peerStatus";
 import { forgetHostCatalogue, warmHostCatalogue } from "../../../features/remote-peer/remoteHostCatalog";
 import {
   connectAllRemotePeers,
@@ -11,6 +12,7 @@ import {
   fetchRemoteSessions,
   listRemotePeers,
   normalizeRemoteSessionRows,
+  unpairRemotePeer,
 } from "../../../features/remote-peer/remotePeerClient";
 
 /** How often the peer list is refreshed. */
@@ -83,6 +85,43 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
   const gatesRef = useRef(new Map<string, CatalogVersionGate>());
   // The launch pass happens once per app session, not once per poll.
   const launchedRef = useRef(false);
+  //
+  // The hosts whose pairing this machine has already tried to forget. A pairing
+  // the other side revoked is refused by the platform on every attempt, so
+  // without this a failed removal would be retried on every poll, for the life
+  // of the session.
+  const forgottenRef = useRef(new Set<string>());
+
+  /**
+   * Drop the local half of a pairing the platform no longer honours.
+   *
+   * The *authoritative* side ended it: the platform refuses this machine's
+   * credential for that host, and no retry can bring it back. The row is what
+   * the user asked about — "the other computer is gone from its own list, why is
+   * it still on mine" — so the pairing is removed here rather than relabelled:
+   * a row whose only remaining action is "unpair" asks the user to clean up
+   * after a machine that already left.
+   *
+   * If the removal itself fails (a storage fault), the row stays and the list
+   * shows it as "pairing revoked" with Unpair offered — the state the row was in
+   * before this existed.
+   */
+  const forgetDetached = useCallback(async (peer: RemotePeer) => {
+    if (forgottenRef.current.has(peer.desktopId))
+      return;
+    forgottenRef.current.add(peer.desktopId);
+    try {
+      // Local first (the command removes the registration before it tries the
+      // platform), so the row leaves even when the revoke cannot be delivered.
+      await unpairRemotePeer(peer.desktopId);
+    }
+    catch (err) {
+      console.error("remote peer: could not forget a revoked pairing:", peer.desktopId, err);
+      return;
+    }
+    gatesRef.current.delete(peer.desktopId);
+    forgetHostCatalogue(peer.desktopId);
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -90,10 +129,26 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
       peersRef.current = next;
       setPeers(next);
       setError(null);
+      // A host whose pairing the platform refuses is not a paired host any more,
+      // whatever this machine still has on file. The failed read is the
+      // platform's own answer, so it is acted on rather than drawn: the row and
+      // its registration go, and the list read below works from what is left.
+      let peers = next;
+      const detached = next.filter(peer => peerRevoked(peer));
+      if (detached.length > 0) {
+        await Promise.all(detached.map(peer => forgetDetached(peer)));
+        peers = await listRemotePeers();
+        peersRef.current = peers;
+        setPeers(peers);
+      }
+      // A host that left is not a host whose catalogue is worth keeping, and its
+      // rows must leave the merged list with it.
+      if (detached.length > 0)
+        setCatalogs(current => current.filter(catalog => peers.some(peer => peer.desktopId === catalog.desktopId)));
       // Only connected hosts are asked for a catalogue: a request to a
       // disconnected host would open a connection as a side effect, which is
       // not what a background poll should do.
-      const connected = next.filter(peer => peer.connected);
+      const connected = peers.filter(peer => peer.connected);
       // And their *own* catalogue — its models, its settings, the skills those
       // settings ask for — is read here, as the connection is established, rather
       // than once per conversation opened (`remoteHostCatalog`). Cached per host,
@@ -108,7 +163,7 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
       // A host that is not connected has no catalogue worth keeping: what was
       // read describes the connection that answered, and a re-pair or a
       // reconnect re-reads it.
-      for (const peer of next) {
+      for (const peer of peers) {
         if (!peer.connected)
           forgetHostCatalogue(peer.desktopId);
       }
@@ -135,7 +190,7 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
     catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [forgetDetached]);
 
   /**
    * Ask for the hosts that should already be live.
@@ -266,6 +321,22 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
         return;
       }
       if (kind === "presence") {
+        // The host ending the pairing says so on the same lane as its heartbeat
+        // (`unpaired`, or `disconnected` with that reason). It is the one event
+        // that makes the row itself wrong rather than stale, and it arrives
+        // while the link still works — the platform refusing this machine's
+        // credential is what follows. Acting on the notice is for the hosts that
+        // get the word out; `refresh`'s own revoked check is what catches the
+        // rest, whose socket dies with the permission.
+        if (presenceEndsPairing(payload)) {
+          const peer = peersRef.current.find(entry => entry.desktopId === desktopId);
+          if (peer) {
+            gatesRef.current.delete(desktopId);
+            forgetHostCatalogue(desktopId);
+            void forgetDetached(peer).then(() => refresh());
+            return;
+          }
+        }
         handlePresence(desktopId, payload, gatesRef.current, peersRef.current, refresh);
         return;
       }
@@ -334,7 +405,7 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
       cancelled = true;
       dispose?.();
     };
-  }, [enabled, refresh]);
+  }, [enabled, forgetDetached, refresh]);
 
   return useMemo(
     () => ({ peers, catalogs, loading, error, refresh, reconnectAll }),
@@ -354,6 +425,24 @@ function readNumber(value: unknown, key: string): number | null {
     return null;
   const field = (value as Record<string, unknown>)[key];
   return typeof field === "number" ? field : null;
+}
+
+/**
+ * Whether a presence packet says the host ended this pairing.
+ *
+ * Two shapes, because the host sends two: the unpair notice (`unpaired: true`,
+ * published while the link is being torn down) and the generic disconnect notice
+ * (`disconnected: true` with `reason: "unpaired"`). Every other reason —
+ * `user_disconnect`, `system_sleep` — is the host stepping away and leaves the
+ * pairing in place, which is exactly the difference the user is told apart.
+ */
+function presenceEndsPairing(payload: unknown): boolean {
+  if (typeof payload !== "object" || payload === null)
+    return false;
+  const obj = payload as Record<string, unknown>;
+  if (obj.unpaired === true)
+    return true;
+  return obj.disconnected === true && obj.reason === "unpaired";
 }
 
 function readVersion(value: unknown): SnapshotVersion | undefined {

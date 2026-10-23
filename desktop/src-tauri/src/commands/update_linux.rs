@@ -251,10 +251,7 @@ pub(super) fn worker(args: &[String]) -> Result<(), String> {
     process::complete(&result)
 }
 pub(super) fn confirm(id: &str) -> Result<(), String> {
-    let plan = future_rpc::home::future_home()
-        .join("app/updates")
-        .join(id)
-        .join("linux.json");
+    let plan = super::journal::root().join(id).join("linux.json");
     let plan: serde_json::Value =
         serde_json::from_slice(&std::fs::read(plan).map_err(|e| e.to_string())?)
             .map_err(|e| e.to_string())?;

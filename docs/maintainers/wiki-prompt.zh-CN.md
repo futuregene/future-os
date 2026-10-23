@@ -31,10 +31,11 @@ Wiki 不必单独创建 TUI 页，仓库已有 `docs/guide/tui*.md`；CLI 页可
 | `Installation.md` | 产物/架构、首次启动、运行库、更新与卸载 | `.github/workflows/release.yml`、`build-{macos-signed,windows-signed}.yml`、`build-linux.yaml`；`scripts/release/install.sh`、`scripts/release/install.ps1`；`docs/dist/` |
 | `Quick-Start.md` | 登录或 BYOK、首个对话、审批选择、模型选择 | 桌面登录/新会话流程及设置文案 |
 | `Using-FutureOS.md` | Chat/workspace、附件、工具、批准卡、Files/Runs/Review | `desktop/src/features/agent/`、`review/`、`filetree/`；`components/layout/` |
-| `Settings.md` | 当前设置项与默认值 | `desktop/src/features/settings/`；`desktop/src-tauri/src/store/app_settings.rs` |
-| `Sandbox.md` | 默认值、三档、平台边界、Linux 安装、提权与排障 | `agent/src/sandbox/`；`agent/src/rpc/session.rs`、`session_prompt.rs`；`docs/internals/desktop/SANDBOX/`；`useSandboxAvailability.ts` |
+| `Settings.md` | 当前设置项与默认值 | `desktop/src/features/settings/`；`packages/app-settings/src/lib.rs`；`host/src/store/app_settings.rs` |
+| `Sandbox.md` | 默认值、四档批准模式、平台边界、Linux 安装、提权与排障 | `agent/src/sandbox/`；`agent/src/rpc/session.rs`、`session_prompt.rs`；`docs/internals/desktop/SANDBOX/`；`useSandboxAvailability.ts` |
 | `Remote.md` | Android/iOS 配对、在线要求、撤销、隐私与排障 | `docs/internals/mobile/README.md`、`mobile/src/remote/`；`desktop/src/features/remote/`、`desktop/src-tauri/src/remote/`；remote 文案 |
 | `Skills.md` | 浏览/安装/使用及精选能力 | `skills/builtin/*/SKILL.md`；`cli/src/commands/skills.rs`；桌面 Skills 页面 |
+| `Scheduled-Tasks.md` | 创建定时任务、触发方式、运行记录、完全权限提示 | `desktop/src/features/tasks/`；`cli/src/help.rs`（`TASK_HELP`）；`host/src/scheduler.rs` |
 | `CLI.md` | 可选 CLI 位置、命令、默认值、Agent 要求 | `cli/src/main.rs`、`cli/src/lib.rs`、`cli/src/commands/{run,auth,configure,tools,skills,doctor}.rs`；`packages/rpc/src/transport.rs` |
 | `Feishu.md` / `DingTalk.md` | 机器人配置、访问策略、启动、命令与排障 | `channels/src/` 配置和各渠道处理器；外部步骤另核验平台文档 |
 | `FAQ.md` | 真实故障与安全处理方法 | 对应实现及产物/渠道信息 |
@@ -45,7 +46,10 @@ Wiki 不必单独创建 TUI 页，仓库已有 `docs/guide/tui*.md`；CLI 页可
 
 1. **不是默认每次工具调用都审批。**桌面默认 `off`，新 Agent 会话权限 `all`；enum 默认值
    不等于应用默认值。手动模式可放行普通读取/workspace 写入，沙箱命令不必逐次预先询问。
-   区分旧式 `--permission` 与 `off/manual/sandbox`；`none` 禁止所有工具，不仅是外部写入。
+   区分旧式 `--permission` 与 `off/manual/sandbox/auto`；`none` 禁止所有工具，不仅是外部写入。
+   `auto` 是在 `sandbox` 之上加了一个模型审核器，替用户决定本会询问的请求；它需要 OS 沙箱与
+   FutureOS 登录（`agent/src/approval_review/`、`desktop/src/integrations/agent/automaticApproval.ts`），
+   不要写成一个独立的 OS 后端。
 2. **三个 OS 后端，保护范围不同。**macOS Seatbelt、原生 Linux 系统 Bubblewrap ≥ 0.9.0、
    Windows 受限令牌写保护；网络开放。Linux 无 seccomp 且缺失/动态路径存在检测型限制；
    Windows 有读取/ACL/删除限制。披露 `auth.json` 例外，不能将可用 probe 或历史 smoke PASS

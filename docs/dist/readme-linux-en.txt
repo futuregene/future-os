@@ -25,7 +25,7 @@ For server phone access, run ./future host. It runs inside the CLI as a foregrou
 program with no graphical UI; Ctrl+C closes it. It is not a futureos sidecar.
 Pair a phone from a second terminal with ./future remote devices add: the QR code
 and link are printed there, and the host starts serving as soon as it is scanned.
-futureos starts only the GUI; its former --headless option has been removed.
+futureos starts only the GUI and has no host-mode entry; use ./future host on a server.
 
 [Optional Sandbox]
 The desktop defaults to Full access. Select Manual or Sandboxed in Settings.

@@ -253,11 +253,18 @@ async fn heartbeats_echo_the_last_sequence_and_stop_after_a_missed_ack() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_ack_clears_the_heartbeat_flag_and_the_connection_survives() {
-    let hello = json!({"op": 10, "d": {"heartbeat_interval": 90}});
+    let hello = json!({"op": 10, "d": {"heartbeat_interval": 300}});
     let (url, received) = spawn_ws(vec![
         WsAction::SendText(hello.to_string()),
-        // Ack before the second interval fires.
-        WsAction::Delay(Duration::from_millis(130)),
+        // Ack the first heartbeat as soon as it arrives. A fixed 130 ms delay
+        // before the ack measured the scheduler, not the flag: on a loaded
+        // runner it landed after the second interval and the gateway reported
+        // "not acknowledged" (CI run 39742523871). Ordering the ack on the
+        // recorded frames leaves a whole interval for it to be read.
+        WsAction::WaitForReceived {
+            count: 2,
+            timeout: Duration::from_secs(2),
+        },
         WsAction::SendText(json!({"op": 11}).to_string()),
         // Hold the connection open until the client has sent IDENTIFY and two
         // heartbeats. Waiting on the recorded frames instead of on a delay is

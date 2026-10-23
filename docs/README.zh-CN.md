@@ -23,6 +23,7 @@
 | [Headless 发布验收](testing/headless-release-acceptance.zh-CN.md)（[en](testing/headless-release-acceptance.md)） | 最终成功 CI、打包签名、真实安装升级、性能与同候选验收遗留清单 |
 | [Headless unsigned 下载与结果](testing/headless-unsigned-results.zh-CN.md)（[en](testing/headless-unsigned-results.md)） | 实际 dev 包、公开地址、SHA-256、CLI/sidecar 和静态/旧 Linux 验证 |
 | [目录布局](guide/directory-layout.zh-CN.md)（[en](guide/directory-layout.md)） | `~/.future/` 下各目录职责（agent、channels、TUI、GUI、goal） |
+| [数据备份与恢复](guide/data-backup.zh-CN.md)（[en](guide/data-backup.md)） | `future data`：离线备份、校验、恢复到原 home、中断恢复后的 resume/rollback，以及启动围栏 |
 | [会话历史召回](guide/session-history.zh-CN.md)（[en](guide/session-history.md)） | 只读的历史检索／条目读取、字节分页，以及压缩后的模型指引 |
 | [移动端延迟诊断](guide/mobile-latency-diagnosis.zh-CN.md)（[en](guide/mobile-latency-diagnosis.md)） | 移动端端到端延迟测量与诊断 |
 | [截图工具](guide/screenshots.zh-CN.md)（[en](guide/screenshots.md)） | 用演示数据渲染真实桌面端 / 手机端界面，在无显示器环境产出截图、功能示意图与图文文档 |
@@ -43,28 +44,30 @@
 | [回复结果语义](architecture/response-outcomes.zh-CN.md)（[en](architecture/response-outcomes.md)） | 回复结束的结果语义（停止 / 拒答 / 过滤 / 暂停） |
 | [goal/](architecture/goal/README.md) | `future-goal` crate：[架构](architecture/goal/ARCHITECTURE.md)（en/zh）、[上游来源](../orchestration/goal/UPSTREAM.md)、[决策内核快照](architecture/goal/snapshots.md) |
 | [共享包](architecture/packages.zh-CN.md)（[en](architecture/packages.md)） | `packages/` 约定：npm/workspace 包与 crate 边界 |
-| [通道测试覆盖率](architecture/channels-test-coverage.zh-CN.md)（[en](architecture/channels-test-coverage.md)） | 通道框架的测试承诺什么，以及有意不覆盖的 22 行代码及每行的原因 |
+| [通道测试覆盖率](architecture/channels-test-coverage.zh-CN.md)（[en](architecture/channels-test-coverage.md)） | 通道框架的测试承诺什么，以及有意不覆盖的那几行代码及每行的原因 |
 | [RPC crate](architecture/rpc.zh-CN.md)（[en](architecture/rpc.md)） | `packages/rpc` — protobuf 线上契约（唯一事实来源） |
 
 ## 内部文档（`internals/`）
 
-各模块工作文档，原分散于 `desktop/DEV_MD/`、`desktop/nats/`、
-`desktop/src-tauri/windows/`、`mobile/`、`tui/tests/` 与 `tests/`。
+桌面应用与移动客户端的分模块工作文档：产品语义、数据模型、各平台沙箱、连接与远程行为、上下文压缩、移动端构建与平台对齐记录，以及 TUI 测试框架约定。
 
-- [desktop/](internals/desktop/PRODUCT.md) — 产品语义、数据模型（`ER.md`）、颜色、沙箱（macOS/Windows/Linux）、连接与远程、嵌入式终端、压缩（原 `desktop/DEV_MD/`；文档地图见 `desktop/CLAUDE.md`）
+- [desktop/](internals/desktop/PRODUCT.md) — 产品语义、数据模型（`ER.md`）、颜色、沙箱（macOS/Windows/Linux）、连接与远程、嵌入式终端、压缩（文档地图见 `desktop/CLAUDE.md`）
 - [compaction/](internals/compaction/compaction.zh-CN.md) — 运行时上下文压缩：两个策略及其参数、生产请求形状、开发指南（`compaction-development.zh-CN.md`）、检索接口，以及两个实验——闭卷（`compaction-closed-book-experiment.zh-CN.md`）与开卷（`compaction-open-book-experiment.zh-CN.md`）
-- [mobile/](internals/mobile/README.md) — 移动端构建/TestFlight、iOS 平台对齐、流式同步设计与测量、鸿蒙兼容（原 `mobile/README.md` + `mobile/docs/`；带日期的审计与测量报告见 `archives/verification/`）
-- [tui/](internals/tui/tests.md) — TUI 测试框架约定（原 `tui/tests/README.md`）
+- [mobile/](internals/mobile/README.md) — 移动端构建/TestFlight、iOS 平台对齐、流式同步设计与测量、鸿蒙兼容（带日期的审计与测量报告见 `archives/verification/`）
+- [tui/](internals/tui/tests.md) — TUI 测试框架约定
 - [skill_reco/](internals/skill_reco/harness.zh-CN.md) — 技能推荐：[评测](internals/skill_reco/evaluation.zh-CN.md)、[运行框架](internals/skill_reco/harness.zh-CN.md) 与[集成方案](internals/skill_reco/integration-plan.zh-CN.md)（历史设计记录）
-- [Desktop NATS 桥](internals/desktop-nats.md)（原 `desktop/nats/README.md`）
-- [Windows 安装/更新](internals/desktop-windows.md)（原 `desktop/src-tauri/windows/README.md`）
-- [Provider 协议测试](internals/provider-protocol.md)（原 `tests/provider-protocol/README.md`）
+- [agent/](internals/agent/README.zh-CN.md) — gRPC 后端（`agent/`）的模块地图：turn loop、工具、LLM 层、会话、沙箱，以及改每一项前该读什么
+- [host](internals/host.zh-CN.md) — `future-host`（无 GUI 的共享后端：store、agent bridge、tasks、remote、identity）的模块地图
+- [Desktop NATS 桥](internals/desktop-nats.md)
+- [Windows 安装/更新](internals/desktop-windows.md)
+- [Provider 协议测试](internals/provider-protocol.md)
 
 ## Wiki（面向用户的应用指南）
 
 - 中文: [首页](wiki/zh/Home.md), [安装](wiki/zh/Installation.md),
   [快速开始](wiki/zh/Quick-Start.md), [使用 FutureOS](wiki/zh/Using-FutureOS.md),
   [设置](wiki/zh/Settings.md), [审批与沙箱](wiki/zh/Sandbox.md), [手机远程](wiki/zh/Remote.md), [技能](wiki/zh/Skills.md),
+  [定时任务](wiki/zh/Scheduled-Tasks.md),
   [命令行工具](wiki/zh/CLI.md), [FAQ](wiki/zh/FAQ.md),
   [飞书](wiki/zh/Feishu.md), [钉钉](wiki/zh/DingTalk.md),
   [模型目录](wiki/zh/Models.md) *(自动生成)*

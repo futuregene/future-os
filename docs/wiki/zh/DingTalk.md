@@ -82,7 +82,7 @@ Bridge 使用**钉钉 Stream Mode**——无需公网回调 URL。它通过 WebS
 | `dingtalk.domain` | API 域名（默认 `api.dingtalk.com`） |
 | `dingtalk.sender_allowlist` | 私聊和群聊中获准操作 agent 的发送者 ID。空列表拒绝**所有**发送者（含 `/help`）；`["*"]` 信任所有能联系机器人的人 |
 
-> **升级提示：** 已配置的钉钉桥需要填写 `sender_allowlist` 才会接收 prompt——
+> **`sender_allowlist` 是访问门槛：** 未填写时钉钉桥不接收任何 prompt——
 > 仅加入群聊并不获得操作 agent 的授权。
 
 > 钉钉与飞书也接受 `providers.dingtalk` / `providers.feishu` 块；两种写法同时存在时以
