@@ -1200,6 +1200,21 @@ impl Store {
             return Ok(None);
         }
         let mut goal = Goal::new(goal_id, &entry.objective, &entry.cwd);
+        // `created_at` comes from persisted data, never from this replay's clock
+        // (`Goal::new` stamps `now_epoch()`, which drifts on every read). Source
+        // precedence, most canonical first:
+        //   1. the ledger's `GoalStarted.ts` — `apply` stamps it over this seed
+        //      below, and the event is the canonical record of when the goal
+        //      was created;
+        //   2. the registry entry's `created_at` — seeded here, for ledgers
+        //      written before the `GoalStarted` fold restored it (a legacy goal
+        //      can have no `GoalStarted` event at all);
+        //   3. `Goal::new`'s `now_epoch()` — LAST RESORT ONLY, for a legacy goal
+        //      whose registry entry predates `created_at` too (0). It can only
+        //      be later than the real creation time, never earlier.
+        if entry.created_at > 0 {
+            goal.created_at = entry.created_at;
+        }
         let from = self
             .goal_schema_version(goal_id)
             .unwrap_or_else(|| LEGACY_EVENT_STORE_SCHEMA_VERSION.to_string());
@@ -1759,7 +1774,15 @@ fn copy_dir_if_present(src: &Path, dest: &Path) -> Result<()> {
 
 fn apply(goal: &mut Goal, event: Event) {
     match event {
-        Event::GoalStarted { .. } => {}
+        // `created_at` is a STATE field: the ledger is its canonical source, so
+        // replay restores the creation time the goal was actually created at
+        // instead of leaving `Goal::new`'s `now_epoch()` (the replay clock) in
+        // place. Dropping this `ts` re-dated every replayed goal to "the moment
+        // it was read", which drifts across seconds (and made
+        // `decision_freshness.events_max_ts == created_at` fail by one second
+        // on CI). `goal init` appends exactly one `GoalStarted` and `register`
+        // is idempotent, so this is a stable assignment, not a race.
+        Event::GoalStarted { ts, .. } => goal.created_at = ts,
         Event::TodoAdded { todo, ts, .. } => {
             let mut t = todo;
             // Assign the goal-relative index on replay too (identity/order).

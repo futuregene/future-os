@@ -207,10 +207,7 @@ fn default_max_image_mb() -> u64 {
 
 impl ChannelConfig {
     pub fn default_path() -> PathBuf {
-        home_dir()
-            .join(".future")
-            .join("channels")
-            .join("config.json")
+        future_home().join("channels").join("config.json")
     }
 
     pub fn load() -> anyhow::Result<Self> {
@@ -274,7 +271,10 @@ impl Default for FeishuChannelConfig {
     }
 }
 
-/// Home directory for channel data and config.
+/// The *user* home directory (not the FutureOS home — see [`future_home`]).
+///
+/// Used for the two things that belong to the OS rather than to FutureOS: the
+/// iMessage provider's Messages.app database and the default workspace.
 ///
 /// The environment wins over the platform profile: `$HOME` (POSIX, and a
 /// redirected portable home), then `USERPROFILE` (Windows shells set no
@@ -290,6 +290,21 @@ pub(crate) fn home_dir() -> PathBuf {
         .find(|path| !path.as_os_str().is_empty() && path.is_absolute())
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("~"))
+}
+
+/// FutureOS home root for this process: `<user home>/.future`, or the absolute
+/// `FUTURE_HOME` override that replaces it.
+///
+/// Channel configuration and per-channel data live below this root, so an
+/// isolated instance (a second Agent, a test home) keeps its own channels
+/// instead of reading and writing the default home's. Resolved through
+/// `future-rpc`, the single source of truth every component — and the Agent
+/// that stores the conversation sessions — agrees on. [`home_dir`] stays the
+/// *user* home on purpose: the iMessage provider reads Messages.app's database
+/// and the default `cwd` is the user's home, neither of which is FutureOS
+/// state and neither of which `FUTURE_HOME` moves.
+pub(crate) fn future_home() -> PathBuf {
+    future_rpc::home::future_home()
 }
 
 #[cfg(test)]

@@ -28,11 +28,19 @@
 //! the whole budget every time. The tail was only reached once those three went
 //! quiet. Oldest-first plus a queue drains on the first pass.
 //!
-//! **Off unless asked.** Resuming sends a prompt the user did not type, which
-//! spends their credits with nobody present. That is a product decision, not a
-//! recovery detail, so it is a switch in `agent/settings.json`
-//! (`resumeInterruptedOnStart`, default off) rather than something that happens
-//! because the process restarted.
+//! **On unless turned off.** Resuming sends a prompt the user did not type,
+//! which spends their credits with nobody present — but that consent was
+//! already recorded by the Desktop's `autoResumeInterrupted` (also on), so the
+//! switch here (`resumeInterruptedOnStart` in `agent/settings.json`) defaults to
+//! on, and is the one control the user edits to opt out.
+//!
+//! **Quiet when there is nothing to do.** A session whose journal shows no open
+//! run is the normal case, not a failure: the pass says nothing about it. Only
+//! a real interruption (and why it was or was not continued) is reported. A
+//! healthy start used to print one "no interrupted run" line per conversation,
+//! which is exactly the noise that corrupted the TUI's first frame when the
+//! TUI hosts the Agent in-process (`tui/src/stderr_log.rs` is the other half of
+//! that fix).
 
 use std::time::Duration;
 
@@ -83,6 +91,91 @@ pub fn build_prompt() -> String {
     .join("\n")
 }
 
+/// What one session's continuation attempt settled on.
+///
+/// Returned instead of a bare `bool` so the pass can tell "nothing was
+/// interrupted" (silent, the healthy case) from "a run is open but was left
+/// alone" (worth reporting and counting). The old shape folded every session
+/// without an open run into `Err("no interrupted run")`, and the caller logged
+/// that as a failure line per conversation on every single start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Outcome {
+    /// The journal showed an open run and the continuation was submitted.
+    Continued,
+    /// The journal shows no open run: the conversation finished. Normal, and
+    /// deliberately not reported.
+    NotInterrupted,
+    /// A run is open, but this pass left it alone.
+    Held(Held),
+}
+
+/// Why an interrupted run was left interrupted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    /// Still streaming or parked on an approval decision. The process that owns
+    /// that state settles it; a second submission would duplicate the work.
+    Busy,
+    /// No model configured, so the continuation prompt cannot run.
+    NoModel,
+}
+
+/// The pass's tally; the summary line is derived from it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Tally {
+    /// Conversations `list_all` returned.
+    considered: usize,
+    /// Of those, the ones worth a per-session look (top-level and fresh).
+    eligible: usize,
+    /// Eligible conversations whose journal still shows an open run.
+    interrupted: usize,
+    /// Continuations actually submitted.
+    continued: usize,
+    /// Interrupted conversations left alone (`Held`).
+    held: usize,
+    /// Eligible conversations whose attempt failed for a real reason.
+    failed: usize,
+}
+
+/// Record one finished attempt. `None` is a real failure (already logged).
+fn record(tally: &mut Tally, outcome: Option<Outcome>) {
+    match outcome {
+        Some(Outcome::Continued) => {
+            tally.interrupted += 1;
+            tally.continued += 1;
+        }
+        Some(Outcome::Held(_)) => {
+            tally.interrupted += 1;
+            tally.held += 1;
+        }
+        Some(Outcome::NotInterrupted) => {}
+        None => tally.failed += 1,
+    }
+}
+
+/// The one line a pass prints, or `None` when there was nothing to continue.
+///
+/// Silent on a healthy start is the point: every conversation that finished is
+/// expected, and a line per conversation is what a TUI sees as corruption.
+fn summary_line(tally: &Tally) -> Option<String> {
+    if tally.interrupted == 0 {
+        return None;
+    }
+    let skipped = tally.considered.saturating_sub(tally.eligible);
+    let mut line = format!(
+        "FutureOS resume: {} conversation(s) checked, {} interrupted, {} continued \
+         (at most {MAX_IN_FLIGHT} at a time), {} left interrupted",
+        tally.considered, tally.interrupted, tally.continued, tally.held,
+    );
+    if tally.failed > 0 {
+        line.push_str(&format!(", {} failed", tally.failed));
+    }
+    line.push_str(&format!(
+        ", {skipped} skipped (older than {} days or sub-session)",
+        MAX_AGE.as_secs() / 86_400
+    ));
+    Some(line)
+}
+
 /// Run one pass. Never fails the launch: resuming is recovery, not startup.
 #[cfg_attr(test, allow(dead_code))] // only reached from the non-test startup hook
 pub async fn resume_interrupted_sessions(state: AppState) {
@@ -94,53 +187,59 @@ pub async fn resume_interrupted_sessions(state: AppState) {
             return;
         }
     };
-    let considered = summaries.len();
+    let mut tally = Tally {
+        considered: summaries.len(),
+        ..Tally::default()
+    };
     let candidates = candidates_in_order(summaries);
+    tally.eligible = candidates.len();
 
-    let total = candidates.len();
-    let mut resumed = 0usize;
     let mut in_flight = tokio::task::JoinSet::new();
     for summary in candidates {
         while in_flight.len() >= MAX_IN_FLIGHT {
             if let Some(joined) = in_flight.join_next().await {
-                resumed += count(joined);
+                record(&mut tally, settle(joined));
             }
         }
         let state = state.clone();
-        let session_id = summary.id;
+        let session_id = summary.id.clone();
         // Each continuation is independent; one session's trouble is reported and
         // the pass moves on rather than abandoning the rest of the queue.
-        in_flight.spawn_blocking(move || match resume_one(&state, &session_id) {
-            Ok(true) => 1usize,
-            Ok(false) => 0,
-            Err(error) => {
+        in_flight.spawn_blocking(move || {
+            let outcome = resume_one(&state, &session_id).map_err(|error| {
                 eprintln!("FutureOS resume: {session_id} not continued: {error}");
-                0
+            });
+            if matches!(outcome, Ok(Outcome::Held(Held::NoModel))) {
+                // No model means the prompt cannot run; leaving the row
+                // interrupted is honest, and the user still sees it.
+                eprintln!(
+                    "FutureOS resume: {session_id} has no model configured; left interrupted"
+                );
             }
+            outcome.ok()
         });
     }
     while let Some(joined) = in_flight.join_next().await {
-        resumed += count(joined);
+        record(&mut tally, settle(joined));
     }
 
     // Report the account, not just the work: "checked N, continued 3" hid how
-    // many were left behind.
-    let skipped = considered - total;
-    eprintln!(
-        "FutureOS resume: {considered} conversation(s) checked, {total} interrupted and eligible, \
-         {resumed} continued (at most {MAX_IN_FLIGHT} at a time), {skipped} skipped \
-         (older than {} days, sub-session, streaming, awaiting approval, or no model)",
-        MAX_AGE.as_secs() / 86_400
-    );
+    // many were left behind. Nothing interrupted → nothing printed.
+    if let Some(line) = summary_line(&tally) {
+        eprintln!("{line}");
+    }
 }
 
-/// Count what one continuation task produced.
-fn count(joined: Result<usize, tokio::task::JoinError>) -> usize {
+/// Settle one continuation task's join result into an [`Outcome`] slot.
+///
+/// A task that panicked is a real failure: the pass keeps going (the JoinSet
+/// has already isolated it) but the summary has to know.
+fn settle(joined: Result<Option<Outcome>, tokio::task::JoinError>) -> Option<Outcome> {
     match joined {
-        Ok(resumed) => resumed,
+        Ok(outcome) => outcome,
         Err(error) => {
             eprintln!("FutureOS resume: a continuation task failed: {error}");
-            0
+            None
         }
     }
 }
@@ -174,13 +273,18 @@ fn is_candidate(summary: &crate::session::SessionSummary) -> bool {
 }
 
 /// Settle one session's interrupted run and submit the continuation prompt.
-/// Returns whether a prompt was submitted.
-fn resume_one(state: &AppState, session_id: &str) -> Result<bool, String> {
+///
+/// `Err` is reserved for a real failure (the journal or the session cannot be
+/// read); "this conversation finished" is [`Outcome::NotInterrupted`], and an
+/// interrupted run that was deliberately left alone is [`Outcome::Held`].
+fn resume_one(state: &AppState, session_id: &str) -> Result<Outcome, String> {
     let run_id = state
         .session_manager
         .unterminated_run_id(session_id)
-        .map_err(|error| format!("journal: {error}"))?
-        .ok_or_else(|| "no interrupted run".to_string())?;
+        .map_err(|error| format!("journal: {error}"))?;
+    let Some(run_id) = run_id else {
+        return Ok(Outcome::NotInterrupted);
+    };
 
     let session = state
         .try_get_session(session_id)
@@ -193,7 +297,7 @@ fn resume_one(state: &AppState, session_id: &str) -> Result<bool, String> {
         .is_streaming
         .load(std::sync::atomic::Ordering::Relaxed)
     {
-        return Ok(false);
+        return Ok(Outcome::Held(Held::Busy));
     }
     if !session
         .approval_gate
@@ -202,16 +306,13 @@ fn resume_one(state: &AppState, session_id: &str) -> Result<bool, String> {
     {
         // Resuming would re-issue a tool call nobody decided on, under whatever
         // approval tier applies now. The approval owns that row.
-        return Ok(false);
+        return Ok(Outcome::Held(Held::Busy));
     }
     if session.model.trim().is_empty() {
-        // No model means the prompt cannot run; leaving the row interrupted is
-        // honest, and the user still sees it.
-        eprintln!("FutureOS resume: {session_id} has no model configured; left interrupted");
-        return Ok(false);
+        return Ok(Outcome::Held(Held::NoModel));
     }
     submit_continuation(&mut session, session_id, &run_id)?;
-    Ok(true)
+    Ok(Outcome::Continued)
 }
 
 /// Continue in place, or fall back to the shape this replaced.
@@ -309,6 +410,68 @@ mod tests {
         assert!(is_candidate(&summary("ok", 5, "")));
         assert!(!is_candidate(&summary("child", 5, "parent")));
         assert!(!is_candidate(&summary("stale", 60 * 24 * 8, "")));
+    }
+
+    /// A healthy start has nothing to report. A conversation that finished is
+    /// *not* an interrupted one — the old summary counted every eligible
+    /// conversation as "interrupted and eligible", and the old pass printed one
+    /// "no interrupted run" line per conversation. On a TUI that hosts the
+    /// Agent those lines landed on the welcome screen (see
+    /// `tui/src/stderr_log.rs` for the other half of that fix).
+    #[test]
+    fn a_healthy_start_reports_nothing() {
+        let mut tally = Tally {
+            considered: 8,
+            eligible: 8,
+            ..Tally::default()
+        };
+        for _ in 0..8 {
+            record(&mut tally, Some(Outcome::NotInterrupted));
+        }
+        assert_eq!(
+            tally.interrupted, 0,
+            "a finished conversation is not interrupted"
+        );
+        assert_eq!(summary_line(&tally), None, "a healthy start is silent");
+    }
+
+    /// When something *was* interrupted the summary states each count for what
+    /// it is, and skips what the cheap filter dropped.
+    #[test]
+    fn the_summary_counts_what_happened() {
+        let mut tally = Tally {
+            considered: 5,
+            eligible: 3,
+            ..Tally::default()
+        };
+        record(&mut tally, Some(Outcome::Continued));
+        record(&mut tally, Some(Outcome::Held(Held::NoModel)));
+        record(&mut tally, Some(Outcome::NotInterrupted));
+        assert_eq!((tally.interrupted, tally.continued, tally.held), (2, 1, 1));
+
+        let line = summary_line(&tally).expect("an interrupted run is reported");
+        assert!(line.contains("5 conversation(s) checked"), "{line}");
+        assert!(line.contains("2 interrupted"), "{line}");
+        assert!(line.contains("1 continued"), "{line}");
+        assert!(line.contains("1 left interrupted"), "{line}");
+        assert!(line.contains("2 skipped"), "{line}");
+    }
+
+    /// A failed attempt is counted without hiding the work that did happen, so
+    /// the summary cannot read green while something went wrong.
+    #[test]
+    fn a_failed_attempt_is_counted_alongside_continued_work() {
+        let mut tally = Tally {
+            considered: 2,
+            eligible: 2,
+            ..Tally::default()
+        };
+        record(&mut tally, Some(Outcome::Continued));
+        record(&mut tally, None);
+        assert_eq!((tally.continued, tally.failed), (1, 1));
+        let line = summary_line(&tally).unwrap();
+        assert!(line.contains("1 continued"), "{line}");
+        assert!(line.contains("1 failed"), "{line}");
     }
 
     /// The concurrency bound is real: ten queued tasks never run more than
@@ -538,7 +701,11 @@ mod wiring_tests {
         register_session(&state, provider.clone(), "s-crashed");
 
         let continued = resume_one(&state, "s-crashed").expect("the pass continues the session");
-        assert!(continued, "an interrupted session is continued");
+        assert_eq!(
+            continued,
+            Outcome::Continued,
+            "an interrupted session is continued"
+        );
 
         // Find the continuation's run id from its marker.
         let mut run_id = None;
@@ -661,13 +828,55 @@ mod wiring_tests {
                 .unwrap(),
             None
         );
-        assert!(
-            resume_one(&state, "s-closed").is_err(),
-            "nothing to continue"
+        assert_eq!(
+            resume_one(&state, "s-closed").expect("a finished conversation is not an error"),
+            Outcome::NotInterrupted,
+            "a conversation whose journal shows no open run is a normal skip"
         );
         assert!(
             provider.requests.lock().unwrap().is_empty(),
             "a refused continuation does not call the model"
+        );
+    }
+
+    /// **The noise regression.** A conversation whose run finished must settle
+    /// as `NotInterrupted` — the healthy, unreported case. It used to come back
+    /// as `Err("no interrupted run")`, which the pass logged per conversation on
+    /// every start; when the TUI hosts the Agent in-process that line lands on
+    /// the welcome screen (`tui/src/stderr_log.rs`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_finished_conversation_settles_as_not_interrupted() {
+        let provider = RecordingProvider::new();
+        let state = state_with(provider.clone());
+        seed_crashed_session(&state, "s-finished");
+        state
+            .session_manager
+            .append_run_continuation(
+                "s-finished",
+                SessionEntry::run_terminal(
+                    "run-crashed",
+                    crate::session::RUN_STATE_COMPLETED,
+                    0,
+                    0,
+                    None,
+                ),
+            )
+            .unwrap_or_else(|_| panic!("seeding a terminal marker"));
+        assert_eq!(
+            state
+                .session_manager
+                .unterminated_run_id("s-finished")
+                .unwrap(),
+            None,
+            "the fixture has no open run left"
+        );
+        assert_eq!(
+            resume_one(&state, "s-finished").expect("a finished conversation is not an error"),
+            Outcome::NotInterrupted
+        );
+        assert!(
+            provider.requests.lock().unwrap().is_empty(),
+            "a finished conversation sends nothing to the model"
         );
     }
 }

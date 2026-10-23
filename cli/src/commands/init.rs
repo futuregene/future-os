@@ -44,6 +44,16 @@ const DEFAULT_PLATFORM: &str = "linux";
 
 /// `init(options = {})` — full port.
 pub async fn init(options: InitOptions, out: &Output) -> Result<(), String> {
+    // `const binDir = join(homeDir, ".future", "bin");`
+    //
+    // Production resolves the FutureOS home, so the links land in the same root
+    // every other piece of state uses: `<HOME>/.future` by default, and the
+    // `FUTURE_HOME` override when one is set (an isolated instance then keeps
+    // its own `bin/` instead of writing into the default home). Tests inject the
+    // *user* home to keep simulating the TypeScript contract. Resolved before
+    // `install_builtins` is moved out of `options` below.
+    let bin_dir = bin_dir_for(&options);
+
     // `const installBuiltins = options.installBuiltins ?? installBuiltinSkills;`
     // The default hook clones the (cheap, Arc-backed) Output so the future is
     // 'static, keeping the hook type simple.
@@ -61,11 +71,6 @@ pub async fn init(options: InitOptions, out: &Output) -> Result<(), String> {
     if platform != "darwin" && platform != "linux" {
         return Ok(());
     }
-
-    // `const homeDir = options.homeDir ?? homedir();`
-    let home_dir = options
-        .home_dir
-        .unwrap_or_else(|| dirs::home_dir().unwrap_or_default());
 
     // `const executablePath = await realpath(options.executablePath ?? process.execPath);`
     let executable_path = realpath(
@@ -97,7 +102,6 @@ pub async fn init(options: InitOptions, out: &Output) -> Result<(), String> {
     };
 
     // `const binDir = join(homeDir, ".future", "bin");`
-    let bin_dir = home_dir.join(".future").join("bin");
     tokio::fs::create_dir_all(&bin_dir)
         .await
         .map_err(|e| e.to_string())?;
@@ -116,9 +120,21 @@ pub async fn init(options: InitOptions, out: &Output) -> Result<(), String> {
         },
         bin_dir.display()
     ));
-    out.log("You can add ~/.future/bin/ to your PATH:");
-    out.log("  export PATH=\"$HOME/.future/bin:$PATH\"");
+    out.log(&format!("You can add {} to your PATH:", bin_dir.display()));
+    out.log(&format!("  export PATH=\"{}:$PATH\"", bin_dir.display()));
     Ok(())
+}
+
+/// Where the `future` / `future-agent` links go.
+///
+/// `home_dir` is the TypeScript `init({ homeDir })` seam and stays the *user*
+/// home. Without it the FutureOS home wins, so the links follow `FUTURE_HOME`
+/// exactly like the settings, sessions and databases do.
+fn bin_dir_for(options: &InitOptions) -> PathBuf {
+    match &options.home_dir {
+        Some(home_dir) => home_dir.join(".future").join("bin"),
+        None => future_agent::utils::future_home().join("bin"),
+    }
 }
 
 /// `ensureSymlink(source, destination)` — idempotent symlink creation.
@@ -200,6 +216,40 @@ mod tests {
     use super::*;
     use crate::output::Output;
     use std::sync::Arc;
+
+    /// The links belong to the FutureOS home, not to the user's shell profile:
+    /// with a `FUTURE_HOME` override they must land below it, so an isolated
+    /// instance never creates `$HOME/.future/bin` in the real home. The
+    /// TypeScript `homeDir` seam keeps pointing the links at a user home.
+    #[tokio::test]
+    async fn bin_dir_follows_the_future_home_override() {
+        let _guard = crate::test_env::lock_env().await;
+        let user_home = tempfile::tempdir().unwrap();
+        let isolated = tempfile::tempdir().unwrap();
+        let _env = crate::test_env::EnvGuard::set(&[
+            ("HOME", user_home.path().as_os_str().to_owned()),
+            ("FUTURE_HOME", isolated.path().as_os_str().to_owned()),
+        ]);
+
+        assert_eq!(
+            bin_dir_for(&InitOptions::default()),
+            isolated.path().join("bin")
+        );
+        // No override → the default FutureOS home, `<HOME>/.future/bin`.
+        let _no_override = crate::test_env::EnvGuard::remove(&["FUTURE_HOME"]);
+        assert_eq!(
+            bin_dir_for(&InitOptions::default()),
+            user_home.path().join(".future").join("bin")
+        );
+        // The injected seam still names a user home.
+        assert_eq!(
+            bin_dir_for(&InitOptions {
+                home_dir: Some(user_home.path().to_path_buf()),
+                ..Default::default()
+            }),
+            user_home.path().join(".future").join("bin")
+        );
+    }
 
     /// `createUnixFixture` from init.test.ts — app/future + app/future-agent.
     async fn create_unix_fixture(root: &Path) -> (PathBuf, PathBuf) {

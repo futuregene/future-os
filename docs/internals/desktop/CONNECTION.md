@@ -19,7 +19,9 @@ contract, with E2EE governed by the security document linked above.
 
 Review date: 2026-09-14. Source baseline: FutureOS `2774e4a9` plus this
 document's own change candidate, and the local future-server `bbd6c23`; the
-server-side baseline does not represent the actual online deployment. The text
+server-side baseline does not represent the actual online deployment. The
+multi-device control, presence and standby material in §2.2.3 describes code as
+of 2026-10-22, later than that baseline. The text
 marks "current", "goal", and "to be verified" separately — plans must not be
 written as implemented capabilities. This document does not cover model-provider
 HTTP, IM channels, or other network subsystems.
@@ -114,7 +116,7 @@ The above are product constraints and the acceptance basis for the follow-up
 refactor; they do not claim every current exit, race, and task-termination path
 is already verified compliant.
 
-- After the user clicks "Pair and start", the UI immediately shows
+- After the user starts pairing from "Add a device", the UI immediately shows
   "Establishing a secure connection; the QR code will appear when the
   connection is ready."; this hint matches the button height, with no
   low-contrast disabled button shown meanwhile and no content below jumping.
@@ -340,7 +342,7 @@ kills, crashes, or tool subprocess termination all complete.
 | `DELETE /client/v1/remote/devices/:pair_id` | revoke a specified pairing by account permission |
 | `DELETE /client/v1/remote/devices/desktop/:desktop_id` | revoke every pairing that desktop holds |
 
-### 2.2.3 Several devices, one in control (2026-10-18)
+### 2.2.3 Several devices, one in control
 
 **Platform.** A pairing row is per device, so several of them can exist for one
 `desktop_id`; the per-desktop cap replaces the old one-row constraint and is
@@ -420,7 +422,7 @@ and `unpair` are the only commands it may speak, plus the two presence commands
 below. The payload it gets back from `get_presence` is the light one: the
 conversation list is the machine's, not every paired device's.
 
-**A standby phone stops asking, and says why (2026-10-22).** The phone's settings
+**A standby phone stops asking, and says why.** The phone's settings
 pages (automation, models, providers, skills, scheduled tasks) kept reading a
 machine that refused every read, so a perfectly healthy desktop was reported as
 "could not read the desktop, try again" on a whole page. Those reads are now
@@ -431,7 +433,20 @@ answers** is in standby, the merged view shows the takeover page rather than
 "no conversations yet", because a standby machine is sent no catalogue and an
 empty list described somebody else's machine as an empty one.
 
-**Whether the client is there (2026-10-20).** Everything above describes the
+**A standby machine's settings are not reachable at all.** Gating
+the reads left the way in open: all five rows on the device page opened a page
+of greyed-out switches under a red line, and the approval radios were not even
+disabled — they only asked whether the machine was online, so a tap wrote a
+command the host answers with `superseded`. The gate therefore moved to the
+entrance: while `presence.control === "standby"` the device page draws no rows
+at all, and what is left is the banner above them (holder, reason, takeover).
+The machine's name and icon stay editable — those are this phone's own record of
+it. A level that is already open when control is taken gives way to the banner,
+and comes back in the same render once this phone has the machine again.
+Desktop-scoped writes are also refused in their handler rather than only at the
+route, so the rule does not depend on a caller remembering to ask.
+
+**Whether the client is there.** Everything above describes the
 *machine's* half of a device: its bridge, its connection, its credential. None
 of it says whether anybody is behind it. A client that was disconnected (or
 force-quit) leaves the bridge serving an empty room, and the page — reading only
@@ -507,12 +522,12 @@ asking that host for its catalogue, since the only possible answer is a refusal.
 simply absent, and the picker and the Remote row are where the reader finds out
 why and takes it back — the same shape the phone settled on.
 
-### 2.2.1 Mobile multi-Desktop pairing (2026-09-12)
+### 2.2.1 Mobile multi-Desktop pairing
 
 Mobile can save pairings for multiple Desktops, entering the list from the
 desktop selector atop the session page or in Settings, scanning to add another
 Desktop, switching the current Desktop, or unpairing one individually. Every
-paired Desktop runs its **own runtime** (2026-10-13) — its connection, catalogue,
+paired Desktop runs its **own runtime** — its connection, catalogue,
 open conversation, drafts and outbox — and one of them is the *active* desktop,
 which is what the UI reads. Switching therefore reconnects nothing: the machine
 being moved to was already connected, catalogued and (if it had a conversation
@@ -552,10 +567,10 @@ only offered a "Reconnect" that could never succeed. A connection that merely
 failed without revocation evidence keeps it and offers a reconnect, so a sleeping
 desktop is still one tap away.
 
-### 2.2.2 The Desktop as a client: connecting out (2026-10-10)
+### 2.2.2 The Desktop as a client: connecting out
 
 **Background.** The sections above describe "a Desktop is connected *to*, by a
-phone". Since 2026-10-10 a Desktop can also be the client of *another* computer,
+phone". A Desktop can also be the client of *another* computer,
 so one process can be an endpoint of both directions at once: connected to by
 its own phone (host role) while connected out to several other computers
 (client role). The rail's two entries are merged into one **Remote**, which
@@ -706,7 +721,7 @@ phone suspects a socket has failed it probes that same socket with `get_presence
 before it tears the connection down, while the desktop takes the answer from the
 `presence` subscription it already holds.
 
-**Every paired computer is held open (2026-10-14).** The client role now works the
+**Every paired computer is held open.** The client role now works the
 way the phone does. At launch the app answers "how do I reach every machine I am
 paired with" by bringing each of them up in one pass over the credential book, and a
 one-minute backstop retries any that are not connected. Until then a host came up only
@@ -733,7 +748,7 @@ device, red when none are — falling back to this machine's own host-bridge sta
 nothing is paired. A merged list that is short of a machine, or one short of
 what this phone may use, is exactly the fact the reader has to be able to see.
 
-**A generation outlives its grant only until the runtime notices (2026-10-20).** A
+**A generation outlives its grant only until the runtime notices.** A
 socket is authorized by the JWT it was opened with. When that grant expired the relay
 closed the socket and `async-nats` reconnected with the same expired JWT — forever,
 because no reconnect budget had been set — so the desktop reported `connected: true`
@@ -824,7 +839,7 @@ subjects.
 | `xfer.up.>` | phone upload chunks and download-pull initiation |
 | `xfer.down.>` | the Desktop sends file chunks down |
 
-**Negotiated event interest (2026-09-16):** a Desktop advertising
+**Negotiated event interest:** a Desktop advertising
 `selective_events_v1` also publishes run start/end, approval request/decision,
 rename/provider-config, run-snapshot and error events to `state.events`.
 The original `evt.{sessionId}` feed remains unchanged for older clients. A
@@ -841,7 +856,7 @@ still fills missing details from the durable journal. The platform API, JWT
 scope and Agent authority are unchanged; Desktop-to-broker legacy publication
 is retained, while irrelevant detailed delivery to the phone is avoided.
 
-**Lean event content (2026-09-26):** a phone that declares `lean_events_v1`
+**Lean event content:** a phone that declares `lean_events_v1`
 receives the same event lane with the content it never renders removed.
 
 Measured on the three heaviest completed runs, the two capabilities the phone
@@ -907,7 +922,7 @@ riding a replay page keeps its events and their `idx` — both the desktop and t
 client reject an empty or reordered list — so only their text is blanked.
 
 Dropping an event **does** leave a hole in the `idx` sequence, and the client's
-integrity checks are what had to learn that (2026-09-26). Both the live lane and
+integrity checks are what had to learn that. Both the live lane and
 the replay path used to be validated as "one event per source index": the live
 cursor called a jump a gap and reconciled, and a replayed tail had to satisfy
 `watermark == since + events.length`. With the trim running, every check failed —
@@ -926,7 +941,7 @@ it as loss. Reconciling cannot recover slices the peer is not sending, so a gap
 verdict there is unanswerable by construction. The same flag suppresses the
 "unknown prefix" reconcile, for the same reason.
 
-**Lean history (2026-09-26):** the same declaration also trims the history pages
+**Lean history:** the same declaration also trims the history pages
 (`get_session_entries`, both the paged and the full read). Three payloads, all of
 them unread rather than merely unrendered, measured on the three heaviest real
 sessions (whole-session payloads, `scripts/measure/measure-lean-history.py`):
@@ -995,7 +1010,7 @@ page byte budget rather than after, so that a page which *exceeds* the budget
 spends it on trimmed exchanges and holds more of them per round trip; a page that
 already fits is simply smaller.
 
-**What bounds one reply (2026-09-26):** the budget is `BACKWARD_HISTORY_PAGE_BYTES`
+**What bounds one reply:** the budget is `BACKWARD_HISTORY_PAGE_BYTES`
 (512 KiB) and it exists to stay under NATS's 1 MiB payload limit with envelope
 headroom — but it is a *soft* bound, and the layers that make it safe are worth
 knowing before touching any of them:
@@ -1026,7 +1041,7 @@ generation: the reasoning row, the tool target and the tool outcome are exactly
 the three things that client reads differently. It is cleared on every new
 connection for the same reason.
 
-**Catalog activity packets (2026-10-14):** catalog *ordering* stopped costing a
+**Catalog activity packets:** catalog *ordering* stopped costing a
 whole session list. A streaming run rewrites its conversation's
 `threads.last_message_at` about once a second, and that column is the list's
 ordering key — under the rule above it was a content change, so every second of
@@ -1081,7 +1096,7 @@ Three properties are priced in rather than hidden:
   condition, and the flag is cleared on every new connection like the other
   capability flags.
 
-**Idle catalog traffic (2026-09-25):** catalog snapshots are published only when
+**Idle catalog traffic:** catalog snapshots are published only when
 content changes. There is no periodic re-send: the presence heartbeat carries
 `catalogVersion` (`{epoch, sessions, workspaces}`), and a client whose applied
 revision is older pulls the catalog itself (`list_sessions` /

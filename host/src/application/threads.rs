@@ -491,8 +491,14 @@ async fn read_thread_history(
     if legacy_cursor {
         return Err("Conversation history source changed; reload before paging further.".into());
     }
+    // A turn reaches this store before it reaches the Agent: `create_run` stamps
+    // the thread's activity and the Agent only persists the user entry once the
+    // prompt is admitted. An empty tail page read inside that window is an
+    // in-flight turn, not a lost conversation — only a conversation that has
+    // nothing running can really be missing its history.
     if empty
         && tail
+        && !store::has_active_run(thread_id)?
         && (thread.last_message_at.is_some() || !store::list_runs(thread_id)?.is_empty())
     {
         return Err("Conversation history is unavailable: restore its matching Agent database or legacy sessions backup.".into());
@@ -1751,6 +1757,78 @@ mod tests {
         let error = get_session_entries(thread.id.clone())
             .await
             .expect_err("missing history source");
+        assert!(error.to_string().contains("history is unavailable"));
+        script_mock_agent(MockScript::default());
+    }
+
+    /// A reload can land between the two halves of a send: `create_run` stamps
+    /// the thread's activity immediately, while the Agent persists the user
+    /// entry only once the prompt is admitted. The empty page read inside that
+    /// window belongs to the live turn — reporting missing history there put the
+    /// "restore your backup" banner on top of a conversation's very first reply.
+    #[tokio::test]
+    async fn an_empty_tail_page_belongs_to_the_live_turn_that_has_not_landed_yet() {
+        let _lock = mock_agent_lock();
+        let home = init("cmd_entries_page_in_flight");
+        let thread = make_thread(&home, Some("sess_in_flight"));
+        script_mock_agent(MockScript::default());
+        let agent = crate::test_support::command_agent::ensure_mock_agent();
+        agent.script_typed_for(
+            "get_session_entries",
+            "sess_in_flight",
+            serde_json::json!({"entries": [], "hasMore": false, "nextOffset": 0}),
+        );
+        store::create_run(store::CreateRunInput {
+            id: Some("run_in_flight".into()),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("live run");
+
+        let page = get_session_entries_page(thread.id, None, 10, None)
+            .await
+            .expect("an in-flight turn is not lost history");
+        assert_eq!(page["entries"], serde_json::json!([]));
+        assert_eq!(page["history"]["availability"], "ready");
+        script_mock_agent(MockScript::default());
+    }
+
+    /// The same empty page with nothing running is exactly the loss the banner
+    /// exists for: the conversation shows activity, but its Agent history is
+    /// gone. The live-turn exemption must not swallow that.
+    #[tokio::test]
+    async fn an_empty_tail_page_for_a_settled_conversation_is_still_a_loss() {
+        let _lock = mock_agent_lock();
+        let home = init("cmd_entries_page_lost");
+        let thread = make_thread(&home, Some("sess_lost"));
+        script_mock_agent(MockScript::default());
+        let agent = crate::test_support::command_agent::ensure_mock_agent();
+        agent.script_typed_for(
+            "get_session_entries",
+            "sess_lost",
+            serde_json::json!({"entries": [], "hasMore": false, "nextOffset": 0}),
+        );
+        store::create_run(store::CreateRunInput {
+            id: Some("run_settled".into()),
+            thread_id: thread.id.clone(),
+            trigger_message_id: None,
+            model_provider: None,
+            model_id: None,
+        })
+        .expect("run");
+        store::update_run_status_if_active(store::UpdateRunStatusInput {
+            run_id: "run_settled".into(),
+            status: "completed".into(),
+            error_message: None,
+            error_type: None,
+        })
+        .expect("settle the run");
+
+        let error = get_session_entries_page(thread.id, None, 10, None)
+            .await
+            .expect_err("a settled conversation with no history is a real loss");
         assert!(error.to_string().contains("history is unavailable"));
         script_mock_agent(MockScript::default());
     }

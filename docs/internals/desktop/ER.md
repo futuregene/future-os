@@ -157,6 +157,7 @@ Field draft:
 | `workspace_id` | owning Workspace |
 | `mode` | `chat` or `workspace` |
 | `title` | conversation title |
+| `title_seed` | the placeholder title a thread was minted with (`store/schema.rs` `threads.title_seed`, migration `v1.2.4-thread-title-seed`); NULL means "never auto-title". A thread is auto-titled only while it still wears this exact title, so a rename settles it for good (`store/threads.rs`) |
 | `status` | `active`, `archived`, `deleted` |
 | `pinned` | pinned or not |
 | `readonly` | read-only or not |
@@ -513,20 +514,26 @@ Notes:
 - **A conversation the exit interrupted continues on the next launch.** The
   Agent is embedded, so quitting ends the run it was streaming: its journal keeps
   a `run_started` with no terminal, `get_run_state` reports it as
-  `interruptedRun`, and the local row is left non-terminal. Once per launch,
-  after the Agent is reachable, `resume_interrupted_runs_at_launch` asks the
-  Agent about each conversation's **newest** run and, only when the answer is
-  that marker (not a live/queued run the watchdog reattaches, not a durable
-  terminal), settles the row `cancelled`+`interrupted` and submits one
-  continuation prompt through the headless pipeline — the same path a prompt
-  from a paired phone takes, with `runs.trigger_message_id = resume:<run id>` so
-  a second pass finds the continuation instead of asking again. Runs older than
-  a week, conversations parked on an approval, and every conversation when the
-  `autoResumeInterrupted` setting is off are skipped.
+  `interruptedRun`, and the local row is left non-terminal. The pass now runs in
+  the Agent itself, once per launch after startup
+  (`agent/src/rpc/resume.rs` `resume_interrupted_sessions`, called from
+  `agent/src/service/startup.rs:314`): a session whose newest run is that marker
+  (not a live/queued run the watchdog reattaches, not a durable terminal) gets
+  one continuation prompt, because the Agent's own journal is the only authority
+  on what was interrupted and the instance lock guarantees one process asks.
+  Conversations still streaming, parked on an approval, missing a model, or idle
+  for more than a week are skipped, and the Agent resolves the same preference
+  the UI switch writes (`resume_interrupted_on_start`, on by default — the
+  Desktop's `autoResumeInterrupted` writes through to it in
+  `store/app_settings.rs` `write_agent_resume_policy`). The Desktop keeps its own
+  side: `reconcile_interrupted_runs` settles the rows a GUI crash left open
+  against the Agent's ledger, and an unknown reason is re-read rather than
+  guessed.
 - If an approval later produces file changes, Review Changeset shows the actual
   modification comparison.
-- P2 introduces structured `action_payload` and `sandbox_boundary` fields
-  (design details in git history, the original `P2_APPROVAL_MODEL.md`).
+- P2 added structured `action_payload` and `sandbox_boundary` fields; both ship
+  as columns of `approval_requests` (`store/schema.rs`), and the design record
+  lives in git history.
 - **v2 (approval rule refactor, 2026-07-04)**: ordinary approval objects
   converge to **file-path access**, rules become **file-based**
   (`${WS}/.future/approval_rule.json`, `~/.future/approval_rule.json`, read
@@ -905,9 +912,9 @@ Notes:
 - Files or artifacts compared by Review File Changes can also be recorded as
   Object References.
 
-## 5. First-version suggested table list
+## 5. GUI table inventory
 
-First-version priority:
+The GUI database (`~/.future/app/app.db`) holds these business-object tables:
 
 - `workspaces`
 - `threads`
@@ -921,17 +928,23 @@ First-version priority:
 - `reference_targets`
 - `object_references`
 - `app_settings` (app-level settings key-value table; absent keys take these
-  defaults — `store/app_settings.rs:64-77,212-262`): `approval_tier` (`off`
-  default / `manual` / `sandbox`; unknown values clamp to `off`),
+  defaults — `packages/app-settings/src/lib.rs`): `approval_tier` (`off`
+  default / `manual` / `sandbox` / `auto`; unknown values clamp to `off`),
   `hidden_models`, `title_language` (`en`/`zh`, default `en`, mirrored from the
   Desktop UI for background title generation), `auto_compact_first_turn` (the
   stored key name kept for "generate a title after the first answer"; default
   true, never compacts context), `auto_upgrade_skills` (true),
-  `auto_connect_remote` (false; consulted only on non-release builds),
-  `bell_on_complete` (true), `skill_recommend` (true),
-  `skill_guide_dismissed` / `skill_intro_dismissed` (false),
-  `community_edition` (false; presentation only) and the internal
-  `device_id`. All use the existing key-value table with absent-key defaults;
+  `auto_connect_remote` (true — the Remote page's own on/off switch, persisted
+  here so a restart serves paired devices again; `host/src/remote/mod.rs`
+  `remember_switch`),
+  `bell_on_complete` (true), `skill_recommend` (false — off until the user opts
+  in), `skill_guide_dismissed` / `skill_intro_dismissed` (false),
+  `community_edition` (false; presentation only), `auto_resume_interrupted`
+  (true; written through to the Agent's `resume_interrupted_on_start`, see
+  `store/app_settings.rs` `write_agent_resume_policy`) and the internal
+  `device_id`. The defaults are `packages/app-settings/src/lib.rs:424-440`
+  (`defaults()`) and `:462-500` (`read()`). All use the existing key-value table
+  with absent-key defaults;
   no structural migration is needed. The retired `show_thinking` key may remain
   in existing databases but is no longer read, written, or exposed by the
   settings API (no destructive migration); the old `remote_enabled` /
@@ -944,7 +957,15 @@ First-version priority:
   user: `day`, `skill_id`, `message_hash` — it answers "how many today / has
   this skill been shown today / has this message produced one"; ignored calls
   leave no row — see `store/skill_reco.rs` and the DDL at
-  `store/schema.rs:249-254`)
+  `store/schema.rs:262-268`)
+- `approval_assessments` (immutable model-review results, one row per assessed
+  approval request — see §4.8 "Automatic review audit")
+
+> Migration, lineage and cleanup bookkeeping tables carry no product object of
+> their own: `schema_migrations`, `app_schema_migrations`,
+> `app_database_identity`, `legacy_thread_bindings`, `thread_sources`,
+> `agent_delete_sources` and `managed_directory_cleanup`. What each records is
+> described in §4.2 and §7.
 
 > `messages`, `run_events`, `tool_calls`, `tool_outputs` were deleted from the
 > GUI schema (`DROPPED_TABLES` clears them in old databases); their data is

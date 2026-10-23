@@ -98,6 +98,7 @@ flowchart TD
 
     host --> cli["cli"]
     host --> desktop["futureos"]
+    host --> tui
     channel --> cli
     goal --> cli
     tui --> cli
@@ -117,7 +118,7 @@ flowchart TD
 | tasks | rpc |
 | channel | rpc |
 | goal | app-settings、rpc |
-| tui | rpc |
+| tui | host、rpc |
 | cli | agent、app-settings、app-workspaces、channel、goal、host、rpc、tasks、tui、remote-crypto（dev） |
 | futureos | agent、app-settings、app-workspaces、host、remote-client、remote-crypto、remote-protocol、remote-server、rpc、tasks |
 
@@ -199,9 +200,8 @@ Core 分组共享每个操作系统的一份缓存，由 main CLI test job 单�
 
 ## 专项验证
 
-[`misc.yml`](../../.github/workflows/misc.yml) **只有手动入口**，不参与 PR/main 门禁，
-替代原 `ci.yml` 专项 scope 和独立 flaky-stress 工作流。
-原 mobile-native-io 工作流的验证已并入常规 Android job。
+[`misc.yml`](../../.github/workflows/misc.yml) **只有手动入口**，不参与 PR/main 门禁。
+移动端原生 IO 验证由常规原生检查覆盖。
 
 ```bash
 gh workflow run ci.yml --ref <branch>
@@ -215,6 +215,7 @@ gh workflow run misc.yml --ref <branch> -f suite=windows-update
 | generated | Proto 重新生成、Remote schema/codegen 一致性 |
 | remote-interop | Rust/TS 互操作、Remote 边界 |
 | windows-update | 离线安装器/更新 fixtures |
+| linux-update | Linux DEB 更新 fixtures：预置执行器的 root 侧校验与 dpkg 恢复 |
 | macos-notarization | Linux 上的恢复/发布脚本回归 |
 | flaky-stress | 重复运行 Agent、TUI、CLI 测试 |
 | agent-lifecycle | 三平台原生生命周期、Host/CLI 边界、Host 文档 |
@@ -225,15 +226,14 @@ gh workflow run misc.yml --ref <branch> -f suite=windows-update
 
 发布签名、公证、打包和上传继续由发布工作流负责。
 
-## 合并门禁迁移
+## 合并门禁
 
 使用固定的 `CI result` 作为 required status。它通过 `always()` 执行，拒绝规划失败、
 任务失败/取消、缺失结果和计划外跳过；未受影响的任务允许跳过。动态矩阵名称用于诊断，
 不作为分支保护的 required-check 名称。
 
-本次改造落地时，需要将 Protect Main ruleset 中旧的逐项 required contexts
-迁移为 `CI result`（GitHub Actions app id 15368），保留严格主干同步要求和其他规则。
-管理配置迁移前，旧名称会一直 pending，即使新检查已通过。
+`Protect Main` ruleset 只要求这一个 context（`CI result`，GitHub Actions app id 15368），
+并保留严格主干同步要求，因此新增或重命名工作流 job 不需要改动管理配置。
 编辑工作流文件本身不会修改 ruleset。
 
 本地只执行语法/静态检查；包括 `scripts/tests/ci-plan.test.mjs` 在内的单元测试交给 CI。

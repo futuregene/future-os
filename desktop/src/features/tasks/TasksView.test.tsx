@@ -234,12 +234,41 @@ function field(container: HTMLElement, label: string) {
   return control;
 }
 
-/** The trigger-mode select lives in the form's fieldset, not the option selects. */
 function triggerModeSelect(container: HTMLElement) {
   const select = container.querySelector<HTMLSelectElement>("fieldset select");
   if (!select)
     throw new Error(`no trigger select; body=${container.innerHTML.slice(0, 400)}`);
   return select;
+}
+
+/**
+ * The time-zone field: a trigger row that opens a searchable list.
+ *
+ * It is not a `<select>` — the list is four hundred zones named in the reader's
+ * language with their offsets — so the tests address it by its own hooks.
+ */
+function timezoneTriggerOrNull(container: HTMLElement) {
+  return container.querySelector<HTMLButtonElement>("[data-testid='timezone-trigger']");
+}
+
+function timezoneTrigger(container: HTMLElement) {
+  const trigger = timezoneTriggerOrNull(container);
+  if (!trigger)
+    throw new Error("no time zone field");
+  return trigger;
+}
+
+function timezoneSearch(container: HTMLElement) {
+  const input = container.querySelector<HTMLInputElement>("[data-testid='timezone-search']");
+  if (!input)
+    throw new Error("the zone list is not open");
+  return input;
+}
+
+/** The row offering `zone` (empty string is this machine's own zone). */
+function timezoneOption(container: HTMLElement, zone: string) {
+  return [...container.querySelectorAll<HTMLButtonElement>("[data-testid='timezone-option']")]
+    .find(node => node.dataset.zone === zone);
 }
 
 async function click(button: HTMLButtonElement | undefined) {
@@ -512,25 +541,50 @@ describe("tasksView", () => {
   // The trigger times are real clock times, so the form asks which clock they
   // belong to. A new task starts on "this machine's zone" — an empty value the
   // host resolves, Beijing when it cannot read one — and an existing task opens
-  // on the zone it stores.
+  // on the zone it stores. Each row names the zone in the reader's language and
+  // spells out the offset, so the value that gets saved is not what is read.
   it("carries the time zone the schedule's clock reads", async () => {
     const { container } = await renderView([task()]);
     await click(rows(container)[0]);
     await click(settingsToggle(container)!);
-    expect(container.textContent).toContain("Asia/Shanghai");
+    // The detail page names the stored zone the same way the picker does.
+    expect(container.textContent).toContain("UTC+8");
 
     await click(buttonByText(container, "Edit")!);
-    const select = field(container, "Time zone") as HTMLSelectElement;
-    expect(select.value).toBe("Asia/Shanghai");
-    // The empty option is the machine's own zone, and a concrete zone is
-    // offered for the common cases even on a runtime without the full list.
-    expect(select.querySelector("option[value='']")).not.toBeNull();
-    expect(select.querySelector("option[value='Europe/Berlin']")).not.toBeNull();
+    // The field opens on the stored zone, under the clock the schedule reads.
+    expect(timezoneTrigger(container).textContent).toContain("UTC+8");
 
-    await setValue(select, "Europe/Berlin");
+    await click(timezoneTrigger(container));
+    // The machine's own zone is still offered, and so is a concrete one.
+    expect(timezoneOption(container, "")).toBeDefined();
+    await click(timezoneOption(container, "Europe/Berlin"));
     await click(buttonByText(container, "Save")!);
     const updated = mocks.invokeCommand.mock.calls.find(([command]) => command === "update_task");
     expect(updated?.[1]).toMatchObject({ input: { timezone: "Europe/Berlin" } });
+  });
+
+  // The list is four hundred entries long in a database nobody reads by name, so
+  // it is searchable by each thing a reader might type: the zone, its city, or
+  // the number of hours it is away.
+  it("narrows the zone list by name and by offset", async () => {
+    const { container } = await renderView([]);
+    await click(buttonByText(container, "New scheduled task"));
+    await setValue(triggerModeSelect(container), "daily");
+    await click(timezoneTrigger(container));
+
+    await setValue(timezoneSearch(container), "Berlin");
+    const shown = [...container.querySelectorAll<HTMLElement>("[data-testid='timezone-option']")]
+      .map(node => node.dataset.zone);
+    expect(shown).toContain("Europe/Berlin");
+    expect(shown).not.toContain("Asia/Tokyo");
+
+    // `+8` is how the offset is spoken, and every zone east of UTC by eight
+    // hours answers it.
+    await setValue(timezoneSearch(container), "+8");
+    const byOffset = [...container.querySelectorAll<HTMLElement>("[data-testid='timezone-option']")]
+      .map(node => node.dataset.zone);
+    expect(byOffset).toContain("Asia/Shanghai");
+    expect(byOffset).not.toContain("Europe/Berlin");
   });
 
   it("leaves a new task on the machine's zone until one is chosen", async () => {
@@ -545,7 +599,7 @@ describe("tasksView", () => {
     await setValue(field(container, "Time") as HTMLInputElement, "09:00");
     // The unset choice is what reaches the host: it resolves and stores a
     // concrete zone, so the record never carries a guess.
-    expect((field(container, "Time zone") as HTMLSelectElement).value).toBe("");
+    expect(timezoneTrigger(container).textContent).toContain("This machine's zone");
     await click(buttonByText(container, "Save"));
     const created = mocks.invokeCommand.mock.calls.find(([command]) => command === "create_task");
     expect(created?.[1]).toMatchObject({ input: { timezone: "" } });
@@ -560,19 +614,19 @@ describe("tasksView", () => {
     const { container } = await renderView([]);
     await click(buttonByText(container, "New scheduled task"));
 
-    expect(fieldOrNull(container, "Time zone")).toBeNull();
+    expect(timezoneTriggerOrNull(container)).toBeNull();
 
     await setValue(triggerModeSelect(container), "interval");
-    expect(fieldOrNull(container, "Time zone")).toBeNull();
+    expect(timezoneTriggerOrNull(container)).toBeNull();
 
     await setValue(triggerModeSelect(container), "daily");
-    const select = field(container, "Time zone");
-    const fieldset = select.closest("fieldset");
+    const trigger = timezoneTrigger(container);
+    const fieldset = trigger.closest("fieldset");
     expect(fieldset, "the zone is asked for inside the trigger").not.toBeNull();
     const controls = [...fieldset!.querySelectorAll("select")];
     // The trigger mode is still the first question; the zone follows it.
     expect(controls.indexOf(triggerModeSelect(container))).toBe(0);
-    expect(controls.indexOf(select as HTMLSelectElement)).toBeGreaterThan(0);
+    expect(controls).toHaveLength(1);
   });
 
   it("refuses a save without a model or a thinking level", async () => {

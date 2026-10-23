@@ -18,6 +18,7 @@ const listRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
 const fetchRemoteSessions = vi.fn<(desktopId: string) => Promise<unknown>>();
 const connectAllRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
 const connectRemotePeer = vi.fn<(desktopId: string) => Promise<RemotePeer>>();
+const unpairRemotePeer = vi.fn<(desktopId: string) => Promise<string | null>>();
 // The host-catalogue reads the poll warms as a connection is established
 // (`remoteHostCatalog`); none of the assertions here is about them, but a mock
 // that omitted them would take the whole refresh down with it.
@@ -40,6 +41,7 @@ vi.mock("../../../features/remote-peer/remotePeerClient", async (importOriginal)
     listRemoteModels: () => listRemoteModels(),
     listRemotePeers: () => listRemotePeers(),
     listRemoteWorkspaces: () => Promise.resolve([]),
+    unpairRemotePeer: (...args: Parameters<typeof unpairRemotePeer>) => unpairRemotePeer(...args),
   };
 });
 
@@ -86,6 +88,7 @@ beforeEach(() => {
   fetchRemoteSessions.mockReset().mockResolvedValue({ desktopId: "desktop_a", sessions: [] });
   connectAllRemotePeers.mockReset().mockResolvedValue([]);
   connectRemotePeer.mockReset().mockResolvedValue(peer());
+  unpairRemotePeer.mockReset().mockResolvedValue(null);
 });
 
 /**
@@ -685,6 +688,107 @@ describe("old host fallback", () => {
     await settle();
     expect(fetchRemoteSessions).toHaveBeenCalled();
     expect(hook.current.catalogs).toHaveLength(1);
+    hook.unmount();
+  });
+});
+
+describe("a pairing the other side ended", () => {
+  // The user unpaired this machine on the *other* computer. The platform then
+  // refuses this machine's credential for that pairing on every attempt, so the
+  // row is not a machine that is merely unreachable — it is a pairing that no
+  // longer exists. It leaves the list, and so does its registration.
+  it("forgets a host the platform says has revoked this machine", async () => {
+    let forgotten = false;
+    listRemotePeers.mockImplementation(async () => [
+      ...(forgotten
+        ? []
+        : [peer({ connected: false, error: "Remote credential is invalid or revoked.", desktopId: "desktop_b" })]),
+      peer({ desktopId: "desktop_a" }),
+    ]);
+    unpairRemotePeer.mockImplementation(async () => {
+      forgotten = true;
+      return null;
+    });
+
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    expect(unpairRemotePeer).toHaveBeenCalledWith("desktop_b");
+    // The row is gone, and the machine that is still paired is untouched.
+    expect(hook.current.peers.map(item => item.desktopId)).toEqual(["desktop_a"]);
+    // Its conversations leave with it.
+    expect(hook.current.catalogs.map(catalog => catalog.desktopId)).toEqual(["desktop_a"]);
+    hook.unmount();
+  });
+
+  it("keeps a host that is merely unreachable", async () => {
+    // A sleeping machine is not a revoked one: forgetting it would silently
+    // unpair a computer that comes back as soon as it wakes up.
+    listRemotePeers.mockResolvedValue([
+      peer({ connected: false, error: "no responders", desktopId: "desktop_b" }),
+    ]);
+
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    expect(unpairRemotePeer).not.toHaveBeenCalled();
+    expect(hook.current.peers.map(item => item.desktopId)).toEqual(["desktop_b"]);
+    hook.unmount();
+  });
+
+  it("forgets the host whose presence says it was unpaired", async () => {
+    // The notice arrives while the link still works, which is the only chance
+    // the host gets to say it: the permission goes with the pairing.
+    let forgotten = false;
+    listRemotePeers.mockImplementation(async () => (forgotten ? [] : [peer()]));
+    unpairRemotePeer.mockImplementation(async () => {
+      forgotten = true;
+      return null;
+    });
+
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    expect(hook.current.peers).toHaveLength(1);
+
+    pushKind("presence", "desktop_a", { online: false, unpaired: true, pairId: "pair_1" });
+    await settle();
+
+    expect(unpairRemotePeer).toHaveBeenCalledWith("desktop_a");
+    expect(hook.current.peers).toEqual([]);
+    hook.unmount();
+  });
+
+  it("leaves a disconnect that keeps the pairing alone", async () => {
+    // `user_disconnect` and `system_sleep` are the host stepping away; pairing
+    // again is not what the user has to do afterwards.
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+
+    pushKind("presence", "desktop_a", { online: false, disconnected: true, reason: "user_disconnect" });
+    await settle();
+
+    expect(unpairRemotePeer).not.toHaveBeenCalled();
+    expect(hook.current.peers).toHaveLength(1);
+    hook.unmount();
+  });
+
+  it("tries a forgotten pairing once, and keeps the row when the removal fails", async () => {
+    // A failing removal must not become a command per poll for the rest of the
+    // session, and the row that could not be removed still has to be usable —
+    // it is drawn as a revoked pairing with Unpair offered.
+    listRemotePeers.mockResolvedValue([peer({ connected: false, error: "Remote credential is invalid or revoked." })]);
+    unpairRemotePeer.mockRejectedValue(new Error("storage is read-only"));
+
+    const hook = renderHook(() => useRemotePeers(true));
+    await settle();
+    expect(unpairRemotePeer).toHaveBeenCalledTimes(1);
+    expect(hook.current.peers).toHaveLength(1);
+
+    await act(async () => {
+      await hook.current.refresh();
+    });
+    await settle();
+    expect(unpairRemotePeer).toHaveBeenCalledTimes(1);
     hook.unmount();
   });
 });

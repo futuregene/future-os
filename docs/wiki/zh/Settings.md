@@ -2,7 +2,7 @@
 
 从窗口左下角进入设置：左栏折叠时是底部的**齿轮图标**，展开时在账户菜单里（点击头像和邮箱）。左栏里还有一个 **Models** 快捷入口，可直接跳到 Models 页。
 
-日常最常用的是 **General**、**Providers**、**Models** 三个页面。此外还有 **手机遥控（Phone Control）**、**账户（Account）**、**检查更新（Check for updates）**、**关于（About）**和**重置（Reset）**页面；测试版构建还多一个 **Environment（环境）** 开关。设置对话框把它们分为 Desktop / Server / Debug 三组。
+日常最常用的是 **General**、**Providers**、**Models** 三个页面。此外还有 **键盘快捷键（Keyboard shortcuts）**、**账户（Account）**、**检查更新（Check for updates）**、**关于（About）**和**重置（Reset）**页面；测试版构建还多一个 **Environment（环境）** 开关。设置对话框把它们分为 Desktop / Server / Debug 三组。
 
 ---
 
@@ -11,14 +11,17 @@
 应用级别的桌面选项:
 
 - **Language(语言)** —— 选择应用的显示语言。
+- **Appearance(外观)** —— 浅色、深色或跟随系统。**Color theme(配色主题)** 选择调色板（FutureOS、Ayu、Catppuccin、Dracula、Everforest 等），每个主题都同时有浅色和深色版本；**Font size(字号)** 只缩放文字，不改变布局。
 - **Approval mode(批准模式)** —— agent 在操作前询问的程度:
   - **Manual(手动)** —— 文件访问遵循 Allow/Ask/Deny 路径规则；shell 除只读白名单外先询问。
   - **Sandboxed(沙箱)** —— 可用时使用 macOS Seatbelt、Linux 系统 Bubblewrap 或 Windows 受限令牌写保护；文件访问仍遵循路径规则，各平台保护范围不同。
+  - **Automatic review(自动审核)** —— 在沙箱之上由一个模型审核器替你决定 Sandboxed 模式下本来会询问你的请求。它需要 OS 沙箱和已登录的 FutureOS 账号，两种缺失的回退不同：沙箱不可用时请求改走手动审核、设置保留；登出或凭据失效则把已保存的设置降级为 **Sandboxed**，重新登录也不会自动恢复。
   - **Full access（完全访问，默认）** —— 不询问、不沙箱，一切照跑。
 - **Auto-upgrade skills(技能自动升级)** —— 每次应用打开时,静默把已安装技能升级到最新版本。
 - **Skill recommendations（技能推荐）**（默认关闭）—— 开启后，发送消息时最多推荐一个你尚未安装的技能。
 - **Generate a title after the first answer（首轮回答后生成标题）**（默认开启）—— 新会话首次成功回答后自动命名；之后的回答不会再次触发。
 - **Completion bell（完成提示音）** —— agent 跑完时播放提示音并提醒窗口。
+- **Continue interrupted conversations（继续被中断的对话）**（默认开启）—— agent 运行在应用进程内，关闭 FutureOS 会中断正在跑的对话；开启后下次启动会自动继续。
 - **Model output（模型输出展示）** —— 回答完成后显示多少内容：
   - **Default（默认）**（出厂档位）—— 回答结束后只保留最终回答，思考、工具调用和中间说明收起到回答上方的一行“查看过程”里；生成过程中仍完整显示，点开这一行即可展开。
   - **Detailed（详细）** —— 保留完整过程：思考、工具调用和中间说明按发生顺序与正文一起显示。
@@ -40,7 +43,7 @@ provider 就是你的模型来源。
 **Future** 是内置 provider（即你的 FutureOS 账号）。使用步骤:
 
 1. 点 **Sign in**——会打开欢迎/登录界面。
-2. 在打开的浏览器页面里授权。当前版本会自动打开，不再单独显示验证码。
+2. 在打开的浏览器页面里授权。应用会自动打开该页面。
 3. 连接后,你随时可以**登出(Sign out)**。
 
 列表里还有其他内置 provider(如 DeepSeek、OpenAI、Anthropic、Google 等)——点 **Configure** 可为它们填入或更新自己的 API key。用 **More providers** 可展开完整列表。

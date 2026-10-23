@@ -218,11 +218,101 @@ describe("the recency page", () => {
     expect(page.more).toBe(0);
   });
 
-  it("draws a fork as a row of its own, at its own age", () => {
-    const rows = recentRows([
-      row("parent", {}, now - 30 * minute),
-      row("fork", { parentSessionId: "parent" }, now - minute),
+});
+
+describe("child sessions on the recency page", () => {
+  /**
+   * The `/future-goal` shape: a conversation that started a worker session for
+   * each piece of work. The workers are newer than the conversation, so a page
+   * that ranked every session put them above it and buried the conversations the
+   * reader actually made.
+   */
+  const goal = (): MergedSessionRow[] => [
+    row("goal", {}, now - 2 * minute),
+    row("worker", { parentSessionId: "goal" }, now - minute),
+    row("helper", { parentSessionId: "worker" }, now - 30_000),
+    row("other", {}, now - 10 * minute),
+  ];
+
+  it("lists the conversation, not the sessions it started", () => {
+    const page = recentRows(goal(), "");
+    // By last reply: the conversation spoke more recently than the other row.
+    expect(ids(page)).toEqual(["goal", "other"]);
+    // The captions count conversations, not the sessions under them.
+    expect(countOf(page, "earlierSection")!.count).toBe(2);
+  });
+
+  it("keeps a running worker out of the active stretch", () => {
+    // A child is never a row of the page's own: filing a goal's worker under
+    // "Active" would show a session the page is supposed to leave to its
+    // conversation.
+    const rows = [
+      row("goal", {}, now - 2 * minute),
+      row("worker", { parentSessionId: "goal", streaming: true }, now - minute),
+    ];
+    expect(captions(recentRows(rows, ""))).toEqual(["sessions.earlierSection"]);
+  });
+
+  it("draws the children under their conversation when it is opened", () => {
+    const first = recentRows(goal(), "");
+    const parent = first.rows.find(item => item.kind === "session" && item.key === "goal");
+    expect(parent).toMatchObject({ depth: 0, hasChildren: true, foldId: "goal" });
+
+    // Folded: the workers are absent, and the childless row has no toggle.
+    expect(ids(first)).toEqual(["goal", "other"]);
+    const other = first.rows.find(item => item.kind === "session" && item.key === "other");
+    expect(other).toMatchObject({ hasChildren: false });
+
+    // Opened: the direct worker appears, one level in, at its parent's place.
+    const opened = recentRows(goal(), "", RECENT_PAGE_SIZE, new Set(["goal"]));
+    expect(ids(opened)).toEqual(["goal", "worker", "other"]);
+    expect(opened.rows.find(item => item.kind === "session" && item.key === "worker"))
+      .toMatchObject({ depth: 1, hasChildren: true, section: "earlier" });
+
+    // Its own children need its own fold, and the indent saturates at three.
+    const deep = recentRows(goal(), "", RECENT_PAGE_SIZE, new Set(["goal", "worker"]));
+    expect(ids(deep)).toEqual(["goal", "worker", "helper", "other"]);
+    expect(deep.rows.find(item => item.kind === "session" && item.key === "helper"))
+      .toMatchObject({ depth: 2 });
+  });
+
+  it("keeps a pinned child a child: this page has no pinned section to hoist it into", () => {
+    const page = recentRows([
+      row("parent", {}, now - minute),
+      row("pinned-worker", { parentSessionId: "parent", pinned: true }, now - 30 * minute),
     ], "");
-    expect(ids(rows)).toEqual(["fork", "parent"]);
+    expect(ids(page)).toEqual(["parent"]);
+  });
+
+  it("draws a child whose parent is not on the page at the top level", () => {
+    // The filter, a search, or a parent that is gone: a row that cannot be drawn
+    // under something is drawn on its own rather than lost.
+    expect(ids(recentRows([row("orphan", { parentSessionId: "missing" })], ""))).toEqual(["orphan"]);
+  });
+
+  it("finds a child by search even when its conversation does not match", () => {
+    const rows = [
+      row("goal", { title: "Goal" }, now - minute),
+      row("worker", { title: "Needle", parentSessionId: "goal" }, now - 30_000),
+    ];
+    const page = recentRows(rows, "needle");
+    expect(ids(page)).toEqual(["worker"]);
+    // A search is flat, as on the other two pages.
+    expect(page.rows.find(item => item.kind === "session")).toMatchObject({ depth: 0, hasChildren: false });
+  });
+
+  it("folds a conversation on another machine by its own key", () => {
+    // A session id is that machine's, not global: two peers can each hold `s1`,
+    // so a peer's fold is keyed by the machine too.
+    const peer = { ...row("s1", {}, now - minute), key: "desk-b::s1", desktopId: "desk-b" };
+    const peerWorker = {
+      ...row("s2", { parentSessionId: "s1" }, now - 30_000),
+      key: "desk-b::s2",
+      desktopId: "desk-b",
+    };
+    expect(ids(recentRows([peer, peerWorker], "", RECENT_PAGE_SIZE, new Set(["s1"]), "desk-a")))
+      .toEqual(["desk-b::s1"]);
+    expect(ids(recentRows([peer, peerWorker], "", RECENT_PAGE_SIZE, new Set(["desk-b::s1"]), "desk-a")))
+      .toEqual(["desk-b::s1", "desk-b::s2"]);
   });
 });

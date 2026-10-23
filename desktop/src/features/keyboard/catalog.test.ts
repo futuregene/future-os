@@ -152,7 +152,7 @@ describe("command catalog", () => {
         expect(lookup(bundle, `categories.${category}`), `${language} categories.${category}`).toEqual(expect.any(String));
       for (const item of FIXED_KEYS)
         expect(lookup(bundle, item.labelKey), `${language} ${item.labelKey}`).toEqual(expect.any(String));
-      for (const key of ["page.hint", "page.search", "page.unbound", "page.reset", "page.resetAll", "page.terminalBlocked", "recorder.prompt", "recorder.reserved", "recorder.conflict", "recorder.hint", "fixed.title", "fixed.description"])
+      for (const key of ["page.hint", "page.search", "page.unbound", "page.reset", "page.resetAll", "recorder.prompt", "recorder.reserved", "recorder.conflict", "recorder.hint", "fixed.title", "fixed.description"])
         expect(lookup(bundle, key), `${language} ${key}`).toEqual(expect.any(String));
     }
   });

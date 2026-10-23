@@ -43,6 +43,13 @@ On Debian/Ubuntu the Linux installer uses a matching `.deb`; other Linux systems
 use the portable desktop package. The scripts finish with `future init`. For a
 host machine, use the CLI-only tarball instead of installing desktop libraries.
 
+Both installers verify the artifact's SHA-256 against the release manifest before
+installing it, including for a version pinned with `FUTUREOS_VERSION` (that
+version's own manifest is fetched). If no checksum can be established — no
+manifest entry for the platform, or no `shasum`/`sha256sum` on the host — the
+install stops instead of proceeding unverified. `FUTUREOS_SKIP_VERIFY=1` disables
+the check for one run, which means installing whatever the mirror served.
+
 ## First launch and signing
 
 Official release workflows sign macOS/Windows installers and notarize macOS
@@ -86,7 +93,9 @@ Official Linux CI builds the CLI (including `future host`) with static musl, so
 neither requires those GUI libraries or any particular glibc version. Local
 source builds depend on their selected target.
 
-For sandbox mode, install **system Bubblewrap ≥ 0.9.0**, restart the app and run
+For sandbox mode, install **system Bubblewrap** (0.9.0 or newer on most
+distributions; compatibility is decided by probing the required options at
+runtime, not by the version string), restart the app and run
 `future agent --probe-sandbox` / `future doctor`. It is not bundled, and an older
 distribution package may need a trusted upgrade. See [[Sandbox]] for requirements,
 namespace restrictions and fallback behavior.

@@ -55,10 +55,7 @@ pub(super) fn cleanup_confirmed(id: &str) -> Result<(), crate::AppError> {
     super::macos::confirm(id).map_err(crate::AppError::from)?;
     #[cfg(target_os = "windows")]
     {
-        let backup = future_rpc::home::future_home()
-            .join("app/updates")
-            .join(id)
-            .join("program-backup");
+        let backup = super::journal::root().join(id).join("program-backup");
         if backup.exists() {
             std::fs::remove_dir_all(backup)?;
         }

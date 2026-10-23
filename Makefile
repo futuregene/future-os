@@ -390,22 +390,40 @@ check-docs:
 
 # Regression tests for the documentation gate itself (includes negative
 # controls, so a checker that stopped detecting violations would fail here).
+#
+# `PYTHONDONTWRITEBYTECODE` is declared as a target-specific exported variable
+# rather than written as a `VAR=1 command` prefix. That prefix is POSIX shell
+# syntax: a Windows make runs recipes through cmd.exe, which takes the first word
+# as the program to run (`'PYTHONDONTWRITEBYTECODE' is not recognized …`). An
+# exported make variable is placed in the recipe's environment whatever the
+# shell is, and the interpreter's own children inherit it — which is the part a
+# bare `python3 -B` would not do for the subprocesses this test spawns.
+test-docs-check: export PYTHONDONTWRITEBYTECODE := 1
 test-docs-check:
-	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test-check-docs.py
+	python3 scripts/tests/test-check-docs.py
 
 # Regression tests for the screenshot harness: the browser lifecycle (the startup
 # sweep of browsers/profiles a killed run left behind, and the rule that only a
 # headless browser is ever driven — starts real headless Chrome, so those cases
 # skip where none is installed), and the upright check's judge for mobile
 # captures of the inverted transcript (offline: it draws the tiles it judges).
+# Same target-specific export as `test-docs-check`, for the same reason.
+test-screenshot-harness: export PYTHONDONTWRITEBYTECODE := 1
 test-screenshot-harness:
-	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test-screenshot-harness-reap.py
-	PYTHONDONTWRITEBYTECODE=1 python3 scripts/tests/test-screenshot-upright-check.py
+	python3 scripts/tests/test-screenshot-harness-reap.py
+	python3 scripts/tests/test-screenshot-upright-check.py
 
 # Wire codegen owners: packages/rpc (future.proto) + channels (feishu_ws pbbp2).
+#
+# `REGENERATE_PROTO` is a target-specific exported variable, not a `VAR=1 cmd`
+# prefix: that prefix is POSIX shell syntax, and a Windows make runs recipes
+# through cmd.exe, which reads the first word as the program to run. Cargo's
+# build script is what consumes the variable (`packages/rpc/build.rs`), and it
+# receives it from the environment either way.
+generate-proto: export REGENERATE_PROTO := 1
 generate-proto:
-	cd packages/rpc && REGENERATE_PROTO=1 cargo build
-	cd channels && REGENERATE_PROTO=1 cargo build
+	cd packages/rpc && cargo build
+	cd channels && cargo build
 
 # ─── Clean ──────────────────────────────────────────────────────────────────
 # Build artifacts only — installed binaries are removed by `uninstall`.

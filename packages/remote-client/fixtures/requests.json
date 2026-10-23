@@ -380,12 +380,11 @@
       "expected": {
         "rust": {
           "attemptAtMs": [
-            0,
-            250
+            0
           ],
-          "outcome": "success",
+          "outcome": "transport",
           "recoveries": 0,
-          "completeAtMs": 250,
+          "completeAtMs": 0,
           "probes": 0
         },
         "typescript": {
@@ -398,7 +397,7 @@
           "probes": 0
         }
       },
-      "difference": "Rust retains its pre-existing prompt/continue whitelist; TypeScript requires negotiated prompt_receipt_v1 before retrying those writes."
+      "difference": null
     },
     {
       "id": "client.request-policy.legacy-continue",
@@ -418,12 +417,11 @@
       "expected": {
         "rust": {
           "attemptAtMs": [
-            0,
-            250
+            0
           ],
-          "outcome": "success",
+          "outcome": "transport",
           "recoveries": 0,
-          "completeAtMs": 250,
+          "completeAtMs": 0,
           "probes": 0
         },
         "typescript": {
@@ -436,7 +434,7 @@
           "probes": 0
         }
       },
-      "difference": "Rust retains its pre-existing prompt/continue whitelist; TypeScript requires negotiated prompt_receipt_v1 before retrying those writes."
+      "difference": null
     },
     {
       "id": "client.request-policy.one-timeout",

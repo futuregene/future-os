@@ -23,8 +23,67 @@ pub(super) struct Record {
     pub repair_acknowledged: bool,
 }
 
-fn root() -> PathBuf {
+// A test case's own journal directory, bound by [`CaseRoot`] on the thread that
+// runs the case. The root used to come from the process-global `HOME` that every
+// fixture rewrites, so a case's isolation depended on *every other test in this
+// binary* leaving that variable alone for the whole of the case. Anything that did
+// not — a fixture that restores `HOME` early, a detached task, a journal read
+// issued from another module — could put two cases in one directory, and the
+// second then reported `Another update transaction is active` about a lock its
+// own sibling held. The override is per thread and test-only, so a case owns its
+// root whatever the rest of the process does.
+#[cfg(test)]
+thread_local! {
+    static CASE_ROOT: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// The updates directory: `<FutureOS home>/app/updates`, or the calling test
+/// case's own directory (see [`CaseRoot`]).
+///
+/// The single derivation of it: the journal, the recovery fingerprints and the
+/// platform adapters all live under this directory, and a test case points all
+/// of them at one private directory.
+pub(super) fn root() -> PathBuf {
+    #[cfg(test)]
+    if let Some(root) = CASE_ROOT.with(|root| root.borrow().clone()) {
+        return root;
+    }
     future_rpc::home::future_home().join("app/updates")
+}
+
+/// Binds the calling thread's journal to a private directory for one test case,
+/// and unbinds it when the case ends.
+///
+/// This is the test-visible construction point the journal offers instead of the
+/// environment: a case never shares `transaction.lock` with another case, so a
+/// red run can only report a transaction *this* case started.
+#[cfg(test)]
+pub(super) struct CaseRoot {
+    directory: tempfile::TempDir,
+}
+
+#[cfg(test)]
+impl CaseRoot {
+    pub(super) fn bind() -> Self {
+        let directory = tempfile::Builder::new()
+            .prefix("update-journal-case-")
+            .tempdir()
+            .expect("a private update-journal directory");
+        CASE_ROOT.with(|root| *root.borrow_mut() = Some(directory.path().to_path_buf()));
+        Self { directory }
+    }
+
+    pub(super) fn path(&self) -> &std::path::Path {
+        self.directory.path()
+    }
+}
+
+#[cfg(test)]
+impl Drop for CaseRoot {
+    fn drop(&mut self) {
+        CASE_ROOT.with(|root| *root.borrow_mut() = None);
+    }
 }
 
 fn read_latest() -> Result<Option<Record>, AppError> {
@@ -74,8 +133,8 @@ fn read_latest() -> Result<Option<Record>, AppError> {
     Ok(Some(record))
 }
 
-// The process lock survives page unmounts and distinguishes a live operation
-// from a record left behind by a crash (where Drop never runs).
+/// The process lock survives page unmounts and distinguishes a live operation
+/// from a record left behind by a crash (where Drop never runs).
 fn transaction_lock() -> Result<std::fs::File, AppError> {
     std::fs::create_dir_all(root())?;
     Ok(std::fs::OpenOptions::new()
@@ -84,6 +143,37 @@ fn transaction_lock() -> Result<std::fs::File, AppError> {
         .create(true)
         .truncate(false)
         .open(root().join("transaction.lock"))?)
+}
+
+/// Takes the transaction lease, giving a lock that only a just-forked child still
+/// holds the moment it needs to exec the chance to disappear first (see
+/// [`LEASE_SETTLE_STEP`]). A lease another process really is holding is still
+/// refused — after the wait, and with the same message.
+fn acquire_transaction_lease() -> Result<std::fs::File, AppError> {
+    let lease = transaction_lock()?;
+    let mut waited = 0;
+    loop {
+        match lease.try_lock_exclusive() {
+            Ok(()) => return Ok(lease),
+            // Only "someone else holds this file" is a concurrent transaction.
+            // Every other failure used to be reported with the same message, so
+            // a full-suite run that failed at its *first* `Operation::begin` in
+            // a fresh directory (1 round in 6, measured in #1305) could not say
+            // which of the two it was.
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if waited >= LEASE_SETTLE_ATTEMPTS {
+                    return Err(AppError::from("Another update transaction is active"));
+                }
+                waited += 1;
+                std::thread::sleep(LEASE_SETTLE_STEP);
+            }
+            Err(error) => {
+                return Err(AppError::from(format!(
+                    "Could not take the update transaction lease: {error}"
+                )))
+            }
+        }
+    }
 }
 
 pub(super) fn latest() -> Result<Option<Record>, AppError> {
@@ -243,14 +333,29 @@ impl Drop for Inner {
 
 #[derive(Clone)]
 pub(super) struct Operation(Arc<Mutex<Inner>>);
+
+/// How long `begin` waits for a lease that is only *transiently* held.
+///
+/// The lease is a file lock, and this process spawns children constantly — the
+/// CLI runner, the installer, terminal shells. A child forked by another thread
+/// keeps a copy of every descriptor that is open at that instant, including this
+/// lease, until it execs; until then the lock reads as held by nobody in
+/// particular. That window was reported as
+/// `Another update transaction is active` — measured on CI: a red desktop run
+/// whose own case had started no update at all (run 39802801818).
+///
+/// Waiting before refusing costs a genuinely concurrent installation nothing: it
+/// holds the lease for the length of that installation, which is minutes, so the
+/// outcome is the same refusal either way. The window being waited out is the
+/// fork-to-exec gap, which is microseconds.
+const LEASE_SETTLE_STEP: std::time::Duration = std::time::Duration::from_millis(10);
+const LEASE_SETTLE_ATTEMPTS: usize = 25;
+
 impl Operation {
     pub(super) fn begin(version: &str) -> Result<Self, AppError> {
         // Recover an abandoned pre-install record before reserving a new one.
         let _ = latest()?;
-        let lease = transaction_lock()?;
-        lease
-            .try_lock_exclusive()
-            .map_err(|_| AppError::from("Another update transaction is active"))?;
+        let lease = acquire_transaction_lease()?;
         if read_latest()?.is_some_and(|record| {
             !record.repair_acknowledged
                 && (record.outcome.is_none()
@@ -381,6 +486,7 @@ mod tests {
     #[test]
     fn abandoned_download_is_retryable_without_manual_repair() {
         let _home = crate::auth_store::test_support::HomeGuard::new("update-crash-before-install");
+        let _root = CaseRoot::bind();
         let operation = Operation::begin("old").unwrap();
         operation.stage("downloading", Some("new")).unwrap();
         let path = operation.path();
@@ -400,6 +506,7 @@ mod tests {
     #[test]
     fn replacing_files_cannot_be_reclassified_as_a_safe_download() {
         let _home = crate::auth_store::test_support::HomeGuard::new("update-crash-during-install");
+        let _root = CaseRoot::bind();
         let operation = Operation::begin("old").unwrap();
         operation.stage("installing", Some("new")).unwrap();
         assert!(operation.stage("prepared", None).is_err());
@@ -410,6 +517,7 @@ mod tests {
     #[test]
     fn old_process_cannot_confirm_the_new_version() {
         let _home = crate::auth_store::test_support::HomeGuard::new("update-health-version");
+        let _root = CaseRoot::bind();
         let operation = Operation::begin("old").unwrap();
         operation.stage("installing", Some("new")).unwrap();
         operation.finish("pending-validation", None, true).unwrap();
@@ -426,6 +534,7 @@ mod tests {
     fn a_worker_result_survives_a_later_parent_error_and_drop() {
         let _home =
             crate::auth_store::test_support::HomeGuard::new("update-worker-result-authority");
+        let _root = CaseRoot::bind();
         let operation = Operation::begin("old").unwrap();
         operation.stage("installing", Some("new")).unwrap();
         let mut record = read_latest().unwrap().unwrap();
@@ -449,6 +558,7 @@ mod tests {
     #[test]
     fn results_survive_operation_drop_and_record_failure_diagnostics() {
         let _home = crate::auth_store::test_support::HomeGuard::new("update-journal-result");
+        let _root = CaseRoot::bind();
         let op = Operation::begin("old").unwrap();
         op.stage("installing", Some("new")).unwrap();
         op.finish("repair-required", Some("mixed program files".into()), false)
@@ -464,6 +574,7 @@ mod tests {
     #[test]
     fn repair_acknowledgement_preserves_unknown_outcome_and_never_grants_restart() {
         let _home = crate::auth_store::test_support::HomeGuard::new("update-journal-repair");
+        let _root = CaseRoot::bind();
         let op = Operation::begin("old").unwrap();
         op.stage("installing", Some("new")).unwrap();
         let id = latest().unwrap().unwrap().operation_id;
@@ -480,6 +591,7 @@ mod tests {
     #[test]
     fn corrupt_record_fails_closed_and_terminal_failure_is_not_overwritten() {
         let _home = crate::auth_store::test_support::HomeGuard::new("update-journal-corrupt");
+        let _root = CaseRoot::bind();
         let op = Operation::begin("old").unwrap();
         op.finish("repair-required", Some("original error".into()), false)
             .unwrap();
@@ -497,6 +609,7 @@ mod tests {
     #[test]
     fn unfinished_operation_blocks_reentry_and_dropped_operation_is_not_success() {
         let _home = crate::auth_store::test_support::HomeGuard::new("update-journal-interrupted");
+        let _root = CaseRoot::bind();
         let op = Operation::begin("old").unwrap();
         assert!(Operation::begin("other").is_err());
         drop(op);
@@ -506,12 +619,60 @@ mod tests {
         );
     }
 
+    /// Cases that run at the same time must not share a journal directory.
+    ///
+    /// This is the regression the module's fixtures were rewritten for: the root
+    /// used to come from the process-global `HOME`, so two cases running side by
+    /// side resolved one directory and the second one's very first
+    /// `Operation::begin` reported `Another update transaction is active` — about
+    /// a lease its own sibling held, not about anything the case did. Falsified by
+    /// dropping the `CASE_ROOT` lookup from `root()`: every thread then resolves
+    /// the one `HOME`-based directory, so `root()` stops matching the case's own
+    /// path and the collected paths collapse to one.
+    ///
+    /// The check is deliberately about the *root*, not about holding a live
+    /// transaction here: a lease is a file lock, and a child process spawned by
+    /// another test between its `fork` and `exec` inherits it, so holding four of
+    /// them while the whole module runs would measure that other hazard instead.
+    /// The lock's own protection is covered by
+    /// [`Operation::begin`]'s callers below — `replacing_files_cannot_be_reclassified…`
+    /// and `unfinished_operation_blocks_reentry…` both keep asserting the refusal.
+    #[test]
+    fn cases_running_at_the_same_time_never_share_a_journal() {
+        let roots = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let cases: Vec<_> = (0..4)
+            .map(|_| {
+                let roots = roots.clone();
+                std::thread::spawn(move || {
+                    let case = CaseRoot::bind();
+                    assert_eq!(
+                        root(),
+                        case.path(),
+                        "a case resolves its own journal, not the process environment"
+                    );
+                    roots.lock().unwrap().push(case.path().to_path_buf());
+                })
+            })
+            .collect();
+        for case in cases {
+            case.join().expect("a case thread must not panic");
+        }
+        let roots = roots.lock().unwrap().clone();
+        let unique: std::collections::HashSet<_> = roots.iter().collect();
+        assert_eq!(
+            unique.len(),
+            roots.len(),
+            "cases must not share a journal root: {roots:?}"
+        );
+    }
+
     /// `latest()` fails closed on every damaged shape of its own state: an
     /// absent pointer is "no record", a pointer that is not an operation id is
     /// refused, and any other read failure is an error rather than silence.
     #[test]
     fn latest_fails_closed_on_damaged_state() {
         let _home = crate::auth_store::test_support::HomeGuard::new("update-journal-latest");
+        let _root = CaseRoot::bind();
         let root = root();
         std::fs::create_dir_all(&root).unwrap();
         assert!(latest().unwrap().is_none(), "no pointer means no record");
@@ -533,6 +694,7 @@ mod tests {
     #[test]
     fn latest_rejects_an_inconsistent_record() {
         let _home = crate::auth_store::test_support::HomeGuard::new("update-journal-record");
+        let _root = CaseRoot::bind();
         let id = "update-abc";
         let directory = root().join(id);
         std::fs::create_dir_all(&directory).unwrap();
@@ -574,6 +736,7 @@ mod tests {
     #[test]
     fn repair_acknowledgement_refuses_a_stale_operation_id() {
         let _home = crate::auth_store::test_support::HomeGuard::new("update-journal-stale-ack");
+        let _root = CaseRoot::bind();
         let op = Operation::begin("old").unwrap();
         let id = latest().unwrap().unwrap().operation_id;
         drop(op);
@@ -587,6 +750,7 @@ mod tests {
     #[test]
     fn an_unpersistable_interrupted_record_is_reported_without_panicking() {
         let _home = crate::auth_store::test_support::HomeGuard::new("update-journal-drop-failure");
+        let _root = CaseRoot::bind();
         let op = Operation::begin("old").unwrap();
         let path = op.path();
         std::fs::remove_file(&path).unwrap();

@@ -58,7 +58,8 @@ Delete the app (macOS: remove `FutureOS.app`; Windows: uninstall or delete the p
 
 ### Linux sandbox is unavailable
 
-Install trusted system Bubblewrap ≥ 0.9.0, fully restart FutureOS, then run `future agent --probe-sandbox` and `future doctor`. User namespaces or fresh `/proc` mounts may be restricted by host policy; ask the administrator rather than bypassing it. See [[Sandbox]] for diagnostic codes and Manual fallback.
+Install trusted system Bubblewrap (0.9.0 or newer on most distributions; the
+app probes the options it needs at runtime), fully restart FutureOS, then run `future agent --probe-sandbox` and `future doctor`. User namespaces or fresh `/proc` mounts may be restricted by host policy; ask the administrator rather than bypassing it. See [[Sandbox]] for diagnostic codes and Manual fallback.
 
 ### Linux GUI won't start on an older server
 

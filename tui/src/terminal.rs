@@ -117,6 +117,10 @@ pub struct Terminal {
     progress_stop: Option<Arc<AtomicBool>>,
     progress_thread: Option<std::thread::JoinHandle<()>>,
     backend: Arc<platform::Backend>,
+    /// Where stderr goes while the alternate screen is up (`None` = leave it
+    /// alone). See [`crate::stderr_log`] for why the screen owner also owns
+    /// stderr.
+    stderr_log: Option<std::path::PathBuf>,
     /// SIGINT/SIGTERM callback (set before `start`; invoked on the reader
     /// thread in place of the default restore-and-re-raise).
     #[allow(clippy::type_complexity)]
@@ -188,6 +192,14 @@ impl Terminal {
         }
         let backend = Arc::new(platform::Backend::new()?);
         let size = Arc::new(Mutex::new(backend.size()));
+        // Unit tests construct terminals in a shared `cargo test` process: a
+        // redirect there would point the whole suite's stderr at a file. The
+        // wiring is covered by `start_captures_stderr_and_stop_restores_it`,
+        // which opts in with a temp path.
+        #[cfg(not(test))]
+        let stderr_log = crate::stderr_log::default_path();
+        #[cfg(test)]
+        let stderr_log = None;
         Ok(Self {
             raw_enabled: false,
             size,
@@ -201,6 +213,7 @@ impl Terminal {
             progress_stop: None,
             progress_thread: None,
             backend,
+            stderr_log,
             exit_signal_cb: Arc::new(Mutex::new(None)),
         })
     }
@@ -212,6 +225,14 @@ impl Terminal {
     /// callback must arrange for `stop()` (or the exit path) to do so.
     pub fn set_exit_signal_callback(&mut self, cb: Option<Box<dyn FnMut() + Send + 'static>>) {
         *self.exit_signal_cb.lock() = cb;
+    }
+
+    /// Point stderr at `path` while the alternate screen is up. Production uses
+    /// `~/.future/tui/stderr.log`; the seam exists so the capture can be tested
+    /// against a temp file instead of the suite's real stderr.
+    #[cfg(test)]
+    pub(crate) fn set_stderr_log(&mut self, path: Option<std::path::PathBuf>) {
+        self.stderr_log = path;
     }
 
     /// Enter the alternate screen, raw mode, bracketed paste; install signal
@@ -244,9 +265,22 @@ impl Terminal {
         // reporting, refresh size. On failure, restore the terminal before
         // returning.
         write_str(&self.write_lock, "\x1b[?1049h");
+        // Home the cursor: entering the alternate screen preserves the cursor
+        // row on some terminals (tmux, for one), so log lines printed before
+        // the screen was taken would otherwise shift the whole first frame
+        // down by however many lines they were.
+        write_str(&self.write_lock, "\x1b[H");
         write_str(&self.write_lock, "\x1b[?2004h");
         write_str(&self.write_lock, "\x1b[?1004h");
         self.refresh_size();
+
+        // The screen is ours now: take stderr with it. Anything the in-process
+        // Agent prints from here on belongs in the log, not on this terminal —
+        // raw mode turns `\n` into a column-preserving line feed and the diff
+        // renderer cannot see writes it did not make (see `stderr_log`).
+        if let Some(path) = self.stderr_log.clone() {
+            let _ = crate::stderr_log::redirect(&path);
+        }
 
         self.stop_flag.store(false, Ordering::SeqCst);
         self.draining.store(false, Ordering::SeqCst);
@@ -483,22 +517,25 @@ impl Terminal {
             self.backend.restore_raw();
             self.raw_enabled = false;
         }
+
+        // Hand stderr back with the terminal, last: everything an in-process
+        // component printed while the screen was held has already been captured,
+        // and the exit path's own messages must reach the user again.
+        let _ = crate::stderr_log::restore();
     }
 
     pub fn write(&self, data: &str) {
         if std::env::var("PI_TUI_WRITE_LOG").as_deref() == Ok("1") {
-            if let Ok(home) = std::env::var("HOME") {
-                use std::io::Write as _;
-                let log_dir = format!("{home}/.future/tui");
-                let log_path = format!("{log_dir}/write.log");
-                let _ = std::fs::create_dir_all(&log_dir);
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&log_path)
-                {
-                    let _ = f.write_all(data.as_bytes());
-                }
+            use std::io::Write as _;
+            let log_dir = crate::home::future_state_dir().join("tui");
+            let log_path = log_dir.join("write.log");
+            let _ = std::fs::create_dir_all(&log_dir);
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+            {
+                let _ = f.write_all(data.as_bytes());
             }
         }
         write_str(&self.write_lock, data);
@@ -596,6 +633,10 @@ impl Drop for Terminal {
         if self.reader_thread.is_some() || self.raw_enabled {
             self.stop();
         }
+        // Failsafe: a Terminal dropped without a full stop (for instance if
+        // `start` failed after the screen was already taken) must not leave
+        // stderr pointing at the log for the rest of the process.
+        let _ = crate::stderr_log::restore();
     }
 }
 
@@ -806,6 +847,9 @@ fn restore_terminal_for_exit(
     write_str(write_lock, TERMINAL_PROGRESS_CLEAR_SEQUENCE);
     backend.restore_raw();
     write_str(write_lock, "\r\n");
+    // The failsafe path never reaches `stop`, so stderr has to be handed back
+    // here too before the process dies.
+    let _ = crate::stderr_log::restore();
 }
 
 // ─── Test-only PTY fixture ────────────────────────────────────────────────
@@ -1119,12 +1163,13 @@ mod tests {
 
     #[test]
     fn write_log_gated_by_env() {
+        use crate::test_env::EnvVarGuard;
         let _guard = crate::test_env::lock();
         let home = tempfile::tempdir().unwrap();
-        let old_log = std::env::var_os("PI_TUI_WRITE_LOG");
-        let old_home = std::env::var_os("HOME");
-        std::env::set_var("PI_TUI_WRITE_LOG", "1");
-        std::env::set_var("HOME", home.path());
+        let isolated = tempfile::tempdir().unwrap();
+        let _log = EnvVarGuard::set("PI_TUI_WRITE_LOG", "1");
+        let _home = EnvVarGuard::set("HOME", home.path());
+        let future_home = EnvVarGuard::remove("FUTURE_HOME");
         #[cfg(unix)]
         let t = terminal_for_methods();
         #[cfg(windows)]
@@ -1134,11 +1179,19 @@ mod tests {
         t.write("log-me");
         let log = std::fs::read_to_string(home.path().join(".future/tui/write.log")).unwrap();
         assert!(log.contains("log-me"));
-        // With HOME unset the log write is skipped (output still written).
-        std::env::remove_var("HOME");
-        t.write("not-logged");
-        restore_env("PI_TUI_WRITE_LOG", old_log);
-        restore_env("HOME", old_home);
+        // An isolated FutureOS home keeps its own write log, so two instances
+        // writing in the same user home do not share one file.
+        drop(future_home);
+        let _isolated = EnvVarGuard::set("FUTURE_HOME", isolated.path());
+        t.write("isolated-log");
+        let isolated_log = std::fs::read_to_string(isolated.path().join("tui/write.log")).unwrap();
+        assert!(isolated_log.contains("isolated-log"));
+        assert!(
+            !std::fs::read_to_string(home.path().join(".future/tui/write.log"))
+                .unwrap()
+                .contains("isolated-log"),
+            "the default home's log must not receive the isolated instance's writes"
+        );
     }
 
     fn restore_env(key: &str, old: Option<std::ffi::OsString>) {
@@ -1946,6 +1999,50 @@ mod tests {
         t.modify_other_keys_active.store(true, Ordering::SeqCst);
         t.stop();
         assert!(!t.modify_other_keys_active.load(Ordering::SeqCst));
+    }
+
+    /// The alternate screen and stderr are taken and returned together. An
+    /// in-process `eprintln!` while the screen is held has to land in the log
+    /// (raw mode's column-preserving `\n` would otherwise staircase it across
+    /// the frame), and the terminal's own stderr has to be back on the exit
+    /// path.
+    #[cfg(unix)]
+    #[test]
+    fn start_captures_stderr_and_stop_restores_it() {
+        use std::io::Write as _;
+
+        let _g = terminal_test_lock();
+        let _pty = PtyStdin::install();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stderr.log");
+        // Restore even if an assertion fails, or the rest of the suite writes
+        // into the temp file.
+        struct RestoreOnDrop;
+        impl Drop for RestoreOnDrop {
+            fn drop(&mut self) {
+                let _ = crate::stderr_log::restore();
+            }
+        }
+        let _restore = RestoreOnDrop;
+
+        let mut t = Terminal::new().unwrap();
+        t.set_stderr_log(Some(path.clone()));
+        t.start(noop_input_cb(), noop_resize_cb()).unwrap();
+        assert!(crate::stderr_log::is_redirected());
+        // `stderr()` writes are not captured by libtest's thread-local print
+        // capture, so this exercises the same descriptor the hosted Agent's
+        // `eprintln!` writes to.
+        std::io::stderr()
+            .write_all(b"written while the alternate screen is up\n")
+            .unwrap();
+        t.stop();
+        assert!(!crate::stderr_log::is_redirected());
+
+        let captured = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            captured.contains("written while the alternate screen is up"),
+            "stderr has to be captured while the screen is held: {captured:?}"
+        );
     }
 
     #[cfg(unix)]

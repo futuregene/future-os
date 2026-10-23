@@ -141,8 +141,12 @@ function contextOfRemote(
 
 export function AppShell() {
   const agentStatus = useAgentStatus();
-  if (agentStatus.phase !== "ready")
+  if ((!agentStatus.admitted && agentStatus.phase !== "ready")
+    || agentStatus.phase === "stopping"
+    || agentStatus.phase === "restart_required"
+    || agentStatus.phase === "incompatible") {
     return <AgentStatusGate showWait={agentStatus.showWait} status={agentStatus} />;
+  }
   return <StartingAppShell agentStatus={agentStatus} />;
 }
 

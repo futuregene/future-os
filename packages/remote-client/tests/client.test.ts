@@ -258,15 +258,21 @@ describe("RemoteClient connection handoff", () => {
     expect(wsconnect).toHaveBeenCalledTimes(1);
   });
 
-  test("initial network failure is terminal and does not retry", async () => {
+  test("initial offline connection retries quietly and can recover without another tap", async () => {
     (wsconnect as jest.Mock).mockRejectedValue(new Error("network down"));
     await client.open();
-    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("failed");
-    await jest.advanceTimersByTimeAsync(180_000);
-    expect(wsconnect).toHaveBeenCalledTimes(1);
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("reconnecting");
+    await jest.advanceTimersByTimeAsync(20_000);
+    const attempts = jest.mocked(wsconnect).mock.calls.length;
+    expect(attempts).toBeGreaterThan(1);
+    expect(callbacks.onError).not.toHaveBeenCalledWith(new Error("connection_timeout"));
+    (wsconnect as jest.Mock).mockResolvedValue(socket().connection);
+    await client.recoverNow("network-restored");
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("ready");
+    expect(wsconnect).toHaveBeenCalledTimes(attempts + 1);
   });
 
-  test("real offline recovery retries within three minutes, then stays terminal", async () => {
+  test("offline recovery cools down quietly and a network event reconnects immediately", async () => {
     (wsconnect as jest.Mock).mockResolvedValueOnce(socket().connection).mockRejectedValue(new Error("network down"));
     await client.open();
     client.setAppActive(false);
@@ -274,15 +280,16 @@ describe("RemoteClient connection handoff", () => {
     await client.recoverNow("foreground");
     await expect(client.request({ type: "list_sessions" })).rejects.toThrow("communication_frozen");
     await jest.advanceTimersByTimeAsync(180_000);
-    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("failed");
-    expect(callbacks.onError).toHaveBeenLastCalledWith(new Error("recovery_timeout"));
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("reconnecting");
+    expect(callbacks.onError).not.toHaveBeenCalledWith(new Error("recovery_timeout"));
     const attempts = jest.mocked(wsconnect).mock.calls.length;
     expect(attempts).toBeGreaterThan(2);
     (wsconnect as jest.Mock).mockResolvedValue(socket().connection);
     await client.recoverNow("foreground");
     await client.recoverNow("network-restored");
     await jest.advanceTimersByTimeAsync(60_000);
-    expect(wsconnect).toHaveBeenCalledTimes(attempts);
+    expect(jest.mocked(wsconnect).mock.calls.length).toBeGreaterThan(attempts);
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("ready");
   });
 
   test("foreground attempts immediately, then retries at 1s, 2s, 4s without network events", async () => {
@@ -735,7 +742,23 @@ describe("RemoteClient connection handoff", () => {
     expect(() => internals.assertBusinessReady()).toThrow("communication_frozen");
   });
 
-  test("a recovery budget that already ran out fails the connection instead of waiting again", async () => {
+  test("Agent recovery on an existing bridge refreshes state without resending commands", async () => {
+    const live = socket();
+    (wsconnect as jest.Mock).mockResolvedValue(live.connection);
+    await client.open();
+    jest.mocked(callbacks.onReconnected).mockClear();
+    const sent = jest.mocked(live.connection.request).mock.calls.length;
+    const internal = client as unknown as { receivePresence(presence: unknown): void };
+    internal.receivePresence({ online: true, agentAvailable: false, bridgeInstanceId: "bridge" });
+    expect(callbacks.onReconnected).not.toHaveBeenCalled();
+    internal.receivePresence({ online: true, agentAvailable: true, bridgeInstanceId: "bridge" });
+    internal.receivePresence({ online: true, agentAvailable: true, bridgeInstanceId: "bridge" });
+    expect(callbacks.onReconnected).toHaveBeenCalledTimes(1);
+    expect(live.connection.request).toHaveBeenCalledTimes(sent);
+    expect(wsconnect).toHaveBeenCalledTimes(1);
+  });
+
+  test("an expired recovery burst enters cooldown instead of resetting the deadline", async () => {
     (wsconnect as jest.Mock).mockImplementation(async () => socket().connection);
     await client.open();
     const internals = client as unknown as {
@@ -748,7 +771,7 @@ describe("RemoteClient connection handoff", () => {
     // pause) ends the attempt now rather than scheduling another fruitless wait.
     internals.recoveryDeadline = Date.now() - 1;
     expect(internals.beginDeadline()).toBe(false);
-    expect(callbacks.onError).toHaveBeenCalledWith(expect.objectContaining({
+    expect(callbacks.onError).not.toHaveBeenCalledWith(expect.objectContaining({
       message: "recovery_timeout",
     }));
   });
@@ -2281,7 +2304,7 @@ describe("lifecycle guards around a failing transport", () => {
     expect(wsconnect).toHaveBeenCalledTimes(2);
   });
 
-  test("a budget that runs out during the probe fails the connection and publishes no presence", async () => {
+  test("an expired probe enters cooldown and publishes no stale presence", async () => {
     const live = await openServingSocket();
     await armBudgetWhileServing(live);
     // The probe is answered, but the phone was suspended long enough that the
@@ -2293,8 +2316,8 @@ describe("lifecycle guards around a failing transport", () => {
     jest.mocked(callbacks.onPresence).mockClear();
     jest.mocked(callbacks.onReconnected).mockClear();
     await client.recoverNow("foreground");
-    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("failed");
-    expect(callbacks.onError).toHaveBeenLastCalledWith(new Error("recovery_timeout"));
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("reconnecting");
+    expect(callbacks.onError).not.toHaveBeenCalledWith(new Error("recovery_timeout"));
     // A desktop that answered inside a window that has already closed is not
     // "back": publishing it would re-enable every conversation action on a
     // pairing whose recovery budget is spent.
@@ -2336,8 +2359,8 @@ describe("lifecycle guards around a failing transport", () => {
     const probes = jest.mocked(live.connection.request).mock.calls.length;
     jest.setSystemTime(Date.now() + 181_000);
     await client.recoverNow("foreground");
-    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("failed");
-    expect(callbacks.onError).toHaveBeenLastCalledWith(new Error("recovery_timeout"));
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("reconnecting");
+    expect(callbacks.onError).not.toHaveBeenCalledWith(new Error("recovery_timeout"));
     // The window is closed: spending a probe (and a three-minute flush budget)
     // on a socket this client has already given up on is pure delay.
     expect(jest.mocked(live.connection.request).mock.calls.length).toBe(probes);
@@ -2569,8 +2592,8 @@ describe("lifecycle guards around a failing transport", () => {
     // publishing it would re-enable every conversation action on a pairing whose
     // recovery budget is spent.
     expect(callbacks.onPresence).not.toHaveBeenCalled();
-    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("failed");
-    expect(callbacks.onError).toHaveBeenLastCalledWith(new Error("recovery_timeout"));
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("reconnecting");
+    expect(callbacks.onError).not.toHaveBeenCalledWith(new Error("recovery_timeout"));
   });
 
   test("a feature announcement that closes the client leaves the replacement unpublished", async () => {
@@ -2627,8 +2650,8 @@ describe("lifecycle guards around a failing transport", () => {
     await tick();
     // The budget is spent: the client must fail now, not arm a backoff that
     // would keep dialling a dead endpoint for another three minutes.
-    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("failed");
-    expect(callbacks.onError).toHaveBeenLastCalledWith(new Error("recovery_timeout"));
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("reconnecting");
+    expect(callbacks.onError).not.toHaveBeenCalledWith(new Error("recovery_timeout"));
     await jest.advanceTimersByTimeAsync(30_000);
     expect(wsconnect).toHaveBeenCalledTimes(2);
   });
@@ -2664,9 +2687,8 @@ describe("lifecycle guards around a failing transport", () => {
     // The broker dropped the socket, but the recovery window is already spent:
     // the UI must be told the pairing failed, not sent back to "reconnecting"
     // for another three minutes.
-    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("failed");
-    expect(callbacks.onError).toHaveBeenLastCalledWith(new Error("recovery_timeout"));
-    expect(callbacks.onConnectionState).not.toHaveBeenCalledWith("reconnecting");
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("reconnecting");
+    expect(callbacks.onError).not.toHaveBeenCalledWith(new Error("recovery_timeout"));
     await jest.advanceTimersByTimeAsync(30_000);
     expect(wsconnect).toHaveBeenCalledTimes(2);
   });
@@ -2683,8 +2705,8 @@ describe("lifecycle guards around a failing transport", () => {
     const status = (live.connection as unknown as { status(): Messages<never> }).status();
     status.push({ type: "reconnect" } as never);
     await tick();
-    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("failed");
-    expect(callbacks.onError).toHaveBeenLastCalledWith(new Error("recovery_timeout"));
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("reconnecting");
+    expect(callbacks.onError).not.toHaveBeenCalledWith(new Error("recovery_timeout"));
     // The re-announcement must not move a client whose window is spent back to
     // ready: every conversation action would be re-enabled on a dead pairing.
     expect(callbacks.onConnectionState).not.toHaveBeenCalledWith("ready");

@@ -4,7 +4,8 @@
 use std::time::{Duration, Instant};
 
 use future_rpc::supervision::{
-    probe_local_agent, Attached, LocalAgentState, RestartBudget, WAIT_FOR_OWNER, WAIT_NOTICE_AFTER,
+    probe_local_agent, Attached, LocalAgentState, ReadinessLoss, RestartBudget, WAIT_FOR_OWNER,
+    WAIT_NOTICE_AFTER,
 };
 
 /// How long a probe may take before it is not worth waiting for inside the
@@ -19,6 +20,7 @@ const UNSEEN_TOLERANCE: Duration = Duration::from_secs(3);
 #[derive(Default)]
 pub(super) struct Agent {
     budget: RestartBudget,
+    loss: ReadinessLoss,
     unseen_since: Option<Instant>,
     waiting_for: Option<(Instant, String)>,
     /// When the Agent last became reachable again. The restart budget is only
@@ -36,7 +38,9 @@ impl Agent {
     }
     pub(super) fn check_running(&mut self) -> Result<(), future_host::Error> {
         match host().phase() {
-            future_host::agent_host::Phase::Failed(error) => Err(error.into()),
+            future_host::agent_host::Phase::Failed(error) if host().recovery_requires_restart() => {
+                Err(error.into())
+            }
             _ => Ok(()),
         }
     }
@@ -58,6 +62,7 @@ impl Agent {
         let state = probe_local_agent(&address, PROBE_CONNECT, PROBE_HANDSHAKE).await;
         match state {
             LocalAgentState::Attached => {
+                self.loss.reset();
                 self.unseen_since = None;
                 self.waiting_for = None;
                 let now = Instant::now();
@@ -67,7 +72,16 @@ impl Agent {
                 }
                 Ok(())
             }
-            LocalAgentState::Busy(detail) => {
+            LocalAgentState::Busy(detail) | LocalAgentState::Unresponsive(detail) => {
+                self.reachable_since = None;
+                if host().owns_agent() {
+                    let now = Instant::now();
+                    if self.loss.confirmed(now) && self.budget.allow(now) {
+                        self.loss.reset();
+                        return self.repair(address).await;
+                    }
+                    return Ok(());
+                }
                 // Another process is starting (or serving on an endpoint this
                 // client cannot see). Wait — never start a second Agent.
                 self.unseen_since = None;
@@ -106,33 +120,36 @@ impl Agent {
                     return Ok(());
                 }
                 if !self.budget.allow(now) {
-                    let cooldown = self
-                        .budget
-                        .open_for(now)
-                        .map(|left| format!("{left:?}"))
-                        .unwrap_or_else(|| "a while".into());
-                    return Err(format!(
-                        "the Agent keeps exiting right after it starts ({cooldown} cooldown before \
-                         the next try); it is not being restarted in a loop. Check the host log for \
-                         why it dies (memory limit, per-user quota, a crash), then start this entry \
-                         again. {}",
-                        future_host::environment::log_file_path().display()
-                    )
-                    .into());
+                    return Ok(());
                 }
                 self.unseen_since = None;
                 eprintln!("FutureOS: the Agent is gone; starting a new one.");
                 self.reachable_since = None;
                 // A host that only attached to the dead Agent must give it up
                 // first, or `start` reports the stale `Ready` and does nothing.
-                host().detach_attached();
-                self.ensure_running().await
+                self.repair(address).await
             }
             LocalAgentState::Blocked(reason) => {
                 // Waiting cannot repair this (version/protocol mismatch, an
                 // explicit endpoint that is unreachable, a stop in progress).
                 Err(reason.into())
             }
+        }
+    }
+
+    async fn repair(&mut self, address: String) -> Result<(), future_host::Error> {
+        let result = tokio::task::spawn_blocking(move || host().recover(address))
+            .await
+            .map_err(|error| error.to_string())?;
+        if let Err(error) = &result {
+            future_host::environment::report(&format!("Agent recovery: {error}"));
+        }
+        // A failed cleanup must exit so the process manager can safely replace
+        // this process. Transient startup failures remain under supervision.
+        if host().recovery_requires_restart() {
+            result
+        } else {
+            Ok(())
         }
     }
 
@@ -227,7 +244,7 @@ mod block_fixtures {
     /// not silently treated as running — the difference between a server that
     /// says why it cannot serve and one that serves a broken bridge.
     #[test]
-    fn a_failed_host_is_reported_with_its_own_error() {
+    fn a_failed_discovery_keeps_supervision_available() {
         run_case("failed");
     }
 
@@ -309,14 +326,14 @@ mod block_fixtures {
                     future_host::agent_host::Phase::Failed(_)
                 );
                 let mut agent = Agent::default();
-                let reported = agent.check_running().unwrap_err().to_string();
+                let recoverable = agent.check_running().is_ok();
                 assert!(refused.is_some(), "a dead endpoint must refuse the start");
                 assert!(failed, "the refused start must leave the host Failed");
-                assert_eq!(
-                    reported,
-                    refused.unwrap(),
-                    "check_running reports the host's own error"
+                assert!(
+                    recoverable,
+                    "failed discovery owns no service requiring process exit"
                 );
+                assert!(!super::host().recovery_requires_restart());
             }
             // A held instance lock: another process is starting (or serving) the
             // Agent. The start is refused, but the host stays `Stopped` so a later

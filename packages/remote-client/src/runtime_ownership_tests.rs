@@ -356,6 +356,51 @@ async fn disconnect_aborts_the_supervisor() {
     );
 }
 
+/// One host cannot end up with two retry loops: a second install retires the
+/// first, and the retired loop is *finished*, not merely forgotten.
+///
+/// Two loops for one host is the failure a retry-window assertion has to be able
+/// to see. They share one `retry_attempts` counter, so they would dispatch more
+/// than `reconnect_attempt_budget()` attempts and the budget check would fail —
+/// but only if the superseded loop is actually stopped. Replacing the map entry
+/// without aborting it leaves the old loop dialling with no owner, invisible to
+/// `supervisor_count` and immortal for `abort_supervisors_for_test`.
+#[tokio::test]
+async fn a_second_install_retires_the_first_retry_loop() {
+    let host = Arc::new(MemoryHost::default());
+    host.upsert(creds()).unwrap();
+    let client = Client::new(host.clone());
+    let first = client.install_supervisor_for_test("desktop_fixture").await;
+    // Park the first loop inside its grant renewal, which waits for a release no
+    // one gives. That is what makes "the old loop stopped" provable: a loop that
+    // was only forgotten (map entry overwritten, handle dropped) stays blocked
+    // here forever, while a loop that was aborted finishes. Without the park the
+    // check would race the loop's own bounded window, which ends on its own —
+    // whether or not anything aborted it.
+    tokio::time::timeout(Duration::from_secs(5), host.entered.notified())
+        .await
+        .expect("the first loop must reach its renewal");
+
+    let _second = client.install_supervisor_for_test("desktop_fixture").await;
+
+    tokio::time::timeout(Duration::from_secs(5), first.completed())
+        .await
+        .expect("the superseded loop must stop when it is replaced");
+    assert_eq!(
+        client.supervisor_count().await,
+        1,
+        "exactly one retry loop per host, and it is the one just installed"
+    );
+    // And the survivor is the installed loop, not the retired one: it reaches the
+    // same renewal the first one was parked in.
+    tokio::time::timeout(Duration::from_secs(5), host.entered.notified())
+        .await
+        .expect("the installed loop must be the one still retrying");
+
+    client.shutdown(Duration::from_secs(1)).await.unwrap();
+    assert_eq!(client.supervisor_count().await, 0);
+}
+
 #[tokio::test]
 async fn connecting_an_unknown_host_is_an_error_not_an_invention() {
     let host = Arc::new(MemoryHost::default());

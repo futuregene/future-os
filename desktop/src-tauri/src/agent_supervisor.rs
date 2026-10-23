@@ -23,9 +23,9 @@ pub struct AgentStatus {
 pub fn start_agent_supervision<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<(), crate::AppError> {
-    ensure_agent_running(app)?;
+    let result = ensure_agent_running(app);
     spawn_agent_watchdog(app.clone());
-    Ok(())
+    result
 }
 
 /// Keep watching the Agent for the life of the app.
@@ -44,100 +44,68 @@ fn spawn_agent_watchdog<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     #[cfg(not(test))]
     crate::runtime::spawn_native(move || {
         use future_rpc::supervision::{
-            probe_local_agent, restart_delay, LocalAgentState, RestartBudget,
+            probe_local_agent, Attached, LocalAgentState, ReadinessLoss, RestartBudget,
         };
         use std::time::{Duration, Instant};
-
-        const PROBE_INTERVAL: Duration = Duration::from_secs(3);
-        const PROBE_CONNECT: Duration = Duration::from_millis(400);
-        const PROBE_HANDSHAKE: Duration = Duration::from_secs(2);
-
+        let _app = app;
         let runtime = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
         {
             Ok(runtime) => runtime,
             Err(error) => {
-                eprintln!("FutureOS Agent watchdog unavailable: {error}");
+                crate::host_environment::report(&format!("Agent watchdog unavailable: {error}"));
                 return;
             }
         };
-        let address = crate::agent_bridge::raw_agent_addr();
         let mut budget = RestartBudget::new();
-        let mut lost_notice: Option<Instant> = None;
-        // When the Agent last became reachable again. The restart budget is only
-        // cleared once it stays reachable, so an Agent the host keeps killing
-        // cannot reset the breaker on every lap.
-        let mut reachable_since: Option<Instant> = None;
+        let mut loss = ReadinessLoss::default();
+        let mut reachable_since = None;
+        let mut last_notice: Option<Instant> = None;
         loop {
-            std::thread::sleep(PROBE_INTERVAL);
-            // A shutdown in progress owns the decision: never race it.
+            std::thread::sleep(Duration::from_secs(3));
             if crate::desktop_shutdown::is_stopping() {
                 return;
             }
-            match runtime.block_on(probe_local_agent(&address, PROBE_CONNECT, PROBE_HANDSHAKE)) {
-                LocalAgentState::Attached => {
-                    let now = Instant::now();
-                    let since = *reachable_since.get_or_insert(now);
-                    if future_rpc::supervision::Attached::of(since, now)
-                        == future_rpc::supervision::Attached::Stable
-                    {
-                        budget.reset();
-                        #[cfg(not(test))]
-                        crate::commands::confirm_update_startup();
-                    }
-                    lost_notice = None;
+            let address = crate::agent_bridge::raw_agent_addr();
+            let observed = runtime.block_on(probe_local_agent(
+                &address,
+                Duration::from_millis(400),
+                Duration::from_secs(2),
+            ));
+            let now = Instant::now();
+            if observed == LocalAgentState::Attached {
+                loss.reset();
+                let since = *reachable_since.get_or_insert(now);
+                if Attached::of(since, now) == Attached::Stable {
+                    budget.reset();
+                    crate::commands::confirm_update_startup();
                 }
-                LocalAgentState::Busy(detail) => {
-                    if lost_notice.is_none_or(|at| at.elapsed() >= Duration::from_secs(30)) {
-                        eprintln!(
-                            "FutureOS: waiting for the Agent another process is starting. {detail}"
-                        );
-                        lost_notice = Some(Instant::now());
-                    }
+                last_notice = None;
+                continue;
+            }
+            reachable_since = None;
+            if let LocalAgentState::Blocked(reason) = &observed {
+                loss.reset();
+                if last_notice.is_none_or(|at| now.duration_since(at) >= Duration::from_secs(30)) {
+                    crate::host_environment::report(&format!("Agent recovery blocked: {reason}"));
+                    last_notice = Some(now);
                 }
-                LocalAgentState::Blocked(reason) => {
-                    if lost_notice.is_none_or(|at| at.elapsed() >= Duration::from_secs(30)) {
-                        eprintln!("FutureOS: cannot use the Agent: {reason}");
-                        lost_notice = Some(Instant::now());
-                    }
-                }
-                LocalAgentState::Startable => {
-                    reachable_since = None;
-                    let now = Instant::now();
-                    if !budget.allow(now) {
-                        if lost_notice.is_none_or(|at| at.elapsed() >= Duration::from_secs(30)) {
-                            eprintln!(
-                                "FutureOS: the Agent keeps exiting right after it starts; not \
-                                 restarting it for {:?}. Check {}.",
-                                budget.open_for(now).unwrap_or_default(),
-                                future_host::environment::log_file_path().display()
-                            );
-                            lost_notice = Some(now);
-                        }
-                        continue;
-                    }
-                    // A host that only attached must let go first, or the
-                    // stale `Ready` makes the launch a no-op.
-                    crate::agent_host::host().detach_attached();
-                    match ensure_agent_running(&app) {
-                        Ok(()) => {
-                            eprintln!("FutureOS: the Agent was gone; started a new one.");
-                            // Not a success yet: only a lasting recovery clears
-                            // the budget (see `reachable_since` above).
-                            reachable_since = None;
-                            lost_notice = None;
-                        }
-                        Err(error) => {
-                            if lost_notice.is_none_or(|at| at.elapsed() >= Duration::from_secs(30))
-                            {
-                                eprintln!("FutureOS: could not start an Agent: {error}");
-                                lost_notice = Some(Instant::now());
-                            }
-                            std::thread::sleep(restart_delay(2));
-                        }
-                    }
-                }
+                continue;
+            }
+            // A held lock may be our own unresponsive embedded service. Only
+            // its owner can drain it. An external owner's lock is never removed.
+            let host = crate::agent_host::host();
+            if !loss.confirmed(now)
+                || !(matches!(observed, LocalAgentState::Startable) || host.owns_agent())
+                || host.recovery_requires_restart()
+                || !budget.allow(now)
+            {
+                continue;
+            }
+            loss.reset();
+            if let Err(error) = host.recover(address) {
+                crate::host_environment::report(&format!("Agent recovery: {error}"));
             }
         }
     });
@@ -182,6 +150,11 @@ pub async fn agent_status() -> AgentStatus {
         status.phase = "stopping".into();
         return status;
     }
+    if crate::agent_host::host().recovery_requires_restart() {
+        status.phase = "restart_required".into();
+        status.error = Some("Agent cleanup is incomplete; restart FutureOS".into());
+        return status;
+    }
     match crate::agent_host::host().phase() {
         crate::agent_host::Phase::Starting => {
             status.phase = "starting".into();
@@ -200,7 +173,7 @@ pub async fn agent_status() -> AgentStatus {
         _ => {}
     }
     match crate::agent_bridge::get_agent_readiness().await {
-        Ok(Some(info)) if status.error.is_none() => {
+        Ok(Some(info)) => {
             status.phase = "ready".into();
             status.agent_version = Some(info.version);
             status.error = None;
@@ -711,7 +684,10 @@ mod block_fixtures {
             crate::agent_host::host().start("auto".into()).unwrap();
             assert!(crate::agent_host::host().owns_agent());
             let status = block_on(agent_status());
-            assert_eq!(status.phase, "ready");
+            // The status carries the reason when it is not ready; without it a
+            // red run says only "unavailable" and the reader has to guess which
+            // of the transport, handshake or data-root checks refused it.
+            assert_eq!(status.phase, "ready", "{status:?}");
             assert_eq!(
                 status.agent_version.as_deref(),
                 Some(crate::build_info::VERSION)

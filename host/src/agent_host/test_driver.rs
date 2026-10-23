@@ -11,6 +11,11 @@ fn drive(host: &super::AgentHost, configured: &str) -> Result<(), crate::Error> 
     let selected = probe.block_on(host.select(configured));
     drop(probe);
     host.run_selected(selected?, |prepared| {
+        let marker = future_rpc::home::future_home().join("panic-once");
+        if marker.exists() {
+            std::fs::remove_file(marker).unwrap();
+            panic!("injected startup panic after acquiring the service");
+        }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_name("agent-runtime")

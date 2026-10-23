@@ -148,19 +148,9 @@ pub const RETRY_BACKOFF_BASE: Duration = Duration::from_millis(250);
 
 /// Whether a command may be re-sent after a transport failure.
 ///
-/// The Rust client's historical whitelist: reads (`get_*`, `list_`) and the two
-/// commands that extend a conversation (`prompt`, `continue_run`), plus
-/// `upload_complete`. Unlike TS,
-/// this existing Rust policy does not condition those two writes on capability
-/// negotiation; shared request fixtures record that compatibility difference.
-/// A read has no
-/// side effect to duplicate; `prompt`/`continue_run` do, and are safe here only
-/// because the host deduplicates on the command `id` (`remote::commands`'
-/// `ReplySlots`, single-flight, 600 s TTL) — a re-send gets the cached reply
-/// rather than a second message. Everything else — the writes
-/// (`create_workspace`, `set_task_enabled`, …) — is left to the user to retry
-/// knowingly, because a re-send that the host cannot recognise as one would
-/// apply the write twice.
+/// Reads are safe to retry. Conversation writes additionally require a stable
+/// command id and negotiated durable receipts (see `retryable_for_features`).
+/// Other writes remain single-attempt.
 pub fn retryable_command(payload: &Value) -> bool {
     let Some(kind) = payload.get("type").and_then(Value::as_str) else {
         return false;
@@ -169,6 +159,25 @@ pub fn retryable_command(payload: &Value) -> bool {
         || kind.starts_with("list_")
         || kind == "upload_complete"
         || matches!(kind, "prompt" | "continue_run")
+}
+
+pub(crate) fn retryable_for_features(payload: &Value, features: &[String]) -> bool {
+    if !retryable_command(payload) {
+        return false;
+    }
+    if matches!(
+        payload.get("type").and_then(Value::as_str),
+        Some("prompt" | "continue_run")
+    ) {
+        return payload
+            .get("id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+            && features
+                .iter()
+                .any(|feature| feature == "prompt_receipt_v1");
+    }
+    true
 }
 
 /// One immutable command body for the initial attempt and every retry.
@@ -494,7 +503,9 @@ impl PeerSession {
     /// A reachable bridge with an unavailable agent is `LC003` in the support
     /// table: the link is up and every command fails.
     pub fn agent_available(&self) -> bool {
-        agent_available(&self.presence)
+        self.control()
+            .agent_available
+            .unwrap_or_else(|| agent_available(&self.presence))
     }
 
     /// The traffic-key mutex, shared with the event stream task. The task takes
@@ -735,7 +746,7 @@ impl PeerSession {
     ) -> Result<Value, crate::Error> {
         // Read before the envelope fields are added: the whitelist is a property
         // of the command, not of the lane it is sent on.
-        let retryable = retryable_command(&payload);
+        let retryable = retryable_for_features(&payload, &self.features);
         let plaintext = command_plaintext(payload, &self.bridge_instance_id)?;
         if retryable {
             self.exchange_retrying(subject, &plaintext, timeout, COMMAND_ATTEMPTS)
@@ -923,6 +934,7 @@ pub fn agent_available(presence: &Value) -> bool {
 /// silence as standby would make every older host look unusable.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Control {
+    pub agent_available: Option<bool>,
     pub state: Option<ControlState>,
     pub holder: Option<Holder>,
 }
@@ -940,6 +952,9 @@ impl Control {
     /// A presence payload without `control` is an older host and changes
     /// nothing — its silence is not a state.
     pub(crate) fn apply_presence(&mut self, presence: &Value) {
+        if let Some(available) = presence.get("agentAvailable").and_then(Value::as_bool) {
+            self.agent_available = Some(available);
+        }
         let Some(state) = ControlState::parse(presence.get("control")) else {
             return;
         };
@@ -1784,6 +1799,38 @@ mod retry_policy_tests {
     /// property of the command, and these two lists are the whole contract. Both
     /// halves matter — a read left out is a self-healing path that never heals, and
     /// a write let in is a duplicated side effect.
+    #[test]
+    fn presence_updates_agent_health_without_changing_legacy_control() {
+        let mut control = session::Control::from_presence(&json!({"agentAvailable": false}));
+        assert_eq!(control.agent_available, Some(false));
+        assert_eq!(control.state, None);
+        control.apply_presence(&json!({"agentAvailable": true}));
+        assert_eq!(control.agent_available, Some(true));
+        assert_eq!(control.state, None);
+        control.apply_presence(&json!({"control": "active"}));
+        assert_eq!(control.agent_available, Some(true));
+        assert_eq!(control.state, Some(session::ControlState::Active));
+    }
+
+    #[test]
+    fn conversation_retries_require_receipts_and_a_stable_identity() {
+        let features = vec!["prompt_receipt_v1".to_string()];
+        for kind in ["prompt", "continue_run"] {
+            assert!(!session::retryable_for_features(
+                &json!({"id":"request", "type":kind}),
+                &[]
+            ));
+            assert!(!session::retryable_for_features(
+                &json!({"type":kind}),
+                &features
+            ));
+            assert!(session::retryable_for_features(
+                &json!({"id":"request", "type":kind}),
+                &features
+            ));
+        }
+    }
+
     #[test]
     fn only_reads_and_the_two_conversation_commands_are_retryable() {
         for kind in [

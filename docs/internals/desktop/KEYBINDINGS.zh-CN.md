@@ -376,18 +376,14 @@ desktop/src/features/settings/
 （ESC）；按 `Ctrl+]` 收到 `0x1d`；两者都没有被应用抢走。这是 Chromium，**不是**
 WebKitGTK——Linux 打包版实际跑的是前者。
 
-**没有人工验过——Linux + WebKitGTK + 中文输入法。** 「组词过程中按修饰键不触发命令」
+**没有人工验过——组词过程中按下的修饰键。** 「组词过程中按修饰键不触发命令」
 这条只在逻辑层有覆盖：`dispatchShortcut` 对 `isComposing`、`keyCode 229`、
 `key: "Unidentified"` 三种形态各有用例，也就是这些引擎会报告的三种形状
-（`dispatch.test.ts`）。它**没有**在 WebKitGTK + ibus-libpinyin 下跑过，而这正是本文
-这条规则所继承的终端事故的现场组合（`embedded-terminal.md`）。写这段时手上既没有
-Linux 桌面，也没有能跑起带输入法的 WebKitGTK webview 的容器。
-
-> **待办。** 关闭它：在一台装了 `ibus-libpinyin`（或任何会组词的 CJK 输入法）的 Linux
-> 桌面上，打开应用、进入一个会话、开始组词，然后按一个已绑定命令的修饰键（例如
-> `Ctrl+B`）。预期：没有命令执行，预编辑框仍在。再在嵌入式终端里重复一次，预期相同，
-> 而要防的旧故障是组词被提交两次（`keyPolicy.ts` 就是为此存在）。验完把两次结果写进
-> 本节。
+（`dispatch.test.ts`）。引擎组合已不再是障碍——后来真的用 WebKitGTK + ibus-libpinyin
+驱动过终端自己的输入法行为（`embedded-terminal.md` 的 §Platforms）——但还没人在那样
+的会话里于组词进行中按下一个已绑定命令的修饰键（例如 `Ctrl+B`）。预期：没有命令执行，
+预编辑框仍在；在嵌入式终端里重复一次预期相同，而要防的旧故障是组词被提交两次
+（`keyPolicy.ts` 就是为此存在）。实测后把两次结果写进本节。
 
 ## 后续（未实现）
 

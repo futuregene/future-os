@@ -12,6 +12,8 @@ use std::path::PathBuf;
 pub struct AgentConfig {
     pub verbose: bool,
     pub grpc_addr: Option<String>,
+    /// Service repair restores connectivity, not uncertain tool execution.
+    pub resume_interrupted_on_start: bool,
     pub(crate) future_home: PathBuf,
 }
 
@@ -20,6 +22,7 @@ impl Default for AgentConfig {
         Self {
             verbose: false,
             grpc_addr: None,
+            resume_interrupted_on_start: true,
             future_home: crate::utils::future_home(),
         }
     }

@@ -97,6 +97,16 @@ pub async fn supervisor_count() -> usize {
     client().supervisor_count().await
 }
 
+/// How many retries one host's supervisor has dispatched so far.
+///
+/// The unit `reconnect_attempt_budget()` is counted in, so a test can assert a
+/// loop spent its whole window. Deliberately not the number of sockets a broker
+/// accepted: see `future_remote_client::runtime::Runtime::retry_attempts`.
+#[cfg(any(test, feature = "test-support"))]
+pub async fn supervisor_attempts(desktop_id: &str) -> usize {
+    client().retry_attempts(desktop_id).await
+}
+
 #[cfg(any(test, feature = "test-support"))]
 pub async fn abort_supervisors_for_test() {
     client().abort_supervisors_for_test().await

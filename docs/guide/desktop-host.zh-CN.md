@@ -9,7 +9,7 @@
 **默认前台运行、持续占用终端；按 Ctrl+C 关闭远程入口并退出。**
 不会自动转入后台，也不会安装系统服务。
 
-本分支已接入统一命令，跨平台、发布与最终验收仍待完成。进度见 [Headless 拆分开发计划](../architecture/headless-package-development.zh-CN.md)。
+统一命令随 CLI 发布；正式打包、签名与同候选验收进度见 [Headless 拆分开发计划](../architecture/headless-package-development.zh-CN.md)。
 
 ## 1. 启动前准备
 
@@ -174,7 +174,9 @@ future remote devices use <id|序号>        # 指定哪一台在控
   不能让不能服务的行被归并进一个暗示它能服务的数字里。这些状态**只是标注**：
   不删任何一行，`control` 的含义不变（仍是存储里的指针）。状态为：`paired`、
   `unclaimed`（还没有手机扫过这一张邀请）、`unclaimed, expired`（从未被认领、已过期的邀请：
-  既扫不了也连不上，`remove` 之前它背后不会有任何事发生）、以及 `legacy`（v2 握手之前的旧凭据，
+  既扫不了也连不上，`remove` 之前它背后不会有任何事发生；而 `remove` 会真的把它从平台上删掉——
+  邀请那一行不管有没有人扫都占着平台给每台桌面的配额，所以丢弃它是一次真删除，而不是记账）、
+  以及 `legacy`（v2 握手之前的旧凭据，
   在本版本连不上）。配对里那个 `expiresAt` 是**邀请**的期限，不是配对的期限：认领过的设备过了
   那个时刻仍照常工作，因为只有认领路径会检查它——所以一条 `paired` 行的期限可以在过去。
 - `add`、`remove` 以及 `use` 的"立刻生效"那一半是例外，因为真正在服务一台设备的是运行中的进程：
@@ -309,7 +311,7 @@ Agent 归属、日志和恢复见[Desktop Agent 生命周期](desktop-agent.zh-C
 ## 6. 数据、权限与排障
 
 主机模式沿用运行用户的现有数据目录，包括 `~/.future/agent/auth.json`、
-`~/.future/remote_pairing.json` 和 `~/.future/app/`。本机已经登录，不代表 SSH 服务器已登录；
+`~/.future/remote_pairings.json` 和 `~/.future/app/`。本机已经登录，不代表 SSH 服务器已登录；
 更换系统用户或 HOME 也不会自动继承原凭证。后台托管时应使用与首次交互设置相同的用户和目录。
 
 启动时会打印日志文件路径，退出报错时再次给出该路径。Desktop 及其内置 Agent 写入

@@ -827,6 +827,10 @@ pub fn temp_dir(label: &str) -> std::path::PathBuf {
 pub struct IsolatedHome {
     pub path: std::path::PathBuf,
     original: Option<String>,
+    /// A `FUTURE_HOME` the ambient environment may carry. Channel state follows
+    /// that override, so an isolated HOME alone would not isolate it: the
+    /// instance would read and write the real FutureOS home.
+    original_future_home: Option<String>,
 }
 
 impl IsolatedHome {
@@ -839,8 +843,14 @@ impl IsolatedHome {
         let path = base.join(format!("{}-{}-{}", label, std::process::id(), n));
         std::fs::create_dir_all(&path).expect("create isolated home");
         let original = std::env::var("HOME").ok();
+        let original_future_home = std::env::var("FUTURE_HOME").ok();
         std::env::set_var("HOME", &path);
-        Self { path, original }
+        std::env::remove_var("FUTURE_HOME");
+        Self {
+            path,
+            original,
+            original_future_home,
+        }
     }
 }
 
@@ -849,6 +859,10 @@ impl Drop for IsolatedHome {
         match &self.original {
             Some(v) => std::env::set_var("HOME", v),
             None => std::env::remove_var("HOME"),
+        }
+        match &self.original_future_home {
+            Some(v) => std::env::set_var("FUTURE_HOME", v),
+            None => std::env::remove_var("FUTURE_HOME"),
         }
     }
 }

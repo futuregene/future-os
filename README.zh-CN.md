@@ -12,9 +12,6 @@
   <img src="docs/desktop-screenshot.png" alt="FutureOS 桌面应用——新对话、模型、技能与工作区，一窗集成" width="800">
 </p>
 
-<!-- TODO(demo): 录制 60–90 秒演示 GIF（TUI 审批门控 → 桌面 GUI → IM 机器人进度 →
-     会话 fork 树 → /future-goal 看板），保存为 docs/demo.gif 后替换上面的静态截图 -->
-
 <p align="center">
   <a href="#快速开始">快速开始</a> •
   <a href="#特性">特性</a> •
@@ -44,7 +41,8 @@
 | 类别 | 说明 |
 |---|---|
 | **多端统一** | 终端界面 (TUI)、桌面应用 (GUI)、移动端 App（Android · iOS）、命令行 (CLI)、IM 机器人——一个 Agent，无处不在。桌面后端还可**以主机模式运行在服务器上**（`future host`，无需窗口或 WebView，可跑在 SSH 会话里），手机与桌面之间的通道是**端到端加密**的——Noise 握手 + ChaCha20-Poly1305 记录，中继只看到密文（[主机模式](docs/guide/desktop-host.zh-CN.md)、[远程](docs/wiki/zh/Remote.md)） |
-| **可配置工具安全** | read, write, edit, shell——审批规则与沙箱分级（`off` / `manual` / `sandbox`）；支持 macOS Seatbelt、Linux 系统 Bubblewrap、Windows 受限令牌写保护。各平台可用性与保护范围不同（[指南](docs/wiki/zh/Sandbox.md)） |
+| **自建中继** | `future relay init` 与 `future relay serve` 自己运行远程控制背后的中继，整条路径上不需要 FutureOS 账号。线路协议、配对与端到端加密不变，官方中继与自建中继可以并行使用（[指南](docs/guide/self-hosted-relay.zh-CN.md)） |
+| **可配置工具安全** | read, write, edit, shell——审批规则与分级（`off` / `manual` / `sandbox`，以及 `auto` = 沙箱 + 由模型复核本会询问的请求，需登录 FutureOS）；支持 macOS Seatbelt、Linux 系统 Bubblewrap、Windows 受限令牌写保护。各平台可用性与保护范围不同（[指南](docs/wiki/zh/Sandbox.md)） |
 | **模型灵活** | **自带 API Key（BYOK）**：[内置目录](docs/wiki/zh/Models.md)覆盖主流 Provider，任何 OpenAI 或 Anthropic 兼容端点都可通过 `models.json` 接入。也可以登录 **FutureOS 托管 Provider**（`future auth login`），由平台直接配好 Key 与模型列表。两者可同时使用，并自行限定选择器里出现的模型（[配置](#配置模型)） |
 | **Goal 工程** | 持久化目标/todos/门禁/监控，支撑 24+ 小时长程任务连续执行——确定性 should-run 内核、事件溯源状态、硬校验（证据下限/验收契约/verify 闸门）、租约活性自愈、多 agent（[指南](docs/architecture/goal-control-plane.zh-CN.md)） |
 | **定时任务** | 不用盯着也会跑：可复用的提示词 + 工作目录 + 模型/思考等级，按计划（每隔 N 分钟 / 每天 / 每周 / 每月 / 每年，或指定某一天）以完全权限自动运行，也可以随时手动立即运行。每次运行都是一条普通会话，并留下运行台账——状态、结果摘要与提示词版本历史（[指南](docs/architecture/tasks.zh-CN.md)） |
@@ -74,6 +72,13 @@ iex (irm https://dl.future-os.cn/install.ps1)
 **[构建与安装](docs/guide/build-and-install.zh-CN.md)** 文档。
 
 安装脚本最后会自动执行 `future init`。
+
+两个脚本都会在安装前用发布清单里的 SHA-256 核对下载到的产物，用
+`FUTUREOS_VERSION` 固定某个版本时也一样（读取该版本自己的 `latest.json`）。
+核对不上的产物——清单缺失、平台没有 `sha256`，或主机既无 `shasum` 也无
+`sha256sum`——会被拒绝安装，而不是未经校验就装上。只有
+`FUTUREOS_SKIP_VERIFY=1`（Windows 为 `$env:FUTUREOS_SKIP_VERIFY = '1'`）会关掉该校验，
+那意味着镜像给什么就装什么。
 
 ### 配置模型
 
@@ -157,7 +162,7 @@ future skills install          # 不带名字：安装全部内置技能
 
 ### 启动 Agent
 
-终端与 CLI 客户端都是轻量 gRPC 客户端，默认使用**每用户本地 IPC**（macOS/Linux 为 Unix socket，Windows 为仅当前用户可访问的命名管道）。Unix 优先使用 `FUTURE_AGENT_SOCKET`；否则端点始终位于实例的 FutureOS home 之下：默认 `~/.future/run/agent.sock`，`FUTURE_HOME=DIR` 指定的实例使用 `<FUTURE_HOME>/run/agent.sock`——见[多实例运行](docs/guide/directory-layout.zh-CN.md#多实例运行future_home)。若 FutureOS home 位于无法承载 Unix socket 的文件系统（如 NFS），请将 `FUTURE_HOME` 指向本地文件系统上的目录。TUI 和桌面应用在没有可连接 Agent 时会自动启动 sidecar，也可以手动启动：
+终端与 CLI 客户端都是轻量 gRPC 客户端，默认使用**每用户本地 IPC**（macOS/Linux 为 Unix socket，Windows 为仅当前用户可访问的命名管道）。Unix 优先使用 `FUTURE_AGENT_SOCKET`；否则端点始终位于实例的 FutureOS home 之下：默认 `~/.future/run/agent.sock`，`FUTURE_HOME=DIR` 指定的实例使用 `<FUTURE_HOME>/run/agent.sock`——见[多实例运行](docs/guide/directory-layout.zh-CN.md#多实例运行future_home)。若 FutureOS home 位于无法承载 Unix socket 的文件系统（如 NFS），请将 `FUTURE_HOME` 指向本地文件系统上的目录。桌面 GUI 与主机模式先尝试连接兼容的外部 Agent；默认端点上没有服务且其实例锁空闲时，它们在自己的进程内运行完整 Agent；不兼容或锁被占用/不可用时直接报错，不会另起第二个 Agent。TUI 保留自己独立的 Agent 启动逻辑。也可以手动启动：
 
 ```bash
 future agent      # 在终端启动 agent（日志打到 stdout，Ctrl-C 停止）

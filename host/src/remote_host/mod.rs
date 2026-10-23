@@ -108,6 +108,9 @@ impl PairingHost for DesktopHost {
     fn queue_revoke(&self, c: &PairingCreds) -> Result<(), future_remote_server::Error> {
         pairing::queue_revoke(c).map_err(Into::into)
     }
+    fn queue_revoke_invitation(&self, pair_id: &str) -> Result<(), future_remote_server::Error> {
+        pairing::queue_revoke_invitation(pair_id).map_err(Into::into)
+    }
     fn retry_revokes(&self) -> BoxFuture<'_, Result<(), future_remote_server::Error>> {
         Box::pin(async { pairing::retry_pending_revokes().await.map_err(Into::into) })
     }
