@@ -198,7 +198,7 @@ export class RemoteClient {
     if (error.message === "recovery_timeout" || error.message === "connection_timeout") {
       // Exhaustion limits a burst, not the lifetime of a paired connection.
       // One owned timer retries quietly; close/background still cancel it.
-      this.signal({ type: "transport_disconnect" });
+      this.signal({ type: "transport_disconnect" }, false);
       this.disposeConnection("network_unavailable");
       this.retryAttempt = 0;
       this.retryTimer = setTimeout(() => {
@@ -683,13 +683,23 @@ export class RemoteClient {
       // back into another refresh (M1's infinite retry): a revoked refresh
       // token is terminal, anything else backs off and re-opens, where
       // ensureFreshCredentials will try the refresh again with backoff.
-      if (classifyError(error) === "authTerminal") {
+      const kind = classifyError(error);
+      if (kind === "authTerminal") {
         this.clearTimers();
         this.signal({ type: "revoked" });
         this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
         return;
       }
-      if (classifyError(error) === "transport" && await this.restoreServingConnection(generation)) return;
+      if (kind === "auth" && !this.everReady) {
+        // A refresh refused before the first usable desktop presence has no
+        // serving credential to fall back to. Surface it instead of retrying
+        // the same rejected pairing until the recovery budget expires.
+        const failure = error instanceof Error ? error : new Error(String(error));
+        this.signal({ type: "fatal", error: failure });
+        this.callbacks.onError(failure);
+        return;
+      }
+      if (kind === "transport" && await this.restoreServingConnection(generation)) return;
       if (this.stopped || controller.signal.aborted) return;
       this.callbacks.onError(error instanceof Error ? error : new Error(String(error)));
       this.scheduleRetry();
@@ -947,6 +957,7 @@ export class RemoteClient {
       | { type: "fatal"; error: Error }
       | { type: "revoked" }
       | { type: "unpair" },
+    startDeadline = true,
   ): void {
     if (event.type === "ready") {
       if (this.stopped || this.isTerminal()) return;
@@ -955,7 +966,7 @@ export class RemoteClient {
         this.everReady = true;
         this.clearDeadline();
       }
-    } else if (event.type === "transport_disconnect" || event.type === "auth_failed") {
+    } else if (startDeadline && (event.type === "transport_disconnect" || event.type === "auth_failed")) {
       if (!this.beginDeadline()) return;
     } else if (event.type === "fatal" || event.type === "revoked") {
       this.clearDeadline();
@@ -1214,6 +1225,7 @@ export class RemoteClient {
             break;
           }
           if (status.type === "disconnect") {
+            if (this.recoveryDeadline && !this.beginDeadline()) return;
             this.signal({ type: "transport_disconnect" });
             this.disposeConnection("network_unavailable");
             void this.open();

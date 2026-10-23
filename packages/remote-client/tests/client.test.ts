@@ -122,6 +122,14 @@ const tick = async () => {
   for (let n = 0; n < 20; n++) await Promise.resolve();
 };
 
+beforeEach(() => {
+  jest.mocked(wsconnect).mockReset();
+  jest.mocked(ensureFreshCredentials).mockReset();
+  jest.mocked(refreshCredentials).mockReset();
+  jest.mocked(classifyNatsError).mockReset().mockReturnValue("transport");
+  jest.mocked(jwtExpiry).mockReset().mockImplementation(() => Math.floor(Date.now() / 1000) + 3600);
+});
+
 describe("RemoteClient connection handoff", () => {
   let client: RemoteClient;
   let callbacks: RemoteClientCallbacks;
@@ -228,11 +236,11 @@ describe("RemoteClient connection handoff", () => {
     await jest.advanceTimersByTimeAsync(179_999);
     expect(callbacks.onConnectionState).not.toHaveBeenLastCalledWith("failed");
     await jest.advanceTimersByTimeAsync(1);
-    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("failed");
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("reconnecting");
     client.setAppActive(false);
     client.setAppActive(true);
     await client.recoverNow("foreground");
-    expect(wsconnect).toHaveBeenCalledTimes(1);
+    expect(wsconnect).toHaveBeenCalledTimes(2);
   });
 
   test("initial connection budget does not expire while the app starts in the background", async () => {
@@ -385,7 +393,7 @@ describe("RemoteClient connection handoff", () => {
     (ensureFreshCredentials as jest.Mock).mockReturnValue(fresh.promise);
     const opening = client.open();
     await jest.advanceTimersByTimeAsync(20_000);
-    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("failed");
+    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("reconnecting");
     fresh.resolve(credentials);
     await opening;
     expect(wsconnect).not.toHaveBeenCalled();
@@ -2483,7 +2491,7 @@ describe("lifecycle guards around a failing transport", () => {
     const live = socket();
     (wsconnect as jest.Mock).mockResolvedValue(live.connection);
     jest.spyOn(client as never, "performHandshake")
-      .mockRejectedValue(new Error("pairing_signature_invalid") as never);
+      .mockRejectedValue(new Error("handshake broken") as never);
     live.close.mockRejectedValue(new Error("socket already gone"));
     await client.open();
     expect(live.close).toHaveBeenCalled();
@@ -2592,7 +2600,7 @@ describe("lifecycle guards around a failing transport", () => {
     // publishing it would re-enable every conversation action on a pairing whose
     // recovery budget is spent.
     expect(callbacks.onPresence).not.toHaveBeenCalled();
-    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("reconnecting");
+    expect((client as unknown as { state: string }).state).toBe("reconnecting");
     expect(callbacks.onError).not.toHaveBeenCalledWith(new Error("recovery_timeout"));
   });
 
@@ -2636,7 +2644,7 @@ describe("lifecycle guards around a failing transport", () => {
       .not.toContain("remote_service_misconfigured");
   });
 
-  test("a failure that lands after the window closed fails at once instead of arming a retry", async () => {
+  test("a failure after the recovery window enters cooldown without arming a retry", async () => {
     const live = await openServingSocket();
     await armBudgetWhileServing(live);
     jest.setSystemTime(Date.now() + 181_000);
@@ -2648,9 +2656,9 @@ describe("lifecycle guards around a failing transport", () => {
       subject: "p.pair.evt.s1", data: encoder.encode('{"type":"agent_end","data":"{}"}'),
     } as never);
     await tick();
-    // The budget is spent: the client must fail now, not arm a backoff that
-    // would keep dialling a dead endpoint for another three minutes.
-    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("reconnecting");
+    // The budget is spent: keep the connection unavailable until cooldown,
+    // without another immediate dial.
+    expect((client as unknown as { state: string }).state).toBe("reconnecting");
     expect(callbacks.onError).not.toHaveBeenCalledWith(new Error("recovery_timeout"));
     await jest.advanceTimersByTimeAsync(30_000);
     expect(wsconnect).toHaveBeenCalledTimes(2);
@@ -2676,7 +2684,7 @@ describe("lifecycle guards around a failing transport", () => {
     expect(wsconnect).toHaveBeenCalledTimes(1);
   });
 
-  test("a disconnect frame that lands after the window closed fails the connection at once", async () => {
+  test("a disconnect frame after the window closed does not bypass cooldown", async () => {
     const live = await openServingSocket();
     await armBudgetWhileServing(live);
     jest.setSystemTime(Date.now() + 181_000);
@@ -2684,10 +2692,9 @@ describe("lifecycle guards around a failing transport", () => {
     const status = (live.connection as unknown as { status(): Messages<never> }).status();
     status.push({ type: "disconnect" } as never);
     await tick();
-    // The broker dropped the socket, but the recovery window is already spent:
-    // the UI must be told the pairing failed, not sent back to "reconnecting"
-    // for another three minutes.
-    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("reconnecting");
+    // The broker dropped the socket after the recovery window was spent.
+    // It must not start a new burst before cooldown ends.
+    expect((client as unknown as { state: string }).state).toBe("reconnecting");
     expect(callbacks.onError).not.toHaveBeenCalledWith(new Error("recovery_timeout"));
     await jest.advanceTimersByTimeAsync(30_000);
     expect(wsconnect).toHaveBeenCalledTimes(2);
@@ -2705,7 +2712,7 @@ describe("lifecycle guards around a failing transport", () => {
     const status = (live.connection as unknown as { status(): Messages<never> }).status();
     status.push({ type: "reconnect" } as never);
     await tick();
-    expect(callbacks.onConnectionState).toHaveBeenLastCalledWith("reconnecting");
+    expect((client as unknown as { state: string }).state).toBe("reconnecting");
     expect(callbacks.onError).not.toHaveBeenCalledWith(new Error("recovery_timeout"));
     // The re-announcement must not move a client whose window is spent back to
     // ready: every conversation action would be re-enabled on a dead pairing.
