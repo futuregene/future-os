@@ -247,9 +247,6 @@ export function RemoteClientSection({
                       {busy === "__pair__" ? t("adding") : t("add")}
                     </Button>
                   </div>
-                  {/* Replacing the phone pairing on the other machine is a real
-                        consequence of this action, so it is stated before, not after. */}
-                  <p className="mt-2 text-xs leading-5 text-ink-muted">{t("slotWarning")}</p>
                 </div>
               )
             : null}

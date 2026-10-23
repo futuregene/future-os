@@ -102,7 +102,10 @@ export function DeviceSelector({
         aria-haspopup="listbox"
         aria-label={label}
         className={cn(
-          "flex items-center gap-1.5 rounded-md border border-line-soft px-1.5 text-xs font-medium text-ink transition-colors hover:bg-surface-subtle",
+          // `text-13`, the rail's content tier: this control shares its row with
+          // the search field, and at `text-xs` the row drew 12px and 14px 2px
+          // apart.
+          "flex items-center gap-1.5 rounded-md border border-line-soft px-1.5 text-13 font-medium text-ink transition-colors hover:bg-surface-subtle",
           compact ? "h-7 max-w-30" : "h-8 w-full gap-2 px-2",
         )}
         onClick={() => setOpen(current => !current)}
@@ -179,7 +182,7 @@ export function DeviceSelector({
               })}
               <div className="my-1 h-px bg-line-soft" />
               <button
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-accent hover:bg-surface-subtle"
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-13 text-accent hover:bg-surface-subtle"
                 onClick={() => {
                   setOpen(false);
                   onManage();
@@ -282,7 +285,7 @@ function SelectorOption({
         aria-label={label}
         aria-selected={active}
         className={cn(
-          "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs",
+          "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-13",
           active ? "bg-accent-soft font-medium text-accent" : "text-ink hover:bg-surface-subtle",
         )}
         onClick={onClick}

@@ -251,7 +251,12 @@ function ThreadMenuItem({
   return (
     <button
       className={cn(
-        "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm font-medium transition-colors",
+        // A menu is a list of actions on the rail, not a louder layer than it:
+        // `text-13` and the default 400 sit at the same tier as the row that
+        // opened it. It was `text-sm font-medium` — heavier than the row, and
+        // heavier than every other popup in the rail (the device picker's
+        // entries and the selection toolbar are both smaller).
+        "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-13 transition-colors",
         danger ? "text-danger hover:bg-danger-soft" : "text-ink-soft hover:bg-surface-subtle hover:text-ink",
       )}
       onClick={() => {
