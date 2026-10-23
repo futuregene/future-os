@@ -10,9 +10,7 @@ import type {
   FlatList,
   NativeScrollEvent,
   NativeSyntheticEvent,
-  ViewabilityConfig,
-  ViewabilityConfigCallbackPair,
-  ViewToken,
+  FlatListProps,
 } from "react-native";
 import type { TimelineItem } from "../../remote/types";
 import { spacing } from "../../theme/tokens";
@@ -51,6 +49,11 @@ export const JUMP_VIEW_OFFSET = ROW_GAP - QUESTION_TOP_INSET;
 const REALIGN_MS = 320;
 /** Bounded so a target that never enters the render window cannot loop. */
 const MAX_JUMP_ATTEMPTS = 4;
+
+type TimelineListProps = FlatListProps<TimelineItem>;
+type ViewabilityConfig = NonNullable<TimelineListProps["viewabilityConfig"]>;
+type ViewabilityConfigCallbackPair = NonNullable<TimelineListProps["viewabilityConfigCallbackPairs"]>[number];
+export type ViewToken = Parameters<NonNullable<TimelineListProps["onViewableItemsChanged"]>>[0]["viewableItems"][number];
 
 const PARTLY_VISIBLE: ViewabilityConfig = { itemVisiblePercentThreshold: 1 };
 

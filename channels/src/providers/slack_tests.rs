@@ -1682,7 +1682,7 @@ async fn the_events_webhook_verifies_signatures_and_answers_the_challenge() {
         "a path without a leading slash is normalized"
     );
     let url = format!("http://127.0.0.1:{port}{path}");
-    let client = reqwest::Client::new();
+    let client = crate::tls::default_client();
 
     // The one-time URL verification challenge is answered verbatim.
     let body = json!({ "type": "url_verification", "challenge": "challenge-abc" }).to_string();
@@ -1888,7 +1888,7 @@ async fn the_events_webhook_binds_the_configured_port_without_the_test_hook() {
 
     // The challenge answered over the configured port proves the bind.
     let url = format!("http://127.0.0.1:{port}/events");
-    let client = reqwest::Client::new();
+    let client = crate::tls::default_client();
     let mut answered = false;
     for _ in 0..50 {
         let body =
@@ -1954,7 +1954,7 @@ async fn the_events_webhook_normalizes_an_already_slash_prefixed_path() {
     let body = json!({ "type": "url_verification", "challenge": "c2" }).to_string();
     let timestamp = slack_now();
     let signature = slack_signature("signing-secret", &timestamp, body.as_bytes());
-    let response = reqwest::Client::new()
+    let response = crate::tls::default_client()
         .post(format!("http://127.0.0.1:{port}{path}"))
         .header("x-slack-request-timestamp", &timestamp)
         .header("x-slack-signature", &signature)

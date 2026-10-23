@@ -80,7 +80,7 @@ export function ChatTimeline({ remote, t, invertedTranscriptItems, scroll, quest
         ListHeaderComponent={
           invertedTranscriptItems.length > 0
             ? TimelineFlexSpacer
-            : null
+            : undefined
         }
         ListHeaderComponentStyle={styles.timelineFlexSpacer}
         ListEmptyComponent={

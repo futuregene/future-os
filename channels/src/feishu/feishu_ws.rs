@@ -88,7 +88,7 @@ async fn send_ws_ping<S>(stream: &mut S) -> Result<()>
 where
     S: futures::Sink<WsMessage, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
 {
-    if let Err(e) = stream.send(WsMessage::Ping(vec![])).await {
+    if let Err(e) = stream.send(WsMessage::Ping(vec![].into())).await {
         warn!("Failed to send ping: {}", e);
         return Err(anyhow!("WebSocket send error: {}", e));
     }
@@ -120,7 +120,7 @@ where
     pong_frame
         .encode(&mut buf)
         .expect("WsFrame encoding is infallible");
-    if let Err(e) = stream.send(WsMessage::Binary(buf)).await {
+    if let Err(e) = stream.send(WsMessage::Binary(buf.into())).await {
         warn!("Failed to send pong: {}", e);
     }
 }
@@ -920,7 +920,7 @@ mod tests {
             .any(|m| matches!(m, WsMsg::Binary(b) if !b.is_empty()));
         let ws_pong = got
             .iter()
-            .any(|m| matches!(m, WsMsg::Pong(p) if p == b"hb"));
+            .any(|m| matches!(m, WsMsg::Pong(p) if **p == *b"hb"));
         assert!(binary_pong, "client must answer pbbp2 ping with pong frame");
         assert!(ws_pong, "client must answer WS ping with pong");
     }

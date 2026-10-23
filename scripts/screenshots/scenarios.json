@@ -5745,6 +5745,84 @@
             "shot": "m-recent-newconv.png"
           }
         ]
+      },
+      "pending-attachment": {
+        "_comment": "The composer's pending attachments at the smallest text size: their byte sizes are drawn at the 10 design size, one of the two places the size scale's floor is visible. ?draft=attachments seeds the stored composer draft the screen restores.",
+        "url": "http://localhost:8099/?draft=attachments",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(()=>{localStorage.setItem('future.mobile.appearance',JSON.stringify({themeMode:'system',fontSize:'small',replyDetail:'default'}));location.reload();return 'small';})()"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1400
+          },
+          {
+            "tap": "工作区"
+          },
+          {
+            "wait": 1400
+          },
+          {
+            "tap": "新对话"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tapText": "新对话"
+          },
+          {
+            "wait": 3000
+          },
+          {
+            "eval": "(()=>{const leaves=[...document.querySelectorAll('*')].filter(n=>n.children.length===0&&(n.textContent||'').trim());const bytes=leaves.filter(n=>/^\\d+(\\.\\d+)?\\s*(B|KB|MB)$/.test(n.textContent.trim()));if(bytes.length!==2)throw new Error('pending attachment sizes drawn: '+bytes.length);const sizes=bytes.map(n=>parseFloat(getComputedStyle(n).fontSize));if(sizes.some(v=>v<10))throw new Error('an attachment size is below 10px: '+JSON.stringify(sizes));const over=leaves.filter(n=>n.scrollHeight>n.parentElement.getBoundingClientRect().height+1);if(over.length)throw new Error('text overflows its box: '+over.map(n=>n.textContent.trim().slice(0,12)).join('|'));return 'attachment sizes at '+sizes.join('/')+'px';})()"
+          },
+          {
+            "shot": "m-pending-attachment.png"
+          }
+        ]
+      },
+      "pending-approval": {
+        "_comment": "A run blocked on the reader's approval at the smallest text size. The card's own label ('Shell 命令') is drawn at the 11 design size — the other place the floor is visible. ?approval=1 feeds a real approval_request event through the shipping projection.",
+        "url": "http://localhost:8099/?approval=1",
+        "steps": [
+          {
+            "wait": 900
+          },
+          {
+            "eval": "(()=>{localStorage.setItem('future.mobile.appearance',JSON.stringify({themeMode:'system',fontSize:'small',replyDetail:'default'}));location.reload();return 'small';})()"
+          },
+          {
+            "wait": 2500
+          },
+          {
+            "tap": "稍后再说"
+          },
+          {
+            "wait": 1400
+          },
+          {
+            "tapText": "整理两篇文献的结论对比表"
+          },
+          {
+            "wait": 2800
+          },
+          {
+            "eval": "(()=>{const leaves=[...document.querySelectorAll('*')].filter(n=>n.children.length===0&&(n.textContent||'').trim());const label=leaves.find(n=>n.textContent.trim()==='Shell 命令');if(!label)throw new Error('the approval card label is not drawn: '+leaves.map(n=>n.textContent.trim()).filter(s=>s.length<14).slice(0,20).join('|'));const size=parseFloat(getComputedStyle(label).fontSize);if(size<10)throw new Error('the approval label is below 10px: '+size);const box=label.getBoundingClientRect();const parent=label.parentElement.getBoundingClientRect();if(box.height>parent.height+1||box.width>parent.width+1)throw new Error('the approval label overflows its box');return 'approval label at '+size+'px';})()"
+          },
+          {
+            "shot": "m-pending-approval.png"
+          }
+        ]
       }
     },
     "ready": "!!document.querySelector('[aria-label=\"稍后再说\"]') || document.body.innerText.includes('工作区')",

@@ -40,7 +40,7 @@ pub async fn endpoint_reachable(endpoint: &str) -> bool {
     };
     match target {
         crate::browser::target::EndpointTarget::Http(base) => {
-            let client = reqwest::Client::new();
+            let client = future_agent::http::client();
             tokio::time::timeout(
                 std::time::Duration::from_secs(1),
                 client.get(format!("{base}/json/version")).send(),

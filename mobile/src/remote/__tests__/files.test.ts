@@ -96,14 +96,14 @@ jest.mock("expo-file-system", () => {
     constructor(uri: string) {
       this.uri = uri;
     }
-    readBytes(n: number): Uint8Array {
+    readBytesSync(n: number): Uint8Array {
       readHook?.(n);
       const bytes = store.get(this.uri)?.bytes ?? new Uint8Array(0);
       const slice = bytes.slice(this.offset, this.offset + n);
       this.offset += slice.byteLength;
       return slice;
     }
-    writeBytes(bytes: Uint8Array): void {
+    writeBytesSync(bytes: Uint8Array): void {
       const rec = store.get(this.uri) ?? {};
       const existing = rec.bytes ?? new Uint8Array(0);
       const total = Math.max(existing.length, this.offset + bytes.length);

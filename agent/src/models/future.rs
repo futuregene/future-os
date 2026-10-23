@@ -42,7 +42,7 @@ static FUTURE_MODELS_GENERATION: AtomicU64 = AtomicU64::new(0);
 // on a Tokio worker. Credentials and URLs remain per-request so auth/provider
 // changes take effect without rebuilding the client.
 static FUTURE_MODELS_HTTP_CLIENT: std::sync::LazyLock<reqwest::blocking::Client> =
-    std::sync::LazyLock::new(reqwest::blocking::Client::new);
+    std::sync::LazyLock::new(crate::http::blocking::client);
 
 /// In-process cache so background refreshes take effect immediately on the
 /// next `Registry::new()` call (GUI polls every 10s), without waiting for

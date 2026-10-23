@@ -9,14 +9,14 @@ jest.mock("../../../remote/files", () => ({
 function fixture(data: Uint8Array, reportedSize = data.length) {
   let offset = 0;
   const close = jest.fn();
-  const readBytes = jest.fn((count: number) => {
+  const readBytesSync = jest.fn((count: number) => {
     const part = data.subarray(offset, offset + count);
     offset += part.length;
     return part;
   });
-  const open = jest.fn(() => ({ readBytes, close }));
+  const open = jest.fn(() => ({ readBytesSync, close }));
   const bytes = jest.fn(() => { throw new Error("whole-file read is forbidden"); });
-  return { file: { size: reportedSize, open, bytes } as unknown as File, open, readBytes, close, bytes,
+  return { file: { size: reportedSize, open, bytes } as unknown as File, open, readBytesSync, close, bytes,
     get totalRead() { return offset; } };
 }
 beforeEach(() => jest.useFakeTimers());
@@ -32,7 +32,7 @@ test("a 10-MiB file reads only the preview budget, in bounded chunks, yielding t
   const result = await reading;
   expect(result).toEqual({ text: "a".repeat(MARKDOWN_RENDER_BYTES), truncated: true });
   expect(f.totalRead).toBe(MARKDOWN_RENDER_BYTES);
-  expect(Math.max(...f.readBytes.mock.calls.map(([count]) => count))).toBeLessThanOrEqual(64 * 1024);
+  expect(Math.max(...f.readBytesSync.mock.calls.map(([count]) => count))).toBeLessThanOrEqual(64 * 1024);
   expect(otherTask).toHaveBeenCalled();
   expect(f.bytes).not.toHaveBeenCalled();
   expect(f.open).toHaveBeenCalledWith(FileMode.ReadOnly);
@@ -62,11 +62,11 @@ test("cancellation after a yield closes the handle and prevents more reads", asy
   const controller = new AbortController();
   const reading = readPreviewText(f.file, controller.signal);
   const rejected = expect(reading).rejects.toThrow("transfer_cancelled");
-  const count = f.readBytes.mock.calls.length;
+  const count = f.readBytesSync.mock.calls.length;
   controller.abort();
   await jest.runAllTimersAsync();
   await rejected;
-  expect(f.readBytes).toHaveBeenCalledTimes(count);
+  expect(f.readBytesSync).toHaveBeenCalledTimes(count);
   expect(f.close).toHaveBeenCalledTimes(1);
 });
 

@@ -296,7 +296,7 @@ fn tls_config() -> Result<rustls::ClientConfig> {
     // Idempotent: production installs this in `run()`, tests in their setup.
     let _ = rustls::crypto::ring::default_provider().install_default();
     Ok(rustls::ClientConfig::builder()
-        .with_platform_verifier()
+        .with_platform_verifier()?
         .with_no_client_auth())
 }
 

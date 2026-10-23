@@ -127,7 +127,7 @@ pub fn router(relay: Arc<Relay>) -> Router {
     Router::new()
         .route("/v1/health", get(health))
         .route("/v1/rooms", post(register_room))
-        .route("/v1/rooms/:pair", get(describe_room).delete(revoke_room))
+        .route("/v1/rooms/{pair}", get(describe_room).delete(revoke_room))
         .route("/client/v1/remote/pair/claim", post(claim))
         .route("/client/v1/remote/auth/token", post(rotate_token))
         .route("/client/v1/remote/pair/revoke", post(client_revoke))

@@ -37,7 +37,6 @@ chrono.workspace = true
 futures-util.workspace = true
 fs2 = "0.4"
 sha2 = "0.10"
-toml = "0.8"
 libc = "0.2"
 
 [dev-dependencies]
@@ -45,7 +44,7 @@ tempfile = "3"
 
 # Holder-liveness probes for leases and the active-state lock (`pid_alive`).
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = [
+windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
 ] }

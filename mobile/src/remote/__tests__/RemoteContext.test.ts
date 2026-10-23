@@ -91,6 +91,10 @@ jest.mock("expo-network", () => ({
   addNetworkStateListener: jest.fn(() => ({ remove: jest.fn() })),
 }));
 
+// SDK 58 localization initializes Expo's native runtime. This provider suite
+// supplies the device locale alongside its network and React Native stand-ins.
+jest.mock("expo-localization", () => ({ getLocales: () => [{ languageCode: "en" }] }));
+
 jest.mock("react-native", () => ({
   __esModule: true,
   AppState: {

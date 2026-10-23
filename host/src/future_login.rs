@@ -233,7 +233,7 @@ fn client() -> &'static reqwest::Client {
     // the default config here is constant, so a failure is an invariant break.
     CLIENT.get_or_init(|| {
         crate::install_rustls_provider();
-        reqwest::Client::builder()
+        future_agent::http::client_builder()
             .timeout(REQUEST_TIMEOUT)
             .build()
             .expect("default reqwest client config cannot fail to build")

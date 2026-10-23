@@ -32,7 +32,7 @@ fn hostname_raw() -> Option<String> {
 
 #[cfg(windows)]
 fn hostname_raw() -> Option<String> {
-    use windows_sys::Win32::Foundation::BOOL;
+    use windows_sys::core::BOOL;
     use windows_sys::Win32::System::WindowsProgramming::GetComputerNameW;
     let mut buffer = [0u16; 256];
     let mut size = buffer.len() as u32;

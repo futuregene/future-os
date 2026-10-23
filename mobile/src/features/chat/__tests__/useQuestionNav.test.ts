@@ -4,10 +4,9 @@ import type {
   FlatList,
   NativeScrollEvent,
   NativeSyntheticEvent,
-  ViewToken,
 } from "react-native";
 import type { TimelineItem } from "../../../remote/types";
-import { JUMP_VIEW_OFFSET, useQuestionNav } from "../useQuestionNav";
+import { JUMP_VIEW_OFFSET, useQuestionNav, type ViewToken } from "../useQuestionNav";
 
 const scrollEvent = (y: number): NativeSyntheticEvent<NativeScrollEvent> =>
   ({

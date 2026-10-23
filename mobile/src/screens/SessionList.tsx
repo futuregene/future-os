@@ -1159,7 +1159,7 @@ export function SessionList({
                 {t("sessions.showMoreCount", { count: recent.more })}
               </Text>
             </Pressable>
-          ) : null}
+          ) : undefined}
         />
       </Animated.View>
     </View>

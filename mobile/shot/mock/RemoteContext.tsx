@@ -57,10 +57,18 @@ import {
   recentOnlySessions,
   sessions,
 } from "./data";
+import { seedComposerDraft, withApprovalRequest } from "./smallestType";
 
 type MockValue = Record<string, any>;
 
 const warned = new Set<string>();
+
+/**
+ * Seed the standing fixtures before the first render: a screen reads its stored
+ * state in a mount effect, and a seed that landed after it would be missed.
+ * Both are opt-in through the URL (`?draft=attachments`, `?approval=1`).
+ */
+seedComposerDraft(window.location.search);
 
 /** Fixed at module load: the value only needs to look recent. */
 const BOOT_TIME = Date.now();
@@ -171,12 +179,14 @@ export function RemoteProvider({ children }: PropsWithChildren) {
           : multiTurnEntries
         : demoEntries;
     const history = timelineFromEntries(historyEntries as unknown as HistoryEntry[]);
-    if (!scriptedCompaction) return history;
+    // `?approval=1` docks a run blocked on the reader's approval (see
+    // `smallestType.ts`); every other capture gets the demo timeline untouched.
+    if (!scriptedCompaction) return withApprovalRequest(search.toString(), history);
     const manualRun = "run_1";
-    return applyStreamEvents(history, [
+    return withApprovalRequest(search.toString(), applyStreamEvents(history, [
       { type: "compaction_started", runId: manualRun, idx: 900, data: JSON.stringify({ operation_id: "cmp_shot", trigger: "manual", phase: "standalone" }) },
       { type: "compaction_committed", runId: manualRun, idx: 901, data: JSON.stringify({ operation_id: "cmp_shot", checkpoint_id: "cp_shot", trigger: "manual", phase: "standalone", tokens_before: 33064, tokens_after: 9250 }) },
-    ]);
+    ]));
   }, [scriptedCompaction, renderMode, olderLoaded]);
   const timeline = useMemo(
     () => (selectedSessionId === "" || selectedSessionId === "sess_dopamine_review"

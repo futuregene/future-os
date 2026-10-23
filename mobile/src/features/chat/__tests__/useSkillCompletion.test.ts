@@ -1,6 +1,6 @@
 import { createElement, useLayoutEffect, useRef, useState } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
-import { BackHandler, Keyboard, type TextInput } from "react-native";
+import { BackHandler, Keyboard, type TextInputInstance } from "react-native";
 import { useSkillCompletion } from "../useSkillCompletion";
 
 let completion: ReturnType<typeof useSkillCompletion>;
@@ -8,7 +8,7 @@ let message: string;
 const focus = jest.fn();
 function Harness({ initial = "", enabled = true }) {
   const [text, setText] = useState(initial);
-  const input = useRef({ focus } as unknown as TextInput);
+  const input = useRef({ focus } as unknown as TextInputInstance);
   const result = useSkillCompletion(text, setText, enabled, input);
   useLayoutEffect(() => { message = text; completion = result; });
   return null;
@@ -153,7 +153,7 @@ test("an action may hand over to another menu by leaving its token behind", () =
   const onAction = jest.fn();
   function Harness() {
     const [text, setText] = useState("");
-    const input = useRef({ focus } as unknown as TextInput);
+    const input = useRef({ focus } as unknown as TextInputInstance);
     const result = useSkillCompletion(text, setText, true, input, onAction);
     useLayoutEffect(() => { message = text; completion = result; });
     return null;
@@ -180,7 +180,7 @@ test("an action may hand over to another menu by leaving its token behind", () =
 test("an action that leaves a token keeps the surrounding draft", () => {
   function Harness() {
     const [text, setText] = useState("看一下 ");
-    const input = useRef({ focus } as unknown as TextInput);
+    const input = useRef({ focus } as unknown as TextInputInstance);
     const result = useSkillCompletion(text, setText, true, input);
     useLayoutEffect(() => { message = text; completion = result; });
     return null;
@@ -197,7 +197,7 @@ test("a slash action with no open query is ignored instead of clearing the draft
   const onAction = jest.fn();
   function ActionHarness() {
     const [text, setText] = useState("");
-    const input = useRef({ focus } as unknown as TextInput);
+    const input = useRef({ focus } as unknown as TextInputInstance);
     const result = useSkillCompletion(text, setText, true, input, onAction);
     useLayoutEffect(() => { message = text; completion = result; });
     return null;
@@ -222,7 +222,7 @@ test("typed # opens the conversation query and inserting one writes the referenc
   const refs = {};
   function Harness() {
     const [text, setText] = useState("");
-    const input = useRef({ focus } as unknown as TextInput);
+    const input = useRef({ focus } as unknown as TextInputInstance);
     const result = useSkillCompletion(text, setText, true, input, undefined, { refs, remember });
     useLayoutEffect(() => { message = text; completion = result; });
     return null;
@@ -250,7 +250,7 @@ test("a second conversation sharing a title gets its own token", () => {
   const remember = jest.fn();
   function Harness() {
     const [text, setText] = useState("#未命名 ");
-    const input = useRef({ focus } as unknown as TextInput);
+    const input = useRef({ focus } as unknown as TextInputInstance);
     const result = useSkillCompletion(text, setText, true, input, undefined, { refs, remember });
     useLayoutEffect(() => { message = text; completion = result; });
     return null;

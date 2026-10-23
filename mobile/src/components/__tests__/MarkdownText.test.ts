@@ -140,7 +140,7 @@ describe("MarkdownText layout and fidelity", () => {
   });
 
   test("a bold URL keeps the punctuation and the code span after it out of the link", () => {
-    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined);
     try {
       const root = render("**https://github.com/huichen/futureos-wechat-articles**（PRIVATE，`huichen` 账号下）");
       const links = root.findAll(node =>
@@ -167,7 +167,7 @@ describe("MarkdownText layout and fidelity", () => {
   });
 
   test("a local image inside a list item renders as an openable file chip", () => {
-    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined);
     try {
       const root = render("- ![chart](docs/chart.png)");
       // A path the phone cannot display inline becomes a chip that names the
@@ -182,7 +182,7 @@ describe("MarkdownText layout and fidelity", () => {
   });
 
   test("an in-document anchor wrapped around an image never reaches the OS", () => {
-    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined);
     try {
       const root = render("[![chart](docs/chart.png)](#section)");
       const pressables = root.findAll(node => typeof node.props.onPress === "function");
@@ -334,7 +334,7 @@ describe("MarkdownText layout and fidelity", () => {
   });
 
   test("linked images retain safe navigation without allowing unsafe protocols", () => {
-    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined);
     try {
       const root = render("[![chart](https://example.com/chart.png)](https://example.com/docs) [![bad](https://example.com/bad.png)](javascript:alert(1))");
       const links = root.findAll(node => node.props.accessibilityRole === "link" && typeof node.props.onPress === "function");
@@ -574,7 +574,7 @@ describe("MarkdownText", () => {
   });
 
   test("does not send blocked link protocols to the OS", () => {
-    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
+    const open = jest.spyOn(Linking, "openURL").mockResolvedValue(undefined);
     let renderer: ReactTestRenderer | undefined;
     act(() => {
       renderer = create(createElement(MarkdownText, { text: "[bad](javascript:alert(1))" }));

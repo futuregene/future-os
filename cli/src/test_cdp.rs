@@ -202,7 +202,7 @@ impl MockCdp {
                                     return;
                                 };
                                 for reply in replies {
-                                    if ws.send(Message::Text(reply.to_string())).await.is_err() {
+                                    if ws.send(Message::Text(reply.to_string().into())).await.is_err() {
                                         return;
                                     }
                                 }
@@ -687,7 +687,7 @@ mod tests {
             .await
             .unwrap();
         ws.send(Message::Text(
-            r#"{"id":1,"method":"Page.enable"}"#.to_string(),
+            r#"{"id":1,"method":"Page.enable"}"#.to_string().into(),
         ))
         .await
         .unwrap();
