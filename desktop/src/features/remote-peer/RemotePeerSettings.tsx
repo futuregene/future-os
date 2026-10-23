@@ -6,6 +6,7 @@ import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
 import { TextInput } from "../../components/ui/TextInput";
 import { SettingsLinkRow, SettingsList, SettingsPage, SettingsRow, SettingsSection, Switch } from "../settings/SettingsPrimitives";
+import { PeerIconChip } from "./PeerIconChip";
 import { PeerIconPicker } from "./PeerIconPicker";
 import { iconGlyph, peerBadgeText } from "./peerIcons";
 import { useHostCatalogueInvalidation } from "./remoteHostCatalog";
@@ -227,7 +228,7 @@ export function RemotePeerSettings({
   return (
     <SettingsPage
       backLabel={t("backToDesktops")}
-      icon={<span aria-hidden className="text-base">{iconGlyph(peer.icon)}</span>}
+      icon={<PeerIconChip glyph={iconGlyph(peer.icon)} variant="page" />}
       onBack={onBack}
       title={peerBadgeText(peer, peer.desktopId)}
     >
