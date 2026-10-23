@@ -1,0 +1,8 @@
+[
+  {
+    "type": "approval_request",
+    "runId": "run_shot_approval",
+    "idx": 950,
+    "data": "{\"approval_request_id\":\"ap_shot_clean\",\"tool_name\":\"shell\",\"risk_level\":\"high\",\"kind\":\"sandbox_escalation\",\"action\":{\"tool\":\"shell\",\"category\":\"sandbox_escalation\",\"command\":\"python3 scripts/clean_survey.py --in data/survey.csv --out data/clean.csv\",\"justification\":\"脚本要写回工作区，沙箱内被拒绝，需要一次授权。\",\"escalation_trigger\":\"sandbox_failure\"}}"
+  }
+]
