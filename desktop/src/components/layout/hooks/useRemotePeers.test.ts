@@ -794,10 +794,11 @@ describe("a pairing the other side ended", () => {
 });
 
 describe("a failing read", () => {
-  it("drops only the unreachable host's rows, keeping the others'", async () => {
+  it("draws the host that answered, and introduces nothing for the one that did not", async () => {
     // Two paired hosts, one of which does not answer. The list is built from
     // the catalogues that arrived: blanking everything because one machine is
     // asleep would take the reachable machine's conversations off screen too.
+    // The silent host has never been read, so there is nothing of it to keep.
     listRemotePeers.mockResolvedValue([peer({ desktopId: "desktop_a" }), peer({ desktopId: "desktop_b" })]);
     fetchRemoteSessions.mockImplementation(async (desktopId: string) => {
       if (desktopId === "desktop_b")
@@ -814,6 +815,56 @@ describe("a failing read", () => {
     expect(hook.current.error).toBeNull();
     expect(hook.current.peers).toHaveLength(2);
     hook.unmount();
+  });
+
+  it("keeps a host's rows through one read it did not answer", async () => {
+    // The reported bug: a host that had just been read, whose next read fails —
+    // because it is busy serving a page of the conversation the user clicked, or
+    // because one round trip timed out over a live socket — used to lose *all* of
+    // its rows until the following poll rebuilt them. The row the user had just
+    // opened disappeared and came back seconds later.
+    vi.useFakeTimers();
+    try {
+      listRemotePeers.mockResolvedValue([peer({ desktopId: "desktop_a" }), peer({ desktopId: "desktop_b" })]);
+      fetchRemoteSessions.mockImplementation(async (desktopId: string) => ({
+        desktopId,
+        sessions: [{ sessionId: `sess_${desktopId}`, title: desktopId, streaming: false, lastMessageAt: 1 }],
+      }));
+      const hook = renderHook(() => useRemotePeers(true));
+      await settle();
+      expect(hook.current.catalogs).toHaveLength(2);
+
+      // desktop_b stops answering, and the peer list still says it is connected.
+      fetchRemoteSessions.mockImplementation(async (desktopId: string) => {
+        if (desktopId === "desktop_b")
+          throw new Error("peer_request_timeout");
+        return { desktopId, sessions: [{ sessionId: "sess_a2", title: "A2", streaming: false, lastMessageAt: 2 }] };
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      await settle();
+
+      // The machine that answered is current, the silent one is one poll behind —
+      // and neither set of rows left the list.
+      expect(hook.current.catalogs.map(catalog => catalog.desktopId)).toEqual(["desktop_a", "desktop_b"]);
+      expect(hook.current.catalogs[0]!.sessions.map(session => session.sessionId)).toEqual(["sess_a2"]);
+      expect(hook.current.catalogs[1]!.sessions.map(session => session.sessionId)).toEqual(["sess_desktop_b"]);
+
+      // And the grace ends as soon as the peer list agrees the host is gone: a
+      // machine that really left must not go on being drawn.
+      listRemotePeers.mockResolvedValue([peer({ desktopId: "desktop_a" }), peer({ desktopId: "desktop_b", connected: false })]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      await settle();
+
+      expect(hook.current.catalogs.map(catalog => catalog.desktopId)).toEqual(["desktop_a"]);
+      hook.unmount();
+    }
+    finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reports a failed peer-list read and keeps the last known rows", async () => {
@@ -937,7 +988,11 @@ describe("the catalogue backstop", () => {
       });
       await settle();
 
-      expect(hook.current.catalogs.map(catalog => catalog.desktopId)).toEqual(["desktop_a"]);
+      // Both hosts are still listed: desktop_b did not answer this read, so it
+      // keeps the rows its last answer described rather than losing them and
+      // getting them back on the following round.
+      expect(hook.current.catalogs.map(catalog => catalog.desktopId)).toEqual(["desktop_a", "desktop_b"]);
+      expect(hook.current.catalogs[1]!.sessions.map(session => session.sessionId)).toEqual(["sess_desktop_b"]);
       hook.unmount();
     }
     finally {

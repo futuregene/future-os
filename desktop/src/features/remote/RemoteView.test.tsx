@@ -292,6 +292,39 @@ describe("the switch", () => {
     await mount({ remoteStatus: status({ pairId: "pair_1", phase: "ready", warningCode: "web_bind" }) });
     expect(container.textContent).toContain("Some features are temporarily unavailable. Try again later. (LC002)");
   });
+
+  /**
+   * The page has to say what this machine is called.
+   *
+   * The rows below name connections (`pair_…`), not computers, so a user
+   * holding a phone that paired with this one had nothing on either screen to
+   * match them by — the id the phone recorded was on this machine only, and
+   * never rendered.
+   */
+  it("shows this machine's own id while the switch is on", async () => {
+    await mount({
+      remoteStatus: status({ pairId: "pair_alpha", phase: "ready", desktopId: "desktop_ABC123", devices: [control] }),
+    });
+
+    const id = container.querySelector("[data-testid='local-device-id']");
+    expect(id?.textContent?.trim()).toBe("desktop_ABC123");
+
+    const clipboardWrite = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: clipboardWrite } });
+    const copy = [...id!.parentElement!.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => (button.textContent ?? "").trim() === "Copy")!;
+    await act(async () => copy.click());
+    await flush();
+
+    expect(clipboardWrite).toHaveBeenCalledWith("desktop_ABC123");
+    expect(copy.textContent?.trim()).toBe("Copied");
+  });
+
+  it("hides the id while the switch is off", async () => {
+    await mount({ remoteStatus: status({ pairId: "pair_alpha", phase: "stopped", desktopId: "desktop_ABC123" }) });
+    // Off means this machine accepts nothing, so there is no id to hand out.
+    expect(container.querySelector("[data-testid='local-device-id']")).toBeNull();
+  });
 });
 
 describe("off hides everything the switch enables", () => {
@@ -524,7 +557,11 @@ describe("adding a connection", () => {
 
     const clipboardWrite = vi.fn(async () => {});
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: clipboardWrite } });
-    await act(async () => buttonByText("Copy")!.click());
+    // The dialog's own Copy: this machine's id carries a Copy button too, so
+    // "the Copy button" is only unambiguous inside the window.
+    const copy = [...addDialog()!.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => (button.textContent ?? "").trim() === "Copy")!;
+    await act(async () => copy.click());
     await flush();
     expect(clipboardWrite).toHaveBeenCalledWith(invited.pairingCode);
     expect(addDialog()!.textContent).toContain("Copied");
