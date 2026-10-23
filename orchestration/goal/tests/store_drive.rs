@@ -53,16 +53,34 @@ fn append_requires_registration_and_dedupes() {
         .is_err());
     registered_goal(&mut store, "g1");
     // Explicit event id appended twice with identical content → idempotent.
-    let mk = || Event::TodoAdded {
+    // Reuse the event, including Todo.updated_at: constructing a second Todo
+    // across a wall-clock second would correctly be rejected as a conflict.
+    let event = Event::TodoAdded {
         goal_id: "g1".into(),
         todo: Todo::advancement("t1", "x"),
         ts: 1,
     };
     store
-        .append_with_meta(mk(), Some("evt-fixed".into()), None, None, None, None, None)
+        .append_with_meta(
+            event.clone(),
+            Some("evt-fixed".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .unwrap();
     store
-        .append_with_meta(mk(), Some("evt-fixed".into()), None, None, None, None, None)
+        .append_with_meta(
+            event,
+            Some("evt-fixed".into()),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
         .unwrap();
     let lines = store.raw_ledger_lines("g1").unwrap();
     assert_eq!(lines.len(), 2, "identical duplicate is not re-appended");
