@@ -359,6 +359,18 @@ pub fn spawn_session_discovery() {
             if TEST_DISCOVERY_STOP.swap(false, std::sync::atomic::Ordering::Relaxed) {
                 return;
             }
+            // A deletion intent the GUI can never deliver must not fence its
+            // session out of every import forever. Same reachability rule as the
+            // passes below, and it runs first so a released conversation is
+            // mirrored again in this pass rather than the next.
+            match crate::store::reconcile_undeliverable_delete_intents().await {
+                Ok(0) => {}
+                Ok(released) => {
+                    eprintln!("FutureOS: released {released} undeliverable deletion intent(s)");
+                    crate::emit_threads_updated();
+                }
+                Err(error) => eprintln!("FutureOS: undeliverable delete reconcile failed: {error}"),
+            }
             super::import::import_missing_sessions().await;
             // Rows mirrored for a session that has no message at all (an
             // announcement imported before its first prompt existed) are not

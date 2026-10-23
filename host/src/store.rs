@@ -59,7 +59,8 @@ pub use db::close_pool;
 pub use deletions::pending_agent_session_deletes;
 pub use deletions::{
     is_agent_session_tombstoned, pending_agent_session_deletes_with_sources,
-    settle_agent_session_deletes,
+    release_undeliverable_agent_session_deletes, settle_agent_session_deletes,
+    undeliverable_agent_session_deletes,
 };
 pub use legacy_history::{
     has_legacy_history, legacy_history_entries, legacy_history_page, legacy_history_source_key,
@@ -360,4 +361,7 @@ mod tests {
 }
 
 mod reconcile;
-pub use reconcile::{reconcile_empty_conversations, reconcile_orphan_sessions};
+pub use reconcile::{
+    reconcile_empty_conversations, reconcile_orphan_sessions,
+    reconcile_undeliverable_delete_intents,
+};
