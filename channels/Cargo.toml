@@ -18,7 +18,10 @@ prost.workspace = true
 tokio.workspace = true
 parking_lot.workspace = true
 tokio-tungstenite = { version = "0.24", features = ["__rustls-tls"] }
-rustls = "0.23"
+# ring, not rustls's default aws-lc-rs: reqwest (via hyper-rustls) and the
+# host crate already select ring, so leaving the default on links a second
+# crypto stack — aws-lc-sys is ~2 MB of BoringSSL in the shipped binary.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 sha2 = "0.10"
 sha1 = "0.10"
 aes = "0.8"

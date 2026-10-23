@@ -294,7 +294,7 @@ impl TlsStream {
 fn tls_config() -> Result<rustls::ClientConfig> {
     use rustls_platform_verifier::BuilderVerifierExt;
     // Idempotent: production installs this in `run()`, tests in their setup.
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let _ = rustls::crypto::ring::default_provider().install_default();
     Ok(rustls::ClientConfig::builder()
         .with_platform_verifier()
         .with_no_client_auth())

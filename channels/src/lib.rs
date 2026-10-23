@@ -67,12 +67,13 @@ pub fn run(args: &[String]) -> Result<()> {
     }
 
     // rustls-platform-verifier shares a rustls instance with reqwest and
-    // tokio-tungstenite.  Both enable different default features on rustls
-    // (aws-lc-rs vs. ring), so we must pin one provider explicitly.
+    // tokio-tungstenite, which each pick a crypto provider, so we must pin
+    // one provider explicitly.  That provider is ring, matching reqwest's and
+    // the host / CLI's own choice: aws-lc-rs would link a second crypto stack.
     // install_default only errors when a provider is ALREADY installed —
     // e.g. when the channel bridge is embedded in the `future` CLI whose
     // agent set one up first — which is fine, so ignore the result.
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     tracing_subscriber::fmt()
         .with_env_filter(
