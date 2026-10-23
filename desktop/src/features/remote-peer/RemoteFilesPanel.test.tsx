@@ -116,6 +116,31 @@ it("reads the conversation's files from the host on open", async () => {
   await view.unmount();
 });
 
+it("gives a folder row and a file row the same height", async () => {
+  list.mockResolvedValue(listing([
+    { isDir: true, name: "analysis", path: "/home/studio/analysis", size: 0 },
+    { isDir: false, name: "report.txt", path: "/home/studio/report.txt", size: 2_048 },
+  ]));
+  const view = await mount();
+
+  const rowFor = (name: string) =>
+    [...view.container.querySelectorAll("button")].find(node => node.textContent === name)!.parentElement!;
+  const folder = rowFor("analysis");
+  const file = rowFor("report.txt");
+
+  // A folder row carries neither a size label nor a download button, so once the
+  // height was left to the row's contents it came out visibly shorter than the
+  // files around it. Both kinds now share one floor. jsdom does no layout, so
+  // what is asserted is where the height is decided: the rows are styled alike,
+  // and the download control is small enough (`size-7`) not to set the row's
+  // height on its own.
+  expect(folder.className).toBe(file.className);
+  expect(folder.className).toContain("min-h-10");
+  expect(file.querySelector<HTMLButtonElement>("button[aria-label='Download report.txt']")!.className)
+    .toContain("size-7");
+  await view.unmount();
+});
+
 it("opens a folder by the host's own path", async () => {
   list.mockResolvedValue(listing([{ isDir: true, name: "analysis", path: "/home/studio/analysis", size: 0 }]));
   const view = await mount();
