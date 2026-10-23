@@ -76,6 +76,7 @@ async function render(props: {
   onNewChat?: () => void;
   onNewChatInWorkspace?: (desktopId: string, workspaceId: string | null) => void;
   onNewWorkspace?: () => void;
+  onNewWorkspaceOnRemote?: (desktopId: string) => void;
   onOpenRemote?: (row: MergedConversation) => void;
   onRenameRemoteWorkspace?: (target: { desktopId: string; workspaceId: string; name: string }) => void;
   onSelectChats?: () => void;
@@ -117,6 +118,7 @@ async function render(props: {
         onNewChat={props.onNewChat}
         onNewChatInWorkspace={props.onNewChatInWorkspace}
         onNewWorkspace={props.onNewWorkspace}
+        onNewWorkspaceOnRemote={props.onNewWorkspaceOnRemote}
         onOpenRemote={props.onOpenRemote ?? vi.fn()}
         onRenameRemote={vi.fn()}
         onRenameRemoteWorkspace={props.onRenameRemoteWorkspace}
@@ -708,6 +710,50 @@ it("withholds the local-only workspace control under another machine's filter", 
   expect(remote.container.querySelector("button[aria-label='New chat']")).not.toBeNull();
   expect(remote.container.querySelector("button[aria-label='New workspace']")).toBeNull();
   await remote.unmount();
+});
+
+/**
+ * The host's own create control, while the picker names that host.
+ *
+ * A workspace is a directory on *that* machine, so the create dialog is
+ * addressed to it — there is no disk left to ask about, and no form on this
+ * machine that could reach it. Offered only by a host that advertises the
+ * command: an older build would answer with "Unsupported command".
+ */
+it("offers the host's own create-workspace control under its filter", async () => {
+  const onNewWorkspaceOnRemote = vi.fn();
+  const host = { ...peer("desktop_a", "Studio iMac"), features: ["workspace_create_v1"] };
+  const rows = [conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a" })];
+
+  const view = await render({
+    filter: { kind: "device", desktopId: "desktop_a" },
+    onNewWorkspaceOnRemote,
+    peers: [host],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows,
+    threadById: new Map(),
+  });
+  const button = view.container.querySelector<HTMLButtonElement>("button[aria-label='New workspace on Studio iMac']");
+  expect(button).not.toBeNull();
+  await act(async () => button!.click());
+  // Addressed to the machine the picker names, never to this one.
+  expect(onNewWorkspaceOnRemote).toHaveBeenCalledWith("desktop_a");
+  await view.unmount();
+});
+
+it("withholds the create-workspace control from a host that cannot make one", async () => {
+  const rows = [conversation({ desktopId: "desktop_a", id: "chat_a", key: "desktop_a::chat_a" })];
+  const view = await render({
+    filter: { kind: "device", desktopId: "desktop_a" },
+    onNewWorkspaceOnRemote: vi.fn(),
+    // An older host: it does not advertise `workspace_create_v1`.
+    peers: [peer("desktop_a", "Studio iMac")],
+    renderLocalRow: vi.fn(() => <div>row</div>),
+    rows,
+    threadById: new Map(),
+  });
+  expect(view.container.querySelector("button[aria-label='New workspace on Studio iMac']")).toBeNull();
+  await view.unmount();
 });
 
 /**

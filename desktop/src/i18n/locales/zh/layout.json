@@ -21,6 +21,7 @@
     "collapseSidebar": "收起侧边栏",
     "expandSidebar": "展开侧边栏",
     "newWorkspace": "新建工作区",
+    "newWorkspaceOn": "在 {{host}} 上新建工作区",
     "noWorkspaceThreads": "暂无工作区对话",
     "expandWorkspace": "展开工作区",
     "collapseWorkspace": "收起工作区",

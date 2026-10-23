@@ -597,6 +597,25 @@ describe("the merged list's controls", () => {
     view.unmount();
   });
 
+  it("addresses the workspace '+' to the host the picker names", async () => {
+    const onNewWorkspaceOnRemote = vi.fn();
+    const view = await mountRail({
+      deviceFilter: { kind: "device", desktopId: "desktop_a" },
+      onNewWorkspaceOnRemote,
+      remoteCatalogs: [catalogRow("sess_a")],
+      // The host advertises the command, so the control exists at all.
+      remotePeers: [{ ...peer, features: ["workspace_create_v1"] }],
+    });
+
+    const add = view.container.querySelector<HTMLButtonElement>("button[aria-label='New workspace on Studio iMac']");
+    expect(add).not.toBeNull();
+    await act(async () => add!.click());
+    // Addressed to the host, never to this machine: a workspace is a directory
+    // there, and the shell opens the create dialog for it.
+    expect(onNewWorkspaceOnRemote).toHaveBeenCalledWith("desktop_a");
+    view.unmount();
+  });
+
   it("re-reads a host when one of its rows changed", async () => {
     const onRemoteConversationsChanged = vi.fn();
     const view = await mountRail({

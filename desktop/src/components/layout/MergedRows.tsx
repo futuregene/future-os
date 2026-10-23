@@ -8,6 +8,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { groupMergedRows } from "../../features/remote-peer/mergeConversations";
 import { PeerIconGlyph } from "../../features/remote-peer/PeerIconGlyph";
+import { peerBadgeText } from "../../features/remote-peer/peerIcons";
 import { RemoteWorkspaceMenu } from "../../features/remote-peer/RemoteWorkspaceMenu";
 import { ChatSectionMenu } from "./ActivityRailMenus";
 import { RailGroupHeader, RailHeaderButton, RailSectionHeader, RailSectionToggle } from "./RailChrome";
@@ -51,6 +52,7 @@ export function MergedRows({
   onNewChat,
   onNewChatInWorkspace,
   onNewWorkspace,
+  onNewWorkspaceOnRemote,
   onOpenRemote,
   onRenameRemote,
   onRenameRemoteWorkspace,
@@ -130,6 +132,16 @@ export function MergedRows({
    */
   onNewChatInWorkspace?: (desktopId: string, workspaceId: string | null) => void;
   onNewWorkspace?: () => void;
+  /**
+   * Create a workspace on another machine.
+   *
+   * The counterpart of `onNewWorkspace` for a list narrowed to a host: the picker
+   * directly above the list already names the machine, so the dialog behind this
+   * is addressed to it rather than asking which disk the folder is on. Only
+   * offered by a host that advertises `workspace_create_v1` — an older one
+   * answers the command with "Unsupported command".
+   */
+  onNewWorkspaceOnRemote?: (desktopId: string) => void;
   onOpenRemote: (conversation: MergedConversation) => void;
   onRenameRemote: (conversation: MergedConversation) => void;
   /** Mark the chats section for a batch action. */
@@ -248,6 +260,15 @@ export function MergedRows({
   // that do it belong only where this machine's rows are listed: under a remote
   // device's filter they would add something the user cannot see.
   const showLocalActions = filter.kind === "all" || filter.desktopId === null;
+  // The machine the filter names, when it is another one — the answer to "which
+  // disk is this folder on?" that the picker above the list has already given.
+  const filteredPeer = filter.kind === "device" && filter.desktopId
+    ? peers.find(peer => peer.desktopId === filter.desktopId) ?? null
+    : null;
+  // A host that predates the command refuses it, so the control is withheld
+  // rather than offered and then answered with an error — the same rule the
+  // host's own settings page applies to its workspaces link.
+  const canCreateOnFilteredPeer = filteredPeer?.features.includes("workspace_create_v1") === true;
 
   function renderRow(
     conversation: MergedConversation,
@@ -403,6 +424,19 @@ export function MergedRows({
                       icon={<Plus className="size-3.5" />}
                       label={t("activityRail.newWorkspace")}
                       onClick={onNewWorkspace}
+                    />
+                  )
+                : null}
+              {/* Under another machine's filter the same control stays, addressed
+                  to that machine: its workspaces are the ones on screen, and
+                  being unable to add one there was the gap between this list and
+                  the phone's workspace tab. */}
+              {!showLocalActions && filteredPeer && canCreateOnFilteredPeer && onNewWorkspaceOnRemote
+                ? (
+                    <RailHeaderButton
+                      icon={<Plus className="size-3.5" />}
+                      label={t("activityRail.newWorkspaceOn", { host: peerBadgeText(filteredPeer, filteredPeer.desktopId) })}
+                      onClick={() => onNewWorkspaceOnRemote(filteredPeer.desktopId)}
                     />
                   )
                 : null}
