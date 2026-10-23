@@ -427,6 +427,39 @@ hang.
 | Phone cannot claim an invitation | Check matching production/test environments and that the invitation is unused and unexpired |
 | Platform logout, account switch or refresh authorization rejected | The entry closes or reports an actionable error; restore the correct login and restart |
 
+### Started from tmux or an SSH login: no window
+
+`futureos` starts only a graphical window, so it needs a session that can
+register one. A `tmux` server — and every pane it creates — keeps the launchd
+session it was started in, and a server first started by an SSH login gives its
+panes an SSH session rather than the desktop one.
+
+Measured on macOS 26.6 with an SSH-rooted server: the window *is* created at the
+right size and position and reports `kCGWindowIsOnscreen`, but the process never
+appears in `lsappinfo` — no Dock icon, no ⌘-Tab entry — and nothing can raise it
+above the app already on screen. That reads as "no window opened". A `tmux`
+server started from a desktop terminal does not have this problem: the same
+binary there registers the window normally and it can be raised. Note that
+`launchctl managername` prints `Background` in both cases and
+`CGSessionCopyCurrentDictionary()` is non-null in both, so neither one tells them
+apart.
+
+Ways out, cheapest first:
+
+1. Give tmux a server of its own, started from a desktop terminal:
+   `tmux -L gui`, then `tmux -L gui attach` to use it. Its panes register windows
+   normally, and the old server keeps running for plain command-line work.
+2. Let the desktop start the app: `open -a FutureOS`. LaunchServices starts it in
+   the desktop session; rebuild the bundle with `make package-desktop` first if it
+   is stale. `open` does not forward the environment, so `FUTURE_HOME` does not
+   carry over — use option 1 for an isolated data root.
+3. Restart the shared server from a desktop terminal: `tmux kill-server`, then
+   start it again there. This drops every session the old server held.
+
+A silent return is worth recognising too: while an instance is already running, a
+second `futureos` — from any shell — only asks the running one to come to the
+front and exits 0 after about a second, printing nothing.
+
 Phone-triggered tools run on the host under the existing approval and file-access
 rules. Host mode does not grant extra permissions or provide additional
 sandbox isolation. See [Phone remote access](../wiki/en/Remote.md) for transport and
