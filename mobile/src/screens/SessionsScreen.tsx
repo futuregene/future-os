@@ -35,7 +35,7 @@ import { useRemoteControls as useRemote } from "../remote/RemoteContext";
 import { activeMachineStatus, machineStatusKey, machinesConnected, type MachineSummary } from "../remote/desktopStatus";
 import { mergeSessions, type DesktopFilter } from "../remote/mergeSessions";
 import type { DesktopCommands } from "../remote/desktopCommands";
-import { iconGlyph } from "../remote/peerIcons";
+import { PeerIconGlyph } from "../remote/PeerIconGlyph";
 import type { RemoteSession, RemoteWorkspace } from "../remote/types";
 import { SessionList, type SessionListHandle } from "./SessionList";
 import { SessionListActions } from "./SessionListActions";
@@ -165,8 +165,8 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
     [mergedRows, activeDesktopId, scopedPeerId],
   );
   const peerIcons = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const desktop of remote.desktops) map.set(desktop.desktopId, iconGlyph(desktop.icon));
+    const map = new Map<string, string | undefined>();
+    for (const desktop of remote.desktops) map.set(desktop.desktopId, desktop.icon);
     return map;
   }, [remote.desktops]);
   /**
@@ -915,9 +915,13 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
         >
           <Unplug color={status === "offline" ? colors.danger : colors.warning} size={26} />
         </View>
-        <Text style={styles.emptyTitle}>
-          {`${iconGlyph(machine?.icon)} ${desktopLabel(scopedPeerId)}`}
-        </Text>
+        {/* The machine's own mark, then the name it was given: the same pair
+            every other list draws, so the row that says which machine cannot
+            be reached is recognisably that machine's row. */}
+        <View style={styles.emptyMachine}>
+          <PeerIconGlyph id={machine?.icon} size={16} />
+          <Text style={styles.emptyTitle}>{desktopLabel(scopedPeerId)}</Text>
+        </View>
         <Text style={styles.emptyHint}>{t(machineStatusKey(status))}</Text>
         <Text style={styles.emptyHint}>{t("desktops.unreachableHint")}</Text>
         <Button
@@ -1130,7 +1134,7 @@ export function SessionsScreen({ onManageDesktops, active = true }: {
                             !creatable && styles.deviceOptionUnavailable,
                           ]}
                         >
-                          <Text style={styles.deviceGlyph}>{iconGlyph(machine.icon)}</Text>
+                          <PeerIconGlyph id={machine.icon} size={18} />
                           <Text numberOfLines={1} style={styles.workspaceOptionName}>
                             {machine.label}
                           </Text>
@@ -1380,9 +1384,14 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   },
   emptyIconOffline: { backgroundColor: theme.colors.dangerSoft },
   emptyIconIdle: { backgroundColor: theme.colors.accentSoft },
-  emptyTitle: {
+  emptyMachine: {
     alignSelf: "stretch",
-    textAlign: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+  },
+  emptyTitle: {
     color: theme.colors.ink,
     fontSize: theme.font(16),
     fontWeight: "700",
@@ -1450,7 +1459,6 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   workspaceForm: { gap: spacing.xs },
   /** A machine the reader can see but not create on, in the machine picker. */
   deviceOptionUnavailable: { opacity: 0.6 },
-  deviceGlyph: { fontSize: theme.font(18) },
   deviceStatus: { color: theme.colors.inkMuted, fontSize: theme.font(13) },
   fieldLabel: { color: theme.colors.ink, fontSize: theme.font(14), fontWeight: "600" },
   workspaceInput: {

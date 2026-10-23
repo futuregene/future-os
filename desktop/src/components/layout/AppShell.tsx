@@ -7,7 +7,6 @@ import type { FutureAuthState, ProvidersView } from "../../integrations/agent/pr
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { ContextTab } from "./ContextPanel";
-import { Monitor } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
@@ -21,6 +20,7 @@ import { useShortcutDispatcher } from "../../features/keyboard/useDispatcher";
 import { CommandPalette } from "../../features/palette/CommandPalette";
 import { ShortcutCheatSheet } from "../../features/palette/ShortcutCheatSheet";
 import { DeviceChoiceDialog } from "../../features/remote-peer/DeviceChoiceDialog";
+import { PeerIconGlyph } from "../../features/remote-peer/PeerIconGlyph";
 import { peerDrivable, peerStatus } from "../../features/remote-peer/peerStatus";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
@@ -645,7 +645,7 @@ function ReadyAppShell({
   const localMachineBadge = remotePeers.length > 0
     ? (
         <MachineBadge
-          glyph={<Monitor aria-hidden className="size-3.5" />}
+          glyph={<PeerIconGlyph className="size-3.5" id="desktop" />}
           label={tRemotePeer("selector.local")}
         />
       )
@@ -881,6 +881,19 @@ function ReadyAppShell({
     setNewWorkspaceForm("open");
     setNewWorkspaceNonce(nonce => nonce + 1);
     setCenterMode("new-chat");
+  }
+
+  /**
+   * The workspace "+" from a host's own list.
+   *
+   * The device picker above the list has already named the machine, so there is
+   * no disk to choose: the form opens addressed to that host, the same answer
+   * `handleNewConversationRequest` gives under the same filter.
+   */
+  function handleNewWorkspaceOnRemote(desktopId: string) {
+    const peer = remotePeers.find(candidate => candidate.desktopId === desktopId);
+    if (peer)
+      setRemoteWorkspaceHost(peer);
   }
 
   /**
@@ -1424,6 +1437,7 @@ function ReadyAppShell({
     onRenameRemoteConversation: setRemoteRename,
     onRenameRemoteWorkspace: setRemoteWorkspaceRename,
     onNewChatOnRemote: (desktopId: string, workspaceId: string | null) => startRemoteConversation(desktopId, workspaceId),
+    onNewWorkspaceOnRemote: handleNewWorkspaceOnRemote,
     onRemoteConversationsChanged: () => void refreshRemotePeers(),
     // The device picker's own takeover: the same `takeover` command the Remote
     // page sends, then a re-read so the machine's rows appear in the merged list

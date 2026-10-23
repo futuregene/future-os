@@ -1,5 +1,6 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import { PeerIconGlyph } from "../../../remote/PeerIconGlyph";
 import { ChatTopBar } from "../components/ChatTopBar";
 
 jest.mock("lucide-react-native", () => ({
@@ -65,18 +66,24 @@ test("the context line carries the machine, and both halves stay addressable", (
     tree = create(createElement(ChatTopBar, {
       ...props,
       contextLabel: "Workspace · Research",
-      machine: { glyph: "💻", label: "Lab MacBook Pro" },
+      machine: { icon: "laptop", label: "Lab MacBook Pro" },
     }));
   });
 
-  // The host node, not its wrapper: a testID is on both, and the rendered text
-  // is what a reader sees.
-  const hostText = (testID: string) => tree.root.findAll(node =>
-    String(node.type) === "Text" && node.props.testID === testID);
-  const machine = hostText("chat-machine");
-  expect(machine).toHaveLength(1);
-  expect(machine[0]!.props.accessibilityLabel).toBe("Lab MacBook Pro");
-  expect(machine[0]!.children.join("")).toBe("💻 Lab MacBook Pro");
+  // The host node, not its wrapper: a testID is on both. The machine is now a
+  // row — the shared set's mark, then the name — so the name is what the Text
+  // holds, and the mark is a drawn glyph rather than a character in it.
+  const hostRow = tree.root.findAll(node =>
+    node.props.testID === "chat-machine" && String(node.type) === "View");
+  expect(hostRow).toHaveLength(1);
+  expect(hostRow[0]!.props.accessibilityLabel).toBe("Lab MacBook Pro");
+  const hostText = hostRow[0]!.findAll(node => String(node.type) === "Text");
+  expect(hostText.map(node => node.children.join(""))).toEqual(["Lab MacBook Pro"]);
+  // The mark is the shared set's, handed the machine's own icon id: this file
+  // stubs the icon module, so what can be checked here is that the mark is
+  // drawn from that set rather than typed into the name (the drawing itself is
+  // `remote/__tests__/peerIcons.test.ts`).
+  expect(hostRow[0]!.findAllByType(PeerIconGlyph).map(node => node.props.id)).toEqual(["laptop"]);
   // The workspace it sits beside is still named, and the bar's controls are
   // untouched by the extra element.
   expect(tree.root.findAll(node => node.props.accessibilityLabel === "Workspace · Research").length).toBeGreaterThan(0);
@@ -85,6 +92,6 @@ test("the context line carries the machine, and both halves stay addressable", (
   // A bar built without a machine (the tests, and any caller that has none)
   // renders exactly what it did before.
   act(() => { tree.update(createElement(ChatTopBar, props)); });
-  expect(hostText("chat-machine")).toHaveLength(0);
+  expect(tree.root.findAll(node => node.props.testID === "chat-machine")).toHaveLength(0);
   expect(tree.root.findAll(node => node.props.accessibilityLabel === props.contextLabel).length).toBeGreaterThan(0);
 });

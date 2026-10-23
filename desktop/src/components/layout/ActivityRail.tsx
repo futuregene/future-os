@@ -132,6 +132,14 @@ interface ActivityRailProps {
    * carry a path this machine cannot resolve.
    */
   onNewChatOnRemote?: (desktopId: string, workspaceId: string | null) => void;
+  /**
+   * Create a workspace on another machine, from that machine's own section.
+   *
+   * The remote counterpart of `onNewWorkspace`: offered while the device picker
+   * names a host, because a workspace is a directory *there* and this machine's
+   * form can only browse its own disk.
+   */
+  onNewWorkspaceOnRemote?: (desktopId: string) => void;
   /** Jump to the Remote Desktops screen. */
   onManageDesktops?: () => void;
   /** The remote conversation currently open (client role), if any. */
@@ -198,6 +206,7 @@ export function ActivityRail({
   onRemoteConversationsChanged,
   onTakeControlRemote,
   onNewChatOnRemote,
+  onNewWorkspaceOnRemote,
   onManageDesktops,
   activeRemoteKey = null,
   futureBalance,
@@ -1399,6 +1408,7 @@ export function ActivityRail({
                                 onNewChatInWorkspace={(desktopId, workspaceId) =>
                                   onNewChatOnRemote?.(desktopId, workspaceId)}
                                 onNewWorkspace={onNewWorkspace}
+                                onNewWorkspaceOnRemote={onNewWorkspaceOnRemote}
                                 onOpenRemote={conversation => onOpenRemoteConversation?.(conversation)}
                                 onRenameRemote={conversation => onRenameRemoteConversation?.(conversation)}
                                 onRenameRemoteWorkspace={target => onRenameRemoteWorkspace?.(target)}

@@ -21,7 +21,7 @@ jest.mock("react-i18next", () => ({
 jest.mock("lucide-react-native", () => ({
   Check: "Check", ChevronDown: "ChevronDown", Layers: "Layers", Monitor: "Monitor", X: "X",
 }));
-jest.mock("../../remote/peerIcons", () => ({ iconGlyph: () => "" }));
+jest.mock("../../remote/PeerIconGlyph", () => ({ PeerIconGlyph: "PeerIconGlyph" }));
 jest.mock("../../components/DialogSurface", () => ({ DialogSurface: "DialogSurface" }));
 
 const desktops: PairedDesktop[] = [

@@ -1291,6 +1291,24 @@ describe("app shell workspace handlers", () => {
   });
 
   /**
+   * The workspace "+" under a host's filter skips the machine question.
+   *
+   * The device picker already named the machine, so the shell opens the create
+   * dialog addressed to it — the same answer the chat section's own "+" gives
+   * under that filter, and the reason this path never draws the device dialog.
+   */
+  it("opens the create dialog for the host the picker names, without asking again", () => {
+    mocks.remotePeers = { catalogs: [], peers: [hostPeer()] };
+    const view = mount(<AppShell />);
+    act(() => rail().onNewWorkspaceOnRemote("desktop_a"));
+
+    expect(view.container.querySelector("[data-child='workspace-device-dialog']")).toBeNull();
+    expect(view.container.querySelector("[data-child='remote-workspace-create']")).not.toBeNull();
+    expect(children.remoteWorkspaceCreateDialog).toMatchObject({ peer: hostPeer() });
+    view.unmount();
+  });
+
+  /**
    * A machine that answers wins the workspace "+" nothing: with no machine able
    * to take the workspace there is no choice to make, so the form opens in one
    * step as it always did.

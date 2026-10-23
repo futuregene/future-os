@@ -1,4 +1,4 @@
-import { iconGlyph } from "../remote/peerIcons";
+import { PeerIconChip } from "../remote/PeerIconChip";
 import { ArrowLeft, Plus, Settings2, Trash2 } from "lucide-react-native";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -136,14 +136,11 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
             const selected = remote.credentials?.pairId === desktop.pairId;
             const identity = (
               <>
-                <View style={styles.desktopIcon}>
-                  {/* The desktop's own mark, exactly as the session list and the
-                      device page draw it: the icon the user picked *is* this
-                      machine's identity. The generic monitor that used to be here
-                      was the one place the choice had no effect — the picker wrote
-                      the id and nothing on this screen ever read it back. */}
-                  <Text style={styles.desktopGlyph}>{iconGlyph(desktop.icon)}</Text>
-                </View>
+                {/* The desktop's own mark, exactly as the session list and the
+                    device page draw it: the icon the user picked *is* this
+                    machine's identity, on the shared set's chip in that icon's
+                    own colour. */}
+                <PeerIconChip id={desktop.icon} size={{ height: 44, width: 36 }} />
                 <View style={styles.identity}>
                   <Text
                     numberOfLines={1}
@@ -277,8 +274,6 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
     backgroundColor: theme.colors.surface,
   },
   select: { flex: 1, minWidth: 0, minHeight: 64, flexDirection: "row", alignItems: "center", gap: spacing.sm, borderRadius: radius.md },
-  desktopIcon: { width: 36, height: 44, alignItems: "center", justifyContent: "center", borderRadius: radius.md, backgroundColor: theme.colors.surfaceSubtle },
-  desktopGlyph: { fontSize: theme.font(20) },
   iconButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.md },
   pressed: { backgroundColor: theme.colors.surfaceSubtle },
   identity: { flex: 1, minWidth: 0, gap: spacing.xs },
