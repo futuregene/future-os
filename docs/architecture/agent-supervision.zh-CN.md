@@ -29,8 +29,23 @@
 服务失败与清理失败分别处理：服务 future 异常返回或被丢弃后请求有界清理；只有成功清理才退役。
 清理超时或存储失败仍是终止状态。宿主串行执行修复，并遵守应用退出、更新的接入冻结。
 
-后台修复启动的 Agent 在该次启动关闭 `resumeInterruptedOnStart`：修复恢复连接和权威任务状态，
-不重放结果不确定的模型或工具操作。普通首次启动继续遵守用户保存的续跑设置。
+后台修复和普通启动统一遵守用户保存的 `resumeInterruptedOnStart` 设置。
+系统停机导致的当前运行使用已有 `interrupted_by_restart` 状态，并在日志中保存
+`interruption_cause=system_shutdown`；用户主动停止仍为 `cancelled`，优先于并发系统停止。
+启动续跑只考虑最新运行的未结算崩溃或明确系统中断，已完成、用户取消和已被后续运行取代的工作不续跑。
+用户停止先记录 `run_stop_requested` 意图，再请求协作取消，避免取消收尾期间崩溃后任务复活；
+该记录不代表任务已经停止。启动延迟和系统收尾期间到达的停止也禁止后续自动续跑。
+拒绝续跑时不会降级成另一条普通 prompt。
+
+续跑先读取未修补的权威工具记录。完整文件写入只有在现状逐字节匹配目标内容时才记为已验证，
+不会重复写入；缺失结果、命令取消/超时及部分失败均不能当作未执行。无法验证的操作将原运行
+保持为中断，并在已有运行错误信息中记录原因，不调用模型盲目续跑。后续手动或远程 prompt
+也不能绕过未解决操作的修改限制，但仍可读取核对。任意 shell 和无法确认结果的 edit 暂停，
+不靠模型声称“已经核对”解除限制。自动续跑还会拦截当前工作中已有结果的相同修改操作，
+指纹按工具名和规范化参数计算，避免换一个调用 ID 再执行一次。
+
+本机、headless Host 和远程会话共享 Agent 内的上述规则；手机和 Peer 只同步结果，
+不增加第二个续跑执行者。现有界面、休眠断开策略和远程操作禁用规则保持不变。
 Rust 远程客户端只有在请求具有稳定 ID 且协商出 `prompt_receipt_v1` 时才重试
 `prompt`／`continue_run`；旧 Host 仅发送一次。重试保持请求正文和 bridge 身份不变，
 不将其他写操作加入重试白名单。
@@ -75,13 +90,13 @@ Rust 远程客户端只有在请求具有稳定 ID 且协商出 `prompt_receipt_
 | **D6** | TUI 改为"外部优先，否则进程内启动"，去掉子进程 sidecar（[§7](#7-tui-改为进程内启动)） | **产品决定** | **已落地**：`tui/src/agent_host.rs` 经 `future_host` 内嵌，`tui/src/agent_supervisor.rs` 把 `start_in_process` 装成驱动；独立的 `future-tui` 二进制仍是 attach-only |
 | **P2** | 让 Agent 活过 TUI 退出：detached sidecar + `--ephemeral` 空闲退出（[§8](#8-生命周期与所有权)） | **产品决定** | **待用户决定** |
 | **D7** | Agent 被**用户主动**停掉后，其他客户端是否自动重启（[§4.3](#43-四种死法要分开)） | 产品决定 | 建议：不自动；**待确认** |
-| **D8** | 重启后的续跑语义：谁跑、什么时候算可续跑（§9.1、§9.2） | 设计 | **部分落地**：续跑判据已实现；`cause` 区分尚未实现（见 §12） |
+| **D8** | 重启后的续跑语义：谁跑、什么时候算可续跑（§9.1、§9.2） | 设计 | **已实现**：系统中断、持久用户停止意图及结果核对，见本文顶部的 2026-10-23 修订；原生故障验证仍交 CI/联调 |
 | **D9** | 触发也放进 Agent（用户 2026-10-21 提出） | 产品决定 | **已落地**：Agent 启动后自触发，开关 `~/.future/agent/settings.json` 的 `resumeInterruptedOnStart`（**默认开**，与桌面原有的 `autoResumeInterrupted` 一致）；Desktop 的一次性 pass 已退役 |
 | **D10** | 续跑不发用户消息，在 loop 内以 request-only 指令续上（§9.3，用户 2026-10-21 提出） | 产品决定 → 设计 | **已落地**，分三步：接受路径 + 指令、占位 tool 结果、放开 assistant 尾巴 |
 
 P2 与 D7 **不是已定方案**，本文不为它们设计代码路径，只描述选项、代价与影响面。
 
-标注"已落地"的项有代码与测试；标注"已认可"的仍只是方案：D8 的 cause 区分尚未实现。
+标注"已落地"的项有代码与测试；标注"已认可"的仍只是方案：D8 的 cause 区分已由顶部修订实现，本地完成静态检查；运行测试交 CI。
 
 ## 3 判定依据
 
@@ -325,7 +340,7 @@ Agent 已经具备全部判据，不需要 app.db：
 
 #### 前提一：停机时必须区分"为什么结束"
 
-实测：`request_shutdown` → `drain` → 每个会话 `abort()` → 活跃 run 走正常终态，状态是 `cancelled`（[session_prompt.rs](../../agent/src/rpc/session_prompt.rs)），而 `request_abort` **没有 cause 参数**。所以**"关掉再启动"目前不会续跑**：正常关闭后 `interruptedRun` 为 null，`plan_resume` 判 `Terminal`。只有 `kill -9` / 崩溃 / OOM（journal 留着 `run_started` 没有 `run_terminal`）才是 `interrupted`。
+历史实测（本次修复前）：`request_shutdown` → `drain` → 每个会话 `abort()` → 活跃 run 走正常终态，状态是 `cancelled`（[session_prompt.rs](../../agent/src/rpc/session_prompt.rs)），而 `request_abort` **没有 cause 参数**。所以当时**"关掉再启动"不会续跑**：正常关闭后 `interruptedRun` 为 null，`plan_resume` 判 `Terminal`。只有 `kill -9` / 崩溃 / OOM（journal 留着 `run_started` 没有 `run_terminal`）才是 `interrupted`。
 
 因此 D8 的判据不是**"还有谁在看"（订阅数），而是"为什么结束"（cause）**。订阅数判据恰好会在用户这个场景里失效：第 3 步 TUI 死了，第 4 步 Agent 独居，按订阅数会判成 `cancelled`。
 
@@ -462,7 +477,7 @@ D10 优先于"发 prompt"的初版：先做"尾部是 tool"和"assistant 带 too
 | `check_running` → 监督 tick（探端点，而不只看自己的 phase） | `cli/src/headless/agent.rs` |
 | 同一 tick 接入 | `desktop/src-tauri/src/agent_supervisor.rs` |
 | 熔断（§6） | 监督器内部，不落新文件 |
-| `CancelCause` 贯穿 abort → 终态记录（D8 的前提） | `agent/src/rpc/session.rs`、`agent/src/runtime/`、`agent/src/session/entry.rs` |
+| `CancellationCause` 与持久用户停止意图贯穿取消 → 终态记录（D8 的前提） | `agent/src/rpc/session.rs`、`agent/src/runtime/`、`agent/src/session/entry.rs` |
 | Agent 自触发续跑（§9.2）：Ready 后判定 + 原子提交，含护栏 | `agent/src/service/startup.rs`、`agent/src/rpc/`、`agent/src/config/mod.rs` |
 | `~/.future/agent/settings.json` 新增开关 + 旧 `app.db` 值的一次性映射 | `agent/src/config/mod.rs`、`packages/app-settings`、桌面设置页 |
 | 续跑 run 的无 user 接受路径 + request-only 指令 + assistant 尾巴守卫（D10） | `agent/src/rpc/session_prompt.rs`、`agent/src/agent/run_loop.rs`、`agent/src/session/entry.rs` |

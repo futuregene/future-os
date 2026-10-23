@@ -25,6 +25,7 @@ pub const ENTRY_TYPE_CUSTOM_MESSAGE: &str = "custom_message";
 /// content and are filtered out of every conversation/context projection.
 pub const ENTRY_TYPE_RUN_STARTED: &str = "run_started";
 pub const ENTRY_TYPE_RUN_TERMINAL: &str = "run_terminal";
+pub const ENTRY_TYPE_RUN_STOP_REQUESTED: &str = "run_stop_requested";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEntry {
@@ -103,6 +104,14 @@ fn default_timestamp() -> DateTime<Local> {
 }
 
 impl SessionEntry {
+    /// Durable user intent, not an acknowledgement that execution has stopped.
+    pub(crate) fn run_stop_requested(run_id: &str) -> Self {
+        let mut entry = Self::run_terminal(run_id, "cancelled", 0, 0, None);
+        entry.entry_type = ENTRY_TYPE_RUN_STOP_REQUESTED.into();
+        entry.content = Some(serde_json::json!({"run_id":run_id}));
+        entry.meta = Some(serde_json::json!({"run_id":run_id}));
+        entry
+    }
     pub fn new_user(role: &str, content: serde_json::Value) -> Self {
         Self {
             id: generate_entry_id(),

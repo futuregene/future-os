@@ -280,6 +280,9 @@ pub(super) async fn initialize(
         state.reconcile_provider_references();
     }
 
+    // Even with automatic continuation disabled, a durable user stop must
+    // settle as cancelled. No executor or client is admitted at this boundary.
+    state.session_manager.reconcile_user_stops_on_start()?;
     tracing::info!("Agent startup: binding the gRPC endpoint");
     let listener = match tcp_bind {
         Some((host, port)) => crate::grpc::AgentListener::bind_tcp(&host, port).await?,
