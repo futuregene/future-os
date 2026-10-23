@@ -172,6 +172,19 @@ export function ApprovalPrompt({
 
       if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
         event.preventDefault();
+        // With ⇧ this is the wider answer: approve and stop asking here — the
+        // button beside "allow once" (`allowChat` / `allowWorkspace`). Its two
+        // shapes are kept apart there too: a rule this build can write outright
+        // is saved; one that needs a path opens the editor (which takes `↩`).
+        if (event.shiftKey) {
+          if (!saveSuggestion || malformedCapability)
+            return;
+          if (saveSuggestion.rules)
+            void confirmCapabilityRules();
+          else
+            openRuleEditor();
+          return;
+        }
         void decide("approved");
         return;
       }
@@ -185,7 +198,7 @@ export function ApprovalPrompt({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [decide, deciding, editorOpen]);
+  }, [confirmCapabilityRules, decide, deciding, editorOpen, malformedCapability, openRuleEditor, saveSuggestion]);
 
   return (
     <section className="rounded-lg border border-line bg-surface/95 p-4 shadow-panel backdrop-blur">

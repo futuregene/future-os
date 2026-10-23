@@ -222,6 +222,66 @@ it("approves on the platform paste/Enter accelerator, but not from a text field"
   expect(meta).toHaveBeenCalledTimes(1);
 });
 
+it("opens the workspace rule editor on the shift-command-enter accelerator", async () => {
+  // The wider answer to the same question the plain accelerator gives, from the
+  // keyboard: the button beside "Allow once" used to be a pointer-only target.
+  const decision = render(approval({
+    actionPayload: JSON.stringify({ category: "file_write", paths: ["a.md"], tool: "edit" }),
+    saveSuggestion: JSON.stringify({ access: "write", path: "a.md" }),
+  }));
+
+  key({ key: "Enter", metaKey: true, shiftKey: true });
+  expect(container.querySelector<HTMLInputElement>("input")?.value).toBe("a.md");
+  // The editor is open, not approved: the rule is a decision of its own.
+  expect(decision).not.toHaveBeenCalled();
+
+  // Enter in the editor confirms it — the rule is saved and the request approved.
+  await act(async () => {
+    container.querySelector("input")!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(storage.saveApprovalRule).toHaveBeenCalledWith({ access: "write", path: "a.md", threadId: "T1" });
+  expect(decision).toHaveBeenCalledWith(expect.objectContaining({ id: "ap1" }), "approved");
+});
+
+it("saves a capability rule outright on shift-command-enter", async () => {
+  // A capability request has no path to edit: the wider answer is a rule this
+  // build can write as it stands, so the accelerator must not open an editor
+  // that has nothing to offer.
+  const decision = render(approval({
+    actionPayload: JSON.stringify({
+      behavior: "manage_files",
+      category: "windows_write_capability",
+      targets: [{ path: "C:/work/a.txt", scope: "file" }],
+      tool: "edit",
+    }),
+    kind: "windows_write_capability",
+    saveSuggestion: JSON.stringify({ rules: [{ access: "write", path: "C:/work/**" }] }),
+  }));
+
+  key({ key: "Enter", ctrlKey: true, shiftKey: true });
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(container.querySelector("input")).toBeNull();
+  expect(storage.saveApprovalRules).toHaveBeenCalledTimes(1);
+  expect(decision).toHaveBeenCalledWith(expect.objectContaining({ id: "ap1" }), "approved");
+});
+
+it("leaves the wider answer inert when this request offers no rule", async () => {
+  // Nothing to persist means nothing to bind: the accelerator must not approve
+  // a request the reader did not answer.
+  const decision = render(approval());
+  key({ key: "Enter", metaKey: true, shiftKey: true });
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(decision).not.toHaveBeenCalled();
+  expect(container.querySelector("input")).toBeNull();
+});
+
 it("lets Escape close the rule editor before it rejects the request", async () => {
   // A two-step Escape: the first closes the editor, the second denies.
   const decision = render(approval({

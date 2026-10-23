@@ -43,6 +43,7 @@
     "loading": "Loading FutureOS thread...",
     "noActiveThread": "No active thread.",
     "jumpToLatest": "Jump to latest",
+    "copiedReply": "Copied the last reply",
     "loadOlder": "Load earlier messages",
     "searchPlaceholder": "Search this thread",
     "searchPrevious": "Previous result",

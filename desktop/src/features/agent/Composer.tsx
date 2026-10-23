@@ -18,6 +18,7 @@ import { splitFileName } from "./attachments";
 import { ComposerControls } from "./composer/ComposerControls";
 import { useComposerAttachments } from "./composer/useComposerAttachments";
 import { clearComposerDraft, loadComposerDraft, saveComposerDraft } from "./composerDraft";
+import { createComposerHistoryCursor } from "./composerHistory";
 import { MentionEditor } from "./MentionEditor";
 import { SkillRecommendCard } from "./SkillRecommendCard";
 
@@ -361,6 +362,14 @@ function ComposerImpl({
   // goes. Registered by the composer itself for the same reason the event above
   // is answered here — only this component knows whether it can hold a caret.
   useCommand("composer.focus", () => editorRef.current?.focus(), !disabled);
+  // The paperclip from the keyboard. Same handler as the button, so a file
+  // picked either way goes through the same access probe and attachment list.
+  useCommand("composer.attach", () => void handleAttachFiles(), !disabled);
+
+  // `↑`/`↓` in the box: this conversation's already-sent messages
+  // (`composerHistory`). A cursor per conversation, recreated when the composer
+  // switches threads — the messages belong to the thread, not to the box.
+  const historyCursor = useMemo(() => createComposerHistoryCursor(draftKey), [draftKey]);
 
   // Autofocus so the user can type immediately: on mount, when switching
   // conversations (draftKey changes), and when a send settles. The streaming
@@ -534,6 +543,7 @@ function ComposerImpl({
         saveComposerDraft(submittedDraftKey, { attachments: restored, text: submittedText });
     };
     dropSubmittedDraft();
+    historyCursor.push(trimmed);
     const result = state.onSend({ attachments: submittedAttachments, content: trimmed });
     if (result) {
       // Async send: the caller reports the failure, and only then does the
@@ -703,6 +713,9 @@ function ComposerImpl({
         onContextToolSelect={handleContextToolSelect}
         onPasteAttachmentPaths={paths => void addAttachmentPaths(paths)}
         onPasteFiles={files => void attachPastedFiles(files)}
+        // Kept off the dictation layer: there the box holds one spoken sentence
+        // at a time and the arrows belong to the remote control.
+        history={triggers ? historyCursor : undefined}
       />
       {attachError
         ? <div className="px-1 pb-1 text-xs text-warning">{attachError}</div>

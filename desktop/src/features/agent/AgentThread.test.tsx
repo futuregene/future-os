@@ -10,6 +10,7 @@ import type {
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { copyText } from "../../lib/clipboard";
 import { onFutureEvent } from "../../lib/futureEvents";
 import { installShortcuts } from "../../test/installShortcuts";
 import { clearCommandHandlers } from "../keyboard/commands";
@@ -151,6 +152,7 @@ vi.mock("../../integrations/agent/agentClient", () => ({
 vi.mock("../skills/installRecommendedSkill", () => ({
   installRecommendedSkill: h.skills.installRecommendedSkill,
 }));
+vi.mock("../../lib/clipboard", () => ({ copyText: vi.fn(async () => {}) }));
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -1026,5 +1028,55 @@ describe("interrupting a run from the keyboard", () => {
     render();
     expect(press().defaultPrevented).toBe(false);
     expect(h.state.handleAbort).not.toHaveBeenCalled();
+  });
+});
+
+describe("reading the transcript from the keyboard", () => {
+  let uninstall: () => void;
+
+  beforeEach(() => {
+    resetAllCommandBindings();
+    uninstall = installShortcuts();
+  });
+  afterEach(() => {
+    uninstall();
+  });
+
+  function press(code: string, key: string) {
+    const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, code, ctrlKey: true, altKey: true, key });
+    act(() => {
+      window.dispatchEvent(event);
+    });
+    return event;
+  }
+
+  it("copies the last reply", async () => {
+    const toasts: { message: string }[] = [];
+    const off = onFutureEvent("toast", toast => void toasts.push(toast));
+    render();
+    expect(press("KeyC", "c").defaultPrevented).toBe(true);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(vi.mocked(copyText)).toHaveBeenCalledWith("answer a1");
+    expect(toasts[0]?.message).toBe("Copied the last reply");
+    off();
+  });
+
+  it("leaves the copy key unclaimed while the turn has no answer", () => {
+    // Nothing to copy: a key that fired on an empty transcript would take the
+    // press and give nothing back. Walking back skips an interrupted reply.
+    setMessages([user("u1")]);
+    render();
+    expect(press("KeyC", "c").defaultPrevented).toBe(false);
+    expect(vi.mocked(copyText)).not.toHaveBeenCalled();
+  });
+
+  it("jumps to the live end", () => {
+    // The corner's button from the keys; registered whether or not the button is
+    // showing, since the button hides while the view is already at the bottom.
+    render();
+    expect(press("KeyG", "g").defaultPrevented).toBe(true);
+    expect(h.paging.scrollToLatest).toHaveBeenCalledTimes(1);
   });
 });

@@ -80,6 +80,23 @@ describe("keyboard shortcut settings", () => {
     expect(bindingButton("Show or hide the terminal").textContent).toBe("Ctrl+J");
   });
 
+  it("offers the reading and composer keys beside the ones they extend", () => {
+    // ``⇧⌘O`` beside the paperclip, ``⌘⌥C`` beside the reply's copy button,
+    // ``⌘⌥G`` beside the corner's jump button: a reader who came here after
+    // seeing one of those buttons should be able to find its key.
+    expect(bindingButton("Attach files").textContent).toBe("Ctrl+Shift+O");
+    expect(bindingButton("Copy the last reply").textContent).toBe("Ctrl+Alt+C");
+    expect(bindingButton("Jump to the latest message").textContent).toBe("Ctrl+Alt+G");
+  });
+
+  it("lists the wider approval answer with the fixed keys", () => {
+    // Both accelerators live on the approval card's own listener (it exists only
+    // while a request is pending), so the table's job is to say they exist.
+    expect(container.textContent).toContain("Approve a request");
+    expect(container.textContent).toContain("Approve, and stop asking in this workspace");
+    expect(container.textContent).toContain("Ctrl+Shift+Enter");
+  });
+
   it("records a new combination and shows it immediately", () => {
     act(() => bindingButton("New conversation").click());
     expect(bindingButton("New conversation").textContent).toContain("Press a new combination");

@@ -1,6 +1,6 @@
 import type { MessageSegment } from "@future-os/thread-projection";
 import { describe, expect, it } from "vitest";
-import { buildReplyBlocks, replyTailBlock, splitFinalAnswer } from "./replyBlocks";
+import { buildReplyBlocks, replyCopyText, replyTailBlock, splitFinalAnswer } from "./replyBlocks";
 
 const thought: MessageSegment = { id: "thought", kind: "thinking", text: "Reasoning" };
 const tool: MessageSegment = { id: "tool", kind: "activity", item: { id: "tool", kind: "read", status: "completed", target: "file.ts" } };
@@ -129,5 +129,32 @@ describe("the block a reply's tail rung lands on", () => {
     expect(anchorOf(segments, true)).toBe(2);
     expect(anchorOf(segments, false)).toBe(1);
     expect(anchorOf(segments, true)).not.toBeNull();
+  });
+});
+
+describe("replyCopyText", () => {
+  const note: MessageSegment = { id: "note", kind: "text", text: "Working on it" };
+
+  it("joins a reply's prose and leaves the work out", () => {
+    expect(replyCopyText({ segments: [note, tool, prose], status: "complete" }, { fold: false }))
+      .toBe("Working on it\n\nResponse");
+  });
+
+  it("copies only the answer while the reading setting folds the work away", () => {
+    // The same rule the copy button beside the reply follows: the button belongs
+    // to the answer it is shown beside, so the note before the tool call is not
+    // part of what the reader is quoting.
+    expect(replyCopyText({ segments: [note, tool, prose], status: "complete" }, { fold: true }))
+      .toBe("Response");
+  });
+
+  it("never folds a reply that is still streaming", () => {
+    expect(replyCopyText({ segments: [note, tool, prose], status: "streaming" }, { fold: true }))
+      .toBe("Working on it\n\nResponse");
+  });
+
+  it("falls back to the raw content when the reply has no slices", () => {
+    expect(replyCopyText({ content: "plain", status: "complete" }, { fold: true })).toBe("plain");
+    expect(replyCopyText({ status: "complete" }, { fold: true })).toBe("");
   });
 });

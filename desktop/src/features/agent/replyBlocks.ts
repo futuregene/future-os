@@ -102,3 +102,38 @@ export function replyTailBlock(blocks: readonly ReplyBlock[]): number | null {
   }
   return null;
 }
+
+/**
+ * The plain text a reply copies as: its prose slices, joined with a blank line.
+ *
+ * One rule, two callers. The hover button beside a reply copies this text, and
+ * `thread.copyReply` (`⌘⌥C`) copies it too — a keyboard path that copied
+ * something else (raw markdown including the activity lines, say) would be a
+ * second, wrong answer to "what does this reply say".
+ *
+ * `fold` matters for the same reason: while the reading setting folds a settled
+ * reply onto its answer, the visible answer is the trailing prose only, and the
+ * notes the model wrote between its calls are not part of what the button beside
+ * it offers.
+ */
+export function replyCopyText(
+  message: { content?: string; segments?: readonly MessageSegment[]; status?: string },
+  detail: { fold: boolean },
+): string {
+  const streaming = message.status === "streaming";
+  const segments = message.segments && message.segments.length > 0 ? message.segments : null;
+  const blocks = segments ? buildReplyBlocks([...segments], streaming) : null;
+  const folded = blocks && detail.fold && !streaming ? splitFinalAnswer(blocks) : null;
+  if (folded)
+    return proseText(folded.answer);
+  if (segments)
+    return segments.flatMap(segment => (segment.kind === "text" ? [segment.text] : [])).join("\n\n");
+  return message.content ?? "";
+}
+
+/** The prose a set of rendered blocks carries, joined the way the copy button wants it. */
+export function proseText(blocks: readonly ReplyBlock[]): string {
+  return blocks
+    .flatMap(block => (block.kind === "segment" && block.segment.kind === "text" ? [block.segment.text] : []))
+    .join("\n\n");
+}

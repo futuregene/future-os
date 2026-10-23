@@ -268,6 +268,8 @@ desktop/src/features/settings/
 | --- | --- | --- |
 | `chat.new`、`panel.*`、`section.*`、`settings.open` | `AppShell` | 外壳状态 |
 | `thread.find` | `features/agent/search/ThreadSearch` | 只有打开会话时才存在 |
+| `thread.copyReply` / `thread.latest` | `features/agent/AgentThread` | 消息列表与滚动位置是正文的。`copyReply` 只在这一轮有回答可复制时注册，空对话里那个键不被占用 |
+| `composer.attach` | `features/agent/Composer` | 附件列表属于输入框自己的 hook（`useComposerAttachments`） |
 | `chat.stop` | `features/agent/AgentThread` | 中断在 `useAgentThreadState` 里，且只在回复流式输出期间 |
 | `composer.focus` | `features/agent/Composer` | 只有输入框自己知道它能不能持有光标 |
 | `composer.model.*` / `composer.thinking.*` / `composer.approval.*` | `features/agent/composer/ComposerControls` | 三个选择器的值与可用性都在那一行里 |
@@ -306,6 +308,9 @@ desktop/src/features/settings/
 | 停止生成 | `mod+.` | 仅在回复流式输出期间注册 |
 | 回到输入框 | `mod+l` | |
 | 在当前对话中查找 | `mod+f` | 原本是 `ThreadSearch` 的私有监听 |
+| 复制最后一条回答 | `mod+alt+c` | 与回答悬停按钮复制的是同一段正文（`replyCopyText`）；只在这一轮有可复制的回答时注册 |
+| 跳到最新消息 | `mod+alt+g` | 角落那个「回到最新」按钮的键盘版；`Page Up`/`Page Down` 在提问之间跳 |
+| 添加附件 | `mod+shift+o` | 输入框的回形针，走同一个选择器与权限探测 |
 | 上一个 / 下一个对话 | `mod+[` / `mod+]` | 细调：逐个对话行；可连按 |
 | 上一个 / 下一个工作区或对话 | `mod+shift+[` / `mod+shift+]` | 粗调：按住 ⇧ 迈更大一步；可连按 |
 | 筛选对话列表 | `mod+shift+f` | 跳到输入框，不做跳转 |
@@ -322,7 +327,14 @@ desktop/src/features/settings/
 | 打开设置 | `mod+,` | |
 
 固定按键（设置页列出，不可修改）：`Enter` 发送、`Shift+Enter` 换行、`Esc` 关闭/拒绝、
-`⌘/Ctrl+Enter` 批准、`Page Up`/`Page Down` 正文跳转（导航的第三层）、菜单内方向键 + `Enter`。
+`⌘/Ctrl+Enter` 批准、`⌘/Ctrl+Shift+Enter` 在本工作区批准、`↑`/`↓` 召回输入框历史（见下）、
+`Page Up`/`Page Down` 正文跳转（导航的第三层）、菜单内方向键 + `Enter`。
+
+**输入框的 `↑`/`↓`** 把这个对话已经发过的消息放回框里（`features/agent/composerHistory.ts`，
+每个对话一条 `sessionStorage` 记录）。这两个键属于编辑器而不属于命令表，原因和 `Enter`
+一样：框里有字时它们就是普通的光标移动，含义在输入框自己手里（模式之外的裸键永远不是命令，
+见《录制器拒绝什么》）。`↑` 只在**空框**时被接管（那里没有光标可移），召回出来的文字只要
+没被改动就能继续往上走；一旦真的开始编辑，这一次召回就结束，方向键重新归编辑器。
 
 ## 录制器拒绝什么
 

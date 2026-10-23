@@ -18,9 +18,11 @@ import { useTranslation } from "react-i18next";
 import { FloatingScrollbar } from "../../components/ui/FloatingScrollbar";
 import { useCachedAgentState } from "../../integrations/agent/agentStateCache";
 import { forkThread } from "../../integrations/storage/threadStore";
+import { copyText } from "../../lib/clipboard";
 import { cn } from "../../lib/cn";
 import { errorMessage } from "../../lib/errors";
 import { emitFutureEvent, onFutureEvent } from "../../lib/futureEvents";
+import { foldsSettledReply, useReplyDetail } from "../../lib/replyDisplay";
 import { useCommittedRef } from "../../lib/useCommittedRef";
 import { useFloatingScrollbar } from "../../lib/useFloatingScrollbar";
 import { useCommand } from "../keyboard/commands";
@@ -35,6 +37,7 @@ import { Composer } from "./Composer";
 import { clearComposerDraftIfMatches } from "./composerDraft";
 import { MessageList } from "./MessageList";
 import { QuestionNavControl } from "./QuestionNavControl";
+import { replyCopyText } from "./replyBlocks";
 import { useThreadCompaction } from "./runtime/useThreadCompaction";
 import { ThreadHeader } from "./ThreadHeader";
 import { ThreadSearch } from "./ThreadSearch";
@@ -310,11 +313,49 @@ export function AgentThread({
       break;
     }
   }
+  // The reading setting the reply rows themselves read, so "copy the last
+  // answer" copies what the answer is currently showing (see `replyCopyText`).
+  const replyDetail = useReplyDetail();
 
   // Settings → Keyboard: the same interrupt the send button turns into while a
   // reply streams. Registered only then, so the key is unclaimed whenever there
   // is nothing to stop — and a press outside a stream stays the app's own.
   useCommand("chat.stop", () => void handleAbort(), isReplyStreaming && ownsCommands);
+
+  /**
+   * The last reply's prose, for `thread.copyReply` — or null when this turn has
+   * no answer to copy (nothing yet, or the last thing the agent said was work:
+   * a tool call, reasoning, a compaction divider).
+   *
+   * `replyCopyText` is the same rule the reply's own copy button uses, so the
+   * key and the button can never copy two different things.
+   */
+  const lastReply = useMemo(() => {
+    const fold = foldsSettledReply(replyDetail);
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]!;
+      if (message.role !== "assistant")
+        continue;
+      const text = replyCopyText(message, { fold }).trim();
+      if (text.length > 0)
+        return text;
+      // One empty reply (an interrupted run) must not hide an earlier answer, so
+      // keep walking back rather than giving up on the newest one.
+    }
+    return null;
+  }, [messages, replyDetail]);
+  useCommand("thread.copyReply", () => {
+    if (!lastReply)
+      return;
+    copyText(lastReply).then(
+      () => emitFutureEvent("toast", { message: t("thread.copiedReply") }),
+      () => emitFutureEvent("toast", { message: t("common:copyFailed"), tone: "error" }),
+    );
+  }, ownsCommands && lastReply !== null);
+  // The corner's "jump to latest" button from the keyboard. Registered whether
+  // or not the button is showing: the button hides while the view is already at
+  // the live end, and a key that stopped answering there would read as broken.
+  useCommand("thread.latest", () => scrollToLatest(), ownsCommands);
 
   const handleRetryMessage = useCallback(
     (_message: AgentMessage, source: AgentMessage) => {
