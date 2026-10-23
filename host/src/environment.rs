@@ -29,6 +29,10 @@ pub fn prepare_process() {
         future_agent::logfile::init_embedded_tracing();
         crate::install_rustls_provider();
         future_agent::sandbox::hydrate_from_login_shell();
+        // A windowless GUI launch has nowhere to show a panic, and exit 101 is
+        // not a crash Windows records — this hook is the only way a later
+        // launch can learn what killed an earlier one.
+        crate::crash_log::install();
     });
 }
 

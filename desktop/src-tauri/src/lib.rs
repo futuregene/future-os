@@ -1201,6 +1201,11 @@ mod gui {
         }
         startup.enter("event loop");
         app.run(dispatch_run_event);
+        // Returning here means the loop ended without a panic, which is the
+        // other half of the evidence `crash_log` records: a launch that left
+        // this line and no crash entry exited on purpose, while one that left
+        // neither still died silently.
+        crate::host_environment::report("event loop returned; the process is exiting");
         Ok(())
     }
 

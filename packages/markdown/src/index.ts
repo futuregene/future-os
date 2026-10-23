@@ -15,6 +15,7 @@ export {
 export type { SessionReference, SessionReferenceMatch } from "./sessionReference";
 export { joinSoftBreaks } from "./softBreaks";
 export { createStreamingMarkdownParser } from "./streamingMarkdown";
+export { plainTitleText } from "./title";
 export { remarkLatexMath } from "./remarkLatexMath";
 export { remarkMathFence } from "./remarkMathFence";
 export { remarkCjkEmphasis } from "./remarkCjkEmphasis";
