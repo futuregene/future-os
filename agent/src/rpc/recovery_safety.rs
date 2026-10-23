@@ -1,6 +1,9 @@
 //! Recovery reads the authoritative transcript, never its healed placeholders.
 //! Unknown side effects fence all further mutations; a model assertion cannot
-//! release the fence. Complete file writes can be verified without redoing them.
+//! release the fence. Complete file writes can be verified without redoing them,
+//! and a shell command whose text provably cannot change anything observable is
+//! not an unknown effect at all. The decision is made from the command text,
+//! never from what the model claimed about it.
 use super::prompt_helpers::prepare_session_tool_call;
 use crate::session::{Manager, SessionEntry, ENTRY_TYPE_RUN_STARTED, ENTRY_TYPE_TOOL};
 use crate::types::ToolCallResult;
@@ -123,6 +126,15 @@ impl RecoverySafety {
                 }
             } else if handled {
                 continue;
+            } else if name == "shell" && args["command"].as_str().is_some_and(command_is_read_only)
+            {
+                // Provably read-only: no side effect can be waiting, so this
+                // call does not fence the session. Anything it cannot prove
+                // stays unresolved below.
+                tracing::debug!(
+                    tool_call_id = %id,
+                    "recovery: interrupted read-only shell is not fenced"
+                );
             } else if name == "write" && write_is_applied(&args) {
                 // This is an observation of the desired complete file, not a
                 // claim that the old process successfully returned. Persist it
@@ -213,6 +225,223 @@ fn write_is_applied(args: &Value) -> bool {
             .is_ok()
             && bytes == content.as_bytes()
     })
+}
+
+/// A shell command whose every segment is a whitelisted read-only program.
+/// Returns false on anything it cannot prove: the fence is the safe default.
+fn command_is_read_only(command: &str) -> bool {
+    let Some(segments) = split_command_segments(command) else {
+        return false;
+    };
+    let last = segments.len() - 1;
+    segments
+        .iter()
+        .enumerate()
+        .all(|(index, segment)| segment_is_read_only(segment, index == last))
+}
+
+/// Split on unquoted `;`, `&&`, `||`, `|` and newlines. `None` means the text
+/// holds something this predicate cannot reason about at all: command
+/// substitution, grouping, a stop-parsing token, any redirection, or an
+/// unbalanced quote.
+fn split_command_segments(command: &str) -> Option<Vec<String>> {
+    if command
+        .chars()
+        .any(|c| matches!(c, '`' | '>' | '<' | '(' | ')' | '{' | '}'))
+    {
+        return None;
+    }
+    if command.contains("--%") {
+        return None;
+    }
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = command.chars().peekable();
+    while let Some(c) = chars.next() {
+        if let Some(open) = quote {
+            current.push(c);
+            if c == open {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quote = Some(c);
+                current.push(c);
+            }
+            // `&&` chains; a lone `&` is the call/background operator.
+            '&' if chars.peek() == Some(&'&') => {
+                chars.next();
+                segments.push(std::mem::take(&mut current));
+            }
+            '&' => return None,
+            '|' => {
+                if chars.peek() == Some(&'|') {
+                    chars.next();
+                }
+                segments.push(std::mem::take(&mut current));
+            }
+            ';' | '\n' | '\r' => segments.push(std::mem::take(&mut current)),
+            _ => current.push(c),
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    segments.push(current);
+    let segments: Vec<String> = segments
+        .into_iter()
+        .map(|segment| segment.trim().to_owned())
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    (!segments.is_empty()).then_some(segments)
+}
+
+/// Whitespace-split honouring quotes, so a quoted separator stays inside its
+/// argument; `None` on an unbalanced quote or a segment with no token.
+fn command_tokens(segment: &str) -> Option<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut started = false;
+    let mut quote: Option<char> = None;
+    for c in segment.chars() {
+        if let Some(open) = quote {
+            started = true;
+            if c == open {
+                quote = None;
+            } else {
+                current.push(c);
+            }
+            continue;
+        }
+        match c {
+            '\'' | '"' => {
+                quote = Some(c);
+                started = true;
+            }
+            c if c.is_whitespace() => {
+                if started {
+                    tokens.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            _ => {
+                started = true;
+                current.push(c);
+            }
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    if started {
+        tokens.push(current);
+    }
+    (!tokens.is_empty()).then_some(tokens)
+}
+
+fn segment_is_read_only(segment: &str, is_last: bool) -> bool {
+    // A leading `$` or `@` assigns shell state (or splats arguments); neither is
+    // a command whose effect can be reasoned about.
+    if segment.starts_with('$') || segment.starts_with('@') {
+        return false;
+    }
+    let Some(tokens) = command_tokens(segment) else {
+        return false;
+    };
+    let Some((program, args)) = tokens.split_first() else {
+        return false;
+    };
+    match program.to_ascii_lowercase().as_str() {
+        // `cd` only moves this process; allowed where nothing follows it.
+        "cd" | "set-location" => is_last,
+        "git" => git_is_read_only(args),
+        "command" => args
+            .first()
+            .is_some_and(|flag| flag.eq_ignore_ascii_case("-v")),
+        // Programs with no write direction at all. Anything absent from this
+        // list is false, including every interpreter (`bash -c`, `node -e`,
+        // `python3 -c`), which can do whatever its argument says.
+        "echo" | "write-output" | "get-childitem" | "get-content" | "get-date" | "get-location"
+        | "get-process" | "test-path" | "select-string" | "select-object" | "measure-object"
+        | "where-object" | "pwd" | "ls" | "cat" | "head" | "tail" | "wc" | "which" | "type" => true,
+        _ => false,
+    }
+}
+
+/// `git` subcommands that only read, with the arguments that would still write
+/// or launch a program rejected so the list stays a list of effects.
+fn git_is_read_only(args: &[String]) -> bool {
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        match arg.as_str() {
+            "--no-pager" | "--no-optional-locks" | "--literal-pathspecs" => index += 1,
+            // `-C <dir>` only changes the directory the read happens in.
+            "-C" => index += 2,
+            _ => break,
+        }
+    }
+    let Some(subcommand) = args.get(index).map(|arg| arg.to_ascii_lowercase()) else {
+        return false;
+    };
+    let rest = &args[index + 1..];
+    if rest.iter().any(|arg| git_arg_writes(arg)) {
+        return false;
+    }
+    match subcommand.as_str() {
+        "status" | "log" | "diff" | "show" | "rev-parse" | "ls-files" => true,
+        // A positional argument would create a branch; the mutating short and
+        // long flags are refused explicitly.
+        "branch" => {
+            rest.iter().all(|arg| arg.starts_with('-'))
+                && !rest.iter().any(|arg| branch_flag_creates_or_deletes(arg))
+        }
+        "worktree" => match rest.first().map(|arg| arg.to_ascii_lowercase()).as_deref() {
+            None => true,
+            Some("list") => rest[1..].iter().all(|arg| arg.starts_with('-')),
+            Some(_) => false,
+        },
+        "remote" => matches!(
+            rest,
+            [flag] if matches!(flag.as_str(), "-v" | "-vv" | "--verbose")
+        ),
+        _ => false,
+    }
+}
+
+fn git_arg_writes(arg: &str) -> bool {
+    let lower = arg.to_ascii_lowercase();
+    // `--output` writes a file; the external diff/textconv helpers run a
+    // program chosen by configuration, and `--open-files-in-pager` spawns one.
+    lower == "--output"
+        || lower.starts_with("--output=")
+        || lower.starts_with("--ext-diff")
+        || lower.starts_with("--textconv")
+        || lower.starts_with("--open-files-in-pager")
+}
+
+fn branch_flag_creates_or_deletes(arg: &str) -> bool {
+    if let Some(long) = arg.strip_prefix("--") {
+        let long = long.split('=').next().unwrap_or(long).to_ascii_lowercase();
+        return matches!(
+            long.as_str(),
+            "delete"
+                | "move"
+                | "copy"
+                | "force"
+                | "set-upstream-to"
+                | "unset-upstream"
+                | "edit-description"
+                | "track"
+                | "no-track"
+                | "create-reflog"
+        );
+    }
+    arg.chars()
+        .skip(1)
+        .any(|c| matches!(c, 'd' | 'D' | 'm' | 'M' | 'c' | 'C' | 'f' | 'u' | 't'))
 }
 
 /// Some(true): recorded outcome; Some(false): not executed; None: partial/unknown.
@@ -501,5 +730,192 @@ mod tests {
             .pause_reason()
             .is_none());
         }
+    }
+
+    // ─── read-only classification ──────────────────────────────────────────
+
+    #[test]
+    fn read_only_classification_follows_the_whitelist() {
+        let proven = [
+            "git status",
+            "git status --short",
+            "git log --oneline -5",
+            "git diff --stat",
+            "git show HEAD",
+            "git rev-parse --abbrev-ref HEAD",
+            "git worktree list",
+            "git worktree list --porcelain",
+            "git branch",
+            "git branch -a -v",
+            "git branch --list",
+            "git remote -v",
+            "git ls-files",
+            "git -C D:/future-os status",
+            "git --no-pager log -1",
+            "Get-ChildItem -Path .",
+            "Get-Content -Path README.md -TotalCount 5",
+            "Get-Location",
+            "Get-Process",
+            "Get-Date",
+            "Test-Path D:/future-os",
+            "Select-String -Pattern 'git worktree' -Path agent/src/rpc/*.rs",
+            "Get-ChildItem | Select-Object -First 5",
+            "Get-Process | Where-Object ProcessName",
+            "Get-ChildItem | Measure-Object",
+            "echo hi",
+            "Write-Output hi",
+            "cd ..",
+            "git status; cd ..",
+            "pwd",
+            "ls",
+            "cat README.md",
+            "head -5 README.md",
+            "tail -5 README.md",
+            "wc -l README.md",
+            "which git",
+            "command -v git",
+            "type git",
+            "git status | Select-String churn",
+            "git status; git log --oneline -3",
+            "git status && echo done",
+            "git status\n\ngit worktree list",
+        ];
+        for command in proven {
+            assert!(
+                command_is_read_only(command),
+                "expected read-only: {command}"
+            );
+        }
+
+        let fenced = [
+            "",
+            "   ",
+            // Anything not on the list, including every write direction.
+            "rm -rf build",
+            "Remove-Item -Recurse -Force build",
+            "Set-Content -Path out.txt -Value hi",
+            "Add-Content out.txt hi",
+            "New-Item out.txt",
+            "Move-Item a b",
+            "Copy-Item a b",
+            "Start-Process notepad",
+            "Invoke-WebRequest http://example.com",
+            "Out-File out.txt",
+            "cargo build",
+            "npm install",
+            "git commit -m x",
+            "git push",
+            "git checkout main",
+            "git reset --hard",
+            "git merge dev",
+            "git worktree add ../other",
+            "git branch -D old",
+            "git branch new-branch",
+            "git remote add origin url",
+            "git diff --output=patch.diff",
+            "curl http://example.com",
+            "wget http://example.com",
+            // Interpreters execute whatever their argument says.
+            "bash -c \"rm x\"",
+            "sh -c \"rm x\"",
+            "node -e \"1\"",
+            "python3 -c \"print(1)\"",
+            "python -c \"print(1)\"",
+            // Read-only-looking disguises: redirection and writing pipes.
+            "echo hi > f",
+            "echo hi >> f",
+            "Get-ChildItem 2> err.txt",
+            "Get-ChildItem *> all.txt",
+            "cat < README.md",
+            "git status > status.txt",
+            "git status | tee f",
+            "Get-Content a.txt | Set-Content b.txt",
+            // A chain is only as read-only as its worst segment.
+            "git status; rm x",
+            "git status && rm x",
+            "git status || rm x",
+            "cd ..; rm x",
+            // Shell state mutation and command substitution.
+            "$x = git status",
+            "$env:FOO = 'bar'",
+            "echo $(rm x)",
+            "echo `rm x`",
+            "git status \"unbalanced",
+        ];
+        for command in fenced {
+            assert!(
+                !command_is_read_only(command),
+                "expected fenced: {command:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn interrupted_read_only_shell_does_not_fence_the_session() {
+        // The shape of tonight's incident: the call went out, the user pressed
+        // stop a second later, and no result was ever recorded.
+        for command in ["git worktree list", "git status --short", "Get-Date"] {
+            let args = json!({"command":command});
+            let (root, manager) = fixture("shell", args.clone(), None);
+            for automatic in [true, false] {
+                let safety = RecoverySafety::load(
+                    &manager,
+                    "session",
+                    root.path().to_str().unwrap(),
+                    automatic,
+                )
+                .unwrap();
+                assert!(safety.pause_reason().is_none(), "{command}");
+                assert!(safety.before_tool("shell", &args).is_none(), "{command}");
+            }
+        }
+    }
+
+    #[test]
+    fn interrupted_mutating_shell_still_fences_the_whole_session() {
+        let args = json!({"command":"rm -rf build"});
+        let (root, manager) = fixture("shell", args.clone(), None);
+        let safety =
+            RecoverySafety::load(&manager, "session", root.path().to_str().unwrap(), false)
+                .unwrap();
+        assert!(safety.pause_reason().is_some());
+        assert!(safety.before_tool("shell", &args).unwrap().is_error);
+        // The fence belongs to the session, not to the command that raised it:
+        // a later read-only command is refused as well.
+        assert!(
+            safety
+                .before_tool("shell", &json!({"command":"git status"}))
+                .unwrap()
+                .is_error
+        );
+    }
+
+    #[test]
+    fn read_only_excuse_never_covers_write_or_edit() {
+        // One unresolved write and one unresolved read-only shell call in the
+        // same transcript: only the shell is excused.
+        let (root, manager) = fixture("write", json!({"path":"missing","content":"new"}), None);
+        manager
+            .append_entries_synced(
+                "session",
+                &[SessionEntry::new_assistant(
+                    json!("more"),
+                    vec![ToolCall {
+                        id: "call2".into(),
+                        call_type: "function".into(),
+                        function: ToolCallFn {
+                            name: "shell".into(),
+                            arguments: json!({"command":"git status"}),
+                        },
+                    }],
+                )],
+            )
+            .unwrap();
+        let safety =
+            RecoverySafety::load(&manager, "session", root.path().to_str().unwrap(), false)
+                .unwrap();
+        let reason = safety.pause_reason().expect("the write is still unknown");
+        assert!(reason.contains("write (call)"), "{reason}");
+        assert!(!reason.contains("shell"), "{reason}");
     }
 }
