@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "text": "把这两份材料的结论对一下，冲突的地方标出来。",
+  "attachments": [
+    {
+      "localUri": "file:///demo/frank-2024.pdf",
+      "name": "frank-2024.pdf",
+      "mimeType": "application/pdf",
+      "kind": "file",
+      "originalSize": 12288,
+      "transferSize": 12288
+    },
+    {
+      "localUri": "file:///demo/dreher-2025.pdf",
+      "name": "dreher-2025.pdf",
+      "mimeType": "application/pdf",
+      "kind": "file",
+      "originalSize": 401408,
+      "transferSize": 401408
+    }
+  ]
+}
