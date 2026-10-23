@@ -84,6 +84,11 @@ coverage-tauri/
 # Demo figures the screenshot harness serves into conversations — generated
 # (scripts/screenshots/gen-demo-assets.py), never committed.
 /desktop/shot/assets/
+# Per-audit scenario fragments (see docs/guide/screenshots.md): they extend the
+# base scenarios with measurement assertions, so committing one would make a
+# plain `capture-*` fail on whatever it asserts. The mechanism and its test are
+# tracked; the audits themselves are scratch like the captures above.
+/scripts/screenshots/scenarios.d/*-audit.json
 
 # goal control plane runtime state (never commit)
 .codex/

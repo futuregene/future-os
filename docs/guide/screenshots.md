@@ -389,6 +389,21 @@ Three platform-level knobs are worth knowing:
   in this state" worth writing: `if (document.body.innerText.includes('正在生成')) throw new Error('…');`.
   The driver's own probes (`ready`, optional element reads) stay non-fatal.
 
+**Fragments in `scenarios.d/`:** when two sessions add scenarios for different
+platforms at the same time, neither edits `scenarios.json` (the later write would
+lose the other's work). Each writes a fragment under
+`scripts/screenshots/scenarios.d/*.json` instead, and `capture.py` merges those on
+top of the shared table at startup, in filename order:
+
+```json
+{ "mobile": { "audit-settings-bottom": { "steps": [ { "wait": 900 }, { "shot": "m-audit-settings-bottom.png" } ] } } }
+```
+
+A fragment hangs its entries under the platform it names and wins over a
+same-named entry (useful for a temporary override). A wrong platform name or a
+malformed fragment is an error rather than a silently empty capture.
+`make test-screenshot-harness` pins those rules.
+
 `desktop/shot/prefs.ts` (loaded before `main.tsx`) pins the preferences that are
 read at import time: `?lang=en`, `?theme=dark|light|system` and
 `?palette=<palette id>` (see `lib/theme.ts` `THEME_PALETTES`). It also *defaults*
