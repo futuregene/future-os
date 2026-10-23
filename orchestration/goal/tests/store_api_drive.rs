@@ -281,13 +281,13 @@ fn append_todo_change_succeeds_and_returns_the_event_id() {
     let dir = tmp();
     let root = dir.path().to_str().unwrap();
     let mut store = registered(root, "goal_tc");
-    let id = store
-        .append_todo_change(Event::TodoAdded {
-            goal_id: "goal_tc".into(),
-            todo: Todo::advancement("t1", "first"),
-            ts: 1,
-        })
-        .unwrap();
+    // Reuse the complete event, including the todo's creation timestamp.
+    let event = Event::TodoAdded {
+        goal_id: "goal_tc".into(),
+        todo: Todo::advancement("t1", "first"),
+        ts: 1,
+    };
+    let id = store.append_todo_change(event.clone()).unwrap();
     assert!(!id.is_empty(), "an append must return its event id");
     // The event is replayable and the schema was stamped on the goal dir.
     assert_eq!(store.replay("goal_tc").unwrap().unwrap().todos.len(), 1);
@@ -304,13 +304,7 @@ fn append_todo_change_succeeds_and_returns_the_event_id() {
     );
 
     // A second append for the same content is idempotent (content-derived id).
-    let again = store
-        .append_todo_change(Event::TodoAdded {
-            goal_id: "goal_tc".into(),
-            todo: Todo::advancement("t1", "first"),
-            ts: 1,
-        })
-        .unwrap();
+    let again = store.append_todo_change(event).unwrap();
     assert_eq!(again, id, "the same content must derive the same event id");
 }
 

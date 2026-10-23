@@ -28,11 +28,11 @@ export function useStopRequest(
   useEffect(() => {
     if (!streaming || !visible) return;
     let timer: ReturnType<typeof setInterval> | undefined;
-    const reset = (state: string | null) => {
+    const reset = (state: string | null | undefined) => {
       clearInterval(timer);
       lagRef.current = [];
       nextTickRef.current = null;
-      if (state !== null && state !== "active") return;
+      if (state != null && state !== "active") return;
       nextTickRef.current = performance.now() + 250;
       // Sample without React state updates or per-tick logging. Discard time
       // spent backgrounded: OS timer suspension is not a JS rendering stall.

@@ -58,8 +58,11 @@ export default antfu(
     },
   },
   {
-    files: ["src/**/*.{ts,tsx}", "shot/**/*.{ts,tsx}"],
+    files: ["src/**/*.{ts,tsx}", "shot/**/*.{ts,tsx}", "vite.shot.config.ts"],
     rules: {
+      // Keep the existing layout while upgrading the preset; v10 enables a new
+      // wrapping policy that would otherwise reformat thousands of unrelated lines.
+      "antfu/reasonable-newline": "off",
       "no-alert": "off",
       "no-console": "error",
       "react/set-state-in-effect": "off",

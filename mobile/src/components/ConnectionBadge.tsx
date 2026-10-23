@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Modal, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View, type ViewInstance } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react-native";
@@ -91,7 +91,7 @@ export function ConnectionBadge({
   const { t } = useTranslation();
   const dimensions = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const trigger = useRef<View>(null);
+  const trigger = useRef<ViewInstance>(null);
   const frameKey = `${dimensions.width}:${dimensions.height}:${dimensions.fontScale}:${insets.top}:${insets.right}:${insets.bottom}:${insets.left}`;
   const [anchor, setAnchor] = useState<{ right: number; top: number; frameKey: string } | null>(null);
   const [modalOpen, setModalOpen] = useState(false);

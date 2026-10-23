@@ -79,7 +79,7 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
         with:
-          packages: "platforms;android-36 build-tools;36.0.0"
+          packages: "platforms;android-37.0 build-tools;37.0.0"
 
       - name: Setup ossutil
         if: github.event_name == 'workflow_dispatch' && !inputs.coordinated

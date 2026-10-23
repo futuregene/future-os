@@ -619,7 +619,7 @@ async fn run_gateway(
                     }
                     if due {
                         let payload = json!({ "op": OP_HEARTBEAT, "d": last_sequence });
-                        socket.send(WsMessage::Text(payload.to_string())).await?;
+                        socket.send(WsMessage::Text(payload.to_string().into())).await?;
                         heartbeat_ack = false;
                         last_heartbeat = Instant::now();
                     }
@@ -667,14 +667,14 @@ async fn run_gateway(
                                         }
                                     });
                                     let text = payload.to_string();
-                                    socket.send(WsMessage::Text(text)).await?;
+                                    socket.send(WsMessage::Text(text.into())).await?;
                                     identified = true;
                                 }
                             }
                             OP_HEARTBEAT => {
                                 let payload = json!({ "op": OP_HEARTBEAT, "d": last_sequence });
                                 let text = payload.to_string();
-                                socket.send(WsMessage::Text(text)).await?;
+                                socket.send(WsMessage::Text(text.into())).await?;
                             }
                             OP_HEARTBEAT_ACK => {
                                 heartbeat_ack = true;

@@ -10,7 +10,7 @@ import {
 /** Resolves slide-out/settle animations in one step — the offset lands on its
  * target and the completion fires — so a release is observable in a single
  * assertion; the real timings are the device's business. */
-const instant = (value: Animated.Value | Animated.ValueXY, config: Animated.TimingAnimationConfig) =>
+const instant: typeof Animated.timing = (value, config) =>
   ({
     start: (callback?: (result: { finished: boolean }) => void) => {
       (value as Animated.Value).setValue(config.toValue as number);

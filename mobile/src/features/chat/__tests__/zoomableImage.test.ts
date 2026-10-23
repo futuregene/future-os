@@ -28,7 +28,7 @@ function gestureHarness(options: { now?: () => number } = {}) {
     nativeEvent: {
       touches: points.map(([locationX, locationY]) => ({ locationX, locationY })),
     },
-  }) as GestureResponderEvent;
+  }) as unknown as GestureResponderEvent;
   const values = () => zoom.transform.map(track =>
     (Object.values(track)[0] as Animated.Value & { __getValue(): number }).__getValue(),
   );

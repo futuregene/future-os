@@ -51,7 +51,7 @@ export function JsonPreview({
             ) : null}
             {formatted.limited ? <Text style={styles.notice}>{tooComplexMessage}</Text> : null}
           </View>
-        ) : null
+        ) : undefined
       }
       maxToRenderPerBatch={60}
       removeClippedSubviews

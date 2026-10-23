@@ -290,7 +290,7 @@ function PreviewLayer({
               keyExtractor={(_row, index) => String(index)}
               ListHeaderComponent={preview.truncated
                 ? <Text style={styles.previewTruncated}>{t("attachment.textTruncated")}</Text>
-                : null}
+                : undefined}
               maxToRenderPerBatch={12}
               renderItem={({ item, index }) => (
                 <Text selectable style={codeStyle ? styles.previewCode : styles.previewText}>

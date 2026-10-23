@@ -159,7 +159,7 @@ mod tests {
             // Give the client's dispatch loop time to subscribe.
             tokio::time::sleep(std::time::Duration::from_millis(80)).await;
             for msg in script {
-                let _ = ws.send(Message::Text(msg.to_string())).await;
+                let _ = ws.send(Message::Text(msg.to_string().into())).await;
             }
             // Brief hold; tests await the handle so the task completes.
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;

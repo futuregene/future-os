@@ -742,7 +742,11 @@ async fn socket_mode_session(
                     }
                 };
                 if let Some(ack) = envelope_ack(&envelope) {
-                    if sink.send(WsMessage::Text(ack.to_string())).await.is_err() {
+                    if sink
+                        .send(WsMessage::Text(ack.to_string().into()))
+                        .await
+                        .is_err()
+                    {
                         bail!("slack socket is not writable");
                     }
                     acked.fetch_add(1, Ordering::Relaxed);

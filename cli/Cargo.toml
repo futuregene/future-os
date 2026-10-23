@@ -43,10 +43,10 @@ serde.workspace = true
 # preserve_order: JSON object key order must match the TS CLI's JS semantics
 # (JSON.parse preserves insertion order; serde_json's default BTreeMap sorts).
 serde_json = { workspace = true, features = ["preserve_order"] }
-reqwest = { workspace = true, features = ["json", "rustls-tls"] }
+reqwest = { workspace = true, features = ["query", "form", "json", "rustls-no-provider"] }
 chrono = { workspace = true, features = ["clock"] }
 chrono-tz.workspace = true
-dirs = "5"
+dirs = "7"
 humantime = "2"
 base64.workspace = true
 tokio-tungstenite.workspace = true
@@ -68,7 +68,7 @@ terminal_size = "0.4"
 # `future relay`: an account-free NATS relay served from this binary. Its HTTP
 # surface is small (four routes, no middleware stack), so axum's default features
 # are enough; `nkeys` signs the NATS user JWTs it issues.
-axum = "0.7"
+axum = "0.8"
 # `future relay serve` terminates TLS itself when relay.json carries a
 # certificate. axum 0.7's `serve` only takes a `TcpListener`, so the accept loop
 # and the TLS handshake are done here with the crates the rest of the binary
@@ -87,14 +87,14 @@ future-remote-crypto = { path = "../packages/remote-crypto" }
 tokio-stream = { workspace = true, features = ["net"] }
 # The relay's broker-level test drives a real `nats-server`; see
 # `cli/tests/relay_nats_auth.rs`.
-async-nats = "0.49"
+async-nats = "0.50"
 futures-util.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 portable-pty = "0.9"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console"] }
 
 # `prompt::ask_yes_no` reads one key at a time on a terminal: termios is what
 # turns the line wait and the echo off, and what puts them back.

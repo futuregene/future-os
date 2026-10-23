@@ -38,6 +38,7 @@ const config: ExpoConfig = {
     // With no options it retains expo-sharing's disabled share-in extensions;
     // FutureOS's optional inbound extension remains owned by the plugin above.
     "expo-sharing",
+    "expo-status-bar",
     [
       "expo-camera",
       {
@@ -85,9 +86,9 @@ const config: ExpoConfig = {
       "expo-build-properties",
       {
         android: {
-          compileSdkVersion: 36,
+          compileSdkVersion: 37,
           targetSdkVersion: 36,
-          buildToolsVersion: "36.0.0",
+          buildToolsVersion: "37.0.0",
           // A self-hosted relay on a home LAN can only be reached over plain
           // HTTP: Android ignores user-installed CAs for apps targeting API 24+,
           // so a self-signed certificate has no trust anchor on the phone. The
@@ -97,10 +98,6 @@ const config: ExpoConfig = {
         },
         ios: {
           deploymentTarget: "16.4",
-          // Xcode 27 / iOS 27 rejects the legacy UIApplication-only lifecycle
-          // at launch. Expo SDK 57 can opt into its backported scene delegate
-          // until the project moves to SDK 58, where scenes are the default.
-          enableSceneSupport: true,
         },
       },
     ],

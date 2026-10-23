@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { MutableRefObject } from "react";
 import * as Network from "expo-network";
-import { AppState, type AppStateStatus } from "react-native";
+import { AppState } from "react-native";
 import type { RecoveryReason } from "./client";
 import { NATIVE_PRESENTATION_GRACE_MS, nativePresentationInFlight } from "./nativePresentation";
 
@@ -69,7 +69,7 @@ export function useAppLifecycle({
   );
 
   useEffect(() => {
-    let previous: AppStateStatus = AppState.currentState;
+    let previous = AppState.currentState;
     let backgrounded = previous === "background";
     let backgroundDeadline: number | null = backgrounded ? Date.now() : null;
     let presentationTimer: ReturnType<typeof setTimeout> | null = null;

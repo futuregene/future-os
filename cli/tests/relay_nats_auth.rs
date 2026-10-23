@@ -183,7 +183,7 @@ impl Host {
         let now = future_cli::relay::now();
         let (public, timestamp, signature) =
             sign::sign(&self.key, "POST", "/v1/rooms", now, &bytes).unwrap();
-        let response = reqwest::Client::new()
+        let response = future_agent::http::client()
             .post(format!("{}/v1/rooms", relay.url))
             .header("x-future-public-key", public)
             .header("x-future-timestamp", timestamp)
@@ -216,7 +216,7 @@ impl Host {
             &bytes,
         )
         .unwrap();
-        let response = reqwest::Client::new()
+        let response = future_agent::http::client()
             .post(format!("{}/client/v1/remote/auth/token", relay.url))
             .header("x-future-public-key", public)
             .header("x-future-timestamp", timestamp)
@@ -248,7 +248,7 @@ impl Device {
 
     /// The exact body the phone sends: `nonce` is the invitation's join token.
     async fn claim(&self, relay: &RunningRelay, host: &Host) -> serde_json::Value {
-        let response = reqwest::Client::new()
+        let response = future_agent::http::client()
             .post(format!("{}/client/v1/remote/pair/claim", relay.url))
             .json(&serde_json::json!({
                 "nonce": host.join,
@@ -271,7 +271,7 @@ impl Device {
         pair_id: &str,
         refresh: &str,
     ) -> (u16, serde_json::Value) {
-        let response = reqwest::Client::new()
+        let response = future_agent::http::client()
             .post(format!("{}/client/v1/remote/auth/token", relay.url))
             .json(&serde_json::json!({
                 "pair_id": pair_id,
@@ -534,7 +534,7 @@ async fn relay_credentials_are_accepted_and_scoped_by_the_broker() {
 
     // ── The invitation is single use ──
     let intruder = Device::new("dev_intruder");
-    let response = reqwest::Client::new()
+    let response = future_agent::http::client()
         .post(format!("{}/client/v1/remote/pair/claim", relay.url))
         .json(&serde_json::json!({
             "nonce": host.join,

@@ -77,7 +77,7 @@ async fn main() -> Result<()> {
         encoded.len() <= MAX_REQUEST_BYTES,
         "input byte bound exceeded"
     );
-    let http = reqwest::Client::builder()
+    let http = future_agent::http::client_builder()
         .timeout(std::time::Duration::from_secs(180))
         .build()?;
     let mut call = http

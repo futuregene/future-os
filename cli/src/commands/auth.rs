@@ -351,7 +351,7 @@ pub fn strip_api_suffix(base_url: &str) -> String {
 
 /// Requests set an explicit timeout covering both headers and body.
 fn http_client() -> reqwest::Client {
-    reqwest::Client::new()
+    future_agent::http::client()
 }
 
 /// `tryFetch(url, init)` — network failures are wrapped in
@@ -984,12 +984,26 @@ mod tests {
 
     #[tokio::test]
     async fn auth_request_timeout_includes_response_body() {
-        use tokio::io::AsyncWriteExt;
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (release, released) = tokio::sync::oneshot::channel::<()>();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
+            // Finish receiving the POST before replying; an unsolicited early
+            // response can fail the send instead of exercising the body timeout.
+            let mut request = BufReader::new(&mut socket);
+            loop {
+                let mut line = String::new();
+                assert!(request.read_line(&mut line).await.unwrap() > 0);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let mut body = [0u8; 2];
+            request.read_exact(&mut body).await.unwrap();
+            assert_eq!(&body, b"{}");
+            drop(request);
             // The head promises 1000 bytes and the body is one byte: the answer
             // this mock stands in for is a *response that never completes, which
             // is what the timeout has to cover. The release (not an abort) ends

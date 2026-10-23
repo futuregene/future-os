@@ -11,7 +11,7 @@ fn http_client() -> reqwest::Client {
     // `Client::builder().timeout().build()` only fails for an invalid config;
     // the default config here is constant, so a failure is an invariant break.
     crate::install_rustls_provider();
-    reqwest::Client::builder()
+    future_agent::http::client_builder()
         .timeout(REQUEST_TIMEOUT)
         .build()
         .expect("default reqwest client config cannot fail to build")

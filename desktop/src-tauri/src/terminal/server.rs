@@ -453,7 +453,7 @@ impl TerminalServer {
         // while the exit path below reads its metadata.
         let replay = std::mem::take(&mut attachment.replay);
         for chunk in replay {
-            if sink.send(Message::Binary(chunk)).await.is_err() {
+            if sink.send(Message::Binary(chunk.into())).await.is_err() {
                 attachment.detach();
                 return;
             }
@@ -472,7 +472,7 @@ impl TerminalServer {
                 exit_code: attachment.exit_code,
             };
             let _ = sink
-                .send(Message::Binary(protocol::meta_frame(&meta)))
+                .send(Message::Binary(protocol::meta_frame(&meta).into()))
                 .await;
             let _ = sink
                 .send(Message::Close(Some(CloseFrame {
@@ -484,7 +484,7 @@ impl TerminalServer {
             return;
         }
         if sink
-            .send(Message::Binary(protocol::meta_frame(&start_meta)))
+            .send(Message::Binary(protocol::meta_frame(&start_meta).into()))
             .await
             .is_err()
         {
@@ -502,12 +502,12 @@ impl TerminalServer {
                 event = events.recv() => {
                     match event {
                         Some(SessionEvent::Data(bytes)) => {
-                            if sink.send(Message::Binary(bytes)).await.is_err() {
+                            if sink.send(Message::Binary(bytes.into())).await.is_err() {
                                 break;
                             }
                         }
                         Some(SessionEvent::Exited(meta)) => {
-                            if sink.send(Message::Binary(protocol::meta_frame(&meta))).await.is_err() {
+                            if sink.send(Message::Binary(protocol::meta_frame(&meta).into())).await.is_err() {
                                 break;
                             }
                             close = Some(CloseFrame { code: CloseCode::Normal, reason: "exited".into() });
@@ -1938,7 +1938,7 @@ mod end_to_end {
         assert_eq!(response.status().as_u16(), 101);
 
         socket
-            .send(Message::Ping(b"probe".to_vec()))
+            .send(Message::Ping(b"probe".to_vec().into()))
             .await
             .expect("send ping");
         let mut pong: Option<Vec<u8>> = None;
@@ -1951,7 +1951,7 @@ mod end_to_end {
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline && pong.is_none() {
             match tokio::time::timeout(Duration::from_secs(5), socket.next()).await {
-                Ok(Some(Ok(Message::Pong(payload)))) => pong = Some(payload),
+                Ok(Some(Ok(Message::Pong(payload)))) => pong = Some(payload.to_vec()),
                 Ok(Some(Ok(Message::Binary(bytes)))) => {
                     if bytes.first() != Some(&protocol::CONTROL_PREFIX) {
                         echoed.push_str(&String::from_utf8_lossy(&bytes));

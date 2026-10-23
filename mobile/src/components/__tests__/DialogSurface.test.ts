@@ -35,6 +35,8 @@ test.each([false, true])("Android edge-to-edge dialog follows the IME and releas
   const event = (height: number) => ({
     duration: 200,
     easing: "keyboard" as const,
+    startCoordinates: { height: 0, width: 390, screenX: 0, screenY: 844 },
+    isEventFromThisApp: true,
     endCoordinates: { height, width: 390, screenX: 0, screenY: 844 - height },
   });
   const remove = jest.fn();
@@ -47,9 +49,9 @@ test.each([false, true])("Android edge-to-edge dialog follows the IME and releas
     StyleSheet.flatten(node.props.style)?.paddingLeft === 20,
   )!.props.style);
   expect(viewportStyle().paddingBottom).toBe(34);
-  act(() => listeners.get("keyboardDidShow")!(event(300)));
+  act(() => { listeners.get("keyboardDidShow")!(event(300)); });
   expect(viewportStyle().paddingBottom).toBe(300);
-  act(() => listeners.get("keyboardDidHide")!(event(0)));
+  act(() => { listeners.get("keyboardDidHide")!(event(0)); });
   expect(viewportStyle().paddingBottom).toBe(34);
   act(() => tree.unmount());
   expect(remove).toHaveBeenCalledTimes(jest.mocked(Keyboard.addListener).mock.calls.length);

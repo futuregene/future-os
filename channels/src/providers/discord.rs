@@ -648,7 +648,7 @@ async fn run_gateway(
                             return Err(anyhow!("gateway heartbeat was not acknowledged; reconnecting"));
                         }
                         let payload = state.heartbeat_payload();
-                        socket.send(WsMessage::Text(payload.to_string())).await?;
+                        socket.send(WsMessage::Text(payload.to_string().into())).await?;
                         heartbeat_ack = false;
                         last_heartbeat = Instant::now();
                     }
@@ -688,13 +688,13 @@ async fn run_gateway(
                                             .unwrap_or_else(|| state.identify_payload(&config.bot_token)),
                                         ResumeDecision::Identify => state.identify_payload(&config.bot_token),
                                     };
-                                    socket.send(WsMessage::Text(payload.to_string())).await?;
+                                    socket.send(WsMessage::Text(payload.to_string().into())).await?;
                                     identified = true;
                                 }
                             }
                             OP_HEARTBEAT => {
                                 let payload = state.heartbeat_payload();
-                                socket.send(WsMessage::Text(payload.to_string())).await?;
+                                socket.send(WsMessage::Text(payload.to_string().into())).await?;
                             }
                             OP_HEARTBEAT_ACK => {
                                 heartbeat_ack = true;
