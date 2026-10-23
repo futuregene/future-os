@@ -82,6 +82,33 @@ describe("building a theme", () => {
     expect(body).toEqual([...body].sort((left, right) => left - right));
     expect(new Set(body).size).toBe(4);
   });
+
+  it("holds the two smallest sizes at 10px on the smallest text size", () => {
+    // `small` (0.85) took `font(10)` and `font(11)` to 9px. Those are the
+    // composer's pending-attachment size and the approval card's uppercase
+    // labels — short CJK strings, unreadable rather than merely quiet, so the
+    // scale has a floor as well as whole points. The floor also makes 10 and 11
+    // the same value at this size; they appear on different screens and never
+    // side by side, and a hierarchy carried by 1px is not one worth keeping.
+    const small = buildTheme("light", "small");
+    expect(small.font(10)).toBe(10);
+    expect(small.font(11)).toBe(10);
+    expect(small.font(12)).toBe(10);
+    // The next size up is still scaled normally, so the floor is a floor and
+    // not a flattening of the whole scale.
+    expect(small.font(13)).toBe(11);
+  });
+
+  it("leaves the larger text sizes untouched by that floor", () => {
+    // Only `small` can reach it: `medium` is the size everything was drawn at,
+    // and the two larger steps only grow. Line heights keep the same clamp and
+    // still clear it — the smallest one the app designs with is 14, which lands
+    // at 12 on `small`.
+    expect(buildTheme("light", "medium").font(12)).toBe(12);
+    expect(buildTheme("light", "large").font(12)).toBe(14);
+    expect(buildTheme("light", "xlarge").font(10)).toBe(14);
+    expect(buildTheme("light", "small").leading(14)).toBe(12);
+  });
 });
 
 describe("the dark palette", () => {
