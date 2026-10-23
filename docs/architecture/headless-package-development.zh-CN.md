@@ -347,7 +347,7 @@ CI `39358154196` 的 headless 进程组失败于 `a_reconnect_with_a_pre_v2_slot
 
 ### 2026-10-20 Agent 托管与入口 runtime 归属
 
-Agent 的状态、发现/兼容性决策、服务锁作用域、准备、readiness、取消、停止与有界清理迁入 `host/src/agent_host.rs`。Desktop 仅保留原生执行驱动：创建 probe runtime，驱动共享选择 future 并销毁 probe；共享库取得原有 Agent 服务许可并准备服务后，入口创建并驱动 Agent runtime。入口先按原 1 秒上限销毁 runtime，再退出共享服务的借用作用域，最后由 Agent 原有清理验证决定释放或保留实例锁。保留 2 个 worker、32 个 blocking thread、2 MiB stack 和原有启动/停止期限。共享生产服务没有 runtime 构造或 `block_on`，不公开内部状态锁或 Agent 数据库。
+Agent 的状态、发现/兼容性决策、服务锁作用域、准备、readiness、取消、停止与有界清理迁入 `host/src/agent_host.rs`。Desktop 仅保留原生执行驱动：创建 probe runtime，驱动共享选择 future 并销毁 probe；共享库取得原有 Agent 服务许可并准备服务后，入口创建并驱动 Agent runtime。入口先按原 1 秒上限销毁 runtime，再退出共享服务的借用作用域，最后由 Agent 原有清理验证决定释放或保留实例锁。保留 5 个 worker、32 个 blocking thread、2 MiB stack 和原有启动/停止期限。共享生产服务没有 runtime 构造或 `block_on`，不公开内部状态锁或 Agent 数据库。
 
 22 个原声明及真实 RPC、数据库导入、FIFO 阻塞、进程/Shell 退出、内置/外部 Agent 归属断言一并迁入独立宿主测试。停止前拒绝启动的库用例直接关闭共享 admission；Desktop 的完整退出协调测试继续验证入口接线。日志路径和镜像也迁入宿主，仍是 `app/logs/desktop.log`，CLI 发现报告留在入口。宿主单包、GUI/CLI 组合、旧 headless Clippy `--all-targets` 和 fmt 通过，详见[验证记录](../testing/headless-host-agent-owner-2026-10-20.json)。本批尚未执行测试且晚于当前 CI 候选，不能用编译或上一候选的跨平台宿主成功替代生命周期验收。完整业务桥、Remote 宿主、调度及整体退出协调仍未完成。
 

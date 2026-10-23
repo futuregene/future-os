@@ -6,6 +6,17 @@ use std::time::Duration;
 
 use future_host::{future_login, remote, Error as AppError};
 
+/// Worker threads for this entry's runtime and its embedded Agent's runtime.
+///
+/// Two workers left no margin. The session loop, the readiness probe, the
+/// remote bridge and the store all share the host runtime, and synchronous file
+/// I/O on the data root (session database, credential store, log file — an NFS
+/// home on a server) can park a worker in an uninterruptible write. With both
+/// workers parked the runtime cannot poll the probe's deadline, and a healthy
+/// Agent is then reported as "handshake timed out". Five keeps the loop and the
+/// probe running while several blocking operations are in flight.
+const RUNTIME_WORKER_THREADS: usize = 5;
+
 pub const HELP: &str = "Usage: future host [--relay URL [--relay-ca PEM]] [--help]
 
 Run this machine as a FutureOS host in this terminal; Ctrl+C stops it.
@@ -127,7 +138,7 @@ pub fn run(options: Options) -> Result<(), String> {
     prepare_terminal();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .worker_threads(2)
+        .worker_threads(RUNTIME_WORKER_THREADS)
         .max_blocking_threads(32)
         .thread_stack_size(2 * 1024 * 1024)
         .build()
