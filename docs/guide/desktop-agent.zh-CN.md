@@ -36,7 +36,7 @@ Windows 自动更新使用独立观察进程等待 Desktop 退出，再运行安
 
 ## 排障与日志
 
-默认数据根是 `~/.future`；有效绝对 `FUTURE_HOME` 替换整个根。内置宿主日志在 `<数据根>/app/logs/desktop.log`；独立 CLI Agent 的日志仍在 `<数据根>/agent/logs/agent.log`（开启文件日志时）；Windows 更新恢复日志在 `<数据根>/app/logs/update-recovery.log`。
+默认数据根是 `~/.future`；有效绝对 `FUTURE_HOME` 替换整个根。内置宿主日志在 `<数据根>/app/logs/desktop.log`，该文件只保留最新 1000 行，且每次启动会先把上一次运行留下的尾部另存为 `<数据根>/app/logs/desktop.prev.log`，因此没起来的启动在现场被下一次会话挤掉后仍可查看；独立 CLI Agent 的日志仍在 `<数据根>/agent/logs/agent.log`（开启文件日志时）；Windows 更新恢复日志在 `<数据根>/app/logs/update-recovery.log`。
 
 Desktop 的 `app/app.db`、`app/desktop.lock`、GUI 单实例范围、聊天临时工作区、配对和设备身份也遵循同一数据根。默认路径和存储格式不变。旧版本在使用覆盖目录时，可能仍把 Desktop 数据放在默认目录，而 Agent 数据位于覆盖目录；这些旧文件原样保留，本次不复制、合并或搬迁。选择默认数据根可访问其中的 Desktop 数据；覆盖目录使用自己的隔离状态。
 

@@ -96,7 +96,10 @@ WAL or lock files to accelerate exit.
 ## Troubleshooting and logs
 
 The default data root is `~/.future`; a valid absolute FUTURE_HOME replaces the
-whole root. Embedded host logs are at `<root>/app/logs/desktop.log`. Independent
+whole root. Embedded host logs are at `<root>/app/logs/desktop.log`; that file
+keeps its newest 1000 lines, and each start first copies the tail of the run
+before it to `<root>/app/logs/desktop.prev.log`, so a launch that never came
+back stays readable after the next session filled the live file. Independent
 CLI Agent file logs remain at `<root>/agent/logs/agent.log` when enabled. Windows
 update recovery uses `<root>/app/logs/update-recovery.log`.
 

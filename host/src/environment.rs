@@ -1,4 +1,24 @@
 //! Shared process preparation and diagnostics, independent of CLI discovery or GUI.
+//!
+//! The host log is a ring buffer (see [`future_agent::logfile`]), so the newest
+//! lines of one run are gone as soon as the next ordinary session writes over
+//! them. [`start_logging`] therefore copies the previous run's tail to a sibling
+//! `*.prev.log` before the live file is opened: what a failed launch left behind
+//! survives one further start, and the live file keeps its existing name,
+//! format and retention unchanged.
+
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+
+/// How many of the previous run's newest lines its `*.prev.log` copy keeps.
+///
+/// One whole ring buffer's worth, so a launch that never reached the Agent can
+/// still be read back from the copy after the next session filled the live log.
+const PREVIOUS_LOG_LINES: usize = future_agent::logfile::DEFAULT_MAX_LINES;
+
+/// Read this much at a time while locating the rotation point; a log can be
+/// large, and only its tail matters.
+const TAIL_CHUNK: u64 = 8 * 1024;
 
 /// Hydrate the process before choosing Future home, taking its lock or starting
 /// a runtime. Each entry applies its parsed relay options and CLI maintenance
@@ -13,13 +33,20 @@ pub fn prepare_process() {
 }
 
 pub fn start_logging() -> Result<(), crate::Error> {
-    future_agent::logfile::init(&log_file_path(), future_agent::logfile::DEFAULT_MAX_LINES)?;
+    let path = log_file_path();
+    // Before the live file is opened and trimmed to its ring buffer, keep the
+    // tail of the run before this one. Best effort: a copy that cannot be made
+    // must not cost this launch its log.
+    if let Err(error) = preserve_previous_log(&path, PREVIOUS_LOG_LINES) {
+        report(&format!("previous host log could not be kept: {error}"));
+    }
+    future_agent::logfile::init(&path, future_agent::logfile::DEFAULT_MAX_LINES)?;
     report(&format!(
         "host starting version={} pid={} mode={} log={}",
         crate::build_info::VERSION,
         std::process::id(),
         std::env::var("FUTURE_DESKTOP_AGENT_MODE").unwrap_or_else(|_| "auto".into()),
-        log_file_path().display()
+        path.display()
     ));
     Ok(())
 }
@@ -32,8 +59,269 @@ pub fn log_file_path() -> std::path::PathBuf {
 }
 
 pub fn report(message: &str) {
-    eprintln!("FutureOS: {message}");
+    let line = report_line(message);
+    eprint!("{line}");
     if let Some(mirror) = future_agent::logfile::get() {
-        mirror.write_stripped(&format!("FutureOS: {message}\n"));
+        mirror.write_stripped(&line);
+    }
+}
+
+/// A report stamped exactly the way the tracing rows in the same file are, so a
+/// start, a stall and an exit can be ordered against them — and against each
+/// other across launches that look adjacent once the stamp is missing.
+fn report_line(message: &str) -> String {
+    format!(
+        "{} FutureOS: {message}\n",
+        chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.6fZ")
+    )
+}
+
+/// Path of the copy holding the previous run's tail: `desktop.prev.log` beside
+/// `desktop.log`.
+fn previous_log_path(path: &Path) -> PathBuf {
+    path.with_extension("prev.log")
+}
+
+/// Copy the newest `max_lines` lines of `path` to [`previous_log_path`],
+/// replacing the copy the run before left there.
+///
+/// Nothing to keep is not an error: a first launch, or a log a previous run
+/// emptied, leaves no copy and no complaint.
+fn preserve_previous_log(path: &Path, max_lines: usize) -> io::Result<()> {
+    let mut source = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let len = source.metadata()?.len();
+    if len == 0 {
+        return Ok(());
+    }
+    let start = tail_start(&mut source, len, max_lines)?;
+    // Copy beside the target and rename over it, so a failure part-way through
+    // leaves the previous copy whole instead of truncated.
+    let staging = path.with_extension("prev.log.tmp");
+    let result = copy_tail(&mut source, start, len, &staging)
+        .and_then(|()| std::fs::rename(&staging, previous_log_path(path)));
+    if result.is_err() {
+        // A copy that could not be published must not leave debris behind.
+        let _ = std::fs::remove_file(&staging);
+    }
+    result
+}
+
+fn copy_tail(source: &mut std::fs::File, start: u64, len: u64, to: &Path) -> io::Result<()> {
+    let mut out = std::fs::File::create(to)?;
+    source.seek(SeekFrom::Start(start))?;
+    let mut tail = source.take(len - start);
+    io::copy(&mut tail, &mut out)?;
+    out.flush()
+}
+
+/// Byte offset where the newest `max_lines` lines begin, found by scanning
+/// backwards in [`TAIL_CHUNK`] reads rather than holding the file in memory.
+fn tail_start(file: &mut std::fs::File, len: u64, max_lines: usize) -> io::Result<u64> {
+    if max_lines == 0 {
+        return Ok(len);
+    }
+    let mut budget = max_lines;
+    let mut end = len;
+    let mut buf = vec![0u8; TAIL_CHUNK as usize];
+    while end > 0 {
+        let start = end.saturating_sub(TAIL_CHUNK);
+        let size = (end - start) as usize;
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut buf[..size])?;
+        for index in (0..size).rev() {
+            let at = start + index as u64;
+            if buf[index] != b'\n' {
+                continue;
+            }
+            // A final newline terminates the last line; it does not open one.
+            if at + 1 == len {
+                continue;
+            }
+            if budget == 1 {
+                return Ok(at + 1);
+            }
+            budget -= 1;
+        }
+        end = start;
+    }
+    Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lines_in(path: &Path) -> Vec<String> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Every file in the directory, so a staging artefact left behind by a
+    /// rotation is as visible as a wrong copy.
+    fn names_in(directory: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_report_line_leads_with_a_utc_timestamp_like_the_tracing_rows() {
+        let line = report_line("host starting version=1 pid=2");
+        assert!(line.ends_with('\n'), "{line:?}");
+        let (stamp, message) = line
+            .trim_end()
+            .split_once(' ')
+            .expect("a stamp and a message");
+        assert_eq!(message, "FutureOS: host starting version=1 pid=2");
+        // `2026-10-23T12:41:16.186523Z`: the shape tracing's `%.6f` timer writes.
+        assert_eq!(stamp.len(), 27, "{stamp}");
+        chrono::DateTime::parse_from_rfc3339(stamp).expect("an RFC 3339 stamp");
+        let (_, fraction) = stamp.split_once('.').expect("a fractional second");
+        assert_eq!(fraction.len(), 7, "{fraction}");
+        assert!(fraction.ends_with('Z'), "{fraction}");
+        assert!(
+            fraction[..6].chars().all(|digit| digit.is_ascii_digit()),
+            "{fraction}"
+        );
+    }
+
+    #[test]
+    fn the_previous_runs_tail_is_kept_beside_the_live_log() {
+        let directory = tempfile::tempdir().unwrap();
+        let live = directory.path().join("desktop.log");
+        let content: String = (0..1500).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(&live, &content).unwrap();
+
+        preserve_previous_log(&live, 1000).unwrap();
+
+        let previous = previous_log_path(&live);
+        assert_eq!(previous, directory.path().join("desktop.prev.log"));
+        let kept = lines_in(&previous);
+        assert_eq!(kept.len(), 1000);
+        assert_eq!(kept.first().unwrap(), "line 500");
+        assert_eq!(kept.last().unwrap(), "line 1499");
+        // The live log is copied, never moved or trimmed: its own bytes stand.
+        assert_eq!(std::fs::read_to_string(&live).unwrap(), content);
+        assert_eq!(
+            names_in(directory.path()),
+            vec!["desktop.log", "desktop.prev.log"]
+        );
+    }
+
+    #[test]
+    fn a_second_launch_replaces_the_previous_copy_instead_of_stacking() {
+        let directory = tempfile::tempdir().unwrap();
+        let live = directory.path().join("desktop.log");
+        std::fs::write(&live, "old 1\nold 2\nold 3\n").unwrap();
+        preserve_previous_log(&live, 2).unwrap();
+        assert_eq!(lines_in(&previous_log_path(&live)), vec!["old 2", "old 3"]);
+
+        std::fs::write(&live, "new\n").unwrap();
+        preserve_previous_log(&live, 2).unwrap();
+
+        assert_eq!(lines_in(&previous_log_path(&live)), vec!["new"]);
+        assert_eq!(
+            names_in(directory.path()),
+            vec!["desktop.log", "desktop.prev.log"],
+            "one copy, not one per run"
+        );
+    }
+
+    #[test]
+    fn a_first_launch_has_nothing_to_preserve() {
+        let directory = tempfile::tempdir().unwrap();
+        let live = directory.path().join("desktop.log");
+
+        preserve_previous_log(&live, 1000).unwrap();
+        assert!(!previous_log_path(&live).exists());
+
+        std::fs::write(&live, "").unwrap();
+        preserve_previous_log(&live, 1000).unwrap();
+        assert!(!previous_log_path(&live).exists());
+        assert_eq!(names_in(directory.path()), vec!["desktop.log"]);
+    }
+
+    #[test]
+    fn a_short_log_is_kept_whole_without_a_final_newline() {
+        let directory = tempfile::tempdir().unwrap();
+        let live = directory.path().join("desktop.log");
+        std::fs::write(&live, "only line").unwrap();
+
+        preserve_previous_log(&live, 1000).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(previous_log_path(&live)).unwrap(),
+            "only line"
+        );
+    }
+
+    #[test]
+    fn the_tail_is_located_across_read_chunks() {
+        let directory = tempfile::tempdir().unwrap();
+        let live = directory.path().join("desktop.log");
+        // Lines longer than TAIL_CHUNK: both the rotation point and the copy
+        // straddle several reads, which a whole-file buffer would hide.
+        let wide = "x".repeat(40 * 1024);
+        std::fs::write(&live, format!("{wide}\nkeep me\n")).unwrap();
+
+        preserve_previous_log(&live, 1).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(previous_log_path(&live)).unwrap(),
+            "keep me\n"
+        );
+
+        preserve_previous_log(&live, 2).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(previous_log_path(&live)).unwrap(),
+            format!("{wide}\nkeep me\n")
+        );
+    }
+
+    #[test]
+    fn keeping_no_lines_writes_an_empty_copy() {
+        let directory = tempfile::tempdir().unwrap();
+        let live = directory.path().join("desktop.log");
+        std::fs::write(&live, "a\nb\n").unwrap();
+
+        preserve_previous_log(&live, 0).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(previous_log_path(&live)).unwrap(),
+            ""
+        );
+    }
+
+    #[test]
+    fn a_copy_that_cannot_replace_the_previous_file_is_an_error_and_leaves_no_staging() {
+        let directory = tempfile::tempdir().unwrap();
+        let live = directory.path().join("desktop.log");
+        std::fs::write(&live, "a\nb\n").unwrap();
+        // A directory where the copy belongs: the rename cannot land.
+        std::fs::create_dir(previous_log_path(&live)).unwrap();
+
+        assert!(preserve_previous_log(&live, 10).is_err());
+        assert_eq!(
+            names_in(directory.path()),
+            vec!["desktop.log", "desktop.prev.log"]
+        );
+        assert!(previous_log_path(&live).is_dir(), "the old copy stands");
+    }
+
+    #[test]
+    fn a_source_that_cannot_be_read_as_a_log_is_an_error() {
+        // Opening a directory as the log fails outright on Windows and fails
+        // on its first read on Unix; either way there is nothing to preserve.
+        let directory = tempfile::tempdir().unwrap();
+        assert!(preserve_previous_log(directory.path(), 10).is_err());
     }
 }
