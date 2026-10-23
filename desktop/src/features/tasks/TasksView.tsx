@@ -14,6 +14,8 @@ import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { formatDateTime } from "../../lib/date";
 import { useTauriEvent } from "../../lib/useTauriEvent";
 import { MarkdownContent } from "../markdown/MarkdownContent";
+import { timezoneLabel, timezoneName } from "./timezoneChoice";
+import { TimezoneField } from "./TimezoneField";
 import { useTasks } from "./useTasks";
 
 /**
@@ -58,60 +60,9 @@ interface DraftTrigger {
 }
 
 /**
- * Zones offered by the time-zone picker: every zone this webview knows, which
- * is the IANA database the runtime ships. `Intl.supportedValuesOf` is missing on
- * an older webview, so a short list of common zones keeps the picker usable
- * there instead of leaving one option; whatever the task already carries is
- * added either way, so an edit never silently rewrites a zone the list lacks.
+ * Zones offered by the time-zone picker live in `./timezoneChoice`: every zone
+ * this webview knows, named in the reader's language with its offset beside it.
  */
-let knownTimezones: string[] | null = null;
-
-/** The runtime's zone list, read once: it does not change within a session. */
-function allTimezones(): string[] {
-  if (knownTimezones)
-    return knownTimezones;
-  let zones: string[] = [];
-  try {
-    const supported = (Intl as unknown as { supportedValuesOf?: (key: string) => string[] })
-      .supportedValuesOf?.("timeZone");
-    if (Array.isArray(supported))
-      zones = supported;
-  }
-  catch {
-    // Treated as "not supported" below.
-  }
-  if (zones.length === 0) {
-    zones = [
-      "UTC",
-      "Asia/Shanghai",
-      "Asia/Tokyo",
-      "Asia/Singapore",
-      "Asia/Hong_Kong",
-      "Asia/Taipei",
-      "Asia/Seoul",
-      "Asia/Kolkata",
-      "Asia/Dubai",
-      "Europe/London",
-      "Europe/Paris",
-      "Europe/Berlin",
-      "Europe/Moscow",
-      "America/New_York",
-      "America/Chicago",
-      "America/Denver",
-      "America/Los_Angeles",
-      "America/Sao_Paulo",
-      "Australia/Sydney",
-    ];
-  }
-  knownTimezones = zones;
-  return zones;
-}
-
-/** Every zone, with whatever the task already carries added if the list lacks it. */
-function timezoneOptions(current: string): string[] {
-  const zones = allTimezones();
-  return current && !zones.includes(current) ? [current, ...zones] : zones;
-}
 
 const emptyTrigger: DraftTrigger = {
   mode: "",
@@ -571,9 +522,9 @@ function TaskForm({
   onCancel: () => void;
   onSave: () => void;
 }) {
-  const { t } = useTranslation("tasks");
+  const { i18n, t } = useTranslation("tasks");
   const [browseError, setBrowseError] = useState<string | null>(null);
-  const zones = useMemo(() => timezoneOptions(draft.timezone), [draft.timezone]);
+  const locale = i18n.language;
   const trigger = draft.trigger;
   const workspaceConversation = draft.conversationMode === "workspace";
   const setTrigger = (patch: Partial<DraftTrigger>) => onChange({ trigger: { ...trigger, ...patch } });
@@ -904,21 +855,16 @@ function TaskForm({
 
         {/* The zone belongs to the schedule, not to the task: it says which
             clock the times just chosen are read on, so it is asked for inside
-            the trigger, after the mode that has times. */}
+            the trigger, after the mode that has times. Each row names the zone
+            in the reader's language and spells out its offset: `Asia/Shanghai`
+            is what gets saved, not what anyone reads. */}
         {triggerReadsClock(trigger.mode)
           ? (
-              <div className="block space-y-1.5">
-                <span className="text-xs text-ink-soft">{t("form.timezone")}</span>
-                <Select value={draft.timezone} onChange={e => onChange({ timezone: e.target.value })}>
-                  <option value="">{t("form.timezoneSystem")}</option>
-                  {zones.map(zone => (
-                    <option key={zone} value={zone}>{zone}</option>
-                  ))}
-                </Select>
-                {/* The hint says what an unset choice means rather than leaving
-                    the user to guess whether it follows the machine or UTC. */}
-                <p className="text-xs text-ink-muted">{t("form.timezoneHint")}</p>
-              </div>
+              <TimezoneField
+                locale={locale}
+                onChange={zone => onChange({ timezone: zone })}
+                value={draft.timezone}
+              />
             )
           : null}
       </fieldset>
@@ -1054,8 +1000,19 @@ function TaskDetail({
                       [t("colCwd"), task.cwd.trim() || (task.conversationMode === "chat" ? t("cwdChatWorkspace") : "—")],
                       // The trigger times are read on this clock: a detail page
                       // that omits it cannot explain why 09:00 printed
-                      // differently than the user's own morning.
-                      [t("colTimezone"), task.timezone || t("form.timezoneSystem")],
+                      // differently than the user's own morning. The offset is
+                      // taken at the next run rather than "now": the times that
+                      // follow are the ones this instant applies to, and a zone
+                      // that observes daylight saving is a different offset on
+                      // the two sides of its own change.
+                      [t("colTimezone"), task.nextDueAt
+                        ? timezoneLabel(
+                            task.timezone,
+                            locale,
+                            new Date(task.nextDueAt),
+                            t("form.timezoneSystem"),
+                          )
+                        : timezoneName(task.timezone, locale) || t("form.timezoneSystem")],
                       [t("colConversation"), t(task.conversationMode === "chat" ? "form.conversationChat" : "form.conversationWorkspace")],
                       [t("form.session"), t(task.sessionPolicy === "existing" ? "form.sessionExisting" : "form.sessionNew")],
                       [

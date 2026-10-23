@@ -1,8 +1,10 @@
 # The Vibe panel
 
-Status: **P0 implemented** (grid, membership = pin, order, the three layers, the
-dictation layer); P1 (remote conversations, the machine filter, the add dialog, the
-two-column reading layer) and P2 are not. This file is the product and interaction
+Status: **P0 and P1 implemented** (grid, membership = pin, order, the three layers,
+the dictation layer, the menu, the attention queue, the machine filter, the add dialog);
+**P2 partly**: the reading layer's second column, `h`/`j`/`k`/`l`, keyboard cell scrolling
+and the key readout shipped, while the block cursor and the hardware measurement pass are
+still open (§14). This file is the product and interaction
 contract. The keys it uses live in
 [`KEYBINDINGS.md`](KEYBINDINGS.md) — that file owns the keyboard table, this one
 owns the panel, and neither repeats the other.
@@ -480,12 +482,11 @@ measurement: which button a given remote actually sends is recorded in
 **read-only key readout** for filling it in (`⌥⇧K` three times; see the same file) — it
 is not a command and consumes no press.
 
-**What the panel answers today.** Arrows, `OK`, `Back`, the digits and `Menu` work
-(P1-1 added the menu); `Home`, the attention queue, the add dialog and the machine
-filter are still P1 and are **not** drawn in the hint line until they have a
-handler. The `Home` row below is the plan, not a shipped behaviour — and which of
-these buttons a given remote actually sends is unverified (§11: the hardware matrix
-is empty).
+**What the panel answers today.** Arrows, `OK`, `Back`, the digits, `Menu` and `Home`
+are all bound in the command table and registered by the panel
+(`desktop/src/features/vibe/VibeStage.tsx`), as are the attention queue, the add dialog
+and the machine filter; which of these buttons a given remote actually sends is still
+unverified (§11: the hardware matrix is empty).
 
 Two deliberate choices:
 
@@ -605,15 +606,13 @@ the tests went red, the assertions came back): the empty-draft close, and
 
 Still open, and honestly not covered:
 
-* **A running conversation's refusal.** The panel does not queue (P1), and the
+* **A running conversation's refusal.** The panel does not queue, and the
   visible reason lives on the composer's own state rather than in a test of the
-  panel. Until P1 this is a manual check.
+  panel.
 * **Trigger suppression.** The input layer passes no recommendation and the
   triggers are the editor's, but nothing yet asserts that a dictated `@` opens no
   menu; the editor's trigger is text-driven, so this needs a test at the editor's
   level.
-* **Per-conversation column preference** (the reading layer's second column) is
-  P2 and not implemented.
 * **The queue's own states are component-tested, not captured.** The screenshot
   harness can report a run in flight to the *rail* (`?streaming=`), but a local
   composer's "my run is in flight" comes from a streaming assistant bubble in that

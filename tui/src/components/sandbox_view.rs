@@ -280,6 +280,17 @@ impl SandboxPlatform {
         }
     }
 
+    /// The backend reported by the connected Agent, independent of the TUI OS.
+    pub fn from_backend(backend: &str) -> Option<Self> {
+        match backend {
+            "macos_seatbelt" => Some(Self::Macos),
+            "linux_bubblewrap" | "bubblewrap" => Some(Self::Linux),
+            "windows_restricted" => Some(Self::Windows),
+            "none" => Some(Self::Other),
+            _ => None,
+        }
+    }
+
     /// The host this binary was built for.
     pub fn current() -> SandboxPlatform {
         SandboxPlatform::from_os(std::env::consts::OS)
@@ -314,7 +325,7 @@ pub fn platform_note(platform: SandboxPlatform) -> Option<&'static str> {
     match platform {
         SandboxPlatform::Macos => None,
         SandboxPlatform::Linux => Some(
-            "Sandboxing is native only to macOS: on Linux the agent runs it through the system Bubblewrap and falls back to Manual when Bubblewrap is missing, untrusted or too old.",
+            "Linux uses system Bubblewrap, unlike macOS Seatbelt. The sandbox is unavailable when Bubblewrap is missing, untrusted or cannot provide basic write protection.",
         ),
         SandboxPlatform::Windows => Some(
             "Windows has no OS sandbox: the sandbox tier is not used there, and commands run under FutureOS write protection instead.",
@@ -355,7 +366,7 @@ pub fn reason_text(code: Option<&str>) -> &'static str {
         Some("path_rejected") => "No trusted system Bubblewrap was found. Check PATH and confirm the bwrap file is owned by root, then restart the agent.",
         Some("binary_invalid") => "System Bubblewrap is not a valid executable. Reinstall it or repair its permissions, then restart the agent.",
         Some("version_unreadable") => "The Bubblewrap version could not be recognized. Reinstall or upgrade Bubblewrap, then restart the agent.",
-        Some("version_too_old") => "Bubblewrap is older than version 0.9.0. Upgrade it, then restart the agent.",
+        Some("version_too_old") => "This Bubblewrap package cannot provide the required protection. Upgrade it, then restart the agent.",
         Some("required_feature_missing") => "This Bubblewrap package lacks features the sandbox requires. Upgrade or replace the system package, then restart the agent.",
         Some("user_namespace_disabled") => "Unprivileged user namespaces are disabled. Enable them, then restart the agent.",
         Some("proc_mount_restricted") => "The system does not allow the sandbox to mount a private /proc. Adjust the system or container policy, then restart the agent.",
@@ -619,6 +630,11 @@ impl SandboxStatus {
                     }
                     _ => AccountState::Checking,
                 };
+                let platform = probe
+                    .backend
+                    .as_deref()
+                    .and_then(SandboxPlatform::from_backend)
+                    .unwrap_or(platform);
                 SandboxStatus {
                     mode,
                     requested_mode,
@@ -975,6 +991,9 @@ impl SandboxView {
     }
 
     fn platform_rows(&self, width: usize) -> Vec<String> {
+        if self.status.platform == SandboxPlatform::Other && !self.status.probe.resolved {
+            return Vec::new();
+        }
         match platform_note(self.status.platform) {
             Some(note) => wrapped_rows(note, width, DESCRIPTION_INDENT)
                 .into_iter()
@@ -993,6 +1012,11 @@ impl SandboxView {
                     "Sandbox: available".to_string()
                 } else {
                     format!("Sandbox: available — {detail}")
+                };
+                let line = if probe.code.as_deref() == Some("available_write_only") {
+                    format!("{line}. Upgrade system Bubblewrap and restart FutureOS to enable full sandbox protection.")
+                } else {
+                    line
                 };
                 (self.theme.success as u8, line)
             }
@@ -1946,7 +1970,8 @@ mod tests {
         let waiting = text(&mut view, 200);
         assert!(waiting.contains("Sandboxed (checking)"));
         assert!(waiting.contains("Sandbox: checking the system sandbox…"));
-        assert!(!waiting.contains("unavailable"));
+        assert!(!waiting.contains("Sandbox: unavailable"));
+        assert!(!waiting.contains("Sandboxed (unavailable)"));
 
         view.set_status(SandboxStatus {
             mode: Some(ApprovalMode::Manual),
@@ -1962,6 +1987,28 @@ mod tests {
             failed.contains("Sandbox: unavailable — Unprivileged user namespaces are disabled.")
         );
         assert!(failed.contains("(diagnostic: user_namespace_disabled)"));
+    }
+
+    #[test]
+    fn write_only_probe_keeps_modes_selectable_with_only_an_upgrade_hint() {
+        let mut view = SandboxView::new(SandboxPlatform::Linux);
+        view.set_status(SandboxStatus {
+            mode: Some(ApprovalMode::Sandbox),
+            requested_mode: None,
+            probe: SandboxProbe {
+                code: Some("available_write_only".into()),
+                ..SandboxProbe::available("linux_bubblewrap")
+            },
+            account: AccountState::SignedIn,
+            platform: SandboxPlatform::Linux,
+        });
+        assert!(view.mode_enabled(ApprovalMode::Sandbox));
+        assert!(view.mode_enabled(ApprovalMode::Auto));
+        assert!(view.mode_suffix(ApprovalMode::Sandbox).is_empty());
+        assert!(view.mode_suffix(ApprovalMode::Auto).is_empty());
+        let rendered = text(&mut view, 240);
+        assert!(rendered.contains("Upgrade system Bubblewrap"));
+        assert!(!rendered.contains("(unavailable)"));
     }
 
     #[test]
@@ -2032,7 +2079,7 @@ mod tests {
     #[test]
     fn linux_and_windows_get_their_own_explanations() {
         let mut linux = SandboxView::new(SandboxPlatform::Linux);
-        assert!(text(&mut linux, 200).contains("runs it through the system Bubblewrap"));
+        assert!(text(&mut linux, 200).contains("Linux uses system Bubblewrap"));
 
         let mut windows = SandboxView::new(SandboxPlatform::Windows);
         let rows = text(&mut windows, 200);
@@ -2042,7 +2089,7 @@ mod tests {
         let mut macos = SandboxView::new(SandboxPlatform::Macos);
         let rows = text(&mut macos, 200);
         assert!(!rows.contains("Windows has no OS sandbox"));
-        assert!(!rows.contains("runs it through the system Bubblewrap"));
+        assert!(!rows.contains("Linux uses system Bubblewrap"));
 
         let mut other = SandboxView::new(SandboxPlatform::Other);
         assert!(text(&mut other, 200).contains("No sandbox backend exists on this platform"));

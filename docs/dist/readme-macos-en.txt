@@ -18,7 +18,8 @@ a "unidentified developer" or "damaged" warning. This is expected. Choose one:
     xattr -dr com.apple.quarantine /Applications/FutureOS.app
 
 [Notes]
-· An internet connection is required for the first-time login (in the app).
+· An internet connection is required for the first-time login (in the app);
+  your own provider can be configured in Settings instead.
 · Personal data is stored in ~/.future. Desktop hosts a complete in-process Agent
   by default and can attach to a compatible external service.
 · Exiting an embedded owner cancels every client's work, including CLI/TUI;

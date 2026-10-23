@@ -384,6 +384,79 @@ fn _summary_shape_anchor(s: &DecisionSummary) {
 
 // ── P1-2② decision_freshness: replayed decisions carry the ledger stamp. ──
 
+/// `created_at` is state, so replay must restore it from persisted data — the
+/// `GoalStarted` ledger event is the canonical source.
+///
+/// The defect this pins: `replay()` seeds the goal with `Goal::new`, which
+/// stamps `created_at: now_epoch()`, and the `GoalStarted` fold used to drop
+/// the event's `ts`. Replaying therefore re-dated creation to *the moment of
+/// the replay*. Two `now_epoch()` calls inside one wall-clock second hid it;
+/// a goal created one second earlier exposed it (CI run 39809589270:
+/// `events_max_ts` 1792685455 vs `created_at` 1792685456).
+///
+/// The fixture backdates creation by two seconds on purpose: the assertion is
+/// then a statement about the data, not about landing both calls in one second.
+#[test]
+fn replay_restores_created_at_from_the_ledger_not_the_replay_clock() {
+    let root = tmp_root("created-at");
+    let mut store = Store::open(&root).unwrap();
+    let created = future_goal::state::now_epoch() - 2;
+    let mut goal = Goal::new("g1", "objective", "/tmp");
+    goal.created_at = created;
+    store.register(&goal).unwrap();
+    store
+        .append(Event::GoalStarted {
+            goal_id: "g1".into(),
+            ts: created,
+        })
+        .unwrap();
+
+    let replayed = store.replay("g1").unwrap().expect("replay");
+    assert_eq!(
+        replayed.created_at, created,
+        "created_at must come from GoalStarted.ts, not from the replay clock"
+    );
+    // The freshness stamp names the newest ledger event: with creation two
+    // seconds back it must equal the restored creation time, which is exactly
+    // the equality the CI failure broke.
+    let freshness = replayed
+        .decision_freshness
+        .clone()
+        .expect("replay stamps freshness");
+    assert_eq!(freshness.events_max_ts, Some(created), "newest event ts");
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The tier below the ledger: a legacy goal whose ledger has no `GoalStarted`
+/// event still gets its creation time back from the registry entry, which is
+/// the other piece of persisted data that records it.
+#[test]
+fn replay_falls_back_to_the_registry_entry_when_the_ledger_has_no_goal_started() {
+    let root = tmp_root("created-at-legacy");
+    let mut store = Store::open(&root).unwrap();
+    let created = future_goal::state::now_epoch() - 2;
+    let mut goal = Goal::new("g1", "objective", "/tmp");
+    goal.created_at = created;
+    store.register(&goal).unwrap();
+    // Legacy ledger: state events, no GoalStarted.
+    store
+        .append(Event::TodoAdded {
+            goal_id: "g1".into(),
+            todo: Todo::advancement("t1", "legacy work"),
+            ts: created,
+        })
+        .unwrap();
+
+    let replayed = store.replay("g1").unwrap().expect("replay");
+    assert_eq!(
+        replayed.created_at, created,
+        "without GoalStarted, created_at comes from the registry entry"
+    );
+
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn replayed_decisions_carry_decision_freshness() {
     let root = tmp_root("freshness");

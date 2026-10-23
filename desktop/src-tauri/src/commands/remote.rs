@@ -78,9 +78,34 @@ pub async fn remote_disconnect_device(
 /// Add a device beside the ones already paired and return the invitation to
 /// display. The bridge for the new device is started immediately so the code
 /// works the moment it is shown.
+///
+/// The platform's per-desktop cap is the one refusal with a different next step,
+/// and it arrives as a typed code (`pairing_limit_reached`) whose display string
+/// is an English sentence. `AppError` serializes as that string alone, so the
+/// code never reaches the webview — `isLimitError` looked for it, found only
+/// prose, and the user was told "try again later (LC999)" for a state the one
+/// sentence they needed explains: unpair a device first. The refusal is therefore
+/// translated into the code the UI matches on, here, where it is still typed.
 #[tauri::command]
 pub async fn remote_add_device() -> Result<remote::RemoteStatus, crate::AppError> {
-    remote::add_device().await
+    remote::add_device().await.map_err(add_device_error)
+}
+
+/// The refusal the UI needs to recognise, in the only form that reaches it.
+///
+/// `AppError` serializes as `Display`, so a typed code is invisible to the
+/// webview; the cap is the one class whose next step ("unpair a device first")
+/// differs from every other failure, so it is translated into a token the UI
+/// matches on. Everything else keeps its own words.
+fn add_device_error(error: crate::AppError) -> crate::AppError {
+    match &error {
+        crate::AppError::Remote {
+            code: Some(code), ..
+        } if code == "pairing_limit_reached" => {
+            crate::AppError::Message("pairing_limit_reached".to_string())
+        }
+        _ => error,
+    }
 }
 
 /// Make `pair_id` the device that drives this machine.
@@ -183,6 +208,33 @@ mod tests {
         assert!(open_url("ftp://x".into()).is_err());
         assert!(open_url("javascript:alert(1)".into()).is_err());
         assert!(open_url("   ".into()).is_err());
+    }
+
+    /// The platform's cap is translated; every other refusal keeps its words.
+    ///
+    /// The webview sees only the display string, so `pairing_limit_reached` was
+    /// never in it: the UI's own match looked for a code that never arrived and
+    /// told the user "try again later (LC999)" for a state with one clear next
+    /// step.
+    #[test]
+    fn the_device_cap_is_reported_as_the_token_the_ui_matches() {
+        let cap = crate::AppError::Remote {
+            status: 409,
+            code: Some("pairing_limit_reached".into()),
+            message: "This desktop already holds 5 devices.".into(),
+        };
+        assert_eq!(add_device_error(cap).to_string(), "pairing_limit_reached");
+
+        let other = crate::AppError::Remote {
+            status: 409,
+            code: Some("pairing_code_error".into()),
+            message: "Failed to create pairing code.".into(),
+        };
+        assert_eq!(
+            add_device_error(other).to_string(),
+            "Failed to create pairing code.",
+            "only the cap has a different next step"
+        );
     }
 
     #[test]

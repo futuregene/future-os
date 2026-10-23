@@ -144,11 +144,43 @@ impl Drop for PtySession {
     }
 }
 
+/// The directory holding the CLI the app ships with, when the executable beside
+/// the desktop one is really there.
+///
+/// Tauri installs the `future` sidecar next to the app binary. A GUI launch does
+/// not put that directory on `PATH` — on Windows the installer's directory is
+/// not a `PATH` entry at all — so `future remote --help` typed into the app's own
+/// terminal failed with "not recognized as a cmdlet". The app opens that shell;
+/// the CLI it ships belongs on its `PATH`.
+fn cli_dir_beside(executable: &Path) -> Option<std::path::PathBuf> {
+    let dir = executable.parent()?;
+    let name = if cfg!(windows) {
+        "future.exe"
+    } else {
+        "future"
+    };
+    let candidate = dir.join(name);
+    candidate.is_file().then(|| dir.to_path_buf())
+}
+
 /// Build the child environment: the user's real environment plus the few
 /// variables a terminal must set, minus the app's own plumbing.
 fn apply_environment(command: &mut CommandBuilder) -> Result<(), String> {
     for key in ENV_DENYLIST {
         command.env_remove(key);
+    }
+    // Prepended, not appended: the CLI the app ships with must be the one its own
+    // terminal finds, even where another build sits later on `PATH`.
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| cli_dir_beside(&exe))
+    {
+        let existing = std::env::var_os("PATH").unwrap_or_default();
+        let mut entries = vec![dir];
+        entries.extend(std::env::split_paths(&existing));
+        if let Ok(path) = std::env::join_paths(entries) {
+            command.env("PATH", path);
+        }
     }
     command.env("TERM", "xterm-256color");
     command.env("COLORTERM", "truecolor");
@@ -625,6 +657,35 @@ mod tests {
                 assert_eq!(command.get_env(key), Some(std::ffi::OsStr::new("C.UTF-8")));
             }
         }
+    }
+
+    /// The terminal's `PATH` starts at the directory holding the bundled CLI.
+    ///
+    /// Nothing else puts it there: the Windows installer's directory is not a
+    /// `PATH` entry, which is why `future remote --help` was "not recognized"
+    /// inside the app's own terminal.
+    #[test]
+    fn the_cli_beside_the_app_leads_the_child_path() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let name = if cfg!(windows) {
+            "future.exe"
+        } else {
+            "future"
+        };
+        std::fs::write(dir.path().join(name), b"#!/bin/sh\n").expect("fake cli");
+        let exe = dir.path().join(if cfg!(windows) {
+            "FutureOS.exe"
+        } else {
+            "FutureOS"
+        });
+
+        let found = cli_dir_beside(&exe).expect("the bundled CLI is beside the app");
+        assert_eq!(found, dir.path());
+
+        // No CLI beside it: leave the inherited PATH untouched rather than
+        // prepending a directory that holds nothing.
+        let bare = tempfile::TempDir::new().expect("temp dir");
+        assert!(cli_dir_beside(&bare.path().join("FutureOS")).is_none());
     }
 
     /// The cursor query is answered by writing the reply to the child's stdin,

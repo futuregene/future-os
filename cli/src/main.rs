@@ -2,10 +2,11 @@
 //! for the other Rust components.
 //!
 //! `future <group> <command>` keeps the CLI's own groups (auth, run, skills,
-//! tools, models, session, doctor, ...). `future agent|tui|channel|goal
+//! tools, models, session, doctor, ...). `future agent|tui|channel|goal|host|relay
 //! <args>` runs the corresponding component in-process — the same code as the
 //! standalone `future-agent` / `future-tui` / `future-channel` /
-//! `future-goal` binaries, which remain installed and usable directly.
+//! `future-goal` binaries. Those stay `cargo build -p <crate>` targets, but an
+//! install places only `future` and `futureos` on the PATH.
 //!
 //! The embedded components build their OWN tokio runtimes, so they must be
 //! dispatched from main() BEFORE the CLI's runtime is entered (nested

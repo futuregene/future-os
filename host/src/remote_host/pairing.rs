@@ -782,6 +782,28 @@ pub(crate) fn queue_revoke(creds: &PairingCreds) -> Result<(), crate::Error> {
     })
 }
 
+/// Queue a revoke for an invitation that never became a pairing.
+///
+/// Keyed by pair id alone, which is all the delivery needs (`revoke_pair_id`
+/// authenticates with the account, not with the invitation): an unclaimed code
+/// has no credential on this machine, and the platform row behind it survives
+/// until its nonce expires unless somebody deletes it.
+///
+/// A relay invitation is a room, not a platform row, and deleting a room needs
+/// the credential that created it — there is nothing sensible to queue here, so
+/// nothing is.
+pub(crate) fn queue_revoke_invitation(pair_id: &str) -> Result<(), crate::Error> {
+    if crate::remote::relay::endpoint().is_some() {
+        return Ok(());
+    }
+    let path = pairing_path()?.with_file_name("remote_pending_revokes.json");
+    crate::config_io::with_config_lock(&path, || {
+        let mut pending = crate::config_io::read_json_object(&path)?;
+        pending[pair_id] = json!(crate::future_platform::current_platform_url());
+        crate::config_io::write_json_atomic(&path, &pending, true)
+    })
+}
+
 /// Retire a queued revoke for the pair id a new invitation just took over.
 ///
 /// Only the entry for the platform that minted the invitation is retired: a

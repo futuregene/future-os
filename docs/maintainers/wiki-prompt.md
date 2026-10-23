@@ -36,10 +36,11 @@ repository guides when necessary for troubleshooting.
 | `Installation.md` | Artifacts/architectures, first launch, runtime requirements, updates/uninstall | `.github/workflows/release.yml`, `build-{macos-signed,windows-signed}.yml`, `build-linux.yaml`; `scripts/release/install.sh`, `scripts/release/install.ps1`; `docs/dist/` |
 | `Quick-Start.md` | Sign in or BYOK, first conversation, approval choice, model selector | Desktop login/new-conversation flow and settings locales |
 | `Using-FutureOS.md` | Chat/workspace, attachments, tools, approval cards, Files/Runs/Review | `desktop/src/features/agent/`, `review/`, `filetree/`; `components/layout/` |
-| `Settings.md` | Current settings and defaults | `desktop/src/features/settings/`; `desktop/src-tauri/src/store/app_settings.rs` |
-| `Sandbox.md` | Defaults, three modes, platform boundaries, Linux setup, escalation, troubleshooting | `agent/src/sandbox/`; `agent/src/rpc/session.rs`, `session_prompt.rs`; `docs/internals/desktop/SANDBOX/`; `useSandboxAvailability.ts` |
+| `Settings.md` | Current settings and defaults | `desktop/src/features/settings/`; `packages/app-settings/src/lib.rs`; `host/src/store/app_settings.rs` |
+| `Sandbox.md` | Defaults, four approval modes, platform boundaries, Linux setup, escalation, troubleshooting | `agent/src/sandbox/`; `agent/src/rpc/session.rs`, `session_prompt.rs`; `docs/internals/desktop/SANDBOX/`; `useSandboxAvailability.ts` |
 | `Remote.md` | Android/iOS pairing, online requirements, unpair, privacy, troubleshooting | `docs/internals/mobile/README.md`, `mobile/src/remote/`; `desktop/src/features/remote/`, `desktop/src-tauri/src/remote/`; remote locales |
 | `Skills.md` | Browse/install/use, curated capabilities | `skills/builtin/*/SKILL.md`; `cli/src/commands/skills.rs`; desktop Skills view |
+| `Scheduled-Tasks.md` | Create a scheduled task, triggers, runs, full-permission warning | `desktop/src/features/tasks/`; `cli/src/help.rs` (`TASK_HELP`); `host/src/scheduler.rs` |
 | `CLI.md` | Optional CLI location, commands, defaults, agent requirements | `cli/src/main.rs`, `cli/src/lib.rs`, `cli/src/commands/{run,auth,configure,tools,skills,doctor}.rs`; `packages/rpc/src/transport.rs` |
 | `Feishu.md` / `DingTalk.md` | Bot setup, access policy, bridge start, commands, troubleshooting | `channels/src/`, especially config and per-channel handlers; provider setup docs if externally reverified |
 | `FAQ.md` | Real failure cases and safe remedies | Corresponding implementation and artifact/channel information |
@@ -52,7 +53,11 @@ repository guides when necessary for troubleshooting.
    fresh agent sessions use permission `all`. An enum default is not an application
    default. Manual path rules can allow ordinary reads/workspace writes; sandbox
    commands need not ask before execution. Separate legacy `--permission` levels
-   from `off/manual/sandbox`; `none` denies all tools, not just external writes.
+   from `off/manual/sandbox/auto`; `none` denies all tools, not just external writes.
+   `auto` is `sandbox` plus a model reviewer for the requests that would ask, and
+   needs both the OS sandbox and a FutureOS sign-in (`agent/src/approval_review/`,
+   `desktop/src/integrations/agent/automaticApproval.ts`) — do not describe it as a
+   separate OS backend.
 2. **Three OS backends, unequal guarantees.** macOS Seatbelt; native Linux system
    Bubblewrap ≥ 0.9.0; Windows restricted-token write protection. Network is open.
    Linux has no seccomp and missing/dynamic-path detection limits; Windows has

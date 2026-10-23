@@ -218,6 +218,9 @@ session members (Linux: `/proc`; other unix: `ps -o sess`). Windows uses
 | macOS | not run | not run (`ps -o sess` path) | not run |
 | Windows | not run | not run (`taskkill /T`) | not run |
 
+The `GUI end-to-end` column means a packaged GUI build exercised end to end; it
+is not keyboard or input-method coverage — that is the paragraph below.
+
 Nothing above claims otherwise. A Job Object on Windows and `proc_listchildpids`
 on macOS would be strictly better than the current best-effort paths.
 

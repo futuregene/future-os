@@ -67,12 +67,13 @@ pub fn run(args: &[String]) -> Result<()> {
     }
 
     // rustls-platform-verifier shares a rustls instance with reqwest and
-    // tokio-tungstenite.  Both enable different default features on rustls
-    // (aws-lc-rs vs. ring), so we must pin one provider explicitly.
+    // tokio-tungstenite, which each pick a crypto provider, so we must pin
+    // one provider explicitly.  That provider is ring, matching reqwest's and
+    // the host / CLI's own choice: aws-lc-rs would link a second crypto stack.
     // install_default only errors when a provider is ALREADY installed —
     // e.g. when the channel bridge is embedded in the `future` CLI whose
     // agent set one up first — which is fine, so ignore the result.
-    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let _ = rustls::crypto::ring::default_provider().install_default();
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -95,9 +96,10 @@ pub fn run(args: &[String]) -> Result<()> {
     runtime.block_on(run_async())
 }
 
-/// Where channel data lives: `~/.future/channels`.
+/// Where channel data lives: `<future home>/channels` (`~/.future/channels`, or
+/// the `FUTURE_HOME` override).
 pub fn data_root() -> std::path::PathBuf {
-    config::home_dir().join(".future").join("channels")
+    config::future_home().join("channels")
 }
 
 /// What a started bridge is holding, so `run_async` and tests share one path.
@@ -461,6 +463,25 @@ mod tests {
         let root = data_root();
         assert!(root.starts_with(&home.path), "{root:?}");
         assert!(root.ends_with("channels"));
+
+        // The override replaces the whole root: an isolated instance keeps its
+        // own channel config, queue and status, and never reaches into the
+        // default home's channels.
+        let isolated = crate::test_support::temp_dir("lib-data-root-override");
+        std::env::set_var("FUTURE_HOME", &isolated);
+        assert_eq!(data_root(), isolated.join("channels"));
+        assert_eq!(
+            config::ChannelConfig::default_path(),
+            isolated.join("channels").join("config.json")
+        );
+        assert_eq!(
+            delivery::DeliveryQueue::default_path(),
+            isolated.join("channels").join("deliveries.json")
+        );
+        assert_eq!(
+            status::StatusSnapshot::default_path(),
+            isolated.join("channels").join("status.json")
+        );
     }
 
     fn config_with(entries: &[(&str, bool)]) -> config::ChannelConfig {

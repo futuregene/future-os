@@ -22,14 +22,14 @@ Agent；默认端点不存在且实例锁空闲时，在自身进程内运行完
 不启动图形界面，按 Ctrl+C 关闭；不是 futureos 的 sidecar。
 在第二个终端运行 ./future remote devices add 配手机：二维码与链接在那里打印，
 手机扫码后主机立即开始服务。
-futureos 只启动 GUI，原 --headless 选项已移除。
+futureos 只启动 GUI，不提供主机模式入口；服务器请用 ./future host。
 
 【可选沙箱】
 桌面默认是完全访问模式，请在设置中按需选择手动或沙箱模式。
-Linux 沙箱需要可信系统 Bubblewrap >= 0.9.0（应用不捆绑）：
+Linux 沙箱需要可信系统 Bubblewrap（按实际能力探测）（应用不捆绑）：
     Debian/Ubuntu: sudo apt install bubblewrap
     Fedora:        sudo dnf install bubblewrap
-旧发行版包可能需要可信渠道升级。完全重启 FutureOS 后，运行
+基本写保护可用才开放沙箱；能力不完整时保留原模式，仅提示升级以启用完整保护。完全重启 FutureOS 后，运行
 future agent --probe-sandbox 与 future doctor。主机 namespace 策略可能阻止使用；
 明确不可用时回退手动模式。网络开放，缺失保护路径与新匹配存在仅检测的限制。
 完整边界见仓库 Wiki 的审批与沙箱指南。

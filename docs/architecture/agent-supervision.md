@@ -3,8 +3,8 @@
 > [中文](agent-supervision.zh-CN.md)
 >
 > Design date: 2026-10-21. Source baseline: `a91fcf0ec`.
-> Status: **P1 has landed** (supervisor, `Busy` yielding, bounded waiting, the breaker, all three entries wired, and
-> Agent-triggered continuation). This document separates what landed from the product decisions that still need
+> Status: **P1 and D6 have landed** (supervisor, `Busy` yielding, bounded waiting, the breaker, all three entries wired,
+> Agent-triggered continuation, and the TUI hosting the Agent in-process). This document separates what landed from the product decisions that still need
 > the user's sign-off — see [§2](#2-approved-design-vs-product-decisions); open items are in
 > [§12](#12-open-questions) and the measurements are in [§13](#13-measured-behaviour).
 
@@ -18,11 +18,13 @@ Three entry points can bring an Agent up today: `future agent`, `future host`, a
 |---|---|---|---|
 | `future agent` | Itself | — | `~/.future/agent/agent-instance.lock` (service lock) + the socket's `.owner.lock` (endpoint lease) |
 | `future host` | Yes, when it gets the service lock | No | `~/.future/app/desktop.lock` (host lock) + the service lock, conditionally |
-| `future tui` | No | Yes: a `future agent --grpc-addr auto` child | Neither |
+| `future tui` | Yes, through `crate::agent_host` when the binary is `future` | No | The service lock, when it hosts |
 
 All three funnel through [`select_agent`](../../packages/rpc/src/connection.rs): handshake an external service first; only on failure plus a confirmed-absent local endpoint (`NotFound`/`ConnectionRefused`) plus a passing [`check_instance_lock`](../../packages/rpc/src/connection.rs) does it issue a `LocalStartPermit`, and the real arbitration is the `try_write()` inside [`AgentService::with_instance`](../../agent/src/service/mod.rs).
 
 ### 1.2 Four gaps
+
+All four are closed today (P1 for 1–3, D6 for 4); they are kept as the record of what the supervisor replaced. The two TUI gaps (1 and 4) were closed by [§7](#7-tui-starts-the-agent-in-process), not by a better sidecar.
 
 1. **Launch happens once.** The TUI calls [`ensure_agent_running`](../../tui/src/agent_supervisor.rs) at the top of `run` and never again; what remains is the [reconnect prober in grpc_client](../../tui/src/rpc/grpc_client.rs) (1s→30s backoff, "Connection to agent lost" in the UI), which **never re-spawns**. Desktop is the same: one call in setup.
 2. **headless cannot see an external Agent die.** Its loop calls [`check_running`](../../cli/src/headless/agent.rs) every second, but that only reads **its own host's `Phase::Failed`**. While attached it is `Ready` forever, so a dead external Agent leaves headless serving and every RPC failing.
@@ -39,14 +41,14 @@ All three funnel through [`select_agent`](../../packages/rpc/src/connection.rs):
 | D4 | Waiting is bounded and visible (see [§5](#5-waiting-is-bounded)) | Design requirement | **Approved** |
 | D5 | A crash-loop breaker (see [§6](#6-the-breaker)) | Design | **Approved** |
 | **P1** | Supervisor core + `Busy` classification + wiring the three entries ([§10](#10-implementation-checklist)) | Implementation | **Landed** |
-| **D6** | TUI switches to "external first, otherwise in-process" and drops the child sidecar ([§7](#7-tui-starts-the-agent-in-process)) | **Product decision** | **Awaiting the user** |
+| **D6** | TUI switches to "external first, otherwise in-process" and drops the child sidecar ([§7](#7-tui-starts-the-agent-in-process)) | **Product decision** | **Landed**: `tui/src/agent_host.rs` hosts through `future_host`, and `tui/src/agent_supervisor.rs` installs `start_in_process` as the driver; the standalone `future-tui` binary stays attach-only |
 | **P2** | Let the Agent outlive the TUI: detached sidecar + `--ephemeral` idle exit ([§8](#8-lifetime-and-ownership)) | **Product decision** | **Awaiting the user** |
 | **D7** | After the **user** stops the Agent, should other clients restart it? ([§4.3](#43-four-kinds-of-death)) | Product decision | Recommendation: no; **awaiting confirmation** |
 | **D8** | Post-restart continuation: who runs it, and when is a run resumable? (§9.1, §9.2) | Design | **Partly landed**: the continuation criterion is implemented; the `cause` distinction is not (see §12) |
 | **D9** | The trigger lives in the Agent too (proposed by the user, 2026-10-21) | Product decision | **Landed**: the Agent triggers it after starting; the switch is `resumeInterruptedOnStart` in `~/.future/agent/settings.json` (**on by default**, matching the desktop's `autoResumeInterrupted`); the desktop's one-shot pass is retired |
 | **D10** | Continuation sends no user message; it continues inside the loop via a request-only directive (§9.3, proposed by the user, 2026-10-21) | Product decision → design | **Landed** in three steps: the accepting path + directive, the placeholder tool result, then the relaxed assistant tail |
 
-The two entries marked "awaiting the user" are **not settled**. This document does not design code paths for them; it states the options, their costs, and what they affect.
+P2 and D7 are **not settled**. This document does not design code paths for them; it states the options, their costs, and what they affect.
 
 An entry marked "landed" has code and tests behind it; "approved" is still only a plan. D8's cause distinction is not implemented.
 
@@ -78,10 +80,10 @@ Corollary: **lock held but endpoint not ready yet = someone else is starting**. 
 - Jitter before `Candidate`: `min(30s, 1s·2ⁿ) × U(0.8, 1.2)` — the same order as the TUI's existing reconnect backoff, so two clients do not take the lock in the same millisecond.
 - `Blocked` covers: version/protocol/storage-contract mismatch, `agent_stopping`, an unreachable explicit `--grpc-addr`, and `FUTURE_DESKTOP_AGENT_MODE=external`. None of these **ever** triggers a launch (existing semantics, unchanged).
 
-### 4.1 Two classifications to add
+### 4.1 Two classifications
 
-- `agent/src/service/instance.rs`: promote the lock conflict to a typed `InstanceBusy`, instead of relying on message text.
-- `host/src/agent_host.rs`: add `Phase::Busy`, which **must not fall into `Phase::Failed`**. `Failed` means "cleanup is uncertain, the lock stays, no in-process restart"; `Busy` only means "let the other one run" and must be recoverable via `detach()` (`Ready && !owned` → `Stopped`) followed by a new `start()`.
+- `agent/src/service/instance.rs`: the lock conflict is a typed error rather than a message-text match — `InstanceFile::acquire` answers `WouldBlock` with `future_rpc::instance_lock::lock_conflict_message`, and `future-host` maps it to `Error::AgentBusy` ([`host/src/agent_host.rs`](../../host/src/agent_host.rs)).
+- `host/src/agent_host.rs`: a lost race must **not** fall into `Phase::Failed`. `Failed` means "cleanup is uncertain, the lock stays, no in-process restart"; the implementation keeps the yielded attempt as `Stopped` with a `yield_reason` beside it (not a separate `Phase::Busy`), so `start` and the status page can report the holder's own refusal instead of a cancellation.
 
 ### 4.2 Who may start one
 
@@ -89,7 +91,7 @@ Corollary: **lock held but endpoint not ready yet = someone else is starting**. 
 |---|---|---|---|
 | `future host` | Yes | No (it can embed; a second process buys nothing) | Yes |
 | Desktop GUI | Yes | No | Yes |
-| `future tui` | See D6 | Today yes; no once D6 is adopted | Yes |
+| `future tui` | Yes (unified `future` binary only) | No | Yes |
 | channels / goal / `future run` / mobile | No | No | Attach only |
 
 For production, keep `future host` under systemd / launchd / NSSM: a process manager does not die with itself, so client self-healing is only the fallback.
@@ -109,7 +111,7 @@ For production, keep `future host` under systemd / launchd / NSSM: a process man
 
 | Entry | Probe cadence | Cap | What the UI/terminal shows meanwhile | Effect on its own runs | After the cap |
 |---|---|---|---|---|---|
-| `future tui` | 250ms, widening to 1s | **180s** (matches `AgentHost::START_TIMEOUT`) | Status line: `waiting for the Agent started by another client (pid 1234 @ host-a)… 12s`; past 30s, add "a cold data root can take minutes; progress: `<log path>`" | Input stays editable; a send is refused with the same sentence — **never queued, never faked** | The UI stays usable and switches to a background probe every 30s, with the status line permanently visible |
+| `future tui` | 1s (`WAIT_PROBE_INTERVAL`) | **180s** (`WAIT_FOR_OWNER`) | Status line: `waiting for the Agent started by another client (pid 1234 @ host-a)… 12s`; from 30s (`WAIT_NOTICE_AFTER`), add "a cold data root can take minutes; progress: `<log path>`" | Input stays editable; a send is refused with the same sentence — **never queued, never faked** | Exits 1 with the same sentence (the TUI starts before the screen does, so there is no usable UI to drop back to) |
 | `future host` | 250ms→1s | **180s** | One stderr line every 30s, same content | Accepts nothing (it never came up) | **Exit with an error** (exit 1), printing the holder's pid/host and the log path, and let the process manager retry |
 | Desktop GUI | 250ms→1s | **180s** | The Agent status page shows "waiting for the Agent started by another client", with pid/host | Agent-dependent pages unavailable | Enter `Failed` with a Retry button; never start a second instance |
 
@@ -143,7 +145,7 @@ A process restart clears the counter (it lives in memory). Two clients therefore
 
 ## 7 TUI starts the Agent in-process
 
-> **Awaiting the user (D6).** This section describes the option and its costs.
+> **Landed (D6).** The TUI now does this: `tui/src/agent_host.rs` hosts a complete Agent in-process (only the unified `future` binary may), and `tui/src/agent_supervisor.rs` drives attach → wait → start. The section below is the proposal that was accepted, kept for its costs.
 
 ### 7.1 The proposal
 
@@ -224,7 +226,7 @@ So the accurate statement is: **the conversation does not end and history is not
 | The conversation must have a thread + run row in `app.db` | Run rows come from a host-submitted prompt or from import (discovery every 60s) | A box running only a TUI, with no host, has no candidate at all; the first self-healed launch should import once |
 | The remaining product gates | Newest run, not `waiting_approval`, within 7 days, `autoResumeInterrupted` (on by default — it spends the user's credits) | Unchanged |
 
-The second row is the easiest thing to break: today's TUI `SIGKILL`s its own sidecar (`OwnedAgent::drop`), which **skips the graceful stop**, so the journal keeps an unterminated run and the conversation happens to be resumable. Once D6 moves the Agent in-process, a normal quit takes the graceful path, the run becomes `cancelled`, and it is **no longer resumable**.
+The second row is the easiest thing to break: the TUI used to `SIGKILL` its own sidecar (`OwnedAgent::drop`), which **skipped the graceful stop**, so the journal kept an unterminated run and the conversation happened to be resumable. With D6 the Agent runs in-process, so a normal quit takes the graceful path, the run becomes `cancelled`, and it is **no longer resumable** — which is exactly why the cause has to be recorded (§9.2, premise 1).
 
 #### The D8 criterion (corrected)
 
@@ -422,14 +424,13 @@ As built, the guard needed one intermediate shape before the last step: an assis
 
 | Change | Location |
 |---|---|
-| `Supervisor` / `Decision` / backoff; split `StartupBlocked` into `Busy` and `Blocked` | `packages/rpc/src/connection.rs` |
-| `InstanceBusy` typed error | `agent/src/service/instance.rs`, `agent/src/service/mod.rs` |
-| `Phase::Busy`, `detach()` | `host/src/agent_host.rs` |
+| `Supervisor` / `Decision` / backoff; split `StartupBlocked` into `Busy` and `Blocked` | `packages/rpc/src/supervision.rs` (with `select_agent` in `packages/rpc/src/connection.rs`) |
+| The typed lock-conflict error | `agent/src/service/instance.rs` (`lock_conflict_message`), `host/src/agent_host.rs` (`Error::AgentBusy`) |
+| Yield instead of failure: `Stopped` + `yield_reason`, `detach_attached()` | `host/src/agent_host.rs` |
 | One-shot launch → resident supervision; the waiting status line ([§5](#5-waiting-is-bounded)) | `tui/src/agent_supervisor.rs` |
 | `check_running` → a supervision tick (probe the endpoint, not just our own phase) | `cli/src/headless/agent.rs` |
 | Same tick wired in | `desktop/src-tauri/src/agent_supervisor.rs` |
 | The breaker ([§6](#6-the-breaker)) | Inside the supervisor; no new file |
-| A distinct lock-conflict exit code (e.g. 75) so the parent can read "lost the election" | `agent/src/cli.rs` |
 | `CancelCause` threaded from abort to the terminal record (D8's premise) | `agent/src/rpc/session.rs`, `agent/src/runtime/`, `agent/src/session/entry.rs` |
 | Agent-triggered continuation (§9.2): decide and submit atomically after Ready, with guardrails | `agent/src/service/startup.rs`, `agent/src/rpc/`, `agent/src/config/mod.rs` |
 | The switch in `~/.future/agent/settings.json` plus a one-time map from the old `app.db` value | `agent/src/config/mod.rs`, `packages/app-settings`, the Desktop settings page |
@@ -440,12 +441,12 @@ As built, the guard needed one intermediate shape before the last step: an assis
 
 ### Later
 
-- **D6** (TUI embedding): `future-host` added to `tui/Cargo.toml`; an `environment::report` sink; the spawn branch and `check_sidecar_program` deleted.
-- **P2** (lifetime): `--ephemeral` + active-subscription counting + idle exit.
+- **D6** (TUI embedding): landed — `future-host` is in `tui/Cargo.toml`, `tui/src/agent_host.rs` drives it, and the spawn branch with `check_sidecar_program` is gone.
+- **P2** (lifetime): `--ephemeral` + active-subscription counting + idle exit. Not implemented: `future agent` has no `--ephemeral` flag.
 
 ## 11 Acceptance
 
-All process-level tests, shaped like the existing `tui/tests/agent_sidecar_launch.rs`:
+All process-level tests, in the shape of `agent/tests/service_startup.rs` (the instance lock and startup races) and `cli/tests/remote_start_refusal.rs` (the entry's refusal before any Agent starts):
 
 1. **Concurrent cold start**: headless + tui on one fresh home → exactly one Agent, the other attaches, **neither exits with an error**, identical instance ids.
 2. **Owner `kill -9`**: the remaining one or two bring an Agent up within budget, with a new instance id, an intact database, and old runs interrupted.
@@ -465,12 +466,12 @@ All process-level tests, shaped like the existing `tui/tests/agent_sidecar_launc
 
 Questions the user must answer, ordered by blast radius:
 
-1. **D6: should the TUI start the Agent in-process?** It affects the TUI's crash isolation, memory and cold start; the gain is one policy for all three entries.
+1. ~~D6: should the TUI start the Agent in-process?~~ (**settled:** landed — see §7).
 2. **P2: should the Agent outlive the TUI?** Option A (dies with its starter; others restart it, which interrupts the current turn though the conversation is continued — see §9.1) versus B (detached + idle exit).
 3. **D7: after the user stops it explicitly, should other clients bring it back automatically?** Recommendation: no (respect "stop means stop"), but it needs confirmation.
-4. **Continuation can spend money with no client present**: now that the switch lives in `~/.future/agent/settings.json`, should its default be on or off? (Today's `autoResumeInterrupted` is on)
+4. ~~Continuation's default~~ (**settled**): `resumeInterruptedOnStart` defaults to **on**, matching the desktop's existing `autoResumeInterrupted`, so moving the mechanism cannot silently drop behaviour.
 5. **Should continuation cover non-interactive sources?** (channels / goal / CLI / sub-sessions). Suggested default: resume only sessions identifiable as "the conversation in front of the user"; the rest needs an extra marker.
-6. **Go-ahead for P1.** The design is approved, but all three entries' startup paths change; D8/D9/D10's items (the cause, Agent-triggered continuation, the switch following the executor, the user-message-free resume) should ride in P1 — otherwise self-healing leaves conversations half way.
+6. ~~Go-ahead for P1.~~ (**settled:** landed — see §10).
 
 Not user decisions — parameters to tune against measurement: the 180s wait cap, the 3-per-300s breaker threshold, the 60s initial cooldown, `IDLE_GRACE` 120s, and whether `future tui -p` also embeds.
 

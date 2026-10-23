@@ -33,6 +33,31 @@ fn remote_json_gzip_enabled() -> bool {
 struct CachedReply {
     request: Value,
     response: Arc<tokio::sync::Mutex<Option<Vec<u8>>>>,
+    /// When this slot stops answering from cache.
+    ///
+    /// The background timer is reclamation, not the expiry itself: it runs on
+    /// the Host executor, which may be closed for admission or never poll a
+    /// best-effort cleanup. A read past this instant therefore replaces the
+    /// slot on the spot, so a lost timer cannot serve a stale reply — the same
+    /// reason the TTL is a property of the entry rather than of the task.
+    expires_at: std::time::Instant,
+}
+
+impl CachedReply {
+    /// Whether the command behind this slot is still executing.
+    ///
+    /// A command may legitimately run longer than the reply TTL (`prompt` with
+    /// a 600 s budget against a 600 s TTL). Expiry must not replace a slot that
+    /// is still in flight — that would execute the same command twice and drop
+    /// the single-flight guarantee this cache exists for. The executing
+    /// delivery holds `response` across the command, so a held mutex or an
+    /// unfilled one both mean "in flight".
+    fn in_flight(&self) -> bool {
+        match self.response.try_lock() {
+            Ok(cached) => cached.is_none(),
+            Err(_) => true,
+        }
+    }
 }
 
 type ReplySlot = Arc<CachedReply>;
@@ -312,6 +337,13 @@ pub async fn command_loop_with_ready(
                         if let Ok(command) = parsed.as_ref() {
                             apply_declared_features(&handshake, &pair_id, &command.features);
                             record_client_identity(handshake.runtime.as_ref(), &pair_id, command);
+                            // Which physical device this is. The platform cannot
+                            // tell that a new pairing belongs to a device this
+                            // machine already serves, and the second pairing could
+                            // never take control because the first still held it.
+                            handshake
+                                .runtime
+                                .note_client_device(&pair_id, &command.device_id);
                         }
                         // The sealed `secure_ready` is the client saying it is
                         // here on the channel it will keep beating on.
@@ -487,13 +519,19 @@ async fn handle_command_singleflight(
 
     let request: Value = serde_json::from_slice(&msg.payload).expect("command already decoded");
     let slot = {
+        let now = std::time::Instant::now();
+        let expires_at = now + handshake.reply_ttl;
         let mut slots = reply_slots.0.lock().unwrap();
+        // An expired entry is replaced here, not only by its timer: the timer
+        // is best-effort (a closed Host executor drops it), and a retry must
+        // then execute instead of receiving a reply the TTL already retired.
         match slots.get(&command_id) {
-            Some(slot) => slot.clone(),
-            None => {
+            Some(slot) if slot.expires_at > now || slot.in_flight() => slot.clone(),
+            _ => {
                 let slot = Arc::new(CachedReply {
                     request: request.clone(),
                     response: Arc::new(tokio::sync::Mutex::new(None)),
+                    expires_at,
                 });
                 slots.insert(command_id.clone(), slot.clone());
                 slot
@@ -765,14 +803,7 @@ async fn handle_command_inner(
             let pair_id = handshake.creds.pair_id.clone();
             reply(client, &msg, true, json!({}), None).await;
             let runtime = handshake.runtime.clone();
-            runtime.spawn(Box::pin(async move {
-                if !handshake.access_current() {
-                    return;
-                }
-                if let Err(error) = handshake.runtime.unpair_slot(&pair_id).await {
-                    eprintln!("remote: phone-initiated unpair failed: {error}");
-                }
-            }));
+            runtime.spawn(Box::pin(finish_phone_unpair(handshake, pair_id)));
         }
         _ => {
             handshake
@@ -786,6 +817,34 @@ async fn handle_command_inner(
 use future_remote_protocol::handshake::{
     handshake_transcript, HandshakeTranscript, HANDSHAKE_PROTOCOL_VERSION,
 };
+
+/// The half of a phone-initiated unpair that destroys something.
+///
+/// Split out of the match arm because it is the half that must be guarded, and
+/// the guard is about *when* it runs: the acknowledgement above is sent while
+/// the generation still owns its epoch, and `stop()` may invalidate that epoch
+/// before this task is scheduled. A detached task therefore re-checks before it
+/// touches the book — an unpair from a connection that has already been torn
+/// down must not delete the pairing of a device the user never asked to remove.
+///
+/// Named rather than an inline closure so the guard can be exercised where it
+/// decides something. Racing a detached task against the invalidation proves
+/// nothing either way: whichever side the scheduler picks first is the answer
+/// the test reads, which is how this path used to fail one run in five.
+async fn finish_phone_unpair(handshake: HandshakeState, pair_id: String) {
+    // Cheap early return, and the one that keeps the error log quiet: going one
+    // layer down under a dead epoch answers `remote_server_stopped`, which is a
+    // normal event here and not a failure worth a line. The guarantee itself
+    // lives in that layer (`supervisor::context` refuses every command from a
+    // generation whose epoch moved), so a race here could delay the answer but
+    // never reach the book.
+    if !handshake.access_current() {
+        return;
+    }
+    if let Err(error) = handshake.runtime.unpair_slot(&pair_id).await {
+        eprintln!("remote: phone-initiated unpair failed: {error}");
+    }
+}
 
 async fn handle_pair_handshake(
     client: &async_nats::Client,
@@ -1128,6 +1187,13 @@ pub(crate) trait CommandRuntime: crate::secure::HandshakeHost {
     ) -> Option<Arc<Mutex<Option<crate::types::ClientIdentity>>>>;
     /// The pairing's record of whether its client is at the other end.
     fn client_link(&self, pair: &str) -> Option<Arc<crate::supervisor::ClientLink>>;
+    /// Record which physical device this pairing's client says it is.
+    ///
+    /// The desktop serves one pairing per device; a second pairing of the same
+    /// device is retired here (see `Supervisor::note_client_device`).
+    fn note_client_device(&self, pair: &str, device_id: &str) {
+        let _ = (pair, device_id);
+    }
     /// The client on `pair` said it is leaving.
     fn client_left(&self, pair: &str);
     fn coalesce_events(&self, pair: &str) -> Arc<AtomicBool>;

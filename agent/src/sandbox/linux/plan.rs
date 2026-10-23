@@ -67,6 +67,27 @@ impl LinuxSandboxPlan {
         Self::compile_with_cancel(snapshot, &|| false)
     }
 
+    /// Write-only compatibility mode preserves the write half of every rule,
+    /// including first-match order. Read-only rules do not create shell masks
+    /// or detection reports; native file tools still use the original rules.
+    pub fn compile_with_read_protection(
+        snapshot: &RuleSetSnapshot,
+        read_protection: bool,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self, LinuxSandboxPlanError> {
+        if read_protection {
+            return Self::compile_with_cancel(snapshot, cancelled);
+        }
+        let mut writes = snapshot.clone();
+        for layer in &mut writes.layers {
+            layer.rules.retain(|rule| rule.access != Access::Read);
+            for rule in &mut layer.rules {
+                rule.access = Access::Write;
+            }
+        }
+        Self::compile_with_cancel(&writes, cancelled)
+    }
+
     pub fn compile_with_cancel(
         snapshot: &RuleSetSnapshot,
         cancelled: &dyn Fn() -> bool,
@@ -532,6 +553,50 @@ mod tests {
             LinuxSandboxPlan::compile(&input),
             Err(LinuxSandboxPlanError::MountLimit)
         ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn write_only_mode_preserves_write_decisions_and_first_match_order() {
+        let root = root();
+        std::fs::write(root.join("work/secret"), "secret").unwrap();
+        std::fs::write(root.join("work/read-only-rule"), "read").unwrap();
+        let input = snapshot(
+            &root,
+            vec![RuleLayerSnapshot {
+                layer: RuleLayer::Workspace,
+                rules: vec![
+                    subtree(&root, "work/vendor/ok", Access::Both, Decision::Allow),
+                    subtree(&root, "work/vendor", Access::Both, Decision::Deny),
+                    subtree(&root, "work/secret", Access::Both, Decision::Ask),
+                    subtree(&root, "work/read-only-rule", Access::Read, Decision::Deny),
+                    subtree(&root, "work/missing-read", Access::Read, Decision::Deny),
+                    subtree(&root, "work/missing-write", Access::Write, Decision::Deny),
+                ],
+            }],
+        );
+        let full = LinuxSandboxPlan::compile(&input).unwrap();
+        let limited =
+            LinuxSandboxPlan::compile_with_read_protection(&input, false, &|| false).unwrap();
+        assert!(full.unreadable_paths.contains(&root.join("work/secret")));
+        assert!(limited.unreadable_paths.is_empty());
+        assert!(limited.read_only_paths.contains(&root.join("work/secret")));
+        assert!(limited.read_only_paths.contains(&root.join("work/vendor")));
+        assert!(!limited
+            .read_only_paths
+            .contains(&root.join("work/read-only-rule")));
+        assert!(limited
+            .reopened_paths
+            .contains(&root.join("work/vendor/ok")));
+        assert_eq!(
+            limited.omitted_missing_protected_paths,
+            vec![root.join("work/missing-write")]
+        );
+        assert_ne!(full.policy_digest, limited.policy_digest);
+        assert_eq!(
+            LinuxSandboxPlan::compile_with_read_protection(&input, true, &|| false).unwrap(),
+            full
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 

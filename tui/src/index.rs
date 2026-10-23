@@ -872,9 +872,7 @@ async fn list_models(grpc_addr: &str, search: Option<&str>) -> Result<(), String
 // ─── Interactive mode ───────────────────────────────────────────────────────
 
 fn tui_settings_path() -> std::path::PathBuf {
-    dirs::home_dir()
-        .unwrap_or_default()
-        .join(".future")
+    crate::home::future_state_dir()
         .join("tui")
         .join("settings.json")
 }
@@ -1206,6 +1204,35 @@ mod tests {
             parse_args(&["--bogus".into()]),
             ParseOutcome::UnknownOption(_)
         ));
+    }
+
+    /// The TUI's own settings file is FutureOS state, so it follows the same
+    /// root every other component uses: `$HOME/.future` normally, and the
+    /// absolute `FUTURE_HOME` override when one is set (which is how a second,
+    /// isolated instance keeps its own model/theme defaults).
+    #[test]
+    fn tui_settings_path_follows_home_and_the_future_home_override() {
+        use crate::test_env::EnvVarGuard;
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let isolated = tempfile::tempdir().unwrap();
+
+        let _home = EnvVarGuard::set("HOME", home.path());
+        let override_guard = EnvVarGuard::remove("FUTURE_HOME");
+        assert_eq!(
+            tui_settings_path(),
+            home.path()
+                .join(".future")
+                .join("tui")
+                .join("settings.json")
+        );
+
+        drop(override_guard);
+        let _isolated = EnvVarGuard::set("FUTURE_HOME", isolated.path());
+        assert_eq!(
+            tui_settings_path(),
+            isolated.path().join("tui").join("settings.json")
+        );
     }
 
     /// Every value-taking flag has a `if i + 1 < args.len()` guard in front of
@@ -1744,8 +1771,15 @@ mod tests {
 
     #[test]
     fn tui_settings_path_lives_under_home() {
-        let path = tui_settings_path();
-        assert!(path.ends_with(".future/tui/settings.json"));
+        use crate::test_env::EnvVarGuard;
+        let _guard = crate::test_env::lock();
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvVarGuard::set("HOME", home.path());
+        let _override = EnvVarGuard::remove("FUTURE_HOME");
+        assert_eq!(
+            tui_settings_path(),
+            home.path().join(".future/tui/settings.json")
+        );
     }
 
     #[test]

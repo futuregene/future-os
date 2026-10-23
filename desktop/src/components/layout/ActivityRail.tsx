@@ -49,7 +49,7 @@ import { useRailView } from "./hooks/useRailView";
 import { MergedRows } from "./MergedRows";
 import { RailDisclosure, RailHeaderButton } from "./RailChrome";
 import { RailViewSwitch } from "./RailViewSwitch";
-import { isActiveRun, RECENT_PAGE_SIZE, recentSplit } from "./recentOrder";
+import { expandRecent, isActiveRun, RECENT_PAGE_SIZE, recentSplit, recentTree } from "./recentOrder";
 import { ThreadListItem } from "./ThreadListItem";
 import { buildThreadTree, buildTree, threadParentIds, visibleThreadRows, visibleTreeRows } from "./threadTree";
 
@@ -417,6 +417,40 @@ export function ActivityRail({
    */
   const threadParents = useMemo(() => threadParentIds(visibleThreads), [visibleThreads]);
 
+  /**
+   * The conversation on screen is never folded away.
+   *
+   * A fork lands *under* the turn it came from, and the tree starts folded, so
+   * creating one left its row hidden: the center showed the new conversation
+   * while the list did not, and the reader had to guess which `+` had swallowed
+   * it. Selecting a row that is hidden is not specific to forks — the palette,
+   * a link or a restored window can do the same — so the rule is stated once,
+   * for whatever is active: open the ancestors of the active row.
+   *
+   * Only ancestors are opened. Folding a row the reader collapsed by hand is
+   * their decision, and this effect does not run again until the selection
+   * moves.
+   */
+  useEffect(() => {
+    if (!activeThreadId)
+      return;
+    const ancestors: string[] = [];
+    let parent = threadParents.get(activeThreadId);
+    while (parent && !ancestors.includes(parent)) {
+      ancestors.push(parent);
+      parent = threadParents.get(parent);
+    }
+    if (ancestors.length === 0)
+      return;
+    setExpandedThreads((current) => {
+      if (ancestors.every(id => current.has(id)))
+        return current;
+      const next = new Set(current);
+      for (const id of ancestors) next.add(id);
+      return next;
+    });
+  }, [activeThreadId, threadParents]);
+
   const remoteRows = useMemo(
     () => mergeConversations(
       visibleThreads.map(thread => ({
@@ -568,6 +602,12 @@ export function ActivityRail({
    * A run's state is read per row: this machine's threads from the rail's own
    * per-thread run statuses (the same source the row's indicator uses), a host's
    * from what it reports on its row.
+   *
+   * A child — a fork, or a session an agent started for one piece of work — is
+   * not ranked here: the stretches rank the conversations that have no parent in
+   * the list, and a row's children are drawn only inside its fold. The fold state
+   * is the rail's (`expandedThreads` / `expandedRemoteThreads`), the same one the
+   * tree folds with, so the two views cannot disagree about whether a row is open.
    */
   const recent = useMemo(() => {
     const rows = remoteRows.filter(rowMatchesQuery).map(row => ({
@@ -580,9 +620,25 @@ export function ActivityRail({
         : isActiveRun(row.runStatus, row.streaming),
       createdAt: row.createdAt ?? null,
       lastActivityAt: row.lastMessageAt,
+      parentKey: row.parentKey ?? null,
     }));
-    return recentSplit(rows, recentLimit);
-  }, [recentLimit, remoteRows, rowMatchesQuery, threadRunStatuses, threadStreamingStatuses]);
+    const tree = recentTree(rows);
+    const split = recentSplit(tree.roots, recentLimit);
+    // One fold state, in the list's vocabulary: a local row's own expansion is
+    // keyed by thread id and a host's by row key, so the local half is translated
+    // into the key its merged row carries — the same translation the tree makes.
+    const expanded = new Set(expandedRemoteThreads);
+    for (const threadId of expandedThreads) expanded.add(rowKey(null, threadId));
+    const meta = new Map<string, { depth: number; hasChildren: boolean }>();
+    const roots = new Map<string, string>();
+    const sections = split.sections.map((section) => {
+      const expansion = expandRecent(section.rows, tree, expanded);
+      for (const [key, seat] of expansion.meta) meta.set(key, seat);
+      for (const [key, root] of expansion.roots) roots.set(key, root);
+      return { ...section, rows: expansion.rows };
+    });
+    return { meta, more: split.more, roots, rows: sections.flatMap(section => section.rows), sections };
+  }, [expandedRemoteThreads, expandedThreads, recentLimit, remoteRows, rowMatchesQuery, threadRunStatuses, threadStreamingStatuses]);
 
   /**
    * The age each recent row shows, by row key.
@@ -623,7 +679,12 @@ export function ActivityRail({
     [remoteRows],
   );
   /** This machine's threads the recent view lists — the batch's local half. */
-  const recentThreads = filteredVisibleThreads;
+  const recentThreads = useMemo(() => {
+    // Only the rows the view draws: a child inside a folded parent is not on the
+    // list, so a batch opened here must not sweep it up behind the reader's back.
+    const listed = new Set(recent.rows.filter(row => row.desktopId === null).map(row => row.id));
+    return filteredVisibleThreads.filter(thread => listed.has(thread.id));
+  }, [filteredVisibleThreads, recent.rows]);
   /** The hosts' rows the recent view lists — the batch's remote half. */
   const recentRemoteRows = useMemo(
     () => recent.rows.filter(row => row.desktopId !== null),
@@ -878,14 +939,16 @@ export function ActivityRail({
     });
 
     if (railView === "recent") {
-      // One block per drawn row, in the order the view draws them: the recent
-      // list is flat, so every conversation is a stop of its own and the two
-      // moves (fine and coarse) agree about where it begins — as they do for a
-      // chat in the tree, which is also a single-row block.
-      return recent.rows.map(row => toBlock("recent", [{
-        key: row.key,
-        open: () => openRow(row),
-      }]));
+      // One block per conversation and the children its fold reveals: the view
+      // draws a child only under its parent, so stepping by conversation must
+      // not land on a row the reader cannot see, and the next stop after a
+      // parent is the next conversation on the list rather than a worker the
+      // parent explains.
+      return byRoot(recent.rows, row => recent.roots.get(row.key) ?? row.key)
+        .map(rows => toBlock("recent", rows.map(row => ({
+          key: row.key,
+          open: () => openRow(row),
+        }))));
     }
 
     if (mergedMode) {
@@ -941,6 +1004,7 @@ export function ActivityRail({
     onSelectWorkspace,
     openRow,
     railView,
+    recent.roots,
     recent.rows,
     threadParents,
     visibleChatThreads,
@@ -1351,7 +1415,7 @@ export function ActivityRail({
                                   toggle: toggleRemoteSelection,
                                 }}
                                 expandedRemoteRows={expandedRemoteThreads}
-                                rowMeta={mergedRowTree.meta}
+                                rowMeta={railView === "recent" ? recent.meta : mergedRowTree.meta}
                                 rowRoots={mergedRowTree.roots}
                                 renderLocalGroupHeader={(workspaceId) => {
                                   const found = visibleWorkspaceGroups.find(item => item.workspace.id === workspaceId);
@@ -1617,18 +1681,26 @@ export function ActivityRail({
   );
 }
 
+/**
+ * This machine's list order: active before archived, pinned before the rest,
+ * then newest started.
+ *
+ * The last key is the conversation's *creation* time, not its last reply. A
+ * streaming run rewrites the activity stamp about once a second, so ranking by
+ * that swapped rows under the reader's thumb for as long as a run was going —
+ * a row would climb above its neighbours and back again. A creation time does
+ * not move, so a row — pinned or not — keeps the place it was given when the
+ * conversation was made. `sort` is stable, so the store's order breaks a tie
+ * (two conversations created in the same millisecond).
+ */
 function sortThreads(items: StoredThread[]) {
   return [...items].sort((a, b) => {
     if (a.status !== b.status)
       return a.status === "active" ? -1 : 1;
     if (a.pinned !== b.pinned)
       return a.pinned ? -1 : 1;
-    return threadSortTime(b) - threadSortTime(a);
+    return b.createdAt - a.createdAt;
   });
-}
-
-function threadSortTime(thread: StoredThread) {
-  return thread.lastMessageAt ?? thread.updatedAt ?? thread.createdAt;
 }
 
 /**

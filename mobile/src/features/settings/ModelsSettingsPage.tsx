@@ -63,14 +63,14 @@ export function ModelsSettingsPage({ settings, disabled, onChange }: {
   const { colors } = useTheme();
   const { t } = useTranslation();
   const remote = useRemoteControls();
-  const resource = useDesktopResource(remote.listSettingsModels, remote.desktopSettingsRevision, remote.desktopOnline);
+  const resource = useDesktopResource(remote.listSettingsModels, remote.desktopSettingsRevision, remote.desktopReadable);
   // The desktop's own view, read for provider display names only. Whether a
   // provider can be called is already decided before the list ever reaches the
   // phone: the agent reports user-defined models as-is (a local endpoint may be
   // deliberately keyless) and built-in catalog models only when their provider
   // holds a credential. Nothing here filters on key state again.
   const named = remote.capabilities?.has("provider_management_v1") ?? false;
-  const providers = useDesktopResource(remote.listProviders, remote.desktopSettingsRevision, remote.desktopOnline && named);
+  const providers = useDesktopResource(remote.listProviders, remote.desktopSettingsRevision, remote.desktopReadable && named);
   const [query, setQuery] = useState("");
   const [folded, setFolded] = useState<ReadonlySet<string>>(() => new Set());
   const hidden = useMemo(() => new Set(settings?.hiddenModels ?? []), [settings?.hiddenModels]);

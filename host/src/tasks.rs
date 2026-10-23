@@ -320,7 +320,7 @@ async fn execute(
     };
     // `Store` owns a `rusqlite::Connection` (Send but not Sync), so it is
     // moved through the async call and handed back rather than borrowed.
-    let (store, outcome) = run_inner(store, &task, &mut run).await;
+    let (store, outcome) = run_inner(store, &task, &mut run, notify).await;
     let (status, error, output) = match outcome {
         Ok(summary) => {
             run.result_summary = Some(kernel::truncate(&summary, kernel::RESULT_SUMMARY_CHARS));
@@ -394,6 +394,7 @@ async fn run_inner(
     store: Store,
     task: &Task,
     run: &mut TaskRun,
+    notify: &Notifier,
 ) -> (Store, Result<String, String>) {
     // 1. Session: new conversation, or the task's bound one (lazy create).
     //    Every store access below happens between awaits, never across one:
@@ -458,6 +459,11 @@ async fn run_inner(
         Ok(prepared) => prepared,
         Err(error) => return (store, Err(error.to_string())),
     };
+    // The conversation exists now, with its first message in it, and the run
+    // may take minutes. Announcing only at the end left the sidebar empty for
+    // that whole time while the task list said "running" — the conversation the
+    // run was using was invisible until it settled, and then appeared at once.
+    notify(Some(&thread_id));
     let (tx, rx) = tokio::sync::oneshot::channel();
     let (finished, result) = tokio::sync::oneshot::channel();
     let handle = crate::runtime::spawn(async move {
@@ -696,10 +702,21 @@ mod tests {
         let run = claim(&store, &t, ClaimReason::Explicit).unwrap();
         script_agent_setup(&mock, "sess_task_1");
 
+        // Each announcement records whether the run was still running at that
+        // moment: the conversation has to reach the sidebar *while* it runs, not
+        // only once it settles.
         let notified = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen = notified.clone();
+        let notify_dir = dir.path().to_path_buf();
+        let notify_run = run.id.clone();
         let notify: Notifier = std::sync::Arc::new(move |thread_id| {
-            seen.lock().unwrap().push(thread_id.map(str::to_string));
+            let running = Store::open(&notify_dir)
+                .ok()
+                .and_then(|store| store.get_run(&notify_run).ok().flatten())
+                .is_some_and(|run| run.status == RunStatus::Running);
+            seen.lock()
+                .unwrap()
+                .push((thread_id.map(str::to_string), running));
         });
 
         // The prompt stream is what `run_prepared_prompt_*` collects; a clean
@@ -772,11 +789,19 @@ mod tests {
         assert_eq!(thread.agent_session_id.as_deref(), Some("sess_task_1"));
         assert!(thread.title.starts_with("runs · "), "{}", thread.title);
 
-        // The host was told, so the UI can refresh.
+        // The host was told, so the UI can refresh — first as soon as the
+        // conversation existed, which is what puts it in the sidebar while the
+        // run is still going, and again when the run settles.
+        let announcements = notified.lock().unwrap().clone();
         assert_eq!(
-            notified.lock().unwrap().as_slice(),
-            &[Some(thread_id)],
-            "the notifier receives the conversation id"
+            announcements.first(),
+            Some(&(Some(thread_id.clone()), true)),
+            "the conversation is announced while the run is still running: {announcements:?}"
+        );
+        assert_eq!(
+            announcements.last(),
+            Some(&(Some(thread_id), false)),
+            "the settlement is announced last: {announcements:?}"
         );
     }
 
@@ -851,9 +876,20 @@ mod tests {
             1,
             "the Agent session behind it was dropped too"
         );
-        // The host is told, with nothing to open: the panel shows the run and
-        // says where the output went.
-        assert_eq!(notified.lock().unwrap().as_slice(), &[None]);
+        // The host is told twice: once while the conversation existed (the
+        // sidebar showed it during the run) and once after the delete, with
+        // nothing to open — the panel shows the run and says where the output
+        // went.
+        let announcements = notified.lock().unwrap().clone();
+        assert_eq!(announcements.len(), 2, "{announcements:?}");
+        assert!(
+            announcements[0].is_some(),
+            "the conversation is announced while it runs: {announcements:?}"
+        );
+        assert_eq!(
+            announcements[1], None,
+            "its removal is what the settlement announces"
+        );
     }
 
     /// A run that never reached an answer (the agent refused the session) has
@@ -2031,6 +2067,13 @@ mod tests {
         };
     }
 
+    /// The notifier these unit tests hand `run_inner`: they assert on the
+    /// outcome, and the conversation announcement is exercised by the loop test
+    /// (which counts the webview refreshes it causes).
+    fn notifier() -> Notifier {
+        std::sync::Arc::new(|_| {})
+    }
+
     /// Break one table of an open store from a peer connection: the same
     /// surface a partially migrated or externally damaged database presents,
     /// and the only way to drive the executor's `?` returns without a seam in
@@ -2059,7 +2102,7 @@ mod tests {
 
         drop_table(future_tasks::store::store_path(dir.path()), "tasks");
 
-        let (_store, outcome) = run_inner(store, &t, &mut run).await;
+        let (_store, outcome) = run_inner(store, &t, &mut run, &notifier()).await;
         let error = outcome.expect_err("binding the conversation must fail");
         assert!(error.contains("tasks"), "{error}");
     }
@@ -2079,7 +2122,7 @@ mod tests {
 
         drop_table(future_tasks::store::store_path(dir.path()), "task_runs");
 
-        let (_store, outcome) = run_inner(store, &t, &mut run).await;
+        let (_store, outcome) = run_inner(store, &t, &mut run, &notifier()).await;
         let error = outcome.expect_err("the run row update must fail");
         assert!(error.contains("task_runs"), "{error}");
     }
@@ -2105,7 +2148,7 @@ mod tests {
             "runs",
         );
 
-        let (_store, outcome) = run_inner(store, &t, &mut run).await;
+        let (_store, outcome) = run_inner(store, &t, &mut run, &notifier()).await;
         let error = outcome.expect_err("preparing the prompt must fail");
         assert!(error.contains("runs"), "{error}");
         assert!(

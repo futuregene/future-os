@@ -5,7 +5,8 @@ import { expect, it, vi } from "vitest";
 import { DEFAULT_APP_SETTINGS } from "../../integrations/storage/appSettings";
 import { GeneralPage } from "./GeneralPage";
 
-vi.mock("../../integrations/agent/useSandboxAvailability", () => ({
+vi.mock("../../integrations/agent/useSandboxAvailability", async importOriginal => ({
+  ...await importOriginal<typeof import("../../integrations/agent/useSandboxAvailability")>(),
   useSandboxAvailability: () => ({ available: true, resolved: true }),
 }));
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;

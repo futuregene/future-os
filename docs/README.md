@@ -25,6 +25,7 @@
 | [Host mode](guide/desktop-host.md) ([中文](guide/desktop-host.zh-CN.md)) | Foreground `future host` startup, platform login QR, pairing from `future remote devices add`, Ctrl+C, GUI-free server builds and troubleshooting |
 | [Self-hosted relay](guide/self-hosted-relay.md) ([中文](guide/self-hosted-relay.zh-CN.md)) | `future relay`: an account-free NATS relay for remote control, its threat model, coexistence with the official relay, and operator notes |
 | [Directory layout](guide/directory-layout.md) ([中文](guide/directory-layout.zh-CN.md)) | What lives where under `~/.future/` ((agent, channels, TUI, GUI, goal)) |
+| [Data backup and recovery](guide/data-backup.md) ([中文](guide/data-backup.zh-CN.md)) | `future data`: offline backup, verify, restore to the original home, resume/rollback after an interrupted restore, and the startup fence |
 | [Session history recall](guide/session-history.md) ([中文](guide/session-history.zh-CN.md)) | Read-only history search/entry reads, byte paging, and post-compaction model guidance |
 | [Self-inspection](guide/self-inspection.md) ([中文](guide/self-inspection.zh-CN.md)) | Reading an agent's own state (settings, skills, tools, sessions) and the user–agent record, and changing global settings from the CLI |
 | [Mobile latency diagnosis](guide/mobile-latency-diagnosis.md) ([中文](guide/mobile-latency-diagnosis.zh-CN.md)) | Mobile end-to-end latency measurement and diagnosis |
@@ -51,29 +52,33 @@ entry point; the [wiki](wiki/en/Home.md) is the user-facing app guide.
 | [Headless package development plan](architecture/headless-package-development.md) ([中文](architecture/headless-package-development.zh-CN.md)) | Implemented `future host` entry, GUI-free `future-host` library, shared backend, data compatibility, test ownership and build/release migration |
 | [Headless release acceptance](testing/headless-release-acceptance.md) ([中文](testing/headless-release-acceptance.zh-CN.md)) | Final successful CI evidence and deferred packaging, signing, installation, performance and same-candidate acceptance |
 | [Headless unsigned downloads/results](testing/headless-unsigned-results.md) ([中文](testing/headless-unsigned-results.zh-CN.md)) | Verified dev payloads, public URLs, SHA-256, CLI/sidecar and static/old-Linux checks |
-| [Channel test coverage](architecture/channels-test-coverage.md) ([中文](architecture/channels-test-coverage.zh-CN.md)) | What the channel framework's tests promise, and the 22 lines that are deliberately not covered, with the reason for each |
+| [Channel test coverage](architecture/channels-test-coverage.md) ([中文](architecture/channels-test-coverage.zh-CN.md)) | What the channel framework's tests promise, and the handful of lines that are deliberately not covered, with the reason for each |
 | [RPC crate](architecture/rpc.md) ([中文](architecture/rpc.zh-CN.md)) | `packages/rpc` — the protobuf wire contract (single source of truth) |
 
 ## Internals (`internals/`)
 
-Per-module working docs, previously scattered under `desktop/DEV_MD/`,
-`desktop/nats/`, `desktop/src-tauri/windows/`, `mobile/`, `tui/tests/` and
-`tests/`.
+Per-module working docs for the desktop app and the mobile client: product
+semantics, data models, platform sandboxes, connection and remote behaviour,
+context compaction, the mobile build and its platform parity notes, and the TUI
+test harness conventions.
 
-- [desktop/](internals/desktop/PRODUCT.md) — product semantics, data model (`ER.md`), colors, sandbox (macOS/Windows/Linux), connection & remote, embedded terminal, compaction (formerly `desktop/DEV_MD/`; see `desktop/CLAUDE.md` for the document map)
+- [desktop/](internals/desktop/PRODUCT.md) — product semantics, data model (`ER.md`), colors, sandbox (macOS/Windows/Linux), connection & remote, embedded terminal, compaction (see `desktop/CLAUDE.md` for the document map)
 - [compaction/](internals/compaction/compaction.md) — runtime context compaction: the two strategies and their parameters, the production request shape, the developer map (`compaction-development.md`), retrieval interfaces, and the two experiments — closed book (`compaction-closed-book-experiment.md`) and open book (`compaction-open-book-experiment.md`)
-- [mobile/](internals/mobile/README.md) — mobile build/TestFlight, iOS platform parity, streaming-sync design and measurements, HarmonyOS compatibility (formerly `mobile/README.md` + `mobile/docs/`; the dated audits and measurement reports are in `archives/verification/`)
-- [tui/](internals/tui/tests.md) — TUI test harness conventions (formerly `tui/tests/README.md`)
+- [mobile/](internals/mobile/README.md) — mobile build/TestFlight, iOS platform parity, streaming-sync design and measurements, HarmonyOS compatibility (the dated audits and measurement reports are in `archives/verification/`)
+- [tui/](internals/tui/tests.md) — TUI test harness conventions
 - [skill_reco/](internals/skill_reco/harness.md) — skill recommendation: the Jev recommender's [evaluation](internals/skill_reco/evaluation.md), its [harness](internals/skill_reco/harness.md) and the [integration plan](internals/skill_reco/integration-plan.md) (a historical design record)
-- [Desktop NATS bridge](internals/desktop-nats.md) (formerly `desktop/nats/README.md`)
-- [Windows installer/update](internals/desktop-windows.md) (formerly `desktop/src-tauri/windows/README.md`)
-- [Provider protocol tests](internals/provider-protocol.md) (formerly `tests/provider-protocol/README.md`)
+- [agent/](internals/agent/README.md) — module map of the gRPC backend (`agent/`): the turn loop, tools, LLM layer, sessions, sandbox, and what to read before changing each one
+- [host](internals/host.md) — module map of `future-host`, the GUI-free shared backend (store, agent bridge, tasks, remote, identity)
+- [Desktop NATS bridge](internals/desktop-nats.md)
+- [Windows installer/update](internals/desktop-windows.md)
+- [Provider protocol tests](internals/provider-protocol.md)
 
 ## Wiki (user-facing app guide)
 
 - English: [Home](wiki/en/Home.md), [Installation](wiki/en/Installation.md),
   [Quick Start](wiki/en/Quick-Start.md), [Using FutureOS](wiki/en/Using-FutureOS.md),
   [Settings](wiki/en/Settings.md), [Sandbox](wiki/en/Sandbox.md), [Remote](wiki/en/Remote.md), [Skills](wiki/en/Skills.md),
+  [Scheduled tasks](wiki/en/Scheduled-Tasks.md),
   [CLI](wiki/en/CLI.md), [FAQ](wiki/en/FAQ.md),
   [Feishu](wiki/en/Feishu.md), [DingTalk](wiki/en/DingTalk.md),
   [Models](wiki/en/Models.md) *(auto-generated — do not edit by hand)*

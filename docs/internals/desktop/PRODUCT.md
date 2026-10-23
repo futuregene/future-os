@@ -450,8 +450,10 @@ diff; sensitive files matching credential rules (`.env`, `*.pem`, `*.key`,
 etc.) are only marked "sensitive file changed, content not saved" — the content
 is not saved.
 
-In the long-term goal, Review will also cover change review of text files like
-markdown, documents, and tables.
+Any non-binary file is reviewed as a text diff, source or not — markdown and
+documents included (`host/src/git_review.rs` reads the bytes as UTF-8 and marks
+only what does not decode as binary). There is no parsed, cell-level view for
+spreadsheets or tables: those are reviewed as text too.
 
 ### 4.8 Skill
 
@@ -611,8 +613,8 @@ a second view exists). The choice is stored on this machine
 **Workspaces**, because the tree is the product's primary shape.
 
 "Recent" is a second **ordering** of the same list, not a second list: it draws
-no workspace groups, no pinned section and no fork tree, and lays every
-conversation (including a paired computer's) in one column of two stretches:
+no workspace groups and no pinned section, and lays every conversation
+(including a paired computer's) in one column of two stretches:
 
 - **Active** — a run that has not finished: producing output, queued, or waiting
   on the reader's approval (which is *not* streaming, so a view that read
@@ -626,9 +628,20 @@ conversation (including a paired computer's) in one column of two stretches:
   them; the caption counts the whole stretch rather than the drawn part. Active
   is never windowed.
 
+**A conversation's child sessions stay under it, as they do in the tree.** A fork,
+and a session an agent started for one piece of work (a `/future-goal` worker),
+is not a conversation the reader scans this list for — it is the work of one they
+did. So the stretches rank only conversations whose parent is not on the list, a
+parent carries the same `+` / `−` tree toggle the tree gives it, and its children
+are drawn — indented, up to three levels — only while it is open. The fold state
+is the rail's one state, so opening a conversation here opens it there. A child
+never takes a place of its own in either stretch: a running worker does not lift
+its conversation into "Active", and the stretch captions count conversations, not
+the sessions under them. Search is the one place a match is not hidden behind a
+parent: a child whose parent does not match is drawn as a root of the result.
+
 In "Recent" a pin is only a row marker and does not move the row (the two clocks
-are the page's rule), and a fork is a row of its own at its own time — there is
-no parent row above it to indent under. Search narrows the merged list by title
+are the page's rule). Search narrows the merged list by title
 and workspace name as it does elsewhere. The two views do not affect each other:
 switching back to Workspaces shows the same groups, folds, pinned section and
 row order as before.
@@ -636,12 +649,15 @@ row order as before.
 **Batch selection has its own entry and scope in each view.** In the tree it is
 reached from a section's menu (the chats section, one workspace) and covers that
 section; a pinned conversation carries no checkbox there and is never swept up by
-"select all", because the pin lifts it above the groups. "Recent" is one flat
-list with no pinned section, so its own menu (right of the switch) marks the whole
-list, and a pinned conversation is an ordinary row — tickable and deletable, the
-same rule the phone uses. The keyboard's two levels (`thread.*` row by row,
-`group.*` group by group) walk the order the recent view *draws*: one list, one
-page, so every step is a row the reader can see.
+"select all", because the pin lifts it above the groups. "Recent" is one scope
+over the whole view, so its own menu (right of the switch) marks the list it
+draws, and a pinned conversation is an ordinary row — tickable and deletable, the
+same rule the phone uses. A child inside a folded conversation is not on that
+list, so the batch does not reach it; opening the conversation puts it in the
+batch's scope. The keyboard's two levels (`thread.*` row by row, `group.*`
+conversation by conversation) walk the order the recent view *draws*: one page, so
+every step is a row the reader can see, and the coarse move steps over a
+conversation's children as one stop.
 
 Pinning is **global**: every pinned conversation — whether belonging to a
 workspace or an ordinary Chat — is gathered in the top "Pinned" section;
@@ -650,6 +666,20 @@ unpinning returns it to its own group. Workspace **groups** can be pinned too
 keep the store's recency order below them, and the header shows a pin marker.
 The flag is stored on the workspace (`workspaces.pinned`), so the phone's
 workspace tab and the desktop rail order the same groups the same way.
+
+**Rows inside a section are ordered by creation time, newest first**, and that
+includes the pinned section: a workspace's conversations, the chats section and
+the merged list with a paired computer use the conversation's start time, while
+the last reply is only drawn as the row's age. The reason is the same one the
+recent view's active stretch has — a running turn rewrites its activity stamp
+about once a second, so ranking by it swaps rows under the reader's thumb for as
+long as anything streams, and an old conversation you just replied to would jump
+to the top. A start time never moves, so a row takes its place when it is made.
+A pin does not change that rule: pinned rows are ranked by their start time too
+and keep their place whether or not they stream. The *group* still holds its own
+place by the workspace's last-opened time (above) and never moves with its
+conversations; a session on a host too old to send a start time falls back to
+recency.
 
 Conversations display as a tree of at most three levels following the Agent's
 parent-child session relations (excluding the Workspace title level), collapsed

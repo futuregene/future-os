@@ -439,9 +439,11 @@ fn replay_all(store: &Store) -> Vec<Goal> {
 pub fn overview(store: &Store) -> Result<Overview> {
     let now = now_epoch();
     let goals = replay_all(store);
-    // Registry timestamps are stable across replays; the replayed goal's
-    // `created_at` is not (the ledger ignores GoalStarted, so replay stamps
-    // it with "now" — which would make every fingerprint change per tick).
+    // Creation time is a state field: replay restores it from
+    // `GoalStarted.ts` (then the registry entry), so it no longer drifts per
+    // tick. The registry read stays as the stable outer answer for a legacy
+    // entry that predates `created_at` (0) — a constant, where replay's
+    // documented last resort is its own clock.
     let created_by: std::collections::HashMap<String, u64> = store
         .registry()
         .iter()
@@ -583,8 +585,9 @@ pub fn goal_detail(store: &Store, goal_id: &str) -> Result<Option<GoalDetail>> {
     runs.truncate(200);
     let graph = task_graph::build_task_graph(&goal).ok();
     let event_count = store.events(goal_id).map(|e| e.len()).unwrap_or(0);
-    // Stable creation timestamp (see overview(): the replayed goal's
-    // created_at is re-stamped with "now" on every replay).
+    // Stable creation timestamp (see overview(): replay restores created_at
+    // from the ledger; a legacy registry entry without created_at stays the
+    // stable 0 rather than replay's clock).
     let created_at = store
         .registry()
         .iter()

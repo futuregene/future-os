@@ -254,6 +254,13 @@ const TOGGLE_SLOP_LEFT = 44 - TOGGLE_WIDTH - TOGGLE_GAP;
 const TOGGLE_SLOP_RIGHT = TOGGLE_GAP;
 const rowInset = (title: string) =>
   StyleSheet.flatten(sessionBody(title).parent!.props.style).paddingLeft;
+// The setup is a render plus one flushed microtask; it asserts nothing about
+// speed. Jest's 5 s default still measured the machine: `jest --runInBand`
+// runs 145 suites in one worker, and one CI run (39742523871) spent more than
+// 5 s inside this hook and reported `Exceeded timeout of 5000 ms for a hook`
+// for a test that never ran. The budget below only keeps a real hang from
+// wedging the suite.
+const FIXTURE_TIMEOUT_MS = 30_000;
 beforeEach(async () => {
   jest.clearAllMocks();
   machinesAnswer = true;
@@ -279,7 +286,7 @@ beforeEach(async () => {
     // tree after the test body has finished.
     await Promise.resolve();
   });
-});
+}, FIXTURE_TIMEOUT_MS);
 afterEach(() => {
   act(() => tree.unmount());
   jest.restoreAllMocks();
@@ -858,6 +865,49 @@ function confirmAlert(): void {
   act(() => modal.findAllByType(Button).find(node => node.props.variant === "danger")!.props.onPress());
   act(() => modal.props.onDismiss());
 }
+
+test("the recency page keeps a child session inside its conversation", () => {
+  // The page's own reason for existing is "what did I last touch", and a
+  // `/future-goal` worker is not one of those: it is the work of a conversation
+  // that is. So it is not a row of either stretch — it is inside its parent's
+  // fold, which is the same `+`/`−` the other two pages draw.
+  const render = () => act(() => tree.update(createElement(SessionList, {
+    tab: "recent",
+    empty: null,
+    onMenu,
+    onTabChange,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+  })));
+  expect(mockRemote.sessions.map(session => session.sessionId)).toEqual(expect.arrayContaining(["s1", "child"]));
+  render();
+  // `s1` has a child in the fixture. The child is a session like any other to a
+  // page that ranks every one of them; here it is inside its conversation, which
+  // is why it is drawn only once that row is opened.
+  expect(recentPage()).toEqual(["#sessions.earlierSection", "s1", "s2"]);
+  expect(sessionBody("Child")).toBeUndefined();
+
+  act(() => button("sessions.expandChildren").props.onPress());
+  // Under its conversation, one level in, still inside the same stretch.
+  expect(recentPage()).toEqual(["#sessions.earlierSection", "s1", "child", "s2"]);
+  expect(rowInset("Child")).toBeGreaterThan(rowInset("First"));
+  // The caption counts conversations, not the session it just revealed.
+  const caption = tree.root.findAll(
+    node => node.props.accessibilityRole === "header" && typeof node.type === "string",
+  ).map(node => node.findAllByType(Text).map(text => text.props.children));
+  expect(caption).toEqual([["sessions.earlierSection", 2]]);
+
+  act(() => button("sessions.collapseChildren").props.onPress());
+  expect(sessionBody("Child")).toBeUndefined();
+  act(() => tree.update(createElement(SessionList, {
+    tab: "chat",
+    empty: null,
+    onMenu,
+    onTabChange,
+    commandsFor: testCommandsFor,
+    ref: listRef,
+  })));
+});
 
 test.each(["workspace", "chat"] as const)("%s parents fold with +/−, not the workspace header chevron", (tab) => {
   // A 44px touch target keeps the row toggle and the workspace header's fold
@@ -1737,7 +1787,7 @@ function renderMerged(
     session: RemoteSession;
   }[],
   activeDesktopId = "desk-a",
-  tab: "workspace" | "chat" = "workspace",
+  tab: "workspace" | "chat" | "recent" = "workspace",
 ): void {
   act(() => tree.update(createElement(SessionList, {
     tab,
@@ -1875,6 +1925,38 @@ test("a conversation with no heading above it keeps its machine's glyph", () => 
   expect(rowGlyphs("Pinned elsewhere", "desk-b")).toBe(1);
   // Under the heading: it does not.
   expect(rowGlyphs("Remote plan", "desk-b")).toBe(0);
+});
+
+/**
+ * The recency row's under-line opens with the machine.
+ *
+ * "Where it lives" is the quieter fact on that page, so it reads as one line
+ * under the title — and the machine comes first on that line, at the row's own
+ * left edge, so the glyph starts in the column the title above it starts in
+ * instead of trailing whatever the workspace happens to be called. The margin
+ * the glyph carried as a follower would read as an indent there; it sits on the
+ * far side instead, keeping the pair's spacing.
+ */
+test("the recency row puts the machine before the workspace name", () => {
+  renderMerged(
+    [mergedRow("desk-a", "a1", "Local plan"), mergedRow("desk-b", "b1", "Remote plan")],
+    "desk-a",
+    "recent",
+  );
+
+  const glyph = sessionBody("Remote plan").findAllByType(Text)
+    .find(child => child.props.accessibilityLabel === "desk-b");
+  expect(glyph).toBeTruthy();
+
+  // One line of two texts, in that order: the glyph, then the name it belongs to.
+  const texts = glyph!.parent!.findAllByType(Text)
+    .map(child => child.props.accessibilityLabel ?? child.props.children);
+  expect(texts).toEqual(["desk-b", "Project"]);
+
+  // Flush with the row's left edge (no indent against the title's column), with
+  // the spacing it needs on the far side of the glyph.
+  expect(StyleSheet.flatten(glyph!.props.style)).toMatchObject({ marginLeft: 0 });
+  expect(StyleSheet.flatten(glyph!.props.style).marginRight).toBeGreaterThan(0);
 });
 
 /**

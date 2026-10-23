@@ -15,16 +15,39 @@
 # Env overrides:
 #   FUTUREOS_VERSION  pin a specific release (e.g. v0.1.2); default = latest
 #   FUTUREOS_BASE     release mirror base URL; default https://dl.future-os.cn/releases
+#   FUTUREOS_SKIP_VERIFY=1  install without checksum verification (not recommended;
+#                     needed only when a release publishes no manifest or the
+#                     host has neither shasum nor sha256sum)
 set -euo pipefail
 
 BASE="${FUTUREOS_BASE:-https://dl.future-os.cn/releases}"
 LATEST="$BASE/latest.json"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/futureos.XXXXXX")"
+MANIFEST="$TMP/latest.json"
 trap 'rm -rf "$TMP"' EXIT
 
 say()  { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m==>\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m==>\033[0m %s\n' "$*" >&2; exit 1; }
+
+# This script runs straight from `curl | bash`, so an unverified download has
+# nothing left but TLS to the mirror (which FUTUREOS_BASE can repoint) and the
+# CDN in front of it. Verification therefore fails closed: a release we cannot
+# checksum is refused, and skipping the check is an explicit opt-in.
+skip_verify_enabled() {
+  case "${FUTUREOS_SKIP_VERIFY:-}" in
+    ""|0|false|no) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+require_verification_unless_skipped() { # reason
+  if skip_verify_enabled; then
+    warn "$1 — installing WITHOUT checksum verification (FUTUREOS_SKIP_VERIFY=1)"
+    return 0
+  fi
+  die "$1 — refusing to install unverified content; set FUTUREOS_SKIP_VERIFY=1 to accept the risk"
+}
 
 command -v curl >/dev/null 2>&1 || die "curl is required (https://curl.se)"
 
@@ -41,7 +64,8 @@ esac
 
 fetch() { curl -fsSL --proto '=https' --tlsv1.2 "$1"; }
 
-# Read the version (no argument) or assets[key] URL+SHA-256 from latest.json.
+# Read the version (no argument) or assets[key] URL+SHA-256 from the release
+# manifest in $MANIFEST.
 # Tokenize strings and nesting rather than relying on lines or field order.
 # This only reads the release manifest string fields; no jq/Python is required.
 manifest_entry() {
@@ -75,17 +99,21 @@ manifest_entry() {
       if (asset_key == "") print version
       else if (url != "") print url, sha
     }
-  ' "$TMP/latest.json"
+  ' "$MANIFEST"
 }
 
 verify_sha256() { # file expected
   local file="$1" expected="$2" got=""
+  if [[ -z "$expected" ]]; then
+    require_verification_unless_skipped "no SHA-256 is published for $(basename "$file")"
+    return 0
+  fi
   if command -v shasum >/dev/null 2>&1; then
     got="$(shasum -a 256 "$file" | awk '{print $1}')"
   elif command -v sha256sum >/dev/null 2>&1; then
     got="$(sha256sum "$file" | awk '{print $1}')"
   else
-    warn "no sha256 tool found — skipping checksum verification"
+    require_verification_unless_skipped "need shasum or sha256sum to verify the download"
     return 0
   fi
   if [[ "$got" != "$expected" ]]; then
@@ -110,39 +138,61 @@ run_future_setup() {
   fi
 }
 
-# Resolve the version to install: FUTUREOS_VERSION wins, otherwise read the
-# pointer from latest.json. A leading "v" is stripped — releases publish under
-# the plain semver (releases/1.0.2/…), matching version.mjs tag handling.
+# Resolve the version to install and read its release manifest into $MANIFEST.
+# FUTUREOS_VERSION wins, otherwise latest.json names the current version. A
+# leading "v" is stripped — releases publish under the plain semver
+# (releases/1.0.2/…), matching version.mjs tag handling. A pinned version reads
+# that version's own manifest (releases/<version>/latest.json, published beside
+# its artifacts), because a constructed URL carries no expected checksum.
 VERSION=""
+MANIFEST_READY=0
 resolve_latest() {
+  local url
   if [[ -z "${FUTUREOS_VERSION:-}" ]]; then
-    fetch "$LATEST" > "$TMP/latest.json"
-    VERSION="$(manifest_entry)"
-    [[ -n "$VERSION" ]] || die "could not resolve the latest version from $LATEST"
+    url="$LATEST"
   else
     VERSION="${FUTUREOS_VERSION#v}"
+    url="$BASE/$VERSION/latest.json"
+  fi
+  MANIFEST_READY=0
+  if fetch "$url" > "$MANIFEST"; then
+    MANIFEST_READY=1
+    if [[ -z "$VERSION" ]]; then
+      VERSION="$(manifest_entry)"
+      [[ -n "$VERSION" ]] || die "could not resolve the latest version from $url"
+    fi
+  else
+    [[ -n "$VERSION" ]] || die "could not resolve the latest version from $url"
   fi
 }
 
-# Resolve the download URL+SHA-256 for one asset key (e.g. "darwin-aarch64").
-# The pinned-version path constructs the URL directly and skips verification,
-# since there is no manifest lookup in that flow yet.
+# Resolve the download URL and its expected SHA-256 for one asset key (e.g.
+# "darwin-aarch64") from the release manifest, falling back to the historical
+# key when asked. A pinned release that publishes no manifest (or no entry for
+# this platform) has no checksum to compare against, so it is refused unless
+# FUTUREOS_SKIP_VERIFY=1 was set: an unverifiable install must be a deliberate
+# choice, never the default.
 ASSET_URL=""
 ASSET_SHA=""
 resolve_asset() {
   local key="$1" filename="$2" fallback_key="${3:-}" manifest_value=""
-  if [[ -z "${FUTUREOS_VERSION:-}" ]]; then
+  if [[ "$MANIFEST_READY" -eq 1 ]]; then
     manifest_value="$(manifest_entry "$key")"
     if [[ -z "$manifest_value" && -n "$fallback_key" ]]; then
       manifest_value="$(manifest_entry "$fallback_key")"
     fi
     read -r ASSET_URL ASSET_SHA <<< "$manifest_value" || true
-    [[ -n "$ASSET_URL" ]] || die "no release asset '$key' in $LATEST"
-  else
+  fi
+  if [[ -z "$ASSET_URL" ]]; then
+    # A latest.json without the platform is a broken release, not something to
+    # paper over with a guessed filename.
+    [[ -z "${FUTUREOS_VERSION:-}" ]] && die "no release asset '$key' in $LATEST"
+    require_verification_unless_skipped "$BASE/$VERSION/latest.json publishes no '$key' asset"
     ASSET_URL="$BASE/$VERSION/$filename"
     ASSET_SHA=""
-    warn "FUTUREOS_VERSION is pinned — skipping SHA-256 verification (no manifest lookup)"
+    return 0
   fi
+  [[ -n "$ASSET_SHA" ]] || require_verification_unless_skipped "the release manifest publishes no SHA-256 for '$key'"
 }
 
 # Preserve macOS bundle metadata when ditto is available. The fallback keeps

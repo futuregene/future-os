@@ -10,6 +10,7 @@ import re
 import struct
 import subprocess
 import tempfile
+import time
 
 
 def pe_imports(path):
@@ -87,30 +88,69 @@ def main():
             r'webkit|webview|gtk|gdk|appkit|qt[56]|libtauri|libwry', name, re.I)]
         if refused:
             raise RuntimeError(f'GUI dependencies in CLI artifact: {refused}')
-        with tempfile.TemporaryDirectory(prefix='future host artifact ') as folder:
+        with tempfile.TemporaryDirectory(prefix='fh-') as folder:
             home = Path(folder)
             state = home / '.future'
             env = os.environ.copy()
             env.update(HOME=str(home), USERPROFILE=str(home), FUTURE_HOME=str(state))
             for key in ('FUTURE_AGENT_GRPC_ADDR', 'FUTURE_AGENT_SOCKET', 'FUTURE_DESKTOP_AGENT_MODE'):
                 env.pop(key, None)
-            for flags, expected, code in [(['host', '--help'], 'Usage: future host', 0),
-                                          (['host'], 'interactive terminal', 1)]:
-                result = subprocess.run([str(binary), *flags], stdin=subprocess.DEVNULL,
-                                        capture_output=True, text=True, encoding='utf-8',
-                                        errors='replace', env=env, timeout=25)
-                output = result.stdout + result.stderr
-                report['probes'].append({'args': flags, 'exitCode': result.returncode,
-                                         'stdout': result.stdout, 'stderr': result.stderr})
-                if result.returncode != code or expected not in output:
-                    raise RuntimeError(f'Unexpected {flags} result: {result.returncode}: {output}')
-                if len(flags) == 2 and state.exists():
-                    raise RuntimeError('Help initialized Future state')
-            if result.stdout:
-                raise RuntimeError('First noninteractive startup printed authorization output')
-            for relative in ('remote_pairing.json', 'app/app.db'):
-                if (state / relative).exists():
-                    raise RuntimeError(f'First noninteractive startup created {relative}')
+            result = subprocess.run([str(binary), 'host', '--help'], stdin=subprocess.DEVNULL,
+                                    capture_output=True, text=True, encoding='utf-8',
+                                    errors='replace', env=env, timeout=25)
+            report['probes'].append({'args': ['host', '--help'], 'exitCode': result.returncode,
+                                     'stdout': result.stdout, 'stderr': result.stderr})
+            if result.returncode != 0 or 'Usage: future host' not in result.stdout:
+                raise RuntimeError(f'Unexpected host help result: {result.returncode}: {result.stderr}')
+            if state.exists():
+                raise RuntimeError('Help initialized Future state')
+            # A signed-out host now serves locally even with redirected stdin.
+            # Files avoid pipe backpressure while waiting for the embedded Agent.
+            with (home / 'stdout.log').open('w+b') as stdout, (home / 'stderr.log').open('w+b') as stderr:
+                process = subprocess.Popen([str(binary), 'host'], stdin=subprocess.DEVNULL,
+                                           stdout=stdout, stderr=stderr, env=env)
+                try:
+                    deadline = time.monotonic() + 25
+                    while True:
+                        output = (home / 'stderr.log').read_text(encoding='utf-8', errors='replace')
+                        if process.poll() is not None:
+                            raise RuntimeError(f'Signed-out host exited {process.returncode}: {output}')
+                        if ('FutureOS: embedded Agent ready' in output and
+                                'Not signed in to FutureOS: serving local' in output):
+                            break
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError(f'Signed-out host did not become ready: {output}')
+                        time.sleep(0.1)
+                    time.sleep(1)
+                    if process.poll() is not None:
+                        raise RuntimeError(f'Signed-out host stopped serving: {process.returncode}')
+                finally:
+                    # Windows terminate() does not stop descendants (e.g. skill
+                    # bootstrap); kill the isolated probe tree before removing HOME.
+                    if system == 'Windows':
+                        subprocess.run(['taskkill', '/PID', str(process.pid), '/T', '/F'],
+                                       capture_output=True, timeout=10)
+                    elif process.poll() is None:
+                        process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+                    stdout.seek(0)
+                    stderr.seek(0)
+                    captured_stdout = stdout.read().decode('utf-8', errors='replace')
+                    captured_stderr = stderr.read().decode('utf-8', errors='replace')
+                    report['probes'].append({'args': ['host'], 'exitCode': process.returncode,
+                                             'stdout': captured_stdout, 'stderr': captured_stderr})
+            if system != 'Windows' and process.returncode != 0:
+                raise RuntimeError(f'Host did not shut down cleanly: {process.returncode}: {captured_stderr}')
+            if captured_stdout or re.search(r'PHONE PAIRING|user code', captured_stderr):
+                raise RuntimeError('Noninteractive startup printed authorization output')
+            if not (state / 'app/app.db').is_file():
+                raise RuntimeError('Signed-out startup did not initialize the local store')
+            if (state / 'remote_pairing.json').exists():
+                raise RuntimeError('Signed-out startup created remote pairing')
             auth = state / 'agent/auth.json'
             if auth.exists() and re.search(r'"key"\s*:', auth.read_text(encoding='utf-8')):
                 raise RuntimeError('First noninteractive startup persisted credentials')

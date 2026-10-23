@@ -116,6 +116,7 @@ flowchart TD
 
     host --> cli["cli"]
     host --> desktop["futureos"]
+    host --> tui
     channel --> cli
     goal --> cli
     tui --> cli
@@ -135,7 +136,7 @@ flowchart TD
 | tasks | rpc |
 | channel | rpc |
 | goal | app-settings, rpc |
-| tui | rpc |
+| tui | host, rpc |
 | cli | agent, app-settings, app-workspaces, channel, goal, host, rpc, tasks, tui, remote-crypto (dev) |
 | futureos | agent, app-settings, app-workspaces, host, remote-client, remote-crypto, remote-protocol, remote-server, rpc, tasks |
 
@@ -229,9 +230,7 @@ jobs do not write large private Rust cache copies.
 ## Specialty validation
 
 [`misc.yml`](../../.github/workflows/misc.yml) has **only** a manual trigger.
-It is outside PR/main gating. It replaces the old `ci.yml` specialty scopes and
-the standalone flaky-stress workflow. Regular native checks absorb the former
-mobile-native-io workflow.
+It is outside PR/main gating. Regular native checks cover mobile native IO.
 
 ```bash
 gh workflow run ci.yml --ref <branch>
@@ -245,6 +244,7 @@ gh workflow run misc.yml --ref <branch> -f suite=windows-update
 | generated | Proto regeneration and Remote schema/codegen freshness |
 | remote-interop | Rust/TS interoperability and Remote boundaries |
 | windows-update | Offline installer/update fixtures |
+| linux-update | Linux DEB update fixtures: root-side verification and dpkg recovery of a prepared executor |
 | macos-notarization | Recovery/publication script regressions on Linux |
 | flaky-stress | Repeated Agent, TUI and CLI tests |
 | agent-lifecycle | Native three-OS lifecycle, Host/CLI boundaries and Host docs |
@@ -255,18 +255,17 @@ gh workflow run misc.yml --ref <branch> -f suite=windows-update
 
 Release signing, notarization, packaging and uploads remain in release workflows.
 
-## Merge gate migration
+## Merge gate
 
 Use the stable `CI result` check as the required status. It runs with `always()`
 and rejects failed planning, failures, cancellations, missing results and
 unexpected skips. Unaffected suites are allowed to skip. Dynamic matrix names
 are diagnostic, not required-check names.
 
-When landing this refactor, migrate the Protect Main ruleset's old individual
-required contexts to `CI result` (GitHub Actions app id 15368), preserving strict
-up-to-date enforcement and all other rules. Until that administrative migration,
-the old contexts will remain pending even when the new checks pass. No ruleset
-is changed by editing these workflow files.
+The `Protect Main` ruleset requires exactly that one context (`CI result`, GitHub
+Actions app id 15368) with strict up-to-date enforcement, so adding or renaming a
+workflow job needs no administrative change. No ruleset is changed by editing
+these workflow files.
 
 Local validation uses syntax/static checks. Unit tests, including planner/gate
 regressions in `scripts/tests/ci-plan.test.mjs`, run in CI.

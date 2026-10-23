@@ -66,6 +66,63 @@ fn helper_request_full(
     )
 }
 
+/// Exercise the actual helper with the limited plan, even on a newer bwrap.
+#[tokio::test]
+#[ignore = "requires a native Linux host with a working system bwrap"]
+async fn write_only_plan_keeps_protected_files_readable_but_not_writable() {
+    use future_agent::sandbox::linux::{plan::LinuxSandboxPlan, runner};
+    use future_agent::sandbox::rules::{
+        Access, Decision, RuleLayer, RuleLayerSnapshot, RuleMatcherSnapshot, RuleSetSnapshot,
+        RuleSnapshot,
+    };
+    let mut probe = probe_linux_sandbox_host();
+    if !probe.available {
+        eprintln!("skipping Linux sandbox smoke: {:?}", probe.code);
+        return;
+    }
+    probe.capabilities.as_mut().unwrap().read_protection = false;
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().canonicalize().unwrap();
+    let secret = workspace.join("secret");
+    std::fs::write(&secret, "original").unwrap();
+    let snapshot = RuleSetSnapshot {
+        workspace: workspace.clone(),
+        temp_roots: Vec::new(),
+        resolution_errors: Vec::new(),
+        layers: vec![RuleLayerSnapshot {
+            layer: RuleLayer::Workspace,
+            rules: vec![RuleSnapshot {
+                matcher: RuleMatcherSnapshot::Literal {
+                    path: secret.clone(),
+                },
+                access: Access::Both,
+                decision: Decision::Deny,
+            }],
+        }],
+    };
+    let plan = LinuxSandboxPlan::compile_with_read_protection(&snapshot, false, &|| false).unwrap();
+    let mut prepared = runner::prepare(
+        &probe,
+        plan,
+        "test \"$(cat secret)\" = original && ! printf changed > secret && printf ok > output",
+        &workspace,
+    )
+    .unwrap();
+    prepared.program = env!("CARGO_BIN_EXE_future-agent").into();
+    prepared.args = vec!["--linux-sandbox-helper".into(), "fd:3".into()];
+    let output = prepared.into_command().unwrap().output().await.unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(secret).unwrap(), "original");
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("output")).unwrap(),
+        "ok"
+    );
+}
+
 #[test]
 #[ignore = "requires a native Linux host with a working system bwrap"]
 fn filesystem_no_new_privs_and_exit_status() {

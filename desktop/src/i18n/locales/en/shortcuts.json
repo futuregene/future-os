@@ -144,8 +144,6 @@
     "reset": "Restore default",
     "resetAll": "Restore all defaults",
     "unbound": "Not set",
-    "terminalBlocked": "Ignored while the terminal has focus: this key belongs to the shell",
-    "levels": "{{coarse}} steps between workspaces and conversations; {{fine}} steps through every conversation; inside one, {{questions}} jumps between questions. Changes apply immediately.",
     "scopedGlobal": "Works anywhere.",
     "scopedVibe": "Only while the Vibe panel is open; inside it these keys may replace the ones above.",
     "multiKey": "These keys are fixed for now."

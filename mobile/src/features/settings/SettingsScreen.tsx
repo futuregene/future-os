@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
-import { Keyboard, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { ArrowLeft } from "lucide-react-native";
+import { Button } from "../../components/Button";
 import { LanguageSettings } from "../../i18n/LanguageSettings";
 import { AppearanceSettings } from "../../theme/AppearanceSettings";
 import { PEER_ICONS, iconGlyph } from "../../remote/peerIcons";
@@ -21,6 +22,7 @@ import { TasksSettingsPage } from "./TasksSettingsPage";
 import type { SettingsPageBack } from "./pageBack";
 import { ResourceStatus, SettingsField, SettingsLink, SettingsSection, SettingsSwitch, createSettingsStyles, useSettingsStyles } from "./SettingsPrimitives";
 import { useDesktopResource } from "./useDesktopResource";
+import { useKeyboardHeight } from "../../lib/useKeyboardHeight";
 
 export type SettingsScreenHandle = { goBack(): void };
 
@@ -131,12 +133,37 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   // Which of the two surfaces this stack is: this phone's own settings, or one
   // paired desktop's.
   const deviceMode = deviceId !== undefined;
+  // This machine is somebody else's right now: pages read nothing, and the way
+  // out is the same takeover the session list offers.
+  const standby = remote.presence?.control === "standby";
+  const holderName = remote.presence?.holder?.name?.trim();
+  const [takingControl, setTakingControl] = useState(false);
+  const [takeControlFailed, setTakeControlFailed] = useState(false);
+  const takeControl = async () => {
+    if (takingControl) return;
+    setTakingControl(true);
+    setTakeControlFailed(false);
+    try {
+      await remote.takeControl();
+    }
+    catch {
+      setTakeControlFailed(true);
+    }
+    finally {
+      setTakingControl(false);
+    }
+  };
   const supported = remote.capabilities?.has("desktop_settings_v1") ?? false;
   const skillsSupported = remote.capabilities?.has("skill_management_v1") ?? false;
   const providersSupported = remote.capabilities?.has("provider_management_v1") ?? false;
   const tasksSupported = remote.capabilities?.has("tasks_v1") ?? false;
-  const enabled = deviceMode && remote.desktopOnline && supported;
-  const resource = useDesktopResource(remote.getDesktopSettings, remote.desktopSettingsRevision, enabled);
+  // A machine another device drives answers every command with a refusal
+  // before a handler runs, so it is *answering* and still not ours to
+  // configure. Online is one question, "may this phone write to it" is another:
+  // folding standby into `enabled` is what keeps a row from being offered for a
+  // page whose every read would be refused.
+  const enabled = deviceMode && remote.desktopOnline && supported && !standby;
+  const resource = useDesktopResource(remote.getDesktopSettings, remote.desktopSettingsRevision, enabled && remote.desktopReadable);
   const disabled = !enabled || saving || resource.loading || resource.failed || !resource.data;
   // Provider pages read and write their own authoritative snapshot; the shared
   // settings revision refetches them whenever the desktop changes a provider.
@@ -163,7 +190,10 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
     }
   };
   const selectApproval = async (tier: string) => {
-    if (!remote.desktopOnline || saving || writing.current) return;
+    // A standby machine refuses this write at the host, so it is not sent: the
+    // page is not reachable in that state, and this keeps the rule true for any
+    // later caller that forgets to ask.
+    if (!remote.desktopOnline || standby || saving || writing.current) return;
     writing.current = true;
     setSaving(true);
     setFailed(null);
@@ -215,6 +245,13 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   // Each level renders on its own; the stack keeps only the visible one mounted,
   // so returning to the provider list always re-reads the desktop's snapshot.
   function renderLevel() {
+    // Taken over while a level was open: its reads are already refused, so the
+    // page would either show data it can no longer vouch for or answer with the
+    // "could not read the desktop" banner this milestone exists to remove. The
+    // banner above is the page in that state, and taking control brings it back
+    // in the same render.
+    if (deviceMode && standby && page.name !== "home")
+      return null;
     switch (page.name) {
       case "providers":
         return <ProvidersSettingsPage
@@ -282,6 +319,9 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
                   <Text style={settingsStyles.label}>{t(`approvalTier.${tier}`)}</Text>
                 </Pressable>)}
             </View>
+            {remote.sandboxAvailable && remote.sandboxCode === "available_write_only"
+              ? <Text style={settingsStyles.description}>{t("approvalTier.upgrade")}</Text>
+              : null}
           </SettingsSection>
         </ScrollView>;
       default:
@@ -367,29 +407,49 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
           </View>
         </SettingsField>
       </SettingsSection>
-      <SettingsSection title={t("desktops.deviceSettings")}>
-        {/* The machine's own rows, on every paired machine. Each one keeps a
-            runtime of its own (see `DesktopScope`), so a machine's settings are
-            read and written over its own connection — there is no connection
-            step to perform first, and nothing here edits another machine. A
-            machine that is not answering says so below, in the notice, and the
-            rows that need it are disabled. */}
-        <SettingsLink label={t("desktopSettings.preferences")} onPress={() => push({ name: "preferences" })} />
-        <SettingsLink label={t("desktopSettings.models")} disabled={!enabled} onPress={() => push({ name: "models" })} />
-        <SettingsLink label={t("desktopSettings.providers")} disabled={!remote.desktopOnline || !providersSupported} onPress={() => push({ name: "providers" })} />
-        <SettingsLink label={t("desktopSettings.skills")} disabled={!remote.desktopOnline || !skillsSupported} onPress={() => push({ name: "skills" })} />
-        <SettingsLink label={t("desktopSettings.tasks")} disabled={!remote.desktopOnline || !tasksSupported} onPress={() => push({ name: "tasks" })} />
-        {remote.desktopOnline && !capable ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text> : null}
-      </SettingsSection>
+      {/* A machine somebody else drives has no settings to show here: every row
+          below it opens a page the desktop would refuse to answer, which is how
+          this phone used to offer a stack of dead ends. The banner above names
+          the holder and carries the takeover, so the page keeps the one action
+          that changes the state instead of a list that pretends otherwise. The
+          machine's own name and icon stay: those live on this phone. */}
+      {standby
+        ? null
+        : (
+            <SettingsSection title={t("desktops.deviceSettings")}>
+              {/* The machine's own rows, on every paired machine. Each one keeps a
+                  runtime of its own (see `DesktopScope`), so a machine's settings are
+                  read and written over its own connection — there is no connection
+                  step to perform first, and nothing here edits another machine. A
+                  machine that is not answering says so below, in the notice, and the
+                  rows that need it are disabled. */}
+              <SettingsLink disabled={!remote.desktopOnline} label={t("desktopSettings.preferences")} onPress={() => push({ name: "preferences" })} />
+              <SettingsLink disabled={!enabled} label={t("desktopSettings.models")} onPress={() => push({ name: "models" })} />
+              <SettingsLink disabled={!remote.desktopOnline || !providersSupported} label={t("desktopSettings.providers")} onPress={() => push({ name: "providers" })} />
+              <SettingsLink disabled={!remote.desktopOnline || !skillsSupported} label={t("desktopSettings.skills")} onPress={() => push({ name: "skills" })} />
+              <SettingsLink disabled={!remote.desktopOnline || !tasksSupported} label={t("desktopSettings.tasks")} onPress={() => push({ name: "tasks" })} />
+              {remote.desktopOnline && !capable ? <Text style={settingsStyles.description}>{t("desktopSettings.updateDesktop")}</Text> : null}
+            </SettingsSection>
+          )}
     </ScrollView>;
   }
 
-  return <View
+  // iOS gets its inset from the KeyboardAvoidingView's padding; Android
+  // edge-to-edge measures it itself (see `useKeyboardHeight`) and replaces the
+  // bottom safe-area inset with the keyboard's height, because the covered
+  // strip is no longer visible. Without this, a field near the bottom of a long
+  // form had no scrollable path above the keyboard.
+  const keyboardHeight = useKeyboardHeight();
+  const bottomInset = Platform.OS === "android" && keyboardHeight > 0
+    ? keyboardHeight
+    : insets.bottom;
+  return <KeyboardAvoidingView
+    behavior={Platform.OS === "ios" ? "padding" : undefined}
     onAccessibilityEscape={goBack}
     // JS insets rather than SafeAreaView: this stack is presented in a native
     // Modal, whose views are not descendants of the app's SafeAreaProvider, so
     // the native SafeAreaView contributes nothing on Android.
-    style={[settingsStyles.page, { paddingTop: insets.top, paddingBottom: insets.bottom }]}
+    style={[settingsStyles.page, { paddingTop: insets.top, paddingBottom: bottomInset }]}
   >
     <View style={styles.column}>
     <View style={styles.header}>
@@ -412,6 +472,34 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
         <Text style={settingsStyles.description}>{t("desktopSettings.sharedHint")}</Text>
       </View>
     </View> : null}
+    {/* A machine another device drives refuses every read this page makes, so
+        the page used to answer "无法读取桌面端数据，请重试" over a desktop that was
+        answering fine — just not to this phone. Say what is happening and offer
+        the one action that changes it. */}
+    {deviceMode && standby
+      ? (
+          <View style={styles.standby}>
+            <Text style={styles.standbyTitle}>
+              {holderName
+                ? t("connection.controlHeldBy", { name: holderName })
+                : t("connection.controlHeldByUnknown")}
+            </Text>
+            <Text style={settingsStyles.description}>{t("connection.standbyPageHint")}</Text>
+            <View>
+              <Button
+                compact
+                label={t("connection.takeControl")}
+                loading={takingControl}
+                onPress={() => void takeControl()}
+                variant="secondary"
+              />
+            </View>
+            {takeControlFailed
+              ? <Text accessibilityRole="alert" style={settingsStyles.error}>{t("connection.takeControlFailed")}</Text>
+              : null}
+          </View>
+        )
+      : null}
     {failed ? <Text accessibilityRole="alert" style={[styles.notice, settingsStyles.error]}>{t(failed)}</Text> : null}
     {page.name === "models" && enabled && (resource.failed || resource.loading) ? <View style={styles.notice}>
       <ResourceStatus loading={resource.loading} failed={resource.failed} onReload={() => void resource.reload()} />
@@ -419,7 +507,7 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
     {deviceMode && !remote.desktopOnline ? <Text style={styles.notice}>{t("desktopSettings.offline")}</Text> : null}
     {renderLevel()}
     </View>
-  </View>;
+  </KeyboardAvoidingView>;
 }
 
 const useStyles = createThemedStyles(theme => StyleSheet.create({
@@ -435,6 +523,17 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   deviceName: { color: theme.colors.inkStrong, fontSize: theme.font(14), fontWeight: "600", marginBottom: spacing.xs },
   version: { ...createSettingsStyles(theme).description, textAlign: "center" },
   notice: { color: theme.colors.inkMuted, padding: layout.gutter, fontSize: theme.font(13) },
+  standby: {
+    marginHorizontal: layout.gutter,
+    marginBottom: spacing.md,
+    padding: spacing.md,
+    gap: spacing.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.warning,
+    borderRadius: radius.lg,
+    backgroundColor: theme.colors.warningSoft,
+  },
+  standbyTitle: { color: theme.colors.inkStrong, fontSize: theme.font(14), fontWeight: "600" },
   approval: { minHeight: layout.touchTarget, justifyContent: "center", padding: spacing.sm, borderWidth: 1, borderColor: theme.colors.line, borderRadius: radius.md, backgroundColor: theme.colors.surface },
   approvalSelected: { borderColor: theme.colors.accent, backgroundColor: theme.colors.accentSoft },
   // One row of icons per device, wrapping for the narrowest phone: the same set

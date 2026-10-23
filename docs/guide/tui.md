@@ -294,10 +294,8 @@ same row — a transcript of twenty calls is twenty rows, not twenty previews.
 that *failed* keeps its body while collapsed, so the reason is readable without
 knowing a key. `/tool-output <call-id>` prints one call's stored output in full.
 Unified diffs
-(`---`/`+++` headers, `@@` hunks) and `apply_patch` envelopes (the FREEFORM
-provider tool whose grammar is captured under
-`tests/provider-protocol/fixtures/`) get a line-number gutter and tinted
-add/remove rows. Raw ANSI escapes inside tool
+(`---`/`+++` headers, `@@` hunks) and `apply_patch` envelopes get a
+line-number gutter and tinted add/remove rows. Raw ANSI escapes inside tool
 output are stripped so they cannot corrupt the screen — the diff renderer
 supplies the only colour.
 
@@ -530,10 +528,10 @@ written when stdout is not a TTY, so print mode and piped runs stay clean.
 
 The TUI persists client-side settings to `~/.future/tui/settings.json`:
 `defaultModel`, `defaultThinkingLevel`, `defaultPermissionLevel`,
-`enabledModelIds`, `themeId`, `bellOnComplete`, `skillRecommend` (set by
-`/skill-recommend`, on by default) and the `notify` object above.
-`defaultModel`, `defaultThinkingLevel` and `defaultPermissionLevel` are applied
-to the agent when the TUI starts. Logs: `PI_DEBUG_REDRAW=1` writes debug redraw
+`defaultApprovalMode`, `enabledModelIds`, `themeId`, `bellOnComplete`,
+`skillRecommend` (set by `/skill-recommend`, on by default) and the `notify`
+object above. `defaultModel`, `defaultThinkingLevel`, `defaultPermissionLevel`
+and `defaultApprovalMode` are applied to the agent when the TUI starts. Logs: `PI_DEBUG_REDRAW=1` writes debug redraw
 logging to `~/.future/tui/debug.log`; `PI_TUI_WRITE_LOG=1` logs raw screen writes
 to `~/.future/tui/write.log`. While the alternate screen is up, the TUI also
 points stderr at `~/.future/tui/stderr.log`: `future tui` may host the Agent in

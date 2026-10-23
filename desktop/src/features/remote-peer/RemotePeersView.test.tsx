@@ -3,6 +3,7 @@ import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
 import { act, useCallback, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
+import en from "../../i18n/locales/en/remotePeer.json";
 import { RemoteClientSection } from "./RemotePeersView";
 
 /**
@@ -369,7 +370,7 @@ it("offers to take a machine back, and names who has it", async () => {
   expect(view.text()).toContain("Taken over");
   expect(view.text()).not.toContain("Connected");
   expect(view.container.querySelector("[data-testid='peer-held']")?.textContent)
-    .toBe("In use by Hui's phone");
+    .toBe("Another device (Hui's phone) is in control");
 
   await act(async () => view.rowButton("Take over")!.click());
   await view.settle();
@@ -387,7 +388,7 @@ it("says another device has it when the holder declared no name", async () => {
   const view = await mount();
 
   expect(view.container.querySelector("[data-testid='peer-held']")?.textContent)
-    .toBe("In use by another device");
+    .toBe("Another device is in control");
   expect(view.rowButton("Take over")).toBeDefined();
   await view.unmount();
 });
@@ -422,8 +423,68 @@ it("draws a takeover that happened elsewhere without the page being reopened", a
 
   expect(view.text()).toContain("Taken over");
   expect(view.container.querySelector("[data-testid='peer-held']")?.textContent)
-    .toBe("In use by Hui's phone");
+    .toBe("Another device (Hui's phone) is in control");
   expect(view.rowButton("Take over")).toBeTruthy();
+  await view.unmount();
+});
+
+/**
+ * Settings on a machine another device drives is not an offer.
+ *
+ * The page it opens reads and writes *that* machine, and a standby host answers
+ * neither: the control either failed with a transport error or opened a page
+ * whose edits went nowhere. Disabled, with the reason on hover rather than only
+ * dimmed — the report that prompted this was "the settings button did nothing".
+ */
+it("disables Settings on a machine another device drives", async () => {
+  listRemotePeers.mockResolvedValue([
+    peer({ control: "standby", holder: { name: "Hui's phone" } }),
+  ]);
+  const view = await mount();
+
+  const settings = view.rowButton("Settings") as HTMLButtonElement;
+  expect(settings.disabled).toBe(true);
+  // The reason rides on the wrapper: a disabled button receives no pointer
+  // events, so a title of its own would never be shown.
+  expect(settings.closest("span")?.getAttribute("title"))
+    .toBe("Take over this computer before changing its settings");
+
+  await act(async () => settings.click());
+  expect(view.onOpenSettings).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+it("keeps Settings available on a machine this desktop drives", async () => {
+  listRemotePeers.mockResolvedValue([peer({ control: "active" })]);
+  const view = await mount();
+
+  const settings = view.rowButton("Settings") as HTMLButtonElement;
+  expect(settings.disabled).toBe(false);
+  await act(async () => settings.click());
+  expect(view.onOpenSettings).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
+/**
+ * A pairing removed on the other computer.
+ *
+ * From this machine it is still a row — the pairing book is local — but the
+ * platform has already said no, so "Connect" is a button that cannot work and the
+ * English refusal must not be what the user reads. The row keeps its one useful
+ * action (remove it here) and says why.
+ */
+it("says a revoked pairing is dead instead of offering Connect", async () => {
+  listRemotePeers.mockResolvedValue([
+    peer({ connected: false, error: "Remote credential is invalid or revoked." }),
+  ]);
+  const view = await mount();
+
+  expect(view.text()).toContain("Pairing revoked");
+  expect(view.text()).toContain(en.errorRevoked);
+  expect(view.rowButton("Connect")).toBeUndefined();
+  expect((view.rowButton("Settings") as HTMLButtonElement).disabled).toBe(true);
+  // Removal stays available: it is the only way out of this state.
+  expect(view.rowButton("Unpair")).toBeTruthy();
   await view.unmount();
 });
 

@@ -252,8 +252,7 @@ agent 侧设置：自动压缩开启时页脚会显示指示；`/autoretry` 则�
 而不是二十段预览。`ctrl+g` 才在该行下方展开正文（最多 200 行，到上限时给出
 `… N more lines · truncated` 提示行），再按一次收起；调用**失败**时正文默认仍显示，
 这样不必按键就能看到失败原因。`/tool-output <call-id>` 可打印某次调用的完整输出。
-统一 diff（`---`/`+++` 头、`@@` 块）与 `apply_patch` 包裹（模型厂商的 FREEFORM
-工具，其语法定义收录在 `tests/provider-protocol/fixtures/`）会显示行号栏
+统一 diff（`---`/`+++` 头、`@@` 块）与 `apply_patch` 包裹会显示行号栏
 并对增/删行着色。工具输出中的原始 ANSI 转义会被剥离，避免破坏屏幕——颜色只由
 diff 渲染器提供。
 
@@ -454,10 +453,10 @@ provider 列表、会话列表、分页浮层，以及用量/沙箱面板。默�
 
 TUI 把客户端侧设置持久化到 `~/.future/tui/settings.json`：
 `defaultModel`、`defaultThinkingLevel`、`defaultPermissionLevel`、
-`enabledModelIds`、`themeId`、`bellOnComplete`、`skillRecommend`（由
-`/skill-recommend` 设置，默认开启）以及上面的 `notify` 对象。
-其中 `defaultModel`、`defaultThinkingLevel` 与 `defaultPermissionLevel` 会在 TUI
-启动时应用到 agent。日志：`PI_DEBUG_REDRAW=1` 时把调试重绘日志写入
+`defaultApprovalMode`、`enabledModelIds`、`themeId`、`bellOnComplete`、
+`skillRecommend`（由 `/skill-recommend` 设置，默认开启）以及上面的 `notify` 对象。
+其中 `defaultModel`、`defaultThinkingLevel`、`defaultPermissionLevel` 与
+`defaultApprovalMode` 会在 TUI 启动时应用到 agent。日志：`PI_DEBUG_REDRAW=1` 时把调试重绘日志写入
 `~/.future/tui/debug.log`；`PI_TUI_WRITE_LOG=1` 时原始屏幕写入记录到
 `~/.future/tui/write.log`。占用备用屏幕期间，TUI 还会把 stderr 指向
 `~/.future/tui/stderr.log`：`future tui` 可能在自己的进程内托管 Agent，该进程

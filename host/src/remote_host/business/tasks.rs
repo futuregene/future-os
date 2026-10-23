@@ -54,12 +54,19 @@ fn run_summary_view(run: future_tasks::TaskRun) -> Value {
 /// The list row: identity + trigger state only, no prompt.
 fn task_list_view(store: &future_tasks::Store, task: future_tasks::Task) -> Value {
     let latest = store.latest_run_for_task(&task.id).ok().flatten();
+    // Resolved before the fields below move into the value. The phone renders
+    // `nextDueAt` on the task's own clock, so a row without this could only put
+    // the instant on the *reader's* zone — the phone and the desktop then named
+    // different wall clocks for the same run, and the phone had to fetch every
+    // task's detail record just to know which clock to use.
+    let timezone = future_tasks::task_timezone(&task).name().to_string();
     json!({
         "id": task.id,
         "name": task.name,
         "enabled": task.enabled,
         "triggerKind": format!("{:?}", task.trigger_kind).to_lowercase(),
         "trigger": task.trigger_json,
+        "timezone": timezone,
         "depCount": 0,
         "nextDueAt": task.next_due_at,
         "queued": task.pending_request_at.is_some(),
@@ -338,7 +345,13 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                     .map(|()| created)
                     .map_err(|e| crate::Error::Message(e.to_string()))
             }) {
-                Ok(task) => reply(sink, true, task_detail_view(&store, task), None).await,
+                Ok(task) => {
+                    // The panel in this very process is showing the list this
+                    // write just changed: tell it, the same way a write from its
+                    // own buttons would. A failed write says nothing.
+                    crate::emit_tasks_updated();
+                    reply(sink, true, task_detail_view(&store, task), None).await
+                }
                 Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
             },
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
@@ -396,7 +409,10 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         Ok(task)
                     });
                 match result {
-                    Ok(task) => reply(sink, true, task_detail_view(&store, task), None).await,
+                    Ok(task) => {
+                        crate::emit_tasks_updated();
+                        reply(sink, true, task_detail_view(&store, task), None).await
+                    }
                     Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
                 }
             }
@@ -422,6 +438,9 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         // anything (see `future_tasks` store schema).
                         Ok(())
                     });
+                if result.is_ok() {
+                    crate::emit_tasks_updated();
+                }
                 reply_unit(sink, result).await
             }
             Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
@@ -444,7 +463,10 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         Ok(task)
                     });
                 match result {
-                    Ok(task) => reply(sink, true, task_detail_view(&store, task), None).await,
+                    Ok(task) => {
+                        crate::emit_tasks_updated();
+                        reply(sink, true, task_detail_view(&store, task), None).await
+                    }
                     Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
                 }
             }
@@ -482,7 +504,12 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                         Ok(task)
                     });
                 match result {
-                    Ok(task) => reply(sink, true, task_detail_view(&store, task), None).await,
+                    Ok(task) => {
+                        // Queued: the panel draws that state, and the run's own
+                        // progress reaches it through the tick's notifier.
+                        crate::emit_tasks_updated();
+                        reply(sink, true, task_detail_view(&store, task), None).await
+                    }
                     Err(error) => reply(sink, false, Value::Null, Some(&error.to_string())).await,
                 }
             }
@@ -539,7 +566,10 @@ pub(super) async fn execute(cmd: &IncomingCmd, sink: &dyn ReplySink) {
                 // accepting a suggestion from the phone marks it applied and
                 // records the version the same way.
                 match crate::tasks::accept_revision(&store, &cmd.task_id, &cmd.revision_id) {
-                    Ok(task) => reply(sink, true, task_detail_view(&store, task), None).await,
+                    Ok(task) => {
+                        crate::emit_tasks_updated();
+                        reply(sink, true, task_detail_view(&store, task), None).await
+                    }
                     Err(error) => reply(sink, false, Value::Null, Some(&error)).await,
                 }
             }
@@ -645,6 +675,13 @@ mod tests {
         assert_eq!(items[0]["name"], "weekly report");
         assert_eq!(items[0]["triggerKind"], "schedule");
         assert_eq!(items[0]["nextDueAt"], saved.next_due_at.unwrap());
+        // The zone the row's next due time is read on: the phone has no detail
+        // record on the list page, so without it the row could only show the
+        // phone's own clock.
+        assert_eq!(
+            items[0]["timezone"],
+            future_tasks::task_timezone(&saved).name()
+        );
         assert_eq!(items[0]["latestRun"]["status"], "completed");
 
         // Nothing is waiting, so the phone is not told otherwise.

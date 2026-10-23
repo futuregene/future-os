@@ -14,6 +14,7 @@ import {
   peerHolderName,
   peerLabelKey,
   peerLabelTone,
+  peerRevoked,
   peersConnected,
 } from "./peerStatus";
 import {
@@ -391,6 +392,9 @@ function PeerRow({
   // not be reached. Only a live connection offers to stop.
   const showDisconnect = peer.connected && !peer.stopped;
   const held = peerHeld(peer);
+  // The pairing is gone on the other side: the platform refuses this side's
+  // credential every time, so the row offers the way out instead of the way in.
+  const revoked = peerRevoked(peer);
   // Named when the controller declared a name; the generic sentence otherwise.
   const holderName = peerHolderName(peer);
 
@@ -436,10 +440,21 @@ function PeerRow({
               </Button>
             )
           : null}
-        {showDisconnect
-          ? <Button disabled={busy} onClick={onDisconnect} size="sm">{t("disconnect")}</Button>
-          : <Button disabled={busy} onClick={onReconnect} size="sm" variant="primary">{t("connect")}</Button>}
-        <Button disabled={busy} onClick={onEdit} size="sm">{t("edit")}</Button>
+        {revoked
+          ? null
+          : showDisconnect
+            ? <Button disabled={busy} onClick={onDisconnect} size="sm">{t("disconnect")}</Button>
+            : <Button disabled={busy} onClick={onReconnect} size="sm" variant="primary">{t("connect")}</Button>}
+        {/* Settings read and write the *other* machine, and a machine another
+            device drives will not answer them. Offered, it either failed with a
+            transport error or — worse — opened a page whose edits went to a
+            host that ignores this desktop. Disabled with the reason on hover: a
+            disabled control with no explanation reads as a broken app. The
+            title sits on the wrapper because a disabled button receives no
+            pointer events of its own. */}
+        <span title={held ? t("takeOverHint") : undefined}>
+          <Button disabled={busy || held || revoked} onClick={onEdit} size="sm">{t("edit")}</Button>
+        </span>
         {/* Last, and marked: it is the one action here that removes the row it
             sits on, and the only one that is confirmed. */}
         <Button disabled={busy} onClick={onUnpair} size="sm" variant="danger-soft">{t("unpair")}</Button>

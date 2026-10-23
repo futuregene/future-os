@@ -15,7 +15,7 @@ FutureOS 使用说明（macOS）
     xattr -dr com.apple.quarantine /Applications/FutureOS.app
 
 【说明】
-· 首次使用需联网登录（在应用内完成）。
+· 首次使用需联网登录（在应用内完成）；也可在设置中配置自己的 provider。
 · 个人数据保存在 ~/.future；Desktop 默认运行完整进程内 Agent，也可连接兼容外部服务。
 · 退出内置宿主会取消所有客户端任务，包括 CLI/TUI 对话；有任务时提示确认。
   连接外部 Agent 时只取消本 Desktop 的运行，外部服务保持运行。

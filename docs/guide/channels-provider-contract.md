@@ -7,7 +7,7 @@ is already written and shared. **A provider holds platform knowledge and nothing
 else.**
 
 Read `channels/src/providers/cli.rs` first: it is a complete, working provider in
-about 150 lines, and it shows the shape every other provider takes. The
+about 200 lines, and it shows the shape every other provider takes. The
 user-facing side of channels is in [Channel providers](channels-providers.md).
 
 ## What a provider is
