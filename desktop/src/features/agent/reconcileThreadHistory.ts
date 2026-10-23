@@ -39,9 +39,43 @@ export function reconcileThreadHistory(
       && (message !== baseline.get(key) || message.status === "streaming"
         || message.id.startsWith("pending") || message.id.startsWith("local_assistant"));
   });
-  const messages = [...prefix, ...tail, ...pending];
+  const messages = mergeLocalOnly([...prefix, ...tail], pending);
   return {
     messages: messages.length === current.length && messages.every((message, index) => message === current[index]) ? current : messages,
     keptOlder: prefix.length > 0,
   };
+}
+
+/**
+ * Merge rows the history page does not contain at their own place in time.
+ *
+ * Such a row is usually the newest write — the optimistic bubble of a send still
+ * in flight — and belongs last. But it can also be an OLD one: a send whose
+ * prompt never reached the agent (network/IPC failure) is persisted nowhere, so
+ * its bubble stays local-only for good, and appending it on every reload moved
+ * an exchange from hours ago below the newest reply — the transcript then read
+ * newest-first. Insert by `createdAt` instead, stably, so an undated row still
+ * lands last and rows that share a timestamp keep their order.
+ */
+function mergeLocalOnly(
+  messages: AgentMessage[],
+  localOnly: AgentMessage[],
+): AgentMessage[] {
+  if (!localOnly.length)
+    return messages;
+  const out = [...messages];
+  for (const message of localOnly) {
+    const at = Date.parse(message.createdAt);
+    const index = Number.isFinite(at)
+      ? out.findIndex((existing) => {
+          const other = Date.parse(existing.createdAt);
+          return Number.isFinite(other) && other > at;
+        })
+      : -1;
+    if (index === -1)
+      out.push(message);
+    else
+      out.splice(index, 0, message);
+  }
+  return out;
 }
