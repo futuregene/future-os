@@ -7,7 +7,7 @@
 	run-agent run-tui run-cli run-host run-headless run-desktop run-mobile-android run-mobile-ios run-channels run-goal \
 	profile-agent-build profile-agent profile-quick profile-heap \
 	generate-models generate-proto \
-	install install-cli install-desktop install-desktop-headless install-skills update-skills uninstall package-desktop clean setup
+	install install-cli install-local install-desktop install-desktop-headless install-skills update-skills uninstall package-desktop clean setup
 
 # ─── Version ────────────────────────────────────────────────────────────────
 # Single source of truth for the build version (scripts/version.mjs); exported
@@ -86,6 +86,30 @@ ifeq ($(OS),windows)
 else
 	$(SUDO) install -m 755 target/release/future "$(PREFIX)/future"
 	$(SUDO) install -m 755 target/release/futureos "$(PREFIX)/futureos"
+endif
+
+# Local-profile install: build both binaries without LTO and put them in PREFIX,
+# the same destinations install-cli/install-desktop use, so `future` on PATH and
+# the Desktop agent (which prepends its own directory to PATH) run what you just
+# built. This is not a release install — `make install*` keep owning PREFIX for
+# shipping builds, and each overwrites the other. Windows cannot overwrite an
+# image that is still running, so close any `future`/`futureos` started from
+# PREFIX first. Skills are untouched; run `make install-skills` if you want them.
+#
+# The Windows recipe copies through node rather than `copy`: make runs every
+# recipe through SHELL, which is sh.exe whenever Git for Windows is on PATH, and
+# cmd builtins plus backslash paths are not valid there. node is already a build
+# prerequisite (`TARGET` is probed with it) and handles the quoting and
+# directory creation in both shells.
+install-local: build-local
+ifeq ($(OS),windows)
+	@node -e "const fs=require('fs'),p=require('path'),d=process.argv[1];fs.mkdirSync(d,{recursive:true});for(const n of ['future','futureos']){const t=p.join(d,n+'.exe');fs.copyFileSync(p.join('target','local',n+'.exe'),t);console.log('  installed '+t)}" "$(PREFIX)"
+else
+	# `install` unlinks+creates a fresh inode; plain `cp` overwrites in place
+	# and macOS taskgated can then SIGKILL the binary ("Code Signature
+	# Invalid") because the vnode's cached signing state no longer matches.
+	$(SUDO) install -m 755 target/local/future "$(PREFIX)/future"
+	$(SUDO) install -m 755 target/local/futureos "$(PREFIX)/futureos"
 endif
 
 # Compatibility alias for a GUI-free CLI installation, including headless.
@@ -495,6 +519,7 @@ help:
 	@echo "  generate-models                     Fetch model data, regenerate Rust catalog + wiki docs"
 	@echo "  generate-proto                      Regenerate wire code (packages/rpc future.proto + channels feishu_ws)"
 	@echo "  install / install-cli / install-desktop / install-desktop-headless / install-skills   Install to $(PREFIX)"
+	@echo "  install-local                       Install the LTO-free 'local' binaries to $(PREFIX) (fast local iteration)"
 	@echo "  update-skills                       Pull the skills submodule's remote, then install skills"
 	@echo "  setup                               Bootstrap a fresh clone (JS deps + skills + sidecar)"
 	@echo "  uninstall                           Remove installed binaries from $(PREFIX)"
