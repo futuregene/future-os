@@ -3602,11 +3602,10 @@ async fn a_continuation_is_refused_when_the_journal_proves_no_open_run() {
         .any(|event| event == "user_message"));
 }
 
-/// Both shapes coexist: when continuing in place is refused, the old
-/// "send a prompt" path still continues the conversation, visibly. A provider
-/// that accepts neither an assistant tail nor an appended directive needs it.
+/// Refused recovery must not turn into a fabricated user prompt. The original
+/// transcript remains available for reconciliation without replaying work.
 #[tokio::test(flavor = "current_thread")]
-async fn a_refused_continuation_falls_back_to_a_visible_prompt() {
+async fn a_refused_continuation_leaves_the_transcript_untouched() {
     let provider = ScriptedProvider::new(vec![text_turn("carrying on")]);
     let mut fixture = continuation_fixture(provider.clone(), "cont-fallback", closed_entries());
     let before = fixture
@@ -3617,22 +3616,17 @@ async fn a_refused_continuation_falls_back_to_a_visible_prompt() {
         .entries
         .len();
 
-    crate::rpc::resume::submit_continuation(&mut fixture.session, "s-cont", "run-crashed")
-        .expect("the fallback shape is still available");
-    wait_for_run_end(&fixture.session).await;
+    let error =
+        crate::rpc::resume::submit_continuation(&mut fixture.session, "s-cont", "run-crashed")
+            .expect_err("a closed run must not be resumed as a new prompt");
+    assert!(error.contains("no unterminated run"), "{error}");
 
-    // The old shape is visible, and that is the trade: a user message the user
-    // did not type, which the client can at least show and correct.
     let seen = event_types(&mut fixture.events);
     assert!(
-        seen.iter().any(|event| event == "user_message"),
-        "the fallback is the prompt shape, so a user message is expected: {seen:?}"
+        !seen.iter().any(|event| event == "user_message"),
+        "rejected recovery cannot fabricate a user message: {seen:?}"
     );
     let stored = fixture.session.session_manager.load("s-cont").unwrap();
-    assert!(
-        stored.entries[before..]
-            .iter()
-            .any(|entry| entry.role == "user"),
-        "the fallback prompt is persisted as a user entry"
-    );
+    assert_eq!(stored.entries.len(), before);
+    assert!(provider.requests.lock().unwrap().is_empty());
 }

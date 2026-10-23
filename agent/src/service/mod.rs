@@ -63,7 +63,22 @@ pub struct AgentService<'lock> {
     _instance: instance::InstanceGuard<'lock>,
 }
 
+/// Evidence that a particular service drained its work and retired its storage.
+/// Hosts must also wait for their worker/runtime to exit before restarting.
+#[derive(Clone)]
+pub struct ServiceRetirement(Arc<work::ServiceWork>);
+
+impl ServiceRetirement {
+    pub fn is_complete(&self) -> bool {
+        self.0.is_retired()
+    }
+}
+
 impl AgentService<'_> {
+    pub fn retirement(&self) -> ServiceRetirement {
+        ServiceRetirement(self.work.clone())
+    }
+
     /// Consume the discovery gate's local-start permission. A race that loses
     /// the actual lock fails before calling the host or initializing storage.
     pub fn with_local_start<T>(
@@ -160,7 +175,7 @@ impl AgentService<'_> {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
-        self.work.retire();
+        self.work.retire()?;
         Ok(())
     }
 
@@ -326,7 +341,7 @@ impl RunningAgent<'_, '_> {
     /// successful poll. Failed startup never sends a Ready identity.
     ///
     /// Keep polling while `AgentHandle::shutdown` drains work. Dropping this
-    /// future reports FailedStopping and retains instance ownership.
+    /// future initiates a bounded drain. Only a completed drain permits restart.
     pub async fn serve(
         self,
         ready: Option<tokio::sync::oneshot::Sender<AgentReady>>,
@@ -340,12 +355,11 @@ impl RunningAgent<'_, '_> {
         impl Drop for ServerGuard {
             fn drop(&mut self) {
                 if !self.completed {
-                    self.handle.shutdown.failed(
-                        "Agent serving future dropped without draining RPC connections".into(),
-                    );
                     self.handle.state.service_work.close();
                     self.handle.state.service_work.close_streams();
                     self.handle.state.service_work.stop_listener();
+                    self.handle
+                        .request_shutdown(std::time::Duration::from_secs(5));
                 }
                 self.handle
                     .shutdown
@@ -389,11 +403,12 @@ impl RunningAgent<'_, '_> {
         // torn-down state; drop it so a late background fetch cannot write
         // into the stopped service. The next service instance re-registers.
         let _ = crate::models::set_future_models_sync_callback(None);
-        if let Err(error) = &result {
+        if result.is_err() {
+            // Serving failure is the host's error; it is not evidence that
+            // cleanup failed. The independent drain must decide that.
             guard
                 .handle
-                .shutdown
-                .failed(format!("Agent serving failed: {error:#}"));
+                .request_shutdown(std::time::Duration::from_secs(5));
         }
         result
     }

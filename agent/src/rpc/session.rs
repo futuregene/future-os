@@ -533,9 +533,110 @@ impl ServerSession {
         let _ = self.abort_run(None);
     }
 
+    /// The same native cancellation coverage as abort, without user-stop intent.
+    pub(crate) fn interrupt_for_shutdown(&self) -> Result<()> {
+        let _recovery = self.fault_recovery.lock();
+        self.runtime.interrupt_for_shutdown()?;
+        self.shell_cancel_generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Some(active) = self.runtime.snapshot().filter(|active| {
+            matches!(
+                active.phase,
+                crate::runtime::RunPhase::CancellationStuck
+                    | crate::runtime::RunPhase::PersistenceDegraded
+            )
+        }) {
+            let lease = crate::runtime::RunLease {
+                run_id: active.run_id,
+                epoch: active.epoch,
+                run_sequence: active.run_sequence,
+            };
+            let reason = "System shutdown after the run task exited.";
+            self.persist_fault_outcome(
+                &lease,
+                crate::session::RUN_STATE_INTERRUPTED_BY_RESTART,
+                reason,
+            )?;
+            if !self.ephemeral {
+                if let Some(outcome) = self
+                    .session_manager
+                    .run_terminal(&self.session_id, &lease.run_id)?
+                {
+                    // Preserve a successful/cancelled commit whose ACK was lost.
+                    if outcome["state"] == crate::session::RUN_STATE_INTERRUPTED_BY_RESTART
+                        && outcome["error"] == reason
+                    {
+                        let mut terminal = crate::session::SessionEntry::run_terminal(
+                            &lease.run_id,
+                            crate::session::RUN_STATE_INTERRUPTED_BY_RESTART,
+                            0,
+                            0,
+                            Some(reason),
+                        );
+                        terminal.content = Some(outcome);
+                        terminal.content.as_mut().unwrap()["interruption_cause"] =
+                            "system_shutdown".into();
+                        self.session_manager
+                            .append_entries_synced(&self.session_id, &[terminal])?;
+                    }
+                }
+            }
+            anyhow::ensure!(
+                self.runtime.finish_cancelled_fault(&lease),
+                "failed run task has not exited; cannot release its writer"
+            );
+        }
+        Ok(())
+    }
+
     pub fn abort_run(&self, expected_run_id: Option<&str>) -> Result<()> {
         let _recovery = self.fault_recovery.lock();
+        if !self.ephemeral && self.session_manager.contains(&self.session_id)? {
+            if let Some(active) = self.runtime.snapshot() {
+                let lease = crate::runtime::RunLease {
+                    run_id: active.run_id.clone(),
+                    epoch: active.epoch,
+                    run_sequence: active.run_sequence,
+                };
+                let cancellable = matches!(
+                    active.phase,
+                    crate::runtime::RunPhase::Starting
+                        | crate::runtime::RunPhase::Running
+                        | crate::runtime::RunPhase::Cancelling
+                ) || self.runtime.cancellation_kind(&lease)
+                    == Some(crate::runtime::CancellationCause::SystemShutdown);
+                if cancellable
+                    && expected_run_id.is_none_or(|id| id.is_empty() || id == active.run_id)
+                {
+                    self.session_manager.append_entries_synced(
+                        &self.session_id,
+                        &[crate::session::SessionEntry::run_stop_requested(
+                            &active.run_id,
+                        )],
+                    )?;
+                }
+            }
+        }
         if self.runtime.snapshot().is_none() && !self.ephemeral {
+            if let Some(run_id) = self.session_manager.resumable_run_id(&self.session_id)? {
+                if expected_run_id.is_none_or(|expected| expected.is_empty() || expected == run_id)
+                {
+                    // A stop arriving during startup's recovery delay must be
+                    // durable too. Otherwise the idle runtime would ignore it
+                    // and the recovery pass would start the task seconds later.
+                    self.session_manager.append_entries_synced(
+                        &self.session_id,
+                        &[crate::session::SessionEntry::run_terminal(
+                            &run_id,
+                            crate::session::RUN_STATE_CANCELLED,
+                            0,
+                            0,
+                            Some("Stopped by user before recovery"),
+                        )],
+                    )?;
+                    return Ok(());
+                }
+            }
             if let Some(run_id) = expected_run_id.filter(|id| !id.is_empty()) {
                 if self
                     .session_manager

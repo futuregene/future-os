@@ -2,7 +2,7 @@
 //! a simulated transport and Tokio's paused clock. No broker or application.
 use super::*;
 use crate::session::{
-    command_plaintext, retry_request, retryable_command, COMMAND_ATTEMPTS, COMMAND_TIMEOUT,
+    command_plaintext, retry_request, retryable_for_features, COMMAND_ATTEMPTS, COMMAND_TIMEOUT,
 };
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -156,7 +156,7 @@ async fn shared_request_scenarios_use_the_production_retry_loop_and_stop_gate() 
         let started = tokio::time::Instant::now();
         let observations = Arc::new(StdMutex::new(Vec::new()));
         let plaintext = command_plaintext(case.command.clone(), &suite.bridge_instance_id).unwrap();
-        let attempts = if retryable_command(&case.command) {
+        let attempts = if retryable_for_features(&case.command, &case.features) {
             COMMAND_ATTEMPTS
         } else {
             1

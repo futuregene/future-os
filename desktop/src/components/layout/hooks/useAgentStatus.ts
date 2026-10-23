@@ -8,6 +8,7 @@ export const AGENT_STARTUP_TIMEOUT_MS = 15000;
 
 export interface AgentStartupStatus extends AgentStatus {
   showWait: boolean;
+  admitted: boolean;
 }
 
 const INITIAL_STATUS: AgentStatus = {
@@ -19,11 +20,12 @@ const INITIAL_STATUS: AgentStatus = {
 /**
  * Gate all account/provider work behind an Agent business-RPC handshake.
  * Startup states poll quickly; ready and terminal-looking states keep slower
- * probes so a later crash shows the Agent page and an external recovery can
- * admit the app without a second login.
+ * probes. Once admitted, AppShell stays mounted during recovery so drafts,
+ * remote sessions and subscription cursors survive local Agent failures.
  */
 export function useAgentStatus(): AgentStartupStatus {
   const [status, setStatus] = useState<AgentStatus>(INITIAL_STATUS);
+  const [admitted, setAdmitted] = useState(false);
   const [showWait, setShowWait] = useState(false);
   const [splashStartedAt] = useState(() => Date.now());
 
@@ -67,6 +69,8 @@ export function useAgentStatus(): AgentStartupStatus {
         ) {
           next = { ...next, phase: "startup_timeout" };
         }
+        if (next.phase === "ready")
+          setAdmitted(true);
         setStatus(current => (
           current.shutdown && (!next.shutdown || (current.shutdown.state !== "running" && next.shutdown.state === "running"))
             ? current
@@ -106,5 +110,5 @@ export function useAgentStatus(): AgentStartupStatus {
     };
   }, [splashStartedAt]);
 
-  return { ...status, showWait };
+  return { ...status, showWait, admitted };
 }

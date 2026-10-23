@@ -12,7 +12,7 @@
         "rust": 18,
         "typescript": 10
       },
-      "difference": "Rust executes the existing attempt-bounded supervisor (18 maximum); TS executes its existing 180000ms recovery deadline after a previously ready role. Rust test builds scale delay units to milliseconds; TS uses deterministic midpoint jitter and starts the first open immediately."
+      "difference": "Counts cover one reconnect burst: Rust allows 18 attempts; TS allows 180000ms after a previously ready role. Both then retain a cancellable five-minute cooldown and retry without user action. Rust test builds scale delay units to milliseconds; TS uses deterministic midpoint jitter and starts the first open immediately."
     },
     {
       "id": "client.recovery.close-before-first",
@@ -21,7 +21,7 @@
         "rust": 0,
         "typescript": 0
       },
-      "difference": "Rust executes the existing attempt-bounded supervisor (18 maximum); TS executes its existing 180000ms recovery deadline after a previously ready role. Rust test builds scale delay units to milliseconds; TS uses deterministic midpoint jitter and starts the first open immediately."
+      "difference": "Counts cover one reconnect burst: Rust allows 18 attempts; TS allows 180000ms after a previously ready role. Both then retain a cancellable five-minute cooldown and retry without user action. Rust test builds scale delay units to milliseconds; TS uses deterministic midpoint jitter and starts the first open immediately."
     },
     {
       "id": "client.recovery.close-after-first",
@@ -30,7 +30,7 @@
         "rust": 1,
         "typescript": 1
       },
-      "difference": "Rust executes the existing attempt-bounded supervisor (18 maximum); TS executes its existing 180000ms recovery deadline after a previously ready role. Rust test builds scale delay units to milliseconds; TS uses deterministic midpoint jitter and starts the first open immediately."
+      "difference": "Counts cover one reconnect burst: Rust allows 18 attempts; TS allows 180000ms after a previously ready role. Both then retain a cancellable five-minute cooldown and retry without user action. Rust test builds scale delay units to milliseconds; TS uses deterministic midpoint jitter and starts the first open immediately."
     },
     {
       "id": "client.recovery.close-after-third",
@@ -39,7 +39,7 @@
         "rust": 3,
         "typescript": 3
       },
-      "difference": "Rust executes the existing attempt-bounded supervisor (18 maximum); TS executes its existing 180000ms recovery deadline after a previously ready role. Rust test builds scale delay units to milliseconds; TS uses deterministic midpoint jitter and starts the first open immediately."
+      "difference": "Counts cover one reconnect burst: Rust allows 18 attempts; TS allows 180000ms after a previously ready role. Both then retain a cancellable five-minute cooldown and retry without user action. Rust test builds scale delay units to milliseconds; TS uses deterministic midpoint jitter and starts the first open immediately."
     }
   ]
 }

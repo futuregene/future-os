@@ -32,6 +32,43 @@ fn command(kind: &str) -> RpcCommand {
         .unwrap()
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn system_shutdown_settles_a_dead_task_without_recording_a_user_stop() {
+    let handle = fixture();
+    let session = handle.state.sessions.read()["default"].clone();
+    let lease = session
+        .read()
+        .runtime
+        .begin(Some("dead-run"), None)
+        .unwrap();
+    handle
+        .state
+        .session_manager
+        .append_entries_synced(
+            "default",
+            &[crate::session::SessionEntry::run_started(
+                "dead-run",
+                lease.epoch,
+            )],
+        )
+        .unwrap();
+    assert!(session
+        .read()
+        .runtime
+        .mark_stuck(&lease, "injected task panic"));
+    session.read().interrupt_for_shutdown().unwrap();
+    assert!(session.read().runtime.snapshot().is_none());
+    assert_eq!(
+        handle
+            .state
+            .session_manager
+            .resumable_run_id("default")
+            .unwrap()
+            .as_deref(),
+        Some("dead-run")
+    );
+}
+
 struct StallingProvider(Arc<std::sync::atomic::AtomicUsize>);
 
 #[async_trait::async_trait]
@@ -103,10 +140,13 @@ async fn cli_prompt_and_follow_up_use_real_run_finalization_without_dequeuing_on
     );
     let manager = crate::session::Manager::new(handle.state.session_manager.dir.clone());
     let loaded = manager.load("default").unwrap();
-    for run in ["cli-first", "cli-follow-up"] {
+    for (run, expected) in [
+        ("cli-first", "interrupted_by_restart"),
+        ("cli-follow-up", "cancelled"),
+    ] {
         assert_eq!(
             crate::session::find_run_terminal(&loaded.entries, run).unwrap()["state"],
-            "cancelled"
+            expected
         );
     }
     assert!(session.read().scheduler.queued().is_empty());

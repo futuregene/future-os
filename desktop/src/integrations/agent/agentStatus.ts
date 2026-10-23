@@ -5,6 +5,7 @@ export type AgentStatusPhase
   = | "checking"
     | "starting"
     | "recovering"
+    | "restart_required"
     | "ready"
     | "spawn_failed"
     | "exited"

@@ -68,12 +68,25 @@ pub fn host() -> &'static AgentHost {
 /// TUI's runtime is busy driving the UI, and a cold start can take minutes on a
 /// network data root.
 pub async fn start_in_process(configured: String) -> Result<(), String> {
+    run_in_process(configured, false).await
+}
+
+pub async fn recover_in_process(configured: String) -> Result<(), String> {
+    run_in_process(configured, true).await
+}
+
+async fn run_in_process(configured: String, repair: bool) -> Result<(), String> {
     hostable()?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::Builder::new()
         .name("tui-agent-start".into())
         .spawn(move || {
-            let _ = tx.send(host().start(configured));
+            let result = if repair {
+                host().recover(configured)
+            } else {
+                host().start(configured)
+            };
+            let _ = tx.send(result);
         })
         .map_err(|error| format!("cannot start the Agent worker thread: {error}"))?;
     match rx.await {
@@ -81,12 +94,6 @@ pub async fn start_in_process(configured: String) -> Result<(), String> {
         Ok(Err(error)) => Err(error.to_string()),
         Err(_) => Err("the Agent worker stopped without reporting a result".into()),
     }
-}
-
-/// Give up an Agent this process only attached to, so a later start probes and
-/// possibly launches again. Refused while we own it.
-pub fn detach_attached() -> bool {
-    host().detach_attached()
 }
 
 /// Whether this process currently owns (started) the Agent.

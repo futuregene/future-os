@@ -983,8 +983,15 @@ impl Supervisor {
             if self.runtime_reconnect_attempts.load(Ordering::Acquire)
                 >= MAX_RUNTIME_RECONNECT_ATTEMPTS
             {
-                *self.last_error_code.lock().unwrap() = Some("reconnect_required".to_string());
-                return;
+                let since = self.runtime_failure_window_started.load(Ordering::Acquire);
+                if unix_millis().saturating_sub(since) <= RUNTIME_FAILURE_WINDOW_MS {
+                    // Keep the generation's existing watcher as the single
+                    // retry owner. Exhaustion cools down; it must not require a
+                    // user reconnect after an ordinary network outage. The next
+                    // lap rechecks user intent and the installed generation.
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    continue;
+                }
             }
             self.spawn_runtime_reconnect(pair_id.clone());
             return;
