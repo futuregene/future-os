@@ -959,10 +959,19 @@ mod tests {
         ts::ensure_crypto_provider();
         // Server stays silent; ping=1s + heartbeat=0s → the second tick
         // (t≈1s, elapsed 1s > 0s) errors out.
-        let (ws_url, _) = ts::spawn_ws(vec![WsAction::Delay(Duration::from_secs(5))]).await;
+        let release = std::sync::Arc::new(tokio::sync::Notify::new());
+        let (ws_url, _) = ts::spawn_ws(vec![WsAction::WaitForRelease(release.clone())]).await;
         let (base, _) = ts::spawn_http(vec![bootstrap_route_no_cfg(&ws_url)]).await;
         let client = FeishuWsClient::new(&base, "app", "secret").with_test_timers(1, 0);
-        let err = client.connect_and_listen(ignore_event).await.err().unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(30),
+            client.connect_and_listen(ignore_event),
+        )
+        .await;
+        release.notify_one();
+        let err = result
+            .expect("the silent connection must hit the heartbeat timeout")
+            .expect_err("the missing heartbeat must end the connection");
         assert!(err.to_string().contains("heartbeat timeout"), "{err}");
     }
 

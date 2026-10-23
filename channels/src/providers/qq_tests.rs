@@ -204,16 +204,12 @@ async fn hello_triggers_an_identify_with_token_intents_and_shard() {
 async fn heartbeats_echo_the_last_sequence_and_stop_after_a_missed_ack() {
     let hello = json!({"op": 10, "d": {"heartbeat_interval": 90}});
     let dispatch = json!({"op": 0, "s": 7, "t": "READY", "d": {}});
+    let release = Arc::new(tokio::sync::Notify::new());
     let (url, received) = spawn_ws(vec![
         WsAction::SendText(hello.to_string()),
         WsAction::SendText(dispatch.to_string()),
-        // Close only after the client's first heartbeat has been recorded;
-        // the second interval then notices the missing ack and reconnects.
-        WsAction::WaitForReceived {
-            count: 2,
-            timeout: Duration::from_secs(10),
-        },
-        WsAction::Delay(Duration::from_millis(700)),
+        // Let the client detect the missing ack before the server closes.
+        WsAction::WaitForRelease(release.clone()),
     ])
     .await;
     let ctx = ctx_with_config(valid_config_json());
@@ -236,13 +232,15 @@ async fn heartbeats_echo_the_last_sequence_and_stop_after_a_missed_ack() {
         });
     }
     let sender = Qq.sender(&ctx).unwrap();
-    let error = tokio::time::timeout(
-        Duration::from_secs(3),
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
         run_gateway(&ctx, &config, &api, sender),
     )
-    .await
-    .expect("the gateway must end")
-    .expect_err("a missing ack must reconnect");
+    .await;
+    release.notify_one();
+    let error = result
+        .expect("the gateway must end")
+        .expect_err("a missing ack must reconnect");
     assert!(error.to_string().contains("not acknowledged"), "{error}");
     let frames = received_gateway_frames(&received);
     let heartbeats: Vec<&Value> = frames.iter().filter(|f| f["op"] == OP_HEARTBEAT).collect();

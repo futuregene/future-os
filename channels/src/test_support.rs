@@ -617,6 +617,9 @@ pub enum WsAction {
     /// another frame after it fails the send and ends the script.
     SendClose,
     Delay(Duration),
+    /// Keep the connection open until the test releases it. Unlike a delay,
+    /// this cannot race the client's own heartbeat timeout under CI load.
+    WaitForRelease(Arc<tokio::sync::Notify>),
     /// Write raw bytes onto the socket underneath the WS framing — used to
     /// inject protocol-level garbage the client's tungstenite rejects.
     SendRawBytes(Vec<u8>),
@@ -707,6 +710,7 @@ pub async fn spawn_ws_per_connection(scripts: Vec<Vec<WsAction>>) -> (String, Ws
                             let _ = sink.send(WsMsg::Close(None)).await;
                         }
                         WsAction::Delay(d) => tokio::time::sleep(d).await,
+                        WsAction::WaitForRelease(release) => release.notified().await,
                         WsAction::SendRawBytes(bytes) => {
                             use std::io::Write;
                             let mut raw = &raw;
