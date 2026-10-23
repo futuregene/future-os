@@ -437,6 +437,34 @@ describe("useNewConversation", () => {
     expect(Array.from(title.replace("...", ""))).toHaveLength(28);
   });
 
+  it("seeds the title from plain text, never from the message's markdown source", async () => {
+    const { harness } = mount();
+    await act(async () => {
+      await harness.current.startNewConversation({
+        content: "[关闭应用未清理锁文件](futureos://session/20261023-204211-fea40647a6d64833aba6b7c25c6090e6) 看一下这个问题",
+        mode: "chat",
+        modelId: "m1",
+        thinkingLevel: "off",
+      });
+    });
+    // A picked conversation is addressing, not the topic: the row must not be
+    // named after the other conversation's title and URL.
+    expect(mocks.createThread).toHaveBeenCalledWith(expect.objectContaining({ title: "看一下这个问题" }));
+  });
+
+  it("names a conversation that is nothing but a reference after the one it points at", async () => {
+    const { harness } = mount();
+    await act(async () => {
+      await harness.current.startNewConversation({
+        content: "[登录修复](futureos://session/s-9)",
+        mode: "chat",
+        modelId: "m1",
+        thinkingLevel: "off",
+      });
+    });
+    expect(mocks.createThread).toHaveBeenCalledWith(expect.objectContaining({ title: "登录修复" }));
+  });
+
   it("re-validates image attachments before creating the thread", async () => {
     const { harness } = mount();
     await act(async () => {

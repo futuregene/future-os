@@ -2,6 +2,7 @@ import type { MessageAttachment } from "@future-os/thread-projection";
 import type { Dispatch, SetStateAction } from "react";
 import type { NewConversationStart } from "../../../features/agent/NewConversation";
 import type { ActivitySection } from "../ActivityRail";
+import { plainTitleText } from "@future-os/markdown";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import i18n from "../../../i18n";
@@ -158,7 +159,11 @@ export function useNewConversation({
 }
 
 function deriveThreadTitle(content: string) {
-  const compact = content.replace(/\s+/g, " ").trim();
+  // A title is text, not markdown: the first message may carry a picked
+  // conversation as `[title](futureos://session/<id>)`, and the row must not
+  // read as that URL the way the raw source would. The rule is the shared one
+  // the Agent applies to the name it mints (`plainTitleText`).
+  const compact = plainTitleText(content);
   if (!compact)
     return i18n.t("layout:appShell.newChat");
   return truncate(compact, 28);
