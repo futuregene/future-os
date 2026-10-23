@@ -349,7 +349,7 @@ RPC serving 与停机报告并行等待，连接排空超时不会让宿主永�
 
 实现说明（2026-10-14）：三个开发入口和 `make run-desktop` 现在直接启动 Desktop，不再预先构建/启动独立 Agent、不使用 TCP 端口作为 ready、不清理旧 PID 或直接更新 SQLite。默认 `FUTURE_DESKTOP_AGENT_MODE=auto` 使用共享连接门禁；`external` 为严格仅连接模式，端点缺失也不启动内置服务，请另行启动外部 Agent。显式地址、FUTURE_HOME 与 socket override 原样传递。`BUILD_CLI` 仍默认构建真正的 CLI 并暂存为 Tauri externalBin，支持 CARGO_TARGET_DIR；空占位文件仅供编译，运行时拒绝。旧 BUILD_AGENT/REUSE_AGENT/CLEAN_STALE_APP_TASKS 不再参与启动。RUN_CHECKS 只做静态检查，DRY_RUN 不构建、写文件或启动进程。
 
-共享 `cli_tool` 优先定位打包 CLI、开发构建产物，再搜索绝对 PATH；拒绝目录、空占位文件和 Unix 不可执行文件，不搜索当前目录。GUI/headless 技能初始化都使用此定位；找不到 CLI 只诊断依赖 CLI 的能力，不阻止内置 Agent。宿主在 Tauri/Tokio 线程之前执行已有登录 shell 环境补全，再把 CLI 目录放入 PATH，选择一次 ring TLS provider 和 tracing。取得 Desktop 锁后写 `app/logs/desktop.log`，包含内置 Agent 记录、宿主模式、版本、实例及生命周期结果；独立 CLI Agent 的 `agent/logs/agent.log` 不变，也不打开外部 Agent 的日志。headless/内置 Agent Tokio 各使用 2 个 worker、2 MiB 栈、32 个 blocking thread 上限；这不是整个进程线程数，性能/包体仍需阶段七测量。CLI 自身运行时和参数保持不变。
+共享 `cli_tool` 优先定位打包 CLI、开发构建产物，再搜索绝对 PATH；拒绝目录、空占位文件和 Unix 不可执行文件，不搜索当前目录。GUI/headless 技能初始化都使用此定位；找不到 CLI 只诊断依赖 CLI 的能力，不阻止内置 Agent。宿主在 Tauri/Tokio 线程之前执行已有登录 shell 环境补全，再把 CLI 目录放入 PATH，选择一次 ring TLS provider 和 tracing。取得 Desktop 锁后写 `app/logs/desktop.log`，包含内置 Agent 记录、宿主模式、版本、实例及生命周期结果；独立 CLI Agent 的 `agent/logs/agent.log` 不变，也不打开外部 Agent 的日志。headless/内置 Agent Tokio 各使用 5 个 worker、2 MiB 栈、32 个 blocking thread 上限；这不是整个进程线程数，性能/包体仍需阶段七测量。CLI 自身运行时和参数保持不变。
 
 Linux helper 继续由当前宿主可执行文件进入，保留统一 CLI 的 `agent` 前缀；外层/内层都携带期望 Agent 构建版本，解析后先校验、再进入既有匿名请求 FD 链路，在 HOME 目录创建、GUI、服务锁、存储和 runtime 之前返回。系统 Bubblewrap 路径/身份/版本探测、请求协议、挂载规则、审批/授权、私有报告及 fail-closed 规则不变；版本不匹配不执行命令、不提供无沙箱回退。
 
