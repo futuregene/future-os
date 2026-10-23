@@ -40,14 +40,17 @@ impl ServiceWork {
 
     // An already owned run may still need a blocking finalizer after admission
     // closes. Its child must remain counted even if its parent panics/aborts.
-    fn child(self: &Arc<Self>, kind: WorkKind) -> WorkGuard {
+    fn child(self: &Arc<Self>, kind: WorkKind) -> Option<WorkGuard> {
         let mut state = self.state.lock();
+        if state.retired {
+            return None;
+        }
         state.revision = state.revision.wrapping_add(1);
         *kind.count(&mut state) += 1;
-        WorkGuard {
+        Some(WorkGuard {
             work: self.clone(),
             kind,
-        }
+        })
     }
 
     fn register(self: &Arc<Self>, kind: WorkKind) -> anyhow::Result<WorkGuard> {
@@ -78,8 +81,18 @@ impl ServiceWork {
         true
     }
 
-    pub(crate) fn retire(&self) {
-        self.state.lock().retired = true;
+    pub(crate) fn retire(&self) -> anyhow::Result<()> {
+        let mut state = self.state.lock();
+        anyhow::ensure!(
+            state.closed && state.commands == 0 && state.background == 0 && state.auxiliary == 0,
+            "Agent work is not drained; instance ownership retained"
+        );
+        state.retired = true;
+        Ok(())
+    }
+
+    pub(crate) fn is_retired(&self) -> bool {
+        self.state.lock().retired
     }
 
     pub(crate) fn is_closed(&self) -> bool {
@@ -196,7 +209,7 @@ pub(crate) fn process_child_work() -> Option<WorkGuard> {
         .lock()
         .as_ref()
         .and_then(|active| active.work.upgrade())
-        .map(|work| work.child(WorkKind::Background))
+        .and_then(|work| work.child(WorkKind::Background))
 }
 
 pub(crate) fn process_auxiliary_work() -> Option<WorkGuard> {
@@ -204,7 +217,7 @@ pub(crate) fn process_auxiliary_work() -> Option<WorkGuard> {
         .lock()
         .as_ref()
         .and_then(|active| active.work.upgrade())
-        .map(|work| work.child(WorkKind::Auxiliary))
+        .and_then(|work| work.child(WorkKind::Auxiliary))
 }
 
 #[cfg(test)]
@@ -240,9 +253,9 @@ mod tests {
     #[test]
     fn idle_workers_are_owned_without_making_user_activity_busy() {
         let work = Arc::new(ServiceWork::default());
-        let scheduler = work.child(WorkKind::Auxiliary);
+        let scheduler = work.child(WorkKind::Auxiliary).unwrap();
         work.close();
-        let finalizer = work.child(WorkKind::Background);
+        let finalizer = work.child(WorkKind::Background).unwrap();
         assert_eq!(work.activity_counts(), (0, 1));
         assert_eq!(work.counts(), (0, 2));
         drop(finalizer);
@@ -250,6 +263,21 @@ mod tests {
         assert_eq!(work.counts(), (0, 1));
         drop(scheduler);
         assert_eq!(work.counts(), (0, 0));
+    }
+
+    #[test]
+    fn retirement_excludes_late_children_and_requires_every_guard_to_finish() {
+        let work = Arc::new(ServiceWork::default());
+        assert!(work.retire().is_err());
+        let child = work.child(WorkKind::Background).unwrap();
+        work.close();
+        assert!(work.retire().is_err());
+        drop(child);
+        work.retire().unwrap();
+        assert!(work.is_retired());
+        assert!(work.child(WorkKind::Background).is_none());
+        assert!(work.child(WorkKind::Auxiliary).is_none());
+        assert!(work.background().is_err());
     }
 
     #[tokio::test]

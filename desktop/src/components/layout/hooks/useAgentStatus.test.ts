@@ -66,6 +66,24 @@ describe("useAgentStatus", () => {
     hook.unmount();
   });
 
+  it("keeps an admitted shell mounted through recovery while tracking real availability", async () => {
+    const hook = renderHook(useAgentStatus);
+    await flushAsync();
+    act(() => vi.advanceTimersByTime(MINIMUM_AGENT_SPLASH_MS));
+    expect(hook.current.admitted).toBe(true);
+    vi.mocked(getAgentStatus).mockResolvedValue({ phase: "unavailable", desktopVersion: "1.1.8", agentVersion: null });
+    act(() => vi.advanceTimersByTime(5000));
+    await flushAsync();
+    expect(hook.current.phase).toBe("unavailable");
+    expect(hook.current.admitted).toBe(true);
+    vi.mocked(getAgentStatus).mockResolvedValue({ phase: "ready", desktopVersion: "1.1.8", agentVersion: "1.1.8" });
+    act(() => vi.advanceTimersByTime(2000));
+    await flushAsync();
+    expect(hook.current.phase).toBe("ready");
+    expect(hook.current.admitted).toBe(true);
+    hook.unmount();
+  });
+
   it("shows the waiting hint only after five seconds", async () => {
     vi.mocked(getAgentStatus).mockResolvedValue({
       phase: "starting",

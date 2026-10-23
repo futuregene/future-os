@@ -13,8 +13,8 @@
 use std::time::{Duration, Instant};
 
 use future_rpc::supervision::{
-    probe_local_agent, restart_delay, Attached, LocalAgentState, RestartBudget, WAIT_FOR_OWNER,
-    WAIT_NOTICE_AFTER, WAIT_PROBE_INTERVAL,
+    probe_local_agent, restart_delay, Attached, LocalAgentState, ReadinessLoss, RestartBudget,
+    WAIT_FOR_OWNER, WAIT_NOTICE_AFTER, WAIT_PROBE_INTERVAL,
 };
 
 /// Per-attempt probe budget. Local IPC answers in milliseconds when it answers.
@@ -47,7 +47,7 @@ pub async fn ensure_agent_running(configured: &str) -> Result<(), String> {
         match probe_local_agent(configured, PROBE_CONNECT, PROBE_HANDSHAKE).await {
             LocalAgentState::Attached => return Ok(()),
             LocalAgentState::Blocked(reason) => return Err(reason),
-            LocalAgentState::Busy(detail) => {
+            LocalAgentState::Busy(detail) | LocalAgentState::Unresponsive(detail) => {
                 let waited = started.elapsed();
                 if waited >= WAIT_FOR_OWNER {
                     return Err(format!(
@@ -115,6 +115,7 @@ fn is_busy(error: &str) -> bool {
 pub fn spawn_agent_supervision(handle: &tokio::runtime::Handle, configured: String) {
     handle.spawn(async move {
         let mut budget = RestartBudget::new();
+        let mut loss = ReadinessLoss::default();
         let mut waiting_since: Option<Instant> = None;
         let mut lost_notice: Option<Instant> = None;
         let mut reachable_since: Option<Instant> = None;
@@ -122,6 +123,7 @@ pub fn spawn_agent_supervision(handle: &tokio::runtime::Handle, configured: Stri
             tokio::time::sleep(PROBE_INTERVAL).await;
             match probe_local_agent(&configured, PROBE_CONNECT, PROBE_HANDSHAKE).await {
                 LocalAgentState::Attached => {
+                    loss.reset();
                     if waiting_since.take().is_some() {
                         eprintln!("future-tui: the Agent is serving again.");
                     }
@@ -135,7 +137,18 @@ pub fn spawn_agent_supervision(handle: &tokio::runtime::Handle, configured: Stri
                         budget.reset();
                     }
                 }
-                LocalAgentState::Busy(detail) => {
+                LocalAgentState::Busy(detail) | LocalAgentState::Unresponsive(detail) => {
+                    reachable_since = None;
+                    if crate::agent_host::owns_agent() {
+                        let now = Instant::now();
+                        if loss.confirmed(now) && budget.allow(now) {
+                            loss.reset();
+                            if let Err(error) = crate::agent_host::recover_in_process(configured.clone()).await {
+                                eprintln!("future-tui: Agent recovery: {error}");
+                            }
+                        }
+                        continue;
+                    }
                     let now = Instant::now();
                     let since = *waiting_since.get_or_insert(now);
                     let waited = now.duration_since(since);
@@ -184,8 +197,7 @@ pub fn spawn_agent_supervision(handle: &tokio::runtime::Handle, configured: Stri
                     }
                     // A host that only attached to the dead Agent must let go
                     // first, or the stale `Ready` makes the start a no-op.
-                    crate::agent_host::detach_attached();
-                    match crate::agent_host::start_in_process(configured.clone()).await {
+                    match crate::agent_host::recover_in_process(configured.clone()).await {
                         Ok(()) => {
                             eprintln!("future-tui: the Agent was gone; started a new one.");
                             reachable_since = None;

@@ -10,6 +10,48 @@
 
 Three entry points can bring an Agent up today: `future agent`, `future host`, and `future tui`. All three honour the same instance lock, but **who starts it, who owns it, and what happens when it dies** each has its own answer. That layer is what is missing, and it is what this document adds. It changes neither the instance lock, the storage format, nor the RPC contract.
 
+## Service repair and remote recovery (2026-10-23)
+
+This revision implements the user's later decision: Desktop should recover in the
+background, keep an already admitted shell mounted, and add no recovery panels or
+notifications. It supersedes the Desktop runtime-error presentation in §5; initial
+startup, incompatibility and explicit application shutdown still use the existing
+gates. A failed cleanup that requires process exit also uses the existing gate.
+
+| Observation | Recovery |
+|---|---|
+| Lock file remains, owner exited | Reacquire the OS lock; never delete it |
+| Transient loss of readiness | Reconnect; Desktop requires at least three failures over 15 seconds before repairing a service |
+| Owned Agent remains unresponsive | Use its native control handle to stop it, wait for service retirement and driver exit, then start a new instance |
+| Service failed but cleanup completed | Clear the failed generation only after retirement and worker completion; keep diagnostics |
+| Cleanup incomplete | Retain the lock; Desktop requires process restart, headless exits for its process manager |
+| External owner or explicit remote endpoint | Reconnect without stopping the external owner or falling back from an explicit endpoint |
+| Remote network retry burst exhausted | Rust and TypeScript clients retain one cancellable five-minute cooldown and retry; explicit disconnect, revocation and terminal identity failures remain terminal |
+| Host Agent recovers on a still-live remote link | Update `agentAvailable` and request the existing state resync; do not replay a prompt |
+
+`ServiceRetirement` is evidence of a successful drain, not a substitute for the OS
+lock or native worker completion. Serving failure and cleanup failure are separate:
+a failed/dropped serving future requests a bounded drain; only a successful drain
+retires the service. A deadline or storage failure remains terminal. The host
+serializes repairs and respects application shutdown/update admission.
+
+Repair-created Agent instances disable `resumeInterruptedOnStart` for that launch.
+This is an execution boundary: repair restores connectivity and authoritative task
+state, not an uncertain model/tool operation. Ordinary fresh launches continue to
+honour the user's saved continuation setting. Rust remote clients now retry
+`prompt`/`continue_run` only with a stable command id and negotiated
+`prompt_receipt_v1`; old hosts receive a single attempt. Retries use the same body
+and bridge identity. Other writes are not added to the retry whitelist.
+
+The remote Host owns local Agent repair; the client owns link recovery. A dead
+Host process still needs a process manager or a later explicit launch. Recovery
+cannot turn a closed GUI or a user-disconnected remote entry back on. No new wire
+fields or storage migration are required. Regression coverage is added for repair
+retirement, failed-cleanup exclusion, retry cooldown cancellation, legacy receipts,
+and Agent-availability resync. Local verification is static only; unit and native
+Windows execution belong to CI.
+
+
 ## 1 Current state
 
 ### 1.1 What each entry point owns

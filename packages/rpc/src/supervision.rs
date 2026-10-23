@@ -41,6 +41,9 @@ pub enum LocalAgentState {
     Startable,
     /// Another process holds the lock and nothing answers yet.
     Busy(String),
+    /// The endpoint exists but connection/readiness did not complete. An owner
+    /// may repair its service after a grace window; attach-only clients retry.
+    Unresponsive(String),
     /// A refusal no amount of waiting repairs; the message is user-facing.
     Blocked(String),
 }
@@ -73,8 +76,30 @@ pub async fn probe_local_agent(
             LocalAgentState::Startable
         }
         Err(error) if error.is_instance_busy() => LocalAgentState::Busy(error.to_string()),
-        Err(ConnectionError::Transport(_)) => LocalAgentState::Startable,
+        Err(error @ (ConnectionError::Transport(_) | ConnectionError::Unverified(_))) => {
+            LocalAgentState::Unresponsive(error.to_string())
+        }
         Err(error) => LocalAgentState::Blocked(error.to_string()),
+    }
+}
+
+/// A slow probe must not cancel healthy work. Recovery needs both repeated
+/// failures and elapsed time; a successful probe resets the entire window.
+#[derive(Default)]
+pub struct ReadinessLoss {
+    since: Option<Instant>,
+    failures: u32,
+}
+impl ReadinessLoss {
+    pub fn reset(&mut self) {
+        self.since = None;
+        self.failures = 0;
+    }
+
+    pub fn confirmed(&mut self, now: Instant) -> bool {
+        let since = *self.since.get_or_insert(now);
+        self.failures = self.failures.saturating_add(1);
+        self.failures >= 3 && now.saturating_duration_since(since) >= Duration::from_secs(15)
     }
 }
 
@@ -211,6 +236,20 @@ impl RestartBudget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovery_needs_repeated_loss_and_a_success_starts_a_new_window() {
+        let mut loss = ReadinessLoss::default();
+        let now = Instant::now();
+        assert!(!loss.confirmed(now));
+        assert!(!loss.confirmed(now + Duration::from_secs(20)));
+        assert!(loss.confirmed(now + Duration::from_secs(21)));
+        loss.reset();
+        assert!(!loss.confirmed(now + Duration::from_secs(30)));
+        assert!(!loss.confirmed(now + Duration::from_secs(31)));
+        assert!(!loss.confirmed(now + Duration::from_secs(32)));
+        assert!(loss.confirmed(now + Duration::from_secs(45)));
+    }
 
     #[test]
     fn restart_delay_grows_and_stays_within_jitter() {

@@ -58,15 +58,23 @@ test.each(input.cases)("shared recovery $id", async scenario => {
     } else {
       expect((client as unknown as { recoveryDeadline: number }).recoveryDeadline).toBe(input.nowMs + input.typescriptBudgetMs);
       await jest.advanceTimersByTimeAsync(input.typescriptBudgetMs); await settle();
-      expect((client as unknown as { state: string }).state).toBe("failed");
+      expect((client as unknown as { state: string }).state).toBe("reconnecting");
       expect(attempts.every(at => at < input.typescriptBudgetMs)).toBe(true);
-      expect(callbacks.onError).toHaveBeenLastCalledWith(expect.objectContaining({ message: "recovery_timeout" }));
+      expect(callbacks.onError).not.toHaveBeenCalledWith(expect.objectContaining({ message: "recovery_timeout" }));
     }
     expect(connect).toHaveBeenCalledTimes(scenario.expected.typescript);
     expect(attempts.length).toBe(scenario.expected.typescript);
     expect((await client.waitTasks(0)).complete).toBe(true);
+    if (scenario.closeAfterAttempts === null) {
+      await jest.advanceTimersByTimeAsync(299_999); await settle();
+      expect(connect).toHaveBeenCalledTimes(scenario.expected.typescript);
+      await jest.advanceTimersByTimeAsync(1); await settle();
+      expect(connect).toHaveBeenCalledTimes(scenario.expected.typescript + 1);
+    }
+    await client.shutdown(1_000); await settle();
+    const stoppedAt = connect.mock.calls.length;
     await jest.advanceTimersByTimeAsync(600_000); await client.open(); await settle();
-    expect(connect).toHaveBeenCalledTimes(scenario.expected.typescript);
+    expect(connect).toHaveBeenCalledTimes(stoppedAt);
     expect(jest.getTimerCount()).toBe(0);
     process.stdout.write(`remote-client shared typescript ${scenario.id} PASS\n`);
   } finally {
