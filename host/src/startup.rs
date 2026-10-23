@@ -35,6 +35,10 @@ pub struct Where {
 #[derive(Clone)]
 pub struct Tracker(Arc<Shared>);
 
+/// One report sink, shared between the tracked launch, the watchdog thread and
+/// the entry's error path.
+type Report = Arc<dyn Fn(&str) + Send + Sync + 'static>;
+
 struct Shared {
     state: Mutex<State>,
     changed: Condvar,
@@ -45,6 +49,8 @@ struct State {
     started: Instant,
     step_started: Instant,
     finished: bool,
+    /// Installed by [`Tracker::arm`]; reports each step as it is entered.
+    reporter: Option<Report>,
 }
 
 impl Default for Tracker {
@@ -62,12 +68,19 @@ impl Tracker {
                 started: now,
                 step_started: now,
                 finished: false,
+                reporter: None,
             }),
             changed: Condvar::new(),
         }))
     }
 
     /// Record the step that is running now.
+    ///
+    /// A launch that dies *inside* a step is the case the stall watchdog cannot
+    /// describe: it reports only once the budget expires, so anything that ends
+    /// the process in the first few seconds leaves no step name at all. Reporting
+    /// the step as it is entered puts the last row of the log inside the window
+    /// where such a death happens.
     pub fn enter(&self, step: &'static str) {
         let mut state = self.lock();
         if state.finished {
@@ -75,8 +88,16 @@ impl Tracker {
         }
         state.step = step;
         state.step_started = Instant::now();
+        let total = state.started.elapsed();
+        let reporter = state.reporter.clone();
         drop(state);
         self.0.changed.notify_all();
+        if let Some(report) = reporter {
+            report(&format!(
+                "startup step '{step}' reached after {:.1}s",
+                total.as_secs_f64()
+            ));
+        }
     }
 
     /// Startup completed; stop the watchdog. Idempotent.
@@ -122,7 +143,10 @@ impl Tracker {
     ) {
         // Shared so the spawn-failure path below can still report; the closure
         // owns one handle and the fallback the other.
-        let report = Arc::new(report);
+        let report: Report = Arc::new(report);
+        // Every later step reports itself as it is entered, for the launch that
+        // never reaches the stall budget.
+        self.lock().reporter = Some(Arc::clone(&report));
         let for_thread = Arc::clone(&report);
         let tracker = self.clone();
         let spawned = std::thread::Builder::new()
@@ -262,6 +286,26 @@ mod tests {
         // never reports again.
         let late = rx.recv_timeout(Duration::from_millis(500));
         assert!(late.is_err(), "a ready launch must not keep reporting");
+    }
+
+    #[test]
+    fn a_step_is_reported_as_it_is_entered_before_the_stall_budget_expires() {
+        let tracker = Tracker::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        tracker.arm(
+            move |message| {
+                let _ = tx.send(message.to_string());
+            },
+            Duration::from_secs(3600),
+            Duration::from_secs(3600),
+        );
+        tracker.enter("app store");
+        let reported = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the step just entered");
+        assert!(reported.contains("startup step"), "{reported}");
+        assert!(reported.contains("app store"), "{reported}");
+        tracker.ready();
     }
 
     #[test]
