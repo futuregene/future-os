@@ -54,6 +54,7 @@ pub mod agent_client;
 pub mod files;
 
 pub mod agent_host;
+mod crash_log;
 pub mod environment;
 
 pub mod agent_bridge;
