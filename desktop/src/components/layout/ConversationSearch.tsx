@@ -92,7 +92,12 @@ export function ConversationSearch({
         aria-label={t("activityRail.searchConversations")}
         autoCapitalize="none"
         autoCorrect="off"
-        className="min-w-0 flex-1 bg-transparent text-sm text-ink placeholder:text-ink-muted focus:outline-none"
+        // The field's text is list content, so it takes the rail's content tier
+        // (`text-13`) — the same one its rows and the device picker beside it
+        // use. It was `text-sm` while that picker was `text-xs`, and two sizes
+        // 2px apart on one 28px row read as two controls that had not been
+        // aligned rather than as two different kinds of control.
+        className="min-w-0 flex-1 bg-transparent text-13 text-ink placeholder:text-ink-muted focus:outline-none"
         onChange={event => onQueryChange(event.target.value)}
         placeholder={t("activityRail.searchConversations")}
         spellCheck={false}

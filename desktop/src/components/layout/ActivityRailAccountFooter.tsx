@@ -148,7 +148,7 @@ function AccountMenuButton({
           <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-accent-soft text-sm font-semibold uppercase leading-none text-accent">
             {initial}
           </span>
-          <span className="min-w-0 flex-1 truncate text-sm font-medium text-ink">{prefix}</span>
+          <span className="min-w-0 flex-1 truncate text-13 font-medium text-ink">{prefix}</span>
         </button>
         {hasUpdate
           ? (
@@ -202,7 +202,7 @@ function AccountMenuButton({
 function MenuRow({ action, icon, label, onClick }: { action?: ReactNode; icon: ReactNode; label: string; onClick: () => void }) {
   return (
     <button
-      className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm text-ink transition-colors hover:bg-surface-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus"
+      className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-13 text-ink transition-colors hover:bg-surface-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus"
       onClick={onClick}
       role="menuitem"
       type="button"
