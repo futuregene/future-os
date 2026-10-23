@@ -174,6 +174,10 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "chat.new", category: "chat", defaultBinding: "mod+n", inTerminal: false },
   { id: "chat.stop", category: "chat", defaultBinding: "mod+period", inTerminal: false },
   { id: "composer.focus", category: "chat", defaultBinding: "mod+l", inTerminal: false },
+  { id: "thread.find", category: "chat", defaultBinding: "mod+f", inTerminal: false },
+  // The conversation's own account book: the same dialog the header's receipt
+  // opens, for a reader whose hands are on the keys.
+  { id: "thread.usage", category: "chat", defaultBinding: "mod+alt+u", inTerminal: false },
   // The composer's three pickers, from the keyboard: model, thinking level and
   // who approves a tool call. Stepping the value rather than opening the menu —
   // a `SelectMenu` has no roving focus, so opening it would only get a reader to
@@ -185,10 +189,6 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "composer.thinking.next", category: "chat", defaultBinding: "mod+alt+t", inTerminal: false },
   { id: "composer.approval.previous", category: "chat", defaultBinding: "mod+alt+shift+a", inTerminal: false },
   { id: "composer.approval.next", category: "chat", defaultBinding: "mod+alt+a", inTerminal: false },
-  // The conversation's own account book: the same dialog the header's receipt
-  // opens, for a reader whose hands are on the keys.
-  { id: "thread.usage", category: "chat", defaultBinding: "mod+alt+u", inTerminal: false },
-  { id: "thread.find", category: "chat", defaultBinding: "mod+f", inTerminal: false },
   // Two levels, because the list is two levels: a workspace holds conversations,
   // a conversation holds its forks. `thread.*` walks the conversation rows;
   // `group.*` steps between the top-level items (each workspace, each standalone
@@ -342,8 +342,54 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "vibe.help", category: "vibe", defaultBinding: "mod+slash", inTerminal: false, scope: "vibe" },
 ];
 
-/** Settings page section order. */
-export const CATEGORIES: readonly CommandCategory[] = ["chat", "navigation", "panels", "terminal", "vibe", "palette", "settings"];
+/**
+ * One block of the settings page and the cheat sheet.
+ *
+ * A **category** says what a command *is* — the palette labels a result with it
+ * and the app menu groups by it. A **section** says how it is *listed*: how much
+ * of the keyboard a reader takes in at one glance. They are deliberately not the
+ * same thing, so that grouping can follow use rather than taxonomy.
+ */
+export interface CommandSection {
+  id: CommandSectionId;
+  /** The categories listed under this heading, in order. */
+  categories: readonly CommandCategory[];
+  /**
+   * Start closed.
+   *
+   * For the keys of a *mode*: a reader who opened this page to change `⌘N` does
+   * not need thirty panel keys between them and the row they came for.
+   */
+  startsCollapsed?: boolean;
+}
+
+export type CommandSectionId = "conversation" | "navigation" | "layout" | "search" | "vibe";
+
+/**
+ * The page's blocks, most-used first.
+ *
+ * Ordering is frequency, not classification: `chat` and `navigation` are what a
+ * reader opens this page for, so they are the first two screens. The small
+ * groups are listed beside each other rather than each owning a one-row card
+ * (`panels` + `terminal` are one "show or hide a pane" idea; the palette and
+ * Settings are one "get me somewhere" idea), and the Vibe panel — a full-screen
+ * mode most readers never open — is last and closed.
+ */
+export const SECTIONS: readonly CommandSection[] = [
+  { id: "conversation", categories: ["chat"] },
+  { id: "navigation", categories: ["navigation"] },
+  { id: "layout", categories: ["panels", "terminal"] },
+  { id: "search", categories: ["palette", "settings"] },
+  { id: "vibe", categories: ["vibe"], startsCollapsed: true },
+];
+
+/** Every category, in the order the sections list it. */
+export const CATEGORIES: readonly CommandCategory[] = SECTIONS.flatMap(section => section.categories);
+
+/** The commands one section lists, in the table's order. */
+export function sectionCommands(section: CommandSection): CommandSpec[] {
+  return COMMANDS.filter(spec => section.categories.includes(spec.category));
+}
 
 const BY_ID = new Map<string, CommandSpec>(COMMANDS.map(spec => [spec.id, spec]));
 

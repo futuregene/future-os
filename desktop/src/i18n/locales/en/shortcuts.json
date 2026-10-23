@@ -8,6 +8,13 @@
     "vibe": "Vibe panel",
     "palette": "Search and help"
   },
+  "sections": {
+    "conversation": "Conversation",
+    "navigation": "Navigation",
+    "layout": "Panels and terminal",
+    "search": "Search and settings",
+    "vibe": "Vibe panel"
+  },
   "commands": {
     "chat": {
       "new": "New conversation",
@@ -146,7 +153,11 @@
     "unbound": "Not set",
     "scopedGlobal": "Works anywhere.",
     "scopedVibe": "Only while the Vibe panel is open; inside it these keys may replace the ones above.",
-    "multiKey": "These keys are fixed for now."
+    "multiKey": "These keys are fixed for now.",
+    "keyCount_one": "{{count}} key",
+    "keyCount_other": "{{count}} keys",
+    "changedCount_one": "{{count}} changed",
+    "changedCount_other": "{{count}} changed"
   },
   "recorder": {
     "prompt": "Press a new combination…",
