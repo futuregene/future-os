@@ -5,7 +5,11 @@
 use std::process::Command;
 
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_future-channel"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_future-channel"));
+    // Readiness checks observe INFO logs, regardless of the developer's own
+    // RUST_LOG setting (for example, `warn` would hide the webhook marker).
+    command.env("RUST_LOG", "info");
+    command
 }
 
 fn isolated_home(label: &str) -> std::path::PathBuf {
