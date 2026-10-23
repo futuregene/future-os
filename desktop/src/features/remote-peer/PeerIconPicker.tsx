@@ -1,5 +1,6 @@
 import { useTranslation } from "react-i18next";
 import { cn } from "../../lib/cn";
+import { PeerIconGlyph } from "./PeerIconGlyph";
 import { PEER_ICONS } from "./peerIcons";
 
 /**
@@ -18,6 +19,10 @@ import { PEER_ICONS } from "./peerIcons";
  * smaller and squarer on the desktop read as a different control rather than
  * the same one on a larger screen. Keep the pairs in step: a change here is a
  * change in `mobile/src/features/settings/SettingsScreen.tsx` (`iconOption`).
+ *
+ * The glyph is a line icon from the shared set, not an emoji: a picture drawn
+ * by the platform's emoji font would differ between macOS, Windows and the
+ * phone, and the picker is where that was promised most loudly.
  */
 export function PeerIconPicker({
   value,
@@ -41,9 +46,9 @@ export function PeerIconPicker({
             aria-checked={selected}
             aria-label={t(`icons.${icon.labelKey}`)}
             className={cn(
-              "flex size-11 items-center justify-center rounded-xl border text-xl leading-none transition-colors",
+              "flex size-11 items-center justify-center rounded-xl border transition-colors",
               selected
-                ? "border-accent bg-accent-soft"
+                ? "border-accent bg-accent-soft text-accent"
                 : "border-line bg-surface text-ink-soft hover:bg-surface-subtle hover:border-line",
             )}
             key={icon.id}
@@ -52,7 +57,7 @@ export function PeerIconPicker({
             title={t(`icons.${icon.labelKey}`)}
             type="button"
           >
-            {icon.glyph}
+            <PeerIconGlyph className="size-5" id={icon.id} />
           </button>
         );
       })}

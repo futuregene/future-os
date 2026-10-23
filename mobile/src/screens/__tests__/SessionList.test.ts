@@ -15,6 +15,7 @@ import {
 import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
 import { RenameModal } from "../../features/chat/components/RenameModal";
+import { PeerIconGlyph } from "../../remote/PeerIconGlyph";
 import type { RemoteSession, RemoteWorkspace } from "../../remote/types";
 import { SessionList, type SessionListHandle } from "../SessionList";
 import { RECENT_PAGE_SIZE } from "../recentRows";
@@ -1842,7 +1843,11 @@ const headingNames = (): string[] =>
  * makes "named once" countable.
  */
 const glyphsIn = (node: ReactTestInstance, desktopId: string): number =>
-  node.findAllByType(Text).filter(child => child.props.accessibilityLabel === desktopId).length;
+  // The mark is a drawn glyph in its own slot rather than a character inside a
+  // Text, so the slot is what carries the machine id for this lookup. Host nodes
+  // only: a composite and its host both carry the slot's props.
+  node.findAll(child => typeof child.type === "string"
+    && child.props.accessibilityLabel === desktopId).length;
 /** The glyphs drawn for a machine anywhere on the page. */
 const sourceGlyphs = (desktopId: string): number => glyphsIn(tree.root, desktopId);
 /** The glyphs drawn on a row, found by its conversation's title. */
@@ -1944,14 +1949,21 @@ test("the recency row puts the machine before the workspace name", () => {
     "recent",
   );
 
-  const glyph = sessionBody("Remote plan").findAllByType(Text)
-    .find(child => child.props.accessibilityLabel === "desk-b");
+  const glyph = sessionBody("Remote plan").findAll(
+    child => typeof child.type === "string" && child.props.accessibilityLabel === "desk-b",
+  )[0];
   expect(glyph).toBeTruthy();
 
-  // One line of two texts, in that order: the glyph, then the name it belongs to.
-  const texts = glyph!.parent!.findAllByType(Text)
-    .map(child => child.props.accessibilityLabel ?? child.props.children);
-  expect(texts).toEqual(["desk-b", "Project"]);
+  // One line, in that order: the glyph's slot (which draws the mark, so it holds
+  // no text of its own), then the name it belongs to.
+  expect(glyph!.findAllByType(PeerIconGlyph)).toHaveLength(1);
+  const order = sessionBody("Remote plan").findAll(node => typeof node.type === "string").flatMap((node) => {
+    if (node.props.accessibilityLabel === "desk-b")
+      return ["#machine"];
+    return [node.props.children].flat().filter((child): child is string => typeof child === "string");
+  });
+  expect(order.indexOf("#machine")).toBeGreaterThanOrEqual(0);
+  expect(order.indexOf("#machine")).toBeLessThan(order.indexOf("Project"));
 
   // Flush with the row's left edge (no indent against the title's column), with
   // the spacing it needs on the far side of the glyph.
@@ -2357,12 +2369,15 @@ test("a row's own machine is named only when several machines are in the list", 
     mergedRow("desk-a", "a1", "Local plan"),
     mergedRow("desk-b", "b1", "Remote review", { workspaceId: "w9", workspaceName: "Review" }),
   ]);
+  // The mark is drawn from the shared set (the icon module is stubbed to its own
+  // name in these tests), so the slot carries the machine id and the glyph
+  // inside it is a host element, not a character.
   const glyphs = () => tree.root.findAll(
-    node => typeof node.props.accessibilityLabel === "string"
-      && node.props.accessibilityLabel.startsWith("desk-")
-      && typeof node.props.children === "string",
-  ).map(node => node.props.children);
-  expect(glyphs()).toContain("💻");
+    node => typeof node.type === "string"
+      && typeof node.props.accessibilityLabel === "string"
+      && node.props.accessibilityLabel.startsWith("desk-"),
+  ).map(node => [node.props.accessibilityLabel, node.findAllByType(PeerIconGlyph).length]);
+  expect(glyphs()).toContainEqual(["desk-b", 1]);
 
   // One machine: the selector above the list already names it, and every row
   // repeating its glyph would take the width the title needs.

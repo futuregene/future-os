@@ -104,7 +104,7 @@ jest.mock("react-native-safe-area-context", () => ({
 jest.mock("../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
 jest.mock("../../update/prompt", () => ({ promptUpgrade: jest.fn() }));
 jest.mock("../../update/update", () => ({ checkForUpdate: jest.fn() }));
-jest.mock("../../remote/peerIcons", () => ({ iconGlyph: () => "" }));
+jest.mock("../../remote/PeerIconGlyph", () => ({ PeerIconGlyph: "PeerIconGlyph" }));
 const mockStorage = new Map<string, string>();
 jest.mock("@react-native-async-storage/async-storage", () => ({
   __esModule: true,

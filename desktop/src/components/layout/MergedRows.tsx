@@ -7,7 +7,7 @@ import { Plus } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { groupMergedRows } from "../../features/remote-peer/mergeConversations";
-import { iconGlyph } from "../../features/remote-peer/peerIcons";
+import { PeerIconGlyph } from "../../features/remote-peer/PeerIconGlyph";
 import { RemoteWorkspaceMenu } from "../../features/remote-peer/RemoteWorkspaceMenu";
 import { ChatSectionMenu } from "./ActivityRailMenus";
 import { RailGroupHeader, RailHeaderButton, RailSectionHeader, RailSectionToggle } from "./RailChrome";
@@ -563,8 +563,8 @@ function GroupGlyph({ desktopId, peers }: { desktopId: string | null; peers: Rem
   if (desktopId === null)
     return null;
   return (
-    <span aria-hidden className="shrink-0 text-xs">
-      {iconGlyph(peers.find(peer => peer.desktopId === desktopId)?.icon)}
+    <span aria-hidden className="shrink-0">
+      <PeerIconGlyph className="size-3" id={peers.find(peer => peer.desktopId === desktopId)?.icon} />
     </span>
   );
 }

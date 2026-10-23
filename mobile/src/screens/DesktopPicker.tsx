@@ -6,7 +6,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { DialogSurface } from "../components/DialogSurface";
-import { iconGlyph } from "../remote/peerIcons";
+import { PeerIconGlyph } from "../remote/PeerIconGlyph";
 import { layout, radius, spacing } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 
@@ -109,16 +109,13 @@ export function DesktopPicker({
           pressed && styles.pressed,
         ]}
       >
-        {/* One machine indicator, not two. A chosen machine's row already leads
-            with its own glyph — the same one the sheet draws beside its name —
-            so the general icon here would repeat it on every drawn width and
-            take the points the name needs; it stays for the merged scope, which
-            has no machine of its own to show. */}
-        {selected ? null : (
-          <View style={styles.triggerIcon}>
-            <Layers color={colors.accent} size={17} />
-          </View>
-        )}
+        {/* One machine indicator, not two: a chosen machine leads with its own
+            glyph — the same one the sheet draws beside its name — and the
+            general layers icon stands in only for the merged scope, which has
+            no machine of its own to show. */}
+        <View style={styles.triggerIcon}>
+          {selected ? <PeerIconGlyph id={selected.icon} size={17} /> : <Layers color={colors.accent} size={17} />}
+        </View>
         {/* Two lines, not one: the row above the list now shares its width with
             the list's own tools, and a machine name the reader gave it can be
             longer than what is left. Wrapping keeps the whole name on screen
@@ -126,7 +123,7 @@ export function DesktopPicker({
             a place to *choose* a machine, not the only place to find out which
             one is on screen. */}
         <Text numberOfLines={2} style={styles.triggerLabel}>
-          {selected ? `${iconGlyph(selected.icon)} ${label(selected)}` : t("desktops.filterAll")}
+          {selected ? label(selected) : t("desktops.filterAll")}
         </Text>
         <ChevronDown color={colors.inkSoft} size={14} />
       </Pressable>
@@ -192,7 +189,7 @@ export function DesktopPicker({
                   ]}
                 >
                   <View style={styles.optionIcon}>
-                    <Text style={styles.optionGlyph}>{iconGlyph(desktop.icon)}</Text>
+                    <PeerIconGlyph id={desktop.icon} size={16} />
                   </View>
                   <View style={styles.optionText}>
                     <Text style={[styles.optionLabel, isSelected && styles.optionLabelSelected]}>
@@ -291,7 +288,6 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   // Same tint the other single-choice sheets use for the answer in force.
   optionSelected: { backgroundColor: theme.colors.accentSoft },
   optionIcon: { width: 24, alignItems: "center", justifyContent: "center" },
-  optionGlyph: { fontSize: theme.font(16) },
   optionText: { flex: 1, minWidth: 0 },
   optionLabel: { color: theme.colors.ink, fontSize: theme.font(15) },
   optionNote: { color: theme.colors.inkMuted, fontSize: theme.font(12), marginTop: 1 },

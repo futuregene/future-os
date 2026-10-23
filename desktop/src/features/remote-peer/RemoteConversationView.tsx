@@ -17,7 +17,8 @@ import { QuestionNavControl } from "../agent/QuestionNavControl";
 import { useComposerInset } from "../agent/useComposerInset";
 import { useQuestionNav } from "../agent/useQuestionNav";
 import { useStickyAutoScroll } from "../agent/useStickyAutoScroll";
-import { iconGlyph, peerBadgeText } from "./peerIcons";
+import { PeerIconGlyph } from "./PeerIconGlyph";
+import { peerBadgeText } from "./peerIcons";
 import { RemoteAttachmentProvider } from "./RemoteAttachmentOrigin";
 import { foldLiveReply, stripRunCopies } from "./remoteLiveReplies";
 import { setRemotePeerVisibleSession } from "./remotePeerClient";
@@ -346,7 +347,7 @@ export function RemoteConversationView({
                 it, with the id as the fallback while the peer list is still
                 loading. */}
                   <MachineBadge
-                    glyph={iconGlyph(peer?.icon)}
+                    glyph={<PeerIconGlyph className="size-3.5" id={peer?.icon} />}
                     label={peer ? peerBadgeText(peer, peer.desktopId) : desktopId}
                     title={peer?.name ?? peer?.desktopId ?? desktopId}
                   />

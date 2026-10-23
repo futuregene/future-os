@@ -453,8 +453,12 @@ describe("the local tree in merged mode", () => {
         { indent: "16px", title: "Pinned parent" },
         { indent: "36px", title: "Fork of pinned" },
         { indent: "28px", title: "Other in the workspace" },
-        { indent: "16px", title: "Remote conversation💻" },
+        { indent: "16px", title: "Remote conversation" },
       ]);
+    // The machine a row belongs to is a drawn mark in its own slot — the mark
+    // used to be an emoji typed into the title, which is why the title no
+    // longer carries one.
+    expect(view.container.querySelectorAll("[data-testid='remote-source-icon'] svg").length).toBeGreaterThan(0);
     view.unmount();
   });
 });
@@ -539,16 +543,19 @@ describe("the remote tree in merged mode", () => {
     const order = () => [...view.container.querySelectorAll<HTMLElement>("div[class*='group/thread']")]
       .map(row => ({ indent: row.style.paddingLeft, title: (row.textContent ?? "").trim() }));
     // Folded: only the parent, with its toggle.
-    expect(order().map(row => row.title)).toEqual(["Host parent💻"]);
+    expect(order().map(row => row.title)).toEqual(["Host parent"]);
 
     act(() => view.container
       .querySelector<HTMLButtonElement>("button[aria-label='Expand child conversations of Host parent']")!
       .click());
 
     expect(order()).toEqual([
-      { indent: "16px", title: "Host parent💻" },
-      { indent: "36px", title: "Host fork💻" },
+      { indent: "16px", title: "Host parent" },
+      { indent: "36px", title: "Host fork" },
     ]);
+    // Both rows carry the host's mark, drawn in the row rather than typed into
+    // the title.
+    expect(view.container.querySelectorAll("[data-testid='remote-source-icon'] svg").length).toBe(2);
     view.unmount();
   });
 });

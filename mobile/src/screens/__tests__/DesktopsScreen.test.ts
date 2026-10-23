@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { Alert, BackHandler, Modal, StyleSheet, Text } from "react-native";
 import { Button } from "../../components/Button";
-import { PEER_ICONS } from "../../remote/peerIcons";
+import { peerIconId, PEER_ICONS } from "../../remote/peerIcons";
 import type { PairedDesktop } from "../../remote/types";
 import { lightColors } from "../../theme/tokens";
 import { DesktopsScreen } from "../DesktopsScreen";
@@ -43,6 +43,9 @@ jest.mock("lucide-react-native", () => ({
   Settings2: "Settings2",
   Trash2: "Trash2",
 }));
+// The machine mark is drawn from the shared peer-icon set; these tests are
+// about which id each row gets, so the glyph itself is one named stub.
+jest.mock("../../remote/PeerIconGlyph", () => ({ PeerIconGlyph: "PeerIconGlyph" }));
 jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: "SafeAreaView",
   useSafeAreaInsets: () => ({ top: 24, bottom: 34, left: 0, right: 0 }),
@@ -92,6 +95,14 @@ const button = (label: string) =>
 const texts = () => tree.root.findAllByType(Text).map((node) => node.props.children).flat().filter(
   (child): child is string => typeof child === "string",
 );
+
+/**
+ * The machine mark each card draws, in row order.
+ *
+ * Resolved through `peerIconId`, because that is what the glyph draws: a card
+ * with no icon of its own is handed `undefined` and the default is what appears.
+ */
+const glyphIds = () => tree.root.findAll(node => String(node.type) === "PeerIconGlyph").map(node => peerIconId(node.props.id));
 
 /** The device page the list opened, if any. */
 const devicePage = () => tree.root.findAllByType("SettingsScreen" as never)[0];
@@ -238,7 +249,8 @@ test("draws each desktop with the icon the user gave it, and the default without
     { desktopId: "desktop-2", pairId: "pair-2" },
   ];
   await render();
-  expect(texts()).toEqual(expect.arrayContaining(["🚀", PEER_ICONS[0]!.glyph]));
+  // The mark is drawn, not typed: the ids say which picture each card got.
+  expect(glyphIds()).toEqual(["rocket", PEER_ICONS[0]!.id]);
 });
 
 test("shows the chosen name above the id", async () => {
