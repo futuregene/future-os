@@ -6,9 +6,11 @@
  * being reopened. That is the whole point of a cheat sheet in an app whose keys are
  * editable: a printed card would be a card of the old keys.
  *
- * A section per category, in the table's order. A command that is scoped to a mode
- * says so on its group, not on every row; a command the user unbound is simply
- * absent (there is nothing to press).
+ * A section per block, in the table's order — the same sections the settings page
+ * uses, so the sheet and the page that edits it never list the keyboard in two
+ * different orders. A command that is scoped to a mode says so on its group, not
+ * on every row; a command the user unbound is simply absent (there is nothing to
+ * press).
  *
  * The header's one button goes to the page that *edits* these binds. It runs the
  * `shortcuts.settings` **command** rather than opening Settings itself: the
@@ -21,7 +23,7 @@ import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Overlay } from "../../components/ui/Overlay";
 import { isMacOS } from "../../lib/platform";
-import { CATEGORIES, COMMANDS, scopeOf } from "../keyboard/catalog";
+import { scopeOf, sectionCommands, SECTIONS } from "../keyboard/catalog";
 import { hasCommandHandler, runCommand } from "../keyboard/commands";
 import { bindingLabel, useShortcutOverrides } from "../keyboard/shortcuts";
 
@@ -32,13 +34,17 @@ export function ShortcutCheatSheet({ onClose, open }: { onClose: () => void; ope
   const isMac = isMacOS;
 
   const groups = useMemo(
-    () => CATEGORIES.map((category) => {
-      const rows = COMMANDS
-        .filter(spec => spec.category === category)
-        .map(spec => ({ id: spec.id, keys: bindingLabel(spec.id, overrides, isMac), label: t(`commands.${spec.id}`) }))
+    () => SECTIONS.map((section) => {
+      const rows = sectionCommands(section)
+        .map(spec => ({
+          id: spec.id,
+          keys: bindingLabel(spec.id, overrides, isMac),
+          label: t(`commands.${spec.id}`),
+          scoped: scopeOf(spec) !== "global",
+        }))
         // An unbound command has no key, so it has no place on a cheat sheet.
         .filter(row => row.keys.length > 0);
-      return { category, rows };
+      return { section, rows };
     }).filter(group => group.rows.length > 0),
     [isMac, overrides, t],
   );
@@ -78,15 +84,15 @@ export function ShortcutCheatSheet({ onClose, open }: { onClose: () => void; ope
         </header>
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
           {groups.map(group => (
-            <div className="mb-4" key={group.category}>
+            <div className="mb-4" key={group.section.id}>
               <div className="mb-1 flex items-baseline gap-2">
                 <h3 className="text-xs font-semibold uppercase tracking-wide text-ink-muted">
-                  {t(`categories.${group.category}`)}
+                  {t(`sections.${group.section.id}`)}
                 </h3>
-                {group.rows.some(row => scopeOf(COMMANDS.find(spec => spec.id === row.id)!) !== "global")
+                {group.rows.some(row => row.scoped)
                   ? (
                       <span className="text-2xs text-ink-muted">
-                        {t(group.category === "vibe" ? "page.scopedVibe" : "page.scopedGlobal")}
+                        {t(group.section.id === "vibe" ? "page.scopedVibe" : "page.scopedGlobal")}
                       </span>
                     )
                   : null}
