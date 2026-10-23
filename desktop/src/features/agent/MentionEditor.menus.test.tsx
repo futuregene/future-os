@@ -1127,6 +1127,84 @@ describe("mentionEditor keyboard submission", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it("requires release after Enter confirms a candidate, even after composition ends", () => {
+    render();
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    setText("正在输入");
+    act(() => editor.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
+    press("Enter");
+    act(() => editor.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true })));
+
+    press("Enter", { repeat: true });
+    // The latch also protects webviews that omit the repeat flag.
+    press("Enter");
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    act(() => editor.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Enter" })));
+    press("Enter");
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { isComposing: true },
+    { keyCode: 229 },
+    { code: "Enter", key: "Unidentified" },
+    { code: "NumpadEnter", key: "Unidentified" },
+  ])("keeps an IME Enter held until release with event markers %j", (init: KeyboardEventInit) => {
+    render();
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    setText("候选词");
+    // WebKit may finish composition before delivering its committing keydown.
+    act(() => editor.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true })));
+    const commit = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter", ...init });
+    act(() => editor.dispatchEvent(commit));
+    expect(commit.defaultPrevented).toBe(false);
+
+    press("Enter", { repeat: true });
+    act(() => editor.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "a" })));
+    press("Enter");
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    act(() => editor.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Enter", code: init.code })));
+    press("Enter");
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels a repeated Enter even when its initial keydown was consumed by the IME", () => {
+    render();
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    setText("候选词");
+    const repeat = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter", repeat: true });
+    act(() => editor.dispatchEvent(repeat));
+    expect(repeat.defaultPrevented).toBe(true);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("allows the next Enter after confirming a candidate with Space", () => {
+    render();
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    setText("候选词");
+    act(() => editor.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
+    press(" ");
+    act(() => editor.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true })));
+    press("Enter");
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers from a release outside the editor after losing focus", () => {
+    render();
+    editor = container.querySelector<HTMLDivElement>("[role=textbox]")!;
+    focusThenSetText("候选词");
+    act(() => editor.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true })));
+    press("Enter");
+    act(() => editor.blur());
+    act(() => editor.focus());
+    press("Enter", { repeat: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+    press("Enter");
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
   it("does not submit a whitespace-only draft", () => {
     // boundary: the parent gets the call; the editor must still not treat a
     // Space as Enter, and the placeholder logic keeps the box "empty".

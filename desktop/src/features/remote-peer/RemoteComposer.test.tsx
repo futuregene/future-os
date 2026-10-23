@@ -155,9 +155,9 @@ async function mount(props: {
         input.dispatchEvent(new Event("input", { bubbles: true }));
       });
     },
-    press: async (key: string) => {
+    press: async (key: string, init: KeyboardEventInit = {}) => {
       await act(async () => {
-        input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key }));
+        input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key, ...init }));
       });
     },
     /**
@@ -212,6 +212,64 @@ it("prompts the conversation it belongs to and clears only on success", async ()
   expect(view.input.value).toBe("");
   // An existing conversation was not created, so nothing adopts an id.
   expect(view.onCreated).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+it.each([
+  {},
+  { isComposing: true },
+  { keyCode: 229 },
+  { code: "Enter", key: "Unidentified" },
+])("requires release before sending after an IME Enter with markers %j", async (init: KeyboardEventInit) => {
+  const view = await mount();
+  await view.type("候选词");
+  if (Object.keys(init).length === 0) {
+    await act(async () => {
+      view.input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    });
+  }
+  await view.press("Enter", init);
+  await act(async () => {
+    view.input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+  });
+  await view.press("Enter", { repeat: true });
+  await view.press("Enter");
+  expect(prompt).not.toHaveBeenCalled();
+  expect(view.input.value).toBe("候选词");
+
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Enter" }));
+  });
+  await view.press("Enter");
+  await settle();
+  expect(prompt).toHaveBeenCalledTimes(1);
+  expect(view.input.value).toBe("");
+  await view.unmount();
+});
+
+it("leaves the slash menu and its command alone during composition and a held Enter", async () => {
+  const onCompact = vi.fn();
+  const view = await mount({ canCompact: true, onCompact });
+  await view.type("/compact");
+  await act(async () => {
+    view.input.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+  });
+  await view.press("ArrowDown");
+  await view.press("Enter");
+  await act(async () => {
+    view.input.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+  });
+  await view.press("Enter", { repeat: true });
+  expect(onCompact).not.toHaveBeenCalled();
+  expect(prompt).not.toHaveBeenCalled();
+  expect(view.input.value).toBe("/compact");
+
+  await act(async () => {
+    view.input.dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, key: "Enter" }));
+  });
+  await view.press("Enter");
+  expect(onCompact).toHaveBeenCalledTimes(1);
+  expect(prompt).not.toHaveBeenCalled();
   await view.unmount();
 });
 
