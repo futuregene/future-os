@@ -233,11 +233,7 @@ fn command_is_read_only(command: &str) -> bool {
     let Some(segments) = split_command_segments(command) else {
         return false;
     };
-    let last = segments.len() - 1;
-    segments
-        .iter()
-        .enumerate()
-        .all(|(index, segment)| segment_is_read_only(segment, index == last))
+    segments.iter().all(|segment| segment_is_read_only(segment))
 }
 
 /// Split on unquoted `;`, `&&`, `||`, `|` and newlines. `None` means the text
@@ -342,7 +338,7 @@ fn command_tokens(segment: &str) -> Option<Vec<String>> {
     (!tokens.is_empty()).then_some(tokens)
 }
 
-fn segment_is_read_only(segment: &str, is_last: bool) -> bool {
+fn segment_is_read_only(segment: &str) -> bool {
     // A leading `$` or `@` assigns shell state (or splats arguments); neither is
     // a command whose effect can be reasoned about.
     if segment.starts_with('$') || segment.starts_with('@') {
@@ -355,8 +351,11 @@ fn segment_is_read_only(segment: &str, is_last: bool) -> bool {
         return false;
     };
     match program.to_ascii_lowercase().as_str() {
-        // `cd` only moves this process; allowed where nothing follows it.
-        "cd" | "set-location" => is_last,
+        // `cd` only moves this process: no observable effect can be waiting,
+        // and repeating it cannot apply anything twice, so it is harmless in
+        // any position of the chain. Its arguments still have to be plain
+        // paths, because an expansion can hide another command.
+        "cd" | "set-location" => cd_is_read_only(args),
         "git" => git_is_read_only(args),
         "command" => args
             .first()
@@ -369,6 +368,14 @@ fn segment_is_read_only(segment: &str, is_last: bool) -> bool {
         | "where-object" | "pwd" | "ls" | "cat" | "head" | "tail" | "wc" | "which" | "type" => true,
         _ => false,
     }
+}
+
+/// `cd` with literal path arguments only. A `$`-expansion, a substitution or a
+/// script block could name anything, so those stay fenced.
+fn cd_is_read_only(args: &[String]) -> bool {
+    args.iter().all(|arg| {
+        !arg.starts_with(['$', '@', '-']) && !arg.contains(['$', '@', '`', '(', ')', '{', '}'])
+    })
 }
 
 /// `git` subcommands that only read, with the arguments that would still write
@@ -765,6 +772,14 @@ mod tests {
             "echo hi",
             "Write-Output hi",
             "cd ..",
+            // `cd` only moves the process, so its position in the chain is
+            // irrelevant — that is tonight's third incident.
+            "cd D:/future-os; git worktree list; git status --short",
+            "cd x; git status",
+            "cd ..; git status --short",
+            "cd ..; cd ..; git status",
+            "cd \"D:/a b\"; git status",
+            "Set-Location ..; git status",
             "git status; cd ..",
             "pwd",
             "ls",
@@ -840,6 +855,15 @@ mod tests {
             "$env:FOO = 'bar'",
             "echo $(rm x)",
             "echo `rm x`",
+            // `cd` is only harmless with a literal path: an expansion could
+            // name whatever the hidden command produced.
+            "cd x; git status > f",
+            "cd $(echo x); git status",
+            "cd `pwd`; git status",
+            "cd $env:FOO; git status",
+            "cd $HOME; git status",
+            "cd x; rm y",
+            "cd x | tee f",
             "git status \"unbalanced",
         ];
         for command in fenced {
@@ -854,7 +878,13 @@ mod tests {
     fn interrupted_read_only_shell_does_not_fence_the_session() {
         // The shape of tonight's incident: the call went out, the user pressed
         // stop a second later, and no result was ever recorded.
-        for command in ["git worktree list", "git status --short", "Get-Date"] {
+        for command in [
+            "git worktree list",
+            "git status --short",
+            "Get-Date",
+            // Tonight's third incident verbatim: `cd` came first in the chain.
+            "cd D:/future-os; git worktree list; git status --short",
+        ] {
             let args = json!({"command":command});
             let (root, manager) = fixture("shell", args.clone(), None);
             for automatic in [true, false] {
