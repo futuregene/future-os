@@ -236,7 +236,7 @@ pub async fn safari_status(
     if connection.protocol() != "webdriver" {
         return (false, None, Some("Not a WebDriver endpoint".to_string()));
     }
-    let client = future_http::client();
+    let client = future_agent::http::client();
     match tokio::time::timeout(
         std::time::Duration::from_secs(2),
         client
@@ -298,7 +298,7 @@ fn permission_error() -> String {
 }
 
 async fn endpoint_reachable(url: &str) -> bool {
-    let client = future_http::client();
+    let client = future_agent::http::client();
     tokio::time::timeout(
         std::time::Duration::from_secs(1),
         client.get(format!("{url}/status")).send(),

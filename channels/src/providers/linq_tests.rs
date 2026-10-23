@@ -97,7 +97,7 @@ fn merge(base: Value, overrides: Value) -> Value {
 
 fn sender_against(base: &str, from: &str) -> LinqSender {
     LinqSender::new(
-        future_http::client(),
+        crate::tls::default_client(),
         &LinqConfig {
             api_key: "key".into(),
             from: from.into(),
@@ -1289,7 +1289,7 @@ async fn run_rejects_an_unsigned_delivery_and_runs_a_signed_one() {
         tokio::spawn(async move { Linq.run(ctx).await })
     };
     let url = format!("http://127.0.0.1:{port}/hooks/linq");
-    let client = future_http::client();
+    let client = crate::tls::default_client();
 
     // The signed instant has to be "now": the bridge drops anything older than
     // its freshness window as a replay.

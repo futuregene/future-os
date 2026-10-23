@@ -358,7 +358,7 @@ impl WebDriverClient {
         body: Option<&Value>,
     ) -> Result<Map<String, Value>, String> {
         let url = format!("{}{}", self.base_url, path);
-        let client = future_http::client();
+        let client = future_agent::http::client();
         let mut req = client.request(
             reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::GET),
             &url,

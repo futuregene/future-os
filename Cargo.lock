@@ -1865,7 +1865,6 @@ dependencies = [
  "dirs 7.0.0",
  "fd-lock",
  "fs2",
- "future-http",
  "future-rpc",
  "futures",
  "futures-util",
@@ -1879,6 +1878,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rusqlite",
+ "rustls",
  "semver",
  "serde",
  "serde_json",
@@ -1933,7 +1933,6 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "dirs 7.0.0",
- "future-http",
  "future-rpc",
  "futures",
  "futures-util",
@@ -1980,7 +1979,6 @@ dependencies = [
  "future-channel",
  "future-goal",
  "future-host",
- "future-http",
  "future-remote-crypto",
  "future-rpc",
  "future-tasks",
@@ -2048,7 +2046,6 @@ dependencies = [
  "future-agent",
  "future-app-settings",
  "future-app-workspaces",
- "future-http",
  "future-remote-client",
  "future-remote-crypto",
  "future-remote-protocol",
@@ -2074,14 +2071,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tonic",
-]
-
-[[package]]
-name = "future-http"
-version = "0.1.0"
-dependencies = [
- "reqwest",
- "rustls",
 ]
 
 [[package]]
@@ -2219,7 +2208,6 @@ dependencies = [
  "base64 0.23.1",
  "chrono",
  "future-host",
- "future-http",
  "future-rpc",
  "futures-util",
  "libc",
@@ -2255,7 +2243,6 @@ dependencies = [
  "future-app-settings",
  "future-app-workspaces",
  "future-host",
- "future-http",
  "future-remote-client",
  "future-remote-crypto",
  "future-remote-protocol",

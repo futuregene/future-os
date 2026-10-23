@@ -490,7 +490,9 @@ mod tests {
         // bytes, no text interpretation.
         let payload: Vec<u8> = (0u8..=255).collect();
         let base = spawn_http(vec![HttpRoute::binary("/pkg.zip", 200, payload.clone())]).await;
-        let response = future_http::get(format!("{base}/pkg.zip")).await.unwrap();
+        let response = future_agent::http::get(format!("{base}/pkg.zip"))
+            .await
+            .unwrap();
         assert_eq!(response.status().as_u16(), 200);
         assert_eq!(
             response
@@ -509,7 +511,9 @@ mod tests {
             Some("session-1"),
         )])
         .await;
-        let response = future_http::get(format!("{base}/mcp")).await.unwrap();
+        let response = future_agent::http::get(format!("{base}/mcp"))
+            .await
+            .unwrap();
         assert_eq!(
             response
                 .headers()
@@ -528,7 +532,9 @@ mod tests {
 
         // An SSE route without a session id omits the header entirely.
         let base = spawn_http(vec![HttpRoute::sse("/mcp", "data: x\n\n", None)]).await;
-        let response = future_http::get(format!("{base}/mcp")).await.unwrap();
+        let response = future_agent::http::get(format!("{base}/mcp"))
+            .await
+            .unwrap();
         assert!(response.headers().get("mcp-session-id").is_none());
     }
 
@@ -536,7 +542,7 @@ mod tests {
     async fn http_shutdown_stops_accept_loop() {
         let (base, shutdown) =
             spawn_http_shutdownable(vec![HttpRoute::json("/s", 200, "{}")]).await;
-        let resp = future_http::get(format!("{base}/s")).await.unwrap();
+        let resp = future_agent::http::get(format!("{base}/s")).await.unwrap();
         assert_eq!(resp.status().as_u16(), 200);
         shutdown.stop().await;
     }
@@ -545,7 +551,9 @@ mod tests {
     async fn http_201_reason_and_aborted_connections() {
         // A 201 route (reason-phrase arm).
         let base = spawn_http(vec![HttpRoute::json("/made", 201, r#"{"ok":true}"#)]).await;
-        let body = future_http::get(format!("{base}/made")).await.unwrap();
+        let body = future_agent::http::get(format!("{base}/made"))
+            .await
+            .unwrap();
         assert_eq!(body.status().as_u16(), 201);
 
         // A client that connects and closes without writing → Ok(0) read →
@@ -553,7 +561,9 @@ mod tests {
         let socket = tokio::net::TcpStream::connect(&base[7..]).await.unwrap();
         drop(socket);
         tokio::time::sleep(Duration::from_millis(50)).await;
-        let body = future_http::get(format!("{base}/made")).await.unwrap();
+        let body = future_agent::http::get(format!("{base}/made"))
+            .await
+            .unwrap();
         assert_eq!(body.status().as_u16(), 201);
     }
 

@@ -25,7 +25,7 @@ pub mod skills;
 pub use home::{future_home_root, home_dir};
 
 pub fn install_rustls_provider() {
-    future_http::install_tls_provider();
+    future_agent::http::install_tls_provider();
 }
 
 #[cfg(any(test, feature = "test-support"))]

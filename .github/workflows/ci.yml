@@ -160,7 +160,7 @@ jobs:
           java-version: '17'
       - uses: android-actions/setup-android@v4
         with:
-          packages: platforms;android-37 build-tools;37.0.0
+          packages: platforms;android-37.0 build-tools;37.0.0
       - run: npm ci
       - name: Prebuild Android
         working-directory: mobile

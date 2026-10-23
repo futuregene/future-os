@@ -362,7 +362,7 @@ async fn check_manual_update_from_url(
     current_version: String,
     endpoint_url: &str,
 ) -> Result<UpdateStatus, AppError> {
-    let client = future_http::client_builder()
+    let client = future_agent::http::client_builder()
         .timeout(UPDATE_CHECK_TIMEOUT)
         .build()
         .map_err(|error| updater_error("Failed to initialize update client", error))?;

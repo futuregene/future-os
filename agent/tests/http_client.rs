@@ -3,13 +3,12 @@
 #[test]
 fn clients_work_before_any_entry_point_initialization() {
     assert!(rustls::crypto::CryptoProvider::get_default().is_none());
-    let _client = future_http::client();
+    let _client = future_agent::http::client();
     let provider = rustls::crypto::CryptoProvider::get_default().unwrap();
-    let _other_client = future_http::client_builder().build().unwrap();
+    let _other_client = future_agent::http::client_builder().build().unwrap();
     assert!(std::ptr::eq(
         provider,
         rustls::crypto::CryptoProvider::get_default().unwrap()
     ));
-    #[cfg(feature = "blocking")]
-    let _blocking_client = future_http::blocking::client();
+    let _blocking_client = future_agent::http::blocking::client();
 }

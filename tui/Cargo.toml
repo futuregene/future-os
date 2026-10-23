@@ -14,7 +14,6 @@ name = "future_tui"
 path = "src/lib.rs"
 
 [dependencies]
-future-http.workspace = true
 libc = "0.2"
 regex = "1"
 unicode-segmentation = "1.13"

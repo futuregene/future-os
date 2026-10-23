@@ -351,7 +351,7 @@ pub fn strip_api_suffix(base_url: &str) -> String {
 
 /// Requests set an explicit timeout covering both headers and body.
 fn http_client() -> reqwest::Client {
-    future_http::client()
+    future_agent::http::client()
 }
 
 /// `tryFetch(url, init)` — network failures are wrapped in

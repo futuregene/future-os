@@ -171,7 +171,7 @@ fn config_value(config: &WecomConfig) -> Value {
 }
 
 fn sender_against(base: &str) -> WecomSender {
-    WecomSender::new(future_http::client(), &config_with_base(base))
+    WecomSender::new(crate::tls::default_client(), &config_with_base(base))
 }
 
 fn conversation() -> ConversationRef {
@@ -1262,7 +1262,7 @@ fn a_callback_reaches_the_agent_over_a_real_socket() {
         let shutdown = ctx.shutdown().clone();
         let serving = tokio::spawn(async move { provider().run(ctx).await });
 
-        let client = future_http::client_builder()
+        let client = crate::tls::default_client_builder()
             .http1_only()
             .build()
             .expect("client");
@@ -1354,7 +1354,7 @@ fn a_callback_that_carries_no_prompt_does_not_reach_the_agent() {
             &format!("http://{agent_addr}"),
         );
         let sender = Arc::new(WecomSender::new(
-            future_http::client(),
+            crate::tls::default_client(),
             &config_with_base(&base),
         ));
 

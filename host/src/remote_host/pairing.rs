@@ -1463,7 +1463,7 @@ mod http_tests {
     async fn transport_or_message_distinguishes_failure_kinds() {
         let _home = HomeGuard::new("pairing-transport-class");
         // A connection-refused send error is a transport failure.
-        let error = future_http::client()
+        let error = future_agent::http::client()
             .get("http://127.0.0.1:9/")
             .send()
             .await
@@ -1482,7 +1482,7 @@ mod http_tests {
             #[allow(dead_code)]
             definitely_missing: String,
         }
-        let error = future_http::client()
+        let error = future_agent::http::client()
             .get(format!("{}/anything", platform.url()))
             .send()
             .await

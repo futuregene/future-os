@@ -26,7 +26,6 @@ pub async fn get(url: impl reqwest::IntoUrl) -> reqwest::Result<reqwest::Respons
     client().get(url).send().await
 }
 
-#[cfg(feature = "blocking")]
 pub mod blocking {
     /// Start a blocking HTTP client builder with the process provider ready.
     pub fn client_builder() -> reqwest::blocking::ClientBuilder {

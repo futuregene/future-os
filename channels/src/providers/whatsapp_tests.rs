@@ -103,7 +103,7 @@ fn config_with_base(base: &str) -> WhatsappConfig {
 }
 
 fn sender_against(base: &str) -> WhatsappSender {
-    WhatsappSender::new(future_http::client(), &config_with_base(base))
+    WhatsappSender::new(crate::tls::default_client(), &config_with_base(base))
 }
 
 fn conversation() -> ConversationRef {
@@ -1035,7 +1035,7 @@ async fn an_accepted_message_is_marked_read_and_a_denied_one_is_not() {
     let (grpc, state) = crate::test_support::spawn_mock_grpc(Default::default()).await;
     let ctx = ctx_with_agent(&grpc, &base, &crate::test_support::temp_dir("whatsapp-e2e"));
     let sender = Arc::new(WhatsappSender::new(
-        future_http::client(),
+        crate::tls::default_client(),
         &config_with_base(&base),
     ));
 
@@ -1079,7 +1079,7 @@ async fn a_duplicate_delivery_is_answered_without_touching_the_agent_twice() {
     let (grpc, state) = crate::test_support::spawn_mock_grpc(Default::default()).await;
     let ctx = ctx_with_agent(&grpc, &base, &crate::test_support::temp_dir("whatsapp-dup"));
     let sender = Arc::new(WhatsappSender::new(
-        future_http::client(),
+        crate::tls::default_client(),
         &config_with_base(&base),
     ));
     let body = delivery(vec![live_message("wamid.DUP", "hello")]);
@@ -1137,7 +1137,7 @@ async fn run_echoes_the_challenge_and_admits_only_signed_deliveries() {
         tokio::spawn(async move { Whatsapp.run(ctx).await })
     };
     let url = format!("http://127.0.0.1:{port}/hooks/whatsapp");
-    let client = future_http::client();
+    let client = crate::tls::default_client();
 
     // The one-time endpoint verification: the challenge comes back as plain
     // text, which is what marks the subscription verified at the platform.
@@ -1360,7 +1360,7 @@ async fn a_read_receipt_that_is_refused_does_not_fail_the_turn() {
         &crate::test_support::temp_dir("whatsapp-receipt-fail"),
     );
     let sender = Arc::new(WhatsappSender::new(
-        future_http::client(),
+        crate::tls::default_client(),
         &config_with_base(&base),
     ));
 

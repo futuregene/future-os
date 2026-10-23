@@ -921,7 +921,7 @@ mod tests {
             HttpRoute::slow("/slow", Duration::from_millis(50)),
         ];
         let (base, recorded) = spawn_http(routes).await;
-        let client = future_http::client();
+        let client = crate::tls::default_client();
         // The 401 reason phrase and the extra headers a rate-limit response
         // carries are part of what the mock must emulate.
         let denied = client.get(format!("{base}/denied")).send().await.unwrap();
@@ -1074,7 +1074,7 @@ mod tests {
         ];
         let (base2, _) = spawn_http(routes).await;
         assert_eq!(
-            future_http::get(format!("{base2}/r400"))
+            crate::tls::default_get(format!("{base2}/r400"))
                 .await
                 .unwrap()
                 .status()
@@ -1082,7 +1082,7 @@ mod tests {
             400
         );
         assert_eq!(
-            future_http::get(format!("{base2}/r401"))
+            crate::tls::default_get(format!("{base2}/r401"))
                 .await
                 .unwrap()
                 .status()
@@ -1092,7 +1092,7 @@ mod tests {
         // Server survives all of it.
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(
-            future_http::get(format!("{base}/x"))
+            crate::tls::default_get(format!("{base}/x"))
                 .await
                 .unwrap()
                 .status()
@@ -1133,7 +1133,7 @@ mod tests {
             Some(1),
         )
         .await;
-        let status = future_http::get(format!("{base}/ping"))
+        let status = crate::tls::default_get(format!("{base}/ping"))
             .await
             .unwrap()
             .status();

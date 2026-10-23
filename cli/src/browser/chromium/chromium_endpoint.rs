@@ -109,7 +109,7 @@ fn ws_path_of(url: &str) -> Option<String> {
 async fn fetch_version(target: &EndpointTarget, timeout_ms: u64) -> Result<(u16, Vec<u8>), String> {
     match target {
         EndpointTarget::Http(base) => {
-            let client = future_http::client();
+            let client = future_agent::http::client();
             let response = tokio::time::timeout(
                 std::time::Duration::from_millis(timeout_ms),
                 client

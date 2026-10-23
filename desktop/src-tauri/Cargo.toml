@@ -56,7 +56,6 @@ tauri-build = { version = "2", features = [], optional = true }
 # compile without pulling in GTK/WebKit through the dev dependency graph.
 
 [dependencies]
-future-http.workspace = true
 future-host = { path = "../../host" }
 # Shared agent wire contract (proto codegen + typed/JSON decode; typed-RPC
 # milestone). Path dep: this crate lives in the root cargo workspace, and

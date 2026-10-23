@@ -379,7 +379,7 @@ fn api_for(base: &str) -> MattermostApi {
     MattermostApi {
         base: base.to_string(),
         token: "tok-1".into(),
-        http: future_http::client(),
+        http: crate::tls::default_client(),
     }
 }
 

@@ -424,7 +424,7 @@ fn ok_send_body(message_id: i64) -> String {
 
 fn sender_against(base: &str) -> TelegramSender {
     TelegramSender::new(
-        future_http::client(),
+        crate::tls::default_client(),
         &TelegramConfig {
             bot_token: "tok".into(),
             api_base: base.to_string(),
@@ -678,7 +678,7 @@ async fn a_photo_is_downloaded_through_get_file_into_bytes() {
         HttpRoute::binary("/file/bottok/photos/full.jpg", 200, vec![0xFF, 0xD8, 0xFF]),
     ])
     .await;
-    let client = future_http::client();
+    let client = crate::tls::default_client();
     let mut media = MediaRef {
         kind: MediaKind::Image,
         url: Some("tgfile:full".into()),
@@ -702,7 +702,7 @@ async fn a_failed_download_keeps_the_text_reference() {
         r#"{"ok":false,"description":"Bad Request: invalid file_id"}"#,
     )])
     .await;
-    let client = future_http::client();
+    let client = crate::tls::default_client();
     let mut media = MediaRef {
         kind: MediaKind::Image,
         url: Some("tgfile:gone".into()),
@@ -881,7 +881,7 @@ async fn a_rate_limit_hint_in_a_failure_body_is_surfaced() {
     )])
     .await;
     let error = call_api(
-        &future_http::client(),
+        &crate::tls::default_client(),
         &base,
         "tok",
         "getMe",
@@ -1121,7 +1121,7 @@ fn channel_chat_type_and_unknown_chat_type_are_mapped() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn media_without_a_placeholder_or_with_a_foreign_url_is_untouched() {
-    let client = future_http::client();
+    let client = crate::tls::default_client();
     // No URL at all: nothing to resolve.
     let mut bare = MediaRef {
         kind: MediaKind::Image,
@@ -1155,7 +1155,7 @@ async fn an_oversized_download_is_skipped_and_the_placeholder_kept() {
         HttpRoute::binary("/file/bottok/videos/huge.mp4", 200, big),
     ])
     .await;
-    let client = future_http::client();
+    let client = crate::tls::default_client();
     let mut media = MediaRef {
         kind: MediaKind::Video,
         url: Some("tgfile:huge".into()),
@@ -1174,7 +1174,7 @@ async fn a_get_file_result_without_a_file_path_keeps_the_placeholder() {
         r#"{"ok":true,"result":{"file_id":"x"}}"#,
     )])
     .await;
-    let client = future_http::client();
+    let client = crate::tls::default_client();
     let mut media = MediaRef {
         kind: MediaKind::Image,
         url: Some("tgfile:x".into()),
@@ -1196,7 +1196,7 @@ async fn a_download_with_a_preset_name_and_type_keeps_both() {
         HttpRoute::binary("/file/bottok/docs/real-name.pdf", 200, b"%PDF".to_vec()),
     ])
     .await;
-    let client = future_http::client();
+    let client = crate::tls::default_client();
     let mut media = MediaRef {
         kind: MediaKind::Document,
         filename: Some("report.pdf".into()),
@@ -1399,7 +1399,10 @@ async fn the_webhook_serves_verified_deliveries_and_rejects_the_rest() {
     let shutdown = ctx.shutdown().clone();
     let running = tokio::spawn(async move { Telegram.run(ctx).await });
 
-    let client = future_http::client_builder().http1_only().build().unwrap();
+    let client = crate::tls::default_client_builder()
+        .http1_only()
+        .build()
+        .unwrap();
     let delivery = update(50, message(private_chat(), alice(), "via webhook"));
     // Wait for the server to bind before posting. The budget is a deadline, not
     // a premise: a machine saturated by other test runs can take seconds to get
@@ -1459,7 +1462,10 @@ async fn a_webhook_configured_with_explicit_addr_and_path_binds_there() {
     );
     let shutdown = ctx.shutdown().clone();
     let running = tokio::spawn(async move { Telegram.run(ctx).await });
-    let client = future_http::client_builder().http1_only().build().unwrap();
+    let client = crate::tls::default_client_builder()
+        .http1_only()
+        .build()
+        .unwrap();
     let bound = crate::test_support::wait_until(
         || std::net::TcpStream::connect(&addr).is_ok(),
         Duration::from_secs(15),

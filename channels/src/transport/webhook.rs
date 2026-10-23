@@ -489,7 +489,10 @@ mod tests {
             },
         );
         let (addr, shutdown, serving) = serve(server).await;
-        let client = future_http::client_builder().http1_only().build().unwrap();
+        let client = crate::tls::default_client_builder()
+            .http1_only()
+            .build()
+            .unwrap();
         let payload = serde_json::json!({"pad": "x".repeat(2000)});
         let response = client
             .post(format!("http://{addr}/hook"))
@@ -573,7 +576,10 @@ mod tests {
         // Dropping the socket with SO_LINGER 0 resets it while the server writes.
 
         // The listener must still answer a normal request afterwards.
-        let client = future_http::client_builder().http1_only().build().unwrap();
+        let client = crate::tls::default_client_builder()
+            .http1_only()
+            .build()
+            .unwrap();
         let ok = tokio::time::timeout(
             Duration::from_secs(5),
             client.post(format!("http://{addr}/hook")).send(),

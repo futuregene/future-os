@@ -24,7 +24,7 @@ case "$(uname -m)" in
 esac
 AVD_NAME="FutureOS"
 SYSTEM_IMAGE="system-images;android-36.1;google_apis;$ABI"
-API_LEVEL="37"
+API_LEVEL="37.0"
 BUILD_TOOLS_VERSION="37.0.0"
 
 if [[ -z "${JAVA_HOME:-}" ]]; then

@@ -12,7 +12,6 @@ name = "future_channel"
 path = "src/lib.rs"
 
 [dependencies]
-future-http.workspace = true
 future-rpc = { path = "../packages/rpc" }
 tonic.workspace = true
 prost.workspace = true

@@ -130,10 +130,10 @@ impl Client {
         target: schema::ResolvedModelTarget,
         adapters: AdapterRegistry,
     ) -> Self {
-        let http = future_http::client_builder()
+        let http = crate::http::client_builder()
             .timeout(std::time::Duration::from_secs(llm_timeout_secs()))
             .build()
-            .unwrap_or_else(|_| future_http::client());
+            .unwrap_or_else(|_| crate::http::client());
         Self {
             http,
             generation: RwLock::new(target.generation.clone()),
@@ -152,10 +152,10 @@ impl Client {
         canonical_model: String,
         registry: std::sync::Arc<parking_lot::RwLock<crate::models::Registry>>,
     ) -> Self {
-        let http = future_http::client_builder()
+        let http = crate::http::client_builder()
             .timeout(std::time::Duration::from_secs(llm_timeout_secs()))
             .build()
-            .unwrap_or_else(|_| future_http::client());
+            .unwrap_or_else(|_| crate::http::client());
         Self {
             http,
             target: RwLock::new(None),
@@ -962,7 +962,7 @@ mod tests {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.local_addr().unwrap()
         };
-        let error = future_http::client()
+        let error = crate::http::client()
             .get(format!("http://{closed}/"))
             .send()
             .await
@@ -986,7 +986,7 @@ mod tests {
             let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4096\r\n\r\nshort");
             let _ = stream.flush();
         });
-        let error = future_http::client()
+        let error = crate::http::client()
             .get(format!("http://{addr}/"))
             .send()
             .await
@@ -1011,7 +1011,7 @@ mod tests {
                 stream.write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nZZZ\r\n");
             let _ = stream.flush();
         });
-        let chunked = future_http::client()
+        let chunked = crate::http::client()
             .get(format!("http://{addr}/"))
             .send()
             .await
@@ -1043,7 +1043,7 @@ mod tests {
                 .write_all(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n");
             let _ = stream.flush();
         });
-        let mut truncated_stream = future_http::client()
+        let mut truncated_stream = crate::http::client()
             .get(format!("http://{addr}/"))
             .send()
             .await
@@ -1074,7 +1074,7 @@ mod tests {
         // is *outside* every named transport kind — so the catch-all must take it
         // too, and the kind must stay the classifier's own fallback rather than a
         // guess at what the peer did.
-        let error = future_http::client()
+        let error = crate::http::client()
             .get("http://this host name has spaces/")
             .send()
             .await
@@ -1297,7 +1297,7 @@ mod tests {
         });
         let target = chat_target(&format!("http://{addr}"), "k", None, None);
         let mut client = Client::from_target(target);
-        client.http = future_http::client_builder()
+        client.http = crate::http::client_builder()
             .timeout(std::time::Duration::from_millis(120))
             .build()
             .unwrap();
@@ -1407,7 +1407,7 @@ mod tests {
 
         let mut client =
             Client::from_target(chat_target(&format!("http://{addr}"), "k", None, None));
-        client.http = future_http::client_builder()
+        client.http = crate::http::client_builder()
             .timeout(std::time::Duration::from_millis(150))
             .build()
             .unwrap();

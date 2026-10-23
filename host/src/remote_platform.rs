@@ -13,7 +13,7 @@ const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 /// the NATS connection would have worked.
 pub(crate) fn http_client() -> Result<reqwest::Client, crate::Error> {
     crate::install_rustls_provider();
-    let mut builder = future_http::client_builder().timeout(REQUEST_TIMEOUT);
+    let mut builder = future_agent::http::client_builder().timeout(REQUEST_TIMEOUT);
     for certificate in relay_trust_anchors()? {
         // `add_root_certificate` *adds* to the verified set (rustls-platform-
         // verifier's `new_with_extra_roots`): verification stays on, and a
