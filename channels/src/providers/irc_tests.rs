@@ -1354,7 +1354,7 @@ impl rustls::client::danger::ServerCertVerifier for TrustTestCertificate {
 }
 
 fn test_algorithms() -> rustls::crypto::WebPkiSupportedAlgorithms {
-    rustls::crypto::aws_lc_rs::default_provider().signature_verification_algorithms
+    rustls::crypto::ring::default_provider().signature_verification_algorithms
 }
 
 /// The client TLS configuration these tests use instead of the platform store.
