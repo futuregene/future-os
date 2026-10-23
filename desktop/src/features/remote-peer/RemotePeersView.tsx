@@ -1,5 +1,5 @@
 import type { RemotePeer } from "./remotePeerClient";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Pencil } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "../../components/ui/Badge";
@@ -9,7 +9,8 @@ import { TextInput } from "../../components/ui/TextInput";
 import { cn } from "../../lib/cn";
 import { emitFutureEvent } from "../../lib/futureEvents";
 import { PeerIconChip } from "./PeerIconChip";
-import { peerBadgeText } from "./peerIcons";
+import { PeerIconPicker } from "./PeerIconPicker";
+import { peerBadgeText, peerIconId } from "./peerIcons";
 import {
   peerHeld,
   peerHolderName,
@@ -22,6 +23,7 @@ import {
   connectRemotePeer,
   disconnectRemotePeer,
   pairRemotePeer,
+  setRemotePeerLabel,
   takeoverRemotePeer,
   unpairRemotePeer,
 } from "./remotePeerClient";
@@ -313,6 +315,7 @@ export function RemoteClientSection({
                     onDisconnect={() => void run(peer.desktopId, () => disconnectRemotePeer(peer.desktopId))}
                     onEdit={() => onOpenSettings(peer)}
                     onReconnect={() => void run(peer.desktopId, () => connectRemotePeer(peer.desktopId))}
+                    onRefresh={onRefresh}
                     onTakeOver={() => void run(peer.desktopId, () => takeoverRemotePeer(peer.desktopId))}
                     onUnpair={() => setUnpairTarget(peer)}
                     peer={peer}
@@ -371,6 +374,7 @@ function PeerRow({
   onDisconnect,
   onEdit,
   onReconnect,
+  onRefresh,
   onTakeOver,
   onUnpair,
   peer,
@@ -379,12 +383,15 @@ function PeerRow({
   onDisconnect: () => void;
   onEdit: () => void;
   onReconnect: () => void;
+  /** Re-read the shell's list, which is what makes a saved label show up. */
+  onRefresh: () => Promise<void>;
   /** Ask this machine to let this desktop drive it (it is in standby). */
   onTakeOver: () => void;
   onUnpair: () => void;
   peer: RemotePeer;
 }) {
   const { t } = useTranslation("remotePeer");
+  const [labelOpen, setLabelOpen] = useState(false);
   const status = peerBadge(peer, t);
   // A machine the user turned off offers the way back; so does one that could
   // not be reached. Only a live connection offers to stop.
@@ -395,68 +402,201 @@ function PeerRow({
   const revoked = peerRevoked(peer);
   // Named when the controller declared a name; the generic sentence otherwise.
   const holderName = peerHolderName(peer);
+  /**
+   * Settings read and write the *other* machine, so there is nothing behind that
+   * button without a live connection: an offline page would only say so, one
+   * line under a button that then looks like it did nothing. Disabled with the
+   * reason on hover instead — a disabled control with no explanation reads as a
+   * broken app.
+   */
+  const settingsHint = held ? t("takeOverHint") : peer.connected ? undefined : t("settingsOfflineHint");
 
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-line-soft p-4" data-testid="peer-row">
-      <span data-testid="peer-icon"><PeerIconChip id={peer.icon} variant="row" /></span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium text-ink">
-            {peerBadgeText(peer, peer.desktopId)}
-          </span>
-          <Badge tone={status.tone}>{status.label}</Badge>
+    <>
+      <div className="flex items-center gap-3 rounded-lg border border-line-soft p-4" data-testid="peer-row">
+        <span data-testid="peer-icon"><PeerIconChip id={peer.icon} variant="row" /></span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-medium text-ink">
+              {peerBadgeText(peer, peer.desktopId)}
+            </span>
+            <Badge tone={status.tone}>{status.label}</Badge>
+            {/* The name and the icon are this machine's own record of that
+                computer — `remote_peer_set_label` writes the local credential
+                book and never goes over the wire. So this is the one control on
+                the row that keeps working with the machine switched off, which
+                is exactly when a name gets changed. */}
+            <Button
+              aria-label={t("editLabel")}
+              className="shrink-0"
+              onClick={() => setLabelOpen(true)}
+              size="xs"
+              title={t("editLabel")}
+              variant="ghost"
+            >
+              <Pencil aria-hidden className="size-3.5" />
+            </Button>
+          </div>
+          <div className="mt-0.5 truncate text-xs text-ink-muted">{peer.desktopId}</div>
+          {/* Why this machine's conversations are not in the list. Said here, on
+              the machine's own row, because that is where the reader is when
+              they ask it — the same sentence the phone's sheet shows. */}
+          {held
+            ? (
+                <div className="mt-1 text-xs text-warning" data-testid="peer-held">
+                  {holderName ? t("heldBy", { name: holderName }) : t("heldByUnknown")}
+                </div>
+              )
+            : null}
+          {/* A stopped machine's last failure is stale by definition: the socket
+              went away because the user closed it. Saying both would read as a
+              fault that is not there. For a machine that is up on paper but not
+              answering, the sentence is still the UI's: `peer.error` is the
+              runtime's diagnostic text. */}
+          {peer.error && !peer.stopped
+            ? <div className="mt-1 text-xs text-danger" title={peer.error}>{remotePeerErrorText(peer.error, t)}</div>
+            : null}
         </div>
-        <div className="mt-0.5 truncate text-xs text-ink-muted">{peer.desktopId}</div>
-        {/* Why this machine's conversations are not in the list. Said here, on
-            the machine's own row, because that is where the reader is when they
-            ask it — the same sentence the phone's sheet shows. */}
-        {held
-          ? (
-              <div className="mt-1 text-xs text-warning" data-testid="peer-held">
-                {holderName ? t("heldBy", { name: holderName }) : t("heldByUnknown")}
-              </div>
-            )
-          : null}
-        {/* A stopped machine's last failure is stale by definition: the socket
-            went away because the user closed it. Saying both would read as a
-            fault that is not there. For a machine that is up on paper but not
-            answering, the sentence is still the UI's: `peer.error` is the
-            runtime's diagnostic text. */}
-        {peer.error && !peer.stopped
-          ? <div className="mt-1 text-xs text-danger" title={peer.error}>{remotePeerErrorText(peer.error, t)}</div>
-          : null}
+        <div className="flex shrink-0 items-center gap-2">
+          {/* Control comes back without a reconnection, and a machine in standby
+              is the one thing this page exists for: its conversations are
+              missing from the list until someone takes it. Offered before
+              Disconnect because it is the action the reader came for. */}
+          {held
+            ? (
+                <Button disabled={busy} onClick={onTakeOver} size="sm" variant="primary">
+                  {t("takeOver")}
+                </Button>
+              )
+            : null}
+          {revoked
+            ? null
+            : showDisconnect
+              ? <Button disabled={busy} onClick={onDisconnect} size="sm">{t("disconnect")}</Button>
+              : <Button disabled={busy} onClick={onReconnect} size="sm" variant="primary">{t("connect")}</Button>}
+          {/* Settings read and write the *other* machine only — that is all the
+              page is now that naming moved to the row — so a machine that is
+              not connected has nothing to show behind it. A machine another
+              device drives does not answer them either. Disabled with the reason
+              on hover: a disabled control with no explanation reads as a broken
+              app. The title sits on the wrapper because a disabled button
+              receives no pointer events of its own. */}
+          <span title={settingsHint}>
+            <Button disabled={busy || held || !peer.connected} onClick={onEdit} size="sm">{t("edit")}</Button>
+          </span>
+          {/* Last, and marked: it is the one action here that removes the row it
+              sits on, and the only one that is confirmed. */}
+          <Button disabled={busy} onClick={onUnpair} size="sm" variant="danger-soft">{t("unpair")}</Button>
+        </div>
       </div>
-      <div className="flex shrink-0 items-center gap-2">
-        {/* Control comes back without a reconnection, and a machine in standby
-            is the one thing this page exists for: its conversations are missing
-            from the list until someone takes it. Offered before Disconnect
-            because it is the action the reader came for. */}
-        {held
-          ? (
-              <Button disabled={busy} onClick={onTakeOver} size="sm" variant="primary">
-                {t("takeOver")}
-              </Button>
-            )
-          : null}
-        {revoked
-          ? null
-          : showDisconnect
-            ? <Button disabled={busy} onClick={onDisconnect} size="sm">{t("disconnect")}</Button>
-            : <Button disabled={busy} onClick={onReconnect} size="sm" variant="primary">{t("connect")}</Button>}
-        {/* Settings read and write the *other* machine, and a machine another
-            device drives will not answer them. Offered, it either failed with a
-            transport error or — worse — opened a page whose edits went to a
-            host that ignores this desktop. Disabled with the reason on hover: a
-            disabled control with no explanation reads as a broken app. The
-            title sits on the wrapper because a disabled button receives no
-            pointer events of its own. */}
-        <span title={held ? t("takeOverHint") : undefined}>
-          <Button disabled={busy || held || revoked} onClick={onEdit} size="sm">{t("edit")}</Button>
-        </span>
-        {/* Last, and marked: it is the one action here that removes the row it
-            sits on, and the only one that is confirmed. */}
-        <Button disabled={busy} onClick={onUnpair} size="sm" variant="danger-soft">{t("unpair")}</Button>
+      {labelOpen
+        ? <PeerLabelDialog onClose={() => setLabelOpen(false)} onRefresh={onRefresh} peer={peer} />
+        : null}
+    </>
+  );
+}
+
+/**
+ * Name and icon, edited on the row of the machine they describe.
+ *
+ * Both live in the local credential book: `remote_peer_set_label` writes this
+ * machine's half of the pairing and never reaches the desktop. That is why the
+ * control belongs here rather than on that machine's settings page — that page
+ * is entirely "read the host, write the host", so a local field among those rows
+ * read as one more remote setting, and was greyed out with the rest whenever the
+ * host was not connected. The one thing a user does want with the machine
+ * switched off — call it something recognisable — was the thing that stopped
+ * working.
+ *
+ * One patch on save, carrying only what changed: `setRemotePeerLabel` treats an
+ * omitted key as "leave it", so sending both every time would rewrite a value
+ * that did not need it. An empty name clears the label, and the row falls back
+ * to the machine's id.
+ */
+function PeerLabelDialog({
+  onClose,
+  onRefresh,
+  peer,
+}: {
+  onClose: () => void;
+  /** Re-read the shell's machine list, which is what redraws the row. */
+  onRefresh: () => Promise<void>;
+  peer: RemotePeer;
+}) {
+  const { t } = useTranslation("remotePeer");
+  const [name, setName] = useState(peer.name ?? "");
+  // The effective id, not the stored one: `null` and an id from a newer build
+  // both draw as the default glyph, and the picker has to show the mark the row
+  // is showing.
+  const [icon, setIcon] = useState<string>(() => peerIconId(peer.icon));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const nameChanged = name.trim() !== (peer.name ?? "");
+  const iconChanged = icon !== peerIconId(peer.icon);
+
+  async function save() {
+    if (busy || (!nameChanged && !iconChanged))
+      return;
+    setBusy(true);
+    setError(null);
+    try {
+      await setRemotePeerLabel(peer.desktopId, {
+        ...(nameChanged ? { name: name.trim() } : {}),
+        ...(iconChanged ? { icon } : {}),
+      });
+      // The rows are the shell's list, so the write is made visible by its
+      // re-read — the same contract every other row action has.
+      await onRefresh();
+      onClose();
+    }
+    catch (err) {
+      // The book is local and can still refuse (read-only, locked): say so
+      // instead of closing on a write that did not happen.
+      setError(err instanceof Error ? err.message : String(err));
+    }
+    finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog
+      description={t("nameHint")}
+      footer={(
+        <>
+          <Button onClick={onClose} variant="secondary">{t("cancel")}</Button>
+          <Button
+            disabled={busy || (!nameChanged && !iconChanged)}
+            onClick={() => void save()}
+            variant="primary"
+          >
+            {busy ? t("saving") : t("save")}
+          </Button>
+        </>
+      )}
+      onClose={onClose}
+      open
+      title={t("editLabel")}
+    >
+      {error ? <p className="mb-3 text-xs text-danger">{error}</p> : null}
+      <div className="space-y-4">
+        <TextInput
+          aria-label={t("nameLabel")}
+          onChange={event => setName(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void save();
+            }
+          }}
+          placeholder={t("namePlaceholder")}
+          value={name}
+        />
+        <div className="space-y-2">
+          <div className="text-xs font-medium text-ink-muted">{t("icons.label")}</div>
+          <PeerIconPicker onChange={setIcon} value={icon} />
+        </div>
       </div>
-    </div>
+    </Dialog>
   );
 }
