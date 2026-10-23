@@ -379,7 +379,7 @@ fn api_for(base: &str) -> MattermostApi {
     MattermostApi {
         base: base.to_string(),
         token: "tok-1".into(),
-        http: reqwest::Client::new(),
+        http: future_http::client(),
     }
 }
 
@@ -615,7 +615,7 @@ async fn a_ping_is_answered_with_a_pong_and_garbage_frames_are_ignored() {
     assert!(
         messages
             .iter()
-            .any(|m| matches!(m, WsMessage::Pong(data) if data == b"keepalive")),
+            .any(|m| matches!(m, WsMessage::Pong(data) if **data == *b"keepalive")),
         "the ping must be answered with a pong carrying the same payload: {messages:?}"
     );
 }

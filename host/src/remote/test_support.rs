@@ -2579,7 +2579,7 @@ mod tests {
 
         // An unscripted path → 404; an unusual scripted status maps its name.
         platform.push("/redirect", 302, serde_json::json!({}));
-        let client = reqwest::Client::builder()
+        let client = future_http::client_builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()
             .unwrap();

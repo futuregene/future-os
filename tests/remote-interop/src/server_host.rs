@@ -232,6 +232,10 @@ impl PairingHost for MemoryServerHost {
     fn queue_revoke(&self, _: &PairingCreds) -> Result<(), Error> {
         Ok(())
     }
+    fn queue_revoke_invitation(&self, _: &str) -> Result<(), Error> {
+        // Credentials are injected by the fixture; no platform invitation exists.
+        Ok(())
+    }
     fn retry_revokes(&self) -> BoxFuture<'_, Result<(), Error>> {
         Box::pin(async { Ok(()) })
     }

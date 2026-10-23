@@ -396,7 +396,7 @@ async fn uninstall_skill(skill_id: &str, out: &Output) -> Result<(), String> {
 const SKILL_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn skill_http_client(timeout: std::time::Duration) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    future_http::client_builder()
         .connect_timeout(std::time::Duration::from_secs(10))
         .timeout(timeout)
         .build()

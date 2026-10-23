@@ -156,10 +156,10 @@ struct JevUsage {
 /// `models/future.rs`.
 static HTTP_CLIENT: std::sync::LazyLock<reqwest::blocking::Client> =
     std::sync::LazyLock::new(|| {
-        reqwest::blocking::Client::builder()
+        future_http::blocking::client_builder()
             .timeout(TIMEOUT)
             .build()
-            .unwrap_or_else(|_| reqwest::blocking::Client::new())
+            .unwrap_or_else(|_| future_http::blocking::client())
     });
 
 /// The recommender's recent health, for the life of this process.
@@ -1327,7 +1327,7 @@ mod tests {
     /// reports that deadline rather than a generic transport error.
     #[test]
     fn a_silent_gateway_hits_the_client_deadline() {
-        let client = reqwest::blocking::Client::builder()
+        let client = future_http::blocking::client_builder()
             .timeout(std::time::Duration::from_millis(250))
             .build()
             .unwrap();

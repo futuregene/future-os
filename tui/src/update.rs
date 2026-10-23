@@ -72,7 +72,10 @@ fn notice(current: &Version, latest: &Version) -> String {
 async fn check_manifest(current: &Version, url: &str, timeout: Duration) -> Option<String> {
     // The outer deadline also covers client setup, DNS, and reading the body.
     tokio::time::timeout(timeout, async {
-        let client = reqwest::Client::builder().timeout(timeout).build().ok()?;
+        let client = future_http::client_builder()
+            .timeout(timeout)
+            .build()
+            .ok()?;
         let mut response = client
             .get(url)
             .header(reqwest::header::CACHE_CONTROL, "no-cache")

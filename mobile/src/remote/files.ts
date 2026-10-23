@@ -122,7 +122,7 @@ function ascii(bytes: Uint8Array, offset: number, length: number): string {
 function isAnimatedPng(file: File): boolean {
   const handle = file.open(FileMode.ReadOnly);
   try {
-    const signature = handle.readBytes(8);
+    const signature = handle.readBytesSync(8);
     if (
       signature.byteLength !== 8 ||
       ![137, 80, 78, 71, 13, 10, 26, 10].every((byte, index) => signature[index] === byte)
@@ -130,7 +130,7 @@ function isAnimatedPng(file: File): boolean {
       return false;
     }
     while ((handle.offset ?? file.size) + 8 <= file.size) {
-      const header = handle.readBytes(8);
+      const header = handle.readBytesSync(8);
       if (header.byteLength !== 8) return false;
       const length =
         ((header[0]! << 24) | (header[1]! << 16) | (header[2]! << 8) | header[3]!) >>> 0;
@@ -150,7 +150,7 @@ function isAnimatedPng(file: File): boolean {
 function isAnimatedWebp(file: File): boolean {
   const handle = file.open(FileMode.ReadOnly);
   try {
-    const header = handle.readBytes(Math.min(21, file.size));
+    const header = handle.readBytesSync(Math.min(21, file.size));
     return (
       header.byteLength >= 21 &&
       ascii(header, 0, 4) === "RIFF" &&
@@ -654,7 +654,14 @@ export async function uploadAttachments(
 ): Promise<MobileAttachment[]> {
   validateAttachmentBatch(attachments);
   return uploadRemoteAttachments(client, attachments, {
-    openUpload: attachment => new File(attachment.localUri).open(FileMode.ReadOnly),
+    openUpload: attachment => {
+      const handle = new File(attachment.localUri).open(FileMode.ReadOnly);
+      return {
+        get offset() { return handle.offset; },
+        readBytes: count => handle.readBytesSync(count),
+        close: () => handle.close(),
+      };
+    },
   }, onProgress);
 }
 
@@ -789,7 +796,7 @@ export async function fileSha256(file: File, signal?: AbortSignal): Promise<stri
     let deadline = Date.now() + 8;
     while (offset < size) {
       throwIfCancelled(signal);
-      const bytes = handle.readBytes(Math.min(64 * 1024, size - offset));
+      const bytes = handle.readBytesSync(Math.min(64 * 1024, size - offset));
       if (!bytes.length) throw new Error("hash_read_size_mismatch");
       hash.update(bytes); offset += bytes.length;
       if (offset < size && (offset % (256 * 1024) === 0 || Date.now() >= deadline)) {
@@ -851,7 +858,14 @@ export function downloadPrepared(
       if (file.exists) file.delete();
       file.create({ intermediates: true, overwrite: true });
       try {
-        return { file, handle: file.open(FileMode.Truncate) };
+        const handle = file.open(FileMode.Truncate);
+        return {
+          file,
+          handle: {
+            writeBytes: bytes => handle.writeBytesSync(bytes),
+            close: () => handle.close(),
+          },
+        };
       } catch (error) {
         if (file.exists) file.delete();
         throw error;

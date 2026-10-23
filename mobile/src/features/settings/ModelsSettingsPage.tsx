@@ -145,7 +145,7 @@ export function ModelsSettingsPage({ settings, disabled, onChange }: {
     </View>}
     ListEmptyComponent={!resource.loading
       ? <Text style={settingsStyles.description}>{t("desktopSettings.noModels")}</Text>
-      : null}
+      : undefined}
   />;
 }
 

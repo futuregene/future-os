@@ -25,7 +25,7 @@ export async function readPreviewText(file: File, signal?: AbortSignal): Promise
     while (offset < length) {
       check();
       const requested = Math.min(READ_CHUNK_BYTES, length - offset);
-      const part = handle.readBytes(requested);
+      const part = handle.readBytesSync(requested);
       if (part.length === 0 || part.length > requested) throw new Error("preview_read_size_mismatch");
       bytes.set(part, offset);
       offset += part.length;

@@ -2451,7 +2451,7 @@ fn client() -> Result<reqwest::Client, String> {
 /// a removal it could not deliver, on a machine where the room is the only thing
 /// keeping the pairing alive.
 fn client_trusting(ca: Option<&Path>) -> Result<reqwest::Client, String> {
-    let mut builder = reqwest::Client::builder().timeout(REQUEST_TIMEOUT);
+    let mut builder = future_http::client_builder().timeout(REQUEST_TIMEOUT);
     if let Some(ca) = ca {
         let pem = std::fs::read(ca)
             .map_err(|error| format!("Cannot read the relay CA {}: {error}", ca.display()))?;

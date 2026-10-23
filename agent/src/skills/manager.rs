@@ -90,7 +90,7 @@ impl SkillManager {
     }
 
     pub fn new(agent_dir: PathBuf, global_dir: PathBuf, platform_url: String) -> Result<Self> {
-        let client = Client::builder()
+        let client = future_http::blocking::client_builder()
             .connect_timeout(Duration::from_secs(10))
             .timeout(Duration::from_secs(60))
             .build()?;

@@ -102,7 +102,7 @@ impl Bridge {
         data_root: PathBuf,
         status: Arc<StatusBoard>,
     ) -> Arc<Self> {
-        let http = reqwest::Client::builder()
+        let http = future_http::client_builder()
             .user_agent(concat!("future-channel/", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(60))
             .build()

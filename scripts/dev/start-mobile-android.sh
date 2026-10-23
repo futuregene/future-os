@@ -24,8 +24,8 @@ case "$(uname -m)" in
 esac
 AVD_NAME="FutureOS"
 SYSTEM_IMAGE="system-images;android-36.1;google_apis;$ABI"
-API_LEVEL="36"
-BUILD_TOOLS_VERSION="36.0.0"
+API_LEVEL="37"
+BUILD_TOOLS_VERSION="37.0.0"
 
 if [[ -z "${JAVA_HOME:-}" ]]; then
   if [[ "$HOST_OS" == "Darwin" ]]; then
@@ -114,8 +114,8 @@ node "$ROOT_DIR/scripts/npm-install-if-needed.mjs"
 
 IMAGE_PATH="$ANDROID_HOME/${SYSTEM_IMAGE//;//}"
 
-if [[ ! -d "$IMAGE_PATH" ]]; then
-  echo "Installing system image $SYSTEM_IMAGE..."
+if [[ ! -d "$IMAGE_PATH" ]] || [[ ! -d "$ANDROID_HOME/platforms/android-$API_LEVEL" ]] || [[ ! -d "$ANDROID_HOME/build-tools/$BUILD_TOOLS_VERSION" ]]; then
+  echo "Installing Android SDK platform, build tools and system image..."
   yes | "$CMDLINE_TOOLS/sdkmanager" --sdk_root="$ANDROID_HOME" \
     "$SYSTEM_IMAGE" "platforms;android-$API_LEVEL" "build-tools;$BUILD_TOOLS_VERSION"
 fi

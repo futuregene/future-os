@@ -14,6 +14,7 @@ name = "future_tui"
 path = "src/lib.rs"
 
 [dependencies]
+future-http.workspace = true
 libc = "0.2"
 regex = "1"
 unicode-segmentation = "1.13"
@@ -22,7 +23,7 @@ base64.workspace = true
 uuid.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 serde.workspace = true
-reqwest = { workspace = true, features = ["rustls-tls"] }
+reqwest = { workspace = true, features = ["rustls-no-provider"] }
 semver = "1"
 parking_lot.workspace = true
 tokio.workspace = true

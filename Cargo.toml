@@ -12,7 +12,7 @@
 # one place instead of chasing drift across the Cargo.tomls. Members opt in
 # with `{ workspace = true }` and may add features (cargo unifies them).
 [workspace]
-members = ["host", "agent", "channels", "packages/rpc", "packages/remote-crypto", "packages/remote-protocol", "packages/remote-client", "packages/remote-server", "packages/app-settings", "packages/app-workspaces", "orchestration/goal", "orchestration/tasks", "tui", "cli", "desktop/src-tauri", "tests/remote-interop"]
+members = ["host", "agent", "channels", "packages/rpc", "packages/http", "packages/remote-crypto", "packages/remote-protocol", "packages/remote-client", "packages/remote-server", "packages/app-settings", "packages/app-workspaces", "orchestration/goal", "orchestration/tasks", "tui", "cli", "desktop/src-tauri", "tests/remote-interop"]
 default-members = ["agent", "channels", "packages/rpc"]
 resolver = "2"
 
@@ -21,21 +21,22 @@ tokio = { version = "1", features = ["full"] }
 parking_lot = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-reqwest = { version = "0.12", default-features = false }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls-no-provider"] }
+future-http = { path = "packages/http" }
 futures = "0.3"
 futures-util = "0.3"
 tokio-stream = "0.1"
 anyhow = "1"
-thiserror = "1"
+thiserror = "2"
 uuid = { version = "1", features = ["v4"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = { version = "0.10", features = ["case-insensitive"] }
 iana-time-zone = "0.1"
-base64 = "0.22"
+base64 = "0.23"
 async-trait = "0.1"
-tokio-tungstenite = { version = "0.24", features = ["__rustls-tls"] }
+tokio-tungstenite = { version = "0.30", features = ["__rustls-tls"] }
 tonic = "0.12"
 prost = "0.13"
 prost-build = "0.13"

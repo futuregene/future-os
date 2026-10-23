@@ -18,7 +18,7 @@ pub fn http_client() -> reqwest::Client {
 /// calling `.build()`.
 pub fn http_client_builder() -> reqwest::ClientBuilder {
     let tls = platform_tls_config();
-    reqwest::Client::builder().use_preconfigured_tls(tls)
+    future_http::client_builder().use_preconfigured_tls(tls)
 }
 
 /// Build a `tokio_tungstenite::Connector` that trusts the platform
@@ -34,6 +34,7 @@ pub fn ws_connector() -> tokio_tungstenite::Connector {
 fn platform_tls_config() -> rustls::ClientConfig {
     rustls::ClientConfig::builder()
         .with_platform_verifier()
+        .expect("initialize platform certificate verifier")
         .with_no_client_auth()
 }
 

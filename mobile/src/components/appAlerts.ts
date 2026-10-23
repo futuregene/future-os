@@ -1,9 +1,11 @@
 import type { AlertButton, AlertOptions } from "react-native";
 
+export type AppAlertButton = Omit<AlertButton, "onPress"> & { onPress?: () => void };
+
 export interface AppAlertRequest {
   title: string;
   message?: string;
-  buttons?: AlertButton[];
+  buttons?: AppAlertButton[];
   options?: AlertOptions;
 }
 
@@ -15,7 +17,7 @@ const listeners = new Set<() => void>();
 function emit() { for (const listener of listeners) listener(); }
 
 export const AppAlert = {
-  alert(title: string, message?: string, buttons?: AlertButton[], options?: AlertOptions): void {
+  alert(title: string, message?: string, buttons?: AppAlertButton[], options?: AlertOptions): void {
     requests = [...requests, { title, message, buttons, options }];
     emit();
   },

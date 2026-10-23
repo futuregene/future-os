@@ -14,10 +14,11 @@ default = []
 test-support = ["future-remote-server/test-support", "future-remote-client/test-support"]
 
 [dependencies]
+future-http.workspace = true
 future-remote-crypto = { path = "../packages/remote-crypto" }
 future-remote-protocol = { path = "../packages/remote-protocol" }
-async-nats = "0.49"
-base64 = "0.22"
+async-nats = "0.50"
+base64 = "0.23"
 flate2 = "1"
 rustls-native-certs = "0.8"
 anyhow.workspace = true
@@ -36,7 +37,7 @@ futures = "0.3"
 future-agent = { path = "../agent" }
 future-tasks = { path = "../orchestration/tasks" }
 future-rpc = { path = "../packages/rpc" }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+reqwest = { workspace = true, features = ["json"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 chrono = "0.4"

@@ -617,7 +617,7 @@ async fn browser_status(args: &Map<String, Value>) -> Result<LocalToolResult, St
             },
         });
     }
-    let client = reqwest::Client::new();
+    let client = future_http::client();
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(1),
         client

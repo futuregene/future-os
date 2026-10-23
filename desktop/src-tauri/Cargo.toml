@@ -42,7 +42,7 @@ tokio = { version = "1", features = ["test-util"] }
 # End-to-end transport checks drive the real loopback listener with a real
 # WebSocket client (`terminal::server::end_to_end`). Features unify only for the
 # test build; the library keeps the server-side `handshake`-only dependency.
-tokio-tungstenite = { version = "0.24", default-features = false, features = [
+tokio-tungstenite = { version = "0.30", default-features = false, features = [
     "handshake",
     "connect",
 ] }
@@ -56,6 +56,7 @@ tauri-build = { version = "2", features = [], optional = true }
 # compile without pulling in GTK/WebKit through the dev dependency graph.
 
 [dependencies]
+future-http.workspace = true
 future-host = { path = "../../host" }
 # Shared agent wire contract (proto codegen + typed/JSON decode; typed-RPC
 # milestone). Path dep: this crate lives in the root cargo workspace, and
@@ -88,7 +89,7 @@ tokio = { version = "1", features = ["time", "sync", "rt-multi-thread", "signal"
 qrcode = { version = "0.14", default-features = false }
 terminal_size = "0.4"
 fs2 = "0.4"
-async-nats = "0.49"
+async-nats = "0.50"
 nkeys = "0.4"
 futures = "0.3"
 tauri-plugin-dialog = { version = "2", optional = true }
@@ -96,7 +97,7 @@ tauri-plugin-single-instance = { version = "2", optional = true }
 # System opener for paths/URLs (ShellExecuteW on Windows — never `cmd /C start`,
 # whose re-parsing of `&`/`^`/`%VAR%` in arguments is an injection vector).
 open = "5"
-base64 = "0.22"
+base64 = "0.23"
 # Optional standard-gzip support for mobile remote JSON replies. It is retained
 # for constrained links but disabled by default because lazy pages are small
 # and React Native's current JS decompression cost exceeded the transfer saving.
@@ -115,14 +116,14 @@ image = { version = "0.25", default-features = false, features = [
 # Use one process-wide Rustls provider. async-nats/Tauri already uses `ring`;
 # reqwest keeps TLS without selecting its default aws-lc provider. We install
 # this provider during application startup before constructing any HTTP client.
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider"] }
+reqwest = { workspace = true, features = ["json"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 # Read the platform trust store ourselves, once per connect, instead of letting
 # async-nats read it per connection and fail the connection when that read
 # errors (see `remote::trust`). Same version async-nats already links.
 rustls-native-certs = "0.8"
 sha2 = "0.10"
-minisign-verify = "0.2"
+minisign-verify = "0.3"
 tempfile = "3"
 chrono = "0.4"
 rand = "0.8"
@@ -140,7 +141,7 @@ arboard = { version = "3.6", default-features = false, optional = true }
 # serves one request per connection and the repo already hand-rolls the web
 # client's HTTP in `remote/mod.rs`.
 portable-pty = "0.9"
-tokio-tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 libc = "0.2"
 
 # Win32 API for the native window chrome: the high-quality taskbar icon (ICO
@@ -153,7 +154,7 @@ libc = "0.2"
 # Gating it on cfg(target_os = "windows") keeps it out of non-Windows graphs
 # entirely while still satisfying the `use windows::...` in lib.rs on Windows.
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
@@ -174,4 +175,4 @@ objc2-app-kit = { version = "0.3.2", optional = true, features = ["NSApplication
 objc2-foundation = { version = "0.3.2", optional = true, features = ["NSData", "NSNotification", "NSOperation", "NSString", "block2"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-zbus = { version = "5.18", default-features = false, features = ["tokio"], optional = true }
+zbus = { version = "6.0", default-features = false, features = ["tokio", "proxy"], optional = true }

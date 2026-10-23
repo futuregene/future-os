@@ -67,7 +67,10 @@ impl Drop for ScriptedHost {
 
 /// A peer and the scripted host across from it, with the first `drop_replies`
 /// requests left unanswered (so the rest are answered, in order).
-async fn scripted_peer(pair_id: &str, drop_replies: usize) -> (session::PeerSession, ScriptedHost) {
+async fn scripted_peer(
+    pair_id: &str,
+    drop_replies: usize,
+) -> (Arc<session::PeerSession>, ScriptedHost) {
     let (client_private, _) = future_remote_crypto::generate_identity().expect("client identity");
     let (host_private, _) = future_remote_crypto::generate_identity().expect("host identity");
     let secret = [7_u8; 32];
@@ -166,7 +169,7 @@ async fn scripted_peer(pair_id: &str, drop_replies: usize) -> (session::PeerSess
         "bridge_test",
     );
     (
-        peer,
+        Arc::new(peer),
         ScriptedHost {
             requests,
             _nats: nats,
@@ -317,13 +320,16 @@ async fn control_arrives_from_presence_and_from_the_control_packet() {
     let (session, host) = scripted_peer(pair_id, 0).await;
     let owner = ClientGuard(Client::new(Arc::new(MemoryClientHost::empty())));
     let (emitter, seen) = recording_emitter();
-    let (_stream, _visible) = owner.0.spawn_fixture_stream(
-        &session,
-        session.subscribe(None).await.expect("subscriptions"),
-        "desktop_cov_control",
-        emitter,
-        future_remote_client::runtime::testing::BACKLOG_CAPACITY,
-    );
+    let (_stream, _visible) = owner
+        .0
+        .spawn_fixture_stream(
+            session.clone(),
+            session.subscribe(None).await.expect("subscriptions"),
+            "desktop_cov_control",
+            emitter,
+            future_remote_client::runtime::testing::BACKLOG_CAPACITY,
+        )
+        .await;
 
     // The subscription must exist before the first push is injected, or the
     // broker has nothing to deliver to and this passes without reading anything.
@@ -393,13 +399,16 @@ async fn a_push_without_a_session_id_recovers_it_from_the_subject() {
     let (session, host) = scripted_peer(pair_id, 0).await;
     let owner = ClientGuard(Client::new(Arc::new(MemoryClientHost::empty())));
     let (emitter, seen) = recording_emitter();
-    let (_stream, _visible) = owner.0.spawn_fixture_stream(
-        &session,
-        session.subscribe(None).await.expect("subscriptions"),
-        "desktop_cov_backfill",
-        emitter,
-        future_remote_client::runtime::testing::BACKLOG_CAPACITY,
-    );
+    let (_stream, _visible) = owner
+        .0
+        .spawn_fixture_stream(
+            session.clone(),
+            session.subscribe(None).await.expect("subscriptions"),
+            "desktop_cov_backfill",
+            emitter,
+            future_remote_client::runtime::testing::BACKLOG_CAPACITY,
+        )
+        .await;
 
     // `subscribe()` returning only means the command was sent; injecting before
     // the broker registers the `SUB` would race and pass without delivering.
@@ -495,13 +504,16 @@ async fn an_overfull_event_backlog_resumes_and_drops_the_newest() {
     drop(barrier);
 
     let (emitter, seen) = recording_emitter();
-    let (_stream, _visible) = owner.0.spawn_fixture_stream(
-        &session,
-        subscriptions,
-        "desktop_cov_resumed",
-        emitter,
-        capacity,
-    );
+    let (_stream, _visible) = owner
+        .0
+        .spawn_fixture_stream(
+            session.clone(),
+            subscriptions,
+            "desktop_cov_resumed",
+            emitter,
+            capacity,
+        )
+        .await;
 
     wait_for("the overflow never produced a resumed", || {
         seen.lock()

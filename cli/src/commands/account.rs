@@ -87,7 +87,7 @@ async fn load_account_auth() -> Result<AccountAuth, String> {
 
 /// `platformGet<T>(url, apiKey)` — GET with Bearer auth, 30s timeout.
 async fn platform_get(url: &str, api_key: &str) -> Result<Value, String> {
-    let response = reqwest::Client::new()
+    let response = future_http::client()
         .get(url)
         .bearer_auth(api_key)
         .header("Accept", "application/json")

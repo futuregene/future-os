@@ -585,7 +585,7 @@ impl E2e {
         // reqwest is built without a provider in this crate (one is installed
         // per entry point, see `crate::install_rustls_provider`).
         crate::install_rustls_provider();
-        let view: Value = reqwest::get(format!("{monitor}/connz?subs=1"))
+        let view: Value = future_http::get(format!("{monitor}/connz?subs=1"))
             .await
             .expect("broker monitoring reachable")
             .json()
