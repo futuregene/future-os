@@ -100,8 +100,12 @@ whole root. Embedded host logs are at `<root>/app/logs/desktop.log`; that file
 keeps its newest 1000 lines, and each start first copies the tail of the run
 before it to `<root>/app/logs/desktop.prev.log`, so a launch that never came
 back stays readable after the next session filled the live file. Independent
-CLI Agent file logs remain at `<root>/agent/logs/agent.log` when enabled. Windows
-update recovery uses `<root>/app/logs/update-recovery.log`.
+CLI Agent file logs remain at `<root>/agent/logs/agent.log` when enabled. A
+launch that panics appends the panic (UTC time, process, thread, `file:line`,
+payload, startup step, best-effort backtrace) to
+`<root>/app/logs/crash.log`, which is never trimmed — a windowless GUI launch has
+no console, and panic exit 101 is not something Windows Error Reporting records.
+Windows update recovery uses `<root>/app/logs/update-recovery.log`.
 
 Desktop's `app/app.db`, `app/desktop.lock`, GUI single-instance scope, chat scratch
 workspaces, pairing and device identity follow this same root. The default paths

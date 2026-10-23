@@ -265,6 +265,37 @@ describe("the rail's rows above the list", () => {
   });
 
   /**
+   * Opening the field must not change the row's height.
+   *
+   * Reported as the row jittering on the click that opens the search: the glyph
+   * was 28px and the field taking its place 32px, so the row grew by 4px, the
+   * list under it jumped, and the picker beside it re-centred 2px down. The
+   * heights are read out of the classes rather than pinned to "28px", because
+   * what matters is that the three controls share one height, not which.
+   */
+  it("keeps the search's row the same height with the field open", async () => {
+    const p = props();
+    p.remotePeers = [peer];
+    p.onChangeDeviceFilter = vi.fn();
+    p.onManageDesktops = vi.fn();
+    const { container } = await render(p);
+
+    // The first `h-*`/`size-*` in a control's classes is the box it draws.
+    const boxHeight = (el: Element) => el.className.match(/\b(?:size|h)-(\d+(?:\.\d+)?)\b/)?.[1] ?? null;
+    const glyph = searchGlyph(container)!;
+    const picker = container.querySelector("button[aria-label='All devices']")!;
+    expect(boxHeight(glyph)).not.toBeNull();
+
+    act(() => glyph.click());
+    await flushAsync();
+
+    // A field is a box around an input, so the box is the input's parent.
+    const field = searchField(container)!.parentElement!;
+    expect(boxHeight(field)).toBe(boxHeight(glyph));
+    expect(boxHeight(picker)).toBe(boxHeight(glyph));
+  });
+
+  /**
    * Nothing above the list offers a batch or a create action.
    *
    * Those belong to what they act on: "new workspace" and "new conversation" sit
