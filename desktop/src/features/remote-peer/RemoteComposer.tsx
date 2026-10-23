@@ -535,7 +535,15 @@ export function RemoteComposer({
     const message = text.trim();
     // An attachment with no words is still a message, which is how a file is
     // handed over without writing a prompt around it.
-    if ((!message && uploads.length === 0) || busy || evaluating)
+    //
+    // A run in flight is the other thing that holds the send here: the host
+    // answers one prompt at a time and refuses a second with "This session is
+    // still running; wait for it to finish or abort it first" — and it refuses
+    // it *after* the prompt was written down, which is what turned a press into
+    // an error over a message the reader had every reason to expect to go. The
+    // send control is closed for the same reason; Enter reaches this function
+    // too, so the guard belongs here, where both paths meet.
+    if ((!message && uploads.length === 0) || busy || evaluating || streaming)
       return;
 
     // Skill recommendation, from *that* host: the draft is held while it is
@@ -990,14 +998,23 @@ export function RemoteComposer({
         </div>
         <div className="ms-auto flex min-w-0 items-center gap-2">
           {controls}
-          {/* Stop replaces Send while a run is in flight rather than joining it:
-              a conversation being answered on the host cannot take a second
-              prompt, and the host would refuse one. The button is disabled while
-              the abort is outstanding, so `disabled` is the single guard against
-              a second abort — there is no second in-flight check to make.
-              Icon buttons, at the local composer's size and colour: the same
-              two controls in the same place on both screens. */}
-          {streaming && !text.trim() && uploads.length === 0
+          {/* Stop replaces Send while a run is in flight, whatever the field
+              holds. The host answers one prompt at a time and refuses a second
+              with "This session is still running; wait for it to finish or
+              abort it first" — a refusal that arrives *after* the prompt was
+              written down, which is what turned a press into an error over a
+              message the reader had every reason to expect to go. So the send
+              control is not drawn while the run streams, however much has been
+              typed: a draft waits in the field, and the one control in this
+              slot is the Stop that ends what it is waiting for. That is the
+              local composer's rule and the phone's, and a third variant here
+              would read as a different product.
+              The button is disabled while the abort is outstanding, so
+              `disabled` is the single guard against a second abort — there is
+              no second in-flight check to make. Icon buttons, at the local
+              composer's size and colour: the same two controls in the same
+              place on both screens. */}
+          {streaming
             ? (
                 <button
                   aria-label={stopping ? t("stopping") : t("stop")}

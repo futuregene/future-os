@@ -1257,7 +1257,7 @@
         ]
       },
       "remote-streaming": {
-        "note": "A prompt sent to a host: the reply is drawn as it is written — text, reasoning and the tool row it calls, inline — and becomes a record when the run ends.",
+        "note": "A prompt sent to a host: the reply is drawn as it is written — text, reasoning and the tool row it calls, inline — and becomes a record when the run ends. While it streams the composer offers Stop and no Send, even with a follow-up drafted in the field.",
         "url": "http://localhost:5299/shot/?lang=zh&remoteStream=1",
         "steps": [
           {
@@ -1289,6 +1289,18 @@
           },
           {
             "wait": 1500
+          },
+          {
+            "tap": "消息"
+          },
+          {
+            "type": "顺便把图例移到右下角"
+          },
+          {
+            "wait": 250
+          },
+          {
+            "eval": "(() => {\n  // A run in flight takes no second prompt — the host refuses one with \"This session is still running; wait for it to finish or abort it first\" — so the composer must not offer Send, however much is drafted meanwhile. It used to hand Send back as soon as the field had text, and the press landed as an error over a message the reader meant to send. Measured here, on the run this scenario is already watching, because the typed draft is the part the unit test cannot see.\n  const form = document.querySelector('form');\n  if (!form) throw new Error('no composer');\n  const send = form.querySelector(\"button[aria-label='发送']\") || form.querySelector(\"button[aria-label='Send']\");\n  if (send) throw new Error('a run in flight still offers Send: ' + (send.outerHTML || '').slice(0, 140));\n  const stop = form.querySelector(\"button[aria-label='停止']\") || form.querySelector(\"button[aria-label='Stop']\");\n  if (!stop) throw new Error('a run in flight offers no way to stop it');\n  const field = form.querySelector('textarea');\n  if (!field) throw new Error('the field is not a textarea');\n  if (!(field.value || '').includes('图例')) throw new Error('the draft typed during the run was lost: ' + field.value);\n  return 'streaming: stop present, send absent, draft kept: ' + field.value;\n})()"
           },
           {
             "eval": "(() => {\n  // Poll rather than sleep: the host's frames arrive over a couple of seconds and\n  // the harness's own click is not instant. What is asserted is unchanged — the\n  // reply is on screen while its row is still the *live* one.\n  const deadline = Date.now() + 8000;\n  return new Promise((resolve, reject) => {\n    const check = () => {\n      const rows = [...document.querySelectorAll('[data-message-id]')];\n      const live = rows.filter(row => (row.getAttribute('data-message-id') || '').startsWith('stream_'));\n      if (live.length === 1 && (live[0].innerText || '').includes('置信区间确实画成了 90%')) {\n        try {\n          const text = live[0].innerText || '';\n          // The run's work, folded into this app's own activity line: one tool call\n          // and one reasoning block, inline in the reply.\n          const line = live[0].querySelector('button[aria-label*=\"工具调用\"], button[aria-label*=\"tool\"]');\n          if (!line) throw new Error('the live reply has no inline activity line: ' + text.slice(0, 200));\n          const label = line.getAttribute('aria-label') || '';\n          if (!label.includes('工具调用') || !label.includes('思考'))\n            throw new Error('the live reply did not fold the run\\'s work: ' + label);\n          if (live[0] !== rows[rows.length - 1]) throw new Error('the live reply is not the last row');\n          // The question it answers is above it, so the reply is not drawn alone.\n          if (!rows.slice(0, -1).some(row => /森林图/.test(row.innerText || '')))\n            throw new Error('the question the reply answers is not in the transcript');\n          resolve('live row: ' + text.replace(/\\s+/g, ' ').slice(0, 120));\n        }\n        catch (error) {\n          reject(error);\n        }\n        return;\n      }\n      if (Date.now() > deadline) {\n        reject(new Error('the reply never streamed: ' + rows.length + ' rows, live=' + live.length));\n        return;\n      }\n      setTimeout(check, 150);\n    };\n    check();\n  });\n})()"

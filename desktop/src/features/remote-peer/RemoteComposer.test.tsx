@@ -342,7 +342,10 @@ it("refuses to send an empty message", async () => {
   await view.unmount();
 });
 
-/** Stop replaces Send while a run is in flight, since the host would refuse a second prompt. */
+/**
+ * Stop replaces Send while a run is in flight and nothing is drafted — the host
+ * would refuse a second prompt.
+ */
 it("stops a run in flight instead of sending", async () => {
   const view = await mount({ streaming: true });
 
@@ -356,12 +359,36 @@ it("stops a run in flight instead of sending", async () => {
   await view.unmount();
 });
 
-/** Typing during a run brings Send back: the user's next message is not lost. */
-it("shows Send again once the user types during a run", async () => {
+/**
+ * A draft typed during a run does not bring Send back: the host refuses a second
+ * prompt while it is answering the first ("This session is still running; wait
+ * for it to finish or abort it first"), so a press could only produce an error
+ * over a message the reader meant to send. The draft waits in the field, Stop
+ * stays reachable, and Send returns when the run settles — the local composer's
+ * rule and the phone's.
+ */
+it("keeps Send away while a run is in flight, however much is drafted", async () => {
   const view = await mount({ streaming: true });
   await view.type("a follow-up");
-  expect(view.button("Send")).toBeTruthy();
+
+  expect(view.button("Send")).toBeUndefined();
+  const stop = view.button("Stop");
+  expect(stop).toBeTruthy();
+  expect(stop!.disabled).toBe(false);
+
+  // Enter takes the same route as the button, and the draft survives it.
+  await view.press("Enter");
+  await settle();
+  expect(prompt).not.toHaveBeenCalled();
+  expect(view.input.value).toBe("a follow-up");
+
+  // The run ends: what was typed meanwhile is still there, and now it can go.
+  await view.rerender({ streaming: false });
   expect(view.button("Stop")).toBeUndefined();
+  expect(view.button("Send")!.disabled).toBe(false);
+  await act(async () => view.button("Send")!.click());
+  await settle();
+  expect(prompt).toHaveBeenCalledTimes(1);
   await view.unmount();
 });
 
