@@ -297,13 +297,78 @@ mod tests {
 
     /// The file lives beside the host log it complements, in the directory
     /// `start_logging` already creates.
+    ///
+    /// Both paths resolve through the process-global home, so the comparison
+    /// only means anything while a fixture owns it: a sibling test that
+    /// publishes its own `HOME` mid-way would otherwise be able to make the two
+    /// reads disagree and fail a passing implementation.
     #[test]
     fn the_crash_log_is_a_sibling_of_the_host_log() {
-        let path = crash_log_path();
-        assert_eq!(path.file_name().unwrap(), "crash.log");
-        assert_eq!(
-            path.parent().unwrap(),
-            crate::environment::log_file_path().parent().unwrap()
+        let _home = crate::auth_store::test_support::HomeGuard::new("crash-log-sibling");
+        let host_log = crate::environment::log_file_path();
+        assert_eq!(crash_log_path(), host_log.with_file_name("crash.log"));
+        assert_eq!(crash_log_path().file_name().unwrap(), "crash.log");
+    }
+
+    /// Environment naming the fixture home of [`the_panicking_fixture`]. Absent
+    /// in an ordinary suite run, where that fixture is a no-op.
+    const FIXTURE_HOME: &str = "FUTURE_CRASH_LOG_FIXTURE_HOME";
+
+    /// The end-to-end case, and the only one that exercises the hook itself:
+    /// every test above renders or appends by hand, so a hook that is never
+    /// installed — or installed before the file can be resolved — still looks
+    /// covered. The child is this same test binary with its own `FUTURE_HOME`,
+    /// so a real panic in a real process has to leave the report on disk, and
+    /// it lands in a fixture directory instead of the developer's own log.
+    #[test]
+    fn a_panicking_process_writes_the_report_it_could_not_show() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join(".future");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "crash_log::tests::the_panicking_fixture",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(FIXTURE_HOME, &home)
+            .env("HOME", directory.path())
+            .env("USERPROFILE", directory.path())
+            // Windows' `dirs::home_dir()` ignores `HOME`, so the override is
+            // the only spelling that holds on every platform.
+            .env("FUTURE_HOME", &home)
+            .output()
+            .expect("run the panicking fixture");
+        // Exit 101 is the code Windows records as no crash at all: no
+        // Application Error event, no dump. That is why the file has to exist.
+        assert_eq!(output.status.code(), Some(101), "{:?}", output.status);
+        let log = std::fs::read_to_string(home.join("app/logs/crash.log"))
+            .expect("a panic in a child process must leave a report");
+        assert!(log.contains("panicked at"), "{log}");
+        assert!(
+            log.contains(&format!("{}:", file!())),
+            "the report must name the file the panic came from: {log}"
         );
+        assert!(log.contains("fixture panic from the child"), "{log}");
+        // The step the launch was in is the part a startup panic needs.
+        assert!(log.contains("startup: step 'window'"), "{log}");
+        // The default hook still ran, so a launch from a terminal keeps the
+        // text it always printed.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("fixture panic from the child"), "{stderr}");
+    }
+
+    /// The child half of [`a_panicking_process_writes_the_report_it_could_not_show`].
+    #[test]
+    fn the_panicking_fixture() {
+        if std::env::var_os(FIXTURE_HOME).is_none() {
+            return;
+        }
+        // Installed here rather than by the harness: the hook is what is under
+        // test, so it must be the fixture that installs it.
+        install();
+        let _armed = ReportingArmed::arm();
+        crate::startup::global().enter("window");
+        panic!("fixture panic from the child");
     }
 }
