@@ -113,8 +113,14 @@ export function RemoteFilesPanel({
                 const previewable = !entry.isDir && previewKindForPath(entry.name) !== null;
                 const fetching = files.previewingPaths.has(entry.path);
                 const downloading = files.busyPaths.has(entry.path);
+                // One row height for both kinds: a folder row carries neither a
+                // size label nor a download button, so leaving the height to its
+                // contents made it visibly shorter than the file rows around it.
+                // The floor is stated here, and each row's controls stay below
+                // it (the download icon is `size-7`, not the default `size-9`),
+                // so text scaling still grows a row instead of being clipped.
                 return (
-                  <div className="flex items-center gap-2 border-b border-line-soft/50 px-2 py-1.5 last:border-b-0" key={entry.path}>
+                  <div className="flex min-h-10 items-center gap-2 border-b border-line-soft/50 px-2 py-1 last:border-b-0" key={entry.path}>
                     {entry.isDir
                       ? <Folder aria-hidden className="size-3.5 shrink-0 text-ink-muted" />
                       : fetching
@@ -139,6 +145,7 @@ export function RemoteFilesPanel({
                                 not choose, on a machine whose conventions we are
                                 guessing at. */}
                             <IconButton
+                              className="size-7"
                               disabled={downloading || fetching}
                               icon={<Download className="size-3.5" />}
                               label={t("filesDownload", { name: entry.name })}

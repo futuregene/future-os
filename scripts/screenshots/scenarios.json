@@ -1256,6 +1256,36 @@
           }
         ]
       },
+      "remote-files-rows": {
+        "note": "The host's files, one row per entry. A folder row carries no size label and no download control, and neither row is as tall as its own contents: a file row's download button is smaller than the row floor, so folders and files line up at one height instead of a ragged column.",
+        "url": "http://localhost:5299/shot/?lang=zh",
+        "steps": [
+          {
+            "wait": 1200
+          },
+          {
+            "wait": 1500
+          },
+          {
+            "tapText": "重画森林图并核对置信区间"
+          },
+          {
+            "wait": 2000
+          },
+          {
+            "tap": "显示此对话的文件"
+          },
+          {
+            "wait": 1200
+          },
+          {
+            "eval": "(() => {\n  const panel = [...document.querySelectorAll('aside')].find(node => (node.textContent || '').includes('forest-plot.png'));\n  if (!panel) throw new Error('the files panel is not open');\n  // The rows are the listing's own children — found by where they sit, not by a\n  // class, so the assertion still measures the old markup it is meant to catch.\n  const scroller = panel.querySelector('div.overflow-y-auto');\n  const rows = scroller ? [...scroller.children] : [];\n  if (rows.length < 3) throw new Error('the listing does not have the three row kinds: ' + rows.length);\n  const heights = rows.map(row => Math.round(row.getBoundingClientRect().height));\n  if (new Set(heights).size !== 1)\n    throw new Error('the rows are not one height: ' + heights.join(','));\n  // The folder row is the one with no download control, and the file row is the\n  // one with it: the height difference this checks is *between* those two shapes,\n  // so both have to be in the capture.\n  if (!rows.some(row => !row.querySelector(\"button[aria-label^='\\u4e0b\\u8f7d ']\")))\n    throw new Error('no folder row in the listing');\n  const download = rows.flatMap(row => [...row.querySelectorAll(\"button[aria-label^='\\u4e0b\\u8f7d ']\")])[0];\n  if (!download) throw new Error('no file row in the listing');\n  // The control belongs *inside* the row: a button taller than its row sets the\n  // row's height from the outside, which is how the file rows came out taller\n  // than the folders between them.\n  const button = Math.round(download.getBoundingClientRect().height);\n  if (!(button < heights[0]))\n    throw new Error('the download control sets the row height: ' + button + ' vs ' + heights[0]);\n  return heights[0] + 'px rows';\n})()"
+          },
+          {
+            "shot": "d-remote-files-rows.png"
+          }
+        ]
+      },
       "remote-streaming": {
         "note": "A prompt sent to a host: the reply is drawn as it is written — text, reasoning and the tool row it calls, inline — and becomes a record when the run ends. While it streams the composer offers Stop and no Send, even with a follow-up drafted in the field.",
         "url": "http://localhost:5299/shot/?lang=zh&remoteStream=1",
