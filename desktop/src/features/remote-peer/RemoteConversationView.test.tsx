@@ -819,7 +819,9 @@ it("disables both actions while a decision is pending", async () => {
 it("names the host in the header, and falls back to the id without a peer", async () => {
   const view = await mount({ entries: [entry("e1", "user", "hi"), entry("e2", "assistant", "hello")] });
   const badge = view.container.querySelector("[data-testid='thread-machine']")!;
-  expect(badge.textContent).toBe("💻Studio iMac");
+  // The mark is drawn (a shared line icon), so the name is all the badge says.
+  expect(badge.textContent).toBe("Studio iMac");
+  expect(badge.querySelector("svg")).not.toBeNull();
   expect(badge.getAttribute("title")).toBe("Studio iMac");
   await view.unmount();
 });

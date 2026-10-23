@@ -23,7 +23,7 @@ export function MachineBadge({
   label,
   title,
 }: {
-  /** The machine's mark: `iconGlyph` for a host, the monitor icon for this one. */
+  /** The machine's mark: the shared icon set for a host, and for this one. */
   glyph: ReactNode;
   /** The machine's name, or the shortest thing that identifies it. */
   label: string;

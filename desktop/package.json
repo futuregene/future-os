@@ -19,6 +19,7 @@
   "dependencies": {
     "@future-os/json-preview": "*",
     "@future-os/markdown": "*",
+    "@future-os/peer-icons": "*",
     "@future-os/thread-projection": "*",
     "@tauri-apps/api": "^2.12.4",
     "@tauri-apps/plugin-dialog": "^2.8.3",

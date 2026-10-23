@@ -7,7 +7,7 @@ import type { ConnectionPresentation } from "../remote/connectionPresentation";
 import type { MachineStatus, MachineSummary } from "../remote/desktopStatus";
 import { machineStatusKey, machinesConnected, machinesPartlyConnected } from "../remote/desktopStatus";
 import { disconnectedCopy } from "../remote/disconnectedCopy";
-import { iconGlyph } from "../remote/peerIcons";
+import { PeerIconGlyph } from "../remote/PeerIconGlyph";
 import { layout, radius, spacing, type Palette } from "../theme/tokens";
 import { createThemedStyles, useTheme } from "../theme/ThemeContext";
 import { Button } from "./Button";
@@ -289,9 +289,12 @@ export function ConnectionBadge({
                           ]}
                         />
                         <View style={styles.machineText}>
-                          <Text numberOfLines={1} style={styles.machineName}>
-                            {`${iconGlyph(machine.icon)} ${machine.label}`}
-                          </Text>
+                          <View style={styles.machineTitle}>
+                            <PeerIconGlyph id={machine.icon} size={14} />
+                            <Text numberOfLines={1} style={styles.machineName}>
+                              {machine.label}
+                            </Text>
+                          </View>
                           <Text numberOfLines={1} style={styles.machineState}>
                             {held
                               ? t("connection.machineStandby")
@@ -384,6 +387,7 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   machineRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   machineDot: { width: 8, height: 8, borderRadius: 4 },
   machineText: { flex: 1, minWidth: 0 },
+  machineTitle: { flexDirection: "row", alignItems: "center", gap: spacing.xs },
   machineName: { color: theme.colors.ink, fontSize: theme.font(14) },
   machineState: { color: theme.colors.inkMuted, fontSize: theme.font(12) },
   machinesSummary: { color: theme.colors.inkMuted, fontSize: theme.font(12) },

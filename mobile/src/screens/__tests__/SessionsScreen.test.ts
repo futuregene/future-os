@@ -485,13 +485,14 @@ test("a picker row is the desktop's name and nothing else", () => {
     typeof node.type === "string" &&
     node.props.accessibilityRole === "radio" &&
     node.props.accessibilityState?.checked !== undefined);
-  // The glyph sits in its own column, so the row's copy is the texts joined.
+  // The mark sits in its own column and is drawn rather than typed, so the row's
+  // copy is the texts it holds — the machine's name and nothing else.
   const labels = rows.map(row =>
     row.findAllByType(Text).flatMap(text => text.props.children as string[]).join(" "));
   // `desktop_1` is the one this phone is paired with, and the header's status dot
   // already says whether the phone is connected to it — a "Connected" label on
   // that one row repeats the dot and makes the spare row look second-class.
-  expect(labels).toEqual(["desktops.filterAll", "🖥️ A very long desktop name", "🖥️ desktop_2"]);
+  expect(labels).toEqual(["desktops.filterAll", "A very long desktop name", "desktop_2"]);
 });
 
 test("the status dot answers for every machine, and reconnect reaches them all", () => {

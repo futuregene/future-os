@@ -10,7 +10,13 @@ if (!directory || !['desktop', 'mobile'].includes(directory) && !/^packages\/[a-
   throw new Error('Invalid TypeScript directory');
 }
 const pkg = JSON.parse(readFileSync(resolve(root, directory, 'package.json'), 'utf8'));
-const shared = ['markdown', 'thread-projection', 'json-preview'].includes(directory.split('/')[1]);
+// Source-only workspace libraries: they ship TypeScript sources rather than a
+// bundle and define no scripts of their own, so CI supplies the whole pipeline
+// (tsc typecheck/emit, the shared vitest project, the shared ESLint config).
+// A new package of this kind must be registered here; otherwise the `shared`
+// branches below fall through to `script(...)` and fail on a missing script,
+// which is the intended loud failure rather than a silently skipped project.
+const shared = ['markdown', 'thread-projection', 'json-preview', 'peer-icons'].includes(directory.split('/')[1]);
 const cwd = resolve(root, directory);
 async function run(command, args, workingDirectory = cwd) {
   const result = await timedCommand(command, args, { cwd: workingDirectory });

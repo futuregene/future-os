@@ -8,7 +8,8 @@ import { Dialog } from "../../components/ui/Dialog";
 import { TextInput } from "../../components/ui/TextInput";
 import { cn } from "../../lib/cn";
 import { emitFutureEvent } from "../../lib/futureEvents";
-import { iconGlyph, peerBadgeText } from "./peerIcons";
+import { PeerIconChip } from "./PeerIconChip";
+import { peerBadgeText } from "./peerIcons";
 import {
   peerHeld,
   peerHolderName,
@@ -400,7 +401,7 @@ function PeerRow({
 
   return (
     <div className="flex items-center gap-3 rounded-lg border border-line-soft p-4" data-testid="peer-row">
-      <span aria-hidden className="text-lg" data-testid="peer-icon">{iconGlyph(peer.icon)}</span>
+      <span data-testid="peer-icon"><PeerIconChip id={peer.icon} variant="row" /></span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
           <span className="truncate text-sm font-medium text-ink">

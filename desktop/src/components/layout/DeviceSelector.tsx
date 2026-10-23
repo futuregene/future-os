@@ -1,9 +1,10 @@
 import type { DeviceFilter } from "../../features/remote-peer/mergeConversations";
 import type { RemotePeer } from "../../features/remote-peer/remotePeerClient";
-import { Check, ChevronDown, Monitor, MonitorSmartphone } from "lucide-react";
+import { Check, ChevronDown, MonitorSmartphone } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { iconGlyph, peerBadgeText } from "../../features/remote-peer/peerIcons";
+import { PeerIconGlyph } from "../../features/remote-peer/PeerIconGlyph";
+import { peerBadgeText } from "../../features/remote-peer/peerIcons";
 import { peerHeld, peerHolderName, peerStatus, peerStatusKey } from "../../features/remote-peer/peerStatus";
 import { cn } from "../../lib/cn";
 import { useKeyboardOwner } from "../../lib/keyboardOwners";
@@ -226,8 +227,8 @@ function filterIcon(filter: DeviceFilter, peers: RemotePeer[]): React.ReactNode 
   if (filter.kind === "all")
     return <MonitorSmartphone className="size-3.5" />;
   if (filter.desktopId === null)
-    return <Monitor className="size-3.5" />;
-  return <span aria-hidden>{iconGlyph(peers.find(peer => peer.desktopId === filter.desktopId)?.icon)}</span>;
+    return <PeerIconGlyph className="size-3.5" id="desktop" />;
+  return <PeerIconGlyph className="size-3.5" id={peers.find(peer => peer.desktopId === filter.desktopId)?.icon} />;
 }
 
 /**
