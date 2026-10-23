@@ -8,6 +8,13 @@
     "vibe": "Vibe 面板",
     "palette": "搜索与帮助"
   },
+  "sections": {
+    "conversation": "对话",
+    "navigation": "导航",
+    "layout": "面板与终端",
+    "search": "查找与设置",
+    "vibe": "Vibe 面板"
+  },
   "commands": {
     "chat": {
       "new": "新建对话",
@@ -146,7 +153,9 @@
     "unbound": "未设置",
     "scopedGlobal": "任何地方都生效。",
     "scopedVibe": "只在 Vibe 面板打开时生效；此时这些键可以覆盖上面的同名键。",
-    "multiKey": "这组按键暂时固定。"
+    "multiKey": "这组按键暂时固定。",
+    "keyCount": "{{count}} 项",
+    "changedCount": "{{count}} 项已改"
   },
   "recorder": {
     "prompt": "按下新的组合键…",

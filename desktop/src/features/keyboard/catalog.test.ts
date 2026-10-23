@@ -4,7 +4,7 @@ import en from "../../i18n/locales/en/shortcuts.json";
 import zhSettings from "../../i18n/locales/zh/settings.json";
 import zh from "../../i18n/locales/zh/shortcuts.json";
 import { bindingProblem, parseBinding, serializeBinding } from "../../lib/keybinding";
-import { CATEGORIES, COMMANDS, defaultBindingTexts, everyDefaultBindingText, FIXED_KEYS, isCommandId, scopeOf } from "./catalog";
+import { CATEGORIES, COMMANDS, defaultBindingTexts, everyDefaultBindingText, FIXED_KEYS, isCommandId, scopeOf, sectionCommands, SECTIONS } from "./catalog";
 
 /** Resolve a dotted key (`commands.chat.new`) against a locale bundle. */
 function lookup(bundle: unknown, path: string): unknown {
@@ -144,12 +144,26 @@ describe("command catalog", () => {
     expect(isCommandId("chat.nope")).toBe(false);
   });
 
+  it("lists every command under exactly one section, and no empty one", () => {
+    // The settings page and the cheat sheet both walk `SECTIONS`, so a category
+    // missing from it would drop its commands from both screens — silently, since
+    // neither page can see a command it never asked for.
+    const sectioned = SECTIONS.flatMap(section => section.categories);
+    expect(new Set(sectioned).size).toBe(sectioned.length);
+    for (const spec of COMMANDS)
+      expect(sectioned, spec.id).toContain(spec.category);
+    for (const section of SECTIONS)
+      expect(sectionCommands(section).length, section.id).toBeGreaterThan(0);
+  });
+
   it("names every command and category in both languages", () => {
     for (const [language, bundle] of [["en", en], ["zh", zh]] as const) {
       for (const spec of COMMANDS)
         expect(lookup(bundle, `commands.${spec.id}`), `${language} commands.${spec.id}`).toEqual(expect.any(String));
       for (const category of CATEGORIES)
         expect(lookup(bundle, `categories.${category}`), `${language} categories.${category}`).toEqual(expect.any(String));
+      for (const section of SECTIONS)
+        expect(lookup(bundle, `sections.${section.id}`), `${language} sections.${section.id}`).toEqual(expect.any(String));
       for (const item of FIXED_KEYS)
         expect(lookup(bundle, item.labelKey), `${language} ${item.labelKey}`).toEqual(expect.any(String));
       for (const key of ["page.hint", "page.search", "page.unbound", "page.reset", "page.resetAll", "recorder.prompt", "recorder.reserved", "recorder.conflict", "recorder.hint", "fixed.title", "fixed.description"])

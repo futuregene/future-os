@@ -19,6 +19,7 @@ const connectRemotePeer = vi.fn<(desktopId: string) => Promise<unknown>>();
 const disconnectRemotePeer = vi.fn<(desktopId: string) => Promise<unknown>>();
 const listRemotePeers = vi.fn<() => Promise<RemotePeer[]>>();
 const pairRemotePeer = vi.fn<(invitation: string) => Promise<unknown>>();
+const setRemotePeerLabel = vi.fn<(desktopId: string, patch: { name?: string; icon?: string }) => Promise<unknown>>();
 const takeoverRemotePeer = vi.fn<(desktopId: string) => Promise<unknown>>();
 const unpairRemotePeer = vi.fn<(desktopId: string) => Promise<string | null>>();
 vi.mock("./remotePeerClient", () => ({
@@ -26,6 +27,7 @@ vi.mock("./remotePeerClient", () => ({
   disconnectRemotePeer: (...args: Parameters<typeof disconnectRemotePeer>) => disconnectRemotePeer(...args),
   listRemotePeers: () => listRemotePeers(),
   pairRemotePeer: (...args: Parameters<typeof pairRemotePeer>) => pairRemotePeer(...args),
+  setRemotePeerLabel: (...args: Parameters<typeof setRemotePeerLabel>) => setRemotePeerLabel(...args),
   takeoverRemotePeer: (...args: Parameters<typeof takeoverRemotePeer>) => takeoverRemotePeer(...args),
   unpairRemotePeer: (...args: Parameters<typeof unpairRemotePeer>) => unpairRemotePeer(...args),
 }));
@@ -185,8 +187,14 @@ async function mount() {
       ?.querySelectorAll<HTMLButtonElement>("button") ?? [])]
       .find(node => node.textContent === label),
     /** A control inside the open dialog. */
-    dialogButton: (label: string) => [...container.querySelectorAll<HTMLButtonElement>("[role=\'dialog\'] button")]
+    dialogButton: (label: string) => [...container.querySelectorAll<HTMLButtonElement>("[role='dialog'] button")]
       .find(node => node.textContent === label),
+    /** The pencil that renames a machine, by its accessible name. */
+    labelButton: (row = 0) => [...(container.querySelectorAll("[data-testid='peer-row']")[row]
+      ?.querySelectorAll<HTMLButtonElement>("button[aria-label]") ?? [])]
+      .find(node => node.getAttribute("aria-label") === "Edit name and icon"),
+    /** The name box of the open label dialog. */
+    labelInput: () => container.querySelector<HTMLInputElement>("[role='dialog'] input"),
     text: () => container.textContent ?? "",
     type: async (value: string) => {
       const row = addRowButton(container);
@@ -220,6 +228,7 @@ beforeEach(() => {
   disconnectRemotePeer.mockReset().mockResolvedValue(undefined);
   listRemotePeers.mockReset().mockResolvedValue([peer()]);
   pairRemotePeer.mockReset().mockResolvedValue(undefined);
+  setRemotePeerLabel.mockReset().mockResolvedValue(undefined);
   takeoverRemotePeer.mockReset().mockResolvedValue(undefined);
   unpairRemotePeer.mockReset().mockResolvedValue(null);
 });
@@ -228,14 +237,15 @@ beforeEach(() => {
  * A machine's row is about the machine, not about starting chats: conversations
  * from every host live in the shared conversation list, and a second entry point
  * here would make the user pick between two answers to "where do I start one".
- * The row therefore offers connect/disconnect, settings and unpair only.
+ * The row therefore offers its local label, connect/disconnect, the host's
+ * settings and unpair — and nothing about conversations.
  */
 it("keeps a machine's row to machine actions", async () => {
   const view = await mount();
   const labels = [...view.container.querySelectorAll("[data-testid='peer-row'] button")]
-    .map(node => node.textContent?.trim());
+    .map(node => node.getAttribute("aria-label")?.trim() || node.textContent?.trim());
 
-  expect(labels).toEqual(["Disconnect", "Settings", "Unpair"]);
+  expect(labels).toEqual(["Edit name and icon", "Disconnect", "Settings", "Unpair"]);
   await view.unmount();
 });
 
@@ -462,6 +472,94 @@ it("keeps Settings available on a machine this desktop drives", async () => {
   expect(settings.disabled).toBe(false);
   await act(async () => settings.click());
   expect(view.onOpenSettings).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
+/**
+ * Every row on that page reads the host or writes it, so a machine that is not
+ * connected has nothing behind the button but a page saying exactly that —
+ * disabled, with the reason where a disabled control can still show one.
+ */
+it("disables Settings on a machine that is not connected", async () => {
+  listRemotePeers.mockResolvedValue([peer({ connected: false, error: "refused" })]);
+  const view = await mount();
+
+  const settings = view.rowButton("Settings") as HTMLButtonElement;
+  expect(settings.disabled).toBe(true);
+  // Same place as the takeover hint: a disabled button receives no pointer
+  // events, so a title of its own would never be shown.
+  expect(settings.closest("span")?.getAttribute("title")).toBe(en.settingsOfflineHint);
+
+  await act(async () => settings.click());
+  expect(view.onOpenSettings).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+/**
+ * The name and icon are this machine's own record of that computer, so they are
+ * edited on its row and keep working with the machine switched off — the one
+ * moment a user does rename it ("the old laptop" is a name for a computer that
+ * no longer answers). The write is local: `remote_peer_set_label` never reaches
+ * the host, and the list's re-read is what redraws the row.
+ */
+it("renames a machine from its own row while it is offline", async () => {
+  listRemotePeers.mockResolvedValue([peer({ connected: false, error: "refused", name: "Studio iMac" })]);
+  const view = await mount();
+  const readsBefore = listRemotePeers.mock.calls.length;
+
+  await act(async () => view.labelButton()!.click());
+  const input = view.labelInput()!;
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(input, "  Old laptop  ");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  // The same grid the settings page offered, by the id the list stores.
+  const phone = view.container.querySelector<HTMLButtonElement>("[role='dialog'] button[aria-label='Phone']")!;
+  await act(async () => phone.click());
+  await act(async () => view.dialogButton("Save")!.click());
+  await view.settle();
+
+  // One patch, trimmed, carrying only what changed.
+  expect(setRemotePeerLabel).toHaveBeenCalledTimes(1);
+  expect(setRemotePeerLabel).toHaveBeenCalledWith("desktop_a", { icon: "phone", name: "Old laptop" });
+  expect(listRemotePeers.mock.calls.length).toBeGreaterThan(readsBefore);
+  expect(view.container.querySelector("[role='dialog']")).toBeNull();
+  await view.unmount();
+});
+
+/** Nothing changed, nothing is written. */
+it("saves a label only once something has changed", async () => {
+  const view = await mount();
+  await act(async () => view.labelButton()!.click());
+
+  expect((view.dialogButton("Save") as HTMLButtonElement).disabled).toBe(true);
+  await act(async () => view.dialogButton("Cancel")!.click());
+  expect(setRemotePeerLabel).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+/**
+ * The book is local and can still refuse the write (read-only, locked). The
+ * dialog says so and stays open rather than closing on a rename that did not
+ * happen.
+ */
+it("reports a label the local book refused", async () => {
+  setRemotePeerLabel.mockRejectedValue(new Error("credential book is read-only"));
+  const view = await mount();
+  await act(async () => view.labelButton()!.click());
+
+  const input = view.labelInput()!;
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(input, "Old laptop");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => view.dialogButton("Save")!.click());
+  await view.settle();
+
+  expect(view.text()).toContain("credential book is read-only");
+  expect(view.container.querySelector("[role='dialog']")).not.toBeNull();
   await view.unmount();
 });
 
