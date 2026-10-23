@@ -42,6 +42,11 @@ import {
  * on and empty. So the two are siblings: the switch decides whether this
  * machine serves its connections at all, and the list is what it serves.
  *
+ * Under the switch sits one line naming **this machine** — its id, which is
+ * what a paired device records when it pairs here. The rows below name
+ * connections (pair ids), not computers, so without that line nothing on either
+ * screen lets a user match the two.
+ *
  * While it is on, the section is a **list plus the actions that change a row**.
  * A row carries everything there is to know about that connection (who it is,
  * what state it is in) and the two things one can do to it — hand it control,
@@ -86,6 +91,8 @@ export function RemoteHostSection({
   /** The device whose unpair is being confirmed, if any. */
   const [confirmUnpair, setConfirmUnpair] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  /** The machine's own id was just copied: said on that button, not the code's. */
+  const [idCopied, setIdCopied] = useState(false);
 
   // --- derived from the shared app-level status (same source as the sidebar indicator) ---
   const phase = remoteStatus?.phase ?? "stopped";
@@ -352,6 +359,27 @@ export function RemoteHostSection({
     }
   }
 
+  /**
+   * Copy this machine's own id.
+   *
+   * It is what the *other* side records when it pairs with this one, so the
+   * person reading both screens can tell they are looking at the same computer.
+   * The pair ids in the list below name connections, not machines, and nothing
+   * else on this page names this one.
+   */
+  async function copyDeviceId() {
+    if (!remoteStatus?.desktopId)
+      return;
+    try {
+      await navigator.clipboard.writeText(remoteStatus.desktopId);
+      setIdCopied(true);
+      setTimeout(setIdCopied, 1500, false);
+    }
+    catch {
+      setError(t("copyFailed"));
+    }
+  }
+
   return (
     <>
       <div className="space-y-4">
@@ -367,6 +395,28 @@ export function RemoteHostSection({
             onChange={handleToggle}
           />
         </div>
+
+        {/* What this machine is called: the id the other side records when it
+            pairs with this one. The rows below carry pair ids, which name a
+            connection, so without this there is nothing to match the two
+            screens by. One line, no explanation — the id is a lookup key, not
+            a setting. */}
+        {running && remoteStatus?.desktopId
+          ? (
+              <div className="flex items-center gap-2 text-xs text-ink-muted">
+                <span className="shrink-0">{t("localDeviceId")}</span>
+                <code
+                  className="min-w-0 flex-1 truncate font-mono text-ink-soft"
+                  data-testid="local-device-id"
+                >
+                  {remoteStatus.desktopId}
+                </code>
+                <Button onClick={() => void copyDeviceId()} size="sm" variant="secondary">
+                  {idCopied ? t("copied") : t("copy")}
+                </Button>
+              </div>
+            )
+          : null}
 
         {/* Feedback about the switch itself — why it could not come on, or why
             the bridge failed — stays visible while it is off. It is not a

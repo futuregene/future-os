@@ -3,6 +3,7 @@
   "description": "让手机、平板或另一台电脑远程使用本机的会话（工具在本机执行）。开启后，本地对话会镜像给已连接的设备，对方也可驱动同一会话。",
   "hostToggleTitle": "远程桌面",
   "hostToggleDescription": "允许其他设备连接并远程使用这台电脑。关闭时这台电脑不接受任何远程连接。",
+  "localDeviceId": "本机 ID",
   "downloadMobile": "下载手机端",
   "connect": "连接",
   "pairAgain": "重新配对",
