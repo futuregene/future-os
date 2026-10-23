@@ -75,7 +75,7 @@ export const resources = {
       desktops: {
         title: "Paired desktops",
         description:
-          "Pair this phone with multiple desktops and select one to use. Each desktop still pairs with only one phone.",
+          "Pair this phone with multiple desktops and select one to use.",
         add: "Scan to add a desktop",
         empty: "No paired desktops yet.",
         settings: "Desktop settings",
@@ -1102,7 +1102,7 @@ export const resources = {
       desktops: {
         title: "已配对的桌面端",
         description:
-          "一台手机可配对多个桌面端，选择后切换使用。每个桌面端仍只能配对一台手机。",
+          "一台手机可配对多个桌面端，选择后切换使用。",
         add: "扫码添加桌面端",
         empty: "尚未配对桌面端。",
         settings: "桌面端设置",

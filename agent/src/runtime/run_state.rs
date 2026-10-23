@@ -46,12 +46,19 @@ pub struct RunSnapshot {
     pub phase: RunPhase,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CancellationCause {
+    User,
+    SystemShutdown,
+}
+
 struct ActiveRun {
     lease: RunLease,
     client_request_id: String,
     phase: RunPhase,
     interrupt_tx: Option<mpsc::Sender<()>>,
     interrupt_flag: Option<Arc<AtomicBool>>,
+    cancellation: Option<CancellationCause>,
 }
 
 #[derive(Default)]
@@ -165,6 +172,7 @@ impl RunControl {
             phase: RunPhase::Starting,
             interrupt_tx: None,
             interrupt_flag: None,
+            cancellation: None,
         });
         self.is_streaming.store(true, Ordering::Release);
         self.active_tasks.fetch_add(1, Ordering::Relaxed);
@@ -224,6 +232,27 @@ impl RunControl {
     /// `Cancelling` there is exactly what produces a spurious
     /// `cancellation_stuck` on the error path.
     pub fn abort_expected(&self, expected_run_id: Option<&str>) -> Result<Option<RunSnapshot>> {
+        self.cancel_expected(expected_run_id, false)
+    }
+
+    pub fn interrupt_for_shutdown(&self) -> Result<Option<RunSnapshot>> {
+        self.cancel_expected(None, true)
+    }
+
+    pub fn cancellation_kind(&self, lease: &RunLease) -> Option<CancellationCause> {
+        self.state
+            .lock()
+            .active
+            .as_ref()
+            .filter(|active| active.lease == *lease)
+            .and_then(|active| active.cancellation)
+    }
+
+    fn cancel_expected(
+        &self,
+        expected_run_id: Option<&str>,
+        system_interruption: bool,
+    ) -> Result<Option<RunSnapshot>> {
         let (snapshot, tx, flag) = {
             let mut state = self.state.lock();
             let Some(active) = state.active.as_mut() else {
@@ -247,6 +276,15 @@ impl RunControl {
                 );
                 return Ok(None);
             }
+            // A user's stop always wins, including a stop racing system drain.
+            // Repeated shutdown requests must never reclassify it as resumable.
+            active.cancellation = Some(
+                if system_interruption && active.cancellation != Some(CancellationCause::User) {
+                    CancellationCause::SystemShutdown
+                } else {
+                    CancellationCause::User
+                },
+            );
             active.phase = RunPhase::Cancelling;
             (
                 RunSnapshot {
@@ -468,6 +506,40 @@ fn abortable(phase: RunPhase) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_stop_wins_in_both_shutdown_race_orders() {
+        for user_first in [true, false] {
+            let control = RunControl::new(Arc::new(AtomicBool::new(false)));
+            let lease = control.begin(Some("run"), None).unwrap();
+            if user_first {
+                control.abort_expected(None).unwrap();
+            }
+            control.interrupt_for_shutdown().unwrap();
+            if !user_first {
+                control.abort_expected(None).unwrap();
+            }
+            control.interrupt_for_shutdown().unwrap();
+            assert!(control.begin_finalizing(&lease));
+            assert_eq!(
+                control.cancellation_kind(&lease),
+                Some(CancellationCause::User)
+            );
+        }
+    }
+
+    #[test]
+    fn system_interruption_is_frozen_at_finalization() {
+        let control = RunControl::new(Arc::new(AtomicBool::new(false)));
+        let lease = control.begin(Some("run"), None).unwrap();
+        control.interrupt_for_shutdown().unwrap();
+        assert!(control.begin_finalizing(&lease));
+        assert!(control.abort_expected(None).unwrap().is_none());
+        assert_eq!(
+            control.cancellation_kind(&lease),
+            Some(CancellationCause::SystemShutdown)
+        );
+    }
 
     #[test]
     fn abort_does_not_release_the_active_run() {

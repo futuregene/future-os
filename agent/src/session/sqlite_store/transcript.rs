@@ -150,7 +150,7 @@ fn read_entry_rows(db: &Connection, session: &str) -> Result<Vec<String>> {
 }
 
 pub(crate) fn read_run_markers(db: &Connection, session: &str) -> Result<Vec<Value>> {
-    let mut statement=db.prepare("SELECT payload FROM entry_records WHERE session_id=?1 AND entry_type IN ('run_started','run_terminal') ORDER BY position")?;
+    let mut statement=db.prepare("SELECT payload FROM entry_records WHERE session_id=?1 AND entry_type IN ('run_started','run_terminal','run_stop_requested') ORDER BY position")?;
     let rows = statement
         .query_map([session], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;

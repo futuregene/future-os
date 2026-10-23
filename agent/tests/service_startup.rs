@@ -99,7 +99,7 @@ fn startup_errors_release_the_scope_and_preserve_existing_data() {
 }
 
 #[test]
-fn dropped_server_retains_instance_ownership_until_process_exit() {
+fn dropped_server_drains_before_releasing_instance_ownership() {
     run_case("dropped-server");
 }
 
@@ -170,7 +170,7 @@ fn an_unopenable_instance_lock_stops_startup_before_any_host_code() {
 /// survive: the returned error carries the host's cause and the cleanup report
 /// is attached to it, rather than one silently replacing the other.
 #[test]
-fn a_host_error_and_a_failed_cleanup_are_reported_together() {
+fn a_host_error_is_preserved_when_cleanup_drains() {
     run_case("host-error-and-dropped-server");
 }
 
@@ -387,10 +387,7 @@ fn service_fixture() {
         });
         let text = format!("{:#}", result.unwrap_err());
         assert!(text.contains("injected host failure"), "{text}");
-        assert!(
-            text.contains("failed to stop") || text.contains("dropped without draining"),
-            "the cleanup failure must be attached, not replaced: {text}"
-        );
+        assert_eq!(text, "injected host failure after an undrained server");
         return;
     }
 
@@ -559,32 +556,17 @@ fn service_fixture() {
         })
     });
     if case == "dropped-server" {
-        assert!(result.unwrap_err().to_string().contains("failed to stop"));
-        let metadata = root.join("agent").join("agent-instance.json");
-        let original = std::fs::read(&metadata).unwrap();
+        result.unwrap();
         let mut reached_store = false;
-        let retry = AgentService::with_instance(AgentConfig::default(), |_| {
+        AgentService::with_instance(AgentConfig::default(), |_| {
             reached_store = true;
             Ok(())
-        });
-        assert!(retry.unwrap_err().to_string().contains("already running"));
-        assert!(!reached_store);
-        assert_eq!(std::fs::read(&metadata).unwrap(), original);
-        std::env::set_var("FUTURE_HOME", root.join("another-home"));
-        let retry = AgentService::with_instance(AgentConfig::default(), |_| {
-            reached_store = true;
-            Ok(())
-        });
-        assert!(retry
-            .unwrap_err()
-            .to_string()
-            .contains("another Agent service"));
-        assert!(!reached_store);
-        assert!(!root
-            .join("another-home")
-            .join("agent")
-            .join("agent.db")
-            .exists());
+        })
+        .unwrap();
+        assert!(
+            reached_store,
+            "a completed drain releases the instance lock"
+        );
         return;
     }
     result.unwrap();

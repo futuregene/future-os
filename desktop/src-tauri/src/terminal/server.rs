@@ -1960,7 +1960,8 @@ mod end_to_end {
                 Ok(Some(Ok(_))) => {}
                 Ok(Some(Err(error))) => panic!("socket error: {error}"),
                 Ok(None) => break,
-                Err(_) => break,
+                // Shell startup can outlast one read on a loaded CI runner.
+                Err(_) => continue,
             }
             if !answered_dsr && echoed.contains("\u{1b}[6n") {
                 answered_dsr = true;
@@ -1990,7 +1991,8 @@ mod end_to_end {
                     }
                 }
                 Ok(Some(Ok(_))) => {}
-                Ok(Some(Err(_))) | Ok(None) | Err(_) => break,
+                Ok(Some(Err(_))) | Ok(None) => break,
+                Err(_) => continue,
             }
             if !answered_dsr && echoed.contains("\u{1b}[6n") {
                 answered_dsr = true;

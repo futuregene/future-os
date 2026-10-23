@@ -68,6 +68,16 @@ fn embedded_startup_and_restart_keep_the_agent_in_the_desktop_process() {
     run_case("restart");
 }
 #[test]
+fn owned_service_repair_releases_the_previous_generation_before_starting() {
+    run_case("recover");
+}
+
+#[test]
+fn a_panicked_start_can_recover_only_after_service_retirement() {
+    run_case("recover-panic");
+}
+
+#[test]
 fn an_attached_host_does_not_stop_the_external_owner() {
     run_case("external");
 }
@@ -121,7 +131,7 @@ fn cancelling_an_external_probe_stops_cleanly_and_allows_a_fresh_start() {
 }
 
 #[test]
-fn cli_prompt_and_queued_follow_up_are_persisted_as_cancelled_on_exit() {
+fn cli_prompt_and_queued_follow_up_preserve_distinct_shutdown_states() {
     run_case("prompt");
 }
 
@@ -133,6 +143,18 @@ fn host_fixture() {
     let root = future_rpc::home::future_home();
     test_driver::install();
     let host = AgentHost::default();
+    if case == "recover-panic" {
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("panic-once"), "").unwrap();
+        assert!(host.start("auto".into()).is_err());
+        assert!(matches!(host.phase(), Phase::Failed(_)));
+        host.recover("auto".into()).unwrap();
+        assert_eq!(host.phase(), Phase::Ready);
+        assert!(host.owns_agent());
+        assert!(!host.recovery_requires_restart());
+        host.stop().unwrap();
+        return;
+    }
     if case == "cancel-probe" {
         let endpoint = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         endpoint.set_nonblocking(true).unwrap();
@@ -420,6 +442,27 @@ fn host_fixture() {
         assert!(response.success, "{}", response.error);
         identity
     });
+    if case == "recover" {
+        drop(rpc);
+        host.recover("auto".into()).unwrap();
+        assert!(host.owns_agent());
+        assert!(!host.recovery_requires_restart());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let next = runtime
+            .block_on(future_rpc::connection::connect_verified(
+                "auto",
+                crate::build_info::VERSION,
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+            ))
+            .unwrap();
+        assert_ne!(next.readiness().agent_instance_id, first);
+        drop(next);
+        drop(runtime);
+        host.stop().unwrap();
+        assert!(future_rpc::connection::check_instance_lock(&root).is_ok());
+        return;
+    }
     if let Some((received, stop, provider_thread)) = provider {
         drop(rpc);
         let rpc = tokio::runtime::Runtime::new().unwrap();
@@ -454,10 +497,13 @@ fn host_fixture() {
         provider_thread.join().unwrap();
         let manager = future_agent::session::Manager::new(root.join("agent/sessions"));
         let stored = manager.load("cli-session").unwrap();
-        for run in ["cli-first", "cli-follow-up"] {
+        for (run, expected) in [
+            ("cli-first", "interrupted_by_restart"),
+            ("cli-follow-up", "cancelled"),
+        ] {
             assert_eq!(
                 future_agent::session::find_run_terminal(&stored.entries, run).unwrap()["state"],
-                "cancelled"
+                expected
             );
         }
         return;
@@ -610,6 +656,8 @@ fn host_fixture() {
         assert!(started.elapsed() < STOP_TIMEOUT);
         assert!(root.join("agent/agent-instance.json").exists());
         assert!(host.start("auto".into()).is_err());
+        assert!(host.recover("auto".into()).is_err());
+        assert!(host.recovery_requires_restart());
         let file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)

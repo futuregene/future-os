@@ -180,7 +180,13 @@ describe("the input layer's send key", () => {
     // Chromium's way of saying "this key belongs to the IME".
     press({ code: "Enter", key: "Enter", keyCode: 229 } as KeyboardEventInit);
     expect(onSend).not.toHaveBeenCalled();
-    // Once the composition ends, the same key sends.
+    // Ending composition does not release the physical Enter.
+    press({ code: "Enter", key: "Enter", repeat: true });
+    expect(onSend).not.toHaveBeenCalled();
+    act(() => {
+      editor().dispatchEvent(new KeyboardEvent("keyup", { bubbles: true, code: "Enter", key: "Enter" }));
+    });
+    // Only a fresh press after release sends.
     press({ code: "Enter", key: "Enter" });
     expect(onSend).toHaveBeenCalledTimes(1);
   });

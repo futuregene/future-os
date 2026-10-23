@@ -4,7 +4,6 @@
   "addHint": "On the other computer, open Remote → Let other devices connect here, copy the pairing link, then paste it here.",
   "add": "Connect",
   "adding": "Connecting…",
-  "slotWarning": "Pairing here replaces that desktop's current phone pairing. It can be re-added later with a new link.",
   "errorUnreachable": "Couldn't reach that desktop. Make sure it's on and FutureOS is open, with Remote desktop enabled there.",
   "errorTimeout": "That desktop didn't answer in time. Try again in a moment — if it keeps happening, check both computers' network.",
   "errorPairing": "That pairing has expired. Generate a new pairing link on the other computer and add it again.",

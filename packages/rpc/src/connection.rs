@@ -449,9 +449,9 @@ pub async fn select_agent(
                 error.kind,
                 Some(io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused)
             ) {
-                return Err(ConnectionError::StartupBlocked(format!(
-                    "local endpoint could not be safely classified as absent: {error}"
-                )));
+                // Still no permission to launch. Preserve the transport class
+                // so an owning host can repair its own unresponsive service.
+                return Err(ConnectionError::Transport(error));
             }
             #[cfg(unix)]
             if let Ok(metadata) = std::fs::symlink_metadata(transport::local_socket_path()) {

@@ -611,7 +611,7 @@ impl ServerSession {
         }
         let unterminated = self
             .session_manager
-            .unterminated_run_id(&self.session_id)
+            .resumable_run_id(&self.session_id)
             .map_err(|error| anyhow::anyhow!("journal: {error}"))?;
         anyhow::ensure!(
             unterminated.as_deref() == Some(interrupted_run_id),
@@ -695,6 +695,17 @@ impl ServerSession {
             cwd_path,
             crate::utils::is_future_managed_dir(cwd_path),
         )?;
+        // Applies to local, remote and manual continuations alike. A new user
+        // message must not erase an unresolved tool effect from the transcript.
+        let recovery_safety = super::recovery_safety::RecoverySafety::load(
+            &self.session_manager,
+            &self.session_id,
+            &run_cwd,
+            continuation.is_some(),
+        )?;
+        if recovery_safety.history_changed {
+            self.load_history()?;
+        }
         let (system_prompt, verbose, mut run_loop) = if let Some(snapshot) = accepted_snapshot {
             let mut run_loop = snapshot.run_loop;
             self.swap_token_counters_into_loop(&mut run_loop);
@@ -1056,6 +1067,7 @@ impl ServerSession {
         let save_messages = messages_arc.clone();
         let save_persistence = self.persistence.clone();
         let persisted_run_id = run_lease.run_id.clone();
+        let persisted_execution_cwd = session_cwd.clone();
         let review_gate = approval_gate.clone();
         let save_closure: crate::agent::PersistCallback =
             Arc::new(move |msg: &mut crate::types::AgentMessage| {
@@ -1064,15 +1076,18 @@ impl ServerSession {
                 if is_ephemeral {
                     return;
                 }
-                let mut persisted = msg.clone();
                 // Every entry of this run carries its run identity — not just
                 // assistant entries — so a message's home run never has to be
                 // re-derived from journal position. Existing ids win for
                 // legacy messages that are re-saved during compaction.
-                let metadata = persisted.metadata.get_or_insert_with(serde_json::Map::new);
+                let metadata = msg.metadata.get_or_insert_with(serde_json::Map::new);
                 metadata
                     .entry("run_id".to_string())
                     .or_insert_with(|| serde_json::Value::String(persisted_run_id.clone()));
+                metadata
+                    .entry("execution_cwd".to_string())
+                    .or_insert_with(|| serde_json::Value::String(persisted_execution_cwd.clone()));
+                let persisted = msg.clone();
                 save_messages.write().push(persisted.clone());
                 let entry = crate::session::agent_message_to_entry(&persisted);
                 if let Err(error) = save_persistence.append(vec![entry]) {
@@ -1116,49 +1131,51 @@ impl ServerSession {
         let approval_cwd = session_cwd.clone();
         let approval_sandbox = sandbox.clone();
         let permission_level = run_permission_level.clone();
-        run_loop.config.before_tool_call =
-            Some(Arc::new(
-                move |tool_name, tool_id, arguments| match permission_level.as_str() {
-                    "all" => {
-                        // Legacy tool access does not grant extra OS sandbox
-                        // permissions. Explicit file requests still need a
-                        // command-bound approval receipt on every platform.
-                        if tool_name == "shell"
-                            && arguments
-                                .get("additional_permissions")
-                                .or_else(|| arguments.get("additionalPermissions"))
-                                .is_some_and(|value| !value.is_null())
-                        {
-                            return approval_gate_hook.request(
-                                &approval_broadcaster,
-                                &approval_session_id,
-                                &approval_cwd,
-                                tool_name,
-                                tool_id,
-                                arguments,
-                                &approval_sandbox,
-                            );
-                        }
-                        approve_tool_path_if_present(&approval_cwd, tool_name, arguments);
-                        None
+        run_loop.config.before_tool_call = Some(Arc::new(move |tool_name, tool_id, arguments| {
+            if let Some(result) = recovery_safety.before_tool(tool_name, arguments) {
+                return Some(result);
+            }
+            match permission_level.as_str() {
+                "all" => {
+                    // Legacy tool access does not grant extra OS sandbox
+                    // permissions. Explicit file requests still need a
+                    // command-bound approval receipt on every platform.
+                    if tool_name == "shell"
+                        && arguments
+                            .get("additional_permissions")
+                            .or_else(|| arguments.get("additionalPermissions"))
+                            .is_some_and(|value| !value.is_null())
+                    {
+                        return approval_gate_hook.request(
+                            &approval_broadcaster,
+                            &approval_session_id,
+                            &approval_cwd,
+                            tool_name,
+                            tool_id,
+                            arguments,
+                            &approval_sandbox,
+                        );
                     }
-                    "none" => Some(crate::types::ToolCallResult {
-                        result: format!(
-                            "Tool call `{tool_name}` denied: permission level is set to 'none'."
-                        ),
-                        is_error: true,
-                    }),
-                    _ => approval_gate_hook.request(
-                        &approval_broadcaster,
-                        &approval_session_id,
-                        &approval_cwd,
-                        tool_name,
-                        tool_id,
-                        arguments,
-                        &approval_sandbox,
+                    approve_tool_path_if_present(&approval_cwd, tool_name, arguments);
+                    None
+                }
+                "none" => Some(crate::types::ToolCallResult {
+                    result: format!(
+                        "Tool call `{tool_name}` denied: permission level is set to 'none'."
                     ),
-                },
-            ));
+                    is_error: true,
+                }),
+                _ => approval_gate_hook.request(
+                    &approval_broadcaster,
+                    &approval_session_id,
+                    &approval_cwd,
+                    tool_name,
+                    tool_id,
+                    arguments,
+                    &approval_sandbox,
+                ),
+            }
+        }));
         let prepare_cwd = session_cwd.clone();
         run_loop.config.prepare_tool_call = Some(Arc::new(move |tool_name, arguments| {
             prepare_session_tool_call(&prepare_cwd, tool_name, arguments)
@@ -1275,15 +1292,6 @@ impl ServerSession {
             // This check fences shared messages, disk commits, and terminal
             // events. A completion from an obsolete epoch is never allowed to
             // mutate a newer run.
-            let was_cancelled = runtime.snapshot().is_some_and(|active| {
-                active.run_id == task_lease.run_id
-                    && active.epoch == task_lease.epoch
-                    && matches!(
-                        active.phase,
-                        crate::runtime::RunPhase::Cancelling
-                            | crate::runtime::RunPhase::CancellationStuck
-                    )
-            });
             let stream_incomplete = run_loop
                 .stream_incomplete
                 .load(std::sync::atomic::Ordering::SeqCst);
@@ -1298,6 +1306,12 @@ impl ServerSession {
             if !runtime.begin_finalizing(&task_lease) {
                 return;
             }
+            // Finalizing freezes cancellation; read the cause after that fence
+            // so a user stop racing the shutdown cannot become an auto-resume.
+            let cancellation = runtime.cancellation_kind(&task_lease);
+            let was_cancelled = cancellation.is_some();
+            let system_interrupted =
+                cancellation == Some(crate::runtime::CancellationCause::SystemShutdown);
 
             let run_error = match result {
                 Ok(mut final_messages) => {
@@ -1325,7 +1339,9 @@ impl ServerSession {
             // checkpoint, so the complete in-memory history remains aligned with
             // the JSONL journal. commit_run reports an append failure by refusing
             // to commit, and we then heal via a full rewrite.
-            let terminal_state = if was_cancelled {
+            let terminal_state = if system_interrupted {
+                crate::session::RUN_STATE_INTERRUPTED_BY_RESTART
+            } else if was_cancelled {
                 crate::session::RUN_STATE_CANCELLED
             } else if run_error.is_some() {
                 crate::session::RUN_STATE_ERROR
@@ -1430,6 +1446,9 @@ impl ServerSession {
                     .as_mut()
                     .and_then(serde_json::Value::as_object_mut)
                 {
+                    if system_interrupted {
+                        content.insert("interruption_cause".into(), "system_shutdown".into());
+                    }
                     content.insert(
                         "input_tokens".into(),
                         tokens_in

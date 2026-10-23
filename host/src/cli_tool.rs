@@ -499,6 +499,9 @@ mod tests {
     /// A *runnable* CLI fixture. The tests above only inspect the file; the
     /// discovery tests have to execute it, because `probe` reads the version and
     /// capability contract from a real child process.
+    /// Callers run through `reexec_test` before creating this file: a concurrent
+    /// fork can inherit its writable handle until exec, making Linux reject the
+    /// probe with ETXTBSY even after `write` closes the parent's handle.
     #[cfg(unix)]
     fn script_cli(directory: &Path, body: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -664,6 +667,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_silent_cli_is_killed_and_reported_as_a_timeout() {
+        if crate::test_support::reexec_test() {
+            return;
+        }
         // `read` is a shell BUILTIN and `/dev/zero` never yields a newline, so the
         // script blocks without needing PATH, which
         // other tests in this binary legitimately narrow (skills_bootstrap sets it
@@ -690,8 +696,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn kill_without_blocking_ends_a_live_child_promptly() {
+        if crate::test_support::reexec_test() {
+            return;
+        }
         let mut child = std::process::Command::new("/bin/sh")
-            .args(["-c", "exec sleep 30"])
+            .args(["-c", "exec /bin/sleep 30"])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -715,6 +724,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_flooding_cli_is_killed_at_the_output_limit() {
+        if crate::test_support::reexec_test() {
+            return;
+        }
         // The limit, not the clock, is what this test is about.
         let _deadline = ProbeDeadlineGuard::set(None);
         // `printf` is a builtin, so the flood does not depend on PATH either.
@@ -733,11 +745,14 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_failing_cli_is_reported_with_its_exit_status() {
+        if crate::test_support::reexec_test() {
+            return;
+        }
         let _deadline = ProbeDeadlineGuard::set(None);
         let root = tempfile::tempdir().unwrap();
         let cli = script_cli(&root.path().join("bin"), "exit 3");
         let error = probe(&cli, "path").unwrap_err();
-        assert!(error.contains("exited with"), "{error}");
+        assert!(error.contains("exited with exit status: 3"), "{error}");
     }
 
     /// The seam must not be able to change what Desktop ships: with no override
@@ -771,6 +786,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_reply_that_arrives_after_the_deadline_is_captured_only_without_one() {
+        if crate::test_support::reexec_test() {
+            return;
+        }
         let _lock = path_lock();
         let root = tempfile::tempdir().unwrap();
         let cli = script_cli(

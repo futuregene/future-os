@@ -283,6 +283,14 @@ impl Manager {
     }
 
     pub fn unterminated_run_id(&self, id: &str) -> Result<Option<String>> {
+        self.run_candidate(id, false)
+    }
+
+    pub(crate) fn resumable_run_id(&self, id: &str) -> Result<Option<String>> {
+        self.run_candidate(id, true)
+    }
+
+    fn run_candidate(&self, id: &str, resume: bool) -> Result<Option<String>> {
         if !self.contains(id)? {
             return Ok(None);
         }
@@ -294,7 +302,11 @@ impl Manager {
             .into_iter()
             .map(serde_json::from_value)
             .collect::<std::result::Result<_, _>>()?;
-        Ok(super::find_unterminated_run(&entries))
+        Ok(if resume {
+            super::find_resumable_run(&entries)
+        } else {
+            super::find_unterminated_run(&entries)
+        })
     }
 
     pub(crate) fn run_terminal(&self, id: &str, run_id: &str) -> Result<Option<serde_json::Value>> {
@@ -342,6 +354,40 @@ impl Manager {
         })?;
         self.invalidate_display_projection(&session_id);
         Ok(result)
+    }
+
+    /// Startup only, before any executor is admitted. Settle durable user stops
+    /// whose process died before cancellation committed, without resuming them.
+    pub(crate) fn reconcile_user_stops_on_start(&self) -> Result<()> {
+        self.storage()?.db.call(|db| {
+            let tx = crate::session::database::begin_write_transaction(db)?;
+            let ids = {
+                let mut statement = tx.prepare("SELECT DISTINCT e.session_id FROM entries e JOIN runs r ON r.session_id=e.session_id AND r.run_id=e.run_id WHERE e.entry_type='run_stop_requested' AND r.status IN ('running','interrupted')")?;
+                let ids = statement.query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                ids
+            };
+            for id in ids {
+                let entries: Vec<SessionEntry> = super::sqlite_store::read_run_markers(&tx, &id)?
+                    .into_iter().map(serde_json::from_value).collect::<std::result::Result<_, _>>()?;
+                let Some(run) = entries.iter().rev().find(|e| e.entry_type == super::ENTRY_TYPE_RUN_STARTED)
+                    .and_then(|e| e.content.as_ref()).and_then(|v| v["run_id"].as_str()) else { continue; };
+                if !entries.iter().any(|e| e.entry_type == super::entry::ENTRY_TYPE_RUN_STOP_REQUESTED
+                    && e.content.as_ref().is_some_and(|v| v["run_id"] == run)) { continue; }
+                let previous = super::find_run_terminal(&entries, run);
+                if previous.as_ref().is_some_and(|v| v["state"] != super::RUN_STATE_INTERRUPTED_BY_RESTART) { continue; }
+                let mut terminal = SessionEntry::run_terminal(run, super::RUN_STATE_CANCELLED, 0, 0, None);
+                if let Some(previous) = previous { terminal.content = Some(previous); }
+                let content = terminal.content.as_mut().unwrap();
+                content["state"] = super::RUN_STATE_CANCELLED.into();
+                content["error"] = "Stopped by user before recovery".into();
+                content["interruption_cause"] = "user_stop".into();
+                super::sqlite_store::insert_transcript_entries(&tx, &id, Self::encoded(&[terminal])?)?;
+                tx.execute("UPDATE sessions SET revision=revision+1 WHERE id=?1", [&id])?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
     }
 
     pub fn save(&self, session: &Session) -> Result<()> {

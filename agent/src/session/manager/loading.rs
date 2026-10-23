@@ -14,11 +14,17 @@ impl Manager {
             .context("serialize entry")
     }
 
-    pub fn load(&self, id: &str) -> Result<Session> {
+    /// Decode authoritative blocks without manufacturing lost-tool results.
+    pub(crate) fn load_unrepaired_entries(&self, id: &str) -> Result<Vec<SessionEntry>> {
         let mut entries: Vec<SessionEntry> = self.storage()?.typed_entries(id)?;
         for entry in &mut entries {
             hydrate_entry_projections(entry);
         }
+        Ok(entries)
+    }
+
+    pub fn load(&self, id: &str) -> Result<Session> {
+        let mut entries = self.load_unrepaired_entries(id)?;
         // Runtime repair is a projection only; importing never calls this path.
         let stripped = strip_empty_assistants(&mut entries);
         let deduped = dedupe_tool_entries(&mut entries);

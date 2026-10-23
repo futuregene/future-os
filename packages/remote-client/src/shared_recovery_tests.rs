@@ -77,7 +77,7 @@ async fn shared_supervisor_budget_and_stop() {
                 closed = true;
                 break;
             }
-            if case.close_after_attempts.is_none() && task.is_finished() {
+            if case.close_after_attempts.is_none() && attempts == case.expected.rust {
                 break;
             }
             assert!(
@@ -95,17 +95,33 @@ async fn shared_supervisor_budget_and_stop() {
         );
         assert_eq!(closed, case.close_after_attempts.is_some());
         assert_eq!(client.is_stopped(), closed);
-        assert!(task.is_finished(), "{}: ownership remains live", case.id);
-        // Natural exhaustion must also be inert before the role is closed.
+        if !closed {
+            assert!(!task.is_finished(), "the cooldown remains owned");
+            tokio::time::advance(delay_unit() * 299).await;
+            settle().await;
+            assert_eq!(
+                host.rejected_loads.load(Ordering::SeqCst),
+                case.expected.rust
+            );
+            tokio::time::advance(delay_unit() * 10).await;
+            settle().await;
+            tokio::time::advance(delay_unit() * 2).await;
+            settle().await;
+            assert!(
+                host.rejected_loads.load(Ordering::SeqCst) > case.expected.rust,
+                "a transient outage must retry after cooldown"
+            );
+        }
+        client.shutdown(Duration::from_secs(1)).await.unwrap();
+        let stopped_at = host.rejected_loads.load(Ordering::SeqCst);
         tokio::time::advance(Duration::from_secs(600)).await;
         settle().await;
         assert_eq!(
             host.rejected_loads.load(Ordering::SeqCst),
-            case.expected.rust,
-            "{}: late retry",
-            case.id
+            stopped_at,
+            "shutdown cancels cooldown and every future retry"
         );
-        client.shutdown(Duration::from_secs(1)).await.unwrap();
+        assert!(task.is_finished());
         println!("remote-client shared rust {} PASS", case.id);
     }
 }

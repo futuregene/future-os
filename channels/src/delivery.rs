@@ -292,12 +292,17 @@ impl DeliveryQueue {
             .filter(|path| !path.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         std::fs::create_dir_all(parent)?;
+        // Serialize snapshots through their rename, not just their in-memory
+        // copy: concurrent saves otherwise share a temporary file and can
+        // overwrite a newer queue with an older snapshot.
+        let entries = self.lock();
         let payload = Store {
-            deliveries: self.lock().clone(),
+            deliveries: entries.clone(),
         };
         let temporary = self.path.with_extension("json.tmp");
         std::fs::write(&temporary, serde_json::to_string_pretty(&payload)?)?;
         std::fs::rename(&temporary, &self.path)?;
+        drop(entries);
         Ok(())
     }
 
@@ -364,6 +369,33 @@ mod tests {
         let queue = DeliveryQueue::load(PathBuf::from("/nonexistent/deliveries.json"));
         assert!(queue.is_empty());
         assert!(queue.load_error().is_none());
+    }
+
+    #[test]
+    fn concurrent_producers_preserve_deliveries_and_their_final_states() {
+        let (queue, path) = queue("delivery-concurrent");
+        let start = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let queue = &queue;
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    for _ in 0..16 {
+                        let id = queue.enqueue("cli", conversation(), "hello").unwrap();
+                        queue.record_success(&id).unwrap();
+                    }
+                });
+            }
+        });
+        let reloaded = DeliveryQueue::load(path.clone());
+        assert!(reloaded.load_error().is_none());
+        assert_eq!(reloaded.len(), 64);
+        assert!(reloaded
+            .all()
+            .iter()
+            .all(|entry| entry.state == DeliveryState::Sent));
+        assert!(!path.with_extension("json.tmp").exists());
     }
 
     #[test]

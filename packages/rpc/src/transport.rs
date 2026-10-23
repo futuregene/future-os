@@ -754,9 +754,15 @@ async fn bind_local_at(name: String) -> io::Result<LocalIncoming> {
                         let connected = std::mem::replace(&mut server, next);
                         yield Ok(LocalIo { inner: connected });
                     }
-                    Err(error) => yield Err(error),
+                    Err(error) => {
+                        yield Err(error);
+                        break;
+                    },
                 },
-                Err(error) => yield Err(error),
+                Err(error) => {
+                        yield Err(error);
+                        break;
+                    },
             }
         }
     };

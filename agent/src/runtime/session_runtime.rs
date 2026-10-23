@@ -114,7 +114,28 @@ impl SessionRuntime {
     /// timer. The task remains owned and the session remains unavailable until
     /// that same lease finalizes.
     pub fn request_abort(self: &Arc<Self>, expected_run_id: Option<&str>) -> Result<()> {
-        let Some(snapshot) = self.control.abort_expected(expected_run_id)? else {
+        self.request_cancellation(expected_run_id, false)
+    }
+
+    pub(crate) fn interrupt_for_shutdown(self: &Arc<Self>) -> Result<()> {
+        self.request_cancellation(None, true)
+    }
+
+    pub(crate) fn cancellation_kind(&self, lease: &RunLease) -> Option<super::CancellationCause> {
+        self.control.cancellation_kind(lease)
+    }
+
+    fn request_cancellation(
+        self: &Arc<Self>,
+        expected_run_id: Option<&str>,
+        system_interruption: bool,
+    ) -> Result<()> {
+        let snapshot = if system_interruption {
+            self.control.interrupt_for_shutdown()?
+        } else {
+            self.control.abort_expected(expected_run_id)?
+        };
+        let Some(snapshot) = snapshot else {
             return Ok(());
         };
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
