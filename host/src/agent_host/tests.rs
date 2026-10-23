@@ -131,7 +131,7 @@ fn cancelling_an_external_probe_stops_cleanly_and_allows_a_fresh_start() {
 }
 
 #[test]
-fn cli_prompt_and_queued_follow_up_are_persisted_as_cancelled_on_exit() {
+fn cli_prompt_and_queued_follow_up_preserve_distinct_shutdown_states() {
     run_case("prompt");
 }
 
@@ -497,10 +497,13 @@ fn host_fixture() {
         provider_thread.join().unwrap();
         let manager = future_agent::session::Manager::new(root.join("agent/sessions"));
         let stored = manager.load("cli-session").unwrap();
-        for run in ["cli-first", "cli-follow-up"] {
+        for (run, expected) in [
+            ("cli-first", "interrupted_by_restart"),
+            ("cli-follow-up", "cancelled"),
+        ] {
             assert_eq!(
                 future_agent::session::find_run_terminal(&stored.entries, run).unwrap()["state"],
-                "cancelled"
+                expected
             );
         }
         return;

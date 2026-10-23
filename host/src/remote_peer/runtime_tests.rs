@@ -1368,9 +1368,8 @@ async fn a_supervisor_stops_when_the_host_is_already_connected() {
     teardown(&fx.pair_id).await;
 }
 
-/// The window is finite: an unreachable host is retried a bounded number of
-/// times and then left alone. A loop that never ends is indistinguishable, to
-/// the user, from one that hung.
+/// One retry burst is finite. An unreachable host then enters a quiet cooldown
+/// while its cancellable supervisor remains owned for eventual recovery.
 ///
 /// The count is taken at the supervisor's own seam — one increment per retry it
 /// *dispatches* — not on the fake broker. The broker counts **sockets**, which is
@@ -1381,7 +1380,7 @@ async fn a_supervisor_stops_when_the_host_is_already_connected() {
 /// or a port the OS reused. The old assertion was `accepted == 18`, and 34 accepted
 /// sockets against an 18-attempt budget is what that mistake reports.
 #[tokio::test]
-async fn a_supervisor_gives_up_after_its_window() {
+async fn a_supervisor_enters_cooldown_after_its_window() {
     let (_home, mut fx) = start("peer-rt-supervisor-giveup").await;
     // Fail the real NATS handshake immediately on every connection. A closed
     // port can cost seconds per SYN on Windows; the retry budget must not
@@ -1403,19 +1402,21 @@ async fn a_supervisor_gives_up_after_its_window() {
     let desktop_id = fx.paired.creds.desktop_id.clone();
 
     let handle = install_supervisor_for_test(&desktop_id).await;
-    // Keep the existing deadline and verify the complete attempt budget as
-    // well as termination: an accidental early return must not pass this test.
-    tokio::time::timeout(std::time::Duration::from_secs(150), handle)
-        .await
-        .expect("the supervisor must stop once its window is spent")
-        .expect("no panic");
+    let budget = future_remote_client::runtime::reconnect_attempt_budget();
+    tokio::time::timeout(std::time::Duration::from_secs(20), async {
+        while supervisor_attempts(&desktop_id).await < budget {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the first retry burst must spend its attempt budget");
+    assert!(!handle.is_finished(), "cooldown keeps one supervisor owned");
 
     let dispatched = supervisor_attempts(&desktop_id).await;
     let accepts = accepted.load(Ordering::SeqCst);
     broker.abort();
     // The budget is the contract, so it is pinned as well as used: a schedule
     // change must be a deliberate edit to this number, not a silent one.
-    let budget = future_remote_client::runtime::reconnect_attempt_budget();
     assert_eq!(
         budget, 18,
         "the window is RECONNECT_DELAYS_SECS.len() * 3: six delays, three rounds"
@@ -1430,13 +1431,15 @@ async fn a_supervisor_gives_up_after_its_window() {
         "the full retry window was exercised ({accepts} sockets accepted; a socket \
          count is not an attempt count)"
     );
-
     assert!(
         !find(&list().await.expect("list"), &desktop_id).connected,
         "an unreachable host must not be reported as connected"
     );
 
     teardown(&fx.pair_id).await;
+    tokio::time::timeout(std::time::Duration::from_secs(1), handle.completed())
+        .await
+        .expect("teardown cancels the cooldown owner");
 }
 
 /// A connect that fails **transiently** schedules a bounded retry — and still
