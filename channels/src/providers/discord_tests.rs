@@ -898,17 +898,24 @@ async fn a_missed_heartbeat_ack_reconnects_as_a_zombie() {
     });
     // HELLO then READY, and never an ack: the second heartbeat interval
     // notices the missing ack and bails.
+    let release = Arc::new(tokio::sync::Notify::new());
     let (url, _received) = spawn_ws(vec![
         WsAction::SendText(hello.to_string()),
         WsAction::SendText(ready.to_string()),
-        WsAction::Delay(Duration::from_secs(4)),
+        WsAction::WaitForRelease(release.clone()),
     ])
     .await;
     let ctx = ctx_with_config(json!({}));
     let config = gateway_config(&url);
     let sender = test_sender(&ctx, "http://127.0.0.1:1");
-    let error = run_gateway_once(&ctx, &config, sender)
-        .await
+    let result = tokio::time::timeout(
+        Duration::from_secs(30),
+        run_gateway_once(&ctx, &config, sender),
+    )
+    .await;
+    release.notify_one();
+    let error = result
+        .expect("the missing ack must end the connection")
         .expect_err("a missing ack must reconnect");
     assert!(error.to_string().contains("not acknowledged"), "{error}");
 }

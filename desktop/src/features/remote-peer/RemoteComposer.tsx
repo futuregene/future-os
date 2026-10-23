@@ -14,6 +14,7 @@ import { cn } from "../../lib/cn";
 import { EMPTY_EDITOR_ATTR } from "../../lib/editableTarget";
 import { errorMessage } from "../../lib/errors";
 import { onFutureEvent } from "../../lib/futureEvents";
+import { useImeEnterGuard } from "../../lib/useImeEnterGuard";
 import { imageExtensionFromMime, splitFileName } from "../agent/attachments";
 import { SkillRecommendCard } from "../agent/SkillRecommendCard";
 import { RemoteApprovalMenu } from "./RemoteApprovalMenu";
@@ -263,6 +264,7 @@ export function RemoteComposer({
   const { t } = useTranslation("remotePeer");
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const ime = useImeEnterGuard();
   const [busy, setBusy] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -906,7 +908,13 @@ export function RemoteComposer({
           setCaret(node.selectionStart === node.selectionEnd ? node.selectionStart : null);
         }}
         onPaste={event => void pasteFiles(event)}
+        onCompositionStart={ime.onCompositionStart}
+        onCompositionEnd={ime.onCompositionEnd}
+        onKeyUp={ime.onKeyUp}
+        onBlur={ime.onBlur}
         onKeyDown={(event) => {
+          if (ime.shouldIgnoreKeyDown(event.nativeEvent))
+            return;
           // The slash menu owns the arrows and Enter while it is open: the
           // word being typed is a command, not a sentence.
           if (query !== null && slashItems.length > 0) {

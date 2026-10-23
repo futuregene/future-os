@@ -1,8 +1,8 @@
 //! Shared GUI/headless owner. The native worker holds the service scope and
 //! its singleton lock through runtime teardown; clients retain only handles.
 use future_agent::service::{
-    AgentConfig, AgentHandle, AgentService, PreparedAgent, ShutdownStatus, StartupCancellation,
-    StartupCancelled,
+    AgentConfig, AgentHandle, AgentService, PreparedAgent, ServiceRetirement, ShutdownStatus,
+    StartupCancellation, StartupCancelled,
 };
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
@@ -32,10 +32,13 @@ struct State {
     cancel: StartupCancellation,
     probe_cancel: Arc<tokio::sync::Notify>,
     handle: Option<AgentHandle>,
+    retirement: Option<ServiceRetirement>,
+    recovery_requires_restart: bool,
 }
 struct Shared {
     state: Mutex<State>,
     changed: Condvar,
+    recovery: Mutex<()>,
 }
 #[derive(Clone)]
 pub struct AgentHost(Arc<Shared>);
@@ -50,8 +53,11 @@ impl Default for AgentHost {
                 cancel: StartupCancellation::default(),
                 probe_cancel: Arc::new(tokio::sync::Notify::new()),
                 handle: None,
+                retirement: None,
+                recovery_requires_restart: false,
             }),
             changed: Condvar::new(),
+            recovery: Mutex::new(()),
         }))
     }
 }
@@ -88,6 +94,71 @@ impl AgentHost {
     }
     pub fn owns_agent(&self) -> bool {
         self.0.state.lock().unwrap().owned
+    }
+
+    pub fn recovery_requires_restart(&self) -> bool {
+        let state = self.0.state.lock().unwrap();
+        state.recovery_requires_restart
+            || (state.owned
+                && state.finished
+                && !state
+                    .retirement
+                    .as_ref()
+                    .is_some_and(ServiceRetirement::is_complete))
+    }
+
+    /// Repair only after sustained loss of readiness. External services are
+    /// detached, never stopped. Owned services must retire AND finish their
+    /// native driver before their failure can be cleared. No command is replayed.
+    pub fn recover(&self, configured: String) -> Result<(), crate::Error> {
+        let Ok(_recovery) = self.0.recovery.try_lock() else {
+            return Ok(());
+        };
+        if crate::request_scope::is_stopping() {
+            return Err("Desktop is stopping".into());
+        }
+        {
+            let state = self.0.state.lock().unwrap();
+            if matches!(state.phase, Phase::Starting | Phase::Stopping) {
+                return Ok(());
+            }
+            if !state.owned && !state.finished {
+                return Ok(());
+            }
+            if state.recovery_requires_restart {
+                return Err("Agent cleanup is incomplete; restart Desktop".into());
+            }
+        }
+        let result = (|| {
+            if self.owns_agent() {
+                // This uses the service control handle, not the broken RPC
+                // connection, and never freezes application-wide admission.
+                let _ = self.stop_until(Instant::now() + STOP_TIMEOUT);
+            }
+            {
+                let mut state = self.0.state.lock().unwrap();
+                if !state.finished
+                    || (state.owned
+                        && !state
+                            .retirement
+                            .as_ref()
+                            .is_some_and(ServiceRetirement::is_complete))
+                {
+                    state.recovery_requires_restart = true;
+                    return Err("Agent cleanup is incomplete; restart Desktop".into());
+                }
+                if crate::request_scope::is_stopping() {
+                    return Err("Desktop is stopping".into());
+                }
+                state.phase = Phase::Stopped;
+                state.owned = false;
+                state.handle = None;
+                state.retirement = None;
+                state.yield_reason = None;
+            }
+            self.start(configured)
+        })();
+        result
     }
 
     /// Give up an Agent this host only *attached* to, so a later [`Self::start`]
@@ -165,6 +236,7 @@ impl AgentHost {
                     // The previous worker's yield belonged to its own attempt.
                     state.yield_reason = None;
                     state.handle = None;
+                    state.retirement = None;
                     state.cancel = StartupCancellation::default();
                     state.probe_cancel = Arc::new(tokio::sync::Notify::new());
                     let host = self.clone();
@@ -334,13 +406,15 @@ impl AgentHost {
                 return Ok(());
             }
         }
-        AgentService::with_local_start(AgentConfig::default(), permit, |service| {
+        let config = AgentConfig::default();
+        AgentService::with_local_start(config, permit, |service| {
             {
                 let mut state = self.0.state.lock().unwrap();
                 if state.phase != Phase::Starting {
                     return Ok(());
                 }
                 state.owned = true;
+                state.retirement = Some(service.retirement());
             }
             service.run_with_cleanup(|| {
                 // Only the lock owner may set first-launch environment defaults.

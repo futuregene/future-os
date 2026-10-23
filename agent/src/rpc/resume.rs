@@ -44,7 +44,6 @@
 
 use std::time::Duration;
 
-use crate::rpc::session_prompt::PromptText;
 use crate::rpc::AppState;
 
 /// How long after its last activity a conversation is still worth continuing
@@ -117,6 +116,7 @@ enum Held {
     Busy,
     /// No model configured, so the continuation prompt cannot run.
     NoModel,
+    Uncertain,
 }
 
 /// The pass's tally; the summary line is derived from it.
@@ -280,7 +280,7 @@ fn is_candidate(summary: &crate::session::SessionSummary) -> bool {
 fn resume_one(state: &AppState, session_id: &str) -> Result<Outcome, String> {
     let run_id = state
         .session_manager
-        .unterminated_run_id(session_id)
+        .resumable_run_id(session_id)
         .map_err(|error| format!("journal: {error}"))?;
     let Some(run_id) = run_id else {
         return Ok(Outcome::NotInterrupted);
@@ -311,55 +311,62 @@ fn resume_one(state: &AppState, session_id: &str) -> Result<Outcome, String> {
     if session.model.trim().is_empty() {
         return Ok(Outcome::Held(Held::NoModel));
     }
+    let safety = super::recovery_safety::RecoverySafety::load(
+        &session.session_manager,
+        session_id,
+        &session.cwd,
+        true,
+    )
+    .map_err(|error| format!("recovery verification: {error}"))?;
+    if let Some(reason) = safety.pause_reason() {
+        let previous = state
+            .session_manager
+            .run_terminal(session_id, &run_id)
+            .map_err(|error| format!("recovery outcome: {error}"))?;
+        if previous.as_ref().and_then(|v| v["error"].as_str()) != Some(&reason) {
+            let mut terminal = crate::session::SessionEntry::run_terminal(
+                &run_id,
+                crate::session::RUN_STATE_INTERRUPTED_BY_RESTART,
+                0,
+                0,
+                Some(&reason),
+            );
+            if let Some(previous) = previous {
+                // Verification must not erase tokens, duration or other facts
+                // already committed by a graceful system interruption.
+                terminal.content = Some(previous);
+                terminal.content.as_mut().unwrap()["error"] = reason.into();
+            }
+            terminal.content.as_mut().unwrap()["interruption_cause"] = "outcome_unknown".into();
+            state
+                .session_manager
+                .append_entries_synced(session_id, &[terminal])
+                .map_err(|error| format!("recovery outcome: {error}"))?;
+        }
+        return Ok(Outcome::Held(Held::Uncertain));
+    }
     submit_continuation(&mut session, session_id, &run_id)?;
     Ok(Outcome::Continued)
 }
 
-/// Continue in place, or fall back to the shape this replaced.
-///
-/// Both shapes have to stay available. In place is the better one — no user
-/// message appears in a conversation nobody typed into — but it depends on the
-/// provider accepting a request whose history stops mid-turn and on the journal
-/// still showing the run as unterminated. When either says no, continuing in
-/// place is refused, and the alternative is a visible prompt: a fabricated user
-/// message is bad, but an interrupted conversation that never continues is
-/// worse, and the user can at least see and correct what was sent.
-///
-/// Kept as its own function so the fallback is exercised by a test rather than
-/// being a branch nobody has ever taken.
+/// Continue the verified interruption without falling back to a new prompt.
 pub(super) fn submit_continuation(
     session: &mut crate::rpc::ServerSession,
     session_id: &str,
     run_id: &str,
 ) -> Result<(), String> {
-    match session.continue_interrupted_run(run_id, &build_prompt()) {
-        Ok(_) => Ok(()),
-        Err(error) => {
-            eprintln!(
-                "FutureOS resume: {session_id} cannot continue in place ({error}); \
-                 submitting a continuation prompt instead"
-            );
-            session
-                .enqueue_prompt_with_model_context(
-                    PromptText::new(&build_prompt(), ""),
-                    &[],
-                    &[],
-                    None,
-                    &format!("resume_{run_id}"),
-                    crate::runtime::BusyPolicy::EnqueueIfBusy,
-                )
-                .map(|_| ())
-                .map_err(|error| format!("prompt: {error}"))
-        }
-    }
+    // A refused recovery must never bypass its safety check by becoming an
+    // ordinary user prompt. Keep the original work intact for reconciliation.
+    session
+        .continue_interrupted_run(run_id, &build_prompt())
+        .map(|_| ())
+        .map_err(|error| format!("{session_id}: {error}"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The prompt must tell the model that tools may have partly run; a model
-    /// that assumes they did not re-runs side effects.
     #[test]
     fn the_prompt_names_partial_tool_execution() {
         let prompt = build_prompt();
@@ -544,6 +551,137 @@ mod wiring_tests {
     use std::sync::Arc;
     use tokio_stream::wrappers::ReceiverStream;
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn user_stop_during_startup_delay_prevents_automatic_resume() {
+        let provider = RecordingProvider::new();
+        let state = state_with(provider.clone());
+        seed_crashed_session(&state, "stopped");
+        register_session(&state, provider.clone(), "stopped");
+        state.sessions.read()["stopped"]
+            .read()
+            .abort_run(Some("run-crashed"))
+            .unwrap();
+        assert_eq!(
+            resume_one(&state, "stopped").unwrap(),
+            Outcome::NotInterrupted
+        );
+        assert!(provider.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn accepted_user_stop_is_durable_before_the_task_finishes() {
+        let provider = RecordingProvider::new();
+        let state = state_with(provider.clone());
+        seed_crashed_session(&state, "active-stop");
+        register_session(&state, provider, "active-stop");
+        let session = state.sessions.read()["active-stop"].clone();
+        session
+            .read()
+            .runtime
+            .begin(Some("run-crashed"), None)
+            .unwrap();
+        session.read().abort_run(Some("run-crashed")).unwrap();
+        // No terminal exists yet: an immediate process loss must still not
+        // resurrect work the user has already stopped.
+        assert!(state
+            .session_manager
+            .unterminated_run_id("active-stop")
+            .unwrap()
+            .is_some());
+        assert!(state
+            .session_manager
+            .resumable_run_id("active-stop")
+            .unwrap()
+            .is_none());
+        state
+            .session_manager
+            .reconcile_user_stops_on_start()
+            .unwrap();
+        let terminal = state
+            .session_manager
+            .run_terminal("active-stop", "run-crashed")
+            .unwrap()
+            .unwrap();
+        assert_eq!(terminal["state"], crate::session::RUN_STATE_CANCELLED);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unknown_shell_holds_recovery_without_spending_a_model_request() {
+        let provider = RecordingProvider::new();
+        let state = state_with(provider.clone());
+        seed_crashed_session(&state, "uncertain");
+        state
+            .session_manager
+            .append_entries_synced(
+                "uncertain",
+                &[SessionEntry::new_assistant(
+                    serde_json::json!("working"),
+                    vec![crate::types::ToolCall {
+                        id: "unknown-effect".into(),
+                        call_type: "function".into(),
+                        function: crate::types::ToolCallFn {
+                            name: "shell".into(),
+                            arguments: serde_json::json!({"command":"append-once"}),
+                        },
+                    }],
+                )],
+            )
+            .unwrap();
+        register_session(&state, provider.clone(), "uncertain");
+        for _ in 0..2 {
+            assert_eq!(
+                resume_one(&state, "uncertain").unwrap(),
+                Outcome::Held(Held::Uncertain)
+            );
+        }
+        assert!(provider.requests.lock().unwrap().is_empty());
+        let terminal = state
+            .session_manager
+            .run_terminal("uncertain", "run-crashed")
+            .unwrap()
+            .unwrap();
+        assert!(terminal["error"]
+            .as_str()
+            .unwrap()
+            .contains("RECOVERY_UNCERTAIN"));
+        assert_eq!(
+            state
+                .session_manager
+                .resumable_run_id("uncertain")
+                .unwrap()
+                .as_deref(),
+            Some("run-crashed")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn graceful_system_interruption_resumes_once_and_refusal_never_falls_back() {
+        let provider = RecordingProvider::new();
+        let state = state_with(provider.clone());
+        seed_crashed_session(&state, "system-stopped");
+        let mut terminal = SessionEntry::run_terminal(
+            "run-crashed",
+            crate::session::RUN_STATE_INTERRUPTED_BY_RESTART,
+            0,
+            0,
+            None,
+        );
+        terminal.content.as_mut().unwrap()["interruption_cause"] = "system_shutdown".into();
+        state
+            .session_manager
+            .append_entries_synced("system-stopped", &[terminal])
+            .unwrap();
+        register_session(&state, provider.clone(), "system-stopped");
+        assert_eq!(
+            resume_one(&state, "system-stopped").unwrap(),
+            Outcome::Continued
+        );
+        let session = state.sessions.read()["system-stopped"].clone();
+        assert!(
+            submit_continuation(&mut session.write(), "system-stopped", "run-crashed").is_err()
+        );
+    }
+
     /// Answers every request with one sentence, and records what it was asked.
     struct RecordingProvider {
         requests: std::sync::Mutex<Vec<ModelRequest>>,
@@ -648,8 +786,8 @@ mod wiring_tests {
             id: "c1".to_string(),
             call_type: "function".to_string(),
             function: crate::types::ToolCallFn {
-                name: "shell".to_string(),
-                arguments: serde_json::json!({"command": "touch side-effect"}),
+                name: "read".to_string(),
+                arguments: serde_json::json!({"path": "progress.txt"}),
             },
         };
         let entries = vec![
@@ -796,11 +934,9 @@ mod wiring_tests {
         );
     }
 
-    /// The other half of "both paths coexist": when the journal cannot prove an
-    /// open run, the pass still continues the conversation — by deliberately
-    /// falling back to the visible prompt shape, not by doing nothing.
+    /// A closed run cannot acquire a continuation or a fallback user prompt.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_restart_pass_falls_back_to_a_prompt_when_in_place_is_refused() {
+    async fn a_closed_run_is_not_resumed_or_replaced_with_a_prompt() {
         let provider = RecordingProvider::new();
         let state = state_with(provider.clone());
         seed_crashed_session(&state, "s-closed");

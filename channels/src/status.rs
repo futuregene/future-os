@@ -253,28 +253,26 @@ impl StatusBoard {
 
     /// Write the snapshot if anything changed and the flush interval elapsed.
     pub fn flush_if_due(&self) -> Result<bool> {
-        let snapshot = {
-            let mut inner = self.lock();
-            if !inner.dirty || inner.last_flush.elapsed() < FLUSH_INTERVAL {
-                return Ok(false);
-            }
-            inner.dirty = false;
-            inner.last_flush = std::time::Instant::now();
-            Self::build(&inner)
-        };
-        self.write(&snapshot)?;
+        let mut inner = self.lock();
+        if !inner.dirty || inner.last_flush.elapsed() < FLUSH_INTERVAL {
+            return Ok(false);
+        }
+        // Keep snapshot construction and publication under the same lock:
+        // concurrent publishers must neither share the temporary file nor let
+        // an older snapshot overwrite a newer one. Failed writes stay dirty.
+        self.write(&Self::build(&inner))?;
+        inner.dirty = false;
+        inner.last_flush = std::time::Instant::now();
         Ok(true)
     }
 
     /// Write the snapshot unconditionally (startup, shutdown, transitions).
     pub fn flush(&self) -> Result<()> {
-        let snapshot = {
-            let mut inner = self.lock();
-            inner.dirty = false;
-            inner.last_flush = std::time::Instant::now();
-            Self::build(&inner)
-        };
-        self.write(&snapshot)
+        let mut inner = self.lock();
+        self.write(&Self::build(&inner))?;
+        inner.dirty = false;
+        inner.last_flush = std::time::Instant::now();
+        Ok(())
     }
 
     /// Where the snapshot is published (diagnostics and tests).
@@ -377,6 +375,47 @@ mod tests {
         let slack = snapshot.channels.get("slack").expect("slack");
         assert_eq!(slack.rejected_count, 1);
         assert_eq!(slack.state, None);
+    }
+
+    #[test]
+    fn concurrent_publishers_preserve_all_counters_on_disk() {
+        let (board, path) = board("status-concurrent");
+        let start = std::sync::Barrier::new(4);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let board = &board;
+                let start = &start;
+                scope.spawn(move || {
+                    start.wait();
+                    for _ in 0..16 {
+                        board.count_inbound("cli", 1);
+                        board.flush().expect("concurrent publication succeeds");
+                    }
+                });
+            }
+        });
+        let snapshot = StatusSnapshot::load(&path);
+        assert_eq!(snapshot.channels["cli"].inbound_count, 64);
+        assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    #[test]
+    fn failed_publication_remains_due_for_retry() {
+        for forced in [false, true] {
+            let (board, path) = board("status-retry");
+            board.count_inbound("cli", 1);
+            // A directory at the destination rejects the final rename.
+            std::fs::create_dir(&path).unwrap();
+            let result = if forced {
+                board.flush().map(|()| true)
+            } else {
+                board.flush_if_due()
+            };
+            assert!(result.is_err());
+            std::fs::remove_dir(&path).unwrap();
+            assert!(board.flush_if_due().unwrap(), "failed writes remain due");
+            assert_eq!(StatusSnapshot::load(&path).channels["cli"].inbound_count, 1);
+        }
     }
 
     #[test]

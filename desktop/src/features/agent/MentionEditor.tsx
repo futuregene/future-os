@@ -7,6 +7,7 @@ import { searchWorkspaceFiles } from "../../integrations/storage/threadStore";
 import { cn } from "../../lib/cn";
 import { EMPTY_EDITOR_ATTR } from "../../lib/editableTarget";
 import { useCommittedRef } from "../../lib/useCommittedRef";
+import { useImeEnterGuard } from "../../lib/useImeEnterGuard";
 import { localPathsFromUriList } from "./clipboardAttachments";
 import { hashContext, isEditorEmpty, mentionContext, PILL_ATTR, serialize, slashContext } from "./composer/mentionDom";
 import { FileMenu, SessionMenu, SlashMenu } from "./composer/MentionMenus";
@@ -125,7 +126,8 @@ export function MentionEditor({
 }: MentionEditorProps) {
   const { t } = useTranslation("agent");
   const editorRef = useRef<HTMLDivElement | null>(null);
-  const isComposingRef = useRef(false);
+  const ime = useImeEnterGuard();
+  const { isComposingRef } = ime;
   // null → no active mention; "" → `@` with empty query (recents).
   const [query, setQuery] = useState<string | null>(null);
   const [results, setResults] = useState<WorkspaceFileResult[]>([]);
@@ -551,10 +553,7 @@ export function MentionEditor({
   }
 
   function handleKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    // Hand every keystroke to the IME while composing (Enter commits, arrows
-    // pick candidates). keyCode 229 covers webviews that leave isComposing unset
-    // on the committing keydown. Mirrors the old textarea guard.
-    if (event.nativeEvent.isComposing || isComposingRef.current || event.nativeEvent.keyCode === 229)
+    if (ime.shouldIgnoreKeyDown(event.nativeEvent))
       return;
 
     if (open && results.length > 0) {
@@ -782,10 +781,12 @@ export function MentionEditor({
           onChange?.();
         }}
         onKeyDown={handleKeyDown}
+        onKeyUp={ime.onKeyUp}
+        onBlur={ime.onBlur}
         onPaste={handlePaste}
-        onCompositionStart={() => { isComposingRef.current = true; }}
+        onCompositionStart={ime.onCompositionStart}
         onCompositionEnd={() => {
-          isComposingRef.current = false;
+          ime.onCompositionEnd();
           // After the composed text lands, re-check for an active `@`/`/` trigger.
           requestAnimationFrame(() => {
             if (!isComposingRef.current) {

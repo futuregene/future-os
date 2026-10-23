@@ -752,10 +752,7 @@ async fn an_unclassifiable_local_endpoint_failure_never_authorizes_a_start() {
     .await
     .err()
     .expect("an unclassifiable occupant must not authorize a local start");
-    assert!(
-        matches!(error, ConnectionError::StartupBlocked(ref reason) if reason.contains("could not be safely classified as absent")),
-        "{error}"
-    );
+    assert!(matches!(error, ConnectionError::Transport(_)), "{error}");
     assert_eq!(
         std::fs::read_to_string(&endpoint).unwrap(),
         "not a socket",

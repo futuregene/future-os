@@ -335,6 +335,10 @@ fn lone_delta_is_flushed_after_the_batch_window() {
     gate.wait();
 
     std::thread::sleep(EVENT_BATCH_WINDOW + std::time::Duration::from_millis(100));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while b.journal_commit_count() == 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     let count = manager
         .storage()
         .unwrap()
