@@ -22,6 +22,7 @@
     },
     "composer": {
       "focus": "Focus the composer",
+      "attach": "Attach files",
       "model": {
         "previous": "Previous model",
         "next": "Next model"
@@ -37,6 +38,8 @@
     },
     "thread": {
       "find": "Find in this conversation",
+      "copyReply": "Copy the last reply",
+      "latest": "Jump to the latest message",
       "usage": "Show this conversation's usage",
       "previous": "Previous conversation",
       "next": "Next conversation"
@@ -177,6 +180,7 @@
     "newline": "Insert a line break",
     "escape": "Close a dialog, or reject a request",
     "approve": "Approve a request",
+    "approveAlways": "Approve, and stop asking in this workspace",
     "transcript": "Jump to the previous / next question",
     "menu": "Move within an open menu"
   },

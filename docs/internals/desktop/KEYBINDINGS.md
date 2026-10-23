@@ -327,6 +327,8 @@ Everything that belongs to a view is registered by that view while it is mounted
 | --- | --- | --- |
 | `chat.new`, `panel.*`, `section.*`, `settings.open` | `AppShell` | shell state |
 | `thread.find` | `features/agent/search/ThreadSearch` | only exists with a conversation open |
+| `thread.copyReply` / `thread.latest` | `features/agent/AgentThread` | the messages and the scroll position are the transcript's. `copyReply` registers only while the turn has an answer to copy, so the key is unclaimed on an empty transcript |
+| `composer.attach` | `features/agent/Composer` | the attachment list is the composer's hook (`useComposerAttachments`) |
 | `chat.stop` | `features/agent/AgentThread` | the abort lives in `useAgentThreadState`, and only while a reply streams |
 | `composer.focus` | `features/agent/Composer` | only the composer knows whether it can hold a caret |
 | `composer.model.*` / `composer.thinking.*` / `composer.approval.*` | `features/agent/composer/ComposerControls` | the three pickers' values and availability live in that row |
@@ -368,6 +370,9 @@ separate keymap — see *Modes* below.
 | Stop generating | `mod+.` | registered only while a reply streams |
 | Focus the composer | `mod+l` | |
 | Find in this conversation | `mod+f` | was a private listener in `ThreadSearch` |
+| Copy the last reply | `mod+alt+c` | the same prose the reply's hover button copies (`replyCopyText`); registered only while the turn has an answer |
+| Jump to the latest message | `mod+alt+g` | the corner's jump button from the keys; `Page Up`/`Page Down` step between questions instead |
+| Attach files | `mod+shift+o` | the composer's paperclip, through the same picker and access probe |
 | Previous / next conversation | `mod+[` / `mod+]` | the fine move: every drawn conversation row; repeats |
 | Previous / next workspace or conversation | `mod+shift+[` / `mod+shift+]` | the coarse move: hold ⇧ for the bigger step; repeats |
 | Filter the conversation list | `mod+shift+f` | jumps to the field, does not navigate |
@@ -384,8 +389,18 @@ separate keymap — see *Modes* below.
 | Open settings | `mod+,` | |
 
 Fixed keys (listed in Settings, not assignable): `Enter` send, `Shift+Enter`
-newline, `Esc` close/reject, `⌘/Ctrl+Enter` approve, `Page Up`/`Page Down`
+newline, `Esc` close/reject, `⌘/Ctrl+Enter` approve, `⌘/Ctrl+Shift+Enter` approve for
+this workspace, `↑`/`↓` recall in the composer (below), `Page Up`/`Page Down`
 transcript (the third navigation level), arrows + `Enter` in an open menu.
+
+**`↑`/`↓` in the composer** put this conversation's already-sent messages back in the
+box (`features/agent/composerHistory.ts`, one `sessionStorage` entry per conversation).
+The key belongs to the editor, not to the command table, for the same reason `Enter`
+does: it is ordinary typing while the box has text, and its meaning is the field's
+caret (a bare key outside a mode is never a command — see *What the recorder refuses*).
+`↑` is taken only on an **empty** box (nowhere to move the caret to), and the walk
+continues while the recalled text is untouched; the first real edit ends it, so the
+arrows are the editor's again.
 
 ## What the recorder refuses
 

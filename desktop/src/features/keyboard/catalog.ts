@@ -42,7 +42,10 @@ export type CommandId
     | "composer.approval.previous"
     | "composer.approval.next"
     | "thread.find"
+    | "thread.copyReply"
+    | "thread.latest"
     | "thread.usage"
+    | "composer.attach"
     | "group.previous"
     | "group.next"
     | "thread.previous"
@@ -175,9 +178,21 @@ export const COMMANDS: readonly CommandSpec[] = [
   { id: "chat.stop", category: "chat", defaultBinding: "mod+period", inTerminal: false },
   { id: "composer.focus", category: "chat", defaultBinding: "mod+l", inTerminal: false },
   { id: "thread.find", category: "chat", defaultBinding: "mod+f", inTerminal: false },
+  // Reading a long reply on a small screen: the answer people quote is the one the
+  // turn ended on, and reaching for its hover button means finding the row first.
+  // The same prose the button beside it copies — see `replyCopyText`.
+  { id: "thread.copyReply", category: "chat", defaultBinding: "mod+alt+c", inTerminal: false },
+  // Down to the live end of the conversation. `⌘⌥G` is what OpenCode binds to
+  // "last message"; the jump button the corner shows when the reader is scrolled
+  // away has always existed, and this is it from the keyboard. `Page Up`/`Down`
+  // step between questions (a fixed key), so this is the coarse move.
+  { id: "thread.latest", category: "chat", defaultBinding: "mod+alt+g", inTerminal: false },
   // The conversation's own account book: the same dialog the header's receipt
   // opens, for a reader whose hands are on the keys.
   { id: "thread.usage", category: "chat", defaultBinding: "mod+alt+u", inTerminal: false },
+  // The composer's fourth control beside the three pickers: a paperclip is a
+  // pointer target, and attaching is the one composer action with no key at all.
+  { id: "composer.attach", category: "chat", defaultBinding: "mod+shift+o", inTerminal: false },
   // The composer's three pickers, from the keyboard: model, thinking level and
   // who approves a tool call. Stepping the value rather than opening the menu —
   // a `SelectMenu` has no roving focus, so opening it would only get a reader to
@@ -464,6 +479,8 @@ export const FIXED_KEYS: ReadonlyArray<{ labelKey: string; keys: { mac: string; 
   { labelKey: "fixed.newline", keys: { mac: "⇧↩", other: "Shift+Enter" } },
   { labelKey: "fixed.escape", keys: { mac: "Esc", other: "Esc" } },
   { labelKey: "fixed.approve", keys: { mac: "⌘↩", other: "Ctrl+Enter" } },
+  // The wider answer to the same question: approve, and stop asking here.
+  { labelKey: "fixed.approveAlways", keys: { mac: "⇧⌘↩", other: "Ctrl+Shift+Enter" } },
   { labelKey: "fixed.transcript", keys: { mac: "⇞ / ⇟", other: "Page Up / Page Down" } },
   { labelKey: "fixed.menu", keys: { mac: "↑ ↓ ↩", other: "Up Down Enter" } },
 ];

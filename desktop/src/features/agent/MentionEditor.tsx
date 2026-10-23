@@ -93,6 +93,14 @@ interface MentionEditorProps {
   onPasteAttachmentPaths?: (paths: string[]) => void;
   /** Clipboard files without a local URI, handed to the parent for copying. */
   onPasteFiles?: (files: File[]) => void;
+  /**
+   * The conversation's sent messages, for `↑`/`↓` on an empty box.
+   *
+   * Omitted where walking history makes no sense (the panel's dictation layer),
+   * and then the arrows are the editor's alone. See `composerHistory` for the
+   * cursor the composer hands in.
+   */
+  history?: { next: () => string | null; previous: () => string | null };
   ref?: Ref<MentionEditorHandle>;
 }
 
@@ -122,6 +130,7 @@ export function MentionEditor({
   onChange,
   onPasteAttachmentPaths,
   onPasteFiles,
+  history,
   ref,
 }: MentionEditorProps) {
   const { t } = useTranslation("agent");
@@ -141,6 +150,9 @@ export function MentionEditor({
   const [selectedSession, setSelectedSession] = useState(0);
   const [empty, setEmpty] = useState(true);
   const emptyRef = useRef(true);
+  // Whether the text in the box came from `↑` (and may be walked further) rather
+  // than from the reader. Cleared by the next real edit.
+  const recallingRef = useRef(false);
 
   const slashGroups = useMemo(
     () => slashQuery === null
@@ -190,6 +202,37 @@ export function MentionEditor({
     return () => observer.disconnect();
   }, [syncEmpty]);
 
+  // Rebuild the DOM from markdown: verbatim text becomes text nodes, each
+  // `[name](./path)` mention and `[title](futureos://session/<id>)` reference
+  // becomes an atomic pill (same builders as a live pick), so the editor never
+  // re-hydrates raw markup. Also what `↑`/`↓` recall writes (see the key
+  // handler), which is why it is a local function and not only a handle method.
+  function restoreContent(content: string) {
+    const editor = editorRef.current;
+    if (editor) {
+      editor.innerHTML = "";
+      for (const segment of content ? parseMentionSegments(content) : []) {
+        if (segment.mention && segment.sessionId)
+          editor.appendChild(buildSessionPill({ sessionId: segment.sessionId, title: segment.text }));
+        else if (segment.mention && segment.path)
+          editor.appendChild(buildPill({ name: segment.text, path: segment.path.replace(/^\.\//, "") }));
+        else if (segment.text)
+          appendTextWithSkillPills(editor, segment.text);
+      }
+      // Focus and park the caret at the end: a bare focus() drops the caret at
+      // the start, which reads as "cursor jumped before the restored text".
+      editor.focus();
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+    closeMenu();
+    syncEmpty();
+  }
+
   useImperativeHandle(ref, () => ({
     getContent: () => serialize(editorRef.current),
     clear: () => {
@@ -200,35 +243,7 @@ export function MentionEditor({
     },
     focus: () => editorRef.current?.focus(),
     insertMention,
-    // Rebuild the DOM from markdown: verbatim text becomes text nodes, each
-    // `[name](./path)` mention and `[title](futureos://session/<id>)` reference
-    // becomes an atomic pill (same builders as a live pick), so the editor
-    // never re-hydrates raw markup.
-    restore: (content: string) => {
-      const editor = editorRef.current;
-      if (editor) {
-        editor.innerHTML = "";
-        for (const segment of content ? parseMentionSegments(content) : []) {
-          if (segment.mention && segment.sessionId)
-            editor.appendChild(buildSessionPill({ sessionId: segment.sessionId, title: segment.text }));
-          else if (segment.mention && segment.path)
-            editor.appendChild(buildPill({ name: segment.text, path: segment.path.replace(/^\.\//, "") }));
-          else if (segment.text)
-            appendTextWithSkillPills(editor, segment.text);
-        }
-        // Focus and park the caret at the end: a bare focus() drops the caret
-        // at the start, which reads as "cursor jumped before the restored text".
-        editor.focus();
-        const selection = window.getSelection();
-        const range = document.createRange();
-        range.selectNodeContents(editor);
-        range.collapse(false);
-        selection?.removeAllRanges();
-        selection?.addRange(range);
-      }
-      closeMenu();
-      syncEmpty();
-    },
+    restore: restoreContent,
   }));
 
   function closeMenu() {
@@ -619,6 +634,31 @@ export function MentionEditor({
       return;
     }
 
+    // `↑`/`↓` walk the conversation's sent messages — the Codex/OpenCode
+    // `history_previous` behaviour. `↑` on an **empty** box is not a caret move
+    // (there is nowhere to go), which is why it can be taken at all; once a
+    // message is in the box the arrows keep walking, because the reader is
+    // still in the same gesture. Typing ends the gesture (`onInput` clears the
+    // flag), so the caret keys are the editor's again — and `Shift`/`⌘`/`⌥`/`⌃`
+    // with an arrow is a selection or a word move, never a recall.
+    if (
+      history
+      && (event.key === "ArrowUp" || event.key === "ArrowDown")
+      && !event.shiftKey && !event.metaKey && !event.altKey && !event.ctrlKey
+      && (recallingRef.current || isEditorEmpty(editorRef.current))
+    ) {
+      const text = event.key === "ArrowUp" ? history.previous() : history.next();
+      if (text !== null) {
+        event.preventDefault();
+        restoreContent(text);
+        recallingRef.current = text.length > 0;
+        // The recalled text is a draft like any other, so it must be persisted
+        // as one (`restore` itself does not report a change).
+        onChange?.();
+        return;
+      }
+    }
+
     if (event.key !== "Enter")
       return;
     event.preventDefault();
@@ -772,6 +812,7 @@ export function MentionEditor({
         )}
         onInput={() => {
           syncEmpty();
+          recallingRef.current = false;
           if (!isComposingRef.current) {
             updateTrigger();
             const selection = window.getSelection();

@@ -16,7 +16,7 @@ import { MessageMeta } from "./MessageMeta";
 import { AttachmentChip } from "./messages/AttachmentChip";
 import { MessageFrame } from "./messages/MessageFrame";
 import { CompactionDivider, StatusDivider } from "./messages/MessageStatus";
-import { buildReplyBlocks, replyTailBlock, splitFinalAnswer } from "./replyBlocks";
+import { buildReplyBlocks, replyCopyText, replyTailBlock, splitFinalAnswer } from "./replyBlocks";
 import { ReplyProcess } from "./ReplyProcess";
 import { ReplySteps } from "./ReplySteps";
 import { ThinkingBlock } from "./ThinkingBlock";
@@ -131,11 +131,8 @@ function MessageBlockImpl({
   // segmented, otherwise the raw content. Activity lines are excluded. While the
   // reading setting folds the work away, the button belongs to the answer it is
   // shown beside, so it copies that answer and not prose that came before it.
-  const copyableText = (folded
-    ? proseText(folded.answer)
-    : segments
-      ? segments.flatMap(segment => (segment.kind === "text" ? [segment.text] : [])).join("\n\n")
-      : message.content ?? "").trim();
+  // Shared with `thread.copyReply` (`⌘⌥C`) — see `replyCopyText`.
+  const copyableText = replyCopyText({ content: message.content, segments: segments ?? undefined, status: message.status }, { fold: Boolean(folded) }).trim();
   // Built once and placed by role: the assistant's sits in the reply's own
   // footer, the user's goes to `MessageFrame`'s footer, outside their bubble.
   const copyControl = copyableText
@@ -367,13 +364,6 @@ function MessageBlockImpl({
  */
 function blockKey(block: ReplyBlock): string {
   return block.kind === "steps" ? block.segments[0]!.id : block.segment.id;
-}
-
-/** The prose a set of rendered blocks carries, joined the way the copy button wants it. */
-function proseText(blocks: readonly ReplyBlock[]): string {
-  return blocks
-    .flatMap(block => (block.kind === "segment" && block.segment.kind === "text" ? [block.segment.text] : []))
-    .join("\n\n");
 }
 
 /** Every step (reasoning or a settled call) a set of rendered blocks holds. */

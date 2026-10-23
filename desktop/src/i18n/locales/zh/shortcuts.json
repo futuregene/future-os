@@ -22,6 +22,7 @@
     },
     "composer": {
       "focus": "回到输入框",
+      "attach": "添加附件",
       "model": {
         "previous": "上一个模型",
         "next": "下一个模型"
@@ -37,6 +38,8 @@
     },
     "thread": {
       "find": "在当前对话中查找",
+      "copyReply": "复制最后一条回答",
+      "latest": "跳到最新消息",
       "usage": "查看本次对话用量",
       "previous": "上一个对话",
       "next": "下一个对话"
@@ -175,6 +178,7 @@
     "newline": "换行",
     "escape": "关闭弹层，或拒绝请求",
     "approve": "批准请求",
+    "approveAlways": "批准，并在本工作区不再询问",
     "transcript": "跳到上一条 / 下一条提问",
     "menu": "在打开的菜单中移动"
   },

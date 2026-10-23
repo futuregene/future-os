@@ -5,12 +5,10 @@ import i18n from "../i18n";
 // bundled inline, so changeLanguage applies synchronously.
 void i18n.changeLanguage("en");
 
-// Vitest's jsdom environment does not expose Web Storage (window.localStorage
-// is undefined there), but app code reads/writes it defensively. Provide a
-// minimal in-memory Storage so those code paths run under jsdom tests.
-if (typeof globalThis.localStorage === "undefined") {
+// A minimal in-memory Storage for a global the runtime did not provide.
+function createMemoryStorage(): Storage {
   const store = new Map<string, string>();
-  const storage: Storage = {
+  return {
     get length() {
       return store.size;
     },
@@ -24,5 +22,22 @@ if (typeof globalThis.localStorage === "undefined") {
     removeItem: key => void store.delete(key),
     setItem: (key, value) => void store.set(key, String(value)),
   };
-  Object.defineProperty(globalThis, "localStorage", { value: storage, configurable: true });
 }
+
+function installMemoryStorageIfMissing(name: "localStorage" | "sessionStorage"): void {
+  if (typeof globalThis[name] !== "undefined")
+    return;
+  Object.defineProperty(globalThis, name, { value: createMemoryStorage(), configurable: true });
+}
+
+// Web Storage is not guaranteed by the test environment: most of this suite
+// runs in Vitest's default `node` environment (only tests that need a DOM opt
+// into jsdom), and Node defines neither storage globally on 24 — while 26 ships
+// an experimental `sessionStorage` only. So a storage-backed module's tests
+// used to pass or fail depending on the Node version the suite ran on, and app
+// code that reads/writes storage defensively had its paths skipped there.
+// Provide whichever global is missing, so both storages behave the same
+// everywhere. jsdom keeps its own real storage: this only fills in an absent
+// global.
+installMemoryStorageIfMissing("localStorage");
+installMemoryStorageIfMissing("sessionStorage");
