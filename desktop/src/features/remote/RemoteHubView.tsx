@@ -4,10 +4,7 @@ import type { RemoteStatus } from "../remote/remoteClient";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { LeftPanelTitlebarToggle } from "../../components/layout/LeftPanelTitlebarToggle";
-import { errorMessage } from "../../lib/errors";
-import { emitFutureEvent } from "../../lib/futureEvents";
 import { startWindowDrag } from "../../lib/windowDrag";
-import { setRemotePeerLabel } from "../remote-peer/remotePeerClient";
 import { RemotePeerSettings } from "../remote-peer/RemotePeerSettings";
 import { RemoteClientSection } from "../remote-peer/RemotePeersView";
 import { RemoteTasksView } from "../remote-peer/RemoteTasksView";
@@ -91,11 +88,6 @@ export function RemoteHubView({
   /** The machine whose tasks are open, if any. They need the whole column. */
   const [tasksFor, setTasksFor] = useState<RemotePeer | null>(null);
 
-  /** A rename that could not be stored locally: said out loud, not swallowed. */
-  function reportLabelFailure(error: unknown) {
-    emitFutureEvent("toast", { message: errorMessage(error), tone: "error" });
-  }
-
   if (tasksFor) {
     return (
       <RemoteTasksView
@@ -114,15 +106,6 @@ export function RemoteHubView({
         onBack={() => setSettingsFor(null)}
         onChanged={() => void onRefreshPeers()}
         onOpenTasks={() => setTasksFor(settingsFor)}
-        onUpdateLabel={(patch) => {
-          void setRemotePeerLabel(settingsFor.desktopId, patch)
-            // The page describes the machine from the peer it was opened with;
-            // the name and icon live in the local credential book, so the page
-            // has to be told what it just became.
-            .then(() => setSettingsFor(current => (current ? { ...current, ...patch } : current)))
-            .then(() => onRefreshPeers())
-            .catch(reportLabelFailure);
-        }}
         peer={settingsFor}
       />
     );

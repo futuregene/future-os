@@ -59,7 +59,6 @@ vi.mock("../remote-peer/RemotePeerSettings", async () => {
       onBack: () => void;
       onOpenTasks: () => void;
       onChanged: () => void;
-      onUpdateLabel: (patch: { name?: string }) => void;
       peer: { desktopId: string };
     }) =>
       createElement(
@@ -68,34 +67,11 @@ vi.mock("../remote-peer/RemotePeerSettings", async () => {
         createElement("button", { "data-back": "1", "onClick": props.onBack }),
         createElement("button", { "data-tasks": "1", "onClick": props.onOpenTasks }),
         createElement("button", { "data-changed": "1", "onClick": props.onChanged }),
-        createElement("button", {
-          "data-rename": "1",
-          "onClick": () => props.onUpdateLabel({ name: "Renamed" }),
-        }),
       ),
   };
 });
 
-const setRemotePeerLabel = vi.fn<(desktopId: string, patch: Record<string, unknown>) => Promise<unknown>>();
-vi.mock("../remote-peer/remotePeerClient", () => ({
-  setRemotePeerLabel: (...args: Parameters<typeof setRemotePeerLabel>) => setRemotePeerLabel(...args),
-}));
-
 /** The page *this machine's* direction owns, stubbed the same way. */
-
-const toasts = vi.hoisted(() => [] as Array<{ message: string; tone?: string }>);
-vi.mock("../../lib/futureEvents", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../lib/futureEvents")>();
-  return {
-    ...actual,
-    emitFutureEvent: (name: string, detail: unknown) => {
-      if (name === "toast")
-        toasts.push(detail as { message: string; tone?: string });
-      else
-        actual.emitFutureEvent(name as never, detail as never);
-    },
-  };
-});
 
 const startWindowDrag = vi.fn();
 vi.mock("../../lib/windowDrag", () => ({
@@ -153,8 +129,6 @@ async function openSettings(desktopId = "desk_a") {
 }
 
 beforeEach(() => {
-  toasts.length = 0;
-  setRemotePeerLabel.mockReset().mockResolvedValue(undefined);
   sections.host = null;
   sections.client = null;
   startWindowDrag.mockClear();
@@ -301,34 +275,6 @@ it("hands the column to a machine's tasks, and gives it back to its settings", a
   // level below the settings that offered it.
   expect(container.querySelector("[data-child='tasks-view']")).toBeNull();
   expect(container.querySelector("[data-child='peer-settings']")).not.toBeNull();
-});
-
-/**
- * A rename is *local*: the name lives in the credential book, so nothing else
- * would show it until the next catalogue read. What this test owns is that the
- * hub forwards the write and re-reads the machines.
- */
-it("writes a local rename from the settings page", async () => {
-  await mount();
-  await openSettings();
-
-  await act(async () => container.querySelector<HTMLButtonElement>("[data-rename='1']")!.click());
-
-  expect(setRemotePeerLabel).toHaveBeenCalledWith("desk_a", { name: "Renamed" });
-});
-
-/** A rename the local store refuses is reported rather than swallowed. */
-it("reports a rename that could not be stored", async () => {
-  setRemotePeerLabel.mockRejectedValue(new Error("credential book is read-only"));
-  await mount();
-  await openSettings();
-
-  await act(async () => container.querySelector<HTMLButtonElement>("[data-rename='1']")!.click());
-  await act(async () => {
-    for (let i = 0; i < 6; i += 1) await Promise.resolve();
-  });
-
-  expect(toasts.some(toast => toast.message.includes("credential book is read-only"))).toBe(true);
 });
 
 /**

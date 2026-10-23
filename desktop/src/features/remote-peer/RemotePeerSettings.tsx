@@ -2,12 +2,9 @@ import type { ApprovalTier } from "../../integrations/storage/appSettings";
 import type { RemoteApprovalSettings, RemotePeer } from "./remotePeerClient";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
-import { TextInput } from "../../components/ui/TextInput";
 import { SettingsLinkRow, SettingsList, SettingsPage, SettingsRow, SettingsSection, Switch } from "../settings/SettingsPrimitives";
 import { PeerIconChip } from "./PeerIconChip";
-import { PeerIconPicker } from "./PeerIconPicker";
 import { peerBadgeText } from "./peerIcons";
 import { useHostCatalogueInvalidation } from "./remoteHostCatalog";
 import { RemoteModelsPanel } from "./RemoteModelsPanel";
@@ -35,6 +32,14 @@ type SettingsSectionPage = "root" | "skills" | "models" | "providers" | "workspa
  * skills" ambiguous between this machine and the remote one, and the two have
  * genuinely different answers.
  *
+ * Nothing local lives here, deliberately: the name and the icon are this
+ * machine's own record of that computer (`remote_peer_set_label` never leaves
+ * the credential book), so they are edited on its row in the list instead. Two
+ * surfaces for one value meant one of them could show the old name after the
+ * other had changed it, and a local field among these rows read as one more
+ * remote setting — one that greyed out with the rest whenever the host was not
+ * connected.
+ *
  * Rows the host cannot serve are disabled rather than hidden: a user who paired
  * a machine running an older build should see that the capability exists and is
  * unavailable, not wonder why their settings look different from someone
@@ -44,18 +49,15 @@ export function RemotePeerSettings({
   onBack,
   onChanged,
   onOpenTasks,
-  onUpdateLabel,
   peer,
 }: {
   onBack: () => void;
   onChanged: () => void;
   /** Open that host's tasks: the editor needs the whole column. */
   onOpenTasks: () => void;
-  onUpdateLabel: (patch: { name?: string; icon?: string }) => void;
   peer: RemotePeer;
 }) {
   const { t } = useTranslation("remotePeer");
-  const [name, setName] = useState(peer.name ?? "");
   const [settings, setSettings] = useState<Record<string, unknown> | null>(null);
   const [approval, setApproval] = useState<RemoteApprovalSettings | null>(null);
   const [busy, setBusy] = useState(false);
@@ -234,38 +236,6 @@ export function RemotePeerSettings({
     >
       {error ? <p className="text-xs text-danger">{error}</p> : null}
       {!available ? <p className="text-xs text-ink-muted">{t("settingsOfflineHint")}</p> : null}
-
-      {/* Naming and the icon are *local*: they never reach the host or the
-          platform, which is why they sit beside the host's own (remote)
-          settings rather than among them — the labels say which is which. */}
-      <SettingsSection description={t("nameHint")} title={t("localSection")}>
-        <SettingsList>
-          <SettingsRow title={t("nameLabel")}>
-            <div className="flex items-center gap-2">
-              <TextInput
-                aria-label={t("nameLabel")}
-                onChange={event => setName(event.target.value)}
-                placeholder={t("namePlaceholder")}
-                value={name}
-              />
-              <Button
-                disabled={name === (peer.name ?? "")}
-                onClick={() => onUpdateLabel({ name: name.trim() })}
-                size="sm"
-              >
-                {t("save")}
-              </Button>
-            </div>
-          </SettingsRow>
-          {/* The glyphs are a grid, not a switch: two dozen of them want more
-              width than this column has, and beside the label they took it all
-              (the label drawn one character per line, the grid out of the card).
-              So this one row puts its control below the label. */}
-          <SettingsRow description={t("iconSectionHint")} stacked title={t("icons.label")}>
-            <PeerIconPicker onChange={icon => onUpdateLabel({ icon })} value={peer.icon} />
-          </SettingsRow>
-        </SettingsList>
-      </SettingsSection>
 
       <SettingsSection
         description={t("settingsAutomationHint")}

@@ -26,15 +26,7 @@ vi.mock("./remotePeerClient", async (importOriginal) => {
 // here. Their calls land on the Tauri boundary, which is mocked instead.
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock("../../integrations/tauri/invoke", () => ({ invokeCommand: invoke }));
-// The icon picker and the skills panel are their own concerns; both are covered
-// where they live.
-vi.mock("./PeerIconPicker", () => ({
-  PeerIconPicker: (props: { onChange: (icon: string) => void; value: string }) => (
-    <div data-icon={props.value} data-testid="icon-picker">
-      <button onClick={() => props.onChange("phone")} type="button">pick-phone</button>
-    </div>
-  ),
-}));
+// The sub-pages' panels are their own concerns; they are covered where they live.
 vi.mock("./RemoteModelsPanel", () => ({
   RemoteModelsPanel: (props: { hidden: string[]; onChangeHidden: (next: string[]) => void }) => (
     <div data-hidden={props.hidden.join(",")} data-testid="models-panel">
@@ -111,12 +103,10 @@ function answerHost(overrides: Partial<Record<string, unknown>> = {}): void {
 async function mount(props: {
   onChanged?: () => void;
   onOpenTasks?: () => void;
-  onUpdateLabel?: (patch: { name?: string; icon?: string }) => void;
   peer?: RemotePeer;
 } = {}) {
   const onChanged = props.onChanged ?? vi.fn();
   const onOpenTasks = props.onOpenTasks ?? vi.fn();
-  const onUpdateLabel = props.onUpdateLabel ?? vi.fn();
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
@@ -126,7 +116,6 @@ async function mount(props: {
         onBack={vi.fn()}
         onChanged={onChanged}
         onOpenTasks={onOpenTasks}
-        onUpdateLabel={onUpdateLabel}
         peer={props.peer ?? peer()}
       />,
     );
@@ -136,8 +125,6 @@ async function mount(props: {
     container,
     onChanged,
     onOpenTasks,
-    onUpdateLabel,
-    input: () => container.querySelector<HTMLInputElement>("input")!,
     switchFor: (label: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`),
     // A row on the settings page that opens a page of its own.
     link: (title: string) => [...container.querySelectorAll("button")]
@@ -253,48 +240,6 @@ describe("the host's automation settings", () => {
     expect(view.text()).toContain("desktop_settings_read_only");
     await view.unmount();
   });
-});
-
-it("renames the machine locally, without sending the name anywhere", async () => {
-  const view = await mount();
-  const input = view.input();
-
-  await act(async () => {
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-    setter.call(input, "Workstation");
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-  await act(async () => {
-    const save = [...view.container.querySelectorAll("button")]
-      .find(node => node.textContent === "Save")!;
-    save.click();
-  });
-
-  expect(view.onUpdateLabel).toHaveBeenCalledWith(expect.objectContaining({ name: "Workstation" }));
-  await view.unmount();
-});
-
-/**
- * The icon row puts its control below the label rather than beside it.
- *
- * The picker is two dozen glyphs — wider than this column — and beside a label it
- * took every pixel of it: the label was drawn one character per line and the grid
- * ran out of the card. jsdom lays nothing out, so what is asserted here is the
- * shape (this row stacks, the rows around it do not); the widths are measured in
- * the screenshot harness, on the same row.
- */
-it("stacks the icon picker under its label instead of beside it", async () => {
-  const view = await mount();
-
-  const picker = view.container.querySelector("[data-testid='icon-picker']")!;
-  const row = picker.parentElement!.parentElement!;
-  expect(row.className).toContain("flex-col");
-  // Left-aligned with the label it sits under, not pushed to the row's right edge.
-  expect(picker.parentElement!.className).toContain("justify-start");
-  // And its neighbours keep the row shape: a switch stays on the right of its label.
-  expect(row.previousElementSibling!.className).toContain("items-center");
-  expect(row.previousElementSibling!.className).not.toContain("flex-col");
-  await view.unmount();
 });
 
 /** The skills panel is handed to the page, and told whether the host is reachable. */
@@ -668,35 +613,6 @@ it("writes the auto-connect switch's own key", async () => {
 it("says the auto-connect row takes effect at that machine's next launch", async () => {
   const view = await mount();
   expect(view.text()).toContain("its own Remote switch changes then, not now");
-  await view.unmount();
-});
-
-/**
- * The machine's icon is written back as a *label* update, by icon id.
- *
- * The id is what the list draws (the glyph is derived from it), so sending the
- * glyph — or the whole peer — would leave the stored value something no other
- * surface understands.
- */
-it("writes the picked icon back as an icon label", async () => {
-  const view = await mount();
-  const picker = view.container.querySelector<HTMLElement>("[data-testid='icon-picker']")!;
-  expect(picker.getAttribute("data-icon")).toBe("laptop");
-
-  const pick = [...view.container.querySelectorAll<HTMLButtonElement>("button")]
-    .find(node => node.textContent === "pick-phone")!;
-  await act(async () => pick.click());
-  await settle();
-
-  // The label patch, which is the caller's own command: the id is what the list
-  // stores, and the glyph is derived from it.
-  expect(view.onUpdateLabel).toHaveBeenCalledWith({ icon: "phone" });
-  // It is a *local* label write, so nothing went to the host for it.
-  expect(request).not.toHaveBeenCalledWith(
-    "desktop_a",
-    expect.objectContaining({ icon: "phone" }),
-    expect.anything(),
-  );
   await view.unmount();
 });
 
