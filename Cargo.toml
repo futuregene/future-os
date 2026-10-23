@@ -48,3 +48,19 @@ tempfile = "3"
 debug = false
 strip = true
 lto = "thin"
+
+# Local iteration only — NOT a release profile. `release` above sets
+# `lto = "thin"`, so every edit re-runs whole-graph ThinLTO even though only one
+# crate changed: measured on a 20-thread Windows machine, touching one line of
+# `future-cli` and rebuilding `--release` takes ~137 s, of which the linker is
+# ~1.5 s. This profile keeps release-style optimisation but turns LTO off and
+# lets Cargo reuse its incremental cache, which brings the same edit down to a
+# few seconds. Nothing selects it implicitly: `cargo build --release`, `make
+# build` and CI all keep using `release`, so shipping behaviour cannot drift.
+# Use it while developing, e.g. `cargo build --profile local -p future-cli`.
+[profile.local]
+inherits = "release"
+lto = false
+incremental = true
+debug = 0
+strip = false
