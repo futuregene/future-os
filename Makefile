@@ -67,10 +67,22 @@ setup:
 
 install: install-desktop install-skills
 
+# Copy already-built Windows binaries into PREFIX. make hands every recipe to
+# SHELL, which is sh.exe whenever Git for Windows is on PATH, so this file's old
+# cmd recipes (`if not exist .. mkdir ..`, unquoted `target\release\future.exe`)
+# were a syntax error there — the documented install targets could not run on a
+# Windows checkout with Git on PATH. node does the copy instead: it is already a
+# build prerequisite (`TARGET` is probed with it) and its path joins and argument
+# quoting behave the same under cmd.exe and sh.exe.
+# $(1) is the profile directory under target/, $(2)/$(3) the binary names (the
+# second is optional). It creates PREFIX itself, so an overridden PREFIX works too.
+define copy_win_binaries
+	@node -e "const fs=require('fs'),p=require('path');const src=p.join('target','$(1)'),dst=process.argv[1];fs.mkdirSync(dst,{recursive:true});for(const n of process.argv[2].split(/[\s,]+/).filter(Boolean)){const t=p.join(dst,n+'.exe');fs.copyFileSync(p.join(src,n+'.exe'),t);console.log('  installed '+t)}" "$(PREFIX)" "$(strip $(2) $(3))"
+endef
+
 install-cli: build-cli
 ifeq ($(OS),windows)
-	@if not exist "$(USERPROFILE)\.future\bin" mkdir "$(USERPROFILE)\.future\bin"
-	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "$(PREFIX)\future$(EXE_SUFFIX)"
+	$(call copy_win_binaries,release,future)
 else
 	# `install` unlinks+creates a fresh inode; plain `cp` overwrites in place
 	# and macOS taskgated can then SIGKILL the binary ("Code Signature
@@ -80,9 +92,7 @@ endif
 
 install-desktop: build-desktop
 ifeq ($(OS),windows)
-	@if not exist "$(USERPROFILE)\.future\bin" mkdir "$(USERPROFILE)\.future\bin"
-	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "$(PREFIX)\future$(EXE_SUFFIX)"
-	$(COPY_CMD) target\release\futureos$(EXE_SUFFIX) "$(PREFIX)\futureos$(EXE_SUFFIX)"
+	$(call copy_win_binaries,release,future,futureos)
 else
 	$(SUDO) install -m 755 target/release/future "$(PREFIX)/future"
 	$(SUDO) install -m 755 target/release/futureos "$(PREFIX)/futureos"
@@ -115,8 +125,7 @@ endif
 # Compatibility alias for a GUI-free CLI installation, including headless.
 install-desktop-headless: build-desktop-headless
 ifeq ($(OS),windows)
-	@if not exist "$(USERPROFILE)\.future\bin" mkdir "$(USERPROFILE)\.future\bin"
-	$(COPY_CMD) target\release\future$(EXE_SUFFIX) "$(PREFIX)\future$(EXE_SUFFIX)"
+	$(call copy_win_binaries,release,future)
 else
 	$(SUDO) install -m 755 target/release/future "$(PREFIX)/future"
 endif
