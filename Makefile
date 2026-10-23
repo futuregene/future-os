@@ -1,5 +1,5 @@
 .PHONY: help version \
-	build build-cli build-desktop build-desktop-headless build-mobile-android build-mobile-ios desktop-sidecars \
+	build build-cli build-cli-local build-desktop build-desktop-local build-desktop-headless build-mobile-android build-mobile-ios desktop-sidecars \
 	test test-agent test-channels test-cli test-app-settings test-tui test-cli-diff test-tui-diff test-tui-tmux \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
@@ -155,6 +155,19 @@ build: build-desktop
 
 build-cli:
 	cargo build --release -p future-cli
+
+# Local verification only: the `local` profile (root Cargo.toml) keeps release
+# optimisation but drops ThinLTO and reuses the incremental cache, so an edit
+# rebuilds in seconds instead of re-running whole-graph LTO. These targets
+# deliberately stay out of `install*` and `package-desktop`: what ships must
+# keep coming from the unchanged `release` profile. Neither wraps the frontend
+# build or the Tauri bundling `build-desktop` does — they produce the Rust
+# binaries under target/local/ only.
+build-cli-local:
+	cargo build --profile local -p future-cli
+
+build-desktop-local:
+	cargo build --profile local -p futureos
 
 # Workspace install: shared packages, desktop, and mobile are npm workspaces, so all
 # deps hoist to the root node_modules and one `npm install` at the repo root
@@ -455,6 +468,7 @@ endif
 
 help:
 	@echo "  build / build-cli / build-desktop   Build desktop + unified CLI (or each part)"
+	@echo "  build-cli-local / build-desktop-local   Rust binaries only, LTO-free 'local' profile (fast local builds)"
 	@echo "  run-host                          Run future host in the foreground (ARGS=...; alias run-headless)"
 	@echo "  build-desktop-headless             Build GUI-free CLI with headless"
 	@echo "  build-mobile-android / -ios         Build & install the mobile app (Expo)"
