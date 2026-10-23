@@ -143,7 +143,7 @@ fn killed_by_signal(status: &std::process::ExitStatus) -> String {
 }
 
 /// Spawn the bridge, optionally feed it `stdin_bytes`, stop it with SIGINT, and
-/// return `(exit status, captured stdout, its HOME)`.
+/// return `(exit status, captured stdout, captured stderr, its HOME)`.
 ///
 /// Retries while the child was killed by the signal itself (it had not installed
 /// its Ctrl-C listener yet — see [`sigint_until_exit`]), with a longer margin
@@ -156,7 +156,7 @@ fn sigint_scenario(
     label: &str,
     config: &str,
     stdin_bytes: Option<&[u8]>,
-) -> (std::process::ExitStatus, String, std::path::PathBuf) {
+) -> (std::process::ExitStatus, String, String, std::path::PathBuf) {
     use std::io::Write as _;
     let mut wait = SIGINT_READY_WAIT;
     loop {
@@ -170,7 +170,7 @@ fn sigint_scenario(
                 std::process::Stdio::null()
             })
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
             .spawn()
             .expect("spawn binary");
         if let Some(bytes) = stdin_bytes {
@@ -193,13 +193,22 @@ fn sigint_scenario(
             let _ = pipe.read_to_end(&mut captured);
             captured
         });
+        let mut stderr = child.stderr.take().expect("piped stderr");
+        let stderr_reader = std::thread::spawn(move || {
+            use std::io::Read as _;
+            let mut captured = String::new();
+            stderr.read_to_string(&mut captured).expect("read stderr");
+            captured
+        });
         std::thread::sleep(wait);
         let status = sigint_until_exit(&mut child);
         let captured = reader.join().expect("stdout reader");
+        let stderr = stderr_reader.join().expect("stderr reader");
         if status.success() || status.code().is_some() {
             return (
                 status,
                 String::from_utf8_lossy(&captured).into_owned(),
+                stderr,
                 home,
             );
         }
@@ -216,8 +225,11 @@ fn sigint_scenario(
 /// and assert a clean exit(0) (the ctrl-c → shutdown path).
 #[cfg(unix)]
 fn sigint_shutdown_case(label: &str, config: &str) {
-    let (status, _stdout, _home) = sigint_scenario(label, config, None);
-    assert!(status.success(), "clean shutdown expected, got {status:?}");
+    let (status, stdout, stderr, _home) = sigint_scenario(label, config, None);
+    assert!(
+        status.success(),
+        "clean shutdown expected, got {status:?}; stdout: {stdout}; stderr: {stderr}"
+    );
 }
 
 #[cfg(unix)]
@@ -362,14 +374,17 @@ fn sigint_after_stdout_marker(
 #[cfg(unix)]
 #[test]
 fn terminal_channel_reads_prompts_and_exits_cleanly() {
-    let (status, stdout, home) = sigint_scenario(
+    let (status, stdout, stderr, home) = sigint_scenario(
         "cli-channel",
         r#"{"agent": {"grpc_addr": "http://127.0.0.1:1"},
             "providers": {"cli": {"enabled": true, "dm_policy": "open"}}}"#,
         // A blank line is skipped, the prompt is submitted, /quit ends the loop.
         Some(b"\nhello from the terminal\n/quit\n"),
     );
-    assert!(status.success(), "clean shutdown expected: {status:?}");
+    assert!(
+        status.success(),
+        "clean shutdown expected: {status:?}; stdout: {stdout}; stderr: {stderr}"
+    );
     // The agent is unreachable, so the terminal is told rather than left quiet.
     assert!(
         stdout.contains("Cannot reach the agent") || stdout.contains("unreachable"),

@@ -1676,6 +1676,10 @@ mod gui {
 
         #[test]
         fn runtime_update_drain_loop_coalesces_and_exits() {
+            // The drain reads process-global stop/admission flags. Keep the
+            // same state lock as shutdown fixtures until its thread is joined.
+            let _home = crate::auth_store::test_support::HomeGuard::new("runtime-update-coalesce");
+            crate::runtime::cancel_test_tasks();
             let (tx, rx) = std::sync::mpsc::channel::<ThreadRuntimeUpdate>();
             let handle = std::thread::spawn(|| runtime_update_drain_loop(rx));
             // One burst: both messages coalesce into a single emit attempt (the
