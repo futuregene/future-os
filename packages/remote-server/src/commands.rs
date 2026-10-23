@@ -702,6 +702,9 @@ async fn handle_command_inner(
         // controller is told `standby` on its own channel below, and its client
         // stops reconnecting until its user asks again.
         "takeover" => {
+            // Read before the claim: it says whether the machine moved at all,
+            // which is what decides whether there is anything to announce.
+            let was_driving = handshake.runtime.in_control(&handshake.creds.pair_id);
             let moved = handshake
                 .runtime
                 .claim_control_soon(&handshake.creds.pair_id, handshake.access_epoch);
@@ -723,8 +726,22 @@ async fn handle_command_inner(
                 None,
             )
             .await;
+            // Both ends are told on their own channel. Only the device that
+            // *lost* the machine used to hear anything, so the one that won had
+            // to read control back from the next heartbeat — up to three
+            // seconds of still being drawn as somebody else's, which is what a
+            // takeover the user just made looks like when it is granted,
+            // withdrawn and granted again. `control: "active"` in the answer
+            // above is not a substitute: the catalogue and every peer row are
+            // rebuilt from this packet, and a client is not obliged to trust an
+            // answer over the machine's own word.
             if let Some(previous) = moved {
                 handshake.runtime.publish_control(&previous, "standby");
+            }
+            if !was_driving {
+                handshake
+                    .runtime
+                    .publish_control(&handshake.creds.pair_id, "active");
             }
         }
         // Presence is normally pushed on every heartbeat. A client that
@@ -1081,6 +1098,7 @@ async fn handle_pair_handshake_confirm(
         && state.access_current()
         && !state.runtime.held_by_another(&state.creds.pair_id)
     {
+        let was_driving = state.runtime.in_control(&state.creds.pair_id);
         let moved = state
             .runtime
             .claim_control_soon(&state.creds.pair_id, state.access_epoch);
@@ -1089,6 +1107,14 @@ async fn handle_pair_handshake_confirm(
         }
         if let Some(previous) = moved {
             state.runtime.publish_control(&previous, "standby");
+        }
+        // The reply above was built *before* this claim, so a pairing that took
+        // a machine nobody held was answered with `control: "standby"` and needs
+        // the packet — the same gap as a takeover, one screen earlier.
+        if !was_driving {
+            state
+                .runtime
+                .publish_control(&state.creds.pair_id, "active");
         }
     }
 }

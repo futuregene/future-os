@@ -150,8 +150,9 @@ mod tests {
 mod bridge_tests {
     #![allow(clippy::await_holding_lock)]
     use super::super::test_support::{
-        await_publish, ensure_mock_agent, init_store, jwt, mock_agent_lock, nats_connect,
-        nats_connect_once, now_secs, unique, wait_until, FakeNats, HomeGuard,
+        await_publish, await_publish_matching, ensure_mock_agent, fake_state, init_store, jwt,
+        mock_agent_lock, nats_connect, nats_connect_once, now_secs, unique, wait_until, FakeNats,
+        HomeGuard,
     };
     use super::*;
     use crate::remote::SUPERVISOR;
@@ -3785,6 +3786,141 @@ mod bridge_tests {
         assert_eq!(reply["data"]["control"], json!("active"));
         assert_eq!(reply["data"]["changed"], json!(false));
         assert_eq!(reply["data"]["previous"], Value::Null);
+        bridge.stop().await;
+    }
+
+    /// A takeover tells the device that **won** as well as the one that lost.
+    ///
+    /// Only the loser used to be told, so the device that asked had to read
+    /// control back from the next heartbeat — up to three seconds in which the
+    /// machine it had just taken still read as somebody else's. On a page that
+    /// draws a machine's control, that is a takeover which is granted,
+    /// withdrawn and granted again.
+    #[tokio::test]
+    async fn a_takeover_announces_control_to_the_device_that_won() {
+        let _lock = mock_agent_lock();
+        let (_home, bridge) = active_bridge("cmd-takeover-notice").await;
+        // The bridge's own runtime, in the supervisor's live set: a control
+        // packet is published into a device's connection, and the machine has
+        // nobody to tell without one.
+        let runtime = fake_state(&bridge.nats, &bridge.pair_id).await;
+        SUPERVISOR
+            .state
+            .lock()
+            .unwrap()
+            .insert(bridge.pair_id.clone(), runtime);
+
+        // Somebody else holds the machine, so this takeover really moves it.
+        let other = format!("pair_{}", unique("holder"));
+        let mut other_creds = bridge_creds();
+        other_creds.pair_id = other.clone();
+        super::super::pairing::save_creds(&other_creds).expect("seed the other device");
+        super::super::pairing::set_active(&other).expect("persist the other device's control");
+        SUPERVISOR.restore_active(Some(other.clone()));
+        assert!(
+            !SUPERVISOR.in_control(&bridge.pair_id),
+            "setup: the machine must be somebody else's for a takeover to move it"
+        );
+
+        let mut tap = bridge.nats.tap();
+        let reply = bridge
+            .call(json!({ "id": unique("cmd"), "type": "takeover" }))
+            .await;
+        assert_eq!(reply["data"]["control"], json!("active"), "got: {reply}");
+        assert_eq!(reply["data"]["previous"], json!(other));
+
+        let announced = await_publish_matching(
+            &mut tap,
+            &format!("p.{}.state.control", bridge.pair_id),
+            Duration::from_secs(5),
+            |published| published.json()["control"] == json!("active"),
+        )
+        .await;
+        assert_eq!(
+            announced.json()["pairId"],
+            json!(bridge.pair_id),
+            "the packet must name the pairing it is about"
+        );
+
+        SUPERVISOR.state.lock().unwrap().remove(&bridge.pair_id);
+        SUPERVISOR.restore_active(None);
+        let _ = super::super::pairing::remove_slot(&other);
+        bridge.stop().await;
+    }
+
+    /// A first pairing that takes a machine nobody holds says so too.
+    ///
+    /// The confirmation's answer is built *before* the claim, so without the
+    /// packet the device that has just become the controller is answered
+    /// `standby` and reads control back from the heartbeat — the same
+    /// three-second lie as a takeover, one screen earlier.
+    #[tokio::test]
+    async fn a_first_pairing_announces_the_control_it_takes() {
+        // Control is one pointer on the process-global supervisor, so this test
+        // must not run beside another one that moves it.
+        let _lock = mock_agent_lock();
+        let _home = HomeGuard::new("cmd-first-claim-notice");
+        init_store();
+        let bridge = Bridge::start().await;
+        let runtime = fake_state(&bridge.nats, &bridge.pair_id).await;
+        SUPERVISOR
+            .state
+            .lock()
+            .unwrap()
+            .insert(bridge.pair_id.clone(), runtime);
+        // Another device is paired but nobody holds the machine: the pointer is
+        // empty, so this pairing's claim genuinely moves control.
+        let other = format!("pair_{}", unique("elsewhere"));
+        let mut other_creds = bridge_creds();
+        other_creds.pair_id = other.clone();
+        super::super::pairing::save_creds(&other_creds).expect("seed the other device");
+        SUPERVISOR.restore_active(None);
+
+        let client_key = nkeys::KeyPair::new_user();
+        let creds = bridge.handshake.credentials().clone();
+        let mut tap = bridge.nats.tap();
+        let reply = bridge.call(handshake_cmd(&creds, &client_key)).await;
+        let desktop_nonce = reply["data"]["desktopNonce"].as_str().unwrap().to_string();
+        let transcript = handshake_transcript(&HandshakeTranscript {
+            pair_id: &creds.pair_id,
+            desktop_id: &creds.desktop_id,
+            desktop_public_key: &crate::remote::pairing::public_key(&creds).unwrap(),
+            bridge_instance_id: bridge.handshake.bridge_instance_id(),
+            device_id: "dev_test",
+            client_public_key: &client_key.public_key(),
+            client_nonce: "nonce-0123456789abcdef",
+            desktop_nonce: &desktop_nonce,
+        });
+        let signature = client_key.sign(transcript.as_bytes()).unwrap();
+        let reply = bridge
+            .call(json!({
+                "id": unique("cmd"),
+                "type": "pair_handshake_confirm",
+                "deviceId": "dev_test",
+                "desktopNonce": desktop_nonce,
+                "clientSignature": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signature),
+            }))
+            .await;
+        assert_eq!(reply["success"], json!(true), "got: {reply}");
+        assert_eq!(
+            reply["data"]["presence"]["control"],
+            json!("standby"),
+            "the answer is built before the claim, which is why the packet is owed"
+        );
+        assert!(SUPERVISOR.in_control(&bridge.pair_id));
+
+        let announced = await_publish_matching(
+            &mut tap,
+            &format!("p.{}.state.control", bridge.pair_id),
+            Duration::from_secs(5),
+            |published| published.json()["control"] == json!("active"),
+        )
+        .await;
+        assert_eq!(announced.json()["pairId"], json!(bridge.pair_id));
+
+        SUPERVISOR.state.lock().unwrap().remove(&bridge.pair_id);
+        SUPERVISOR.restore_active(None);
+        let _ = super::super::pairing::remove_slot(&other);
         bridge.stop().await;
     }
 
