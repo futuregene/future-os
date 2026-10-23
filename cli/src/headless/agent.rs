@@ -175,7 +175,7 @@ fn drive(
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .thread_name("agent-runtime")
-            .worker_threads(2)
+            .worker_threads(super::RUNTIME_WORKER_THREADS)
             .max_blocking_threads(32)
             .thread_stack_size(2 * 1024 * 1024)
             .build()?;
