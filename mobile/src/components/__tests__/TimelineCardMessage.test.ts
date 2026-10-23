@@ -137,6 +137,16 @@ describe("a user message is the user's own markdown, plus their attachments", ()
     expect(chip.props.disabled).toBe(true);
   });
 
+  // A chip draws as one 26px line, so the name alone left a target under the 44px
+  // floor; the slop is what makes it hittable, and nothing on screen moves.
+  test("an attachment chip extends its touch area past its drawn line", () => {
+    render(message({ role: "user", text: "here", attachments: [attachment({ name: "a.txt", kind: "file" })] }), { onOpenAttachment: jest.fn() });
+    const chip = tree.root.findAll(node => node.props.accessibilityLabel === "a.txt")[0]!;
+    // 26px drawn + this much a side reaches `layout.touchTarget`, the arithmetic
+    // the transcript's copy button does from its 28px box.
+    expect(chip.props.hitSlop).toEqual({ top: (layout.touchTarget - 26) / 2, bottom: (layout.touchTarget - 26) / 2 });
+  });
+
   test("a message with only attachments shows no empty bubble, and an empty message draws nothing", () => {
     render(message({ role: "user", text: "   ", attachments: [attachment({ name: "a.txt", kind: "file" })] }));
     expect(hasText("a.txt")).toBe(true);

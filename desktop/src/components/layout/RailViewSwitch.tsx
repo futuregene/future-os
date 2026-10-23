@@ -179,7 +179,11 @@ export function RailViewSwitch({
               "flex h-6 min-w-0 flex-1 select-none items-center justify-center rounded px-1 text-xs font-medium transition-colors",
               selected
                 ? "bg-surface text-ink shadow-sm"
-                : "text-ink-muted hover:text-ink-soft",
+                // The unselected segments sit on `surface-subtle`, where muted
+                // ink only clears the 3:1 floor; a navigation label the reader
+                // has to pick by name needs the body-text floor, so it uses the
+                // soft ink and steps up to full ink on hover.
+                : "text-ink-soft hover:text-ink",
               // While dragging, the segment still moves under the pointer but
               // reads as picked up rather than as a resting control.
               dragging === id ? "cursor-grabbing opacity-70" : "hover:cursor-grab",

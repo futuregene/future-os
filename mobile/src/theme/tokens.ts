@@ -68,7 +68,12 @@ export const lightColors: Palette = {
   lineSoft: "#e8edf4",
   ink: "#172033",
   inkSoft: "#5d687a",
-  inkMuted: "#707c90",
+  // Tertiary text is small (12–13pt) wherever it is used, so it is held to the
+  // 4.5:1 floor of WCAG AA against every surface it is painted on — the darkest
+  // of them is `accentSoft`, where this grey still reads at 4.6:1. The previous
+  // #707c90 sat at 3.7–4.2:1 on the same surfaces: legible on white, thin on a
+  // tinted row for timestamps, hints and section captions.
+  inkMuted: "#606c82",
   inkStrong: "#0f172a",
   accent: "#2563eb",
   accentSoft: "#e8f0ff",

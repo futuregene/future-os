@@ -15,7 +15,10 @@ const variants: Record<ButtonVariant, string> = {
   "danger": "border-danger-fill bg-danger-fill text-white hover:opacity-90",
   "danger-soft": "border-danger-line bg-danger-soft text-danger hover:brightness-95",
   "ghost": "border-transparent bg-transparent text-ink-soft hover:bg-surface-subtle hover:text-ink",
-  "primary": "border-accent-fill bg-accent-fill text-white hover:bg-accent-fill-hover disabled:bg-accent-fill-disabled",
+  // A disabled primary keeps the pale fill but not the white label: white on
+  // `accent-fill-disabled` is 1.42:1, which reads as an empty button rather
+  // than a disabled one. The accent ink on that fill clears 4.9:1.
+  "primary": "border-accent-fill bg-accent-fill text-white hover:bg-accent-fill-hover disabled:bg-accent-fill-disabled disabled:text-accent-fill-hover",
   "secondary": "border-line bg-surface text-ink hover:bg-surface-subtle",
   // Muted outlined action button used in toolbars/embeds (icon + short label).
   "toolbar": "border-line bg-surface text-ink-soft hover:bg-surface-subtle hover:text-ink",

@@ -83,7 +83,13 @@ const FLOORS: Array<[string, string, number]> = [
   ["ink", "code-surface", 6],
   ["ink-soft", "surface", 4.5],
   ["ink-soft", "surface-subtle", 4],
+  // Muted text is de-emphasised, not decoration: the rail's view switch, chips
+  // and counts paint it on the raised surfaces, not only on `surface`. Checked
+  // against `surface-subtle` (the darkest one it sits on) it measured 2.77:1 in
+  // every light palette before the floor covered it.
   ["ink-muted", "surface", 3],
+  ["ink-muted", "surface-subtle", 3],
+  ["ink-muted", "canvas", 3],
   ["accent", "surface", 4.5],
   ["success", "surface", 4.5],
   ["danger", "surface", 4.5],
