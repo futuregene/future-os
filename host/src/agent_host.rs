@@ -33,7 +33,6 @@ struct State {
     probe_cancel: Arc<tokio::sync::Notify>,
     handle: Option<AgentHandle>,
     retirement: Option<ServiceRetirement>,
-    recovering: bool,
     recovery_requires_restart: bool,
 }
 struct Shared {
@@ -55,7 +54,6 @@ impl Default for AgentHost {
                 probe_cancel: Arc::new(tokio::sync::Notify::new()),
                 handle: None,
                 retirement: None,
-                recovering: false,
                 recovery_requires_restart: false,
             }),
             changed: Condvar::new(),
@@ -120,7 +118,7 @@ impl AgentHost {
             return Err("Desktop is stopping".into());
         }
         {
-            let mut state = self.0.state.lock().unwrap();
+            let state = self.0.state.lock().unwrap();
             if matches!(state.phase, Phase::Starting | Phase::Stopping) {
                 return Ok(());
             }
@@ -130,7 +128,6 @@ impl AgentHost {
             if state.recovery_requires_restart {
                 return Err("Agent cleanup is incomplete; restart Desktop".into());
             }
-            state.recovering = true;
         }
         let result = (|| {
             if self.owns_agent() {
@@ -161,7 +158,6 @@ impl AgentHost {
             }
             self.start(configured)
         })();
-        self.0.state.lock().unwrap().recovering = false;
         result
     }
 
@@ -410,8 +406,7 @@ impl AgentHost {
                 return Ok(());
             }
         }
-        let mut config = AgentConfig::default();
-        config.resume_interrupted_on_start = !self.0.state.lock().unwrap().recovering;
+        let config = AgentConfig::default();
         AgentService::with_local_start(config, permit, |service| {
             {
                 let mut state = self.0.state.lock().unwrap();

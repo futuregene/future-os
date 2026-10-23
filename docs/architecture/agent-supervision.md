@@ -35,10 +35,29 @@ a failed/dropped serving future requests a bounded drain; only a successful drai
 retires the service. A deadline or storage failure remains terminal. The host
 serializes repairs and respects application shutdown/update admission.
 
-Repair-created Agent instances disable `resumeInterruptedOnStart` for that launch.
-This is an execution boundary: repair restores connectivity and authoritative task
-state, not an uncertain model/tool operation. Ordinary fresh launches continue to
-honour the user's saved continuation setting. Rust remote clients now retry
+Repair and ordinary startup both honour the saved `resumeInterruptedOnStart` policy.
+System drain records the existing `interrupted_by_restart` state with
+`interruption_cause=system_shutdown`; a user stop remains `cancelled` and wins races
+with shutdown. Only the latest abrupt interruption or explicit system interruption
+can resume. Completed, user-cancelled and superseded work stays ended. A durable
+`run_stop_requested` records user intent before cooperative cancellation; it does
+not acknowledge that execution stopped. A crash during cancellation, a stop racing
+system finalization, or a stop during the startup delay cannot resurrect that work.
+A refused continuation never falls back to a new prompt.
+
+Recovery inspects authoritative tool records before their in-memory repair. A complete
+file write is verified only by a byte-for-byte match and is not written again. Missing
+results, cancelled/timed-out commands and partial failures cannot prove non-execution.
+Unverifiable operations hold the original run as interrupted with its reason in existing
+run error information; no model request is made to blindly continue. Subsequent manual
+and remote prompts retain the mutation fence while reads remain available. Arbitrary
+shell effects and unverifiable edits stay held; a model assertion cannot clear the fence.
+Automatic continuation also rejects identical recorded mutation operations using
+canonical tool/argument fingerprints, even with a new tool-call ID.
+
+Local and headless hosts and remote conversations share this Agent policy; mobile and
+Peer clients sync the outcome rather than creating another continuation executor.
+Existing UI, sleep-disconnect behaviour and disabled remote actions are preserved. Rust remote clients now retry
 `prompt`/`continue_run` only with a stable command id and negotiated
 `prompt_receipt_v1`; old hosts receive a single attempt. Retries use the same body
 and bridge identity. Other writes are not added to the retry whitelist.
@@ -86,13 +105,13 @@ All four are closed today (P1 for 1–3, D6 for 4); they are kept as the record 
 | **D6** | TUI switches to "external first, otherwise in-process" and drops the child sidecar ([§7](#7-tui-starts-the-agent-in-process)) | **Product decision** | **Landed**: `tui/src/agent_host.rs` hosts through `future_host`, and `tui/src/agent_supervisor.rs` installs `start_in_process` as the driver; the standalone `future-tui` binary stays attach-only |
 | **P2** | Let the Agent outlive the TUI: detached sidecar + `--ephemeral` idle exit ([§8](#8-lifetime-and-ownership)) | **Product decision** | **Awaiting the user** |
 | **D7** | After the **user** stops the Agent, should other clients restart it? ([§4.3](#43-four-kinds-of-death)) | Product decision | Recommendation: no; **awaiting confirmation** |
-| **D8** | Post-restart continuation: who runs it, and when is a run resumable? (§9.1, §9.2) | Design | **Partly landed**: the continuation criterion is implemented; the `cause` distinction is not (see §12) |
+| **D8** | Post-restart continuation: who runs it, and when is a run resumable? (§9.1, §9.2) | Design | **Implemented**: system interruption, durable user stop intent and outcome verification; see the 2026-10-23 revision above. Native fault validation remains with CI/device testing |
 | **D9** | The trigger lives in the Agent too (proposed by the user, 2026-10-21) | Product decision | **Landed**: the Agent triggers it after starting; the switch is `resumeInterruptedOnStart` in `~/.future/agent/settings.json` (**on by default**, matching the desktop's `autoResumeInterrupted`); the desktop's one-shot pass is retired |
 | **D10** | Continuation sends no user message; it continues inside the loop via a request-only directive (§9.3, proposed by the user, 2026-10-21) | Product decision → design | **Landed** in three steps: the accepting path + directive, the placeholder tool result, then the relaxed assistant tail |
 
 P2 and D7 are **not settled**. This document does not design code paths for them; it states the options, their costs, and what they affect.
 
-An entry marked "landed" has code and tests behind it; "approved" is still only a plan. D8's cause distinction is not implemented.
+An entry marked "landed" has code and tests behind it; "approved" is still only a plan. D8's cause distinction is implemented by the revision above; local static checks cover it and runtime tests remain with CI.
 
 ## 3 Inputs to a decision
 
@@ -336,7 +355,7 @@ Adopted, because it is the only one of the three locations that **de-duplicates 
 
 #### Premise 1: settling must record *why* the run ended
 
-Measured: `request_shutdown` → `drain` → each session's `abort()` → the active run takes the normal terminal path with state `cancelled` ([session_prompt.rs](../../agent/src/rpc/session_prompt.rs)), and `request_abort` has **no cause parameter**. So **"shut it down and start it again" does not resume today**: after a graceful stop `interruptedRun` is null and `plan_resume` says `Terminal`. Only `kill -9` / a crash / OOM (a journal with `run_started` and no `run_terminal`) leaves `interrupted`.
+Historical measurement before this fix: `request_shutdown` → `drain` → each session's `abort()` → the active run takes the normal terminal path with state `cancelled` ([session_prompt.rs](../../agent/src/rpc/session_prompt.rs)), and `request_abort` has **no cause parameter**. So **"shut it down and start it again" did not resume then**: after a graceful stop `interruptedRun` is null and `plan_resume` says `Terminal`. Only `kill -9` / a crash / OOM (a journal with `run_started` and no `run_terminal`) leaves `interrupted`.
 
 So D8's criterion is not **"who is still watching" (subscription count)** but **"why did it end" (cause)**. The subscription rule fails precisely in the user's scenario: the TUI is already dead at step 3, the Agent is alone at step 4, so it would settle `cancelled`.
 
@@ -473,7 +492,7 @@ As built, the guard needed one intermediate shape before the last step: an assis
 | `check_running` → a supervision tick (probe the endpoint, not just our own phase) | `cli/src/headless/agent.rs` |
 | Same tick wired in | `desktop/src-tauri/src/agent_supervisor.rs` |
 | The breaker ([§6](#6-the-breaker)) | Inside the supervisor; no new file |
-| `CancelCause` threaded from abort to the terminal record (D8's premise) | `agent/src/rpc/session.rs`, `agent/src/runtime/`, `agent/src/session/entry.rs` |
+| `CancellationCause` and durable user stop intent threaded through cancellation and terminal records (D8's premise) | `agent/src/rpc/session.rs`, `agent/src/runtime/`, `agent/src/session/entry.rs` |
 | Agent-triggered continuation (§9.2): decide and submit atomically after Ready, with guardrails | `agent/src/service/startup.rs`, `agent/src/rpc/`, `agent/src/config/mod.rs` |
 | The switch in `~/.future/agent/settings.json` plus a one-time map from the old `app.db` value | `agent/src/config/mod.rs`, `packages/app-settings`, the Desktop settings page |
 | A user-message-free resume acceptance path + the request-only directive + the assistant-tail guard (D10) | `agent/src/rpc/session_prompt.rs`, `agent/src/agent/run_loop.rs`, `agent/src/session/entry.rs` |

@@ -173,7 +173,7 @@ impl AgentHandle {
             .collect::<Vec<_>>();
         for session in &sessions {
             let session = session.read();
-            session.abort();
+            let _ = session.interrupt_for_shutdown();
             session
                 .approval_gate
                 .cancel_session(&session.session_id, "Agent is shutting down.");
@@ -199,7 +199,7 @@ impl AgentHandle {
         let mut cancelled_queues = Vec::new();
         for session in &sessions {
             let mut session = session.write();
-            session.abort();
+            let _ = session.interrupt_for_shutdown();
             session
                 .approval_gate
                 .cancel_session(&session.session_id, "Agent is shutting down.");

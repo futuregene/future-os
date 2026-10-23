@@ -5,7 +5,9 @@
 //! interrupted by a crash or restart and continue run ordering without
 //! persisting queued work.
 
-use super::entry::{SessionEntry, ENTRY_TYPE_RUN_STARTED, ENTRY_TYPE_RUN_TERMINAL};
+use super::entry::{
+    SessionEntry, ENTRY_TYPE_RUN_STARTED, ENTRY_TYPE_RUN_STOP_REQUESTED, ENTRY_TYPE_RUN_TERMINAL,
+};
 
 /// Terminal state recorded on a `run_terminal` marker.
 pub const RUN_STATE_COMPLETED: &str = "completed";
@@ -21,7 +23,10 @@ pub const RUN_STATE_INTERRUPTED_BY_RESTART: &str = "interrupted_by_restart";
 /// conversation content. Forks skip these (they belong to the parent's runs)
 /// and every context/display projection filters them out.
 pub fn is_run_marker(entry_type: &str) -> bool {
-    matches!(entry_type, ENTRY_TYPE_RUN_STARTED | ENTRY_TYPE_RUN_TERMINAL)
+    matches!(
+        entry_type,
+        ENTRY_TYPE_RUN_STARTED | ENTRY_TYPE_RUN_TERMINAL | ENTRY_TYPE_RUN_STOP_REQUESTED
+    )
 }
 
 /// Scan a session's entries for a run that began (has a `run_started` marker)
@@ -66,6 +71,37 @@ pub fn find_unterminated_run(entries: &[SessionEntry]) -> Option<String> {
         }
     }
     open
+}
+
+/// Resume only the latest run: an abrupt crash, or a durable system shutdown.
+/// A later user/completed/cancelled run supersedes any earlier interruption.
+pub fn find_resumable_run(entries: &[SessionEntry]) -> Option<String> {
+    let latest = entries
+        .iter()
+        .rev()
+        .find(|entry| entry.entry_type == ENTRY_TYPE_RUN_STARTED)?;
+    let run = latest.content.as_ref()?.get("run_id")?.as_str()?;
+    // Survives a crash during cancellation and a stop racing finalization.
+    // A later system terminal cannot revoke the user's intent.
+    if entries.iter().any(|entry| {
+        entry.entry_type == ENTRY_TYPE_RUN_STOP_REQUESTED
+            && entry.content.as_ref().is_some_and(|v| v["run_id"] == run)
+    }) {
+        return None;
+    }
+    match find_run_terminal(entries, run) {
+        None => Some(run.to_owned()),
+        Some(terminal)
+            if terminal["state"] == RUN_STATE_INTERRUPTED_BY_RESTART
+                && matches!(
+                    terminal["interruption_cause"].as_str(),
+                    Some("system_shutdown" | "outcome_unknown")
+                ) =>
+        {
+            Some(run.to_owned())
+        }
+        _ => None,
+    }
 }
 
 /// Continue run ordering including recovered queued inputs. New markers carry an
@@ -114,6 +150,49 @@ mod tests {
         SessionEntry, ENTRY_TYPE_ASSISTANT, ENTRY_TYPE_RUN_STARTED, ENTRY_TYPE_RUN_TERMINAL,
         ENTRY_TYPE_SESSION_INFO, ENTRY_TYPE_SYSTEM,
     };
+
+    #[test]
+    fn only_latest_system_interruption_or_crash_can_resume() {
+        let mut entries = vec![SessionEntry::run_started("old", 1)];
+        assert_eq!(find_resumable_run(&entries).as_deref(), Some("old"));
+        let mut interrupted =
+            SessionEntry::run_terminal("old", RUN_STATE_INTERRUPTED_BY_RESTART, 0, 0, None);
+        interrupted.content.as_mut().unwrap()["interruption_cause"] = "system_shutdown".into();
+        entries.push(interrupted);
+        assert_eq!(find_resumable_run(&entries).as_deref(), Some("old"));
+        entries.push(SessionEntry::run_terminal(
+            "old",
+            RUN_STATE_CANCELLED,
+            0,
+            0,
+            None,
+        ));
+        assert_eq!(find_resumable_run(&entries), None);
+        entries.push(SessionEntry::run_started("new", 2));
+        entries.push(SessionEntry::run_terminal(
+            "new",
+            RUN_STATE_COMPLETED,
+            0,
+            0,
+            None,
+        ));
+        assert_eq!(find_resumable_run(&entries), None);
+    }
+
+    #[test]
+    fn durable_stop_survives_a_crash_and_a_later_system_terminal() {
+        let mut entries = vec![
+            SessionEntry::run_started("run", 1),
+            SessionEntry::run_stop_requested("run"),
+        ];
+        assert_eq!(find_resumable_run(&entries), None);
+        let mut terminal =
+            SessionEntry::run_terminal("run", RUN_STATE_INTERRUPTED_BY_RESTART, 0, 0, None);
+        terminal.content.as_mut().unwrap()["interruption_cause"] = "system_shutdown".into();
+        entries.push(terminal);
+        assert_eq!(find_resumable_run(&entries), None);
+        assert!(is_run_marker(ENTRY_TYPE_RUN_STOP_REQUESTED));
+    }
 
     #[test]
     fn run_markers_have_correct_type_and_content() {
