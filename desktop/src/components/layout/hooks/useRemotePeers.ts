@@ -167,25 +167,23 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
         if (!peer.connected)
           forgetHostCatalogue(peer.desktopId);
       }
-      const results = await Promise.all(connected.map(async (peer) => {
-        // A standby device reads nothing: the host refuses its business
-        // commands with `superseded`, so asking would spend a round trip per
-        // poll on an answer that can only be a refusal. What the reader needs
-        // instead is the machine's own state, which is why `control` rides on
-        // the peer summary.
-        if (peer.control === "standby")
-          return null;
+      // A standby device reads nothing: the host refuses its business commands
+      // with `superseded`, so asking would spend a round trip per poll on an
+      // answer that can only be a refusal. What the reader needs instead is the
+      // machine's own state, which is why `control` rides on the peer summary.
+      const asked = connected.filter(peer => peer.control !== "standby");
+      const results = await Promise.all(asked.map(async (peer) => {
         try {
           return await fetchRemoteSessions(peer.desktopId);
         }
         catch {
-          // One unreachable host must not blank the others' rows. Its rows
-          // simply drop out until it answers again.
+          // One unreachable host must not blank the others' rows, and it must
+          // not blank *its own* either: see `keepUnanswered`.
           return null;
         }
       }));
       const answered = results.filter((catalog): catalog is RemoteCatalog => catalog !== null);
-      setCatalogs(answered);
+      setCatalogs(current => keepUnanswered(current, answered, asked.map(peer => peer.desktopId)));
     }
     catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -286,7 +284,8 @@ export function useRemotePeers(enabled: boolean): RemotePeersState {
             return null;
           }
         }));
-        setCatalogs(results.filter((catalog): catalog is RemoteCatalog => catalog !== null));
+        const answered = results.filter((catalog): catalog is RemoteCatalog => catalog !== null);
+        setCatalogs(current => keepUnanswered(current, answered, connected.map(peer => peer.desktopId)));
       })();
     }, CATALOG_POLL_MS);
     return () => clearInterval(timer);
@@ -443,6 +442,49 @@ function presenceEndsPairing(payload: unknown): boolean {
   if (obj.unpaired === true)
     return true;
   return obj.disconnected === true && obj.reason === "unpaired";
+}
+
+/**
+ * This round's answers, with the last snapshot kept for a host that was asked
+ * and did not answer.
+ *
+ * A catalogue read fails for reasons that say nothing about the host: a store
+ * momentarily busy while it serves a page of a conversation's history, one round
+ * trip that timed out over a socket `is_connected` still reports as live. Reading
+ * that as "this machine has no conversations" emptied its rows until the next
+ * poll rebuilt them, and the row the user had *just clicked* was one of them —
+ * the reported "the session disappears and comes back a while later". The phone
+ * has never had it: its catalog keeps the last snapshot on a failed read, and
+ * says why ("Not flashing the catalogue empty is the point").
+ *
+ * The grace lasts one round, not forever. `refresh` reads the peer list before it
+ * reads the catalogues, so a host that is genuinely gone is `connected: false`
+ * next time, is not asked, and its rows leave then: what survives a failure is a
+ * machine that is still paired and live but did not answer this once. A host that
+ * is not asked at all — disconnected, stopped, in standby, unpaired — is not in
+ * `asked` and keeps today's rule, which is that its rows go.
+ */
+function keepUnanswered(
+  current: RemoteCatalog[],
+  answered: RemoteCatalog[],
+  asked: readonly string[],
+): RemoteCatalog[] {
+  const answers = new Map(answered.map(catalog => [catalog.desktopId, catalog] as const));
+  const next: RemoteCatalog[] = [];
+  for (const catalog of current) {
+    const answer = answers.get(catalog.desktopId);
+    if (answer) {
+      next.push(answer);
+      answers.delete(catalog.desktopId);
+      continue;
+    }
+    if (asked.includes(catalog.desktopId))
+      next.push(catalog);
+  }
+  // A host this list has never held: there is nothing to keep, so its answer —
+  // if it produced one — is what introduces it.
+  next.push(...answers.values());
+  return next;
 }
 
 function readVersion(value: unknown): SnapshotVersion | undefined {

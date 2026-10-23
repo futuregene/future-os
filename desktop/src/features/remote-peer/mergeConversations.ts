@@ -240,6 +240,12 @@ export function localTimestamp(thread: LocalThreadLike): number {
  * no entry, and its rows disappear rather than going stale-but-visible. Rows
  * are de-duplicated by `(desktopId, id)`, so a poll that re-reads the same
  * snapshot cannot double a row.
+ *
+ * An entry that is *older* than the poll comes from `useRemotePeers` keeping a
+ * connected host's last snapshot across a read it did not answer. Nothing here
+ * needs to know that: the row set it describes is the host's own, one poll
+ * behind, and the alternative is a list that empties itself and refills whenever
+ * that host is busy (the row a reader just opened disappearing and coming back).
  */
 export function mergeConversations(
   threads: LocalThreadLike[],
