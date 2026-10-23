@@ -539,11 +539,12 @@ them. Their conversations and workspaces are merged into one list with the
 active Desktop's. Switching sends no unbind command and does not revoke other
 Desktops' credentials; re-pairing the same Desktop replaces its own record.
 
-This is "one phone to many Desktops". The existing Desktop/platform-side single
-pending/active pairing, one-time invitation, signature handshake, and per-pairId
-authorization rules are all unchanged — the Desktop as the *host* still has one
-slot (see 2.2.2). future-server was not modified this round; real multi-device
-platform/Android/iOS integration testing still needs separate verification.
+This is "one phone to many Desktops". The one-time invitation, signature
+handshake, and per-pairId authorization rules are unchanged. When this was
+written the Desktop as the *host* served a single pairing slot; it now keeps a
+book of device slots and adds each new device beside the others, up to the
+platform's per-desktop allowance (five). What has not changed is control: one
+device drives at a time, and the others wait.
 
 The Desktop display name is set locally by the user (optional, saved with the
 pairing index but not reported to the platform nor written into the Desktop);
@@ -776,10 +777,6 @@ the machines' state, not the number of open transcripts.
 
 **Known limitations (current implementation, not design goals).**
 
-- The **host side is still single-slot**: one pending/active pairing per account
-  per Desktop, so a desktop client claiming an invitation **replaces** that
-  host's current phone pairing. The UI says "replaced" rather than "invalid",
-  stopping locally first and compensating the cloud revoke after.
 - On mobile, every paired Desktop holds its **own runtime** for as long as it is
   paired — its connection, catalogue, open conversation, drafts and outbox — and
   exactly one of them is the *active* desktop, which is what the screens read.
