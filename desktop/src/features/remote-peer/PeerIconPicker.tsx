@@ -9,6 +9,15 @@ import { PEER_ICONS } from "./peerIcons";
  * rendered in place of the machine's name in the conversation list — where it
  * must be same-width and distinguishable at a glance. Picking from a set is
  * what makes that true; it is also why the stored value is the icon *id*.
+ *
+ * The tiles are the phone's, value for value: 44px square (`layout.touchTarget`
+ * there), a 12px radius (`radius.md`), a 20px glyph, an 8px gap, and the same
+ * two states — a `line` border on `surface` for the rest, an `accent` border on
+ * `accent-soft` for the machine's own. The two clients show the same machine's
+ * mark and the same set to choose it from, so a picker that was visibly
+ * smaller and squarer on the desktop read as a different control rather than
+ * the same one on a larger screen. Keep the pairs in step: a change here is a
+ * change in `mobile/src/features/settings/SettingsScreen.tsx` (`iconOption`).
  */
 export function PeerIconPicker({
   value,
@@ -22,7 +31,7 @@ export function PeerIconPicker({
   return (
     <div
       aria-label={t("icons.label")}
-      className="flex flex-wrap items-center gap-1.5"
+      className="flex flex-wrap items-center gap-2"
       role="radiogroup"
     >
       {PEER_ICONS.map((icon) => {
@@ -32,10 +41,10 @@ export function PeerIconPicker({
             aria-checked={selected}
             aria-label={t(`icons.${icon.labelKey}`)}
             className={cn(
-              "flex size-8 items-center justify-center rounded-md border text-base transition-colors",
+              "flex size-11 items-center justify-center rounded-xl border text-xl leading-none transition-colors",
               selected
-                ? "border-accent bg-accent-soft text-accent"
-                : "border-line-soft text-ink-soft hover:border-line hover:text-ink",
+                ? "border-accent bg-accent-soft"
+                : "border-line bg-surface text-ink-soft hover:bg-surface-subtle hover:border-line",
             )}
             key={icon.id}
             onClick={() => onChange(icon.id)}
