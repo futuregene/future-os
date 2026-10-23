@@ -76,6 +76,53 @@ pub async fn reconcile_orphan_sessions() -> Result<usize, crate::Error> {
     Ok(removed)
 }
 
+/// Release deletion intents the GUI can never deliver, so a conversation that
+/// still exists in the Agent database stops being fenced out of every import.
+///
+/// A user delete queues an intent and deletes the local conversation; the fence
+/// then blocks import until the Agent acknowledges. That is correct while the
+/// intent can still be delivered. When no ownership evidence survives (see
+/// [`super::undeliverable_agent_session_deletes`]) the delivery pass refuses the
+/// intent forever, so the fence becomes a permanent leak: the session stays in
+/// the Agent and no client-mirroring pass may show it again.
+///
+/// Only intents refused at least once and holding no evidence are candidates,
+/// and only those whose session the Agent still reports *present* here are
+/// released. An intent with evidence keeps its fence — that delivery can still
+/// happen, and it belongs to a user delete this pass must not undo. An
+/// unreachable Agent, or one that no longer holds the session, releases nothing.
+pub async fn reconcile_undeliverable_delete_intents() -> Result<usize, crate::Error> {
+    let candidates = super::undeliverable_agent_session_deletes()?;
+    let mut released = 0;
+    for batch in candidates.chunks(future_rpc::session_deletion::MAX_DELETE_SESSIONS) {
+        let presence = match crate::agent_bridge::session_presence(batch.to_vec()).await {
+            Ok(presence) => presence,
+            Err(error) => {
+                // Nothing in this pass can be judged without the Agent's own
+                // catalogue; the next one re-runs it.
+                eprintln!("FutureOS: undeliverable delete reconcile deferred: {error}");
+                break;
+            }
+        };
+        let present: Vec<String> = presence
+            .sessions
+            .iter()
+            .filter(|item| item.status == "present")
+            .map(|item| item.session_id.clone())
+            .collect();
+        if present.is_empty() {
+            continue;
+        }
+        released += super::release_undeliverable_agent_session_deletes(&present)?;
+    }
+    if released > 0 {
+        eprintln!(
+            "FutureOS: released {released} undeliverable deletion intent(s); the next import may mirror those conversations again"
+        );
+    }
+    Ok(released)
+}
+
 /// Sweep conversations the GUI mirrors for a session that has no message at all.
 ///
 /// Sessions are announced when they are *created*, so builds that imported every
@@ -191,6 +238,114 @@ mod tests {
         let deleted = reconcile_orphan_sessions().await.expect("reconcile");
         assert_eq!(deleted, 0, "an unreachable agent deletes nothing");
         assert!(crate::store::get_thread("t_none").expect("get").is_some());
+    }
+
+    #[tokio::test]
+    async fn reconcile_releases_a_deletion_intent_the_gui_can_never_deliver() {
+        let (_home, conn) = guarded_conn("reconcile_undeliverable");
+        conn.execute_batch(
+            "INSERT INTO agent_delete_outbox (session_id, requested_at, attempts, last_error)
+             VALUES ('sess_stuck', 1, 1, 'Deletion source is unverified')",
+        )
+        .expect("seed a refused intent that holds no ownership evidence");
+        drop(conn);
+        let mock = mock_agent();
+        mock.default_data(
+            "get_session_presence",
+            serde_json::json!({"databaseId":"database-live","restoreGeneration":"generation",
+                "sessions":[{"sessionId":"sess_stuck","status":"present"}]}),
+        );
+
+        assert_eq!(
+            reconcile_undeliverable_delete_intents()
+                .await
+                .expect("reconcile"),
+            1
+        );
+        assert!(
+            !crate::store::is_agent_session_tombstoned("sess_stuck").expect("fence"),
+            "the session is still in the Agent, so the import used to be fenced out of it forever"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_keeps_the_fence_of_an_intent_that_still_owns_its_session() {
+        let (_home, conn) = guarded_conn("reconcile_evidenced");
+        conn.execute_batch(
+            "INSERT INTO agent_delete_outbox (session_id, requested_at, attempts, last_error)
+             VALUES ('sess_evidenced', 1, 1, 'Deletion belongs to a different Agent database');
+             INSERT INTO agent_delete_sources (session_id, database_id)
+             VALUES ('sess_evidenced', 'database-other');",
+        )
+        .expect("seed an intent with ownership evidence");
+        drop(conn);
+        let mock = mock_agent();
+        mock.default_data(
+            "get_session_presence",
+            serde_json::json!({"databaseId":"database-live","restoreGeneration":"generation",
+                "sessions":[{"sessionId":"sess_evidenced","status":"present"}]}),
+        );
+
+        // A user delete that named its database is deliverable, so the session
+        // must never be mirrored again. Dropping the evidence condition from
+        // `undeliverable_agent_session_deletes` turns this red.
+        assert_eq!(
+            reconcile_undeliverable_delete_intents()
+                .await
+                .expect("reconcile"),
+            0
+        );
+        assert!(
+            crate::store::is_agent_session_tombstoned("sess_evidenced").expect("fence"),
+            "a conversation the user deleted must not come back"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_keeps_the_fence_when_the_agent_no_longer_holds_the_session() {
+        let (_home, conn) = guarded_conn("reconcile_session_gone");
+        conn.execute_batch(
+            "INSERT INTO agent_delete_outbox (session_id, requested_at, attempts, last_error)
+             VALUES ('sess_gone', 1, 1, 'Deletion source is unverified')",
+        )
+        .expect("seed");
+        drop(conn);
+        let mock = mock_agent();
+        mock.default_data(
+            "get_session_presence",
+            serde_json::json!({"databaseId":"database-live","restoreGeneration":"generation",
+                "sessions":[{"sessionId":"sess_gone","status":"missing"}]}),
+        );
+
+        assert_eq!(
+            reconcile_undeliverable_delete_intents()
+                .await
+                .expect("reconcile"),
+            0,
+            "a session the Agent does not hold is not a conversation to restore"
+        );
+        assert!(crate::store::is_agent_session_tombstoned("sess_gone").expect("fence"));
+    }
+
+    #[tokio::test]
+    async fn reconcile_releases_nothing_while_the_agent_is_unreachable() {
+        let (_home, conn) = guarded_conn("reconcile_undeliverable_down");
+        conn.execute_batch(
+            "INSERT INTO agent_delete_outbox (session_id, requested_at, attempts, last_error)
+             VALUES ('sess_stuck', 1, 1, 'Deletion source is unverified')",
+        )
+        .expect("seed");
+        drop(conn);
+        let mock = mock_agent();
+        mock.set_down(true);
+
+        assert_eq!(
+            reconcile_undeliverable_delete_intents()
+                .await
+                .expect("reconcile"),
+            0
+        );
+        assert!(crate::store::is_agent_session_tombstoned("sess_stuck").expect("fence"));
     }
 
     #[tokio::test]
