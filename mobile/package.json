@@ -5,6 +5,7 @@
   "dependencies": {
     "@future-os/json-preview": "*",
     "@future-os/markdown": "*",
+    "@future-os/peer-icons": "*",
     "@future-os/remote-client": "*",
     "@future-os/remote-crypto": "*",
     "@future-os/remote-protocol": "*",

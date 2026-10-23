@@ -1,4 +1,4 @@
-import { iconGlyph } from "../remote/peerIcons";
+import { PeerIconGlyph } from "../remote/PeerIconGlyph";
 import { ArrowLeft, Plus, Settings2, Trash2 } from "lucide-react-native";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -139,10 +139,10 @@ export function DesktopsScreen({ onBack, onAdd, onOpenConversation }: {
                 <View style={styles.desktopIcon}>
                   {/* The desktop's own mark, exactly as the session list and the
                       device page draw it: the icon the user picked *is* this
-                      machine's identity. The generic monitor that used to be here
-                      was the one place the choice had no effect — the picker wrote
-                      the id and nothing on this screen ever read it back. */}
-                  <Text style={styles.desktopGlyph}>{iconGlyph(desktop.icon)}</Text>
+                      machine's identity. One shared set draws it here, in the
+                      session list and on that machine's settings page, so the
+                      choice has the same face wherever it shows up. */}
+                  <PeerIconGlyph id={desktop.icon} size={20} />
                 </View>
                 <View style={styles.identity}>
                   <Text
@@ -278,7 +278,6 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   },
   select: { flex: 1, minWidth: 0, minHeight: 64, flexDirection: "row", alignItems: "center", gap: spacing.sm, borderRadius: radius.md },
   desktopIcon: { width: 36, height: 44, alignItems: "center", justifyContent: "center", borderRadius: radius.md, backgroundColor: theme.colors.surfaceSubtle },
-  desktopGlyph: { fontSize: theme.font(20) },
   iconButton: { width: layout.touchTarget, height: layout.touchTarget, alignItems: "center", justifyContent: "center", borderRadius: radius.md },
   pressed: { backgroundColor: theme.colors.surfaceSubtle },
   identity: { flex: 1, minWidth: 0, gap: spacing.xs },

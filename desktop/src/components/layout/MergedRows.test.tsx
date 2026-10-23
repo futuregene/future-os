@@ -298,7 +298,10 @@ it("merges every machine's chats into one section, in time order", async () => {
   // Newest first, across machines: the host's newest, then this machine's row
   // (rendered by the rail's own renderer, which this test stubs as "row"), then
   // the other host's older one.
-  expect(section.textContent).toBe("newest💻rowolder💻");
+  expect(section.textContent).toBe("newestrowolder");
+  // Each host row carries its machine's mark, drawn in the row rather than typed
+  // into it — the mark used to be an emoji appended to the title.
+  expect(section.querySelectorAll("[data-testid='remote-source-icon'] svg")).toHaveLength(2);
   await view.unmount();
 });
 
@@ -330,9 +333,9 @@ it("draws a fork under the conversation it hangs under", async () => {
     threadById: new Map(),
   });
 
-  expect([...view.container.querySelectorAll("div[class*='group/thread']")]
-    .map(row => (row.textContent ?? "").trim()))
-    .toEqual(["Parent💻", "Fork💻"]);
+  const rows = [...view.container.querySelectorAll("div[class*='group/thread']")];
+  expect(rows.map(row => (row.textContent ?? "").trim())).toEqual(["Parent", "Fork"]);
+  expect(rows.map(row => row.querySelectorAll("[data-testid='remote-source-icon'] svg").length)).toEqual([1, 1]);
   await view.unmount();
 });
 
@@ -636,7 +639,11 @@ it("puts the machine's icon after the group name", async () => {
   // The name element precedes the machine's glyph inside the header.
   expect(icon).not.toBeNull();
   expect(icon.className).toContain("shrink-0");
-  expect(heading.parentElement!.textContent).toBe("future-os💻");
+  expect(heading.parentElement!.textContent).toBe("future-os");
+  // The mark is drawn, so it is an svg in the header rather than a character in
+  // the text beside the name. (The header also carries the row's own menu icon,
+  // hence at least one rather than exactly one.)
+  expect(icon.querySelectorAll("svg").length).toBe(1);
   await view.unmount();
 });
 

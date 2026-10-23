@@ -7,7 +7,7 @@ import { resources } from "../../../i18n/locales";
 import { SettingsLink, SettingsSwitch, useSettingsStyles } from "../SettingsPrimitives";
 import { lightTheme } from "../../../theme/theme";
 import type { DesktopSettings, InstalledSkill, PairedDesktop, ProvidersView } from "../../../remote/types";
-import { PEER_ICONS } from "../../../remote/peerIcons";
+import { peerIconId, PEER_ICONS } from "../../../remote/peerIcons";
 
 let stored: DesktopSettings;
 let installed: InstalledSkill[];
@@ -72,6 +72,9 @@ jest.mock("../../../remote/RemoteContext", () => ({ useRemoteControls: () => moc
 jest.mock("../../../i18n/LanguageSettings", () => ({ LanguageSettings: () => null }));
 jest.mock("../TasksSettingsPage", () => ({ TasksSettingsPage: (props: { desktopOnline: boolean; settings: unknown }) => { tasksPageProps = props as never; return null; } }));
 jest.mock("lucide-react-native", () => ({ ArrowLeft: "ArrowLeft", Monitor: "Monitor", Check: "Check", ChevronDown: "ChevronDown", ChevronRight: "ChevronRight" }));
+// The machine mark comes from the shared peer-icon set (see `peerIcons`); these
+// tests are about which id a surface draws, so the glyph itself is one named stub.
+jest.mock("../../../remote/PeerIconGlyph", () => ({ PeerIconGlyph: "PeerIconGlyph" }));
 jest.mock("react-native-safe-area-context", () => ({ SafeAreaView: "SafeAreaView", useSafeAreaInsets: () => ({ top: 24, bottom: 34, left: 0, right: 0 }) }));
 jest.mock("react-i18next", () => ({ useTranslation: () => ({ t: (key: string, options?: { name?: string }) => options?.name ? `${key}: ${options.name}` : key, i18n: { get language() { return mockLanguage; } } }) }));
 
@@ -407,13 +410,13 @@ test("the device page names the machine it configures, and offers no unpair acti
  */
 test("the scoped banner wears the bound desktop's own icon", async () => {
   await openPreferences();
-  expect(strings()).toContain(PEER_ICONS[0]!.glyph);
+  expect(glyphIds()).toEqual([PEER_ICONS[0]!.id]);
   mockRemote.desktops = [
     { pairId: "other", desktopId: "other-desktop", name: "Other computer" },
     { pairId: "pair", desktopId: "desktop", name: "Work computer", icon: "rocket" },
   ];
   await act(async () => tree.update(createElement(SettingsScreen, deviceProps)));
-  expect(strings()).toContain("🚀");
+  expect(glyphIds()).toEqual(["rocket"]);
 });
 
 test("the phone's own screen holds no device settings", async () => {
@@ -530,6 +533,13 @@ test("the official-account entry stays reachable while the desktop is offline", 
 const texts = () => tree.root.findAllByType(Text).map(node => node.props.children);
 /** The string children only: a text node may hold an interpolated element. */
 const strings = () => texts().filter((child): child is string => typeof child === "string");
+/**
+ * The machine mark each surface draws.
+ *
+ * Resolved through `peerIconId`, because that is what the glyph draws: a
+ * machine with no icon of its own is handed `undefined` and draws the default.
+ */
+const glyphIds = () => tree.root.findAll(node => String(node.type) === "PeerIconGlyph").map(node => peerIconId(node.props.id));
 const radio = (tier: string) => tree.root.findAll(node =>
   node.props.accessibilityRole === "radio" && node.props.accessibilityLabel === tier)[0]!;
 /** Fresh mount: `useDesktopResource` only re-reads when its inputs change, so a

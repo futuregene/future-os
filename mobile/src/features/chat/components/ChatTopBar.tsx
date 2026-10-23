@@ -1,5 +1,6 @@
 import { ArrowLeft, FolderOpen, ReceiptText } from "lucide-react-native";
 import { Pressable, StyleSheet, Text, View } from "react-native";
+import { PeerIconGlyph } from "../../../remote/PeerIconGlyph";
 import { layout, radius, spacing } from "../../../theme/tokens";
 import { createThemedStyles, useTheme } from "../../../theme/ThemeContext";
 
@@ -20,14 +21,14 @@ export function ChatTopBar({
   contextLabel: string;
   draft: boolean;
   /**
-   * The desktop this conversation is on: its glyph and the user's name for it.
+   * The desktop this conversation is on: its icon id and the user's name for it.
    *
    * The phone has no conversations of its own — every one of these lives on a
    * paired desktop — so the bar says which, on the line that already answers
    * "where is this" (the workspace, or the chat section). One line, as that line
    * is: the machine qualifies the conversation, it does not get a row of its own.
    */
-  machine?: { glyph: string; label: string };
+  machine?: { icon: string | undefined; label: string };
   backLabel: string;
   /**
    * Opens the conversation's token/amount breakdown. An icon rather than the
@@ -64,15 +65,13 @@ export function ChatTopBar({
             <>
               {/* Named for the screen reader and for the tests: the glyph alone is
                   not a name, and the element is the only place a reader can learn
-                  which computer the conversation they are in lives on. */}
-              <Text
-                accessibilityLabel={machine.label}
-                numberOfLines={1}
-                style={styles.machine}
-                testID="chat-machine"
-              >
-                {`${machine.glyph} ${machine.label}`}
-              </Text>
+                  which computer the conversation they are in lives on. The mark
+                  itself is drawn from the shared icon set, so it is the same
+                  picture the session list and the machine's own page show. */}
+              <View accessibilityLabel={machine.label} style={styles.machine} testID="chat-machine">
+                <PeerIconGlyph id={machine.icon} size={12} />
+                <Text numberOfLines={1} style={styles.machineLabel}>{machine.label}</Text>
+              </View>
               <Text accessibilityElementsHidden importantForAccessibility="no" style={styles.contextSeparator}>
                 ·
               </Text>
@@ -138,7 +137,8 @@ const useStyles = createThemedStyles(theme => StyleSheet.create({
   // reader just came from, and a line truncating *both* halves reads as a row
   // that did not fit.
   contextLine: { flexDirection: "row", alignItems: "center", justifyContent: "center", maxWidth: "100%", marginTop: 2 },
-  machine: { color: theme.colors.inkMuted, fontSize: theme.font(12), flexShrink: 0, maxWidth: "70%" },
+  machine: { flexDirection: "row", alignItems: "center", gap: 3, flexShrink: 0, maxWidth: "70%" },
+  machineLabel: { color: theme.colors.inkMuted, fontSize: theme.font(12), flexShrink: 1 },
   contextSeparator: { color: theme.colors.inkMuted, fontSize: theme.font(12), marginHorizontal: 4 },
   context: { color: theme.colors.inkSoft, fontSize: theme.font(12), flexShrink: 1 },
   title: { color: theme.colors.inkStrong, fontSize: theme.font(16), fontWeight: "700", maxWidth: "90%" },

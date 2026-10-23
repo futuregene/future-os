@@ -1,30 +1,25 @@
 /** @jest-environment node */
 
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { describe, expect, it, jest } from "@jest/globals";
-import { iconGlyph, PEER_ICONS, type PeerIcon } from "../peerIcons";
-import * as storage from "../storage";
+import { describe, expect, it } from "@jest/globals";
+import { PEER_GLYPHS } from "../peerGlyphs";
+import { PEER_ICONS, peerIconId } from "../peerIcons";
 import { resources } from "../../i18n/locales";
 
 /**
- * The desktop app keeps the same ids: a user can label the same machine from
- * either device, and a glyph that exists on one platform but not the other
- * would make one machine look like two different ones depending on which
- * device you are holding. Reading the other platform's source (rather than a
- * copy of the list here) is what makes drift fail the build instead of the
- * user.
+ * The icon set a paired machine is drawn from.
+ *
+ * The ids live in `@future-os/peer-icons` and the desktop reads the same list,
+ * so what is left to prove here is the phone's half of the drawing: every id in
+ * that list has a glyph on this platform.
+ *
+ * The set used to be emoji, and an emoji is drawn by whichever colour-emoji
+ * font the device ships — Noto's picture on Android, Apple's on iOS, a
+ * monochrome text glyph wherever the stack found neither — so one machine
+ * looked like three different machines. A line icon drawn from the same path
+ * data as the desktop's ends that; a glyph that went back to text would still
+ * render, which is why the mapping is checked id by id rather than by
+ * "something appeared".
  */
-function desktopIcons(): Pick<PeerIcon, "id" | "glyph">[] {
-  const file = path.resolve(__dirname, "../../../../desktop/src/features/remote-peer/peerIcons.ts");
-  const found: Pick<PeerIcon, "id" | "glyph">[] = [];
-  for (const match of readFileSync(file, "utf8").matchAll(
-    /\{\s*id:\s*"([^"]+)",\s*glyph:\s*"([^"]+)",/gu,
-  ))
-    found.push({ id: match[1]!, glyph: match[2]! });
-  expect(found.length).toBeGreaterThan(0);
-  return found;
-}
 
 /** The `desktops.icons` namespace of one bundle, as the picker reads it. */
 function iconLabels(locale: "en" | "zh"): Record<string, unknown> {
@@ -34,65 +29,31 @@ function iconLabels(locale: "en" | "zh"): Record<string, unknown> {
 }
 
 describe("peerIcons", () => {
-  it("uses the same ids and glyphs as the desktop app", () => {
-    expect(PEER_ICONS.map(icon => ({ id: icon.id, glyph: icon.glyph }))).toEqual(desktopIcons());
+  it("has a glyph of its own for every id in the shared set", () => {
+    for (const icon of PEER_ICONS)
+      expect({ id: icon.id, drawn: Boolean(PEER_GLYPHS[icon.id]) }).toEqual({ id: icon.id, drawn: true });
   });
 
-  it("resolves a stored id to its glyph", () => {
-    expect(iconGlyph("rocket")).toBe("🚀");
-    expect(iconGlyph("home")).toBe("🏠");
+  it("resolves a stored id to itself", () => {
+    expect(peerIconId("rocket")).toBe("rocket");
+    expect(peerIconId("home")).toBe("home");
   });
 
   /**
-   * An unknown or empty id must render the default: this value is drawn beside
-   * a session title, so it can never be arbitrary stored text, and a blank row
-   * would look like a broken list.
+   * A label file from another build may hold an id this one does not know, and
+   * this value is drawn in place of a machine's name: it must never reach the
+   * screen as itself, and must not leave the row blank either.
    */
   it("falls back to the default for an unknown or empty id", () => {
-    for (const value of [null, undefined, "", "not-an-icon", "<script>"]) {
-      expect(iconGlyph(value)).toBe(PEER_ICONS[0]!.glyph);
-    }
+    for (const value of [null, undefined, "", "not-an-icon", "<script>"])
+      expect(peerIconId(value)).toBe(PEER_ICONS[0]!.id);
   });
 
   it("has no duplicate ids and no empty labels", () => {
     const ids = PEER_ICONS.map(icon => icon.id);
     expect(new Set(ids).size).toBe(ids.length);
-    for (const icon of PEER_ICONS) {
-      expect(icon.glyph.length).toBeGreaterThan(0);
+    for (const icon of PEER_ICONS)
       expect(icon.labelKey.length).toBeGreaterThan(0);
-    }
-  });
-
-  /**
-   * Every glyph has to be one emoji that both mobile and desktop fonts can
-   * draw, and the picker is where a bad one is invisible until a phone shows a
-   * tofu box: the old `server` glyph was `U+1F5A7` (three networked computers),
-   * which is not an emoji at all, and `U+1F5A5`/`U+2601` without `U+FE0F`
-   * selected their monochrome text glyph. So: exactly one code point (no
-   * skin-tone or ZWJ sequences, which older fonts split or drop), plus `U+FE0F`
-   * unless Unicode gives that code point an emoji presentation by default.
-   */
-  it("uses glyphs every platform renders as emoji", () => {
-    // Default-emoji-presentation code points, from `emoji-test.txt`: their
-    // fully-qualified sequence has no `U+FE0F`.
-    const DEFAULT_EMOJI = new Set([
-      0x1F4BB /* 💻 */,
-      0x1F4F1 /* 📱 */, 0x1F3E0 /* 🏠 */, 0x1F3E2 /* 🏢 */, 0x2615 /* ☕ */,
-      0x1F3EB /* 🏫 */, 0x1F680 /* 🚀 */,
-      0x1F9EA /* 🧪 */, 0x1F916 /* 🤖 */, 0x1F4CA /* 📊 */, 0x1F4BE /* 💾 */,
-      0x1F4FA /* 📺 */, 0x1F3A8 /* 🎨 */, 0x1F9E0 /* 🧠 */,
-      0x1F52C /* 🔬 */, 0x1F512 /* 🔒 */, 0x26A1 /* ⚡ */, 0x2B50 /* ⭐ */,
-      0x1F3AC /* 🎬 */, 0x1F3AE /* 🎮 */, 0x1F310 /* 🌐 */,
-      0x1FA9F /* 🪟 */, 0x1F34E /* 🍎 */, 0x1F427 /* 🐧 */,
-    ]);
-    for (const icon of PEER_ICONS) {
-      const points = [...icon.glyph].map(char => char.codePointAt(0)!);
-      const base = points.filter(point => point !== 0xFE0F);
-      expect({ id: icon.id, codePoints: base.length }).toEqual({ id: icon.id, codePoints: 1 });
-      if (!DEFAULT_EMOJI.has(base[0]!))
-        expect({ id: icon.id, hasVariationSelector: points.includes(0xFE0F) })
-          .toEqual({ id: icon.id, hasVariationSelector: true });
-    }
   });
 
   /** A picker option with no label is an unlabelled button for screen readers. */
@@ -103,17 +64,5 @@ describe("peerIcons", () => {
           .toEqual({ locale, label: expect.any(String) });
       }
     }
-  });
-});
-
-describe("labelDesktop", () => {
-  const setItem = jest.spyOn(storage, "labelDesktop");
-
-  it("is the storage entry point a desktop's icon is written through", () => {
-    // Guards against the label editor being wired to a function that does not
-    // exist (a rename that leaves the icon behind, say) — the failure mode is
-    // silent, because a missing write just leaves the old value in place.
-    expect(typeof storage.labelDesktop).toBe("function");
-    setItem.mockRestore();
   });
 });

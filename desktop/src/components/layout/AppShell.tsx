@@ -7,7 +7,6 @@ import type { FutureAuthState, ProvidersView } from "../../integrations/agent/pr
 import type { StoredApprovalRequest, StoredThread, StoredWorkspace } from "../../integrations/storage/threadStore";
 import type { ActivitySection } from "./ActivityRail";
 import type { ContextTab } from "./ContextPanel";
-import { Monitor } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AgentThread } from "../../features/agent/AgentThread";
@@ -21,6 +20,7 @@ import { useShortcutDispatcher } from "../../features/keyboard/useDispatcher";
 import { CommandPalette } from "../../features/palette/CommandPalette";
 import { ShortcutCheatSheet } from "../../features/palette/ShortcutCheatSheet";
 import { DeviceChoiceDialog } from "../../features/remote-peer/DeviceChoiceDialog";
+import { PeerIconGlyph } from "../../features/remote-peer/PeerIconGlyph";
 import { peerDrivable, peerStatus } from "../../features/remote-peer/peerStatus";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
@@ -641,7 +641,7 @@ function ReadyAppShell({
   const localMachineBadge = remotePeers.length > 0
     ? (
         <MachineBadge
-          glyph={<Monitor aria-hidden className="size-3.5" />}
+          glyph={<PeerIconGlyph className="size-3.5" id="desktop" />}
           label={tRemotePeer("selector.local")}
         />
       )

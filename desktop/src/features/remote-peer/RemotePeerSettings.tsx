@@ -8,7 +8,7 @@ import { TextInput } from "../../components/ui/TextInput";
 import { SettingsLinkRow, SettingsList, SettingsPage, SettingsRow, SettingsSection, Switch } from "../settings/SettingsPrimitives";
 import { PeerIconChip } from "./PeerIconChip";
 import { PeerIconPicker } from "./PeerIconPicker";
-import { iconGlyph, peerBadgeText } from "./peerIcons";
+import { peerBadgeText } from "./peerIcons";
 import { useHostCatalogueInvalidation } from "./remoteHostCatalog";
 import { RemoteModelsPanel } from "./RemoteModelsPanel";
 import { getRemoteApprovalSettings, requestRemotePeer, setRemoteApprovalTier } from "./remotePeerClient";
@@ -228,7 +228,7 @@ export function RemotePeerSettings({
   return (
     <SettingsPage
       backLabel={t("backToDesktops")}
-      icon={<PeerIconChip glyph={iconGlyph(peer.icon)} variant="page" />}
+      icon={<PeerIconChip id={peer.icon} variant="page" />}
       onBack={onBack}
       title={peerBadgeText(peer, peer.desktopId)}
     >

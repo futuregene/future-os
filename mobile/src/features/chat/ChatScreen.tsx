@@ -9,7 +9,6 @@ import { PausedTimeline } from "../../components/PausedTimeline";
 import { ErrorBanner } from "../../components/ErrorBanner";
 import { StandbyNotice } from "../../components/StandbyNotice";
 import { useRemote, useRemoteControls } from "../../remote/RemoteContext";
-import { iconGlyph } from "../../remote/peerIcons";
 import { modelReference, type TimelineItem } from "../../remote/types";
 import { spacing } from "../../theme/tokens";
 import { useTransferProgress } from "./useTransferProgress";
@@ -106,7 +105,7 @@ export function ChatScreen() {
   const desktopId = remote.credentials?.expectedDesktopId;
   const pairedDesktop = remote.desktops.find(item => item.desktopId === desktopId);
   const machine = desktopId
-    ? { glyph: iconGlyph(pairedDesktop?.icon), label: pairedDesktop?.name || desktopId }
+    ? { icon: pairedDesktop?.icon, label: pairedDesktop?.name || desktopId }
     : undefined;
   const activeModel = remote.models.find(
     (model) => modelReference(model) === remote.modelId,

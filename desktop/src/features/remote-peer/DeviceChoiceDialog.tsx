@@ -1,12 +1,13 @@
 import type { KeyboardEvent } from "react";
 import type { RemotePeer } from "./remotePeerClient";
-import { ChevronRight, Monitor } from "lucide-react";
+import { ChevronRight } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "../../components/ui/Button";
 import { Dialog } from "../../components/ui/Dialog";
 import { cn } from "../../lib/cn";
-import { iconGlyph, peerBadgeText } from "./peerIcons";
+import { PeerIconGlyph } from "./PeerIconGlyph";
+import { peerBadgeText } from "./peerIcons";
 import { peerDrivable, peerHeld, peerHolderName, peerStatus, peerStatusKey } from "./peerStatus";
 
 /**
@@ -85,7 +86,7 @@ export function DeviceChoiceDialog({
         {/* This machine leads: it is the answer a create action used to assume,
             and it is always able to take the work. */}
         <DeviceRow
-          glyph={<Monitor aria-hidden className="size-4" />}
+          glyph={<PeerIconGlyph className="size-4" id="desktop" />}
           label={t("selector.local")}
           onClick={onPickLocal}
         />
@@ -98,7 +99,7 @@ export function DeviceChoiceDialog({
           return (
             <DeviceRow
               disabled={!ready}
-              glyph={<span aria-hidden className="text-sm">{iconGlyph(peer.icon)}</span>}
+              glyph={<PeerIconGlyph className="size-4" id={peer.icon} />}
               key={peer.desktopId}
               label={peerBadgeText(peer, peer.desktopId)}
               note={ready ? undefined : heldNote(peer) ?? t(peerStatusKey(status))}
@@ -197,11 +198,10 @@ function DeviceRow({
       onClick={onClick}
       type="button"
     >
-      {/* One slot for both kinds of mark. This machine is drawn with a 16px
-          line icon and a host with an emoji, whose glyph box is wider than that
-          at the same font size — so without a reserved width each row's name
-          started at its own x, and the two rows read as two columns with the
-          emoji hanging into the first one. */}
+      {/* One slot for both kinds of mark. Both are 16px line icons from the
+          shared peer-icon set now, so the reserved box is what keeps every
+          row's name starting at the same x rather than what evens out two
+          different glyph widths. */}
       <span aria-hidden className="flex size-5 shrink-0 items-center justify-center leading-none">
         {glyph}
       </span>
