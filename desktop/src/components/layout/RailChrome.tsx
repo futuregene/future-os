@@ -173,7 +173,12 @@ export function RailGroupHeader({
   const label = (
     <>
       <Folder className="size-4 shrink-0 text-ink-soft" />
-      <span className="min-w-0 truncate text-sm font-medium text-ink-soft" data-testid={testId} title={name}>
+      {/* `font-semibold` + full ink over a row's `font-medium` + `ink-soft`: at
+          the same 13px, weight and colour are what make a group heading read as
+          the name of the list under it rather than as its first row. It used to
+          carry neither — the same size, weight *and* colour as the titles it
+          heads — so the folder glyph and the indent were the whole difference. */}
+      <span className="min-w-0 truncate text-13 font-semibold text-ink" data-testid={testId} title={name}>
         {name}
       </span>
       {glyph}

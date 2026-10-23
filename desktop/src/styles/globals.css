@@ -258,12 +258,18 @@
   /* Reader text size (`lib/fontSize.ts` writes this multiplier: 0.85 / 1 /
      1.15 / 1.35). Every type token is its design-time size times the scale, so
      `text-*` grows while spacing and widths — which read `--spacing` and px
-     values — stay fixed. The paired `--text-*--line-height` values are
-     unitless ratios (or `normal`), so they follow their font size
-     automatically. `@theme` declares the design-time sizes these override. */
+     values — stay fixed. The paired `--text-*--line-height` values are unitless
+     ratios (or `normal`), so they follow their font size automatically. `@theme`
+     declares the design-time sizes these override. The two smallest keep a
+     floor — see below. */
   --app-font-scale: 1;
-  --text-3xs: calc(0.625rem * var(--app-font-scale));
-  --text-2xs: calc(0.6875rem * var(--app-font-scale));
+  /* The two smallest steps do not scale all the way down. "Small" (0.85) took
+     `--text-2xs` to 9.35px and `--text-3xs` to 8.5px — ages, count badges and
+     the picker's status notes, i.e. short CJK strings that are unreadable rather
+     than merely quiet at that size. 10px is the floor both keep. Scaling up is
+     untouched: 0.625rem × 1.35 is 11.3px, already above it. */
+  --text-3xs: max(0.625rem, calc(0.625rem * var(--app-font-scale)));
+  --text-2xs: max(0.625rem, calc(0.6875rem * var(--app-font-scale)));
   --text-13: calc(0.8125rem * var(--app-font-scale));
   --text-xs: calc(0.75rem * var(--app-font-scale));
   --text-sm: calc(0.875rem * var(--app-font-scale));

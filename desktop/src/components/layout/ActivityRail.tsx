@@ -1171,7 +1171,7 @@ export function ActivityRail({
               to be able to address it (a heading whose rows come from another
               component is the pair that can disagree). */}
           <span
-            className="min-w-0 flex-1 truncate text-sm font-medium text-ink-soft"
+            className="min-w-0 flex-1 truncate text-13 font-semibold text-ink"
             data-testid="local-group-heading"
             title={workspace.name}
           >

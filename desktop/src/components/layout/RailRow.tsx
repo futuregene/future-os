@@ -126,12 +126,21 @@ export function RailRowTreeToggle({
   );
 }
 
-/** A row's title, at the one size and weight every row uses. */
+/**
+ * A row's title, at the one size and weight every row uses.
+ *
+ * `text-13` (13px), not `text-sm`: at 14px a row's title, its workspace heading
+ * and the navigation entry above them were all the same size *and* the same
+ * weight, so the level had to be carried by one step of ink alone. 13px is the
+ * macOS source-list size, which is what a 224–480px column of one-line labels
+ * is, and in the 203px title column it fits about one more CJK character than
+ * 14px did — enough that the longest demo title stops clipping.
+ */
 export function RailRowTitle({ children, grow = true, muted }: { children: ReactNode; grow?: boolean; muted?: boolean }) {
   return (
     <span
       className={cn(
-        "pointer-events-none min-w-0 truncate text-sm font-medium",
+        "pointer-events-none min-w-0 truncate text-13 font-medium",
         // `flex-1` while the title is the row's last flexible element (its
         // indicator and menu belong at the right edge). A row that puts a
         // qualifier *after* the title — the machine a conversation is on —
