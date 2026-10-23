@@ -82,7 +82,14 @@ export function ConversationSearch({
         // `min-w-0`: the field shares the row with the device picker, and a flex
         // item's default `min-width: auto` let the input push the row wider than
         // the rail (the magnifier then sat outside it).
-        "flex h-8 min-w-0 flex-1 items-center gap-1 rounded-md border border-line-soft bg-surface px-2",
+        //
+        // `h-7`, the height of the glyph it replaces. The field was `h-8` while
+        // that glyph was `size-7`, so clicking the magnifier grew the row by 4px:
+        // the list under it jumped, and the picker sharing the row re-centred 2px
+        // down — read as the row jittering at the moment of the click. The rail
+        // draws this band, the switch's band under it and the compact picker at
+        // 28px, so a field taking the glyph's place takes its height too.
+        "flex h-7 min-w-0 flex-1 items-center gap-1 rounded-md border border-line-soft bg-surface px-2",
         className,
       )}
     >
