@@ -1,4 +1,4 @@
-import { Children, createElement, type ComponentProps, type ReactElement, type ReactNode } from "react";
+import { Children, createElement, type ComponentProps, type MutableRefObject, type ReactElement, type ReactNode } from "react";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import {
   ActivityIndicator,
@@ -15,6 +15,8 @@ import { ConnectionBadge } from "../../components/ConnectionBadge";
 import { Button } from "../../components/Button";
 import { DialogSurface } from "../../components/DialogSurface";
 import { SessionsScreen } from "../SessionsScreen";
+import { useSessionCatalog } from "../../remote/useSessionCatalog";
+import type { RemoteClient } from "../../remote/client";
 import { SessionList } from "../SessionList";
 import { DesktopPicker } from "../DesktopPicker";
 import { ActionMenu } from "../../components/ActionMenu";
@@ -61,7 +63,7 @@ const mockRemote = {
   newConversationOn: jest.fn(async (_desktopId: string, _mode?: string, _workspaceId?: string) => {}),
   reconnect: jest.fn(),
   takeControl: jest.fn(async () => {}),
-  setSessionPinned: jest.fn(async () => {}),
+  setSessionPinned: jest.fn(async (_sessionId: string, _threadId: string, _pinned: boolean) => {}),
   unpair: jest.fn(async () => {}),
   rename: jest.fn(async () => {}),
   generateTitle: jest.fn(async () => {}),
@@ -868,6 +870,45 @@ describe("screen-owned surfaces", () => {
     act(() => button("sessions.pin").props.onPress());
     await act(async () => { menu.findByType(Modal).props.onDismiss(); });
     expect(modalText()).toContain("common.error");
+  });
+
+  /**
+   * The end of the same road, with both real halves: the catalogue's own
+   * `setSessionPinned` (which refuses a row it cannot address) answers the
+   * screen's tap. Asserting the promise alone would pass while the screen still
+   * swallowed it — and swallowing is exactly what the reader saw: the sheet
+   * closes, the row does not move, and nothing says why.
+   */
+  test("a pin the catalogue cannot address reaches the reader as common.error", async () => {
+    act(() => tree.unmount());
+    const live = { current: null as ReturnType<typeof useSessionCatalog> | null };
+    // Held by a null client: the shape a phone holds while the machine's runtime
+    // is gone, which is the state the silent return used to hide.
+    function CatalogScreen(): ReactElement {
+      live.current = useSessionCatalog(
+        { current: null } as MutableRefObject<RemoteClient | null>,
+        { current: "" },
+      );
+      return createElement(SessionsScreen, { onManageDesktops });
+    }
+    // The screen reads its commands from the provider at render, so the
+    // delegate is what it captures; the hook behind it is the one under test.
+    const original = mockRemote.setSessionPinned;
+    jest.mocked(mockRemote.setSessionPinned).mockImplementation(
+      async (sessionId, threadId, pinned) =>
+        live.current!.setSessionPinned(sessionId, threadId, pinned),
+    );
+    try {
+      act(() => { tree = create(createElement(CatalogScreen)); });
+      expect(live.current).not.toBeNull();
+      act(() => tree.root.findByType(SessionList).props.onMenu(session));
+      const menu = visibleMenu();
+      act(() => button("sessions.pin").props.onPress());
+      await act(async () => { menu.findByType(Modal).props.onDismiss(); });
+      expect(modalText()).toContain("common.error");
+    } finally {
+      mockRemote.setSessionPinned = original;
+    }
   });
 
   test("deleting a session confirms with the title and reports a failed delete", async () => {
