@@ -162,6 +162,25 @@ export async function syncFutureModels() {
   return invokeCommand<SyncFutureModelsResult>("sync_future_models");
 }
 
+/** Result of a background Future catalogue refresh request. */
+export interface RequestFutureModelsRefreshResult {
+  /**
+   * Whether the agent started a refresh; `false` means the backoff window was
+   * still open, a refresh was already running, or no Future credential exists.
+   */
+  requested: boolean;
+}
+
+/**
+ * Ask the agent to refresh the Future catalogue **in the background**. The call
+ * returns once the fetch is scheduled; the refreshed list reaches the UI later
+ * through the agent's `provider-config-changed` event (which the desktop
+ * republishes as `providers-changed`), so nothing needs to await it.
+ */
+export async function requestFutureModelsRefresh() {
+  return invokeCommand<RequestFutureModelsRefreshResult>("request_future_models_refresh");
+}
+
 function normalizeAgentModelOptions(models: AgentModelOption[]) {
   const seen = new Set<string>();
   return models

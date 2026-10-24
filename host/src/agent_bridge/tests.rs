@@ -710,6 +710,60 @@ mod bridge_tests {
     }
 
     #[tokio::test]
+    async fn request_future_models_refresh_variants() {
+        let mock = mock_agent();
+
+        mock.push_data(
+            "request_future_models_refresh",
+            serde_json::json!({ "requested": true }),
+        );
+        let result = request_future_models_refresh().await.expect("request");
+        assert!(result.requested);
+
+        // The agent declined (backoff window open / no credential) — still a
+        // success for the picker that asked.
+        mock.push_data(
+            "request_future_models_refresh",
+            serde_json::json!({ "requested": false }),
+        );
+        assert!(
+            !request_future_models_refresh()
+                .await
+                .expect("declined")
+                .requested
+        );
+
+        // Down agent → not requested, not an error: opening a picker is not a
+        // place to report a connection failure.
+        let prev = std::env::var("FUTURE_AGENT_GRPC_ADDR").expect("mock addr");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", "http://[::1");
+        let result = request_future_models_refresh().await.expect("down");
+        std::env::set_var("FUTURE_AGENT_GRPC_ADDR", prev);
+        assert!(!result.requested);
+
+        mock.push(
+            "request_future_models_refresh",
+            Reply::Status(tonic::Code::Internal, "boom"),
+        );
+        let error = request_future_models_refresh()
+            .await
+            .expect_err("transport");
+        assert!(matches!(error, crate::Error::Message(_)), "{error}");
+        mock.push(
+            "request_future_models_refresh",
+            Reply::Reject("bad".to_string()),
+        );
+        let error = request_future_models_refresh().await.expect_err("reject");
+        assert_eq!(error.to_string(), "bad");
+        mock.push_data("request_future_models_refresh", serde_json::json!({}));
+        let error = request_future_models_refresh().await.expect_err("invalid");
+        assert!(
+            error.to_string().contains("invalid refresh result"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
     async fn run_snapshot_validates_identity_and_only_falls_back_for_explicit_unsupported() {
         let mock = mock_agent();
         let snapshot = serde_json::json!({"runSnapshot":true,"watermark":100,"events":[],

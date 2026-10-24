@@ -1,8 +1,9 @@
 import type { AgentModelOption } from "../../integrations/agent/agentClient";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { TextInput } from "../../components/ui/TextInput";
 import { localizedModelDescription, modelKey } from "../../integrations/agent/agentClient";
+import { requestModelCatalogRefresh } from "../../integrations/agent/modelCatalogRefresh";
 import { useProviderNames } from "../../integrations/agent/useProviderNames";
 import { SettingsList, SettingsRow, SettingsSection, Switch } from "./SettingsPrimitives";
 
@@ -18,6 +19,16 @@ export function ModelsPage({
   const { t, i18n } = useTranslation("settings");
   const [query, setQuery] = useState("");
   const providerNames = useProviderNames();
+
+  // Opening the models page is the same "show me the catalogue" moment as
+  // opening the composer's picker: ask for a background refresh (TTL-gated, one
+  // request per 10 minutes across both places) so a model published since the
+  // agent started appears here without a restart. The refreshed list arrives
+  // through `providers-changed`, which the caller already re-reads on.
+  useEffect(() => {
+    requestModelCatalogRefresh();
+  }, []);
+
   const hidden = useMemo(() => new Set(hiddenModels), [hiddenModels]);
 
   // Built-in catalog providers (deepseek, openai, …) have no name → fall back to id.

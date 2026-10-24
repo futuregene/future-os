@@ -6,6 +6,7 @@ import { Trans, useTranslation } from "react-i18next";
 import { SelectMenu, SelectMenuItem } from "../../../components/ui/SelectMenu";
 import { localizedModelDescription, modelKey, modelLabel, modelOption, modelSupportsThinking, modelThinkingLevels, resolveThinkingLevel } from "../../../integrations/agent/agentClient";
 import { automaticApprovalAvailable, effectiveApprovalTier } from "../../../integrations/agent/automaticApproval";
+import { requestModelCatalogRefresh } from "../../../integrations/agent/modelCatalogRefresh";
 import { useProviderNames } from "../../../integrations/agent/useProviderNames";
 import { isWriteOnlySandbox, useSandboxAvailability } from "../../../integrations/agent/useSandboxAvailability";
 import { isLinux, isWindows } from "../../../lib/platform";
@@ -230,6 +231,13 @@ export function ComposerControls({ disabled, modelId, modelOptions, modelsEmptyR
                 onClick={() => {
                   setThinkingMenuOpen(false);
                   setApprovalMenuOpen(false);
+                  // Opening the picker is the moment a newly published model
+                  // should appear: ask for a background catalogue refresh so the
+                  // list updates in place while it is open, instead of waiting
+                  // for the daily maintenance pass. The request is TTL-gated and
+                  // never awaited, so the menu still opens immediately.
+                  if (!modelMenuOpen)
+                    requestModelCatalogRefresh();
                   setModelMenuOpen(open => !open);
                 }}
                 type="button"

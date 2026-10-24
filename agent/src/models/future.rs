@@ -171,7 +171,11 @@ fn release_future_models_refresh_slot(ticket: u64) {
 /// respecting a backoff window. Never blocks the caller — the fetched models are
 /// written to both the file cache and the in-process memory cache, so the next
 /// registry rebuild picks up fresh data immediately.
-fn spawn_future_models_refresh(api_key: &str, base_url: &str) {
+///
+/// Returns `true` when this call actually started a refresh. `false` is a no-op
+/// rather than a failure: the backoff window is still open, another refresh is
+/// already running, or there is no service to register the work with.
+fn spawn_future_models_refresh(api_key: &str, base_url: &str) -> bool {
     // Test builds serialize the single-flight gate's check-and-acquire against
     // concurrent `Registry::new()` threads, which share these process-global
     // statics but do NOT hold `future_models_test_lock`. Without the gate, a
@@ -181,7 +185,42 @@ fn spawn_future_models_refresh(api_key: &str, base_url: &str) {
     let _gate = FUTURE_REFRESH_GATE
         .lock()
         .unwrap_or_else(|poison| poison.into_inner());
-    let _ = spawn_future_models_refresh_unlocked(api_key, base_url);
+    spawn_future_models_refresh_unlocked(api_key, base_url).is_some()
+}
+
+/// Ask for a background refresh of the Future catalog and answer immediately.
+///
+/// This is the non-blocking counterpart of [`sync_future_models_cache`]: it is
+/// for callers that want the catalogue to catch up *eventually* (a model picker
+/// being opened) rather than right now (post-login setup), so it must never wait
+/// on the platform. The refresh it starts is the same single-flight one
+/// `Registry::new()` uses, behind the same backoff, and when the fetch lands the
+/// service's sync callback rebuilds the registry and publishes
+/// `provider_config_changed`, which is what makes an already-open list update in
+/// place.
+///
+/// Returns `true` when a refresh was started, `false` when there is no Future
+/// credential or the backoff/single-flight gate declined this call.
+pub(crate) fn request_future_models_refresh() -> bool {
+    let auth_store = crate::AuthStore::load();
+    let Some(future_key) = auth_store.get("future") else {
+        return false;
+    };
+    let base_url = resolve_future_base_url();
+    start_future_models_refresh(&future_key, &base_url)
+}
+
+/// The credential-resolved half of [`request_future_models_refresh`]: schedule
+/// the fetch and report whether it started.
+///
+/// Split out because a test that owns [`FUTURE_REFRESH_GATE`] (so the shared
+/// statics stay its own) cannot reach the fetch through
+/// [`spawn_future_models_refresh`], which takes that same gate in test builds and
+/// would deadlock on the test's own guard. Production has one caller and takes
+/// no lock here: the single-flight slot and the backoff stamp are the
+/// concurrency control that matters.
+fn start_future_models_refresh(api_key: &str, base_url: &str) -> bool {
+    spawn_future_models_refresh_unlocked(api_key, base_url).is_some()
 }
 
 /// Gate already held by the caller (a test that owns the [`FUTURE_REFRESH_GATE`]
@@ -825,7 +864,7 @@ pub(super) fn get_future_models_with_cache(api_key: &str, base_url: &str) -> Vec
     // hammering the server).  This ensures that when the user removes models
     // from the API, the client picks up the change within one backoff window
     // instead of waiting for an hour-long TTL.
-    spawn_future_models_refresh(api_key, base_url);
+    let _ = spawn_future_models_refresh(api_key, base_url);
 
     // Prefer the in-process memory cache — it is updated by completed
     // background refreshes and avoids reading the file from disk.
@@ -1700,10 +1739,14 @@ mod tests {
     /// registry from staying empty until restart.
     #[test]
     fn background_refresh_notifies_the_sync_callback_on_success_only() {
+        // Lock order: the isolated HOME before the refresh gate. Every test that
+        // needs both takes them this way round — the reverse (the gate first,
+        // then a HOME) deadlocks any test that holds a HOME and then goes
+        // through `spawn_future_models_refresh`, which takes that gate itself.
+        let home = crate::test_support::TestHome::new();
         let _gate = FUTURE_REFRESH_GATE
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let home = crate::test_support::TestHome::new();
         reset_future_caches_for_tests_unlocked();
         std::fs::create_dir_all(home.path().join(".future/agent")).unwrap();
 
@@ -1891,6 +1934,45 @@ mod tests {
         // Join the refresh thread deterministically, then assert the slot cleared.
         handle.join().unwrap();
         assert_eq!(FUTURE_MODELS_REFRESH_IN_FLIGHT.load(Ordering::Relaxed), 0);
+    }
+
+    /// The picker-facing entry point: it reads the credential and starts the
+    /// same backoff-guarded refresh `Registry::new()` uses, answering at once
+    /// (the picker must not wait on the platform), and declines — rather than
+    /// failing — when there is no Future credential.
+    #[test]
+    fn a_refresh_request_needs_a_future_credential_and_never_waits() {
+        // Lock order matches the rest of this module: the cache test lock, then
+        // the isolated HOME, then the refresh gate (see
+        // `background_refresh_notifies_the_sync_callback_on_success_only`).
+        // Holding the gate keeps every other test's `Registry::new()` from
+        // stamping the shared backoff statics inside this test's assertions.
+        let _guard = future_test_lock();
+        let home = crate::test_support::TestHome::new();
+        let _gate = future_refresh_gate();
+        reset_future_caches_for_tests_unlocked();
+
+        // Nothing configured yet: no fetch is possible, and that is a no-op.
+        assert!(!request_future_models_refresh());
+        assert_eq!(FUTURE_MODELS_LAST_ATTEMPT.load(Ordering::Relaxed), 0);
+
+        let auth_path = home.auth_path();
+        std::fs::create_dir_all(auth_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &auth_path,
+            r#"{"future": {"type": "api_key", "key": "k", "base_url": "http://127.0.0.1:1/api"}}"#,
+        )
+        .unwrap();
+
+        assert!(
+            request_future_models_refresh(),
+            "a Future credential starts the background fetch"
+        );
+        // The attempt was stamped before returning, so opening a picker again
+        // inside the backoff window asks for nothing instead of a second
+        // platform call.
+        assert!(!request_future_models_refresh());
+        assert!(FUTURE_MODELS_LAST_ATTEMPT.load(Ordering::Relaxed) > 0);
     }
 
     #[test]

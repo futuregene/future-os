@@ -12,7 +12,8 @@ mod reasoning_tests;
 pub use future::set_future_models_sync_callback;
 pub(crate) use future::{cached_model_count, display_base_url_from_auth, sweep_stale_cache_temps};
 use future::{
-    derive_thinking_compat, get_future_models_with_cache, resolve_future_base_url,
+    derive_thinking_compat, get_future_models_with_cache,
+    request_future_models_refresh as request_future_models_refresh_inner, resolve_future_base_url,
     sync_future_models_cache as sync_future_models_cache_inner,
 };
 use std::collections::HashMap;
@@ -489,6 +490,15 @@ pub fn get_default_model_with(registry: &Registry) -> Option<String> {
 /// `true` when the caches were populated. See [`future::sync_future_models_cache`].
 pub fn sync_future_models_cache() -> bool {
     sync_future_models_cache_inner()
+}
+
+/// Ask for a background Future-catalogue refresh without waiting for it. Used by
+/// the model-picker `request_future_models_refresh` RPC: the picker must open
+/// immediately, and the refreshed list reaches it through the sync callback's
+/// `provider_config_changed` publication. Returns `true` when a refresh started.
+/// See [`future::request_future_models_refresh`].
+pub fn request_future_models_refresh() -> bool {
+    request_future_models_refresh_inner()
 }
 
 /// LoadUserModels reads a models.json file.

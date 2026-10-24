@@ -1127,6 +1127,7 @@ mod gui {
                 search_workspace_files,
                 list_agent_models,
                 sync_future_models,
+                request_future_models_refresh,
                 set_default_model,
                 probe_sandbox,
                 probe_windows_sandbox,
