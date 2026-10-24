@@ -4,6 +4,7 @@ import * as Notifications from "expo-notifications";
 import i18n from "../i18n";
 import type { RemoteSession } from "../remote/types";
 import { withNativePresentation } from "../remote/nativePresentation";
+import { getTaskFinishedReminders, initializeTaskFinishedReminders, subscribeTaskFinishedReminders } from "./preferences";
 
 const CHANNEL_ID = "task-completion";
 let preparation: Promise<void> | null = null;
@@ -21,6 +22,15 @@ Notifications.setNotificationHandler({
 export function prepareTaskNotifications(): Promise<void> {
   if (preparation) return preparation;
   preparation = (async () => {
+    // Reminders the user switched off are not asked for: the OS permission
+    // prompt belongs to this feature, and it would be the first thing an
+    // opted-out user saw. Leaving the memo unset lets switching them back on
+    // prepare (and ask) for real — see `SettingsScreen`.
+    await initializeTaskFinishedReminders();
+    if (!getTaskFinishedReminders()) {
+      preparation = null;
+      return;
+    }
     if (Platform.OS === "android") {
       await Notifications.setNotificationChannelAsync(CHANNEL_ID, {
         name: i18n.t("notifications.channel"),
@@ -39,6 +49,13 @@ export function prepareTaskNotifications(): Promise<void> {
   });
   return preparation;
 }
+
+// Switching the reminders back on is the moment to ask the OS: preparation was
+// skipped while they were off. Watching the store here covers every path that
+// flips the switch, and does nothing at load — the store only reports changes.
+subscribeTaskFinishedReminders(() => {
+  if (getTaskFinishedReminders()) void prepareTaskNotifications();
+});
 
 /**
  * Where a tapped reminder says the finished conversation is.
@@ -85,6 +102,11 @@ export async function notifyTaskFinished(
   isCurrent: () => boolean,
   context: TaskNotificationContext = {},
 ): Promise<void> {
+  // Off means off: no permission prompt, no scheduled reminder, and no in-app
+  // alert standing in for one. Read before anything is shown so a task that
+  // finishes right after launch also honours a stored "off".
+  await initializeTaskFinishedReminders();
+  if (!getTaskFinishedReminders()) return;
   const { machine, desktopId } = context;
   const title = i18n.t(session.status === "failed" ? "notifications.failed" : "notifications.completed");
   const conversation = session.title || i18n.t("sessions.unnamed");

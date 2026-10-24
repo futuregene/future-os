@@ -2,6 +2,7 @@ import { AppState, Platform } from "react-native";
 import { AppAlert as Alert } from "../../components/appAlerts";
 import * as Notifications from "expo-notifications";
 import { notifyTaskFinished, prepareTaskNotifications } from "../taskNotifications";
+import { setTaskFinishedReminders } from "../preferences";
 
 jest.mock("../../i18n", () => ({ __esModule: true, default: { t: jest.fn((key: string) => key) } }));
 jest.mock("expo-notifications", () => ({
@@ -89,8 +90,51 @@ test("native delivery failure falls back without breaking sync; switched pairing
   expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
 });
 
+test("reminders switched off deliver nothing, not even the in-app alert", async () => {
+  await setTaskFinishedReminders(false);
+  try {
+    // Both halves of the feature are silent: the reminder the OS would show,
+    // and the alert that stands in when it may not.
+    allow(false);
+    await notifyTaskFinished({ ...session, status: "failed" }, () => true, { machine: "Studio" });
+    expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+    expect(Alert.alert).not.toHaveBeenCalled();
+    allow(true);
+    await notifyTaskFinished(session, () => true);
+    expect(Notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+  } finally {
+    await setTaskFinishedReminders(true);
+  }
+});
+
+test("switching the reminders back on is when the OS is asked", async () => {
+  const { module, notif } = freshModule();
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- the instances the module above reads
+  const fresh = require("react-native") as typeof import("react-native");
+  Object.defineProperty(fresh.Platform, "OS", { configurable: true, value: "android" });
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- the fresh instance the module above reads
+  const prefs = require("../preferences") as typeof import("../preferences");
+  try {
+    await prefs.setTaskFinishedReminders(false);
+    // Off means the channel and the permission prompt are not prepared either:
+    // an opted-out user must not meet the OS dialog for this feature.
+    await module.prepareTaskNotifications();
+    expect(notif.setNotificationChannelAsync).not.toHaveBeenCalled();
+    expect(notif.getPermissionsAsync).not.toHaveBeenCalled();
+    (notif.getPermissionsAsync as jest.Mock).mockResolvedValue({ granted: false, canAskAgain: true });
+    await prefs.setTaskFinishedReminders(true);
+    // The skip left the memo unset, so turning them on prepares for real.
+    await module.prepareTaskNotifications();
+    expect(notif.setNotificationChannelAsync).toHaveBeenCalledWith("task-completion", expect.objectContaining({ importance: 4 }));
+    expect(notif.getPermissionsAsync).toHaveBeenCalledTimes(1);
+  } finally {
+    await prefs.setTaskFinishedReminders(true);
+  }
+});
+
 type MockedNotifications = {
   setNotificationHandler: jest.Mock;
+  setNotificationChannelAsync: jest.Mock;
   getPermissionsAsync: jest.Mock;
   addNotificationResponseReceivedListener: jest.Mock;
   getLastNotificationResponse: jest.Mock;
