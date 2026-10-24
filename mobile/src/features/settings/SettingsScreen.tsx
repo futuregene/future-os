@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
+import { useCallback, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore, type Ref } from "react";
 import { Keyboard, KeyboardAvoidingView, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useTranslation } from "react-i18next";
 import { ArrowLeft } from "lucide-react-native";
 import { Button } from "../../components/Button";
 import { LanguageSettings } from "../../i18n/LanguageSettings";
+import { getTaskFinishedReminders, initializeTaskFinishedReminders, setTaskFinishedReminders, subscribeTaskFinishedReminders } from "../../notifications/preferences";
 import { AppearanceSettings } from "../../theme/AppearanceSettings";
 import { PeerIconChip } from "../../remote/PeerIconChip";
 import { PeerIconGlyph } from "../../remote/PeerIconGlyph";
@@ -65,6 +66,18 @@ const DEVICE_LEVELS = new Set(["preferences", "models", "skills", "tasks", "prov
 /** A refused write, as the key of what failed. Held rather than a boolean
  * because the two surfaces fail differently and say so on screen. */
 type SettingsNotice = "desktopSettings.saveFailed" | "desktops.actionFailed";
+
+/**
+ * This phone's task-finished reminder switch.
+ *
+ * Through the store rather than as component state: the reminder path reads the
+ * same store, so the row has to show what is actually in effect — and the saved
+ * value arrives asynchronously, which the subscription carries in.
+ */
+function useTaskFinishedReminders(): boolean {
+  useEffect(() => { void initializeTaskFinishedReminders(); }, []);
+  return useSyncExternalStore(subscribeTaskFinishedReminders, getTaskFinishedReminders);
+}
 
 /**
  * The settings stack.
@@ -135,6 +148,10 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
   // Which of the two surfaces this stack is: this phone's own settings, or one
   // paired desktop's.
   const deviceMode = deviceId !== undefined;
+  // This phone's own reminder preference, read from the store the delivery path
+  // reads: no desktop is written, and the row is reachable with none paired.
+  const taskFinishedReminders = useTaskFinishedReminders();
+  const [reminderSaveFailed, setReminderSaveFailed] = useState(false);
   // This machine is somebody else's right now: pages read nothing, and the way
   // out is the same takeover the session list offers.
   const standby = remote.presence?.control === "standby";
@@ -244,6 +261,24 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
     }
   };
 
+  /**
+   * Turn this phone's task-finished reminders on or off.
+   *
+   * The write is the switch's only source of truth: the store commits after
+   * persistence succeeds, so a refused write leaves the row showing the value
+   * that is actually in effect. Switching them on is also when the OS is asked
+   * for permission (preparation was skipped while they were off — see the
+   * notifications module, which watches this store).
+   */
+  const changeTaskFinishedReminders = async (next: boolean) => {
+    setReminderSaveFailed(false);
+    try {
+      await setTaskFinishedReminders(next);
+    } catch {
+      if (active.current) setReminderSaveFailed(true);
+    }
+  };
+
   // Each level renders on its own; the stack keeps only the visible one mounted,
   // so returning to the provider list always re-reads the desktop's snapshot.
   function renderLevel() {
@@ -347,6 +382,20 @@ export function SettingsScreen({ deviceId, onClose, onCheckUpdate, checkingUpdat
         <SettingsLink label={t("desktopSettings.followAccount")} onPress={() => push({ name: "followAccount" })} />
         {onCheckUpdate
           ? <SettingsLink label={t("update.check")} disabled={checkingUpdate} loading={checkingUpdate} onPress={onCheckUpdate} />
+          : null}
+      </SettingsSection>
+      {/* The reminder is drawn by this phone, so it is set here and not on the
+          paired machine that ran the task: one choice covers every desktop the
+          phone is paired with. */}
+      <SettingsSection title={t("notifications.title")}>
+        <SettingsSwitch
+          description={t("notifications.taskFinishedHint")}
+          label={t("notifications.taskFinished")}
+          onChange={enabled => void changeTaskFinishedReminders(enabled)}
+          value={taskFinishedReminders}
+        />
+        {reminderSaveFailed
+          ? <Text accessibilityRole="alert" style={settingsStyles.error}>{t("notifications.saveFailed")}</Text>
           : null}
       </SettingsSection>
       <Text style={styles.version}>{t("common.version", { version: VERSION })}</Text>
