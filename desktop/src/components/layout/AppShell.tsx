@@ -1,5 +1,6 @@
 import type { PaletteCommand, PaletteTarget } from "../../features/palette/paletteItems";
-import type { DeviceFilter, MergedConversation, RemoteCatalog, RemoteWorkspaceTarget } from "../../features/remote-peer/mergeConversations";
+import type { DeviceFilter, MergedConversation, RemoteWorkspaceTarget } from "../../features/remote-peer/mergeConversations";
+import type { RemoteIdentityMemory } from "../../features/remote-peer/remoteConversationIdentity";
 import type { RemotePeer, RemoteWorkspaceRow } from "../../features/remote-peer/remotePeerClient";
 import type { SettingsTab } from "../../features/settings/SettingsDialog";
 import type { VibeThreadViewProps } from "../../features/vibe/VibeStage";
@@ -23,6 +24,7 @@ import { DeviceChoiceDialog } from "../../features/remote-peer/DeviceChoiceDialo
 import { PeerIconGlyph } from "../../features/remote-peer/PeerIconGlyph";
 import { peerDrivable, peerStatus } from "../../features/remote-peer/peerStatus";
 import { RemoteComposer } from "../../features/remote-peer/RemoteComposer";
+import { rememberRemoteIdentities, remoteConversationIdentity } from "../../features/remote-peer/remoteConversationIdentity";
 import { RemoteConversationSettings } from "../../features/remote-peer/RemoteConversationSettings";
 import { RemoteConversationView } from "../../features/remote-peer/RemoteConversationView";
 import { RemoteDraftTargetChooser } from "../../features/remote-peer/RemoteDraftTargetChooser";
@@ -111,32 +113,6 @@ interface WorkspaceCreateRequest {
   name?: string | null;
   path: string;
   createDirectory: boolean;
-}
-
-/**
- * What the open remote conversation's header says about it, from the catalogue
- * the rows are built from.
- *
- * The title falls back to the session id rather than to an empty header: a
- * conversation the catalogue has not caught up with yet is still *open*, and a
- * blank title would read as a broken view instead of a pending read. The
- * workspace is the one the row was grouped under in the list — a name, not an
- * id, so a host that does not report it leaves the qualifier off rather than
- * drawing something the reader cannot recognise. A chat conversation has no
- * workspace of its own, so it gets none.
- */
-function contextOfRemote(
-  catalogs: RemoteCatalog[],
-  target: { desktopId: string; sessionId: string },
-): { title: string; workspaceName: string | null } {
-  const session = catalogs
-    .find(catalog => catalog.desktopId === target.desktopId)
-    ?.sessions
-    .find(session => session.sessionId === target.sessionId);
-  return {
-    title: session?.title ?? target.sessionId,
-    workspaceName: session?.mode === "workspace" ? (session.workspaceName ?? null) : null,
-  };
 }
 
 export function AppShell() {
@@ -1156,12 +1132,24 @@ function ReadyAppShell({
   const activeRemotePeer = activeRemote
     ? remotePeers.find(peer => peer.desktopId === activeRemote.desktopId)
     : undefined;
-  // Read once per render rather than at each use: the header and the usage
-  // dialog must name the same conversation, and a draft (an empty session id)
-  // simply has no catalogue row to read.
-  const activeRemoteContext = activeRemote
-    ? contextOfRemote(remoteCatalogs, activeRemote)
-    : null;
+  /**
+   * What the open conversation is called, and where it lives on its host.
+   *
+   * Read from the host's catalogue — that is the authority — and remembered
+   * past the moment the catalogue stops carrying it, which is what another
+   * device taking the machine over does to every row of that host (see
+   * `remoteConversationIdentity`). A failed read is the other case: it empties
+   * the rows for a round, and it must not rename the conversation either.
+   */
+  const remoteIdentitiesRef = useRef<RemoteIdentityMemory>(new Map());
+  const activeRemoteContext = useMemo(() => {
+    // Idempotent (a re-render rewrites the same titles), and display-only: the
+    // catalogue's own row is still what wins whenever there is one.
+    rememberRemoteIdentities(remoteCatalogs, remoteIdentitiesRef.current);
+    return activeRemote
+      ? remoteConversationIdentity(remoteCatalogs, activeRemote, remoteIdentitiesRef.current)
+      : null;
+  }, [activeRemote, remoteCatalogs]);
   /**
    * The workspace a remote draft is in, named as the host names it.
    *
@@ -1309,6 +1297,23 @@ function ReadyAppShell({
     setNewChatWorkspaceId(null);
   }
 
+  /**
+   * Ask `desktopId` to let this computer drive it, then re-read the machine.
+   *
+   * One command, two places that send it: the device picker's row and the notice
+   * in a conversation the machine no longer serves. The re-read is not
+   * decoration — the host's own `control` push gets there a poll later at the
+   * latest, but the button that asked sits under a list or a composer that has to
+   * come back the moment the pointer moves, not on the next tick.
+   *
+   * A refusal is the caller's to report: the host went away, or another device
+   * moved first, and neither is this function's to assume.
+   */
+  async function takeOverRemotePeer(desktopId: string) {
+    await takeoverRemotePeer(desktopId);
+    await refreshRemotePeers();
+  }
+
   // ---- Keyboard shortcuts ---------------------------------------------
   // One listener for the whole window, and the commands that are the *shell's*
   // own: navigation, panels, settings. Everything that belongs to a view — the
@@ -1443,10 +1448,7 @@ function ReadyAppShell({
     // page sends, then a re-read so the machine's rows appear in the merged list
     // the picker sits above (the host's `control` push would get there a poll
     // later at the latest, but the list is right there under the button).
-    onTakeControlRemote: async (desktopId: string) => {
-      await takeoverRemotePeer(desktopId);
-      await refreshRemotePeers();
-    },
+    onTakeControlRemote: takeOverRemotePeer,
     onManageDesktops: () => handleSectionChange("remote"),
     activeRemoteKey: activeRemote
       ? `${activeRemote.desktopId}::${activeRemote.sessionId}`
@@ -1784,6 +1786,14 @@ function ReadyAppShell({
                                     olderHistoryFailed={remoteTimeline.olderHistoryFailed}
                                     onOpenUsage={() => setRemoteUsageOpen(true)}
                                     onRetry={() => void remoteTimeline.refresh()}
+                                    // The machine's own pointer, moved from inside the
+                                    // conversation it stopped serving: the notice there
+                                    // says another device holds it, and this is the act
+                                    // that takes it back (the same command the device
+                                    // picker and the Remote page send).
+                                    onTakeControl={activeRemotePeer
+                                      ? () => takeOverRemotePeer(activeRemote.desktopId)
+                                      : undefined}
                                     peer={activeRemotePeer}
                                     persistedEntryIds={remoteTimeline.persistedEntryIds}
                                     sessionId={activeRemote.sessionId}

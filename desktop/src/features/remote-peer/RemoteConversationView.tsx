@@ -19,10 +19,12 @@ import { useQuestionNav } from "../agent/useQuestionNav";
 import { useStickyAutoScroll } from "../agent/useStickyAutoScroll";
 import { PeerIconGlyph } from "./PeerIconGlyph";
 import { peerBadgeText } from "./peerIcons";
+import { peerHolderName } from "./peerStatus";
 import { RemoteAttachmentProvider } from "./RemoteAttachmentOrigin";
 import { foldLiveReply, stripRunCopies } from "./remoteLiveReplies";
 import { setRemotePeerVisibleSession } from "./remotePeerClient";
 import { withRemoteRunNotices } from "./remoteRunNotices";
+import { RemoteStandbyNotice } from "./RemoteStandbyNotice";
 import { fetchRemoteToolTarget } from "./remoteToolTarget";
 
 /**
@@ -92,6 +94,7 @@ export function RemoteConversationView({
   onLoadOlder,
   onOpenUsage,
   onRetry,
+  onTakeControl,
   onToggleLeftPanel,
   olderHistoryFailed,
   peer,
@@ -155,6 +158,15 @@ export function RemoteConversationView({
   /** Open this conversation's account book (token usage and amount). */
   onOpenUsage: () => void;
   onRetry: () => void;
+  /**
+   * Ask the host to let this computer drive it again.
+   *
+   * Offered in the notice that explains why this conversation has stopped
+   * answering: another paired device holds the machine, and the way back is the
+   * same `takeover` command the device picker sends. Absent when there is no peer
+   * to ask — the notice is not drawn then either.
+   */
+  onTakeControl?: () => Promise<unknown> | void;
   onToggleLeftPanel: () => void;
   peer: RemotePeer | undefined;
   /** The entry ids the host will accept as a stored record (see the timeline). */
@@ -195,6 +207,18 @@ export function RemoteConversationView({
 }) {
   const { t } = useTranslation("remotePeer");
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  /**
+   * Whether another paired device drives this machine, which is what closes every
+   * write offered here.
+   *
+   * Read from `control` rather than from `peerHeld`: the fact that decides is the
+   * host's own — it refuses this client's business commands with `superseded`
+   * while someone else holds it — and the link being up or down this second is a
+   * different question. A host too old to report `control` says nothing, and is
+   * assumed to be its own, exactly as the rest of the app does.
+   */
+  const held = peer?.control === "standby";
+  const holderName = held && peer ? peerHolderName(peer) : null;
   /**
    * One tool call's command or path, read from the host when a row is opened.
    *
@@ -464,16 +488,23 @@ The same two layers this app's own conversation uses (`AgentThread`):
                   the chip needs it. */}
               {rendered.map((message, index) => {
                 /**
-                 * Whether this turn is a settled point.
+                 * Whether this turn may be acted on from here at all.
                  *
-                 * The last row is the one still being written — the reply in flight
-                 * (a turn of its own) or, before its first frame, the reply the host
-                 * is about to replace. Nothing it offers can be acted on: a fork
-                 * branches at a settled turn, and the host answers one prompt at a
-                 * time, so a Retry would be refused. A settled earlier turn keeps
-                 * both, which is why this is per row and not a blanket `!streaming`.
+                 * Two halves. A turn is a settled point when it is not the one still
+                 * being written — the reply in flight (a turn of its own) or, before its
+                 * first frame, the reply the host is about to replace. Nothing it offers
+                 * can be acted on: a fork branches at a settled turn, and the host answers
+                 * one prompt at a time, so a Retry would be refused. A settled earlier
+                 * turn keeps both, which is why this is per row and not a blanket
+                 * `!streaming`.
+                 *
+                 * The other half is who may write: forking and continuing are both
+                 * commands to the host, and a host another paired device drives refuses
+                 * them with `superseded`. Offered-then-refused would put a transport
+                 * refusal where the row simply should not offer it — the notice above the
+                 * composer is where that state is explained.
                  */
-                const settled = index !== rendered.length - 1 || !streaming;
+                const writable = (index !== rendered.length - 1 || !streaming) && !held;
                 return (
                   <RemoteAttachmentProvider key={message.id} value={{ desktopId, sessionId }}>
                     <MessageBlock
@@ -484,10 +515,10 @@ The same two layers this app's own conversation uses (`AgentThread`):
                       // The host refuses to continue anything that did not fail, so the
                       // affordance appears exactly where it would be accepted — and it
                       // is addressed by the host's own run id.
-                      onContinue={settled && message.status === "failed" && message.runId
+                      onContinue={writable && message.status === "failed" && message.runId
                         ? () => onContinueRun(message.runId!)
                         : undefined}
-                      onFork={settled ? () => forkAt(rendered, index, persistedEntryIds, onFork) : undefined}
+                      onFork={writable ? () => forkAt(rendered, index, persistedEntryIds, onFork) : undefined}
                       onHover={setHoveredId}
                       onLeave={id => setHoveredId(current => (current === id ? null : current))}
                       // No status is stamped on: a reply's own status is what it is. The
@@ -522,6 +553,14 @@ The same two layers this app's own conversation uses (`AgentThread`):
                   : "pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-linear-to-t from-surface from-80% to-transparent px-8 pb-5 pt-10"}
               >
                 <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
+                  {/* Why nothing here will go anywhere, before the cards that
+                cannot be answered either: a decision the host is blocked on is
+                the first thing the reader reaches for, and the sentence that
+                says it is closed has to come before it, not after. Full chrome
+                only — a panel cell has no composer and nothing to send. */}
+                  {held && chrome === "full" && onTakeControl
+                    ? <RemoteStandbyNotice holderName={holderName} onTakeControl={onTakeControl} />
+                    : null}
                   {/* Approvals sit above the composer, not inside the transcript: they
                 are a decision the user has to make now, and a card that scrolls
                 away with history is a card that gets missed while the host waits.
@@ -531,6 +570,7 @@ The same two layers this app's own conversation uses (`AgentThread`):
                       <ApprovalCard
                         approval={approval}
                         error={approvalErrors[approval.id] ?? null}
+                        held={held}
                         onDecide={onDecideApproval}
                         pending={approvalPending === approval.id}
                         peerName={peer ? peerBadgeText(peer, peer.desktopId) : ""}
@@ -622,12 +662,23 @@ function forkAt(
 function ApprovalCard({
   approval,
   error,
+  held,
   onDecide,
   pending,
   peerName,
 }: {
   approval: RemoteApproval;
   error: string | null;
+  /**
+   * Another paired device drives the machine, so neither answer would reach it.
+   *
+   * The card stays: the decision is still owed, and hiding it would leave the
+   * reader with a run that stopped for no stated reason. What changes is that the
+   * buttons are closed with the reason beside them — the host would refuse this
+   * command with `superseded`, and an error about a refusal is not the same
+   * sentence as "someone else is at that computer".
+   */
+  held: boolean;
   onDecide: (approval: RemoteApproval, decision: "allow" | "deny") => void;
   pending: boolean;
   peerName: string;
@@ -665,10 +716,11 @@ function ApprovalCard({
         {approval.riskLevel ? ` · ${approval.riskLevel}` : ""}
       </div>
       {error ? <div className="mt-3 text-xs leading-5 text-danger">{error}</div> : null}
+      {held ? <div className="mt-3 text-xs leading-5 text-warning">{t("heldApprovalBlocked")}</div> : null}
       <div className="mt-4 flex items-center justify-between gap-3">
         <Button
           className="shadow-xs"
-          disabled={pending}
+          disabled={pending || held}
           leftIcon={<X className="size-3.5" />}
           onClick={() => onDecide(approval, "deny")}
           variant="toolbar"
@@ -678,7 +730,7 @@ function ApprovalCard({
         <div className="flex items-center gap-2">
           <Button
             className="shadow-xs"
-            disabled={pending}
+            disabled={pending || held}
             leftIcon={<Check className="size-3.5" />}
             onClick={() => onDecide(approval, "allow")}
             variant="primary"
