@@ -83,12 +83,25 @@ impl serde::Serialize for ModelsJson {
     }
 }
 
+/// The Future platform provider id — the catalogue `future models refresh` pulls.
+const FUTURE_PROVIDER: &str = "future";
+
 /// `models(args)`.
 pub async fn models(args: &[String], out: &Output) -> Result<(), String> {
     // `const jsonFlag = args.includes("--json");`
     let json_flag = args.iter().any(|a| a == "--json");
     // `const nonFlags = args.filter(a => !a.startsWith("--"));`
     let non_flags: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+
+    // `future models refresh [<addr>]` — the only subcommand. Every other
+    // positional is the explicit agent address the listing accepts.
+    if non_flags
+        .first()
+        .is_some_and(|arg| arg.as_str() == "refresh")
+    {
+        return refresh(non_flags.get(1).map(|arg| arg.as_str()), json_flag, out).await;
+    }
+
     // `nonFlags[0] ?? process.env.FUTURE_AGENT_GRPC_ADDR ?? "127.0.0.1:50051"`
     let grpc_addr = match non_flags.first() {
         Some(s) => s.as_str().to_string(),
@@ -218,6 +231,131 @@ pub async fn models(args: &[String], out: &Output) -> Result<(), String> {
     Ok(())
 }
 
+/// Report a failure the way the listing does — a JSON `{"error": ...}` on stdout
+/// under `--json`, a readable line on stderr otherwise — and signal that the
+/// exit code is already accounted for.
+fn fail(json_flag: bool, out: &Output, message: &str) -> Result<(), String> {
+    if json_flag {
+        out.log(&json!({ "error": message }).to_string());
+    } else {
+        out.log_err(&format!("Error: {message}"));
+    }
+    Err(crate::HANDLED_EXIT.to_string())
+}
+
+/// Whether a Future credential is configured (`auth.json` `future` entry).
+///
+/// Read here only to explain a failed refresh: the agent answers `synced:
+/// false` both for "no credential" and for "the platform call failed", and the
+/// two need different advice.
+fn future_credential_present() -> bool {
+    future_agent::AuthStore::load()
+        .get(FUTURE_PROVIDER)
+        .is_some()
+}
+
+/// How many Future models the catalogue currently offers, counted through the
+/// same registry injection the Agent uses (so it is the number the pickers
+/// would show, not a raw cache-entry count).
+fn future_model_count() -> usize {
+    future_agent::models::Registry::new()
+        .all_models()
+        .iter()
+        .filter(|model| model.provider == FUTURE_PROVIDER)
+        .count()
+}
+
+/// `future models refresh [<addr>] [--json]` — pull the Future platform
+/// catalogue, the CLI counterpart of the desktop's Settings → Providers →
+/// "Update model list" button.
+///
+/// The agent is asked first: its `sync_future_models` command fetches the
+/// platform catalogue, rebuilds the registry and publishes
+/// `provider_config_changed`, which is what makes a *running* desktop reload its
+/// model list in place — no restart, nothing to copy around. When no agent is
+/// reachable (the desktop is closed) the fetch runs here instead and fills the
+/// on-disk cache the next Agent start reads.
+async fn refresh(address: Option<&str>, json_flag: bool, out: &Output) -> Result<(), String> {
+    let addr = address.map(str::to_string).unwrap_or_else(grpc_addr);
+    let client = RunClient::new(&addr);
+    match client.sync_future_models().await {
+        Ok(data) => {
+            let synced = data.get("synced").and_then(Value::as_bool).unwrap_or(false);
+            let model_count = data.get("modelCount").and_then(Value::as_u64).unwrap_or(0);
+            if !synced {
+                return fail(json_flag, out, &refresh_failure_reason());
+            }
+            if json_flag {
+                out.log(
+                    &json!({
+                        "provider": FUTURE_PROVIDER,
+                        "source": "agent",
+                        "synced": true,
+                        "modelCount": model_count,
+                    })
+                    .to_string(),
+                );
+            } else {
+                out.log(&format!(
+                    "Refreshed the Future model catalogue: {model_count} models."
+                ));
+                out.log("A running Desktop reloads its model list by itself — no restart needed.");
+            }
+            Ok(())
+        }
+        Err(agent_error) => {
+            // No agent: refresh the catalogue this process owns, so the next
+            // Agent (a Desktop start) begins from the fresh cache instead of the
+            // stale one. A failed agent call is not fatal on its own — it is
+            // reported only if the local fetch cannot make up for it.
+            if !future_credential_present() {
+                return fail(
+                    json_flag,
+                    out,
+                    &format!(
+                        "{agent_error} — and no Future credential is configured; \
+                         run `future auth login`."
+                    ),
+                );
+            }
+            if !future_agent::models::sync_future_models_cache() {
+                return fail(json_flag, out, &refresh_failure_reason());
+            }
+            let model_count = future_model_count();
+            if json_flag {
+                out.log(
+                    &json!({
+                        "provider": FUTURE_PROVIDER,
+                        "source": "cache",
+                        "synced": true,
+                        "modelCount": model_count,
+                    })
+                    .to_string(),
+                );
+            } else {
+                out.log(&format!(
+                    "Refreshed the Future model catalogue on disk: {model_count} models."
+                ));
+                out.log(&format!(
+                    "No agent took the refresh ({agent_error}) — start the Desktop \
+                     (or `future agent`) to use them."
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// Why a refresh did not complete, in the form the user can act on.
+fn refresh_failure_reason() -> String {
+    if future_credential_present() {
+        "the Future platform request failed — check the network, or run `future doctor`."
+            .to_string()
+    } else {
+        "no Future credential is configured — run `future auth login`.".to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,6 +466,156 @@ mod tests {
         assert_eq!(future_rows[1]["supportsImages"], true);
         assert_eq!(future_rows[1]["thinkingLevel"], "xhigh");
         assert_eq!(parsed["models"]["openai"][0]["isDefault"], false);
+    }
+
+    /// The mock agent that answers `list_models` (above) and a `refresh` mock
+    /// that answers with a fixed sync result.
+    async fn refresh_mock(synced: bool, model_count: u32) -> String {
+        let agent = crate::test_server::MockAgent::respond(
+            "sync_future_models",
+            &format!(r#"{{"synced":{synced},"modelCount":{model_count},"revision":7}}"#),
+        );
+        crate::test_server::spawn_mock(agent).await
+    }
+
+    #[tokio::test]
+    async fn refresh_reports_the_agent_sync_and_asks_for_it() {
+        let _guard = crate::test_env::lock_env().await;
+        // Isolated home: the refresh path reads auth.json to explain failures,
+        // and a test must never read (or warm) the developer's real catalogue.
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let addr = refresh_mock(true, 14).await;
+
+        let (out, cap) = Output::memory();
+        models(&["refresh".to_string(), addr.clone()], &out)
+            .await
+            .expect("refresh");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(
+            stdout.contains("Refreshed the Future model catalogue: 14 models."),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("reloads its model list by itself"),
+            "the desktop is the point of this command: {stdout}"
+        );
+        assert!(cap.err.lock().unwrap().is_empty());
+
+        // `--json` carries the same facts, with where the refresh happened.
+        let (out, cap) = Output::memory();
+        models(&["refresh".to_string(), "--json".to_string(), addr], &out)
+            .await
+            .expect("refresh json");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let parsed: Value = serde_json::from_str(&stdout).expect("json");
+        assert_eq!(parsed["source"], "agent");
+        assert_eq!(parsed["provider"], "future");
+        assert_eq!(parsed["synced"], true);
+        assert_eq!(parsed["modelCount"], 14);
+    }
+
+    /// The agent answers `synced: false` both when it has no Future credential
+    /// and when the platform call failed; the two need different advice, so the
+    /// command reads the credential to pick the message.
+    #[tokio::test]
+    async fn refresh_explains_a_failed_sync_from_the_local_credential() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let addr = refresh_mock(false, 0).await;
+
+        let (out, cap) = Output::memory();
+        let result = models(&["refresh".to_string(), addr], &out).await;
+        assert!(result.is_err(), "a failed refresh must exit non-zero");
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("no Future credential is configured")
+                && stderr.contains("future auth login"),
+            "stderr: {stderr}"
+        );
+    }
+
+    /// With no agent (desktop closed) and no credential there is nothing to fetch
+    /// with: the command reports the agent error and the login hint rather than
+    /// touching the network.
+    #[tokio::test]
+    async fn refresh_without_an_agent_or_a_credential_reports_both() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+
+        let (out, cap) = Output::memory();
+        let result = models(&["refresh".to_string(), "127.0.0.1:1".to_string()], &out).await;
+        assert!(result.is_err());
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        assert!(
+            stderr.contains("no Future credential is configured"),
+            "stderr: {stderr}"
+        );
+        assert!(stderr.contains("future auth login"), "stderr: {stderr}");
+
+        // `--json` reports the same failure as a JSON error object.
+        let (out, cap) = Output::memory();
+        models(
+            &[
+                "refresh".to_string(),
+                "--json".to_string(),
+                "127.0.0.1:1".to_string(),
+            ],
+            &out,
+        )
+        .await
+        .expect_err("handled exit");
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        assert!(stdout.starts_with("{\"error\":"), "stdout: {stdout}");
+    }
+
+    /// With no agent running (the desktop is closed) the command refreshes the
+    /// on-disk catalogue itself, so the next Agent start — and the desktop that
+    /// starts it — begins from the fresh list.
+    ///
+    /// `multi_thread` on purpose: the sync path performs the platform fetch on a
+    /// native thread and joins it, so the in-test mock server needs a worker of
+    /// its own to answer on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refresh_without_an_agent_warms_the_disk_cache() {
+        let _guard = crate::test_env::lock_env().await;
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let base = crate::test_server::spawn_http(vec![crate::test_server::HttpRoute::json(
+            // auth.json stores `{platform}/api`, and the catalogue hangs off it.
+            "/api/v1/models",
+            200,
+            r#"{"data":[{"id":"kimi-k3.1-pro","name":"Kimi K3.1 PRO","context_length":1048576}]}"#,
+        )])
+        .await;
+
+        // A Future credential exists, but only the local catalogue can be
+        // refreshed: point it at the mock platform.
+        let auth_path = future_agent::utils::default_config_dir().join("auth.json");
+        std::fs::create_dir_all(auth_path.parent().expect("agent dir")).expect("agent dir");
+        std::fs::write(
+            &auth_path,
+            format!(r#"{{"future":{{"type":"api_key","key":"k","base_url":"{base}/api"}}}}"#),
+        )
+        .expect("auth.json");
+
+        let (out, cap) = Output::memory();
+        let result = models(&["refresh".to_string(), "127.0.0.1:1".to_string()], &out).await;
+        let stdout = String::from_utf8(cap.out.lock().unwrap().clone()).unwrap();
+        let stderr = String::from_utf8(cap.err.lock().unwrap().clone()).unwrap();
+        result.unwrap_or_else(|_| panic!("local refresh — stdout: {stdout} stderr: {stderr}"));
+        assert!(
+            stdout.contains("Refreshed the Future model catalogue on disk: 1 models."),
+            "stdout: {stdout}"
+        );
+        assert!(
+            stdout.contains("start the Desktop"),
+            "the user must know when it takes effect: {stdout}"
+        );
+        // The catalogue really is on disk for the next Agent start.
+        let cache = std::fs::read_to_string(
+            future_agent::utils::default_config_dir().join(".future-models-cache.json"),
+        )
+        .expect("cache written");
+        assert!(cache.contains("kimi-k3.1-pro"), "cache: {cache}");
     }
 
     #[tokio::test]

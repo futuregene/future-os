@@ -22,6 +22,7 @@ themselves.
 | `future workspace list --json` | The desktop app's workspaces (the directories workspace conversations are filed under) |
 | `future doctor` | One pass over login, agent connectivity, sandbox, providers, sessions and skills |
 | `future models --json` | Models this agent can use |
+| `future models refresh` | Pull the Future platform catalogue (the desktop's "Update model list"), so a model published after the app started appears without a restart |
 | `future version --json` | Which build this is: version, commit, target, dirty state |
 | `future auth status` | Whether a platform login is configured (and to what) |
 | `future account profile` / `balance` | The user's account and remaining credits |

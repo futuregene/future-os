@@ -21,7 +21,7 @@ Groups:
   task      Manage scheduled tasks (reusable prompt + trigger + runs)
   tools     List, describe, and call platform & browser tools
   mcp       Configure MCP servers and call their tools
-  models    List available AI models from the agent
+  models    List or refresh available AI models from the agent
   session   List, inspect, update, rename, and delete agent sessions
   data      Offline history backup, verification and recovery
   doctor    Environment diagnostic
@@ -61,7 +61,7 @@ Run 'future <group> --help' for per-group details.
   future task --help         Scheduled-task management (list/show/add/run/runs)
   future tools --help        Tool subcommands
   future mcp --help          MCP server and tool subcommands
-  future models --help       Model listing options
+  future models --help       Model listing and catalogue-refresh options
   future session --help      Session management options
   future agent --help        Agent server options (gRPC addr, logging, profiling)
   future relay --help        Self-hosted relay (init/serve)
@@ -1134,14 +1134,22 @@ Commands:
 Requires authentication: future auth login first."#;
 
 /// `future models --help` output (index.ts).
-pub const MODELS_HELP: &str = r#"future models — list available models from the running agent
+pub const MODELS_HELP: &str = r#"future models — list or refresh models from the running agent
 
 Usage:
-  future models [--json]
+  future models [--json]           List what the agent can use right now
+  future models refresh [--json]   Pull the Future platform catalogue
 
   --json    Output as JSON array with id, label, provider, contextWindow,
             supportsImages, thinkingLevel, and isDefault fields.
   --help    Show this help.
 
-Requires a running agent (connects over per-user local IPC by default).
+`refresh` is the same fetch the desktop's Settings -> Providers -> "Update model
+list" button performs: it reads the platform catalogue, rebuilds the agent's
+model registry, and announces the change, so a running Desktop reloads its model
+list in place — no restart. With no agent answering (the desktop is closed) it
+refreshes the on-disk catalogue instead, which the next Agent start reads.
+
+`models` and `refresh` take a running agent (connects over per-user local IPC by
+default); only `refresh` can fall back to the on-disk catalogue without one.
 Set FUTURE_AGENT_GRPC_ADDR to an explicit TCP address for remote/development use."#;
