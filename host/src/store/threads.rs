@@ -466,6 +466,11 @@ pub fn pin_thread(input: PinThreadInput) -> Result<ThreadRecord, crate::Error> {
          WHERE id = ?2 AND status != 'deleted'";
     let conn = connect()?;
     conn.execute(SQL, params![pinned, input.thread_id])?;
+    // `pinned` is on the catalogue's structural side, so a client cannot patch it
+    // from a value — the snapshot has to be re-read and re-sent. Marked here
+    // exactly as `workspaces::pin_workspace` marks it, so the publisher hears
+    // about the write from the store's own signal.
+    mark_catalog_dirty();
 
     loaded(get_thread(&input.thread_id)?, "Thread")
 }
@@ -1194,6 +1199,28 @@ mod tests {
         assert_eq!(
             get_thread("t1").unwrap().unwrap().parent_session_id,
             thread.parent_session_id
+        );
+    }
+
+    #[test]
+    fn a_pin_announces_a_catalogue_change() {
+        let (_home, conn) = guarded_conn("threads_pin_catalog");
+        seed_two_threads(&conn);
+        drop(conn);
+        // Start from a drained flag: what is asserted is this write's own mark.
+        crate::store::take_catalog_dirty();
+        pin_thread(PinThreadInput {
+            thread_id: "t2".into(),
+            pinned: true,
+        })
+        .expect("pin");
+        assert!(
+            crate::store::take_catalog_dirty(),
+            "a pin is on the catalogue's structural side, so the session snapshot has to be re-read and re-sent — the publisher learns that from the store, exactly as it does for a workspace pin"
+        );
+        assert!(
+            !crate::store::take_catalog_dirty(),
+            "the flag is a one-shot signal, not a level"
         );
     }
 
