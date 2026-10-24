@@ -247,7 +247,7 @@ python3 scripts/screenshots/capture.py check-upright-mobile chat
 - **点不到的状态用 `eval`。** 只在悬停时出现的控件，需要先对它的容器加一个 `hover` 步骤（否则驱动会报告目标尺寸为 0，而不是去点页面角落）。例如对话内搜索是 ⌘F 打开的，驱动没法把它当按键发出去，所以场景改为访问 `?press=meta%2Bf`，由 `desktop/shot/main.tsx` 把快捷键派发给真实的 window 监听器。
 - **`eval` 里断言就是测试。** 步骤里的 `eval` 抛错会让这次截图以非零退出码失败（和点不到目标一样计入 `step(s) could not reach their target`），所以「界面必须处于某状态」写成 `eval` 断言才有意义：`if (document.body.innerText.includes('正在生成')) throw new Error('…');`。驱动内部自己的探测（`ready`、可选的元素读取）不在此列，不会因为读不到就判失败。
 
-**分片文件 `scenarios.d/`：** 两个 session 同时给不同平台加场景时，不要都改 `scenarios.json`（后写的会覆盖先写的）。改成在 `scripts/screenshots/scenarios.d/*.json` 各写一个片段，`capture.py` 启动时按文件名顺序合并到共享表上：
+**分片文件 `scenarios.d/`：** 两个 session 同时给不同平台加场景时，不要都改 `scenarios.json`（后写的会覆盖先写的）。改成在 `scripts/screenshots/scenarios.d/` 各写一个片段，`capture.py` 启动时按文件名顺序合并到共享表上：
 
 ```json
 { "mobile": { "audit-settings-bottom": { "steps": [ { "wait": 900 }, { "shot": "m-audit-settings-bottom.png" } ] } } }

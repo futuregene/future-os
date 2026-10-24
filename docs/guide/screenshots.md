@@ -392,8 +392,8 @@ Three platform-level knobs are worth knowing:
 **Fragments in `scenarios.d/`:** when two sessions add scenarios for different
 platforms at the same time, neither edits `scenarios.json` (the later write would
 lose the other's work). Each writes a fragment under
-`scripts/screenshots/scenarios.d/*.json` instead, and `capture.py` merges those on
-top of the shared table at startup, in filename order:
+`scripts/screenshots/scenarios.d/` instead, and `capture.py` merges those on top
+of the shared table at startup, in filename order:
 
 ```json
 { "mobile": { "audit-settings-bottom": { "steps": [ { "wait": 900 }, { "shot": "m-audit-settings-bottom.png" } ] } } }
