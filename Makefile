@@ -1,5 +1,5 @@
 .PHONY: help version \
-	build build-cli build-cli-local build-desktop build-desktop-local build-local build-desktop-headless build-mobile-android build-mobile-ios desktop-sidecars \
+	build build-cli build-cli-local build-desktop build-desktop-local build-local build-desktop-headless desktop-frontend build-mobile-android build-mobile-ios desktop-sidecars \
 	test test-agent test-channels test-cli test-app-settings test-tui test-cli-diff test-tui-diff test-tui-tmux \
 	test-desktop test-desktop-rust test-mobile \
 	lint lint-rust lint-desktop stylelint-desktop lint-mobile check-desktop check-mobile fmt \
@@ -118,6 +118,8 @@ endif
 # shipping builds, and each overwrites the other. Windows cannot overwrite an
 # image that is still running, so close any `future`/`futureos` started from
 # PREFIX first. Skills are untouched; run `make install-skills` if you want them.
+# The installed app is self-contained: `build-local` embeds the frontend into
+# `futureos`, so it opens without a Vite dev server (see the build-local note).
 #
 # The Windows recipe copies through node rather than `copy`: make runs every
 # recipe through SHELL, which is sh.exe whenever Git for Windows is on PATH, and
@@ -201,23 +203,36 @@ build-cli:
 # optimisation but drops ThinLTO and reuses the incremental cache, so an edit
 # rebuilds in seconds instead of re-running whole-graph LTO. These targets
 # deliberately stay out of `install*` and `package-desktop`: what ships must
-# keep coming from the unchanged `release` profile. Neither wraps the frontend
-# build or the Tauri bundling `build-desktop` does — they produce the Rust
-# binaries under target/local/ only.
+# keep coming from the unchanged `release` profile. Neither stages the Desktop
+# sidecar nor bundles.
+#
+# The Desktop ones do build the frontend, because the binary they produce is not
+# a dev-mode shell: `--features custom-protocol` (desktop/src-tauri/Cargo.toml)
+# makes it serve `desktop/dist` from inside the binary instead of opening
+# `build.devUrl`. Plain `cargo build` leaves Tauri on `cfg(dev)`, which is why a
+# binary built without it shows ERR_CONNECTION_REFUSED for
+# http://127.0.0.1:5173 unless a Vite server happens to be running. `npm run
+# build` costs a few seconds and `stabilize-dist-mtimes` keeps an unchanged
+# bundle's timestamps, so cargo still skips the Desktop crate when only Rust
+# changed.
+desktop-frontend:
+	$(call npm-install-if-needed,desktop)
+	cd desktop && npm run build
+
 build-cli-local:
 	cargo build --profile local -p future-cli
 
-build-desktop-local:
-	cargo build --profile local -p futureos
+build-desktop-local: desktop-frontend
+	cargo build --profile local -p futureos --features custom-protocol
 
 # Both binaries from one Cargo invocation, as `make install` does through
 # scripts/build/build-desktop.mjs: one dependency graph, so shared crates build
 # once and feature unification matches the shipping build. Writes
-# target/local/{future,futureos} only — it does not install into PREFIX, stage
-# the Desktop sidecar, build the frontend, or bundle; those stay with the
-# release path (`make install*`, `make package-desktop`).
-build-local:
-	cargo build --profile local -p future-cli -p futureos --bin future --bin futureos
+# target/local/{future,futureos} only — it does not install into PREFIX or
+# bundle; those stay with the release path (`make install*`,
+# `make package-desktop`).
+build-local: desktop-frontend
+	cargo build --profile local -p future-cli -p futureos --bin future --bin futureos --features custom-protocol
 
 # Workspace install: shared packages, desktop, and mobile are npm workspaces, so all
 # deps hoist to the root node_modules and one `npm install` at the repo root
@@ -519,7 +534,7 @@ endif
 
 help:
 	@echo "  build / build-cli / build-desktop   Build desktop + unified CLI (or each part)"
-	@echo "  build-cli-local / build-desktop-local   Rust binaries only, LTO-free 'local' profile (fast local builds)"
+	@echo "  build-cli-local / build-desktop-local   LTO-free 'local' profile binaries (the Desktop one embeds the frontend)"
 	@echo "  build-local                         Both binaries (future + futureos) in one 'local' profile build"
 	@echo "  run-host                          Run future host in the foreground (ARGS=...; alias run-headless)"
 	@echo "  build-desktop-headless             Build GUI-free CLI with headless"
