@@ -843,8 +843,19 @@ mod tests {
         );
     }
 
-    /// The schedule is computed in the task's zone, not the host's: a daily
-    /// 09:00 in Shanghai is 01:00 UTC whatever this machine's clock says.
+    /// The schedule is computed in each task's own zone, not the host's: a daily
+    /// 09:00 reads 09:00 in the zone it was written in, whatever this machine's
+    /// clock says — and the two tasks therefore come due at two different
+    /// instants.
+    ///
+    /// Read each due date in *its own* zone rather than in a single one. A
+    /// hard-coded "09:00 Berlin is 15:00 Shanghai" also encodes the offset in
+    /// force on the day it runs: Europe/Berlin is UTC+2 until the last Sunday of
+    /// October and UTC+1 after it, so the same correct schedule reads 15:00 in
+    /// summer and 16:00 in winter, and the assertion goes red for half the year
+    /// on code that never changed. (It did: the next 09:00 Berlin fell after the
+    /// 2026-10-25 switch, so from that morning this test failed on every machine
+    /// — including CI, which had last run it before the switch.)
     #[test]
     fn a_tasks_schedule_uses_its_own_zone() {
         let _home = init("cmd_tasks_timezone_schedule");
@@ -855,15 +866,23 @@ mod tests {
         berlin.timezone = Some("Europe/Berlin".into());
         let berlin = create_task(berlin).expect("create");
 
-        let due_of = |task: &TaskView| {
+        let due_in = |task: &TaskView, zone: chrono_tz::Tz| {
             chrono::DateTime::from_timestamp_millis(task.next_due_at.expect("a schedule"))
                 .unwrap()
-                .with_timezone(&chrono_tz::Tz::Asia__Shanghai)
+                .with_timezone(&zone)
                 .format("%H:%M")
                 .to_string()
         };
-        assert_eq!(due_of(&shanghai), "09:00");
-        assert_eq!(due_of(&berlin), "15:00", "09:00 Berlin is 15:00 Shanghai");
+        assert_eq!(due_in(&shanghai, chrono_tz::Tz::Asia__Shanghai), "09:00");
+        assert_eq!(due_in(&berlin, chrono_tz::Tz::Europe__Berlin), "09:00");
+        // The host's zone is neither task's: read through it, Berlin's 09:00 is
+        // not 09:00, and the two instants are hours apart. A schedule that used
+        // the host's zone for both would land them on one instant.
+        assert_ne!(due_in(&berlin, chrono_tz::Tz::Asia__Shanghai), "09:00");
+        assert_ne!(
+            shanghai.next_due_at, berlin.next_due_at,
+            "one wall clock in two zones is two different instants"
+        );
     }
 
     #[test]
