@@ -36,7 +36,10 @@ export function ReplyProcess({
   const Chevron = expanded ? ChevronUp : ChevronDown;
 
   return (
-    <div className="flex min-w-0 flex-col gap-1 text-13 leading-6 text-ink-muted">
+    // The fold's own line is a control the reader presses by its label, so it
+    // keeps the body-text floor (soft ink at rest, full ink on hover) while the
+    // counts beside it inherit the same ink rather than dropping to muted.
+    <div className="flex min-w-0 flex-col gap-1 text-13 leading-6 text-ink-soft">
       <button
         aria-expanded={expanded}
         className="flex max-w-full cursor-pointer flex-wrap items-center justify-start gap-1 self-start text-left hover:text-ink"
@@ -45,7 +48,7 @@ export function ReplyProcess({
       >
         <ListTree aria-hidden="true" className="size-3.5 shrink-0" />
         <span>{t(expanded ? "process.hide" : "process.show")}</span>
-        {summary ? <span className="text-ink-muted">{`· ${summary}`}</span> : null}
+        {summary ? <span>{`· ${summary}`}</span> : null}
         <Chevron aria-hidden="true" className="size-3 shrink-0" />
       </button>
       {expanded ? <div className="min-w-0 space-y-3 pl-6">{children}</div> : null}

@@ -467,6 +467,7 @@ test-screenshot-harness: export PYTHONDONTWRITEBYTECODE := 1
 test-screenshot-harness:
 	python3 scripts/tests/test-screenshot-harness-reap.py
 	python3 scripts/tests/test-screenshot-upright-check.py
+	python3 scripts/tests/test-screenshot-scenario-fragments.py
 
 # Wire codegen owners: packages/rpc (future.proto) + channels (feishu_ws pbbp2).
 #

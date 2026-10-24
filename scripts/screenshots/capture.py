@@ -53,7 +53,35 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 SCRIPTS = ROOT / "scripts" / "screenshots"
 DEFAULT_OUT = ROOT / ".screenshots"
-SCENARIOS = json.loads((SCRIPTS / "scenarios.json").read_text(encoding="utf-8"))
+
+
+def load_scenarios(scripts: Path = SCRIPTS) -> dict:
+    """The scenario table plus the fragments under `scenarios.d/`.
+
+    A fragment maps a platform name to scenario entries and is merged on top of
+    `scenarios.json`, so two sessions can add scenarios for different platforms
+    at the same time without editing (and overwriting) one shared file. A
+    fragment may also override an entry of the same name. Keys starting with an
+    underscore are comments, exactly as in `scenarios.json`.
+    """
+    table = json.loads((scripts / "scenarios.json").read_text(encoding="utf-8"))
+    fragments = scripts / "scenarios.d"
+    if not fragments.is_dir():
+        return table
+    for path in sorted(fragments.glob("*.json")):
+        extra = json.loads(path.read_text(encoding="utf-8"))
+        for platform, scenarios in extra.items():
+            if platform.startswith("_"):
+                continue
+            if platform not in table or not isinstance(table[platform], dict):
+                raise SystemExit(f"error: {path.name} names unknown platform {platform!r}")
+            if not isinstance(scenarios, dict):
+                raise SystemExit(f"error: {path.name}: {platform!r} must map scenario names to scenarios")
+            table[platform].setdefault("scenarios", {}).update(scenarios)
+    return table
+
+
+SCENARIOS = load_scenarios()
 CHROME_CANDIDATES = (
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",

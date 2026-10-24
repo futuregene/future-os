@@ -26,7 +26,10 @@ export function SkillRecommendCard({
     <div className="mb-2 flex items-start gap-3 rounded-md border border-focus/40 bg-focus-soft px-3 py-2.5">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5 text-xs font-medium text-ink">
-          <span className="text-focus">{t("composer.skillRecommend.cardTitle")}</span>
+          {/* `text-focus` is the focus-ring blue: as a label it measured
+              1.80:1 on this panel. The accent ink keeps the same family and
+              clears body text. */}
+          <span className="text-accent">{t("composer.skillRecommend.cardTitle")}</span>
           <span className="font-mono text-ink">
             /
             {name}

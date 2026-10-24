@@ -1,6 +1,6 @@
 import { createElement } from "react";
 import { AppState, StyleSheet, type AppStateStatus } from "react-native";
-import { lightColors } from "../../theme/tokens";
+import { lightColors, layout } from "../../theme/tokens";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { TimelineCard } from "../TimelineCard";
 import type { TimelineCardProps } from "../TimelineCard";
@@ -331,14 +331,16 @@ test("an unfolded step row aligns with the folded summary on the left", () => {
 });
 
 // A step row is the only way into the call behind it, so it carries a real touch
-// target even though it draws as a single 20px line.
+// target even though it draws as a single 20px line: the slop a side is what the
+// 44px floor leaves over.
 test("every step row extends its touch area beyond its drawn line", () => {
   render(reply({ segments: [tool("c1"), tool("c2"), prose("p1"), thinking("k1", "why")] }));
-  expect(summaryRow({ tools: 2 }).props.hitSlop).toEqual({ top: 8, bottom: 8 });
+  const slop = { top: (layout.touchTarget - 20) / 2, bottom: (layout.touchTarget - 20) / 2 };
+  expect(summaryRow({ tools: 2 }).props.hitSlop).toEqual(slop);
   // Expanded rows and the lone reasoning slice carry it too.
   act(() => summaryRow({ tools: 2 }).props.onPress());
-  expect(rowButton("chat.runCompleted").props.hitSlop).toEqual({ top: 8, bottom: 8 });
-  expect(rowButton("chat.thoughtCompleted").props.hitSlop).toEqual({ top: 8, bottom: 8 });
+  expect(rowButton("chat.runCompleted").props.hitSlop).toEqual(slop);
+  expect(rowButton("chat.thoughtCompleted").props.hitSlop).toEqual(slop);
 });
 
 // Timing metadata follows the reply's leading edge while the run is live.
