@@ -374,7 +374,7 @@ describe("useSessionCatalog", () => {
       });
       // What the packet is for: the conversation that just spoke leads the list.
       const merged = mergeSessions(
-        [{ desktopId: "d1", label: "d1", sessions: result.current.sessions }],
+        [{ desktopId: "d1", label: "d1", status: "connected", sessions: result.current.sessions }],
         { kind: "all" },
       );
       expect(merged.map(row => row.session.sessionId)).toEqual(["older", "newer"]);
