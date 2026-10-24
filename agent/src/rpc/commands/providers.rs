@@ -56,6 +56,22 @@ pub(crate) fn handle_sync_future_models(state: &AppState, id: &str) -> String {
     )
 }
 
+pub(crate) fn handle_request_future_models_refresh(id: &str) -> String {
+    // Non-blocking counterpart of `handle_sync_future_models`, for callers that
+    // only want the catalogue to catch up (a model picker opening) and must not
+    // wait on the platform: this asks the models layer to start the background
+    // fetch the registry build uses — same backoff, same single-flight slot —
+    // and answers at once. When that fetch lands, the sync callback installed by
+    // the service rebuilds the registry and publishes `provider_config_changed`,
+    // so the picker refreshes from the event instead of from this response.
+    let requested = crate::models::request_future_models_refresh();
+    RpcResponse::ok(
+        id,
+        "request_future_models_refresh",
+        serde_json::json!({ "requested": requested }),
+    )
+}
+
 pub(crate) fn handle_set_default_model(state: &AppState, cmd: &RpcCommand, id: &str) -> String {
     // Persist the onboarding model-picker's choice as the global default model
     // (settings.json `defaultModel`). Sessionless: it's a process-wide setting,

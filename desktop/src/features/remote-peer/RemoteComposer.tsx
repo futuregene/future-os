@@ -263,6 +263,20 @@ export function RemoteComposer({
 }) {
   const { t } = useTranslation("remotePeer");
   const [text, setText] = useState("");
+  /**
+   * Whether another paired device drives the host, which is what closes every
+   * write this composer offers.
+   *
+   * The fact that decides is `control`, not `connected`: while another device
+   * holds the machine the host refuses this client's business commands with
+   * `superseded`, and a press that reaches the wire is a press that ends in a
+   * transport refusal over a message the reader expected to go. So the send
+   * control, the attachment staging and the `/compact` command are closed here
+   * instead — and the notice above the composer says why, with the way back.
+   * A host too old to report `control` says nothing and is treated as its own,
+   * as everywhere else.
+   */
+  const held = peer?.control === "standby";
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const ime = useImeEnterGuard();
   const [busy, setBusy] = useState(false);
@@ -392,6 +406,10 @@ export function RemoteComposer({
    * reach is a guard no test can trust.
    */
   async function attach() {
+    // Staging a file writes to the host, so a machine another device drives is
+    // closed here for the same reason sending is (`held`, above).
+    if (held)
+      return;
     setUploading(true);
     setError(null);
     try {
@@ -421,7 +439,7 @@ export function RemoteComposer({
    */
   async function pasteFiles(event: React.ClipboardEvent<HTMLTextAreaElement>) {
     const data = event.clipboardData;
-    if (!data || busy || uploading)
+    if (!data || busy || uploading || held)
       return;
     const files = [...data.files];
     const hasUriList = data.types.includes("text/uri-list") && !!data.getData("text/uri-list");
@@ -543,7 +561,7 @@ export function RemoteComposer({
     // an error over a message the reader had every reason to expect to go. The
     // send control is closed for the same reason; Enter reaches this function
     // too, so the guard belongs here, where both paths meet.
-    if ((!message && uploads.length === 0) || busy || evaluating || streaming)
+    if ((!message && uploads.length === 0) || busy || evaluating || streaming || held)
       return;
 
     // Skill recommendation, from *that* host: the draft is held while it is
@@ -632,7 +650,10 @@ export function RemoteComposer({
   );
 
   const commands = useRemoteCommands({
-    canCompact: canCompact && !busy && !evaluating,
+    // A compact request is a command to the host too, and a host another device
+    // drives refuses it. Left out of the menu rather than drawn disabled: a
+    // slash menu is a list of things you can ask for.
+    canCompact: canCompact && !busy && !evaluating && !held,
     canReference: referenceOptions.length > 0,
     onCompact: () => onCompact?.(),
   });
@@ -987,9 +1008,9 @@ export function RemoteComposer({
           <button
             aria-label={t("attach")}
             className="inline-flex size-7 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-surface-subtle hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
-            disabled={uploading}
+            disabled={uploading || held}
             onClick={() => void attach()}
-            title={t("attach")}
+            title={held ? t("heldSendBlocked") : t("attach")}
             type="button"
           >
             <Paperclip className="size-3.5" />
@@ -1031,8 +1052,11 @@ export function RemoteComposer({
                 <button
                   aria-label={busy ? t("sending") : t("send")}
                   className="inline-flex size-7 items-center justify-center rounded-md bg-accent-fill text-white transition-colors hover:bg-accent-fill-hover disabled:bg-accent-fill-disabled"
-                  disabled={(!text.trim() && uploads.length === 0) || busy || uploading || evaluating}
-                  title={busy ? t("sending") : t("send")}
+                  // `held` is not a state the button is briefly in (busy): it is the
+                  // machine being someone else's, and the reason travels with the
+                  // closed control rather than only in the banner above it.
+                  disabled={(!text.trim() && uploads.length === 0) || busy || uploading || evaluating || held}
+                  title={held ? t("heldSendBlocked") : busy ? t("sending") : t("send")}
                   type="submit"
                 >
                   {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArrowUp className="size-3.5" />}

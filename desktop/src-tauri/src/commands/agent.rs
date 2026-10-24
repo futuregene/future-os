@@ -22,6 +22,16 @@ pub async fn sync_future_models() -> Result<agent_bridge::SyncFutureModelsResult
     crate::scheduler::refresh_future_models_now().await
 }
 
+/// Ask the agent to refresh the Future catalogue **in the background**: the call
+/// returns once the fetch is scheduled, and the refreshed list arrives later as
+/// the agent's `provider-config-changed` event. The model pickers call this when
+/// they open, so opening one never waits on the platform.
+#[tauri::command]
+pub async fn request_future_models_refresh(
+) -> Result<agent_bridge::RequestFutureModelsRefreshResult, crate::AppError> {
+    agent_bridge::request_future_models_refresh().await
+}
+
 /// Persist the onboarding model-picker's choice as the agent's global default
 /// model (settings.json `defaultModel`). Sessionless.
 #[tauri::command]
@@ -309,6 +319,22 @@ mod tests {
         assert!(probe.available);
         assert_eq!(probe.code, "available");
         assert_eq!(reset_windows_sandbox().await.expect("reset"), 3);
+        script_mock_agent(MockScript::default());
+    }
+
+    #[tokio::test]
+    async fn request_future_models_refresh_parses_the_agent_result() {
+        let _lock = mock_agent_lock();
+        crate::commands::agent_mock::ensure_mock_agent();
+        script_mock_agent(MockScript {
+            data: HashMap::from([(
+                "request_future_models_refresh".to_string(),
+                "{\"requested\":true}".to_string(),
+            )]),
+            ..Default::default()
+        });
+        let result = request_future_models_refresh().await.expect("request");
+        assert!(result.requested);
         script_mock_agent(MockScript::default());
     }
 

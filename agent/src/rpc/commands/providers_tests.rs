@@ -336,6 +336,20 @@ fn sync_future_models_without_credentials_reports_not_synced() {
 }
 
 #[test]
+fn request_future_models_refresh_without_credentials_is_a_no_op() {
+    let _home = TestHome::new();
+    let state = make_app_state();
+    let resp = parse_response(&handle_command_internal(
+        &state,
+        make_cmd("request_future_models_refresh"),
+    ));
+    // Dispatched and answered — the picker's call must never hang on a missing
+    // credential, it just has nothing to refresh.
+    assert_eq!(resp["success"], true);
+    assert_eq!(resp["data"]["requested"], false);
+}
+
+#[test]
 fn set_default_model_rejects_empty_and_unknown_ids() {
     let _home = TestHome::new();
     let state = make_app_state();

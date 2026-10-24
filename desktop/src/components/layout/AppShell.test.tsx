@@ -2207,6 +2207,122 @@ describe("app shell collapsed-panel affordances", () => {
     });
 
     /**
+     * And it keeps the name it last read when the host stops reporting the row.
+     *
+     * This is what another paired device taking the machine over does: the host
+     * refuses this client's reads and sends it no more snapshots, so every row of
+     * that host leaves the catalogue — and the open conversation fell back to its
+     * session id, turning the header of a conversation the reader was in the
+     * middle of into `sess_1`. The transcript survived because it had already
+     * been read; the title had to survive the same way.
+     */
+    it("keeps the last title when the host stops reporting the row", () => {
+      mocks.remotePeers = {
+        catalogs: [{
+          desktopId: "desktop_a",
+          sessions: [{ lastMessageAt: 1, sessionId: "sess_1", title: "Deadlock in the revive pass" }],
+        }],
+        peers: [{ desktopId: "desktop_a", name: "Studio iMac" }],
+      };
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+      expect((children.remoteConversationView as { title?: string }).title).toBe("Deadlock in the revive pass");
+
+      // Someone else took the machine: the rows of that host are gone, the
+      // conversation is still on screen.
+      mocks.remotePeers = {
+        catalogs: [],
+        peers: [{ control: "standby", desktopId: "desktop_a", holder: { name: "Hui's phone" }, name: "Studio iMac" }],
+      };
+      view.rerender(<AppShell />);
+
+      expect((children.remoteConversationView as { title?: string }).title).toBe("Deadlock in the revive pass");
+      view.unmount();
+    });
+
+    /**
+     * A catalogue that blinks must not cost the reader their place.
+     *
+     * Rows can go missing for reasons that say nothing about the host — a store
+     * busy serving a page of history, one round trip that timed out — and the
+     * same reasoning that keeps a silent host's rows in the rail
+     * (`keepUnanswered`) applies to the conversation those rows opened: only a
+     * deletion the host confirmed closes it. Anything else that read "no row" as
+     * "no conversation" would empty the column under a reader who was reading it.
+     */
+    it("keeps the conversation open when the catalogue blinks", () => {
+      mocks.remotePeers = {
+        catalogs: [{
+          desktopId: "desktop_a",
+          sessions: [{ lastMessageAt: 1, sessionId: "sess_1", title: "Remote conversation" }],
+        }],
+        peers: [{ desktopId: "desktop_a", name: "Studio iMac" }],
+      };
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+
+      // One failed read: the catalogue answers with nothing at all.
+      mocks.remotePeers = { catalogs: [], peers: [{ desktopId: "desktop_a", name: "Studio iMac" }] };
+      view.rerender(<AppShell />);
+
+      expect(children.remoteConversationView).not.toBeNull();
+      expect(composer().sessionId).toBe("sess_1");
+      expect((children.remoteConversationView as { title?: string }).title).toBe("Remote conversation");
+
+      // …and the next read puts the rows back without a second open.
+      mocks.remotePeers = {
+        catalogs: [{
+          desktopId: "desktop_a",
+          sessions: [{ lastMessageAt: 1, sessionId: "sess_1", title: "Renamed while away" }],
+        }],
+        peers: [{ desktopId: "desktop_a", name: "Studio iMac" }],
+      };
+      view.rerender(<AppShell />);
+      expect((children.remoteConversationView as { title?: string }).title).toBe("Renamed while away");
+      view.unmount();
+    });
+
+    /**
+     * The machine's own pointer, from inside the conversation it stopped serving.
+     *
+     * The notice names the device holding it and offers the way back; the act
+     * behind that button is the same `takeover` command the device picker sends,
+     * followed by a re-read so the conversation's own state lands in this render
+     * rather than on the next poll.
+     */
+    it("takes the machine back from the conversation's own notice", async () => {
+      mocks.remotePeers = {
+        catalogs: [],
+        peers: [{
+          connected: true,
+          control: "standby",
+          desktopId: "desktop_a",
+          holder: { name: "Hui's phone" },
+          name: "Studio iMac",
+        }],
+      };
+      const view = mount(<AppShell />);
+      act(() => rail().onOpenRemoteConversation?.(remoteConversation()));
+
+      const takeOver = (children.remoteConversationView as { onTakeControl?: () => Promise<unknown> }).onTakeControl;
+      expect(takeOver).toBeTypeOf("function");
+      await act(async () => {
+        await takeOver!();
+      });
+
+      expect(mocks.invoke).toHaveBeenCalledWith(
+        "remote_peer_request",
+        expect.objectContaining({
+          command: { type: "takeover" },
+          desktopId: "desktop_a",
+        }),
+      );
+      // The list is re-read, so the machine's rows (and the title) come back now.
+      expect(mocks.hooks.refreshRemotePeers).toHaveBeenCalled();
+      view.unmount();
+    });
+
+    /**
      * Opening a conversation costs the phone's commands, and nothing else.
      *
      * Everything a remote conversation needs from the *host* — its newest page,

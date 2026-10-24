@@ -420,6 +420,14 @@ impl Loop {
                     Some(&cancelled),
                     false,
                 ));
+                // Persist it like an executed call. The assistant entry holding
+                // these tool calls is already on disk, so an unpersisted result
+                // leaves a call with no result at all: on the next load that
+                // reads as "the process died mid-call", which fences the whole
+                // session for a stop the user asked for.
+                if let Some(ref cb) = on_tool_result {
+                    cb(messages.last_mut().unwrap());
+                }
             }
         }
     }

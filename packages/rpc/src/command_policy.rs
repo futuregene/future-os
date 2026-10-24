@@ -113,6 +113,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "refresh_skills",
     "reload_auth",
     "reload_config",
+    "request_future_models_refresh",
     "reset_session_history",
     "reset_windows_sandbox",
     "retry_persistence",
@@ -180,6 +181,13 @@ pub fn command_policy(command: &str) -> Option<CommandPolicy> {
             ExecutionKind::Bounded,
         ),
         "sync_future_models" => policy(NETWORK_TIMEOUT, RetryPolicy::Never, ExecutionKind::Bounded),
+        // Non-blocking catalogue refresh: it only starts a background fetch, so
+        // it answers immediately and a timeout has nothing to retry.
+        "request_future_models_refresh" => policy(
+            CONTROL_TIMEOUT,
+            RetryPolicy::Never,
+            ExecutionKind::Immediate,
+        ),
         "list_available_skills" => policy(
             NETWORK_TIMEOUT,
             RetryPolicy::SafeRead,
