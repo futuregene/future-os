@@ -4951,6 +4951,62 @@ mod tests {
         assert_eq!(tool_result_flags(&messages), vec![false, false]);
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn skipped_tool_result_reaches_the_journal() {
+        // The assistant entry naming both calls is persisted as soon as the
+        // turn ends. If the skipped result never reaches the same journal, the
+        // transcript ends up with a call that has no result at all, which the
+        // next recovery pass cannot tell from a crash.
+        let provider = ScriptedProvider::new(vec![
+            Script::Events(vec![
+                ev_toolcall_start(0, "c1", "echo", "{}"),
+                ev_toolcall_start(1, "c2", "echo", "{}"),
+                ev_toolcall_end(),
+                ev_stop(),
+            ]),
+            Script::Events(vec![ev_text("after"), ev_stop()]),
+        ]);
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let config = crate::types::AgentConfig {
+            after_tool_call: Some({
+                let flag = flag.clone();
+                Arc::new(move |_, _, _, _, _| {
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    None
+                })
+            }),
+            ..Default::default()
+        };
+        let mut loop_ = Loop::new(provider, "mock")
+            .with_tools(vec![echo_tool()])
+            .with_config(config);
+        loop_.interrupt_flag = flag;
+        let saved = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let collect = {
+            let saved = saved.clone();
+            Arc::new(move |m: &mut AgentMessage| saved.lock().push(m.text()))
+                as crate::agent::PersistCallback
+        };
+        let ctx = StreamContext {
+            model: "mock".to_string(),
+            system_prompt: "sys".to_string(),
+            on_tool_result: Some(collect.clone()),
+            save_callback: Some(collect),
+            ..Default::default()
+        };
+        loop_
+            .run_streaming_with_messages(user_messages("hi"), &ctx, noop_on_text, |_| {}, None)
+            .await
+            .unwrap();
+        let saved = saved.lock().clone();
+        assert!(
+            saved
+                .iter()
+                .any(|text| text.contains("was skipped due to user interrupt")),
+            "the skipped call's result must be persisted: {saved:?}"
+        );
+    }
+
     // ── pure helpers ────────────────────────────────────────────────────────
 
     #[test]
