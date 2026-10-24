@@ -17,6 +17,7 @@
 | `future workspace list --json` | 桌面端的工作区（工作区会话归档到的那些目录） |
 | `future doctor` | 一次检查登录、Agent 连接、沙箱、provider、会话与技能 |
 | `future models --json` | 本 Agent 可用的模型 |
+| `future models refresh` | 拉取 Future 平台模型目录（等同桌面端「更新模型列表」），应用启动后新上线的模型不必重启就能出现 |
 | `future version --json` | 这是哪个构建：版本、commit、目标平台、是否有未提交改动 |
 | `future auth status` | 是否已配置平台登录（登录到哪个平台） |
 | `future account profile` / `balance` | 用户账户与剩余额度 |

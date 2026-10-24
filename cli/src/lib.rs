@@ -338,14 +338,14 @@ pub async fn dispatch(args: &[String], out: &Output) -> i32 {
             out.log(help::MODELS_HELP);
             return 0;
         }
-        // command === "--json" ? [command, ...rest] : rest
-        let models_args: Vec<String> = if command == Some("--json") {
-            std::iter::once("--json".to_string())
-                .chain(rest.iter().cloned())
-                .collect()
-        } else {
-            rest.to_vec()
-        };
+        // Everything after the group is forwarded: `models` dispatches its own
+        // `refresh` subcommand, and any remaining positional is the explicit
+        // agent address the listing accepts (`models(args)` in commands/models.rs).
+        let models_args: Vec<String> = command
+            .into_iter()
+            .chain(rest.iter().map(String::as_str))
+            .map(str::to_string)
+            .collect();
         return catch(out, commands::models::models(&models_args, out)).await;
     }
 
@@ -924,6 +924,31 @@ mod tests {
         let (code, _, stderr) = run(&["run"]).await;
         assert_eq!(code, 1);
         assert!(stderr.contains("No prompt provided."), "stderr: {stderr}");
+    }
+
+    #[tokio::test]
+    async fn models_refresh_routes_to_the_sync_path() {
+        let _guard = crate::test_env::lock_env().await;
+        // Isolated home: the refresh path reads the Future credential, and a test
+        // must never consult (or refresh) the developer's real catalogue.
+        let _home = crate::test_env::EnvGuard::temp_home();
+        let _env = crate::test_env::EnvGuard::set(&[(
+            "FUTURE_AGENT_GRPC_ADDR",
+            std::ffi::OsString::from("127.0.0.1:1"),
+        )]);
+        // The subcommand reaches the refresh path, not the listing: with no agent
+        // and no credential it says what to do instead of printing a model list.
+        let (code, stdout, stderr) = run(&["models", "refresh"]).await;
+        assert_eq!(code, 1);
+        assert_eq!(stdout, "");
+        assert!(
+            stderr.contains("no Future credential is configured"),
+            "stderr: {stderr}"
+        );
+        // Help still wins over the subcommand.
+        let (code, stdout, _) = run(&["models", "refresh", "--help"]).await;
+        assert_eq!(code, 0);
+        assert_eq!(stdout, format!("{}\n", help::MODELS_HELP));
     }
 
     #[tokio::test]
