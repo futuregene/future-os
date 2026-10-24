@@ -123,56 +123,66 @@ impl RecoverySafety {
             let args = prepare_session_tool_call(&call_cwd, name, &call.function.arguments);
             let key = fingerprint(name, &args, &call_cwd)?;
             let recorded = results.get(&(run.clone(), id.clone()));
+            // The user ending this run is the only state that makes a missing
+            // result an abort rather than a crash. A system shutdown or a kill
+            // lands on `interrupted_by_restart` and keeps fencing.
+            let user_stopped = terminals
+                .get(&run)
+                .is_some_and(|state| state == crate::session::RUN_STATE_CANCELLED);
             // A timeout already handled within a settled successful task is
             // not a new recovery incident. Missing results are never excused.
             let handled = recorded.is_some()
                 && terminals
                     .get(&run)
                     .is_some_and(|state| state == crate::session::RUN_STATE_COMPLETED);
-            match recorded {
+            let doubt = match recorded {
                 Some(ResultState::Recorded) => {
                     if recovered_runs.contains(&run) {
-                        safety.completed.insert(key);
+                        safety.completed.insert(key.clone());
                     }
+                    Doubt::Settled
                 }
-                // The user stopping a run is not a crash, and it is not a
-                // success either: the interrupted call is remembered by
-                // fingerprint and questioned once, on its own, later.
-                Some(ResultState::Aborted) => {
-                    safety.aborted.insert(key);
+                Some(ResultState::NotExecuted) => Doubt::Settled,
+                // The user pressed stop in this run. The effect of that one
+                // operation is genuinely unknown, but the session's own
+                // liveness is not in question.
+                Some(ResultState::Aborted) => Doubt::Aborted,
+                // No result at all in a run the user ended: the process that
+                // would have written it was stopped, which is the same
+                // question — not the crash this fence exists for.
+                None if user_stopped => Doubt::Aborted,
+                Some(ResultState::Unknown) | None if handled => Doubt::Settled,
+                Some(ResultState::Unknown) | None => Doubt::Unknown,
+            };
+            if doubt == Doubt::Settled {
+                continue;
+            }
+            if name == "shell" && args["command"].as_str().is_some_and(command_is_read_only) {
+                // Provably read-only: no side effect can be waiting, so this
+                // call does not fence the session — not even as an aborted
+                // operation. Anything it cannot prove stays questioned below.
+                tracing::debug!(
+                    tool_call_id = %id,
+                    "recovery: interrupted read-only shell is not fenced"
+                );
+            } else if name == "write" && write_is_applied(&args) {
+                // This is an observation of the desired complete file, not a
+                // claim that the old process successfully returned. Persist it
+                // so later starts and clients see the same verified fact.
+                let mut result = SessionEntry::new_tool(&id,
+                    "Recovery verified that the file already contains the complete requested content. No write was repeated.");
+                result.name = name.clone();
+                result.tool_args = serde_json::to_string(&args)?;
+                result.meta = Some(json!({"run_id":run,"recovery_verified":true}));
+                verified.push(result);
+                if recovered_runs.contains(&run) {
+                    safety.completed.insert(key);
                 }
-                Some(ResultState::NotExecuted) => {}
-                Some(ResultState::Unknown) | None => {
-                    if handled {
-                        continue;
-                    }
-                    if name == "shell" && args["command"].as_str().is_some_and(command_is_read_only)
-                    {
-                        // Provably read-only: no side effect can be waiting, so
-                        // this call does not fence the session. Anything it
-                        // cannot prove stays unresolved below.
-                        tracing::debug!(
-                            tool_call_id = %id,
-                            "recovery: interrupted read-only shell is not fenced"
-                        );
-                    } else if name == "write" && write_is_applied(&args) {
-                        // This is an observation of the desired complete file,
-                        // not a claim that the old process successfully
-                        // returned. Persist it so later starts and clients see
-                        // the same verified fact.
-                        let mut result = SessionEntry::new_tool(&id,
-                            "Recovery verified that the file already contains the complete requested content. No write was repeated.");
-                        result.name = name.clone();
-                        result.tool_args = serde_json::to_string(&args)?;
-                        result.meta = Some(json!({"run_id":run,"recovery_verified":true}));
-                        verified.push(result);
-                        if recovered_runs.contains(&run) {
-                            safety.completed.insert(key);
-                        }
-                    } else {
-                        safety.unresolved.push(format!("{name} ({id})"));
-                    }
-                }
+            } else if doubt == Doubt::Aborted {
+                // Questioned once, on its own, by `before_tool`.
+                safety.aborted.insert(key);
+            } else {
+                safety.unresolved.push(format!("{name} ({id})"));
             }
         }
         if !verified.is_empty() {
@@ -483,6 +493,18 @@ fn branch_flag_creates_or_deletes(arg: &str) -> bool {
     arg.chars()
         .skip(1)
         .any(|c| matches!(c, 'd' | 'D' | 'm' | 'M' | 'c' | 'C' | 'f' | 'u' | 't'))
+}
+
+/// How much of a call the authoritative transcript can vouch for.
+///
+/// `Settled`: the outcome is recorded, or provably never ran. `Aborted`: the
+/// user ended the run this call belonged to, so only that one operation is in
+/// question. `Unknown`: nobody can say — the fence applies to the session.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Doubt {
+    Settled,
+    Aborted,
+    Unknown,
 }
 
 /// Recorded: settled outcome; NotExecuted: provably never ran; Aborted: the
@@ -1185,5 +1207,178 @@ mod tests {
                 .unwrap();
         assert!(safety.pause_reason().is_some());
         assert!(safety.before_tool("shell", &args).unwrap().is_error);
+    }
+
+    // ─── an unexecuted call must be on disk as unexecuted ──────────────────
+
+    /// The fixture's run ended in `state`, which is what decides whether a
+    /// missing result is a user stop or a crash.
+    fn stop_state(state: &str) -> SessionEntry {
+        SessionEntry::run_terminal("run", state, 0, 0, None)
+    }
+
+    #[test]
+    fn persisted_skip_placeholder_does_not_fence_after_a_reload() {
+        // Before the skip placeholder was persisted, this session had a call
+        // with no result at all and read as a crash. With the result on disk
+        // it reads as what it is: a call that never ran.
+        let args = json!({"command":"Remove-Item -Recurse -Force build"});
+        let (root, manager) = fixture(
+            "shell",
+            args.clone(),
+            Some(SessionEntry::new_tool(
+                "call",
+                "[Tool execution cancelled — shell was skipped due to user interrupt]",
+            )),
+        );
+        manager
+            .append_entries_synced(
+                "session",
+                &[stop_state(crate::session::RUN_STATE_CANCELLED)],
+            )
+            .unwrap();
+        for automatic in [true, false] {
+            let safety = RecoverySafety::load(
+                &manager,
+                "session",
+                root.path().to_str().unwrap(),
+                automatic,
+            )
+            .unwrap();
+            assert!(safety.pause_reason().is_none());
+            // Nothing ran, so nothing is questioned and nothing is "recorded".
+            assert!(safety.before_tool("shell", &args).is_none());
+            assert!(safety
+                .before_tool("write", &json!({"path":"missing","content":"new"}))
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn missing_result_in_a_user_stopped_run_is_questioned_once_not_fenced() {
+        // The shape left on disk by an older build: two calls in flight, the
+        // user stopped the run, only one result ever landed.
+        let args = json!({"command":"Remove-Item -Recurse -Force build"});
+        let (root, manager) = fixture("shell", args.clone(), None);
+        manager
+            .append_entries_synced(
+                "session",
+                &[stop_state(crate::session::RUN_STATE_CANCELLED)],
+            )
+            .unwrap();
+        for automatic in [true, false] {
+            let safety = RecoverySafety::load(
+                &manager,
+                "session",
+                root.path().to_str().unwrap(),
+                automatic,
+            )
+            .unwrap();
+            assert!(safety.pause_reason().is_none());
+            assert!(safety
+                .before_tool("write", &json!({"path":"missing","content":"new"}))
+                .is_none());
+            let first = safety
+                .before_tool("shell", &args)
+                .expect("the interrupted operation itself is questioned once");
+            assert!(first.result.starts_with("[RECOVERY_ABORTED_OPERATION]"));
+            assert!(safety.before_tool("shell", &args).is_none());
+        }
+    }
+
+    #[test]
+    fn missing_result_after_a_restart_still_fences_the_session() {
+        // A system shutdown or a kill is what this fence exists for: nobody
+        // was present, so the session must not silently continue.
+        for state in [
+            crate::session::RUN_STATE_INTERRUPTED_BY_RESTART,
+            crate::session::RUN_STATE_INCOMPLETE,
+            crate::session::RUN_STATE_ERROR,
+        ] {
+            let args = json!({"command":"Remove-Item -Recurse -Force build"});
+            let (root, manager) = fixture("shell", args.clone(), None);
+            manager
+                .append_entries_synced("session", &[stop_state(state)])
+                .unwrap();
+            let safety =
+                RecoverySafety::load(&manager, "session", root.path().to_str().unwrap(), true)
+                    .unwrap();
+            assert!(safety.pause_reason().is_some(), "{state}");
+            assert!(
+                safety.before_tool("shell", &args).unwrap().is_error,
+                "{state}"
+            );
+        }
+    }
+
+    #[test]
+    fn timed_out_result_still_fences_even_in_a_user_stopped_run() {
+        // A timeout is nobody's decision: the run's own state must not excuse
+        // it just because the user also pressed stop later.
+        for status in ["timed_out", "execution_failed"] {
+            let mut result = SessionEntry::new_tool("call", "command interrupted");
+            result.meta = Some(json!({"shell_result":{"status":status,"is_error":true}}));
+            let (root, manager) = fixture(
+                "shell",
+                json!({"command":"Remove-Item -Recurse -Force build"}),
+                Some(result),
+            );
+            manager
+                .append_entries_synced(
+                    "session",
+                    &[stop_state(crate::session::RUN_STATE_CANCELLED)],
+                )
+                .unwrap();
+            let safety =
+                RecoverySafety::load(&manager, "session", root.path().to_str().unwrap(), false)
+                    .unwrap();
+            assert!(safety.pause_reason().is_some(), "{status}");
+        }
+    }
+
+    #[test]
+    fn aborted_read_only_shell_stays_silently_exempt() {
+        // A read-only command cannot have changed anything, so there is
+        // nothing to check and nothing to warn about.
+        let (root, manager) = interrupted_shell_fixture("cancelled", "git status --short");
+        let safety =
+            RecoverySafety::load(&manager, "session", root.path().to_str().unwrap(), true).unwrap();
+        assert!(safety.pause_reason().is_none());
+        assert!(safety
+            .before_tool("shell", &json!({"command":"git status --short"}))
+            .is_none());
+    }
+
+    #[test]
+    fn aborted_write_that_already_landed_is_verified_instead_of_questioned() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "complete content").unwrap();
+        let args = json!({"path":file.path(),"content":"complete content"});
+        let mut result = SessionEntry::new_tool("call", "command interrupted");
+        result.meta = Some(json!({"shell_result":{"status":"cancelled","is_error":true}}));
+        let (root, manager) = fixture("write", args.clone(), Some(result));
+        manager
+            .append_entries_synced(
+                "session",
+                &[stop_state(crate::session::RUN_STATE_CANCELLED)],
+            )
+            .unwrap();
+        let safety =
+            RecoverySafety::load(&manager, "session", root.path().to_str().unwrap(), true).unwrap();
+        assert!(safety.pause_reason().is_none());
+        // The file already holds the requested content: that answer exists, so
+        // the model is not asked to go and check it itself.
+        let stored = manager.load_unrepaired_entries("session").unwrap();
+        assert!(stored.iter().any(|e| e
+            .meta
+            .as_ref()
+            .is_some_and(|m| m["recovery_verified"] == true)));
+        assert!(!safety
+            .before_tool("write", &args)
+            .is_some_and(|r| r.result.starts_with("[RECOVERY_ABORTED_OPERATION]")));
+        assert_eq!(
+            std::fs::read_to_string(file.path()).unwrap(),
+            "complete content"
+        );
     }
 }
