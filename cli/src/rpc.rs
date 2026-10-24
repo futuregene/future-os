@@ -206,6 +206,21 @@ impl RunClient {
             .await
     }
 
+    /// Pull the Future platform catalogue into the agent: it fetches, warms the
+    /// cache, rebuilds the registry and publishes `provider_config_changed`, so
+    /// the next `list_models` and every connected GUI see the new catalogue.
+    ///
+    /// → `{synced, modelCount, revision}`. `synced: false` means the fetch did
+    /// not complete (no Future credential, or the platform was unreachable); it
+    /// is not a transport error.
+    pub async fn sync_future_models(&self) -> Result<Value, String> {
+        // The connect budget only bounds reaching the agent (`execute_command`
+        // clamps it); the platform fetch itself is bounded by the command's own
+        // NETWORK_TIMEOUT policy on the wire.
+        self.execute_command("sync_future_models", RpcCommand::default(), None, 20)
+            .await
+    }
+
     /// Agent-authoritative, secret-redacted provider snapshot.
     pub async fn list_providers(&self) -> Result<Value, String> {
         self.execute_command("list_providers", RpcCommand::default(), None, 5)
