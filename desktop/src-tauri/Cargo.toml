@@ -33,6 +33,13 @@ gui = [
     "dep:tauri-plugin-single-instance", "dep:arboard", "dep:objc2",
     "dep:block2", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:zbus",
 ]
+# Serve the frontend embedded from `build.frontendDist` (`desktop/dist`) instead
+# of `build.devUrl`. Tauri derives `cfg(dev)` from this feature, so without it
+# the binary is a dev-mode shell: it opens http://127.0.0.1:5173 and, with no
+# Vite server running, shows only ERR_CONNECTION_REFUSED. `tauri build` enables
+# it for every shipped binary; sources outside the Tauri CLI (`make
+# install-local`, a bare `cargo build --profile local`) have to ask for it.
+custom-protocol = ["tauri/custom-protocol"]
 
 [dev-dependencies]
 future-host = { path = "../../host", features = ["test-support"] }
