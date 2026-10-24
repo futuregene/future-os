@@ -50,9 +50,14 @@ export const resources = {
         saveFailed: "Could not save the language setting. Please try again.",
       },
       notifications: {
+        title: "Notifications",
         channel: "Task completion",
         completed: "Task completed",
         failed: "Task failed — review the conversation",
+        taskFinished: "Remind me when a task finishes",
+        taskFinishedHint:
+          "This phone shows a reminder each time a task ends on a paired computer.",
+        saveFailed: "Could not save the notification setting. Please try again.",
       },
       files: {
         title: "Session files",
@@ -1078,9 +1083,13 @@ export const resources = {
         saveFailed: "无法保存语言设置，请重试。",
       },
       notifications: {
+        title: "通知",
         channel: "任务完成提醒",
         completed: "任务已完成",
         failed: "任务失败，请查看会话",
+        taskFinished: "任务结束提醒",
+        taskFinishedHint: "每台已配对电脑上的任务结束时，这台手机都会收到一条提醒。",
+        saveFailed: "无法保存通知设置，请重试。",
       },
       files: {
         title: "会话文件",
