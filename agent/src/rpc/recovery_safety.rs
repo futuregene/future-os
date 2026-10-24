@@ -8,6 +8,7 @@ use super::prompt_helpers::prepare_session_tool_call;
 use crate::session::{Manager, SessionEntry, ENTRY_TYPE_RUN_STARTED, ENTRY_TYPE_TOOL};
 use crate::types::ToolCallResult;
 use anyhow::Result;
+use parking_lot::Mutex;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -15,6 +16,13 @@ use std::collections::{HashMap, HashSet};
 pub(super) struct RecoverySafety {
     unresolved: Vec<String>,
     completed: HashSet<String>,
+    /// Fingerprints of calls the user aborted while they were in flight. Their
+    /// effect is unknown, but only that one operation is questioned: fencing
+    /// the whole session for the user's own stop is not a safety property.
+    aborted: HashSet<String>,
+    /// Operations already warned about in this run. A second attempt of the
+    /// same command is the model acting on the warning, not a new incident.
+    warned: Mutex<HashSet<String>>,
     cwd: String,
     pub(super) history_changed: bool,
 }
@@ -114,42 +122,57 @@ impl RecoverySafety {
             }
             let args = prepare_session_tool_call(&call_cwd, name, &call.function.arguments);
             let key = fingerprint(name, &args, &call_cwd)?;
+            let recorded = results.get(&(run.clone(), id.clone()));
             // A timeout already handled within a settled successful task is
             // not a new recovery incident. Missing results are never excused.
-            let handled = results.contains_key(&(run.clone(), id.clone()))
+            let handled = recorded.is_some()
                 && terminals
                     .get(&run)
                     .is_some_and(|state| state == crate::session::RUN_STATE_COMPLETED);
-            if let Some(Some(completed)) = results.get(&(run.clone(), id.clone())) {
-                if *completed && recovered_runs.contains(&run) {
-                    safety.completed.insert(key);
+            match recorded {
+                Some(ResultState::Recorded) => {
+                    if recovered_runs.contains(&run) {
+                        safety.completed.insert(key);
+                    }
                 }
-            } else if handled {
-                continue;
-            } else if name == "shell" && args["command"].as_str().is_some_and(command_is_read_only)
-            {
-                // Provably read-only: no side effect can be waiting, so this
-                // call does not fence the session. Anything it cannot prove
-                // stays unresolved below.
-                tracing::debug!(
-                    tool_call_id = %id,
-                    "recovery: interrupted read-only shell is not fenced"
-                );
-            } else if name == "write" && write_is_applied(&args) {
-                // This is an observation of the desired complete file, not a
-                // claim that the old process successfully returned. Persist it
-                // so later starts and clients see the same verified fact.
-                let mut result = SessionEntry::new_tool(&id,
-                    "Recovery verified that the file already contains the complete requested content. No write was repeated.");
-                result.name = name.clone();
-                result.tool_args = serde_json::to_string(&args)?;
-                result.meta = Some(json!({"run_id":run,"recovery_verified":true}));
-                verified.push(result);
-                if recovered_runs.contains(&run) {
-                    safety.completed.insert(key);
+                // The user stopping a run is not a crash, and it is not a
+                // success either: the interrupted call is remembered by
+                // fingerprint and questioned once, on its own, later.
+                Some(ResultState::Aborted) => {
+                    safety.aborted.insert(key);
                 }
-            } else {
-                safety.unresolved.push(format!("{name} ({id})"));
+                Some(ResultState::NotExecuted) => {}
+                Some(ResultState::Unknown) | None => {
+                    if handled {
+                        continue;
+                    }
+                    if name == "shell" && args["command"].as_str().is_some_and(command_is_read_only)
+                    {
+                        // Provably read-only: no side effect can be waiting, so
+                        // this call does not fence the session. Anything it
+                        // cannot prove stays unresolved below.
+                        tracing::debug!(
+                            tool_call_id = %id,
+                            "recovery: interrupted read-only shell is not fenced"
+                        );
+                    } else if name == "write" && write_is_applied(&args) {
+                        // This is an observation of the desired complete file,
+                        // not a claim that the old process successfully
+                        // returned. Persist it so later starts and clients see
+                        // the same verified fact.
+                        let mut result = SessionEntry::new_tool(&id,
+                            "Recovery verified that the file already contains the complete requested content. No write was repeated.");
+                        result.name = name.clone();
+                        result.tool_args = serde_json::to_string(&args)?;
+                        result.meta = Some(json!({"run_id":run,"recovery_verified":true}));
+                        verified.push(result);
+                        if recovered_runs.contains(&run) {
+                            safety.completed.insert(key);
+                        }
+                    } else {
+                        safety.unresolved.push(format!("{name} ({id})"));
+                    }
+                }
             }
         }
         if !verified.is_empty() {
@@ -173,6 +196,7 @@ impl RecoverySafety {
         let reason = self.pause_reason().or_else(|| match fingerprint(name, args, &self.cwd) {
             Ok(key) if self.completed.contains(&key) => Some(
                 "[RECOVERY_RECORDED_OPERATION] This operation already has a recorded result in the interrupted task. It was not executed again. Inspect the existing result (which may be a failure); do not treat it as a fresh execution.".to_owned()),
+            Ok(key) if self.aborted.contains(&key) => self.aborted_once(&key),
             Ok(_) => None,
             Err(error) => Some(format!("[RECOVERY_UNCERTAIN] Cannot identify the operation safely: {error}")),
         });
@@ -180,6 +204,16 @@ impl RecoverySafety {
             result,
             is_error: true,
         })
+    }
+
+    /// Warns once per run about the operation the user aborted, then leaves the
+    /// decision to the model: fencing the same command forever would trade a
+    /// session-wide deadlock for a per-command one.
+    fn aborted_once(&self, key: &str) -> Option<String> {
+        if !self.warned.lock().insert(key.to_owned()) {
+            return None;
+        }
+        Some("[RECOVERY_ABORTED_OPERATION] The previous run was stopped while this operation was in flight, so whether it took effect is unknown. Check the result with a read-only command first, and re-run it only if that check shows it did not happen.".to_owned())
     }
 }
 
@@ -451,14 +485,23 @@ fn branch_flag_creates_or_deletes(arg: &str) -> bool {
         .any(|c| matches!(c, 'd' | 'D' | 'm' | 'M' | 'c' | 'C' | 'f' | 'u' | 't'))
 }
 
-/// Some(true): recorded outcome; Some(false): not executed; None: partial/unknown.
-fn result_state(entry: &SessionEntry) -> Option<bool> {
+/// Recorded: settled outcome; NotExecuted: provably never ran; Aborted: the
+/// user stopped the run it belonged to; Unknown: partial or missing outcome.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ResultState {
+    Recorded,
+    NotExecuted,
+    Aborted,
+    Unknown,
+}
+
+fn result_state(entry: &SessionEntry) -> ResultState {
     if entry
         .meta
         .as_ref()
         .is_some_and(|m| m["recovery_verified"] == true)
     {
-        return Some(true);
+        return ResultState::Recorded;
     }
     let mut text = String::new();
     if let Some(content) = &entry.content {
@@ -474,16 +517,16 @@ fn result_state(entry: &SessionEntry) -> Option<bool> {
                     );
                 }
             }
-            _ => return None,
+            _ => return ResultState::Unknown,
         }
     } else {
-        return None;
+        return ResultState::Unknown;
     }
     if text.starts_with("[RECOVERY_") || text.starts_with("[Tool execution cancelled —") {
-        return Some(false);
+        return ResultState::NotExecuted;
     }
     if text.starts_with("[Tool execution lost") {
-        return None;
+        return ResultState::Unknown;
     }
     if let Some(facts) = entry.meta.as_ref().and_then(|m| m.get("shell_result")) {
         return match facts["status"].as_str() {
@@ -494,13 +537,17 @@ fn result_state(entry: &SessionEntry) -> Option<bool> {
                     })
                 }) =>
             {
-                Some(false)
+                ResultState::NotExecuted
             }
-            Some("exited") => Some(true),
-            _ => None,
+            Some("exited") => ResultState::Recorded,
+            // An abort is neither a success nor a crash: claiming it ran
+            // would be a lie, and treating it as an unknown effect would lock
+            // the session for a stop the user asked for.
+            Some("cancelled") => ResultState::Aborted,
+            _ => ResultState::Unknown,
         };
     }
-    Some(true)
+    ResultState::Recorded
 }
 
 #[cfg(test)]
@@ -644,9 +691,14 @@ mod tests {
             .is_none());
     }
 
+    // `cancelled` used to sit in this loop, which made the user pressing stop
+    // fence the whole session. It is an abort the user asked for, not an
+    // unsupervised interruption, and is covered by
+    // `user_aborted_shell_does_not_fence_the_whole_session` and
+    // `aborted_operation_is_warned_once_then_allowed` instead.
     #[test]
-    fn cancelled_or_timed_out_process_can_have_partial_effects() {
-        for status in ["cancelled", "timed_out", "execution_failed"] {
+    fn timed_out_or_failed_process_can_have_partial_effects() {
+        for status in ["timed_out", "execution_failed"] {
             let mut result = SessionEntry::new_tool("call", "command interrupted");
             result.meta = Some(json!({"shell_result":{"status":status,"is_error":true}}));
             let (root, manager) = fixture("shell", json!({"command":"append-once"}), Some(result));
@@ -947,5 +999,191 @@ mod tests {
         let reason = safety.pause_reason().expect("the write is still unknown");
         assert!(reason.contains("write (call)"), "{reason}");
         assert!(!reason.contains("shell"), "{reason}");
+    }
+
+    // ─── user abort is an operation-level question ─────────────────────────
+
+    fn interrupted_shell_fixture(status: &str, command: &str) -> (tempfile::TempDir, Manager) {
+        let mut result = SessionEntry::new_tool("call", "command interrupted");
+        result.meta = Some(json!({"shell_result":{
+            "status":status,
+            "is_error":true,
+            "exit_code":null,
+            "note":"Shell command interrupted by abort",
+        }}));
+        let (root, manager) = fixture("shell", json!({"command":command}), Some(result));
+        manager
+            .append_entries_synced(
+                "session",
+                &[SessionEntry::run_terminal(
+                    "run",
+                    crate::session::RUN_STATE_CANCELLED,
+                    0,
+                    0,
+                    None,
+                )],
+            )
+            .unwrap();
+        (root, manager)
+    }
+
+    #[test]
+    fn user_aborted_shell_does_not_fence_the_whole_session() {
+        // The incident: the user pressed stop, the shell was recorded as
+        // cancelled, and every later tool in that session was refused.
+        let (root, manager) =
+            interrupted_shell_fixture("cancelled", "Remove-Item -Recurse -Force build");
+        for automatic in [true, false] {
+            let safety = RecoverySafety::load(
+                &manager,
+                "session",
+                root.path().to_str().unwrap(),
+                automatic,
+            )
+            .unwrap();
+            assert!(safety.pause_reason().is_none());
+            assert!(safety
+                .before_tool("write", &json!({"path":"missing","content":"new"}))
+                .is_none());
+            assert!(safety
+                .before_tool("shell", &json!({"command":"Get-Date"}))
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn aborted_operation_is_warned_once_then_allowed() {
+        let args = json!({"command":"Remove-Item -Recurse -Force build"});
+        let (root, manager) =
+            interrupted_shell_fixture("cancelled", "Remove-Item -Recurse -Force build");
+        let safety =
+            RecoverySafety::load(&manager, "session", root.path().to_str().unwrap(), false)
+                .unwrap();
+        assert!(safety.pause_reason().is_none());
+        let first = safety
+            .before_tool("shell", &args)
+            .expect("first attempt warns");
+        assert!(first.is_error);
+        assert!(
+            first.result.starts_with("[RECOVERY_ABORTED_OPERATION]"),
+            "{}",
+            first.result
+        );
+        assert!(!first.result.starts_with("[RECOVERY_UNCERTAIN]"));
+        // Same run, same operation: the model acted on the warning, so it may
+        // now re-run the command instead of deadlocking on it forever.
+        assert!(safety.before_tool("shell", &args).is_none());
+        // An unrelated operation never paid for that warning.
+        assert!(safety
+            .before_tool(
+                "shell",
+                &json!({"command":"Remove-Item -Recurse -Force dist"})
+            )
+            .is_none());
+        // A fresh run starts with a fresh warning, not a silent allowance.
+        let reloaded =
+            RecoverySafety::load(&manager, "session", root.path().to_str().unwrap(), false)
+                .unwrap();
+        assert!(reloaded.before_tool("shell", &args).is_some());
+    }
+
+    #[test]
+    fn missing_result_still_fences_even_in_a_cancelled_run() {
+        // No recorded outcome at all is still a crash: the abort excuse needs
+        // a cancelled result, not merely a cancelled run.
+        let (root, manager) = fixture(
+            "shell",
+            json!({"command":"Remove-Item -Recurse -Force build"}),
+            None,
+        );
+        manager
+            .append_entries_synced(
+                "session",
+                &[SessionEntry::run_terminal(
+                    "run",
+                    crate::session::RUN_STATE_CANCELLED,
+                    0,
+                    0,
+                    None,
+                )],
+            )
+            .unwrap();
+        for automatic in [true, false] {
+            let safety = RecoverySafety::load(
+                &manager,
+                "session",
+                root.path().to_str().unwrap(),
+                automatic,
+            )
+            .unwrap();
+            assert!(safety.pause_reason().is_some());
+        }
+    }
+
+    #[test]
+    fn not_started_shell_is_neither_fenced_nor_completed() {
+        let args = json!({"command":"Remove-Item -Recurse -Force build"});
+        let mut result = SessionEntry::new_tool("call", "not started");
+        result.meta = Some(json!({"shell_result":{
+            "status":"not_started",
+            "is_error":true,
+            "attempts":[{"status":"not_started"}],
+        }}));
+        let (root, manager) = fixture("shell", args.clone(), Some(result));
+        let safety =
+            RecoverySafety::load(&manager, "session", root.path().to_str().unwrap(), true).unwrap();
+        assert!(safety.pause_reason().is_none());
+        // Nothing ran, so this is not a recorded operation either: repeating it
+        // is a fresh execution, not a repeat of a settled one.
+        assert!(safety.before_tool("shell", &args).is_none());
+    }
+
+    #[test]
+    fn a_refused_call_never_becomes_a_new_incident() {
+        // The fence's own refusal is stored as the tool result. Reading it
+        // back must not manufacture a second unresolved call, in this design
+        // or any later one.
+        let (root, manager) = fixture(
+            "shell",
+            json!({"command":"append-once"}),
+            Some(SessionEntry::new_tool(
+                "call",
+                "[RECOVERY_UNCERTAIN] The previous operation's effect could not be verified.",
+            )),
+        );
+        let safety =
+            RecoverySafety::load(&manager, "session", root.path().to_str().unwrap(), false)
+                .unwrap();
+        assert!(safety.pause_reason().is_none());
+    }
+
+    #[test]
+    fn lost_tool_result_still_fences_the_session() {
+        let args = json!({"command":"Remove-Item -Recurse -Force build"});
+        let (root, manager) = fixture(
+            "shell",
+            args.clone(),
+            Some(SessionEntry::new_tool(
+                "call",
+                "[Tool execution lost before the result was recorded]",
+            )),
+        );
+        manager
+            .append_entries_synced(
+                "session",
+                &[SessionEntry::run_terminal(
+                    "run",
+                    crate::session::RUN_STATE_CANCELLED,
+                    0,
+                    0,
+                    None,
+                )],
+            )
+            .unwrap();
+        let safety =
+            RecoverySafety::load(&manager, "session", root.path().to_str().unwrap(), false)
+                .unwrap();
+        assert!(safety.pause_reason().is_some());
+        assert!(safety.before_tool("shell", &args).unwrap().is_error);
     }
 }
