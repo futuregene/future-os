@@ -1,10 +1,12 @@
 import { createElement } from "react";
 import { act, create, type ReactTestRenderer } from "react-test-renderer";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { ScrollView, SectionList, StyleSheet, Switch, Text, TextInput } from "react-native";
 import { Button } from "../../../components/Button";
 import { SettingsScreen, TITLED_SETTINGS_PAGES, type SettingsScreenHandle } from "../SettingsScreen";
 import { resources } from "../../../i18n/locales";
 import { SettingsLink, SettingsSwitch, useSettingsStyles } from "../SettingsPrimitives";
+import { getTaskFinishedReminders, setTaskFinishedReminders } from "../../../notifications/preferences";
 import { lightTheme } from "../../../theme/theme";
 import type { DesktopSettings, InstalledSkill, PairedDesktop, ProvidersView } from "../../../remote/types";
 import { peerIconId, PEER_ICONS } from "../../../remote/peerIcons";
@@ -505,6 +507,33 @@ test("preferences auto-load without a persistent refresh button", async () => {
   // is the desktop's own (its Remote page), so the phone does not offer it.
   expect(tree.root.findAllByType(SettingsSwitch)).toHaveLength(3);
   expect(tree.root.findAllByType(Button)).toHaveLength(0);
+});
+
+test("the phone's own screen offers the task-finished reminder, on by default", async () => {
+  await setTaskFinishedReminders(true);
+  await remountPhone();
+  const row = () => toggle("notifications.taskFinished");
+  // Delivered on: a task is the thing the user walked away from.
+  expect(row().props.value).toBe(true);
+  await act(async () => row().props.onChange(false));
+  // The store is what the reminder path reads, and the row follows it.
+  expect(getTaskFinishedReminders()).toBe(false);
+  expect(row().props.value).toBe(false);
+  await act(async () => row().props.onChange(true));
+  expect(getTaskFinishedReminders()).toBe(true);
+  expect(row().props.value).toBe(true);
+});
+
+test("a reminder setting that cannot be saved is reported, and the row stays in effect", async () => {
+  await setTaskFinishedReminders(true);
+  await remountPhone();
+  const setItem = jest.spyOn(AsyncStorage, "setItem").mockRejectedValueOnce(new Error("storage full"));
+  await act(async () => toggle("notifications.taskFinished").props.onChange(false));
+  // The switch must never show a value the store does not hold.
+  expect(getTaskFinishedReminders()).toBe(true);
+  expect(toggle("notifications.taskFinished").props.value).toBe(true);
+  expect(strings()).toContain("notifications.saveFailed");
+  setItem.mockRestore();
 });
 
 test("the official-account entry stays reachable while the desktop is offline", async () => {
