@@ -20,7 +20,7 @@ import type { RemoteClient } from "../../remote/client";
 import { SessionList } from "../SessionList";
 import { DesktopPicker } from "../DesktopPicker";
 import { ActionMenu } from "../../components/ActionMenu";
-import type { MachineSummary } from "../../remote/desktopStatus";
+import type { MachineStatus, MachineSummary } from "../../remote/desktopStatus";
 import { RenameModal } from "../../features/chat/components/RenameModal";
 import { DisconnectedScreen } from "../DisconnectedScreen";
 import { StandbyScreen } from "../StandbyScreen";
@@ -99,6 +99,7 @@ const mockCatalogs = {
   catalogs: [] as {
     desktopId: string;
     label: string;
+    status: MachineStatus;
     sessions: { sessionId: string; threadId: string; title: string; streaming: boolean }[];
   }[],
   machines: [] as MachineSummary[],
@@ -1643,7 +1644,7 @@ describe("several desktops, only some answering", () => {
     )[0]!;
 
   test("a machine that answers keeps the list instead of the phone's red page", () => {
-    mockCatalogs.catalogs = [{ desktopId: "desktop_2", label: "Office", sessions: [elsewhere] }];
+    mockCatalogs.catalogs = [{ desktopId: "desktop_2", label: "Office", status: "connected", sessions: [elsewhere] }];
     rerender();
     act(() => tree.root.findByType(SessionList).props.onTabChange("chat"));
 
@@ -1653,6 +1654,22 @@ describe("several desktops, only some answering", () => {
     expect(rows()).toEqual(["desktop_2"]);
     // The badge is judged on the same two machines the list is.
     expect(tree.root.findByType(ConnectionBadge).props.machines).toHaveLength(2);
+  });
+
+  test("a machine that is still connecting contributes no rows", () => {
+    mockCatalogs.catalogs = [{
+      desktopId: "desktop_2",
+      label: "Office",
+      status: "connecting",
+      sessions: [elsewhere],
+    }];
+    rerender();
+    act(() => tree.root.findByType(SessionList).props.onTabChange("chat"));
+
+    // The catalogue is the last one that machine sent, so those rows are real
+    // conversations on a desktop the phone cannot open yet. The flat view has
+    // nothing of that machine to merge, and the list stays the open machine's.
+    expect(tree.root.findByType(SessionList).props.merged).toBeUndefined();
   });
 
   test("picking a machine that answers shows that machine's list, not a disconnect", () => {

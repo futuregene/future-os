@@ -1,3 +1,4 @@
+import type { MachineStatus } from "./desktopStatus";
 import type { RemoteSession } from "./types";
 
 /**
@@ -14,6 +15,9 @@ import type { RemoteSession } from "./types";
  * A session without a timestamp (a desktop older than that field) sorts *below*
  * every dated row: "unknown age" must not masquerade as "just now". Ties break
  * on a stable key so a poll cannot reshuffle the list under the reader.
+ *
+ * Which machines contribute at all is the other half of the rule: only one that
+ * is `connected` does. See `CatalogEntry.status`.
  */
 
 /** Which desktops the list shows. `null` desktopId means the active one only. */
@@ -23,6 +27,22 @@ export interface CatalogEntry {
   desktopId: string;
   /** The desktop's display label (its `name`, else its id). */
   label: string;
+  /**
+   * How the machine stands right now, as the picker and the badge read it.
+   *
+   * Only a `connected` machine contributes rows. The other three states each
+   * mean the phone is not reading that machine at the moment — `connecting` (the
+   * handshake is still running), `preparing` (its agent is restarting) and
+   * `offline` (nothing is answering) — and the catalogue held here is then the
+   * *last* one it sent, not a list this phone may draw: those rows cannot be
+   * opened, and a tap on one would fail against a machine the header is already
+   * describing as unreachable.
+   *
+   * Dropping the entry instead of marking it would be the same statement made
+   * by absence, and would lose the machine from anything that counts catalogues;
+   * `machines` is where a listed-but-not-answering machine is described.
+   */
+  status: MachineStatus;
   sessions: RemoteSession[];
 }
 
@@ -47,6 +67,10 @@ export function mergeSessions(
   const seen = new Set<string>();
   for (const catalog of catalogs) {
     if (filter.kind === "desktop" && filter.desktopId !== catalog.desktopId) continue;
+    // A machine that is not answering contributes nothing — see `status`. Its
+    // cached rows outlive the connection that delivered them, so leaving them in
+    // would list conversations of a desktop that is connecting or gone.
+    if (catalog.status !== "connected") continue;
     for (const session of catalog.sessions) {
       const key = sessionKey(catalog.desktopId, session.sessionId);
       if (seen.has(key)) continue;
@@ -77,6 +101,8 @@ export function compareSessions(a: MergedSessionRow, b: MergedSessionRow): numbe
  *
  * Shown next to the picker so "one desktop" does not read as "my sessions
  * disappeared" — the same reassurance the desktop app gives in the same spot.
+ * Rows of a machine that is not answering are hidden by neither: they are not
+ * in either list, so the count cannot claim a filter is hiding them.
  */
 export function hiddenSessionCount(catalogs: CatalogEntry[], filter: DesktopFilter): number {
   const total = mergeSessions(catalogs, { kind: "all" }).length;
