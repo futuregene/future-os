@@ -868,6 +868,26 @@ it("reports a failed connect, and reports a failed disconnect the same way", asy
   await online.unmount();
 });
 
+/**
+ * A failed connect is one sentence, not two.
+ *
+ * The rejection this page catches and the machine's own `peer.error` are the
+ * same fact: the re-read after the failed command writes it into the row as
+ * well. Rendering both put the identical red line on screen twice — once under
+ * the form, once under the machine it was about.
+ */
+it("shows a failed connect once, on the machine's own row", async () => {
+  const raw = "Remote handshake failed: no responders: no responders";
+  connectRemotePeer.mockRejectedValue(new Error(raw));
+  listRemotePeers.mockResolvedValue([peer({ connected: false, error: raw })]);
+  const view = await mount();
+  await act(async () => view.rowButton("Connect")!.click());
+  await view.settle();
+
+  expect(view.text().split(en.errorUnreachable).length - 1).toBe(1);
+  await view.unmount();
+});
+
 it("reports a reconnect-all the shell could not carry out", async () => {
   // The pass itself is the shell's, so its failure arrives as a rejection from
   // `onReconnectAll` — this screen's job is to say so rather than to look like

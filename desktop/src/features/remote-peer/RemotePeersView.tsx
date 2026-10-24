@@ -202,6 +202,22 @@ export function RemoteClientSection({
   // The action that was just attempted is the more useful of the two: it is the
   // one the user caused, and the read failure under it would be the older fact.
   const shownError = actionError ?? error;
+  /**
+   * Whether a row below already says the same sentence.
+   *
+   * A failed connect is this section's failure *and* the machine's own state:
+   * the command rejects, and the re-read that follows writes the same failure
+   * into `peer.error`, which the row renders in the same words. So the sentence
+   * appeared twice, one line above the other — once under the folded form, once
+   * under the machine it was about. The row is where it belongs, so the section
+   * line steps aside while a row is already saying it. Compared as the rendered
+   * sentence rather than the raw text, because the two sides report the same
+   * failure in words of their own.
+   */
+  const saidOnRow = shownError !== null
+    && peers.some(peer => !peer.stopped
+      && peer.error !== null
+      && remotePeerErrorText(peer.error, t) === remotePeerErrorText(shownError, t));
 
   return (
     <>
@@ -254,7 +270,7 @@ export function RemoteClientSection({
             : null}
         </div>
 
-        {shownError
+        {shownError && !saidOnRow
           ? (
               // The backend's own words are diagnostics ("Remote handshake
               // failed: no responders: no responders"); the sentence is the
