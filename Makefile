@@ -80,6 +80,19 @@ define copy_win_binaries
 	@node -e "const fs=require('fs'),p=require('path');const src=p.join('target','$(1)'),dst=process.argv[1];fs.mkdirSync(dst,{recursive:true});for(const n of process.argv[2].split(/[\s,]+/).filter(Boolean)){const t=p.join(dst,n+'.exe');fs.copyFileSync(p.join(src,n+'.exe'),t);console.log('  installed '+t)}" "$(PREFIX)" "$(strip $(2) $(3))"
 endef
 
+# Copy the built-in skill bundles into the agent's skills directory on Windows.
+# Same sh.exe reason as copy_win_binaries: `if not exist`, `for /d %%d`, `rmdir`
+# and `xcopy` are cmd builtins, so with Git for Windows on PATH the recipe died
+# with `syntax error: unexpected end of file from 'if' command` before copying
+# anything. Each bundle is removed and copied afresh, which is the "replaced,
+# not merged" result the cmd recipe gave and also what the POSIX branch's
+# rm -rf + ln -s means; the check mark is a JS escape so the command line stays
+# ASCII under every shell and code page. $(1) is the source directory, $(2) the
+# destination.
+define copy_win_skills
+	@node -e "const fs=require('fs'),p=require('path');const [src,dst]=process.argv.slice(1);fs.mkdirSync(dst,{recursive:true});for(const n of fs.readdirSync(src)){const s=p.join(src,n),t=p.join(dst,n);if(!fs.statSync(s).isDirectory())continue;fs.rmSync(t,{recursive:true,force:true});fs.cpSync(s,t,{recursive:true});console.log('  '+String.fromCharCode(0x2713)+' '+n)}" "$(1)" "$(2)"
+endef
+
 install-cli: build-cli
 ifeq ($(OS),windows)
 	$(call copy_win_binaries,release,future)
@@ -152,12 +165,7 @@ endif
 install-skills:
 	git submodule update --init skills
 ifeq ($(OS),windows)
-	@if not exist "$(USERPROFILE)\.future\agent\skills" mkdir "$(USERPROFILE)\.future\agent\skills"
-	@for /d %%d in (skills\builtin\*) do @( \
-		rmdir /s /q "$(USERPROFILE)\.future\agent\skills\%%~nxd" 2>NUL & \
-		xcopy /e /i /y "%%d" "$(USERPROFILE)\.future\agent\skills\%%~nxd" >NUL & \
-		echo   ✓ %%~nxd \
-	)
+	$(call copy_win_skills,skills/builtin,$(USERPROFILE)/.future/agent/skills)
 else
 	@mkdir -p "$${HOME}/.future/agent/skills"
 	@for skill_dir in skills/builtin/*/; do \
