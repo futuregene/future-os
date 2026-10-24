@@ -11,6 +11,15 @@ const mocks = vi.hoisted(() => ({ listAgentProviders: vi.fn() }));
 
 vi.mock("../../integrations/agent/providers", () => ({ listAgentProviders: mocks.listAgentProviders }));
 
+// Opening this page is a "show me the catalogue" moment, so it asks the agent
+// for a background refresh. Pinned here so the wiring cannot be dropped
+// silently; the TTL behaviour itself is covered by modelCatalogRefresh.test.ts.
+const refreshMocks = vi.hoisted(() => ({ requestModelCatalogRefresh: vi.fn() }));
+
+vi.mock("../../integrations/agent/modelCatalogRefresh", () => ({
+  requestModelCatalogRefresh: refreshMocks.requestModelCatalogRefresh,
+}));
+
 const PROVIDERS_VIEW = {
   builtin: [
     { id: "future", name: "FutureOS", baseUrl: "", hasApiKey: true, modelCount: 1, requiresBaseUrl: false },
@@ -53,6 +62,7 @@ const roots: { root: ReturnType<typeof createRoot>; container: HTMLElement }[] =
 beforeEach(() => {
   mocks.listAgentProviders.mockReset();
   mocks.listAgentProviders.mockResolvedValue(PROVIDERS_VIEW);
+  refreshMocks.requestModelCatalogRefresh.mockReset();
 });
 
 afterEach(() => {
@@ -103,6 +113,12 @@ function type(container: HTMLElement, value: string) {
 }
 
 describe("modelsPage layout", () => {
+  it("asks for a background catalogue refresh when the page opens", async () => {
+    await renderPage();
+
+    expect(refreshMocks.requestModelCatalogRefresh).toHaveBeenCalledTimes(1);
+  });
+
   it("groups models by provider display name", async () => {
     const container = await renderPage();
 

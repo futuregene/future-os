@@ -685,3 +685,37 @@ pub async fn sync_future_models() -> Result<SyncFutureModelsResult, crate::Error
     serde_json::from_value::<SyncFutureModelsResult>(future_rpc::decode::response_data(&response))
         .map_err(|error| format!("Future Agent returned invalid sync result: {error}").into())
 }
+
+/// Result of [`request_future_models_refresh`]: whether the agent started a
+/// background catalogue refresh for this call. `false` is not an error — the
+/// agent's backoff window may still be open, another refresh may be running, or
+/// there may be no Future credential at all.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RequestFutureModelsRefreshResult {
+    pub requested: bool,
+}
+
+/// Ask the agent to refresh the Future catalogue **in the background**: the call
+/// returns as soon as the fetch is scheduled, and the refreshed list reaches the
+/// UI later through the agent's `provider_config_changed` event. Used by the
+/// model pickers, which must open immediately instead of waiting on the platform.
+/// Best-effort: an unavailable agent yields `requested: false` rather than an
+/// error, because a picker opening is not a place to report connection failures.
+pub async fn request_future_models_refresh(
+) -> Result<RequestFutureModelsRefreshResult, crate::Error> {
+    let mut client = match connect_agent().await {
+        Ok(client) => client,
+        Err(_) => return Ok(RequestFutureModelsRefreshResult { requested: false }),
+    };
+    let response = client
+        .execute_command(base_command("request_future_models_refresh", String::new()))
+        .await
+        .map_err(|status| map_rpc_error("Unable to request a Future Agent model refresh", status))?
+        .into_inner()
+        .ok_or_rpc_error("Future Agent rejected the model refresh request.")?;
+    serde_json::from_value::<RequestFutureModelsRefreshResult>(future_rpc::decode::response_data(
+        &response,
+    ))
+    .map_err(|error| format!("Future Agent returned an invalid refresh result: {error}").into())
+}

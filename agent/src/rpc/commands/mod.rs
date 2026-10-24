@@ -108,6 +108,13 @@ pub fn handle_command_internal(state: &AppState, cmd: RpcCommand) -> String {
         return providers::handle_sync_future_models(state, id);
     }
 
+    // Background catalogue refresh for the model pickers: starts the same
+    // single-flight fetch `Registry::new()` uses and returns immediately, so
+    // opening a picker never waits on the platform.
+    if cmd_type == "request_future_models_refresh" {
+        return providers::handle_request_future_models_refresh(id);
+    }
+
     // Persist the onboarding model-picker's choice as the global default model.
     if cmd_type == "set_default_model" {
         return providers::handle_set_default_model(state, &cmd, id);
