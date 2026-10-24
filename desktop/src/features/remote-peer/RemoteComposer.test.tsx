@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import type { RemotePeer } from "./remotePeerClient";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -102,7 +103,7 @@ async function mount(props: {
   onCompact?: () => void;
   onCreated?: (sessionId: string) => void;
   onSent?: () => void;
-  peer?: typeof peer;
+  peer?: RemotePeer;
   sessionId?: string;
   streaming?: boolean;
   workspaceId?: string | null;
@@ -1387,4 +1388,78 @@ it("abandons a recovery that settles after unmount", async () => {
   // touching state, and the outbox is exactly as the recovery found it (a state
   // update after unmount is the branch these guards exist to avoid).
   expect(getRemoteOutbox("desktop_a", "sess_1").prompt).toBeNull();
+});
+
+/**
+ * A machine another paired device holds.
+ *
+ * The host refuses this client's business commands with `superseded` for as long
+ * as someone else drives it, so every write this composer offers — the prompt,
+ * the staged file, the `/compact` request — is closed here rather than sent and
+ * refused afterwards. The reason travels with the closed controls; the sentence
+ * that explains the machine is the notice the conversation frame puts above this
+ * composer.
+ */
+const heldPeer: RemotePeer = { ...peer, control: "standby", holder: { name: "Hui's phone" } };
+
+it("closes send while another device holds the machine, and says why", async () => {
+  const view = await mount({ peer: heldPeer });
+  await view.type("hello host");
+  const send = view.button("Send")!;
+  expect(send.disabled).toBe(true);
+  expect(send.title).toContain("sending is closed");
+
+  // Enter reaches the same function as the button, so the guard has to hold
+  // there too: a keypress that produced a command the host refuses would be the
+  // same error in a different shape.
+  await view.press("Enter");
+  await settle();
+  expect(prompt).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+it("reopens send once this computer takes the machine back", async () => {
+  const view = await mount({ peer: heldPeer });
+  await view.type("hello host");
+  expect(view.button("Send")!.disabled).toBe(true);
+
+  // The shell re-reads the machine after a takeover; the peer list then reports
+  // this computer driving it again, and the composer is re-rendered (not
+  // remounted) with that fact.
+  await view.rerender({ peer: { ...peer, control: "active" } });
+  const send = view.button("Send")!;
+  expect(send.disabled).toBe(false);
+  await act(async () => send.click());
+  await settle();
+  expect(prompt).toHaveBeenCalledTimes(1);
+  await view.unmount();
+});
+
+it("closes attachment staging while another device holds the machine", async () => {
+  const view = await mount({ peer: heldPeer });
+  const attach = view.button("Attach")!;
+  expect(attach.disabled).toBe(true);
+  expect(attach.title).toContain("sending is closed");
+  await act(async () => attach.click());
+  // Nothing was staged on a host that would have refused the upload.
+  expect(upload).not.toHaveBeenCalled();
+  await view.unmount();
+});
+
+it("leaves compact out of the `/` menu while another device holds the machine", async () => {
+  const onCompact = vi.fn();
+  const view = await mount({ canCompact: true, conversations, onCompact, peer: heldPeer });
+  // A bare `/` opens the whole menu: what the host could be asked for, less the
+  // commands it would refuse. Typing `/compact` instead would filter the menu
+  // down to nothing and prove only that the word matched no row.
+  await view.type("/");
+  await settle();
+  // The menu is still there — referencing a conversation writes nothing — and
+  // the command that would ask the host to compact is not in it.
+  expect(view.text()).toContain("Reference a conversation");
+  expect(view.text()).not.toContain("Compact context");
+  await view.press("Escape");
+  await settle();
+  expect(onCompact).not.toHaveBeenCalled();
+  await view.unmount();
 });
