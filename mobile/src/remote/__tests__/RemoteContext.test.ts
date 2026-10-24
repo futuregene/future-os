@@ -3,6 +3,7 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import { prepareTaskNotifications } from "../../notifications/taskNotifications";
 import { DesktopScope, RemoteProvider, useRemote, useRemoteControls, type RemoteControls } from "../RemoteContext";
 import { claimPairingCode, serverRevoke } from "../pairing";
+import { mergeSessions } from "../mergeSessions";
 import { loadCredentials, loadPairedDesktops, savePendingRevoke } from "../storage";
 import { currentAppAlert } from "../../components/appAlerts";
 import type { DownloadInfo, HistoryAttachment, Presence, RemoteCredentials, RemoteSession } from "../types";
@@ -585,6 +586,34 @@ describe("RemoteProvider over several desktops", () => {
     expect(remote.catalogs.machines.map((machine) => machine.desktopId)).toEqual(["desktop_2"]);
     expect(remote.catalogs.machines[0]!.status).toBe("connected");
     expect(remote.catalogs.machines[0]!.label).toBe("Office");
+  });
+
+  test("a machine the phone cannot read keeps its catalogue but contributes no rows", async () => {
+    await mount();
+    await settle();
+    const office = clientFor("desktop_2");
+    act(() => { office.callbacks.onPresence?.(onlinePresence("desktop_2") as never); });
+    await settle();
+
+    const statusOf = (desktopId: string) =>
+      remote.catalogs.catalogs.find((entry) => entry.desktopId === desktopId)?.status;
+    const listed = () =>
+      mergeSessions(remote.catalogs.catalogs, { kind: "all" }).map((row) => row.desktopId);
+
+    expect(statusOf("desktop_2")).toBe("connected");
+    expect(listed()).toContain("desktop_2");
+    // The open machine's socket is up but no heartbeat has been heard from it,
+    // so it is not a machine the list may draw: its catalogue stays here for the
+    // moment it answers again.
+    expect(statusOf("desktop_1")).toBe("offline");
+    expect(listed()).not.toContain("desktop_1");
+
+    // A handshake in flight is the same statement — the rows come with the
+    // connection, not before it.
+    act(() => { office.callbacks.onConnectionState?.("reconnecting" as never); });
+    await settle();
+    expect(statusOf("desktop_2")).toBe("connecting");
+    expect(listed()).toEqual([]);
   });
 
   test("a machine another device takes over drops out of the merged list at once", async () => {

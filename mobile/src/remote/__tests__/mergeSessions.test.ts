@@ -1,14 +1,19 @@
 import type { CatalogEntry, DesktopFilter } from "../mergeSessions";
 import { describe, expect, it } from "@jest/globals";
 import { hiddenSessionCount, mergeSessions, sessionKey } from "../mergeSessions";
+import type { MachineStatus } from "../desktopStatus";
 import type { RemoteSession } from "../types";
 
 function session(overrides: Partial<RemoteSession> & { sessionId: string }): RemoteSession {
   return { title: overrides.sessionId, streaming: false, threadId: overrides.sessionId, ...overrides };
 }
 
-function catalog(desktopId: string, sessions: RemoteSession[]): CatalogEntry {
-  return { desktopId, label: desktopId, sessions };
+function catalog(
+  desktopId: string,
+  sessions: RemoteSession[],
+  status: MachineStatus = "connected",
+): CatalogEntry {
+  return { desktopId, label: desktopId, status, sessions };
 }
 
 const ALL: DesktopFilter = { kind: "all" };
@@ -87,6 +92,35 @@ describe("mergeSessions", () => {
   /** A desktop that has not answered yet contributes nothing, not stale rows. */
   it("omits a desktop with no catalogue", () => {
     expect(mergeSessions([catalog("a", [])], ALL)).toEqual([]);
+  });
+
+  /**
+   * A machine that is not answering contributes nothing either — its cached rows
+   * outlive the connection that delivered them.
+   *
+   * The catalogue a phone holds for a desktop is the last one it sent, and it is
+   * still here after the socket goes: a row drawn from it names a conversation
+   * this phone cannot open until that machine answers again. Only `connected`
+   * draws, so `connecting` (a handshake in flight), `preparing` (the desktop's
+   * agent restarting) and `offline` all leave the list to the machines that can
+   * actually be read.
+   */
+  it("draws only machines that are connected", () => {
+    const catalogs = [
+      catalog("up", [session({ sessionId: "up1", lastMessageAt: 100 })], "connected"),
+      catalog("dialing", [session({ sessionId: "dial1", lastMessageAt: 300 })], "connecting"),
+      catalog("warming", [session({ sessionId: "warm1", lastMessageAt: 200 })], "preparing"),
+      catalog("gone", [session({ sessionId: "gone1", lastMessageAt: 400 })], "offline"),
+    ];
+
+    expect(mergeSessions(catalogs, ALL).map(row => row.session.sessionId)).toEqual(["up1"]);
+    // Naming a machine that is not answering shows none of its rows either: the
+    // screen's own answer for that machine is its status, not its old list.
+    expect(mergeSessions(catalogs, { kind: "desktop", desktopId: "gone" })).toEqual([]);
+    // And the hidden count speaks about the filter, never about a machine nobody
+    // can read: the rows of a down machine are in neither list.
+    expect(hiddenSessionCount(catalogs, { kind: "all" })).toBe(0);
+    expect(hiddenSessionCount(catalogs, { kind: "desktop", desktopId: "up" })).toBe(0);
   });
 
   it("de-duplicates a session that appears twice in one catalogue", () => {

@@ -301,6 +301,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       catalogs: [{
         desktopId,
         label: pairedDesktop?.name ?? desktopId,
+        // The harness always renders a machine that is answering: its catalogue
+        // is the one this file builds, not a mirror of a connection that could
+        // be down. The merged list draws only `connected` machines.
+        status: "connected" as const,
         sessions,
       }],
       // `?peers=1` gives the second paired desktop a live connection, the state

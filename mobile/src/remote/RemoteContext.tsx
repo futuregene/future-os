@@ -856,6 +856,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
     const catalogEntries: CatalogEntry[] = others.map((entry) => ({
       desktopId: entry.desktopId,
       label: entry.label,
+      // The same judgement the picker's row and the badge make, from the same
+      // leaves: a machine that is not `connected` keeps its last catalogue here,
+      // but the merged list does not draw it (see `CatalogEntry.status`).
+      status: machineStatusOf(entry),
       sessions: entry.catalog.sessions,
     }));
     // The open machine contributes through its own runtime rather than a second
@@ -864,6 +868,10 @@ export function RemoteProvider({ children }: PropsWithChildren) {
       catalogEntries.push({
         desktopId: activeRuntime.desktopId,
         label: activeRuntime.label,
+        // The open machine is judged like any other, so a list that is showing
+        // several machines cannot hold one machine's rows under a status its own
+        // header contradicts.
+        status: machineStatusOf(activeRuntime),
         sessions: activeRuntime.catalog.sessions,
       });
     const machines: MachineSummary[] = others.map((entry) => ({
