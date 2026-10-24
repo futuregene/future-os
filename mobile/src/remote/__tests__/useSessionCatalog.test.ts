@@ -1058,7 +1058,7 @@ describe("useSessionCatalog", () => {
     expect(result.current.unreadSessions.has("other")).toBe(false);
   });
 
-  test("setSessionPinned reorders pinned sessions to the top", async () => {
+  test("setSessionPinned sends the pin and reorders pinned sessions to the top", async () => {
     render();
     act(
       () =>
@@ -1071,14 +1071,52 @@ describe("useSessionCatalog", () => {
     await act(async () => {
       await result.current.setSessionPinned("b", "thread-b", true);
     });
+    expect(request).toHaveBeenLastCalledWith(
+      { type: "set_session_pinned", sessionId: "b", threadId: "thread-b", pinned: true },
+      "b",
+    );
     expect(result.current.sessions.map((s) => s.sessionId)).toEqual(["b", "a"]);
+    // Unpinning is the same command from the other side. The optimistic reorder
+    // is a stable partition, so the row keeps its place until the desktop's own
+    // ordering arrives in the next snapshot — the flag is what must move now.
+    request.mockResolvedValueOnce({ data: {} });
+    await act(async () => {
+      await result.current.setSessionPinned("b", "thread-b", false);
+    });
+    expect(request).toHaveBeenLastCalledWith(
+      { type: "set_session_pinned", sessionId: "b", threadId: "thread-b", pinned: false },
+      "b",
+    );
+    expect(result.current.sessions.find((s) => s.sessionId === "b")?.pinned).toBe(false);
+    act(() =>
+      void result.current.applySessionSnapshot([session("a", "running"), session("b", "running")]),
+    );
+    expect(result.current.sessions.map((s) => s.sessionId)).toEqual(["a", "b"]);
   });
 
-  test("setSessionPinned ignores empty ids", async () => {
+  /**
+   * A pin is a command with a caller waiting on it, so a row this store cannot
+   * address is refused rather than skipped: resolving would tell the caller the
+   * desktop took the pin. `deleteSession` and `setWorkspacePinned` answer the
+   * same way, and the reader's only way to learn a tap did nothing is that
+   * rejection.
+   */
+  test("setSessionPinned refuses an empty id instead of resolving", async () => {
     render();
-    await act(async () => {
-      await result.current.setSessionPinned("", "", true);
-    });
+    await expect(result.current.setSessionPinned("", "", true))
+      .rejects.toThrow("Session unavailable");
+    // The desktop's own id for the row, which a session notice can lack (see
+    // `onFinished`'s `threadId: ""`): the session id alone cannot address it.
+    await expect(result.current.setSessionPinned("s1", "", true))
+      .rejects.toThrow("Session unavailable");
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  test("setSessionPinned refuses to answer for a missing connection", async () => {
+    render();
+    clientRef.current = null;
+    await expect(result.current.setSessionPinned("s1", "thread-s1", true))
+      .rejects.toThrow("Session unavailable");
     expect(request).not.toHaveBeenCalled();
   });
 
