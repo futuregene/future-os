@@ -462,8 +462,10 @@ function PeerRow({
                 // Its own tint, not the card's: the card sits on
                 // `surface-subtle`, where a semantic ink lands at 4.38:1. The
                 // `bg-<family>-soft text-<family>` pair is what the palette
-                // contract holds to AA.
-                <div className="mt-1 rounded bg-warning-soft px-1.5 py-0.5 text-xs text-warning" data-testid="peer-held">
+                // contract holds to AA. Sized to its text (`w-fit`): as a plain
+                // block it painted the whole text column, reading as a banner
+                // rather than a label on the row.
+                <div className="mt-1 w-fit max-w-full rounded bg-warning-soft px-1.5 py-0.5 text-xs text-warning" data-testid="peer-held">
                   {holderName ? t("heldBy", { name: holderName }) : t("heldByUnknown")}
                 </div>
               )
@@ -475,7 +477,7 @@ function PeerRow({
               runtime's diagnostic text. */}
           {peer.error && !peer.stopped
             ? (
-                <div className="mt-1 rounded bg-danger-soft px-1.5 py-0.5 text-xs text-danger" title={peer.error}>
+                <div className="mt-1 w-fit max-w-full rounded bg-danger-soft px-1.5 py-0.5 text-xs text-danger" title={peer.error}>
                   {remotePeerErrorText(peer.error, t)}
                 </div>
               )
