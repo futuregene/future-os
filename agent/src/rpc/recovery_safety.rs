@@ -1109,38 +1109,14 @@ mod tests {
         assert!(reloaded.before_tool("shell", &args).is_some());
     }
 
-    #[test]
-    fn missing_result_still_fences_even_in_a_cancelled_run() {
-        // No recorded outcome at all is still a crash: the abort excuse needs
-        // a cancelled result, not merely a cancelled run.
-        let (root, manager) = fixture(
-            "shell",
-            json!({"command":"Remove-Item -Recurse -Force build"}),
-            None,
-        );
-        manager
-            .append_entries_synced(
-                "session",
-                &[SessionEntry::run_terminal(
-                    "run",
-                    crate::session::RUN_STATE_CANCELLED,
-                    0,
-                    0,
-                    None,
-                )],
-            )
-            .unwrap();
-        for automatic in [true, false] {
-            let safety = RecoverySafety::load(
-                &manager,
-                "session",
-                root.path().to_str().unwrap(),
-                automatic,
-            )
-            .unwrap();
-            assert!(safety.pause_reason().is_some());
-        }
-    }
+    // A test named `missing_result_still_fences_even_in_a_cancelled_run` lived
+    // here. It built "no result at all" with a `RUN_STATE_CANCELLED` terminal and
+    // asserted the session fences — that folded a user stop into the crash case,
+    // which is exactly the behaviour this file no longer has. A missing result
+    // after a *crash* is still fenced by
+    // `missing_result_after_a_restart_still_fences_the_session`, and a missing
+    // result after a user stop is covered by
+    // `missing_result_in_a_user_stopped_run_is_questioned_once_not_fenced`.
 
     #[test]
     fn not_started_shell_is_neither_fenced_nor_completed() {
