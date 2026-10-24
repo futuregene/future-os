@@ -10,7 +10,7 @@ import type { ToolTargetResolver } from "./types";
 import { ToolRow } from "./ToolRow";
 import { ThinkingRow } from "./ThinkingRow";
 import { CompactionDivider } from "./MessageStatus";
-import { ROW_HIT_SLOP } from "./messageUtils";
+import { ROW_HIT_SLOP } from "./touchTargets";
 
 /** The two slice kinds a folded step run is made of. */
 type StepSegment = Extract<TimelineSegment, { kind: "thinking" | "tool"; }>;

@@ -255,6 +255,10 @@ python3 scripts/screenshots/capture.py check-upright-mobile chat
 
 片段按平台名挂到对应表下，同名场景以片段为准（可用于临时覆盖）；平台名写错或结构不对会直接报错，不会静默丢掉整段场景。`make test-screenshot-harness` 钉住了这三条规则。
 
+**场景可以有自己的 `ready`，这是让「就绪」不再是竞态的办法。** `capture.py` 传的是 `spec.get("ready", config["ready"])`，所以比「界面已绘制」要求更多的场景可以自己说：深色窗口的主题选择器要断言 `document.documentElement` 带 `dark`，于是它的就绪条件里就包含这个 class，而不是靠一个「够长」的 `wait` 去赌冷启动。条件写进 `ready`，断言仍然是断言。
+
+**截图判断不了 `hitSlop`。** `react-native-web` 不实现它——用 `elementFromPoint` 探到的是绘制盒——所以只扩大触控区域的移动端修复，在截图和 `TOUCH` 探针里都看不见。这类改动由单测守（`mobile/src/features/chat/messages/touchTargets.ts`，断言在 `foldedRowTouchTargets.test.ts`），真实效果只能在设备上看。不要靠「把绘制盒撑大」让截图好看：那改的是设计，不是命中区。
+
 `desktop/shot/prefs.ts`（在 `main.tsx` 之前加载）负责固定那些「在 import 时就被读走」的偏好：`?lang=en`、`?theme=dark|light|system`、`?palette=<主题 id>`（见 `lib/theme.ts` 的 `THEME_PALETTES`）；它同时给出默认值（zh / light / FutureOS），所以切换配色主题的场景不会渗到同一轮后面的截图里，深色系统的机器也仍然拍到多数用户看到的画面。`?settings=key:value,...` 用来在启动前预置应用设置；`?remoteSlowRead=1` 会把对端主机的回答压慢，这是截图唯一能拍到"读取还在途中"那一刻的办法（例如模型控件在对端回答之前的样子）；`mobile/shot/mock/shareIntent.ts` 读 `?share=1`，好让分享面板只出现在分享相关场景里。
 
 ### 指针指示与标注

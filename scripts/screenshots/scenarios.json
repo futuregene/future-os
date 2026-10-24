@@ -3036,7 +3036,8 @@
           {
             "shot": "d-settings-themes-dark.png"
           }
-        ]
+        ],
+        "ready": "document.documentElement.classList.contains('dark') && !!document.querySelector('[aria-label]')"
       },
       "settings-shortcuts": {
         "note": "Settings → Keyboard shortcuts without the two paragraphs that used to explain the key levels and the terminal's rule. The page is the search box, the reset button and the list; nothing above the list has to be read first.",
