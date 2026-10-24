@@ -384,7 +384,11 @@ export function MergedRows({
           ? (
               <button
                 aria-label={t("activityRail.recentShowMore", { count: recentMore })}
-                className="mt-1 flex h-7 w-full items-center justify-center rounded-md border border-line-soft bg-surface-subtle text-xs font-medium text-accent transition-colors hover:bg-surface"
+                // Accent ink on its own soft fill: the palette contract holds
+                // that pair to AA, whereas `surface-subtle` left it short in six
+                // palettes. The hover darkens the tint instead of swapping the
+                // surface, which keeps the label on a background that is checked.
+                className="mt-1 flex h-7 w-full items-center justify-center rounded-md border border-line-soft bg-accent-soft text-xs font-medium text-accent transition-colors hover:brightness-95"
                 data-testid="recent-show-more"
                 onClick={onShowMoreRecent}
                 type="button"
