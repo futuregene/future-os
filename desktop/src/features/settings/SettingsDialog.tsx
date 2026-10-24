@@ -170,10 +170,13 @@ export function SettingsDialog({
               test-build hint stays here (release builds show nothing). The hint
               carries its own soft fill: the nav behind it is `surface-subtle`,
               where the warning ink lands at 4.49:1 in one palette, just under
-              AA — the palette contract covers `bg-warning-soft text-warning`. */}
+              AA — the palette contract covers `bg-warning-soft text-warning`.
+              Sized to its text (`w-fit`): one word in a block element painted
+              the whole 184px nav column and read as a band, not a label — the
+              same warning chip the About page shows as a `Badge`. */}
           {build.data && !build.data.isRelease
             ? (
-                <div className="mt-3 rounded bg-warning-soft px-2 py-1 text-xs text-warning">{t("dialog.testBuild")}</div>
+                <div className="mt-3 w-fit max-w-full rounded bg-warning-soft px-2 py-1 text-xs text-warning">{t("dialog.testBuild")}</div>
               )
             : null}
         </nav>
