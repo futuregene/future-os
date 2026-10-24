@@ -647,7 +647,13 @@ export function useSessionCatalog(
   const setSessionPinned = useCallback(
     async (sessionId: string, threadId: string, pinned: boolean) => {
       const client = clientRef.current;
-      if (!client || !sessionId || !threadId) return;
+      // A row this store cannot address is refused, never skipped. Resolving
+      // here would tell the caller the desktop took the pin, and the caller's
+      // `catch` is the only thing that can tell the reader the tap did nothing —
+      // `deleteSession` and `setWorkspacePinned` answer the same way. `threadId`
+      // alone can go missing: a session notice carries `threadId: ""` (see
+      // `onFinished`), and the session id cannot address the desktop's row.
+      if (!client || !sessionId || !threadId) throw new Error("Session unavailable");
       const epoch = catalogEpoch.current;
       await client.request({ type: "set_session_pinned", sessionId, threadId, pinned }, sessionId);
       if (clientRef.current !== client || catalogEpoch.current !== epoch) return;
