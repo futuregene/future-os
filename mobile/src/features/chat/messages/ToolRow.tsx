@@ -6,7 +6,8 @@ import type { TimelineToolRow } from "../../../remote/types";
 import { useTheme } from "../../../theme/ThemeContext";
 import { useStyles } from "./messageStyles";
 import type { ToolTargetResolver } from "./types";
-import { ROW_HIT_SLOP, toolKind, ToolGlyph, toolLabel, failedToolLabel, toolDetail } from "./messageUtils";
+import { toolKind, ToolGlyph, toolLabel, failedToolLabel, toolDetail } from "./messageUtils";
+import { ROW_HIT_SLOP } from "./touchTargets";
 import type { ToolKind } from "./messageUtils";
 
 /**

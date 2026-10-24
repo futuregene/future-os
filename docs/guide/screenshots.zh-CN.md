@@ -247,13 +247,17 @@ python3 scripts/screenshots/capture.py check-upright-mobile chat
 - **点不到的状态用 `eval`。** 只在悬停时出现的控件，需要先对它的容器加一个 `hover` 步骤（否则驱动会报告目标尺寸为 0，而不是去点页面角落）。例如对话内搜索是 ⌘F 打开的，驱动没法把它当按键发出去，所以场景改为访问 `?press=meta%2Bf`，由 `desktop/shot/main.tsx` 把快捷键派发给真实的 window 监听器。
 - **`eval` 里断言就是测试。** 步骤里的 `eval` 抛错会让这次截图以非零退出码失败（和点不到目标一样计入 `step(s) could not reach their target`），所以「界面必须处于某状态」写成 `eval` 断言才有意义：`if (document.body.innerText.includes('正在生成')) throw new Error('…');`。驱动内部自己的探测（`ready`、可选的元素读取）不在此列，不会因为读不到就判失败。
 
-**分片文件 `scenarios.d/`：** 两个 session 同时给不同平台加场景时，不要都改 `scenarios.json`（后写的会覆盖先写的）。改成在 `scripts/screenshots/scenarios.d/*.json` 各写一个片段，`capture.py` 启动时按文件名顺序合并到共享表上：
+**分片文件 `scenarios.d/`：** 两个 session 同时给不同平台加场景时，不要都改 `scenarios.json`（后写的会覆盖先写的）。改成在 `scripts/screenshots/scenarios.d/` 各写一个片段，`capture.py` 启动时按文件名顺序合并到共享表上：
 
 ```json
 { "mobile": { "audit-settings-bottom": { "steps": [ { "wait": 900 }, { "shot": "m-audit-settings-bottom.png" } ] } } }
 ```
 
 片段按平台名挂到对应表下，同名场景以片段为准（可用于临时覆盖）；平台名写错或结构不对会直接报错，不会静默丢掉整段场景。`make test-screenshot-harness` 钉住了这三条规则。
+
+**场景可以有自己的 `ready`，这是让「就绪」不再是竞态的办法。** `capture.py` 传的是 `spec.get("ready", config["ready"])`，所以比「界面已绘制」要求更多的场景可以自己说：深色窗口的主题选择器要断言 `document.documentElement` 带 `dark`，于是它的就绪条件里就包含这个 class，而不是靠一个「够长」的 `wait` 去赌冷启动。条件写进 `ready`，断言仍然是断言。
+
+**截图判断不了 `hitSlop`。** `react-native-web` 不实现它——用 `elementFromPoint` 探到的是绘制盒——所以只扩大触控区域的移动端修复，在截图和 `TOUCH` 探针里都看不见。这类改动由单测守（`mobile/src/features/chat/messages/touchTargets.ts`，断言在 `foldedRowTouchTargets.test.ts`），真实效果只能在设备上看。不要靠「把绘制盒撑大」让截图好看：那改的是设计，不是命中区。
 
 `desktop/shot/prefs.ts`（在 `main.tsx` 之前加载）负责固定那些「在 import 时就被读走」的偏好：`?lang=en`、`?theme=dark|light|system`、`?palette=<主题 id>`（见 `lib/theme.ts` 的 `THEME_PALETTES`）；它同时给出默认值（zh / light / FutureOS），所以切换配色主题的场景不会渗到同一轮后面的截图里，深色系统的机器也仍然拍到多数用户看到的画面。`?settings=key:value,...` 用来在启动前预置应用设置；`?remoteSlowRead=1` 会把对端主机的回答压慢，这是截图唯一能拍到"读取还在途中"那一刻的办法（例如模型控件在对端回答之前的样子）；`mobile/shot/mock/shareIntent.ts` 读 `?share=1`，好让分享面板只出现在分享相关场景里。
 

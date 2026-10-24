@@ -95,6 +95,16 @@ const FLOORS: Array<[string, string, number]> = [
   ["danger", "surface", 4.5],
   ["warning", "surface", 4.5],
   ["info", "surface", 4.5],
+  // `bg-<family>-soft text-<family>` is the app's chip / callout / error-row
+  // pattern (47 call sites), so each ink also has to clear AA on its own soft
+  // fill, not only on `surface`. Before these floors the pair sat at 3.43:1
+  // (dracula danger) to 4.49:1 (nord warning) in 49 renditions; the fix moved
+  // the ink by at most 4% lightness, or the tint, and never the hue.
+  ["accent", "accent-soft", 4.5],
+  ["success", "success-soft", 4.5],
+  ["danger", "danger-soft", 4.5],
+  ["warning", "warning-soft", 4.5],
+  ["info", "info-soft", 4.5],
 ];
 
 describe("theme palettes", () => {

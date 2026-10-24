@@ -227,3 +227,16 @@ export const layout = {
   formMaxWidth: 560,
   dialogMaxWidth: 420,
 } as const;
+
+/**
+ * The `hitSlop` that lifts a control drawn `drawn` tall to the touch target.
+ *
+ * A row or chip that hugs its text is the only way into what it opens, but the
+ * platform's minimum is `layout.touchTarget`. `react-native-web` ignores
+ * `hitSlop`, so a capture cannot show the result — the arithmetic is the
+ * evidence, which is why it lives here once instead of in each control.
+ */
+export function slopToTouchTarget(drawn: number, target: number = layout.touchTarget) {
+  const slop = Math.max(0, Math.ceil((target - drawn) / 2));
+  return { top: slop, bottom: slop };
+}

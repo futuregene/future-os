@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Pressable, Text, View } from "react-native";
 import { useTheme } from "../../../theme/ThemeContext";
 import { useStyles } from "./messageStyles";
-import { ROW_HIT_SLOP } from "./messageUtils";
+import { ROW_HIT_SLOP } from "./touchTargets";
 
 /**
  * Inline thinking block inside a reply bubble. The mobile product decision

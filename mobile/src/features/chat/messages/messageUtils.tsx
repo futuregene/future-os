@@ -4,7 +4,6 @@ import { useTranslation } from "react-i18next";
 import { AppState, Text, View } from "react-native";
 import { TimelineVisibleContext } from "../../../components/PausedTimeline";
 import { basename } from "../../../remote/localPath";
-import { spacing } from "../../../theme/tokens";
 import { useTheme } from "../../../theme/ThemeContext";
 import { useStyles } from "./messageStyles";
 
@@ -15,18 +14,6 @@ export function formatDuration(durationMs: number): string {
   if (totalSeconds < 60) return `${totalSeconds}s`;
   return `${Math.floor(totalSeconds / 60)}m ${totalSeconds % 60}s`;
 }
-
-/**
- * A step row draws as one muted 20px line to stay out of the reader's way, but
- * it is also a control. Extending the touch area vertically reaches the 44px
- * `layout.touchTarget` without giving the row back the height it was folded to
- * save — the visual line stays 20px, the tappable one is 44px.
- *
- * 12 a side, not 8: 20 + 8 + 8 left the target at 36px, which measured short of
- * the target every other control in the app keeps (the copy button beside it
- * reaches 44 from a 28px box with the same arithmetic).
- */
-export const ROW_HIT_SLOP = { top: spacing.md, bottom: spacing.md } as const;
 
 export function RunIndicator({ startedAt }: { startedAt?: number; }) {
   const styles = useStyles();

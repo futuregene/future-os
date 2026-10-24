@@ -392,8 +392,8 @@ Three platform-level knobs are worth knowing:
 **Fragments in `scenarios.d/`:** when two sessions add scenarios for different
 platforms at the same time, neither edits `scenarios.json` (the later write would
 lose the other's work). Each writes a fragment under
-`scripts/screenshots/scenarios.d/*.json` instead, and `capture.py` merges those on
-top of the shared table at startup, in filename order:
+`scripts/screenshots/scenarios.d/` instead, and `capture.py` merges those on top
+of the shared table at startup, in filename order:
 
 ```json
 { "mobile": { "audit-settings-bottom": { "steps": [ { "wait": 900 }, { "shot": "m-audit-settings-bottom.png" } ] } } }
@@ -403,6 +403,21 @@ A fragment hangs its entries under the platform it names and wins over a
 same-named entry (useful for a temporary override). A wrong platform name or a
 malformed fragment is an error rather than a silently empty capture.
 `make test-screenshot-harness` pins those rules.
+
+**A per-scenario `ready` is how readiness stops being a race.** `capture.py`
+passes `spec.get("ready", config["ready"])`, so a scenario that needs more than
+"the app painted something" can say so: the dark-window theme picker asserts
+`document.documentElement` carries `dark`, so its readiness includes that class
+instead of relying on a `wait` long enough to cover a cold bundle. Put the
+condition in `ready` and keep the assertion as the assertion.
+
+**What a capture cannot judge: `hitSlop`.** `react-native-web` does not implement
+it — an `elementFromPoint` probe returns the drawn box — so a mobile fix that
+only enlarges the touch area is invisible to both screenshots and the `TOUCH`
+probe. Those are held by unit tests instead (`mobile/src/features/chat/messages/
+touchTargets.ts`, asserted in `foldedRowTouchTargets.test.ts`), and the real
+effect is observable on a device only. Do not "fix" such a scene by widening the
+drawn box: that changes the design, not the target.
 
 `desktop/shot/prefs.ts` (loaded before `main.tsx`) pins the preferences that are
 read at import time: `?lang=en`, `?theme=dark|light|system` and

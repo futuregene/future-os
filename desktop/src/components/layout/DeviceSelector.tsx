@@ -182,7 +182,11 @@ export function DeviceSelector({
               })}
               <div className="my-1 h-px bg-line-soft" />
               <button
-                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-13 text-accent hover:bg-surface-subtle"
+                // The accent label sits on `accent-soft` rather than
+                // `surface-subtle`: the contract now holds every semantic ink to
+                // AA on its own soft fill, while a dim shared surface left it at
+                // 3.8-4.4:1 in six palettes.
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-13 text-accent hover:bg-accent-soft"
                 onClick={() => {
                   setOpen(false);
                   onManage();
