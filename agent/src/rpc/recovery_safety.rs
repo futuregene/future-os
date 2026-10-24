@@ -691,9 +691,14 @@ mod tests {
             .is_none());
     }
 
+    // `cancelled` used to sit in this loop, which made the user pressing stop
+    // fence the whole session. It is an abort the user asked for, not an
+    // unsupervised interruption, and is covered by
+    // `user_aborted_shell_does_not_fence_the_whole_session` and
+    // `aborted_operation_is_warned_once_then_allowed` instead.
     #[test]
-    fn cancelled_or_timed_out_process_can_have_partial_effects() {
-        for status in ["cancelled", "timed_out", "execution_failed"] {
+    fn timed_out_or_failed_process_can_have_partial_effects() {
+        for status in ["timed_out", "execution_failed"] {
             let mut result = SessionEntry::new_tool("call", "command interrupted");
             result.meta = Some(json!({"shell_result":{"status":status,"is_error":true}}));
             let (root, manager) = fixture("shell", json!({"command":"append-once"}), Some(result));
